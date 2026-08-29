@@ -6,7 +6,7 @@
 //! mesimon-minted UUID. The extended chain (branch → worktree → PR) arrives with
 //! adoption in M3. Entities mesimon did not create are normal input, never errors.
 
-use crate::board::{ExitReason, SessionRecord, SessionState};
+use crate::board::{ExitReason, SessionRecord, SessionState, UnknownReason};
 
 /// One pane row from `list-panes -a` on the private server.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,14 +38,32 @@ pub struct Reconciled {
 }
 
 /// The state a record should transition to for a given link.
-pub fn state_for(link: &Link, prior: &SessionState) -> SessionState {
+/// `hook_instrumented`: the record's state is driven by a hook stream (a
+/// Claude session). A bash session has no hooks — a live shell pane is
+/// trivially `Running` and there is nothing stale about saying so.
+pub fn state_for(link: &Link, prior: &SessionState, hook_instrumented: bool) -> SessionState {
     match link {
+        Link::Live { .. } if hook_instrumented => match prior {
+            // A live pane proves a process, nothing more. A persisted
+            // RequiresAction / Idle / Throttled / Failed claim survives — it is
+            // sticky by design and the hook stream picks up from where it left
+            // off (needs-you additionally has the 15-min stale demote). But an
+            // ACTIVITY claim (`Running` / `Spawning`) cannot be trusted across
+            // daemon downtime: the `Stop` that ended the turn may have fired
+            // into the void, and there is no polling to ever correct it
+            // (dogfood 2026-08-30: sessions read "working" forever). Honest
+            // answer until the next hook event: unknown, daemon restarted.
+            SessionState::Running
+            | SessionState::Spawning
+            | SessionState::Exited { .. }
+            | SessionState::Unknown { .. }
+            | SessionState::Sleeping => {
+                SessionState::Unknown { reason: UnknownReason::DaemonRestarted }
+            }
+            s => s.clone(),
+        },
         Link::Live { .. } => match prior {
-            // A live pane proves the process exists; anything the record thought
-            // beyond that is stale after a restart. A persisted RequiresAction /
-            // Idle / Throttled survives — the pane is still there and the hook
-            // stream picks up from where it left off. A pane under a Sleeping
-            // record means the sleep never finished killing — the process is real.
+            // No hook stream: the pane is the whole truth.
             SessionState::Exited { .. }
             | SessionState::Unknown { .. }
             | SessionState::Sleeping => SessionState::Running,
@@ -107,7 +125,7 @@ pub fn reconcile(records: &[SessionRecord], snapshot: &[PaneSnapshot]) -> Reconc
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::board::{SessionKind, SessionRecord, SessionState};
+    use crate::board::{SessionKind, SessionRecord, SessionState, UnknownReason};
 
     fn rec(state: SessionState) -> SessionRecord {
         SessionRecord::new(
@@ -125,24 +143,47 @@ mod tests {
     }
 
     #[test]
-    fn live_pane_links_and_runs() {
+    fn live_pane_is_running_only_without_hooks() {
         let r = rec(SessionState::unknown());
-        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), false, None)]);
+        let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), false, None)]);
         assert_eq!(out.links.len(), 1);
         let link = &out.links[0].1;
         assert!(matches!(link, Link::Live { .. }));
-        assert_eq!(state_for(link, &r.state), SessionState::Running);
+        // Bash (no hook stream): the live pane is the whole truth.
+        assert_eq!(state_for(link, &r.state, false), SessionState::Running);
+        // Claude: a pane proves a process, not activity.
+        assert_eq!(
+            state_for(link, &r.state, true),
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted }
+        );
         assert!(out.foreign.is_empty());
+    }
+
+    #[test]
+    fn stale_running_claim_demotes_across_restart() {
+        // Dogfood 2026-08-30: a Stop that fired while the daemon was down left
+        // "working" latched forever — restart must not trust activity claims.
+        for prior in [SessionState::Running, SessionState::Spawning] {
+            let r = rec(prior.clone());
+            let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), false, None)]);
+            assert_eq!(
+                state_for(&out.links[0].1, &r.state, true),
+                SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+                "{prior:?}"
+            );
+            // A bash session's Running is trivially true while the pane lives.
+            assert_eq!(state_for(&out.links[0].1, &r.state, false), prior);
+        }
     }
 
     #[test]
     fn dead_pane_yields_exit_reason() {
         let r = rec(SessionState::Running);
-        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), true, Some(7))]);
+        let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), true, Some(7))]);
         let link = &out.links[0].1;
         assert!(matches!(link, Link::DeadPane { status: 7, session_name: _ }));
         assert_eq!(
-            state_for(link, &r.state),
+            state_for(link, &r.state, true),
             SessionState::Exited { reason: ExitReason::Crashed }
         );
     }
@@ -150,9 +191,9 @@ mod tests {
     #[test]
     fn clean_dead_pane_is_user_quit() {
         let r = rec(SessionState::Running);
-        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), true, Some(0))]);
+        let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), true, Some(0))]);
         assert_eq!(
-            state_for(&out.links[0].1, &r.state),
+            state_for(&out.links[0].1, &r.state, true),
             SessionState::Exited { reason: ExitReason::UserQuit }
         );
     }
@@ -160,17 +201,17 @@ mod tests {
     #[test]
     fn missing_pane_is_crashed_unless_already_exited() {
         let r = rec(SessionState::Running);
-        let out = reconcile(&[r.clone()], &[]);
+        let out = reconcile(std::slice::from_ref(&r), &[]);
         assert!(matches!(out.links[0].1, Link::Missing));
         assert_eq!(
-            state_for(&out.links[0].1, &r.state),
+            state_for(&out.links[0].1, &r.state, true),
             SessionState::Exited { reason: ExitReason::Crashed }
         );
 
         let r2 = rec(SessionState::Exited { reason: ExitReason::UserQuit });
-        let out2 = reconcile(&[r2.clone()], &[]);
+        let out2 = reconcile(std::slice::from_ref(&r2), &[]);
         assert_eq!(
-            state_for(&out2.links[0].1, &r2.state),
+            state_for(&out2.links[0].1, &r2.state, true),
             SessionState::Exited { reason: ExitReason::UserQuit }
         );
     }
@@ -181,40 +222,43 @@ mod tests {
         // pane is still alive — the hook stream resumes from there.
         let state = SessionState::RequiresAction { reason: crate::board::Reason::Permission };
         let r = rec(state.clone());
-        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), false, None)]);
-        assert_eq!(state_for(&out.links[0].1, &r.state), state);
+        let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), false, None)]);
+        assert_eq!(state_for(&out.links[0].1, &r.state, true), state);
     }
 
     #[test]
     fn dead_pane_keeps_richer_exit_reason() {
         let state = SessionState::Exited { reason: ExitReason::Killed };
         let r = rec(state.clone());
-        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), true, Some(1))]);
-        assert_eq!(state_for(&out.links[0].1, &r.state), state);
+        let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), true, Some(1))]);
+        assert_eq!(state_for(&out.links[0].1, &r.state, true), state);
     }
 
     #[test]
     fn sleeping_survives_restart_and_dead_pane() {
         // Missing: that IS the sleeping condition.
         let r = rec(SessionState::Sleeping);
-        let out = reconcile(&[r.clone()], &[]);
+        let out = reconcile(std::slice::from_ref(&r), &[]);
         assert!(matches!(out.links[0].1, Link::Missing));
-        assert_eq!(state_for(&out.links[0].1, &r.state), SessionState::Sleeping);
+        assert_eq!(state_for(&out.links[0].1, &r.state, true), SessionState::Sleeping);
 
         // DeadPane: daemon died between SIGTERM and kill-session — harvest, stay asleep.
-        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), true, Some(0))]);
-        assert_eq!(state_for(&out.links[0].1, &r.state), SessionState::Sleeping);
+        let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), true, Some(0))]);
+        assert_eq!(state_for(&out.links[0].1, &r.state, true), SessionState::Sleeping);
 
         // Live: a pane proves a process; the sleep never completed.
-        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), false, None)]);
-        assert_eq!(state_for(&out.links[0].1, &r.state), SessionState::Running);
+        let out = reconcile(std::slice::from_ref(&r), &[pane(&r.sid16(), false, None)]);
+        assert_eq!(
+            state_for(&out.links[0].1, &r.state, true),
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted }
+        );
     }
 
     #[test]
     fn foreign_sessions_surface_without_error() {
         let r = rec(SessionState::Running);
         let out = reconcile(
-            &[r.clone()],
+            std::slice::from_ref(&r),
             &[pane(&r.sid16(), false, None), pane("handmade", false, None)],
         );
         assert_eq!(out.foreign, vec!["handmade".to_string()]);
@@ -226,7 +270,7 @@ mod tests {
         // duplicates from a corrupt server — first claim wins, second surfaces foreign.
         let r = rec(SessionState::Running);
         let out = reconcile(
-            &[r.clone()],
+            std::slice::from_ref(&r),
             &[pane(&r.sid16(), false, None), pane(&r.sid16(), true, Some(1))],
         );
         assert!(matches!(out.links[0].1, Link::Live { .. }));

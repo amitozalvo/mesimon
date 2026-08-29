@@ -359,7 +359,12 @@ impl Machine {
         use SessionState as S;
         let t = |s: S| Some((s, Confidence::High));
         match sig {
-            Signal::SessionStart { .. } => t(S::Running),
+            // A session that just started sits at the prompt — that is idle,
+            // not working (dogfood 2026-08-30: fresh spawns read "working"
+            // forever). The one exception: a compact-restart fires
+            // SessionStart mid-turn and the turn continues.
+            Signal::SessionStart { source: StartSource::Compact } => t(S::Running),
+            Signal::SessionStart { .. } => t(S::Idle { stop_reason: StopReason::Unknown }),
             Signal::SessionEnd { kind } => t(S::Exited { reason: kind.exit_reason() }),
             Signal::UserPromptSubmit => t(S::Running),
             Signal::Stop { stop_hook_active: true, .. } => None, // re-entrancy guard

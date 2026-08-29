@@ -90,7 +90,7 @@ mod tests {
         f.flush().unwrap();
         assert_eq!(c.poll(2), vec!["{\"a\":1}".to_string()]);
 
-        write!(f, "2}}\n").unwrap();
+        writeln!(f, "2}}").unwrap();
         f.flush().unwrap();
         assert_eq!(c.poll(3), vec!["{\"b\":2}".to_string()]);
         std::fs::remove_dir_all(p.parent().unwrap()).ok();

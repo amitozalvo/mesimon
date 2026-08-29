@@ -86,6 +86,13 @@ pub struct Daemon {
     rss_cache: (u64, usize),
     /// Recounted at startup and immediately before each spawn (14 §5.1).
     pty_cache: crate::resources::PtyFigures,
+    /// Last breadcrumb pushed into the tmux status line — dedupes the
+    /// set-option so board churn doesn't spam the server.
+    last_status_left: Option<String>,
+    /// The focused session's breadcrumb leaf ("claude"/"bash", or the pane
+    /// title when the agent named itself). Cached at FocusStart — broadcast
+    /// refreshes must not query tmux per board change.
+    focus_label: String,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -136,7 +143,7 @@ pub fn run(paths: Paths) -> Result<()> {
             if observe_only && matches!(link, mesimon_core::reconcile::Link::Missing) {
                 continue;
             }
-            r.state = state_for(link, &r.state);
+            r.state = state_for(link, &r.state, r.kind == SessionKind::Claude);
         }
     }
     store::save_sessions(&paths, &board)?;
@@ -213,6 +220,8 @@ pub fn run(paths: Paths) -> Result<()> {
         reaping: HashMap::new(),
         rss_cache: (0, 0),
         pty_cache: crate::resources::pty_figures(),
+        last_status_left: None,
+        focus_label: String::new(),
     };
 
     for msg in rx {
@@ -812,6 +821,9 @@ impl Daemon {
     }
 
     fn broadcast(&mut self) {
+        // Keep the focused status line's `!N` live while a session holds focus
+        // (attention transitions land here via persist_and_notify).
+        self.refresh_status_line();
         let line = match serde_json::to_string(&Event::BoardChanged) {
             Ok(l) => l,
             Err(_) => return,
@@ -1375,7 +1387,75 @@ impl Daemon {
             return Response::Err { message: "external session — resume it to take over".into() };
         }
         self.focus = Some(session);
-        Response::Attach { argv: self.backend.attach_argv(&rec.sid16()) }
+        let sid16 = rec.sid16();
+        let kind = rec.kind;
+        let argv = self.backend.attach_argv(&sid16);
+        // Breadcrumb leaf: the session's own name when the agent set one
+        // (OSC-0 pane title; tmux reports the hostname when it never did),
+        // else the kind word.
+        let kind_word = match kind {
+            SessionKind::Claude => "claude",
+            SessionKind::Bash => "bash",
+        };
+        let hostname = std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default();
+        self.focus_label = match self.backend.pane_title(&sid16) {
+            Ok(t) => {
+                let t = t.trim();
+                if t.is_empty() || t == hostname {
+                    kind_word.to_string()
+                } else {
+                    tmux_text(t, 24)
+                }
+            }
+            Err(_) => kind_word.to_string(),
+        };
+        self.refresh_status_line();
+        Response::Attach { argv }
+    }
+
+    /// The focused status line renders the breadcrumb — same component as the
+    /// TUI header: ` mesimon > project !N > ticket title `. The needs-you
+    /// count uses terminal yellow (the 16-colour attn of 06 §2.7, both
+    /// flavors) popped out of the reversed bar; tmux chrome is backend-owned
+    /// display, not the wire — the daemon still never styles a wire string.
+    fn refresh_status_line(&mut self) {
+        let Some(focused) = self.focus else { return };
+        let repo = tmux_text(
+            &self
+                .paths
+                .repo_root
+                .file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default(),
+            32,
+        );
+        let title = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.id == focused)
+            .and_then(|s| self.board.ticket(s.ticket))
+            .map(|t| tmux_text(&t.title, 48))
+            .unwrap_or_default();
+        let needs_you = mesimon_core::attention::attention_queue(&self.board).len();
+        let attn = if needs_you > 0 {
+            format!("#[noreverse]#[fg=yellow,bold] !{needs_you} #[default]")
+        } else {
+            String::new()
+        };
+        let line = format!(
+            " mesimon > #[bold]{repo}#[nobold]{attn} > {title} > #[bold]{}#[nobold] ",
+            self.focus_label
+        );
+        if self.last_status_left.as_deref() != Some(&line)
+            && self.backend.set_status_left(&line).is_ok()
+        {
+            self.last_status_left = Some(line);
+        }
     }
 
     fn gate_status(&mut self) -> Response {
@@ -1402,6 +1482,21 @@ impl Daemon {
         }
         Response::Gate { passed: false, attach_argv: Some(self.backend.attach_argv(GATE_SESSION)) }
     }
+}
+
+/// Text destined for the tmux status line: `#` doubled (tmux format escape),
+/// quotes and control characters stripped, hard char cap.
+fn tmux_text(s: &str, max_chars: usize) -> String {
+    let mut out = String::new();
+    for ch in s.chars().take(max_chars) {
+        match ch {
+            '#' => out.push_str("##"),
+            '"' | '\'' | ';' => {}
+            c if c.is_control() => {}
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Test seam only — e2e cannot wait out the real 60 s floor.

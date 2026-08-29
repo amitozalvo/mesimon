@@ -22,12 +22,12 @@ set -g window-size latest
 set -g default-terminal "tmux-256color"
 set -g escape-time 10
 set -g status-style "reverse"
-set -g status-left "  FOCUSED "
-set -g status-left-length 20
-set -g status-right " Ctrl+] board  "
+set -g status-left " mesimon "
+set -g status-left-length 120
+set -g status-right " Ctrl+] back  "
 set -g status-right-length 20
 set -g window-status-format ""
-set -g window-status-current-format "#{session_name}"
+set -g window-status-current-format ""
 "##
     .to_string();
     if let Some(cmd) = pane_died_cmd {

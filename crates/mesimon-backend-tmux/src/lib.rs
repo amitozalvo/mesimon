@@ -144,6 +144,18 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Replace the focused status line's left text (the breadcrumb). Issued
+    /// as a live command — a running server never re-reads its conf, and a
+    /// server predating the 120-length conf still holds the old cap, so the
+    /// length rides along.
+    pub fn set_status_left(&self, text: &str) -> Result<()> {
+        self.run(&["set-option", "-g", "status-left-length", "120"])?;
+        self.run(&["set-option", "-g", "status-left", text])?;
+        // Live servers predate conf wording changes; keep the right side in step.
+        self.run(&["set-option", "-g", "status-right", " Ctrl+] back  "])?;
+        Ok(())
+    }
+
     /// The pane's OSC-0 title (tmux tracks it in `#{pane_title}`). Defaults to
     /// the hostname when the app never set one — callers match app-specific
     /// content, not emptiness (startup-modal probe, 11 §11.5.3).
