@@ -152,15 +152,25 @@ fn candidate(
         return None;
     }
 
-    let preview = read_tail_preview(path, meta.len());
+    let tail = read_tail_info(path, meta.len());
+    // The user's own words are an honest preview when the session's final
+    // stretch holds no assistant text (measured: one real session ended with
+    // 6.8 MB of attachments/snapshots after the last assistant turn).
+    let preview =
+        tail.assistant.or_else(|| tail.last_prompt.map(|p| sanitize(&format!("> {p}"))));
     let pid = pid_files.get(&head.session_id);
+    let name = pid
+        .and_then(|p| p.name.clone())
+        .or(tail.custom_title)
+        .or(tail.ai_title)
+        .map(|n| sanitize(&n));
     Some(ExternalItem {
         claude_session_id: head.session_id,
         cwd: head.cwd,
         transcript_path: path.display().to_string(),
         mtime_ms,
         preview,
-        name: pid.and_then(|p| p.name.clone()).map(|n| sanitize(&n)),
+        name,
         running_elsewhere: pid.is_some_and(|p| p.alive),
     })
 }
@@ -174,39 +184,77 @@ fn read_head(path: &Path) -> Option<String> {
     Some(String::from_utf8_lossy(&buf).into_owned())
 }
 
-/// Last assistant text from the file's tail — the drawer's one-line preview.
-fn read_tail_preview(path: &Path, len: u64) -> Option<String> {
-    for window in [TAIL_BYTES, TAIL_BYTES_MAX] {
-        if let Some(p) = scan_tail_window(path, len, window) {
-            return Some(p);
-        }
-        if window >= len {
-            break; // the whole file was already in the window
-        }
-    }
-    None
+/// What the tail scan can offer the drawer: the last assistant text (already
+/// sanitized), plus the uuid-less latches that ride near EOF (09 §4.2 —
+/// last-write-wins state records: `last-prompt`, `ai-title`, `custom-title`).
+#[derive(Default)]
+struct TailInfo {
+    assistant: Option<String>,
+    last_prompt: Option<String>,
+    ai_title: Option<String>,
+    custom_title: Option<String>,
 }
 
-fn scan_tail_window(path: &Path, len: u64, window: u64) -> Option<String> {
+impl TailInfo {
+    fn merge_missing(&mut self, other: TailInfo) {
+        self.assistant = self.assistant.take().or(other.assistant);
+        self.last_prompt = self.last_prompt.take().or(other.last_prompt);
+        self.ai_title = self.ai_title.take().or(other.ai_title);
+        self.custom_title = self.custom_title.take().or(other.custom_title);
+    }
+}
+
+fn read_tail_info(path: &Path, len: u64) -> TailInfo {
+    let mut info = scan_tail_window(path, len, TAIL_BYTES);
+    // Latches live at EOF; only the assistant text warrants the deep window.
+    if info.assistant.is_none() && len > TAIL_BYTES {
+        info.merge_missing(scan_tail_window(path, len, TAIL_BYTES_MAX));
+    }
+    info
+}
+
+fn scan_tail_window(path: &Path, len: u64, window: u64) -> TailInfo {
     use std::io::{Read, Seek, SeekFrom};
-    let mut f = std::fs::File::open(path).ok()?;
+    let mut info = TailInfo::default();
+    let Ok(mut f) = std::fs::File::open(path) else { return info };
     let start = len.saturating_sub(window);
-    f.seek(SeekFrom::Start(start)).ok()?;
+    if f.seek(SeekFrom::Start(start)).is_err() {
+        return info;
+    }
     let mut buf = Vec::new();
-    f.read_to_end(&mut buf).ok()?;
+    if f.read_to_end(&mut buf).is_err() {
+        return info;
+    }
     // The seek can land mid-record and mid-UTF-8 — lossy, never fatal.
     let text = String::from_utf8_lossy(&buf);
     let mut lines: Vec<&str> = text.lines().collect();
     if start > 0 && !lines.is_empty() {
         lines.remove(0); // the seek landed mid-line
     }
+    // Reversed: the first hit of each kind is the latest write.
     for line in lines.iter().rev() {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        if let TailEvent::AssistantText { text } = classify_tail_record(&v) {
-            return Some(sanitize(&text));
+        if v.get("uuid").is_none() {
+            let s = |key: &str| v.get(key).and_then(serde_json::Value::as_str).map(str::to_string);
+            match v.get("type").and_then(serde_json::Value::as_str) {
+                Some("last-prompt") if info.last_prompt.is_none() => {
+                    info.last_prompt = s("lastPrompt");
+                }
+                Some("ai-title") if info.ai_title.is_none() => info.ai_title = s("aiTitle"),
+                Some("custom-title") if info.custom_title.is_none() => {
+                    info.custom_title = s("customTitle");
+                }
+                _ => {}
+            }
+            continue;
+        }
+        if info.assistant.is_none() {
+            if let TailEvent::AssistantText { text } = classify_tail_record(&v) {
+                info.assistant = Some(sanitize(&text));
+            }
         }
     }
-    None
+    info
 }
 
 /// D29: foreign text entering chrome is sanitized — control characters and
@@ -333,6 +381,23 @@ mod tests {
         write_transcript(&home, "-s", "a.jsonl", SID_A, repo, &tail);
         let items = scan(&home, &[PathBuf::from(repo)], &|_| false);
         assert_eq!(items[0].preview.as_deref(), Some("buried preview"));
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn preview_falls_back_to_last_prompt_and_name_to_ai_title() {
+        // No assistant text anywhere near EOF — the latches carry the story.
+        let home = tmp("latch");
+        let repo = "/repo/l";
+        let tail = format!(
+            "{{\"uuid\":\"u1\",\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"do it\"}}]}}}}\n\
+             {{\"type\":\"last-prompt\",\"lastPrompt\":\"ill push, find it\",\"sessionId\":\"{SID_A}\"}}\n\
+             {{\"type\":\"ai-title\",\"aiTitle\":\"Fix widget animation\",\"sessionId\":\"{SID_A}\"}}\n"
+        );
+        write_transcript(&home, "-s", "a.jsonl", SID_A, repo, &tail);
+        let items = scan(&home, &[PathBuf::from(repo)], &|_| false);
+        assert_eq!(items[0].preview.as_deref(), Some("> ill push, find it"));
+        assert_eq!(items[0].name.as_deref(), Some("Fix widget animation"));
         std::fs::remove_dir_all(home).ok();
     }
 
