@@ -82,16 +82,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         None => Line::default(),
     };
 
-    let top = vec![Line::from(head), ident, band];
+    // Breathing row between the breadcrumb and the identity line too — the
+    // title never touches its metadata (06 §5.5).
+    let top = vec![Line::from(head), Line::default(), ident, band];
     f.render_widget(
         Paragraph::new(top),
-        Rect { x: area.x, y: area.y, width: area.width, height: 3.min(area.height) },
+        Rect { x: area.x, y: area.y, width: area.width, height: 4.min(area.height) },
     );
 
     // ---- body zones -------------------------------------------------------
     // One breathing row under the band (06 §5.5) before the zones begin.
-    let body_y = area.y + 4;
-    let body_h = area.height.saturating_sub(5); // top 3 + breathing 1 + footer 1
+    let body_y = area.y + 5;
+    let body_h = area.height.saturating_sub(6); // top 4 + breathing 1 + footer 1
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     if two_zone {
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
