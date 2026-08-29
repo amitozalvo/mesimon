@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use mesimon_core::board::{Board, SessionKind, SessionState, Ticket};
+use mesimon_core::board::{Board, Provenance, SessionKind, SessionState, Ticket};
 use mesimon_core::command::{Command, ExternalItem, GraceItem, Resources, Response};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
@@ -496,6 +496,37 @@ impl App {
     }
 
     fn focus_session(&mut self, sid: uuid::Uuid) -> Result<()> {
+        // Enter means "get me into this session": paneless records (imported
+        // observe-only, sleeping) resume first, then the focus flow runs.
+        if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
+            let observe_only = rec.provenance == Provenance::Adopted && rec.argv.is_empty();
+            let sleeping = matches!(rec.state, SessionState::Sleeping);
+            if observe_only || sleeping {
+                let cmd = if sleeping && rec.kind == SessionKind::Bash {
+                    Command::WakeSession { id: sid }
+                } else {
+                    Command::ResumeSession { id: sid, confirm: self.resume_refused == Some(sid) }
+                };
+                match self.client.request(cmd)? {
+                    Response::Spawned { .. } => {
+                        self.resume_refused = None;
+                        self.refresh()?;
+                        // fall through to the focus flow below
+                    }
+                    Response::Err { message } => {
+                        if message.contains("running elsewhere") {
+                            // The daemon's message says "resume again to
+                            // override" — the next Enter carries the confirm.
+                            self.resume_refused = Some(sid);
+                        }
+                        self.status = message;
+                        self.refresh()?;
+                        return Ok(());
+                    }
+                    _ => return Ok(()),
+                }
+            }
+        }
         // GATE (D20): prove the unfocus key once before the first real focus.
         match self.client.request(Command::GateStatus)? {
             Response::Gate { passed: true, .. } => {
