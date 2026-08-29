@@ -42,6 +42,78 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::Pick { ticket, idx } = &app.mode {
         draw_picker(f, app, *ticket, *idx);
     }
+    if let Mode::External { idx } = &app.mode {
+        draw_drawer(f, app, *idx);
+    }
+}
+
+/// The External drawer (19 §4): discovered foreign sessions, observe/resume.
+fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
+    if app.external.is_empty() {
+        return;
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let w = 64.min(f.area().width.saturating_sub(4));
+    let h = ((app.external.len() as u16 * 2) + 4).min(f.area().height.saturating_sub(2));
+    let area = Rect {
+        x: (f.area().width.saturating_sub(w)) / 2,
+        y: (f.area().height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(" external sessions — {}", app.external.len()),
+        Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+    for (i, item) in app.external.iter().enumerate() {
+        let name = item
+            .name
+            .clone()
+            .unwrap_or_else(|| item.claude_session_id.to_string()[..8].to_string());
+        let mut badges = String::new();
+        if item.running_elsewhere {
+            badges.push_str("  · running elsewhere");
+        }
+        let head = format!(
+            " {} {}  {}{badges}",
+            if i == idx { "▸" } else { " " },
+            truncate(&name, 24),
+            age_word(now, item.mtime_ms),
+        );
+        let style = if i == idx {
+            Style::default().fg(FG).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(FG)
+        };
+        lines.push(Line::from(Span::styled(head, style)));
+        let preview = item.preview.as_deref().unwrap_or("");
+        lines.push(Line::from(Span::styled(
+            format!("     {}", truncate(preview, w as usize - 6)),
+            Style::default().fg(DIM),
+        )));
+    }
+    lines.push(Line::from(Span::styled(
+        " jk · a attach · R resume here · Esc",
+        Style::default().fg(DIM),
+    )));
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+fn age_word(now_ms: u64, then_ms: u64) -> String {
+    let secs = now_ms.saturating_sub(then_ms) / 1000;
+    match secs {
+        0..=119 => format!("{secs}s"),
+        120..=7199 => format!("{}m", secs / 60),
+        7200..=172_799 => format!("{}h", secs / 3600),
+        _ => format!("{}d", secs / 86_400),
+    }
 }
 
 /// Small centered session picker (M1 stand-in for the ticket screen).
@@ -72,19 +144,33 @@ fn draw_picker(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
             mesimon_core::board::SessionKind::Claude => "claude",
             mesimon_core::board::SessionKind::Bash => "bash",
         };
+        let mut badges = String::new();
+        if matches!(s.state, mesimon_core::board::SessionState::Sleeping) {
+            badges.push_str(" · asleep");
+        }
+        if s.provenance == mesimon_core::board::Provenance::Adopted && s.argv.is_empty() {
+            badges.push_str(" · external");
+        }
+        if s.pinned_awake {
+            badges.push_str(" · pinned");
+        }
         let style = if i == idx {
             Style::default().fg(FG).add_modifier(Modifier::REVERSED)
         } else {
             Style::default().fg(FG)
         };
         lines.push(Line::from(Span::styled(
-            format!("  {} {kind} · {}  ", if i == idx { "▸" } else { " " }, &s.sid16()[..8]),
+            format!(
+                "  {} {kind} · {}{badges}  ",
+                if i == idx { "▸" } else { " " },
+                &s.sid16()[..8]
+            ),
             style,
         )));
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        " jk · Enter focus · x kill · Esc",
+        " jk · Enter focus · z sleep/wake · p pin · x kill · Esc",
         Style::default().fg(DIM),
     )));
     f.render_widget(Paragraph::new(lines), area);
@@ -96,13 +182,28 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let live = app.board.sessions.iter().filter(|s| s.state.is_live()).count();
+    // D33e: session count, RSS aggregate, PTY headroom — all grey. The one
+    // saturated colour stays reserved for `needs you`.
+    let r = &app.resources;
     let needs_you = mesimon_core::attention::attention_queue(&app.board).len();
     let mut spans = vec![
         Span::styled("  mesimon", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {repo}"), Style::default().fg(DIM)),
-        Span::styled(format!("   {live} live"), Style::default().fg(DIM)),
+        Span::styled(format!("   {} live", r.live), Style::default().fg(DIM)),
     ];
+    if r.asleep > 0 {
+        spans.push(Span::styled(format!(" · {} asleep", r.asleep), Style::default().fg(DIM)));
+    }
+    if r.pty_total > 0 {
+        spans.push(Span::styled(
+            format!("   ptys {}/{}", r.pty_used, r.pty_total),
+            Style::default().fg(DIM),
+        ));
+    }
+    if r.rss_measured > 0 {
+        let gib = r.rss_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        spans.push(Span::styled(format!(" · {gib:.1}GiB"), Style::default().fg(DIM)));
+    }
     // `needs you N`, no colon (07 §2.2) — never dropped, absent only at zero.
     if needs_you > 0 {
         spans.push(Span::styled(
@@ -174,11 +275,20 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
 
     let render_row = |lines: &mut Vec<Line>, t: &mesimon_core::board::Ticket, selected: bool, ghosted: bool| {
+        // Dots are panes; sleeping sessions render as a dim z-run instead.
         let live = app
             .board
             .sessions
             .iter()
-            .filter(|s| s.ticket == t.id && s.state.is_live())
+            .filter(|s| s.ticket == t.id && s.state.has_pane())
+            .count();
+        let asleep = app
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.ticket == t.id && matches!(s.state, mesimon_core::board::SessionState::Sleeping)
+            })
             .count();
         let attn = if ghosted { None } else { attn_word(t.id) };
         let accent = if ghosted {
@@ -191,11 +301,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             ACCENT_IDLE
         };
         // The reason replaces the dots (06 §3: the reason IS the state word).
-        let suffix = match attn {
+        let mut suffix = match attn {
             Some(word) => format!(" ● {word}"),
             None if live > 0 => format!(" {}", "•".repeat(live.min(4))),
             None => String::new(),
         };
+        if attn.is_none() && asleep > 0 {
+            suffix.push_str(&format!(" {}", "z".repeat(asleep.min(4))));
+        }
         let width = (area.width as usize).saturating_sub(3 + suffix.chars().count() + 1);
         let title = truncate(&t.title, width);
         let style = if selected {
@@ -287,13 +400,17 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(FG).add_modifier(Modifier::REVERSED),
         )),
         Mode::Pick { .. } => Line::from(Span::styled(
-            " PICK  jk select · Enter focus · x kill · Esc back",
+            " PICK  jk select · Enter focus · z sleep/wake · p pin · x kill · Esc back",
+            Style::default().fg(FG).add_modifier(Modifier::REVERSED),
+        )),
+        Mode::External { .. } => Line::from(Span::styled(
+            " EXTERNAL  jk select · a attach · R resume here · Esc back",
             Style::default().fg(FG).add_modifier(Modifier::REVERSED),
         )),
         Mode::Normal => {
             if app.status.is_empty() {
                 Line::from(Span::styled(
-                    " BOARD  hjkl · Tab needs-you · o new · r rename · d delete · u undo · m move · s claude · S bash · Enter open · q quit",
+                    " BOARD  hjkl · Tab needs-you · o new · r rename · d delete · u undo · m move · s claude · S bash · e external · Z reclaim · Enter open · q quit",
                     Style::default().fg(DIM),
                 ))
             } else {

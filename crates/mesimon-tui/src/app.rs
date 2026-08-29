@@ -5,8 +5,8 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use mesimon_core::board::{Board, SessionKind, Ticket};
-use mesimon_core::command::{Command, GraceItem, Response};
+use mesimon_core::board::{Board, SessionKind, SessionState, Ticket};
+use mesimon_core::command::{Command, ExternalItem, GraceItem, Resources, Response};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::client::Client;
@@ -19,6 +19,8 @@ pub enum Mode {
     Input { purpose: InputPurpose, buffer: String },
     /// Session picker: a ticket has more than one live session.
     Pick { ticket: ulid::Ulid, idx: usize },
+    /// External drawer: discovered foreign sessions (19 §4 tier 1).
+    External { idx: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -32,6 +34,11 @@ pub struct App {
     pub repo_root: PathBuf,
     pub board: Board,
     pub grace: Vec<GraceItem>,
+    pub external: Vec<ExternalItem>,
+    pub resources: Resources,
+    /// The drawer row whose resume was refused as running-elsewhere — a
+    /// second R on the same row sends the confirm override.
+    resume_refused: Option<uuid::Uuid>,
     pub cursor_col: usize,
     pub cursor_row: usize,
     pub mode: Mode,
@@ -47,12 +54,15 @@ pub struct App {
 
 impl App {
     pub fn new(mut client: Client, repo_root: PathBuf) -> Result<Self> {
-        let (board, grace) = fetch(&mut client)?;
+        let (board, grace, external, resources) = fetch(&mut client)?;
         Ok(Self {
             client,
             repo_root,
             board,
             grace,
+            external,
+            resources,
+            resume_refused: None,
             cursor_col: 0,
             cursor_row: 0,
             mode: Mode::Normal,
@@ -65,11 +75,24 @@ impl App {
     }
 
     pub fn refresh(&mut self) -> Result<()> {
-        let (board, grace) = fetch(&mut self.client)?;
+        let (board, grace, external, resources) = fetch(&mut self.client)?;
         self.board = board;
         self.grace = grace;
+        self.external = external;
+        self.resources = resources;
         self.clamp_cursor();
         Ok(())
+    }
+
+    /// Take whatever board a command replied with (RescanExternal does this).
+    fn absorb_board(&mut self, resp: Response) {
+        if let Response::Board { board, grace, external, resources } = resp {
+            self.board = board;
+            self.grace = grace;
+            self.external = external;
+            self.resources = resources;
+            self.clamp_cursor();
+        }
     }
 
     pub fn columns(&self) -> Vec<String> {
@@ -130,6 +153,7 @@ impl App {
             Mode::Normal => self.key_normal(key.code, key.modifiers)?,
             Mode::Move { ticket, col, idx } => self.key_move(key.code, ticket, col, idx)?,
             Mode::Pick { ticket, idx } => self.key_pick(key.code, ticket, idx)?,
+            Mode::External { idx } => self.key_external(key.code, idx)?,
             Mode::Input { purpose, mut buffer } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
@@ -206,7 +230,102 @@ impl App {
             }
             KeyCode::Char('s') => self.spawn_and_focus(SessionKind::Claude)?,
             KeyCode::Char('S') => self.spawn_and_focus(SessionKind::Bash)?,
+            KeyCode::Char('e') => self.open_drawer()?,
+            KeyCode::Char('Z') => {
+                match self.client.request(Command::ReclaimAll)? {
+                    Response::Reclaimed { slept, skipped } => {
+                        self.status = match (slept, skipped) {
+                            (0, 0) => "nothing to reclaim".into(),
+                            (n, 0) => format!("slept {n}"),
+                            (n, k) => format!("slept {n} · {k} not eligible"),
+                        };
+                    }
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
+                self.refresh()?;
+            }
             KeyCode::Enter => self.focus_selected()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// `e`: rescan (lazy census — this is the only trigger) and open the drawer.
+    fn open_drawer(&mut self) -> Result<()> {
+        let resp = self.client.request(Command::RescanExternal)?;
+        self.absorb_board(resp);
+        if self.external.is_empty() {
+            self.status = "no external sessions found for this repo".into();
+        } else {
+            self.mode = Mode::External { idx: 0 };
+        }
+        Ok(())
+    }
+
+    fn key_external(&mut self, code: KeyCode, idx: usize) -> Result<()> {
+        if self.external.is_empty() {
+            self.mode = Mode::Normal;
+            return Ok(());
+        }
+        let idx = idx.min(self.external.len() - 1);
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('e') => self.mode = Mode::Normal,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.mode = Mode::External { idx: (idx + 1).min(self.external.len() - 1) };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mode = Mode::External { idx: idx.saturating_sub(1) };
+            }
+            KeyCode::Char('a') => {
+                let claude_session_id = self.external[idx].claude_session_id;
+                let Some(t) = self.selected_ticket() else {
+                    self.status = "select a ticket first (Esc, move, e again)".into();
+                    return Ok(());
+                };
+                let ticket = t.id;
+                match self
+                    .client
+                    .request(Command::AttachExternal { claude_session_id, ticket })?
+                {
+                    Response::Spawned { .. } => {
+                        self.status = "attached as external — observe-only until resumed".into();
+                        self.mode = Mode::Normal;
+                    }
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
+                self.refresh()?;
+            }
+            KeyCode::Char('R') | KeyCode::Enter => {
+                let claude_session_id = self.external[idx].claude_session_id;
+                let Some(t) = self.selected_ticket() else {
+                    self.status = "select a ticket first (Esc, move, e again)".into();
+                    return Ok(());
+                };
+                let ticket = t.id;
+                let confirm = self.resume_refused == Some(claude_session_id);
+                match self.client.request(Command::ResumeExternal {
+                    claude_session_id,
+                    ticket,
+                    confirm,
+                })? {
+                    Response::Spawned { .. } => {
+                        self.resume_refused = None;
+                        self.status = "resumed here".into();
+                        self.mode = Mode::Normal;
+                    }
+                    Response::Err { message } => {
+                        if message.contains("running elsewhere") {
+                            self.resume_refused = Some(claude_session_id);
+                        }
+                        self.status = message;
+                        self.mode = Mode::Normal;
+                    }
+                    _ => {}
+                }
+                self.refresh()?;
+            }
             _ => {}
         }
         Ok(())
@@ -343,6 +462,34 @@ impl App {
                     Mode::Normal
                 };
             }
+            KeyCode::Char('z') => {
+                // Sleep/wake toggle on the selected session.
+                let sid = live[idx.min(live.len() - 1)];
+                let asleep = self
+                    .board
+                    .sessions
+                    .iter()
+                    .any(|s| s.id == sid && matches!(s.state, SessionState::Sleeping));
+                let cmd = if asleep {
+                    Command::WakeSession { id: sid }
+                } else {
+                    Command::SleepSession { id: sid }
+                };
+                self.send(cmd)?;
+            }
+            KeyCode::Char('p') => {
+                let sid = live[idx.min(live.len() - 1)];
+                let pinned = self
+                    .board
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == sid)
+                    .map(|s| !s.pinned_awake)
+                    .unwrap_or(true);
+                self.send(Command::PinAwake { id: sid, pinned })?;
+                self.status =
+                    if pinned { "pinned awake".into() } else { "unpinned".into() };
+            }
             _ => {}
         }
         Ok(())
@@ -450,9 +597,11 @@ impl App {
     }
 }
 
-fn fetch(client: &mut Client) -> Result<(Board, Vec<GraceItem>)> {
+fn fetch(client: &mut Client) -> Result<(Board, Vec<GraceItem>, Vec<ExternalItem>, Resources)> {
     match client.request(Command::Snapshot)? {
-        Response::Board { board, grace, .. } => Ok((board, grace)),
+        Response::Board { board, grace, external, resources } => {
+            Ok((board, grace, external, resources))
+        }
         other => anyhow::bail!("unexpected snapshot response: {other:?}"),
     }
 }
