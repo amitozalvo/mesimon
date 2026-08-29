@@ -494,17 +494,8 @@ impl Daemon {
             }
             _ => rec.detail = None,
         }
-        let ticket = rec.ticket;
-        let rec_detail = rec.detail.clone();
-        self.feed.session_state(
-            id,
-            ticket,
-            &change.from,
-            &change.to,
-            change.confidence,
-            hook,
-            rec_detail.as_deref(),
-        );
+        let snapshot = rec.clone();
+        self.feed.session_state(&snapshot, &change.from, hook);
         true
     }
 

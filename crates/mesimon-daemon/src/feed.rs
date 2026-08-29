@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use mesimon_core::attention;
-use mesimon_core::board::{Confidence, SessionState};
+use mesimon_core::board::{SessionRecord, SessionState};
 use serde_json::{json, Value};
 
 const ROTATE_BYTES: u64 = 8 * 1024 * 1024;
@@ -50,31 +50,22 @@ impl FeedWriter {
         }
     }
 
-    /// One debounced session transition (the schema the D33m decider will
-    /// later extend with a non-null `rule`).
-    pub fn session_state(
-        &mut self,
-        session: uuid::Uuid,
-        ticket: ulid::Ulid,
-        from: &SessionState,
-        to: &SessionState,
-        confidence: Confidence,
-        hook: Option<&str>,
-        detail: Option<&str>,
-    ) {
-        let (to_tag, reason) = split_state(to);
+    /// One debounced session transition, read off the just-updated record
+    /// (the schema the D33m decider will later extend with a non-null `rule`).
+    pub fn session_state(&mut self, rec: &SessionRecord, from: &SessionState, hook: Option<&str>) {
+        let (to_tag, reason) = split_state(&rec.state);
         let (from_tag, _) = split_state(from);
         self.push(json!({
             "kind": "session_state",
-            "session": session,
-            "ticket": ticket,
+            "session": rec.id,
+            "ticket": rec.ticket,
             "from": from_tag,
             "to": to_tag,
             "reason": reason,
-            "rank": attention::rank(to),
-            "confidence": confidence,
+            "rank": attention::rank(&rec.state),
+            "confidence": rec.confidence,
             "hook": hook,
-            "detail": detail,
+            "detail": rec.detail,
             "rule": null,
         }));
     }
@@ -169,15 +160,16 @@ mod tests {
     fn session_state_line_schema() {
         let path = tmp("schema");
         let mut w = FeedWriter::open(&path).unwrap();
-        w.session_state(
+        let mut rec = SessionRecord::new(
             uuid::Uuid::nil(),
+            mesimon_core::board::SessionKind::Claude,
             ulid::Ulid::nil(),
-            &SessionState::Running,
-            &SessionState::RequiresAction { reason: Reason::Permission },
-            Confidence::High,
-            Some("PermissionRequest"),
-            Some("Bash(npm test)"),
+            vec![],
+            "/tmp".into(),
+            SessionState::RequiresAction { reason: Reason::Permission },
         );
+        rec.detail = Some("Bash(npm test)".into());
+        w.session_state(&rec, &SessionState::Running, Some("PermissionRequest"));
         w.flush().unwrap();
         let text = std::fs::read_to_string(&path).unwrap();
         let v: Value = serde_json::from_str(text.trim()).unwrap();
