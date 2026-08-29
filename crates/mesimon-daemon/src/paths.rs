@@ -59,6 +59,10 @@ impl Paths {
     pub fn gate_file(&self) -> PathBuf {
         self.state_dir.join("gate-passed")
     }
+    /// Transcript copies made at sleep time (D23 step 3; B-A22).
+    pub fn transcripts_dir(&self) -> PathBuf {
+        self.state_dir.join("transcripts")
+    }
     pub fn daemon_log(&self) -> PathBuf {
         self.state_dir.join("daemon.log")
     }

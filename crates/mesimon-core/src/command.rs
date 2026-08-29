@@ -64,6 +64,8 @@ pub enum Response {
     Hello { version: u32, daemon_pid: u32 },
     Ok,
     Spawned { id: uuid::Uuid },
+    /// ReclaimAll's receipt: how many actually slept, and why others did not.
+    Reclaimed { slept: usize, skipped: usize },
     Board {
         board: Board,
         grace: Vec<GraceItem>,

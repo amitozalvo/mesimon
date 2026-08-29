@@ -41,6 +41,10 @@ const SERVER_GUARD_TICKS: u64 = 60;
 const TAIL_POLL_TICKS: u64 = 8;
 /// Transcript quiet past this while "running" (Tier-0) demotes to idle.
 const TAIL_QUIET_MS: u64 = 45_000;
+/// SIGTERM-to-kill-pane grace (docs/19 §1 kill ladder — never SIGKILL).
+const REAP_GRACE: Duration = Duration::from_secs(5);
+/// D23 floor: a session younger than this in its current state never sleeps.
+const SLEEP_MIN_AGE_MS: u64 = 60_000;
 
 struct GraceEntry {
     ticket: Ticket,
@@ -74,6 +78,8 @@ pub struct Daemon {
     external: Vec<ExternalItem>,
     /// Observe-tier transcript cursors for adopted hook-less sessions.
     tails: HashMap<uuid::Uuid, TailCursor>,
+    /// Panes SIGTERM'd and awaiting their grace-then-kill-pane (by sid16).
+    reaping: HashMap<String, Instant>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -191,6 +197,7 @@ pub fn run(paths: Paths) -> Result<()> {
         feed,
         external: Vec::new(),
         tails: HashMap::new(),
+        reaping: HashMap::new(),
     };
 
     for msg in rx {
@@ -357,11 +364,35 @@ impl Daemon {
                 self.persist_and_notify();
                 resp
             }
-            // Landing with the sleep workpackage.
-            Command::SleepSession { .. }
-            | Command::WakeSession { .. }
-            | Command::ReclaimAll
-            | Command::PinAwake { .. } => Response::Err { message: "not implemented".into() },
+            Command::SleepSession { id } => match self.sleep_one(id) {
+                Ok(()) => {
+                    self.persist_and_notify();
+                    Response::Ok
+                }
+                Err(message) => Response::Err { message },
+            },
+            Command::WakeSession { id } => {
+                let resp = self.wake_session(id);
+                self.persist_and_notify();
+                resp
+            }
+            Command::ReclaimAll => {
+                let (slept, skipped) = self.reclaim_all();
+                if slept > 0 {
+                    self.persist_and_notify();
+                }
+                Response::Reclaimed { slept, skipped }
+            }
+            Command::PinAwake { id, pinned } => {
+                match self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    Some(rec) => {
+                        rec.pinned_awake = pinned;
+                        self.persist_and_notify();
+                        Response::Ok
+                    }
+                    None => Response::Err { message: "no such session".into() },
+                }
+            }
         };
         if let Some((cmd, ticket)) = feed_cmd {
             if matches!(resp, Response::Ok | Response::Spawned { .. }) {
@@ -377,6 +408,7 @@ impl Daemon {
         self.ticks += 1;
         if self.ticks % 4 == 0 {
             self.expire_grace();
+            self.sweep_reaping();
         }
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> = self
@@ -795,11 +827,11 @@ impl Daemon {
         for id in expired {
             if let Some(g) = self.grace.remove(&id) {
                 for s in &g.sessions {
-                    // SIGTERM the group, then remove the pane (docs/19 §1 kill ladder;
-                    // the M2 refinement adds the grace-then-kill-pane delay).
+                    // SIGTERM the group now; the reaper's grace-then-kill-pane
+                    // finishes the ladder (docs/19 §1 — never SIGKILL).
                     if s.state.has_pane() {
                         let _ = self.backend.signal_session(&s.sid16());
-                        let _ = self.backend.kill_session(&s.sid16());
+                        self.reaping.insert(s.sid16(), Instant::now() + REAP_GRACE);
                     }
                 }
             }
@@ -897,16 +929,16 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return Response::Err { message: "no such session".into() };
         };
-        if rec.state.has_pane() {
-            let sid = rec.sid16();
-            let _ = self.backend.signal_session(&sid);
-            let _ = self.backend.kill_session(&sid);
-        }
+        let reap = rec.state.has_pane().then(|| rec.sid16());
         rec.state = SessionState::Exited { reason: ExitReason::Killed };
         rec.waiting_since = None;
         rec.detail = None;
         let (id, state) = (rec.id, rec.state.clone());
         self.machines.insert(id, Machine::new(state, now_ms()));
+        if let Some(sid) = reap {
+            let _ = self.backend.signal_session(&sid);
+            self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        }
         self.persist_and_notify();
         Response::Ok
     }
@@ -1046,6 +1078,7 @@ impl Daemon {
         };
         let (sid, cwd) = (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()));
         let cwd = if cwd.is_dir() { cwd } else { self.paths.repo_root.clone() };
+        self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
         if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &[]) {
             return Response::Err { message: format!("resume spawn failed: {e}") };
@@ -1062,6 +1095,155 @@ impl Daemon {
         self.probe_stage.remove(&id);
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));
         Response::Spawned { id }
+    }
+
+    /// D23 floors, tmux-recast. `Err` carries the user-facing refusal.
+    fn sleep_eligible(&self, rec: &SessionRecord, now: u64) -> std::result::Result<(), String> {
+        if rec.pinned_awake {
+            return Err("pinned awake".into());
+        }
+        match (rec.kind, &rec.state) {
+            (SessionKind::Claude, SessionState::Idle { .. }) => {}
+            (SessionKind::Claude, _) => return Err("only idle sessions sleep".into()),
+            // Bash has no hook surface: Running IS its only live state, so the
+            // manual path accepts it — guarded by the live-children check.
+            (SessionKind::Bash, SessionState::Running) => {}
+            (SessionKind::Bash, _) => return Err("no live shell to sleep".into()),
+        }
+        let age = now.saturating_sub(rec.state_changed_at.unwrap_or(now));
+        if age < sleep_min_age_ms() {
+            return Err("too young — never sleep within 60s".into());
+        }
+        if rec.kind == SessionKind::Bash {
+            // TIOCGPGRP recast: we hold no PTY master under tmux, so the
+            // guard is the pane process's live children (D23 hard floor).
+            let pane_pid = self
+                .backend
+                .snapshot()
+                .ok()
+                .and_then(|s| s.into_iter().find(|p| p.session_name == rec.sid16()))
+                .map(|p| p.pane_pid);
+            if let Some(pid) = pane_pid {
+                let kids = live_children(pid);
+                if !kids.is_empty() {
+                    return Err(format!("bash has live children ({})", kids.join(", ")));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// D23/14 §6.1, tmux-recast: copy transcript, park the record FIRST (the
+    /// machine's Sleeping latch swallows the kill's own SessionEnd/pane-died),
+    /// SIGTERM the group, kill-pane after grace. Never SIGKILL.
+    fn sleep_one(&mut self, id: uuid::Uuid) -> std::result::Result<(), String> {
+        let now = now_ms();
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return Err("no such session".into());
+        };
+        self.sleep_eligible(rec, now)?;
+        let (sid, kind, transcript) = (rec.sid16(), rec.kind, rec.transcript_path.clone());
+
+        // B-A22's cheap half: a copy with no user+assistant pair means resume
+        // would come back amnesiac — sleep anyway, but say so on the card.
+        let mut warn = None;
+        if kind == SessionKind::Claude {
+            let copied = transcript.as_ref().and_then(|t| {
+                let dir = self.paths.transcripts_dir();
+                std::fs::create_dir_all(&dir).ok()?;
+                let dst = dir.join(format!("{id}.jsonl"));
+                std::fs::copy(t, &dst).ok()?;
+                Some(dst)
+            });
+            match copied {
+                Some(dst) if transcript_has_conversation(&dst) => {}
+                _ => warn = Some("resume may lose context".to_string()),
+            }
+        }
+
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.state = SessionState::Sleeping;
+            rec.confidence = Confidence::High;
+            rec.waiting_since = None;
+            rec.state_changed_at = Some(now);
+            rec.detail = warn;
+        }
+        self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
+        self.tails.remove(&id);
+        self.probe_stage.remove(&id);
+        let _ = self.backend.signal_session(&sid);
+        self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        Ok(())
+    }
+
+    fn wake_session(&mut self, id: uuid::Uuid) -> Response {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return Response::Err { message: "no such session".into() };
+        };
+        if !matches!(rec.state, SessionState::Sleeping) {
+            return Response::Err { message: "not asleep".into() };
+        }
+        match rec.kind {
+            SessionKind::Claude => self.resume_session(id, false),
+            SessionKind::Bash => {
+                let (sid, argv, cwd) =
+                    (rec.sid16(), rec.argv.clone(), std::path::PathBuf::from(rec.cwd.clone()));
+                let cwd = if cwd.is_dir() { cwd } else { self.paths.repo_root.clone() };
+                self.reaping.remove(&sid);
+                let _ = self.backend.kill_session(&sid);
+                if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &[]) {
+                    return Response::Err { message: format!("wake spawn failed: {e}") };
+                }
+                let now = now_ms();
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.state = SessionState::Running;
+                    rec.state_changed_at = Some(now);
+                }
+                self.machines.insert(id, Machine::new(SessionState::Running, now));
+                Response::Spawned { id }
+            }
+        }
+    }
+
+    /// 04's reclaim: sleep everything eligible, report the honest split.
+    fn reclaim_all(&mut self) -> (usize, usize) {
+        let candidates: Vec<uuid::Uuid> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| match (r.kind, &r.state) {
+                (SessionKind::Claude, SessionState::Idle { .. }) => true,
+                (SessionKind::Bash, SessionState::Running) => true,
+                _ => false,
+            })
+            .map(|r| r.id)
+            .collect();
+        let mut slept = 0;
+        let mut skipped = 0;
+        for id in candidates {
+            match self.sleep_one(id) {
+                Ok(()) => slept += 1,
+                Err(_) => skipped += 1,
+            }
+        }
+        (slept, skipped)
+    }
+
+    /// The grace half of the kill ladder: SIGTERM already went out; once the
+    /// deadline passes, remove the pane (remain-on-exit keeps it visible
+    /// meanwhile, and pane-died usually beats us here).
+    fn sweep_reaping(&mut self) {
+        let now = Instant::now();
+        let due: Vec<String> = self
+            .reaping
+            .iter()
+            .filter(|(_, t)| **t <= now)
+            .map(|(s, _)| s.clone())
+            .collect();
+        for sid in due {
+            self.reaping.remove(&sid);
+            let _ = self.backend.kill_session(&sid);
+        }
     }
 
     fn focus_start(&mut self, session: uuid::Uuid) -> Response {
@@ -1108,6 +1290,40 @@ impl Daemon {
         }
         Response::Gate { passed: false, attach_argv: Some(self.backend.attach_argv(GATE_SESSION)) }
     }
+}
+
+/// Test seam only — e2e cannot wait out the real 60 s floor.
+fn sleep_min_age_ms() -> u64 {
+    std::env::var("MESIMON_SLEEP_MIN_AGE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(SLEEP_MIN_AGE_MS)
+}
+
+/// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.
+fn live_children(pid: i32) -> Vec<String> {
+    let Ok(out) = std::process::Command::new("pgrep").args(["-lP", &pid.to_string()]).output()
+    else {
+        return Vec::new();
+    };
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
+        .collect()
+}
+
+/// B-A22's cheap assertion: the copied transcript holds a real conversation.
+fn transcript_has_conversation(path: &std::path::Path) -> bool {
+    let Ok(f) = std::fs::File::open(path) else { return false };
+    let (mut user, mut assistant) = (false, false);
+    for line in BufReader::new(f).lines().map_while(|l| l.ok()) {
+        user |= line.contains("\"type\":\"user\"");
+        assistant |= line.contains("\"type\":\"assistant\"");
+        if user && assistant {
+            return true;
+        }
+    }
+    false
 }
 
 fn now_iso() -> String {
