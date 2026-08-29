@@ -98,7 +98,7 @@ fn m1_acceptance_headless() {
 
     // Spawn a bash session → live pane in the private tmux server.
     let r = c.request(Command::SpawnSession { ticket: t.id, kind: SessionKind::Bash });
-    assert!(matches!(r, Response::Ok), "{r:?}");
+    assert!(matches!(r, Response::Spawned { .. }), "{r:?}");
     let (board, _) = board_of(c.request(Command::Snapshot));
     let s = board.sessions.first().expect("session record").clone();
 
