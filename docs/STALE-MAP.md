@@ -122,12 +122,29 @@ budget); persisted state moves.
 `Space Q` in 07 §6 violates 04 §2.9's no-kill-binding rule · `g d`/`g a` drift · 08 §10.4's
 inherited digit row. Validator rules 3a/12–15 have never been run — run them in M1.
 
-## Known-unverified claims to treat as spike inputs, not facts
+## Known-unverified claims — sprint-0 spike verdicts (2026-08-29, `docs/spikes/`)
 
-Hook event set (18 of 31 events uncorroborated; `StopFailure` load-bearing) · `PermissionRequest`
-shape · `~/.claude.json` trust-key path · version-gate table (measured on 2.1.250; local is
-2.1.251) · `--bare`/`--settings` interaction · Codex `[hooks.state]` claim (gates the
-codex-adapter tier argument) · `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` and MCP timeout-floor
-behaviors · third-party issue numbers cited in 03/05/17 · "starship/p10k do blocking CPR reads"
-(asserted, not measured) · Claude fullscreen mouse-mode ordering (reconstruction; local capture
-showed none).
+| claim | verdict |
+|---|---|
+| hook event set (31 names, 09 §5.1) | **CONFIRMED** — all 31 accepted; **`StopFailure` exists and fired** (`authentication_failed`). Field drift: `UserPromptSubmit.prompt`, `StopFailure.error` (confirms 11 over 09). Unknown names silently ignored |
+| `PermissionRequest` wire shape | **11 §11.2.4 wins** (see D34.10). No `tool_use_id` in payload — 11 §11.7.3's PreToolUse bridge needs another key. Headless no-decision ⇒ auto-deny |
+| `~/.claude.json` trust key | **PARTIAL** — `projects["<abs cwd>"].hasTrustDialogAccepted` confirmed; but **worktrees observed with their own per-directory entries (8)**, so D25's second-pass "keyed on main checkout root" is **back in doubt** — live worktree A/B is a required hand-check before the spawn gate is coded |
+| `--bare` vs `--settings` hooks | **CONFIRMED dangerous** — `--bare` suppresses hooks even when passed via `--settings` (A/B'd). `--bare` is off the table for observed sessions |
+| `CLAUDE_CODE_CHILD_SESSION` flips the renderer | **REFUTED on 2.1.251** — renderer governed by the `tui` setting alone (default `inline`). Env allowlist survives on hygiene/other suppressions; the D0 §2 renderer narrative is dead |
+| prompt delivery (D11 mechanics) | **CONFIRMED** — `load-buffer` → `paste-buffer -p` → separate `send-keys Enter`: 3,696 bytes byte-identical, `UserPromptSubmit` fired **94 ms** after Enter (= the delivery ack). Negative confirmed: one-shot body+Enter loses the Enter AND truncates (630/3696); `;` splits tmux commands |
+| Claude fullscreen under tmux | **CONFIRMED** — alt screen enters under `TERM=tmux-256color`; **Shift+Enter inserts newline** via CSI-u and via tmux `S-Enter` with `extended-keys always` (3.6a). Wants `focus-events on`. `run-shell -t <pane>` leaves `pane_in_mode=1` swallowing send-keys — guard needed |
+| flag survey on 2.1.251 | **CONFIRMED** — all probed flags exist; `--permission-mode` spells normal mode `manual` |
+
+Still unverified (no spike yet): Codex `[hooks.state]` claim (gates the codex-adapter tier
+argument) · `CLAUDE_CODE_MCP_AUTO_BACKGROUND_MS` and MCP timeout-floor behaviors · third-party
+issue numbers cited in 03/05/17 · "starship/p10k do blocking CPR reads" · Claude fullscreen
+mouse-mode ordering.
+
+**NEEDS-AUTH:** the isolated spike `CLAUDE_CONFIG_DIR` has no credentials (Keychain OAuth is
+per-config-dir). The live-turn portions (remaining 23 hook events firing, S-B live wire capture)
+unlock after the author runs `claude /login` once under that config dir — exact commands in the
+spike files.
+
+**NEEDS-MANUAL (author):** Ctrl+] detach across GUI terminals (T-3) · real-ratatui byte-clean
+handover (T-4, an M1 item) · physical Shift+Enter through a real outer terminal + nested chain
+(T-6) · the worktree-trust live A/B (S-C).
