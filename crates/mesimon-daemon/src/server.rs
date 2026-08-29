@@ -291,8 +291,8 @@ impl Daemon {
             Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
             Command::KillSession { .. } => Some(("kill_session", None)),
-            Command::AttachExternal { ticket, .. } => Some(("attach_external", Some(*ticket))),
-            Command::ResumeExternal { ticket, .. } => Some(("resume_external", Some(*ticket))),
+            Command::AttachExternal { ticket, .. } => Some(("attach_external", *ticket)),
+            Command::ResumeExternal { ticket, .. } => Some(("resume_external", *ticket)),
             Command::ResumeSession { .. } => Some(("resume_session", None)),
             Command::SleepSession { .. } => Some(("sleep_session", None)),
             Command::WakeSession { .. } => Some(("wake_session", None)),
@@ -831,6 +831,13 @@ impl Daemon {
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
         }
+        self.mint_ticket(column, title);
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// Append a new ticket to `column` (caller validated the column).
+    fn mint_ticket(&mut self, column: String, title: String) -> ulid::Ulid {
         self.board.next_key += 1;
         let last = self
             .board
@@ -846,10 +853,10 @@ impl Daemon {
             order: fracindex::between(&last, ""),
             created_at: now_iso(),
         };
+        let id = t.id;
         let _ = store::save_ticket(&self.paths, &t);
         self.board.tickets.push(t);
-        self.persist_and_notify();
-        Response::Ok
+        id
     }
 
     fn delete_ticket(&mut self, id: ulid::Ulid) -> Response {
@@ -1016,10 +1023,12 @@ impl Daemon {
     fn attach_external(
         &mut self,
         claude_session_id: uuid::Uuid,
-        ticket: ulid::Ulid,
+        ticket: Option<ulid::Ulid>,
     ) -> std::result::Result<uuid::Uuid, String> {
-        if self.board.ticket(ticket).is_none() {
-            return Err("no such ticket".into());
+        if let Some(t) = ticket {
+            if self.board.ticket(t).is_none() {
+                return Err("no such ticket".into());
+            }
         }
         if self.board.sessions.iter().any(|s| {
             s.state.is_live()
@@ -1033,6 +1042,24 @@ impl Daemon {
             return Err("unknown external session — reopen the drawer to rescan".into());
         };
         let item = self.external.remove(pos);
+        // Import gesture: no target ticket means mint one, named after the
+        // session (title latch → preview → id), in the first column.
+        let ticket = match ticket {
+            Some(t) => t,
+            None => {
+                let Some(column) = self.board.sorted_columns().first().map(|c| c.name.clone())
+                else {
+                    return Err("board has no columns".into());
+                };
+                let title = item
+                    .name
+                    .clone()
+                    .or_else(|| item.preview.clone())
+                    .unwrap_or_else(|| item.claude_session_id.to_string()[..8].to_string());
+                let title: String = title.chars().take(48).collect();
+                self.mint_ticket(column, title)
+            }
+        };
         let id = uuid::Uuid::new_v4();
         let mut rec = SessionRecord::new(
             id,

@@ -213,3 +213,9 @@ handover (T-4, an M1 item) · physical Shift+Enter through a real outer terminal
   gate recounts only at spawn time and refuses only at the OS boundary (D33e), naming the reason.
 - **Test seams added**: `MESIMON_CLAUDE_HOME` (census root override) and
   `MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s floor).
+- **Drawer gesture is IMPORT, not attach-to-selected-ticket** (author, dogfood round): `a` and
+  `R` mint a fresh ticket in the first column, titled from the session's title latch → preview →
+  id — `19` §4 tier 2's "the user attaches one to a ticket" pre-selection flow is superseded.
+  The wire keeps `ticket: Option<Ulid>` so a future ticket-screen `a` (04 §2.6) can still target
+  an existing ticket. Drawer previews/names also read the EOF latches (`last-prompt`,
+  `ai-title`/`custom-title`) — assistant text can sit MBs before EOF (measured 6.8 MB).

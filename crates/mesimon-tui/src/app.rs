@@ -278,19 +278,24 @@ impl App {
                 self.mode = Mode::External { idx: idx.saturating_sub(1) };
             }
             KeyCode::Char('a') => {
+                // Import: the daemon mints a ticket named after the session.
                 let claude_session_id = self.external[idx].claude_session_id;
-                let Some(t) = self.selected_ticket() else {
-                    self.status = "select a ticket first (Esc, move, e again)".into();
-                    return Ok(());
-                };
-                let ticket = t.id;
                 match self
                     .client
-                    .request(Command::AttachExternal { claude_session_id, ticket })?
+                    .request(Command::AttachExternal { claude_session_id, ticket: None })?
                 {
-                    Response::Spawned { .. } => {
-                        self.status = "attached as external — observe-only until resumed".into();
+                    Response::Spawned { id } => {
+                        self.refresh()?;
+                        self.status = self
+                            .board
+                            .sessions
+                            .iter()
+                            .find(|s| s.id == id)
+                            .and_then(|s| self.board.ticket(s.ticket))
+                            .map(|t| format!("imported as {} — observe-only, R resumes", t.short_key))
+                            .unwrap_or_else(|| "imported — observe-only".into());
                         self.mode = Mode::Normal;
+                        return Ok(());
                     }
                     Response::Err { message } => self.status = message,
                     _ => {}
@@ -299,15 +304,10 @@ impl App {
             }
             KeyCode::Char('R') | KeyCode::Enter => {
                 let claude_session_id = self.external[idx].claude_session_id;
-                let Some(t) = self.selected_ticket() else {
-                    self.status = "select a ticket first (Esc, move, e again)".into();
-                    return Ok(());
-                };
-                let ticket = t.id;
                 let confirm = self.resume_refused == Some(claude_session_id);
                 match self.client.request(Command::ResumeExternal {
                     claude_session_id,
-                    ticket,
+                    ticket: None,
                     confirm,
                 })? {
                     Response::Spawned { .. } => {

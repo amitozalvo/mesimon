@@ -36,11 +36,12 @@ pub enum Command {
     /// Re-run the external-session census (19 §4 tier 1). Lazy by design:
     /// fired when the drawer opens, never on a timer.
     RescanExternal,
-    /// Tier 2: attach a discovered foreign session to a ticket as an
-    /// `external` record — observe-only, no process, no hooks.
-    AttachExternal { claude_session_id: uuid::Uuid, ticket: ulid::Ulid },
-    /// Tier 3 in one step: attach + take over via `claude --resume`.
-    ResumeExternal { claude_session_id: uuid::Uuid, ticket: ulid::Ulid, confirm: bool },
+    /// Tier 2: import a discovered foreign session as an `external` record —
+    /// observe-only, no process, no hooks. `ticket: None` mints a fresh
+    /// ticket named after the session (the drawer's default gesture).
+    AttachExternal { claude_session_id: uuid::Uuid, ticket: Option<ulid::Ulid> },
+    /// Tier 3 in one step: import + take over via `claude --resume`.
+    ResumeExternal { claude_session_id: uuid::Uuid, ticket: Option<ulid::Ulid>, confirm: bool },
     /// Take over (or re-take) an attached record. `confirm` overrides the
     /// running-elsewhere refusal (double-resume guard, 09 §9).
     ResumeSession { id: uuid::Uuid, confirm: bool },

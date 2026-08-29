@@ -100,7 +100,7 @@ fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
         )));
     }
     lines.push(Line::from(Span::styled(
-        " jk · a attach · R resume here · Esc",
+        " jk · a import · R import + resume · Esc",
         Style::default().fg(DIM),
     )));
     f.render_widget(Paragraph::new(lines), area);
@@ -404,7 +404,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             Style::default().fg(FG).add_modifier(Modifier::REVERSED),
         )),
         Mode::External { .. } => Line::from(Span::styled(
-            " EXTERNAL  jk select · a attach · R resume here · Esc back",
+            " EXTERNAL  jk select · a import · R import + resume · Esc back",
             Style::default().fg(FG).add_modifier(Modifier::REVERSED),
         )),
         Mode::Normal => {

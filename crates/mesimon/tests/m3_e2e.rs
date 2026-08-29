@@ -168,25 +168,32 @@ fn m3_adoption_and_sleep() {
     assert_eq!(item.preview.as_deref(), Some("foreign work in flight"));
     assert!(!item.running_elsewhere);
 
-    // --- Attach: observe-only record, no pane, no argv.
+    // --- Import: mints its own ticket (named from the preview here — no
+    // pid-file name exists), record is observe-only: no pane, no argv.
     let foreign: uuid::Uuid = FOREIGN_SID.parse().unwrap();
-    let obs = match c.request(Command::AttachExternal { claude_session_id: foreign, ticket }) {
-        Response::Spawned { id } => id,
-        other => panic!("attach: {other:?}"),
-    };
+    let obs =
+        match c.request(Command::AttachExternal { claude_session_id: foreign, ticket: None }) {
+            Response::Spawned { id } => id,
+            other => panic!("attach: {other:?}"),
+        };
     let board = board_of(c.request(Command::Snapshot));
     let rec = board.sessions.iter().find(|s| s.id == obs).unwrap();
     assert_eq!(rec.provenance, Provenance::Adopted);
     assert_eq!(rec.claude_session_id, Some(foreign));
     assert!(rec.argv.is_empty());
     assert_eq!(rec.detail.as_deref(), Some("foreign work in flight"));
+    assert_ne!(rec.ticket, ticket, "import must mint its own ticket");
+    let minted = board.ticket(rec.ticket).expect("minted ticket");
+    assert_eq!(minted.title, "foreign work in flight");
+    assert_eq!(board.tickets.len(), 2);
     // Observe-only records refuse focus.
     assert!(matches!(c.request(Command::FocusStart { session: obs }), Response::Err { .. }));
-    // A second attach of the same claude session refuses.
+    // A second attach of the same claude session refuses (no orphan ticket).
     assert!(matches!(
-        c.request(Command::AttachExternal { claude_session_id: foreign, ticket }),
+        c.request(Command::AttachExternal { claude_session_id: foreign, ticket: None }),
         Response::Err { .. }
     ));
+    assert_eq!(board_of(c.request(Command::Snapshot)).tickets.len(), 2);
 
     // --- Takeover: spawn `claude --resume <foreign>` with our hooks.
     let resumed = match c.request(Command::ResumeSession { id: obs, confirm: false }) {
