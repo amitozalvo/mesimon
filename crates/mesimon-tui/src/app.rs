@@ -191,14 +191,6 @@ impl App {
             }
             KeyCode::Char('s') => self.spawn_and_focus(SessionKind::Claude)?,
             KeyCode::Char('S') => self.spawn_and_focus(SessionKind::Bash)?,
-            KeyCode::Char('x') => {
-                if let Some(t) = self.selected_ticket() {
-                    let last = self.live_sessions_of(t.id).last().map(|s| s.id);
-                    if let Some(sid) = last {
-                        self.send(Command::KillSession { id: sid })?;
-                    }
-                }
-            }
             KeyCode::Enter => self.focus_selected()?,
             _ => {}
         }

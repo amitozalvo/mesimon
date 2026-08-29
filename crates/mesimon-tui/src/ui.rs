@@ -255,7 +255,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Mode::Normal => {
             if app.status.is_empty() {
                 Line::from(Span::styled(
-                    " BOARD  hjkl · o new · r rename · d delete · u undo · m move · s claude · S bash · Enter focus · x kill · q quit",
+                    " BOARD  hjkl · o new · r rename · d delete · u undo · m move · s claude · S bash · Enter open · q quit",
                     Style::default().fg(DIM),
                 ))
             } else {
