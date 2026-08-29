@@ -10,9 +10,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use mesimon_core::attention::{self, Change, Machine, Signal};
+use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool};
+use mesimon_core::attention::{self, Change, Machine, Signal, TailHint};
 use mesimon_core::board::{
-    Board, Confidence, ExitReason, SessionKind, SessionRecord, SessionState, Ticket, UnknownReason,
+    Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState, Ticket,
+    UnknownReason,
 };
 use mesimon_core::command::{
     Command, Envelope, Event, ExternalItem, GraceItem, Resources, Response, PROTOCOL_VERSION,
@@ -25,6 +27,7 @@ use crate::feed::FeedWriter;
 use crate::ingest::{self, HookFrame};
 use crate::paths::Paths;
 use crate::store;
+use crate::tail::TailCursor;
 
 const GRACE_SECS: u64 = 9;
 const GATE_SESSION: &str = "msmn-gate";
@@ -33,6 +36,11 @@ const TICK_MS: u64 = 250;
 /// Every this-many ticks, check the private tmux server wholesale — pane-died
 /// cannot fire for a dead server, so this guard is load-bearing.
 const SERVER_GUARD_TICKS: u64 = 60;
+/// Observe-tier transcript polling cadence (2 s) — stat-then-read, adopted
+/// hook-less sessions only.
+const TAIL_POLL_TICKS: u64 = 8;
+/// Transcript quiet past this while "running" (Tier-0) demotes to idle.
+const TAIL_QUIET_MS: u64 = 45_000;
 
 struct GraceEntry {
     ticket: Ticket,
@@ -64,6 +72,8 @@ pub struct Daemon {
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
     /// only on `RescanExternal` (the drawer opening).
     external: Vec<ExternalItem>,
+    /// Observe-tier transcript cursors for adopted hook-less sessions.
+    tails: HashMap<uuid::Uuid, TailCursor>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -180,6 +190,7 @@ pub fn run(paths: Paths) -> Result<()> {
         ticks: 0,
         feed,
         external: Vec::new(),
+        tails: HashMap::new(),
     };
 
     for msg in rx {
@@ -350,6 +361,9 @@ impl Daemon {
         if self.ticks % 4 == 0 {
             changed |= self.probe_spawning();
         }
+        if self.ticks % TAIL_POLL_TICKS == 0 {
+            changed |= self.poll_tails();
+        }
         if self.ticks % SERVER_GUARD_TICKS == 0 {
             changed |= self.guard_server();
         }
@@ -413,6 +427,83 @@ impl Daemon {
             if let Some(m) = self.machines.get_mut(&id) {
                 if let Some(change) = m.apply(&sig, now) {
                     changed |= self.apply_change(id, &change, None, Some("probe"));
+                }
+            }
+        }
+        changed
+    }
+
+    /// Observe tier (19 §4 tier 2): adopted sessions with no process of ours
+    /// get their state from the transcript tail, at `Confidence::Low` only.
+    fn poll_tails(&mut self) -> bool {
+        let now = now_ms();
+        let cands: Vec<(uuid::Uuid, String)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| {
+                r.provenance == Provenance::Adopted && r.argv.is_empty() && r.state.is_live()
+            })
+            .filter_map(|r| r.transcript_path.clone().map(|t| (r.id, t)))
+            .collect();
+        self.tails.retain(|id, _| cands.iter().any(|(cid, _)| cid == id));
+
+        let mut changed = false;
+        for (id, tpath) in cands {
+            let path = std::path::PathBuf::from(&tpath);
+            let cursor = self
+                .tails
+                .entry(id)
+                .or_insert_with(|| TailCursor::at_end(path.clone(), now));
+            if cursor.path != path {
+                *cursor = TailCursor::at_end(path.clone(), now);
+            }
+            let lines = cursor.poll(now);
+            let quiet = now.saturating_sub(cursor.grew_at);
+
+            let mut hints: Vec<(TailHint, Option<String>)> = Vec::new();
+            for line in &lines {
+                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+                match classify_tail_record(&v) {
+                    TailEvent::AssistantText { text } => hints
+                        .push((TailHint::AssistantText, Some(crate::census::sanitize(&text)))),
+                    TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion } => {
+                        hints.push((TailHint::AskUserQuestion, None))
+                    }
+                    TailEvent::NeedsHuman { tool: TailTool::ExitPlanMode } => {
+                        hints.push((TailHint::ExitPlanMode, None))
+                    }
+                    TailEvent::TurnComplete => hints.push((TailHint::TurnComplete, None)),
+                    TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
+                    TailEvent::Latch | TailEvent::Other => {}
+                }
+            }
+            if hints.is_empty()
+                && quiet >= TAIL_QUIET_MS
+                && self
+                    .board
+                    .sessions
+                    .iter()
+                    .any(|r| r.id == id && r.state == SessionState::Running)
+            {
+                hints.push((TailHint::StaleQuiet, None));
+            }
+
+            for (hint, preview) in hints {
+                let sig = Signal::TranscriptHint { kind: hint };
+                if let Some(change) = self.machines.get_mut(&id).and_then(|m| m.apply(&sig, now))
+                {
+                    changed |= self.apply_change(id, &change, None, Some("tail"));
+                }
+                // The preview outlives the state word (apply_change wipes
+                // detail outside attention states) — set it after.
+                if let Some(p) = preview {
+                    if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                        if rec.detail.as_deref() != Some(p.as_str()) {
+                            rec.detail = Some(p);
+                            changed = true;
+                        }
+                    }
                 }
             }
         }

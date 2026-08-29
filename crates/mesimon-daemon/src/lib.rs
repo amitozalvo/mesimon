@@ -8,6 +8,7 @@ pub mod ingest;
 pub mod paths;
 pub mod server;
 pub mod store;
+pub mod tail;
 
 use std::path::Path;
 use std::process::{Command, Stdio};
