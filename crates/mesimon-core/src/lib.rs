@@ -5,6 +5,7 @@
 //! through `authorize()`, which returns `Allow` unconditionally in v0.1 but is called
 //! on every mutation path anyway.
 
+pub mod adopt;
 pub mod attention;
 pub mod authorize;
 pub mod board;
