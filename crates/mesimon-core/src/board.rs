@@ -28,10 +28,17 @@ pub enum SessionState {
 }
 
 impl SessionState {
-    /// A pane exists (or should) for this record. Single source for every
-    /// live-count and picker site — a `RequiresAction` session is live.
+    /// The record belongs to the ticket's working set — a `Sleeping` session is
+    /// live-but-parked (it can be woken), only `Exited` is out.
     pub fn is_live(&self) -> bool {
         !matches!(self, SessionState::Exited { .. })
+    }
+
+    /// A pane exists (or should) for this record. `Sleeping` records have no
+    /// process and no pane; every pane operation and pane-derived count keys
+    /// off this, not `is_live`.
+    pub fn has_pane(&self) -> bool {
+        !matches!(self, SessionState::Exited { .. } | SessionState::Sleeping)
     }
 
     pub fn unknown() -> Self {
@@ -52,6 +59,10 @@ pub enum Reason {
     QuotaResume,
     Trust,
     StartupModal,
+    /// The resume-from-summary blocking dialog (09 §9): the session was
+    /// resumed but is not yet accepting input. Shares rank 8 with
+    /// `StartupModal` — an amendment to 11 §11.7.1, recorded in STALE-MAP.
+    ResumeDialog,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -107,6 +118,19 @@ pub enum Confidence {
     Stale,
 }
 
+/// Where a session record came from. Not named `origin` — that is D32c's word
+/// for ticket/text provenance and carries trust semantics this does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum Provenance {
+    /// mesimon minted the UUID and spawned the process (`--session-id`).
+    #[default]
+    Spawned,
+    /// A foreign session attached from the External drawer (19 §4). Badge
+    /// word is "external"; hooks exist only after takeover-by-resume.
+    Adopted,
+}
+
 /// A session record the daemon persists. The UUID is minted by mesimon and
 /// passed to the agent (`--session-id`) and to tmux (session name = sid16),
 /// so identity is never discovered (D24).
@@ -133,6 +157,16 @@ pub struct SessionRecord {
     pub detail: Option<String>,
     #[serde(default)]
     pub confidence: Confidence,
+    #[serde(default)]
+    pub provenance: Provenance,
+    /// The claude-side session id when it differs from `id` — set only for
+    /// adopted sessions (mesimon-spawned ones pass `--session-id id`, so the
+    /// two coincide and this stays None).
+    #[serde(default)]
+    pub claude_session_id: Option<uuid::Uuid>,
+    /// Manual override: never sleep this session (D23 guard, third part).
+    #[serde(default)]
+    pub pinned_awake: bool,
 }
 
 impl SessionRecord {
@@ -156,6 +190,9 @@ impl SessionRecord {
             transcript_path: None,
             detail: None,
             confidence: Confidence::default(),
+            provenance: Provenance::default(),
+            claude_session_id: None,
+            pinned_awake: false,
         }
     }
 
@@ -264,12 +301,37 @@ mod tests {
         assert_eq!(rec.state, SessionState::Exited { reason: ExitReason::Killed });
     }
 
+    /// An M2 sessions.json line (pre-provenance) must keep parsing after the
+    /// M3 field growth — defaults are the migration.
+    #[test]
+    fn m2_session_record_parses() {
+        let m2 = r#"{
+            "id": "3f2b8c1e-9a4d-4e6f-8b1a-2c3d4e5f6a7b",
+            "kind": "claude",
+            "ticket": "01J8ZQ7VJ00000000000000000",
+            "argv": ["claude", "--settings", "/x.json", "--session-id", "3f2b8c1e-9a4d-4e6f-8b1a-2c3d4e5f6a7b"],
+            "cwd": "/tmp",
+            "state": { "state": "requires_action", "reason": "permission" },
+            "waiting_since": 1724900000000,
+            "state_changed_at": 1724900000000,
+            "transcript_path": "/tmp/t.jsonl",
+            "detail": "Bash",
+            "confidence": "high"
+        }"#;
+        let rec: SessionRecord = serde_json::from_str(m2).unwrap();
+        assert_eq!(rec.provenance, Provenance::Spawned);
+        assert!(rec.claude_session_id.is_none());
+        assert!(!rec.pinned_awake);
+    }
+
     #[test]
     fn state_roundtrips() {
         for s in [
             SessionState::Spawning,
             SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::RequiresAction { reason: Reason::ResumeDialog },
             SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Sleeping,
             SessionState::Failed { reason: FailReason::Server },
             SessionState::Throttled,
             SessionState::Unknown { reason: UnknownReason::SupervisorDead },

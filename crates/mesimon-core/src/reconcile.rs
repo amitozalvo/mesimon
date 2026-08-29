@@ -44,13 +44,19 @@ pub fn state_for(link: &Link, prior: &SessionState) -> SessionState {
             // A live pane proves the process exists; anything the record thought
             // beyond that is stale after a restart. A persisted RequiresAction /
             // Idle / Throttled survives — the pane is still there and the hook
-            // stream picks up from where it left off.
-            SessionState::Exited { .. } | SessionState::Unknown { .. } => SessionState::Running,
+            // stream picks up from where it left off. A pane under a Sleeping
+            // record means the sleep never finished killing — the process is real.
+            SessionState::Exited { .. }
+            | SessionState::Unknown { .. }
+            | SessionState::Sleeping => SessionState::Running,
             s => s.clone(),
         },
         Link::DeadPane { status, .. } => match prior {
             // Already recorded as exited: keep the richer reason (publish-once).
             s @ SessionState::Exited { .. } => s.clone(),
+            // A sleeping session's own kill left this pane behind (daemon died
+            // mid-reap): harvest the pane, the record stays asleep.
+            SessionState::Sleeping => SessionState::Sleeping,
             _ => SessionState::Exited {
                 reason: if *status == 0 { ExitReason::UserQuit } else { ExitReason::Crashed },
             },
@@ -58,6 +64,9 @@ pub fn state_for(link: &Link, prior: &SessionState) -> SessionState {
         Link::Missing => match prior {
             // Already recorded as exited: keep the richer reason.
             s @ SessionState::Exited { .. } => s.clone(),
+            // No pane IS the sleeping condition — a daemon restart must not
+            // demote every sleeping session to Crashed.
+            SessionState::Sleeping => SessionState::Sleeping,
             _ => SessionState::Exited { reason: ExitReason::Crashed },
         },
     }
@@ -182,6 +191,23 @@ mod tests {
         let r = rec(state.clone());
         let out = reconcile(&[r.clone()], &[pane(&r.sid16(), true, Some(1))]);
         assert_eq!(state_for(&out.links[0].1, &r.state), state);
+    }
+
+    #[test]
+    fn sleeping_survives_restart_and_dead_pane() {
+        // Missing: that IS the sleeping condition.
+        let r = rec(SessionState::Sleeping);
+        let out = reconcile(&[r.clone()], &[]);
+        assert!(matches!(out.links[0].1, Link::Missing));
+        assert_eq!(state_for(&out.links[0].1, &r.state), SessionState::Sleeping);
+
+        // DeadPane: daemon died between SIGTERM and kill-session — harvest, stay asleep.
+        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), true, Some(0))]);
+        assert_eq!(state_for(&out.links[0].1, &r.state), SessionState::Sleeping);
+
+        // Live: a pane proves a process; the sleep never completed.
+        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), false, None)]);
+        assert_eq!(state_for(&out.links[0].1, &r.state), SessionState::Running);
     }
 
     #[test]
