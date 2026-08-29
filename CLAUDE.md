@@ -6,9 +6,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 **mesimon** (repo dir is `kanban-tui`; the product name is mesimon) — a Rust terminal kanban that
 orchestrates many coding-agent sessions behind a per-repo daemon and a private tmux server.
-Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), and M2 (attention) are built; M3
-(adoption + resources) is next. The milestone plan and current execution state live in the
-auto-memory (`mesimon-project-state`) and `~/.claude/plans/reactive-painting-umbrella.md`.
+Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), M2 (attention), M3 (adoption +
+resources), and M3.5 (design foundation) are built; M4 is next. The milestone plan and current
+execution state live in the auto-memory (`mesimon-project-state`) and
+`~/.claude/plans/reactive-painting-umbrella.md`.
 
 ## Commands
 
@@ -48,12 +49,18 @@ cleans one up.
    the docs have been wrong twice already. Spike verdicts in `docs/spikes/` are empirical and
    trustworthy.
 
-Visual design was deliberately interim through M3; **M3.5 (next) is the design-foundation pass**
-(reordered before M4, 2026-08-29): OSC-11 light/dark palette, cursor-column indication, card
-anatomy per doc 07, ticket screen skeleton. Remaining polish (decay, animation, banners,
-keymap validator) stays in M6. One hard visual rule from day one: exactly ONE saturated colour
-on the board, reserved for needs-you (`ACCENT_ATTN` in `mesimon-tui/src/ui.rs`), nothing else
-ever.
+**M3.5 (built 2026-08-29) is the design foundation**: OSC-11 light/dark detection
+(`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, queried exactly once before raw mode),
+the graphite/chalk token themes for all five colour profiles (`theme.rs` — the colour-law tests
+in it are the palette's spec), pure board geometry (`layout.rs`, post-D33k arithmetic), card
+anatomy per 07 §4 (`ui/card.rs`), spines + the minted cursor-column treatment (`ui/board.rs`),
+and the ticket screen skeleton (`ui/ticket.rs` — replaced `Mode::Pick`; zero daemon changes).
+Deviations recorded in STALE-MAP's "M3.5 implementation deviations". Rendering goldens live in
+`mesimon-tui/testdata/golden/` — `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui` regenerates
+after a deliberate visual change; review the diff by eye. `MESIMON_THEME`/`MESIMON_COLOR` force
+flavor/profile. Remaining polish (decay, animation, banners, density ladder, keymap validator)
+stays in M6. One hard visual rule: exactly ONE saturated colour on the board, reserved for
+needs-you (`Theme::attn`; `test_attn_provenance*` enforces it), nothing else ever.
 
 ## Architecture
 

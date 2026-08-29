@@ -219,3 +219,136 @@ handover (T-4, an M1 item) · physical Shift+Enter through a real outer terminal
   The wire keeps `ticket: Option<Ulid>` so a future ticket-screen `a` (04 §2.6) can still target
   an existing ticket. Drawer previews/names also read the EOF latches (`last-prompt`,
   `ai-title`/`custom-title`) — assistant text can sit MBs before EOF (measured 6.8 MB).
+
+## M3.5 implementation deviations (2026-08-29)
+
+The design-foundation pass (`06`/`07`/`04` are the owners; D33g/D33i/D33k/D34.9/D34.10 applied).
+What shipped differs from the corpus in these ways:
+
+- **Elevation collapsed to two painted surfaces** (`bg` + `selected`) in every colour profile —
+  `06` §2.1's six-surface model (`sunken/surface/raised/overlay`) is an M6 refinement. The zone
+  bands on the ticket screen paint `selected` for the same reason (no `surface` token exists).
+- **Detection ladder subset** (`06` §2.9): `MESIMON_THEME` env stands in for the `[ui] theme`
+  config rung (no config system yet); `MESIMON_COLOR` for `--color`. `CSI ? 996 n` and
+  `CSI ? 2031` live re-theming are deferred to M6 together (2031 never armed → nothing to
+  disarm → `test_dsr_2031_disarmed` defers with it). The two terminfo rungs are deferred:
+  terminfo is a guaranteed false negative under tmux; env rungs carry the weight. OSC 11 goes
+  through `terminal-colorsaurus` 1.0.3 (reads `/dev/tty`, sidesteps the T-4 stdin race).
+- **Card anatomy** (`07` §4): the running/spawning/idle-other states render NO badge glyph —
+  `07` §4.1's "glyph pair present only when abnormal" wins over `06` §10.3's gallery, which
+  shows `▸`/`◦` on resting cards. Session liveness appears in the meta-strip dots instead.
+  Tag-pip and stage zones are zero-width (no tags field; D33g), so a session-less card is one
+  line with no age (created-at staleness needs a parsed timestamp — deferred).
+- **Density is `normal` only**: `compact`/`detail`/`map` and the `z` ladder are M6. The
+  accordion is the 1+3 normal form (short key + top-2 sessions; branch/diff line has no data).
+- **Cursor-column treatment minted** (spec gap): header cell 0 painted `bar.cursor` weight
+  (`#` in mono) + column name value step `dim1 → base`. Zero chroma.
+- **Spine is render-only**: auto-collapse under `MIN_COL` pressure with the window sliding on
+  `h`/`l`; `z o`/`z c` manual collapse and collapsed-by-default terminal columns deferred
+  (needs a column `kind`). Width hysteresis (`06` §6.3) deferred — no child PTY resize exists.
+- **MOVE ghost**: the held card renders with `bar.cursor` + the selected surface in the target
+  column, but the origin column still shows the card in place (M1 behaviour kept) — `06`
+  §10.13's dimmed origin slot is M6 polish.
+- **Ticket screen skeleton** (`07` §14): metadata header + one-line board strip + `DOCUMENTS (0)`
+  placeholder + the SESSIONS rail (two rows per session; a waiting session shows its `detail`
+  question). The ticket-directory IA (`ticket.toml`, `spec.md`, `notes/`) is NOT created —
+  zero wire/daemon/store changes; `e`/`n`/`[` scrollback/`\` rail toggle/`a` adopt/`o` observe
+  defer with it. `Mode::Pick` and the centered picker are deleted; unfocus with >1 session
+  returns to the ticket screen, else the board.
+- **Keymap**: board `Enter` opens the ticket screen (the direct-focus fast path moved onto the
+  ticket screen's `Enter`); board gains `a` as a create alias (07 §16.2's `a  add here`).
+  Inside TICKET, `c`/`s` follow `04` §2.6 (claude/shell, focus-or-spawn; `C`/`S` force new) —
+  so `s` means shell on TICKET but claude on BOARD until the M6 keymap pass. Picker keys
+  `z`/`p`/`x` re-homed onto the rail selection. Digits stay unbound (D34.3).
+- **`✓` done renders with no decay** (`06` §3.6 `seen_at` is M6); `err`/`attn` never decay.
+- **Age slot vocabulary** is `now/…s/…m/…h/…d/…w/>1y` from `state_changed_at` only.
+- **Goldens**: hand-rolled text goldens under `mesimon-tui/testdata/golden/`
+  (`MESIMON_UPDATE_GOLDEN=1` regenerates) — not `insta`. Colour/SGR laws are asserted
+  cell-wise over `TestBackend` (`test_attn_provenance*`, `test_no_banned_sgr`,
+  `test_no_drawn_structure`, `test_alarm_never_dimmed`, `test_cursor_column_header`).
+
+## M3.5 dogfood round (2026-08-30)
+
+- **`SessionStart` → `idle`, not `running`** (`11` §11.7.3 amendment, attention.rs transition
+  table): a session that just started sits at the prompt; fresh spawns were reading "working"
+  forever. Exception: `SessionStart{source: compact}` fires mid-turn → stays `running`.
+- **Ticket screen header is a breadcrumb**: `mesimon > repo !N > title` (needs-you glyph +
+  count beside the repo name, accent colour), then one identity line
+  `KEY ∙ COLUMN ∙ created by you AGE ago` — the full board strip of `07` §14.2 is dropped
+  (author: no need for all columns). Creator is hardcoded "you" (single-user v0.1, D33f).
+- **`h`/`l` adjacent-ticket on the ticket screen unbound** (author: a ticket screen holds one
+  ticket) — `04` §2.6's binding is rejected, not deferred.
+- **Session rows drop the kind letter**: `claude`/`bash` word only (the `c`/`b` letter of
+  `07` §4.3/§14.2 read as noise).
+- **Rename/create are in-place edits** (`r` on board card, `r` in the ticket title; `o`/`a`
+  create edits a phantom card at the column tail): hardware cursor per `06` §5.7, tail kept
+  visible; footer shows only `NEW`/`RENAME  enter save ∙ esc cancel`.
+- **Marquee reveal** for the cursor card's truncated title (hold 1.2 s, 1 cell / 200 ms,
+  hold, loop) — an M6-animation exception pulled forward by the author; motion is
+  cursor-triggered only, so L5/idle-zero-frames applies to every card except the one under
+  the cursor.
+
+## M3.5 dogfood round 2 (2026-08-30)
+
+- **Short keys hidden from the UI** (author: `T-N` confuses): dropped from the ticket identity
+  line, the board accordion, the grace row, and the import status. D24's key survives in the
+  data model and the wire — this is presentation only; resurface it when branches/worktrees
+  give it a job.
+- **Selection must not move what was already visible**: accordion session rows right-align
+  their state glyph + age into the resting card's dot/age columns, and a session-less cursor
+  card renders one line with NO breathing rows (nothing below it shifts).
+- **Session-kind mark**: `✻` U+273B for claude (the Claude Code banner mark; Emoji=No,
+  Neutral = 1 cell — font coverage across the 06 §13 seven faces unverified), `$` for bash,
+  `*` ascii tier. Used in the accordion and the ticket rail; the rail also drops the sid8
+  (same identifier-noise rationale as short keys).
+
+## M3.5 dogfood round 3 (2026-08-30)
+
+- **`created_at` is `@<epoch-secs>`** (server.rs `now_iso` — the name lies): the TUI's
+  `created_at_epoch_ms` parses that form first, RFC3339 as compatibility. The "created by you
+  X ago" age was silently absent because the parser only spoke RFC3339.
+- **Ticket rail is one line per session** — the state word line under every row read as a
+  selectable item of its own. The glyph carries the state; a second line exists only for a
+  waiting session's question or for badges, and it wears the row's selected surface so it
+  reads as part of its session.
+- **PTY headroom hidden below 80% of the OS cap** (round 3 addendum): `ptys U/T` was
+  machine-wide noise (high-water `/dev/ttys*` count on Darwin, B-D16); it now appears only at
+  ≥80% of `kern.tty.ptmx_max`, as `ptys U/T ∙ close to the limit` in full-value grey — never
+  the accent (L3). The "close N idle sessions (reclaim X MB)" suggestion shape stays with the
+  M6 offer-banner work.
+- **Header is the breadcrumb component on every screen** (round 3 addendum): ` mesimon > project`
+  (project bold, 1-cell page pad), needs-you as `!N` beside the project on both screens —
+  `07` §2.2's separate `needs you N` word form is superseded; the board header count is
+  tickets-on-board, not live sessions.
+- **Restart demotes activity claims** (round 3 addendum): `state_for` gained a
+  `hook_instrumented` flag — after a daemon restart, a Claude record's persisted
+  `Running`/`Spawning` (and pane-proven Exited/Unknown/Sleeping) becomes
+  `Unknown{DaemonRestarted}` ("unavailable ?") instead of being trusted: the `Stop` that ended
+  the turn may have fired while the daemon was down, and nothing polls to ever correct the lie.
+  Sticky claims (RequiresAction/Idle/Throttled/Failed) still survive. Bash keeps the old
+  mapping — no hook stream, a live shell pane is trivially Running.
+- **Focused tmux status line renders the breadcrumb** (round 3 addendum): ` mesimon >
+  project !N > ticket title ` replaces `FOCUSED` + the sid16
+  (`window-status-current-format` now empty). Set live via `set-option` at FocusStart and
+  refreshed from `broadcast()` while focus is held (dedup against the last pushed string);
+  the conf default is a bare ` mesimon ` for panes attached outside the focus flow (gate).
+  `!N` renders terminal yellow (both flavors' 16-colour attn, 06 §2.7) popped
+  `#[noreverse]` out of the reversed bar. Titles pass `tmux_text` (## escape, quotes/controls
+  stripped, 48-char cap). tmux chrome is backend-owned display — the daemon still never
+  styles a wire string (D22 §2.9 intact).
+- **Breadcrumb leaf + wording** (round 3 addendum): the focused status line appends
+  ` > session` in bold — the pane's OSC-0 title when the agent named itself (tmux reports
+  the hostname when it never did — filtered), else the kind word. Cached at FocusStart
+  (`focus_label`); broadcast refreshes never query tmux. `Ctrl+] board` → `Ctrl+] back`
+  (conf + pushed live for pre-existing servers).
+- **Resting meta strip CUT; blank rows reinstated** (round 4, 2026-08-30): the session-dot
+  line duplicated the aggregate glyph (a lone `?` under a `?` card) — a resting card is now
+  always ONE line, per-session detail lives in the accordion + ticket rail (`07` §4.5's strip
+  has no job until tags exist). And `07` §3.1's zero-gap stacking lost to `06` §5.5 in
+  dogfood: one blank row between cards is back ("hard to separate them with the eye").
+  `a  add here` renders only when the cursor is on the empty column.
+- **Cursor-column treatment reminted** (round 4 addendum): the header's 1-cell `bar.cursor`
+  read as another card (same vocabulary as accent bars). Now the cursor column's header row
+  is a full-width painted band on the `selected` surface, name at `sel.base` bold — a shape
+  cards never take. Mono/Ansi8 fall back to the sanctioned reverse; light-256 (no painted
+  selected) relies on the name's value step alone.

@@ -12,10 +12,28 @@ use mesimon_core::command::{Command, Envelope, Response, PROTOCOL_VERSION};
 use mesimon_core::Principal;
 use mesimon_daemon::Paths;
 
+/// The app's seam to the daemon: the real `Client` over `orch.sock`, or a
+/// canned fake under test (the TestBackend harness never spawns a daemon).
+pub trait Transport {
+    fn request(&mut self, command: Command) -> Result<Response>;
+    /// Non-blocking: true when an async board-changed event has arrived.
+    fn poll_event(&mut self) -> bool;
+}
+
 pub struct Client {
     write: UnixStream,
     responses: Receiver<Response>,
     pub events: Receiver<()>,
+}
+
+impl Transport for Client {
+    fn request(&mut self, command: Command) -> Result<Response> {
+        Client::request(self, command)
+    }
+
+    fn poll_event(&mut self) -> bool {
+        self.events.try_recv().is_ok()
+    }
 }
 
 impl Client {

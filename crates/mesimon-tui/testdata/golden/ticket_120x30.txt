@@ -1,0 +1,30 @@
+ mesimon > kanban-tui !1 > Fix OSC-11 detection
+
+ IN PROGRESS ∙ created by you >1y ago
+
+
+  DOCUMENTS                                                                               (0)    SESSIONS            2
+
+    drop files into this ticket's directory                                                     ▸ ✻ claude         >1y
+    ticket directories land with the adoption IA (M4)                                           ◦ $ bash           >1y
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ TICKET  jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ z sleep ∙ x kill ∙ esc board

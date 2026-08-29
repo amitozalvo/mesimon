@@ -1,6 +1,9 @@
 //! Board app: state, keymap (M1 subset — the full 04 keymap lands in M2/M6),
-//! MOVE mode with client-side ghost (07 §7 core rules), focus flow with GATE.
+//! MOVE mode with client-side ghost (07 §7 core rules), focus flow with GATE,
+//! and the M3.5 ticket screen (Enter opens it; the old session picker is its
+//! SESSIONS rail now).
 
+use std::cell::Cell;
 use std::path::PathBuf;
 use std::time::Duration;
 
@@ -9,7 +12,16 @@ use mesimon_core::board::{Board, Provenance, SessionKind, SessionState, Ticket};
 use mesimon_core::command::{Command, ExternalItem, GraceItem, Resources, Response};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
-use crate::client::Client;
+use crate::client::Transport;
+use crate::theme::Theme;
+
+/// Which screen owns the keymap and the frame (07 §1). `Mode` remains the
+/// board's sub-state; the ticket screen has no modes yet.
+#[derive(Debug, Clone, PartialEq)]
+pub enum Screen {
+    Board,
+    Ticket { ticket: ulid::Ulid, rail_idx: usize },
+}
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -17,8 +29,6 @@ pub enum Mode {
     /// MOVE: ghost position tracked client-side, committed on Enter (M-rules).
     Move { ticket: ulid::Ulid, col: usize, idx: usize },
     Input { purpose: InputPurpose, buffer: String },
-    /// Session picker: a ticket has more than one live session.
-    Pick { ticket: ulid::Ulid, idx: usize },
     /// External drawer: discovered foreign sessions (19 §4 tier 1).
     External { idx: usize },
 }
@@ -30,20 +40,30 @@ pub enum InputPurpose {
 }
 
 pub struct App {
-    pub client: Client,
+    pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
     pub board: Board,
     pub grace: Vec<GraceItem>,
     pub external: Vec<ExternalItem>,
     pub resources: Resources,
+    pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
     resume_refused: Option<uuid::Uuid>,
+    pub screen: Screen,
     pub cursor_col: usize,
     pub cursor_row: usize,
     pub mode: Mode,
     pub status: String,
     pub quit: bool,
+    /// Board-column viewport (layout::board_geometry slides it); Cell because
+    /// the draw pass owns it and draw takes &App.
+    pub col_window: Cell<usize>,
+    /// Marquee clock for the selected card's truncated title: which ticket is
+    /// scrolling and since when (draw-side state).
+    pub marquee: Cell<Option<(ulid::Ulid, std::time::Instant)>>,
+    /// First visible card row of the cursor column (draw-side scroll state).
+    pub scroll_row: Cell<usize>,
     /// Set when the user asked to focus: the main loop performs the handover
     /// outside the render loop.
     pub pending_attach: Option<Vec<String>>,
@@ -53,8 +73,8 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(mut client: Client, repo_root: PathBuf) -> Result<Self> {
-        let (board, grace, external, resources) = fetch(&mut client)?;
+    pub fn new(mut client: Box<dyn Transport>, repo_root: PathBuf, theme: Theme) -> Result<Self> {
+        let (board, grace, external, resources) = fetch(client.as_mut())?;
         Ok(Self {
             client,
             repo_root,
@@ -62,12 +82,17 @@ impl App {
             grace,
             external,
             resources,
+            theme,
             resume_refused: None,
+            screen: Screen::Board,
             cursor_col: 0,
             cursor_row: 0,
             mode: Mode::Normal,
             status: String::new(),
             quit: false,
+            col_window: Cell::new(0),
+            marquee: Cell::new(None),
+            scroll_row: Cell::new(0),
             pending_attach: None,
             pending_gate_then: None,
             focused_session_hint: None,
@@ -75,12 +100,13 @@ impl App {
     }
 
     pub fn refresh(&mut self) -> Result<()> {
-        let (board, grace, external, resources) = fetch(&mut self.client)?;
+        let (board, grace, external, resources) = fetch(self.client.as_mut())?;
         self.board = board;
         self.grace = grace;
         self.external = external;
         self.resources = resources;
         self.clamp_cursor();
+        self.clamp_screen();
         Ok(())
     }
 
@@ -92,6 +118,7 @@ impl App {
             self.external = external;
             self.resources = resources;
             self.clamp_cursor();
+            self.clamp_screen();
         }
     }
 
@@ -115,11 +142,24 @@ impl App {
         self.cursor_row = self.cursor_row.min(n.saturating_sub(1));
     }
 
+    /// A refresh can delete the ticket the ticket screen shows.
+    fn clamp_screen(&mut self) {
+        if let Screen::Ticket { ticket, rail_idx } = &self.screen {
+            if self.board.ticket(*ticket).is_none() {
+                self.screen = Screen::Board;
+            } else {
+                let n = self.rail_sessions(*ticket).len();
+                let idx = (*rail_idx).min(n.saturating_sub(1));
+                self.screen = Screen::Ticket { ticket: *ticket, rail_idx: idx };
+            }
+        }
+    }
+
     /// Poll one terminal event; returns whether a redraw is needed.
     pub fn tick(&mut self) -> Result<bool> {
         // Async board-changed events from the daemon.
         let mut dirty = false;
-        while self.client.events.try_recv().is_ok() {
+        while self.client.poll_event() {
             dirty = true;
         }
         if dirty {
@@ -134,27 +174,16 @@ impl App {
             return Ok(dirty);
         }
         self.status.clear();
-        // Tab / Shift+Tab: next/previous needs-you card. Global, BEFORE the
-        // mode dispatch (04/07 §21: the only exception is a text field).
-        if !matches!(self.mode, Mode::Input { .. }) {
-            match key.code {
-                KeyCode::Tab => {
-                    self.cycle_attention(false);
-                    return Ok(true);
-                }
-                KeyCode::BackTab => {
-                    self.cycle_attention(true);
-                    return Ok(true);
-                }
-                _ => {}
-            }
-        }
-        match self.mode.clone() {
-            Mode::Normal => self.key_normal(key.code, key.modifiers)?,
-            Mode::Move { ticket, col, idx } => self.key_move(key.code, ticket, col, idx)?,
-            Mode::Pick { ticket, idx } => self.key_pick(key.code, ticket, idx)?,
-            Mode::External { idx } => self.key_external(key.code, idx)?,
-            Mode::Input { purpose, mut buffer } => match key.code {
+        self.handle_key(key.code, key.modifiers)?;
+        Ok(true)
+    }
+
+    /// The full key dispatch, seam for the TestBackend harness.
+    pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // Text input first — it is inline (in the card / ticket title) and
+        // owns every key on both screens, including Tab.
+        if let Mode::Input { purpose, mut buffer } = self.mode.clone() {
+            match code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
                     self.mode = Mode::Normal;
@@ -169,9 +198,32 @@ impl App {
                     self.mode = Mode::Input { purpose, buffer };
                 }
                 _ => {}
-            },
+            }
+            return Ok(());
         }
-        Ok(true)
+        // Tab / Shift+Tab: next/previous needs-you card. Global, BEFORE the
+        // mode dispatch (04/07 §21: the only exception is a text field).
+        match code {
+            KeyCode::Tab => {
+                self.cycle_attention(false);
+                return Ok(());
+            }
+            KeyCode::BackTab => {
+                self.cycle_attention(true);
+                return Ok(());
+            }
+            _ => {}
+        }
+        if let Screen::Ticket { ticket, rail_idx } = self.screen.clone() {
+            return self.key_ticket(code, ticket, rail_idx);
+        }
+        match self.mode.clone() {
+            Mode::Normal => self.key_normal(code, mods)?,
+            Mode::Move { ticket, col, idx } => self.key_move(code, ticket, col, idx)?,
+            Mode::External { idx } => self.key_external(code, idx)?,
+            Mode::Input { .. } => {} // handled above
+        }
+        Ok(())
     }
 
     fn key_normal(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
@@ -200,7 +252,7 @@ impl App {
                 self.cursor_row = usize::MAX;
                 self.clamp_cursor();
             }
-            KeyCode::Char('o') => {
+            KeyCode::Char('o') | KeyCode::Char('a') => {
                 self.mode = Mode::Input { purpose: InputPurpose::Create, buffer: String::new() };
             }
             KeyCode::Char('r') => {
@@ -228,8 +280,18 @@ impl App {
                     self.mode = Mode::Move { ticket: t.id, col: self.cursor_col, idx: self.cursor_row };
                 }
             }
-            KeyCode::Char('s') => self.spawn_and_focus(SessionKind::Claude)?,
-            KeyCode::Char('S') => self.spawn_and_focus(SessionKind::Bash)?,
+            KeyCode::Char('s') => {
+                if let Some(t) = self.selected_ticket() {
+                    let ticket = t.id;
+                    self.spawn_and_focus(ticket, SessionKind::Claude)?;
+                }
+            }
+            KeyCode::Char('S') => {
+                if let Some(t) = self.selected_ticket() {
+                    let ticket = t.id;
+                    self.spawn_and_focus(ticket, SessionKind::Bash)?;
+                }
+            }
             KeyCode::Char('e') => self.open_drawer()?,
             KeyCode::Char('Z') => {
                 match self.client.request(Command::ReclaimAll)? {
@@ -237,7 +299,7 @@ impl App {
                         self.status = match (slept, skipped) {
                             (0, 0) => "nothing to reclaim".into(),
                             (n, 0) => format!("slept {n}"),
-                            (n, k) => format!("slept {n} · {k} not eligible"),
+                            (n, k) => format!("slept {n} ∙ {k} not eligible"),
                         };
                     }
                     Response::Err { message } => self.status = message,
@@ -245,10 +307,106 @@ impl App {
                 }
                 self.refresh()?;
             }
-            KeyCode::Enter => self.focus_selected()?,
+            KeyCode::Enter => {
+                // Enter opens the ticket screen (07 §1) — the direct-focus
+                // fast path moved onto the ticket screen's Enter.
+                if let Some(t) = self.selected_ticket() {
+                    self.screen = Screen::Ticket { ticket: t.id, rail_idx: 0 };
+                }
+            }
             _ => {}
         }
         Ok(())
+    }
+
+    /// TICKET keymap (04 §2.6 subset; the M3 picker keys re-homed here).
+    /// Note: inside TICKET, `s` is the shell session per 04 — this differs
+    /// from BOARD's `s` (claude) until the M6 keymap pass reconciles them.
+    fn key_ticket(&mut self, code: KeyCode, ticket: ulid::Ulid, rail_idx: usize) -> Result<()> {
+        let rail: Vec<uuid::Uuid> = self.rail_sessions(ticket).iter().map(|s| s.id).collect();
+        let idx = rail_idx.min(rail.len().saturating_sub(1));
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Board,
+            KeyCode::Char('j') | KeyCode::Down => {
+                let idx = (idx + 1).min(rail.len().saturating_sub(1));
+                self.screen = Screen::Ticket { ticket, rail_idx: idx };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.screen = Screen::Ticket { ticket, rail_idx: idx.saturating_sub(1) };
+            }
+            // 04 §2.6's h/l = adjacent ticket is deliberately NOT bound:
+            // a ticket screen holds one ticket (author, dogfood 2026-08-30).
+            KeyCode::Char('r') => {
+                if let Some(t) = self.board.ticket(ticket) {
+                    self.mode = Mode::Input {
+                        purpose: InputPurpose::Rename { id: t.id },
+                        buffer: t.title.clone(),
+                    };
+                }
+            }
+            KeyCode::Enter => {
+                if let Some(&sid) = rail.get(idx) {
+                    self.focus_session(sid)?;
+                }
+            }
+            // c / s: focus the existing session of that kind, spawn if none
+            // (04 §2.6); C / S always spawn fresh.
+            KeyCode::Char('c') => self.focus_kind_or_spawn(ticket, SessionKind::Claude)?,
+            KeyCode::Char('s') => self.focus_kind_or_spawn(ticket, SessionKind::Bash)?,
+            KeyCode::Char('C') => self.spawn_and_focus(ticket, SessionKind::Claude)?,
+            KeyCode::Char('S') => self.spawn_and_focus(ticket, SessionKind::Bash)?,
+            KeyCode::Char('x') => {
+                if let Some(&sid) = rail.get(idx) {
+                    self.send(Command::KillSession { id: sid })?;
+                }
+            }
+            KeyCode::Char('z') => {
+                if let Some(&sid) = rail.get(idx) {
+                    let asleep = self
+                        .board
+                        .sessions
+                        .iter()
+                        .any(|s| s.id == sid && matches!(s.state, SessionState::Sleeping));
+                    let cmd = if asleep {
+                        Command::WakeSession { id: sid }
+                    } else {
+                        Command::SleepSession { id: sid }
+                    };
+                    self.send(cmd)?;
+                }
+            }
+            KeyCode::Char('p') => {
+                if let Some(&sid) = rail.get(idx) {
+                    let pinned = self
+                        .board
+                        .sessions
+                        .iter()
+                        .find(|s| s.id == sid)
+                        .map(|s| !s.pinned_awake)
+                        .unwrap_or(true);
+                    self.send(Command::PinAwake { id: sid, pinned })?;
+                    self.status = if pinned { "pinned awake".into() } else { "unpinned".into() };
+                }
+            }
+            KeyCode::Char('d') => {
+                self.screen = Screen::Board;
+                self.send(Command::DeleteTicket { id: ticket })?;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn focus_kind_or_spawn(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
+        let existing = self
+            .rail_sessions(ticket)
+            .iter()
+            .find(|s| s.kind == kind)
+            .map(|s| s.id);
+        match existing {
+            Some(sid) => self.focus_session(sid),
+            None => self.spawn_and_focus(ticket, kind),
+        }
     }
 
     /// `e`: rescan (lazy census — this is the only trigger) and open the drawer.
@@ -292,7 +450,7 @@ impl App {
                             .iter()
                             .find(|s| s.id == id)
                             .and_then(|s| self.board.ticket(s.ticket))
-                            .map(|t| format!("imported as {} — observe-only, R resumes", t.short_key))
+                            .map(|t| format!("imported \"{}\" — observe-only, R resumes", t.title))
                             .unwrap_or_else(|| "imported — observe-only".into());
                         self.mode = Mode::Normal;
                         return Ok(());
@@ -397,8 +555,10 @@ impl App {
         Ok(())
     }
 
-    /// Live sessions of a ticket, in spawn order.
-    pub fn live_sessions_of(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
+    /// Live sessions of a ticket, in spawn order. `Sleeping` is live-but-parked;
+    /// only `Exited` drops out. This is the ticket screen's SESSIONS rail —
+    /// fixed creation order, never resorted by activity (06 §7 R4).
+    pub fn rail_sessions(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
         self.board
             .sessions
             .iter()
@@ -406,9 +566,7 @@ impl App {
             .collect()
     }
 
-    fn spawn_and_focus(&mut self, kind: SessionKind) -> Result<()> {
-        let Some(t) = self.selected_ticket() else { return Ok(()) };
-        let ticket = t.id;
+    fn spawn_and_focus(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
         match self.client.request(Command::SpawnSession { ticket, kind })? {
             Response::Spawned { id } => {
                 self.refresh()?;
@@ -416,81 +574,6 @@ impl App {
             }
             Response::Err { message } => self.status = message,
             _ => self.refresh()?,
-        }
-        Ok(())
-    }
-
-    fn focus_selected(&mut self) -> Result<()> {
-        // Enter on nothing does nothing.
-        let Some(t) = self.selected_ticket() else { return Ok(()) };
-        let ticket = t.id;
-        let live: Vec<uuid::Uuid> = self.live_sessions_of(ticket).iter().map(|s| s.id).collect();
-        match live.len() {
-            0 => self.status = "no live session on this ticket — s spawns claude, S bash".into(),
-            1 => self.focus_session(live[0])?,
-            _ => self.mode = Mode::Pick { ticket, idx: live.len() - 1 },
-        }
-        Ok(())
-    }
-
-    fn key_pick(&mut self, code: KeyCode, ticket: ulid::Ulid, idx: usize) -> Result<()> {
-        let live: Vec<uuid::Uuid> = self.live_sessions_of(ticket).iter().map(|s| s.id).collect();
-        if live.is_empty() {
-            self.mode = Mode::Normal;
-            return Ok(());
-        }
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.mode = Mode::Pick { ticket, idx: (idx + 1).min(live.len() - 1) };
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::Pick { ticket, idx: idx.saturating_sub(1) };
-            }
-            KeyCode::Enter => {
-                let sid = live[idx.min(live.len() - 1)];
-                self.mode = Mode::Normal;
-                self.focus_session(sid)?;
-            }
-            KeyCode::Char('x') => {
-                let sid = live[idx.min(live.len() - 1)];
-                self.send(Command::KillSession { id: sid })?;
-                let remaining = self.live_sessions_of(ticket).len();
-                self.mode = if remaining > 1 {
-                    Mode::Pick { ticket, idx: idx.min(remaining - 1) }
-                } else {
-                    Mode::Normal
-                };
-            }
-            KeyCode::Char('z') => {
-                // Sleep/wake toggle on the selected session.
-                let sid = live[idx.min(live.len() - 1)];
-                let asleep = self
-                    .board
-                    .sessions
-                    .iter()
-                    .any(|s| s.id == sid && matches!(s.state, SessionState::Sleeping));
-                let cmd = if asleep {
-                    Command::WakeSession { id: sid }
-                } else {
-                    Command::SleepSession { id: sid }
-                };
-                self.send(cmd)?;
-            }
-            KeyCode::Char('p') => {
-                let sid = live[idx.min(live.len() - 1)];
-                let pinned = self
-                    .board
-                    .sessions
-                    .iter()
-                    .find(|s| s.id == sid)
-                    .map(|s| !s.pinned_awake)
-                    .unwrap_or(true);
-                self.send(Command::PinAwake { id: sid, pinned })?;
-                self.status =
-                    if pinned { "pinned awake".into() } else { "unpinned".into() };
-            }
-            _ => {}
         }
         Ok(())
     }
@@ -566,16 +649,18 @@ impl App {
         } else if let Some(sid) = self.focused_session_hint.take() {
             self.send(Command::FocusEnd { session: sid })?;
             self.refresh()?;
-            // Unfocus lands where a choice remains: the session list only when
-            // the ticket holds several, otherwise the board with the ticket
-            // selected (a one-session picker is a dead stop).
+            // Unfocus lands where a choice remains: the ticket screen when the
+            // ticket still holds several sessions, otherwise the board with
+            // the ticket selected (a one-session screen is a dead stop).
             if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
                 let ticket = rec.ticket;
                 self.select_ticket(ticket);
-                let live = self.live_sessions_of(ticket);
-                if live.len() > 1 {
-                    let idx = live.iter().position(|s| s.id == sid).unwrap_or(0);
-                    self.mode = Mode::Pick { ticket, idx };
+                let rail = self.rail_sessions(ticket);
+                if rail.len() > 1 {
+                    let idx = rail.iter().position(|s| s.id == sid).unwrap_or(0);
+                    self.screen = Screen::Ticket { ticket, rail_idx: idx };
+                } else {
+                    self.screen = Screen::Board;
                 }
             }
             return Ok(());
@@ -585,7 +670,8 @@ impl App {
 
     /// Jump the cursor to the next (or previous) card needing attention.
     /// Queue order: precedence rank, then longest-waiting (daemon-minted
-    /// `waiting_since`), wrapping. Inert when nothing waits.
+    /// `waiting_since`), wrapping. Inert when nothing waits. Pops back to the
+    /// board — attention is a board-level gesture.
     fn cycle_attention(&mut self, reverse: bool) {
         let queue = mesimon_core::attention::attention_queue(&self.board);
         let mut tickets: Vec<ulid::Ulid> = Vec::new();
@@ -598,6 +684,7 @@ impl App {
             self.status = "nothing needs you".into();
             return;
         }
+        self.screen = Screen::Board;
         self.mode = Mode::Normal;
         let current = self.selected_ticket().map(|t| t.id);
         let pos = current.and_then(|id| tickets.iter().position(|t| *t == id));
@@ -609,7 +696,7 @@ impl App {
         self.select_ticket(next);
     }
 
-    /// Point the board cursor at a ticket (so Esc from the picker lands on it).
+    /// Point the board cursor at a ticket (so Esc from the ticket screen lands on it).
     fn select_ticket(&mut self, ticket: ulid::Ulid) {
         let cols = self.columns();
         for (ci, col) in cols.iter().enumerate() {
@@ -629,11 +716,55 @@ impl App {
     }
 }
 
-fn fetch(client: &mut Client) -> Result<(Board, Vec<GraceItem>, Vec<ExternalItem>, Resources)> {
+fn fetch(client: &mut dyn Transport) -> Result<(Board, Vec<GraceItem>, Vec<ExternalItem>, Resources)> {
     match client.request(Command::Snapshot)? {
         Response::Board { board, grace, external, resources } => {
             Ok((board, grace, external, resources))
         }
         other => anyhow::bail!("unexpected snapshot response: {other:?}"),
+    }
+}
+
+/// Test-only transport + constructor: canned snapshots, no daemon, no tmux.
+#[cfg(test)]
+pub(crate) mod test_support {
+    use super::*;
+
+    pub struct FakeTransport {
+        pub board: Board,
+        pub grace: Vec<GraceItem>,
+        pub external: Vec<ExternalItem>,
+        pub resources: Resources,
+    }
+
+    impl Transport for FakeTransport {
+        fn request(&mut self, command: Command) -> Result<Response> {
+            match command {
+                Command::Snapshot => Ok(Response::Board {
+                    board: self.board.clone(),
+                    grace: self.grace.clone(),
+                    external: self.external.clone(),
+                    resources: self.resources.clone(),
+                }),
+                _ => Ok(Response::Ok),
+            }
+        }
+
+        fn poll_event(&mut self) -> bool {
+            false
+        }
+    }
+
+    impl App {
+        pub(crate) fn for_test(board: Board, theme: Theme) -> App {
+            let fake = FakeTransport {
+                board,
+                grace: vec![],
+                external: vec![],
+                resources: Resources::default(),
+            };
+            App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
+                .expect("fake transport snapshot")
+        }
     }
 }

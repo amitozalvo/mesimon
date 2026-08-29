@@ -1,0 +1,30 @@
+ mesimon > kanban-tui   0 tickets
+
+   TODO                     0    IN PROGRESS              0    REVIEW                   0    DONE                    0
+
+   a  add here
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ BOARD  enter open ticket ∙ tab needs you ∙ a add ∙ m move ∙ e external ∙ q quit

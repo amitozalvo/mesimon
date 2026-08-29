@@ -3,7 +3,12 @@
 
 mod app;
 mod client;
+mod detect;
+mod glyphs;
 mod handover;
+mod layout;
+mod text;
+mod theme;
 mod ui;
 
 use std::path::Path;
@@ -19,8 +24,21 @@ use app::App;
 use client::Client;
 
 pub fn run(repo_root: &Path) -> Result<()> {
+    // Capability + light/dark detection runs exactly once, before raw mode,
+    // before any PTY exists, and never again for the process lifetime
+    // (06 §2.9 query hygiene; handovers reuse the cached theme).
+    let theme = detect::detect();
+
+    // Hard floor (07 §2.4): refuse to start below 60x20.
+    if let Ok((w, h)) = ratatui::crossterm::terminal::size() {
+        if w < layout::MIN_W || h < layout::MIN_H {
+            eprintln!("mesimon needs {}x{}; this terminal is {w}x{h}", layout::MIN_W, layout::MIN_H);
+            std::process::exit(2);
+        }
+    }
+
     let client = Client::connect(repo_root)?;
-    let mut app = App::new(client, repo_root.to_path_buf())?;
+    let mut app = App::new(Box::new(client), repo_root.to_path_buf(), theme)?;
 
     let mut terminal = init_terminal()?;
     let result = event_loop(&mut terminal, &mut app);
