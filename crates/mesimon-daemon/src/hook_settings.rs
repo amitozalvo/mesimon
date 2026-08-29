@@ -52,9 +52,11 @@ fn entry(
     matcher: Option<&str>,
     reason: Option<&str>,
 ) -> Value {
+    // Exec form (no shell): `command` is the executable, `args` its arguments
+    // — verified against the live 2.1.251 settings validator; docs/11's
+    // bare-`args` example is wrong (STALE-MAP).
     let mut args = vec![
-        hook_bin.display().to_string(),
-        "hook".into(),
+        "hook".to_string(),
         "--sock".into(),
         hook_sock.display().to_string(),
         "--session".into(),
@@ -66,7 +68,12 @@ fn entry(
         args.push("--reason".into());
         args.push(r.to_string());
     }
-    let mut hook = json!({ "type": "command", "args": args, "timeout": 2 });
+    let mut hook = json!({
+        "type": "command",
+        "command": hook_bin.display().to_string(),
+        "args": args,
+        "timeout": 2,
+    });
     if ASYNC_EVENTS.contains(&event) {
         hook["async"] = json!(true);
     }
@@ -192,8 +199,9 @@ mod tests {
             for h in e["hooks"].as_array().unwrap() {
                 assert_eq!(h["timeout"], json!(2), "timeout on {ev}");
                 assert_eq!(h["type"], json!("command"));
+                assert!(h["command"].as_str().unwrap().starts_with('/'), "hook bin abs");
                 let args = h["args"].as_array().unwrap();
-                assert!(args[0].as_str().unwrap().starts_with('/'), "hook bin abs");
+                assert_eq!(args[0], json!("hook"), "subcommand first");
                 let sock_pos = args.iter().position(|a| a == "--sock").unwrap();
                 assert!(args[sock_pos + 1].as_str().unwrap().starts_with('/'), "sock abs");
             }

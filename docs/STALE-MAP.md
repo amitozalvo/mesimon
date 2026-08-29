@@ -162,3 +162,7 @@ handover (T-4, an M1 item) · physical Shift+Enter through a real outer terminal
   (modal ⇒ medium confidence), with the no-bytes ⇒ `unknown` verdict at +30 s.
 - **`ExitReason` carries a non-normative extra variant `Killed`** (mesimon's own kill ladder ended
   the session) beyond `11` §11.7.1's five.
+- **`11` §11.2.2's exec-form example is wrong on 2.1.251**: a command hook requires
+  `"command": "<executable>"` with `"args": [...]` as its arguments — a bare `"args"` array fails
+  settings validation ("Expected string, but received undefined" on `hooks.*.command`, whole file
+  skipped). Verified live via the Settings Error dialog; generator fixed accordingly.
