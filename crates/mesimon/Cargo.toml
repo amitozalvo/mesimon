@@ -17,6 +17,12 @@ mesimon-daemon.workspace = true
 mesimon-tui.workspace = true
 mesimon-backend-tmux.workspace = true
 anyhow.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+mesimon-core.workspace = true
+mesimon-daemon.workspace = true
+serde_json.workspace = true
 
 [lints]
 workspace = true

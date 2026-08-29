@@ -38,6 +38,18 @@ impl Paths {
     pub fn tmux_sock(&self) -> PathBuf {
         self.rt_dir.join("tmux.sock")
     }
+    /// Hook-ingest socket (0600 — filesystem permission IS the auth).
+    pub fn hook_sock(&self) -> PathBuf {
+        self.rt_dir.join("hook.sock")
+    }
+    /// Per-session generated Claude settings files (11 §11.2.1, D33b path).
+    pub fn hooks_dir(&self) -> PathBuf {
+        self.state_dir.join("hooks")
+    }
+    /// Append-only activity feed (D34.10: JSONL, not SQLite, for v0.1).
+    pub fn activity_log(&self) -> PathBuf {
+        self.state_dir.join("activity.jsonl")
+    }
     pub fn lock_file(&self) -> PathBuf {
         self.rt_dir.join("daemon.lock")
     }
@@ -103,6 +115,7 @@ mod tests {
         let p = Paths::for_repo(&dir).unwrap();
         assert!(p.orch_sock().as_os_str().len() <= 100, "{:?}", p.orch_sock());
         assert!(p.tmux_sock().as_os_str().len() <= 100, "{:?}", p.tmux_sock());
+        assert!(p.hook_sock().as_os_str().len() <= 100, "{:?}", p.hook_sock());
         assert_eq!(p.proj16.len(), 16);
         std::fs::remove_dir_all(dir).ok();
     }

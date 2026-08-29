@@ -1,5 +1,7 @@
 //! mesimon — me-si-MON. The task instrument.
 
+mod hook;
+
 use std::path::PathBuf;
 
 use anyhow::Result;
@@ -7,6 +9,9 @@ use anyhow::Result;
 fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     match args.first().map(String::as_str) {
+        // First: the hot path. Runs inside the user's agent turn (≤5 ms p99,
+        // docs/14 §1.7) and must touch nothing else in the binary.
+        Some("hook") => hook::run(&args[1..]),
         Some("daemon") => {
             let repo = arg_value(&args, "--repo")
                 .map(PathBuf::from)

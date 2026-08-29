@@ -381,6 +381,7 @@ dependencies = [
  "mesimon-core",
  "mesimon-daemon",
  "mesimon-tui",
+ "serde_json",
 ]
 
 [[package]]

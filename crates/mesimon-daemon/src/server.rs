@@ -10,17 +10,26 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use mesimon_core::board::{Board, ExitReason, SessionKind, SessionRecord, SessionState, Ticket};
+use mesimon_core::attention::{self, Change, Machine};
+use mesimon_core::board::{
+    Board, Confidence, ExitReason, SessionKind, SessionRecord, SessionState, Ticket, UnknownReason,
+};
 use mesimon_core::command::{Command, Envelope, Event, GraceItem, Response, PROTOCOL_VERSION};
 use mesimon_core::reconcile::{reconcile, state_for};
-use mesimon_core::{authorize, fracindex, Action, Decision, Resource};
+use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 use mesimon_backend_tmux::TmuxBackend;
 
+use crate::ingest::{self, HookFrame};
 use crate::paths::Paths;
 use crate::store;
 
 const GRACE_SECS: u64 = 9;
 const GATE_SESSION: &str = "msmn-gate";
+/// The deadline wheel (11 §11.7.4 settle timers need finer than 1 s).
+const TICK_MS: u64 = 250;
+/// Every this-many ticks, check the private tmux server wholesale — pane-died
+/// cannot fire for a dead server, so this guard is load-bearing.
+const SERVER_GUARD_TICKS: u64 = 60;
 
 struct GraceEntry {
     ticket: Ticket,
@@ -30,6 +39,7 @@ struct GraceEntry {
 
 enum Msg {
     Request(Envelope, Sender<Response>, Arc<Mutex<UnixStream>>),
+    Hook(HookFrame),
     Tick,
 }
 
@@ -41,6 +51,9 @@ pub struct Daemon {
     subscribers: Vec<Arc<Mutex<UnixStream>>>,
     focus: Option<uuid::Uuid>,
     shutting_down: bool,
+    /// One attention machine per session, keyed by session UUID.
+    machines: HashMap<uuid::Uuid, Machine>,
+    ticks: u64,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -77,10 +90,10 @@ pub fn run(paths: Paths) -> Result<()> {
 
     let (tx, rx) = channel::<Msg>();
 
-    // Ticker for grace-band expiry.
+    // The deadline wheel: grace expiry, settle timers, the server guard.
     let tick_tx = tx.clone();
     std::thread::spawn(move || loop {
-        std::thread::sleep(Duration::from_secs(1));
+        std::thread::sleep(Duration::from_millis(TICK_MS));
         if tick_tx.send(Msg::Tick).is_err() {
             break;
         }
@@ -95,6 +108,40 @@ pub fn run(paths: Paths) -> Result<()> {
         }
     });
 
+    // Hook ingest: one-shot SOCK_STREAM frames from `mesimon hook`. The 0600
+    // socket is the authentication (11 §11.2.2 — no token in any agent env).
+    let hook_path = paths.hook_sock();
+    let _ = std::fs::remove_file(&hook_path);
+    let hook_listener = UnixListener::bind(&hook_path).context("bind hook.sock")?;
+    std::fs::set_permissions(
+        &hook_path,
+        std::os::unix::fs::PermissionsExt::from_mode(0o600),
+    )?;
+    let hook_tx = tx.clone();
+    std::thread::spawn(move || {
+        for stream in hook_listener.incoming().flatten() {
+            let tx = hook_tx.clone();
+            std::thread::spawn(move || {
+                let mut stream = stream;
+                let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
+                let mut buf = Vec::new();
+                use std::io::Read;
+                if stream.read_to_end(&mut buf).is_ok() {
+                    if let Some(frame) = ingest::parse_frame(&buf) {
+                        let _ = tx.send(Msg::Hook(frame));
+                    }
+                }
+            });
+        }
+    });
+
+    let now = now_ms();
+    let machines = board
+        .sessions
+        .iter()
+        .map(|s| (s.id, Machine::new(s.state.clone(), now)))
+        .collect();
+
     let mut d = Daemon {
         paths,
         board,
@@ -103,11 +150,14 @@ pub fn run(paths: Paths) -> Result<()> {
         subscribers: Vec::new(),
         focus: None,
         shutting_down: false,
+        machines,
+        ticks: 0,
     };
 
     for msg in rx {
         match msg {
-            Msg::Tick => d.expire_grace(),
+            Msg::Tick => d.on_tick(),
+            Msg::Hook(frame) => d.on_hook(frame),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -119,7 +169,15 @@ pub fn run(paths: Paths) -> Result<()> {
         }
     }
     let _ = std::fs::remove_file(d.paths.orch_sock());
+    let _ = std::fs::remove_file(d.paths.hook_sock());
     Ok(())
+}
+
+fn now_ms() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 fn client_loop(stream: UnixStream, tx: Sender<Msg>) {
@@ -211,6 +269,124 @@ impl Daemon {
         }
     }
 
+    /// One wheel tick (250 ms): grace expiry at the old 1 s cadence, settle
+    /// timers, the wholesale-server guard.
+    fn on_tick(&mut self) {
+        self.ticks += 1;
+        if self.ticks % 4 == 0 {
+            self.expire_grace();
+        }
+        let now = now_ms();
+        let fired: Vec<(uuid::Uuid, Change)> = self
+            .machines
+            .iter_mut()
+            .filter_map(|(id, m)| m.tick(now).map(|c| (*id, c)))
+            .collect();
+        let mut changed = false;
+        for (id, change) in fired {
+            changed |= self.apply_change(id, &change, None);
+        }
+        if self.ticks % SERVER_GUARD_TICKS == 0 {
+            changed |= self.guard_server();
+        }
+        if changed {
+            let _ = store::save_sessions(&self.paths, &self.board);
+            self.broadcast();
+        }
+    }
+
+    /// pane-died cannot fire for a dead tmux server: if the private server is
+    /// gone wholesale, every live card demotes to "unavailable" (D5 — never
+    /// render anything from a dead supervisor as blocked).
+    fn guard_server(&mut self) -> bool {
+        let any_live = self.board.sessions.iter().any(|s| s.state.is_live());
+        if !any_live || self.backend.server_alive() {
+            return false;
+        }
+        let now = now_ms();
+        let mut changed = false;
+        for rec in &mut self.board.sessions {
+            if rec.state.is_live() {
+                rec.state = SessionState::Unknown { reason: UnknownReason::SupervisorDead };
+                rec.confidence = Confidence::Stale;
+                rec.waiting_since = None;
+                rec.state_changed_at = Some(now);
+                self.machines.insert(rec.id, Machine::new(rec.state.clone(), now));
+                changed = true;
+            }
+        }
+        changed
+    }
+
+    /// One hook frame off the ingest socket (Claude hook or tmux pane-died).
+    fn on_hook(&mut self, frame: HookFrame) {
+        let Some(id) = self.resolve_session(&frame.session) else { return };
+        // D32c invariant 2: the agent-originated path passes the chokepoint too.
+        if let Decision::Deny { .. } = authorize(
+            &Principal::Agent { session: id },
+            &Action::Mutate,
+            &Resource::Session { id },
+        ) {
+            return;
+        }
+        let now = now_ms();
+        let mut dirty = false;
+        if let Some(t) = ingest::transcript_of(&frame) {
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                if rec.transcript_path.as_deref() != Some(t.as_str()) {
+                    rec.transcript_path = Some(t);
+                    dirty = true;
+                }
+            }
+        }
+        if let Some(sig) = ingest::signal_of(&frame) {
+            let machine = self
+                .machines
+                .entry(id)
+                .or_insert_with(|| Machine::new(SessionState::unknown(), now));
+            if let Some(change) = machine.apply(&sig, now) {
+                dirty |= self.apply_change(id, &change, ingest::detail_of(&frame));
+            }
+        }
+        if dirty {
+            let _ = store::save_sessions(&self.paths, &self.board);
+            self.broadcast();
+        }
+    }
+
+    /// Hooks send the session UUID; the tmux pane-died hook sends the sid16.
+    fn resolve_session(&self, key: &str) -> Option<uuid::Uuid> {
+        if let Ok(id) = key.parse::<uuid::Uuid>() {
+            return self.board.sessions.iter().find(|s| s.id == id).map(|s| s.id);
+        }
+        self.board.sessions.iter().find(|s| s.sid16() == key).map(|s| s.id)
+    }
+
+    /// Fold one debounced machine transition into the session record.
+    /// Returns whether anything visible changed (caller persists/broadcasts).
+    fn apply_change(&mut self, id: uuid::Uuid, change: &Change, detail: Option<String>) -> bool {
+        let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
+            return false;
+        };
+        let now = now_ms();
+        rec.state = change.to.clone();
+        rec.confidence = change.confidence;
+        rec.state_changed_at = Some(now);
+        rec.waiting_since =
+            if attention::is_attention(&change.to) { Some(now) } else { None };
+        match &change.to {
+            SessionState::RequiresAction { .. }
+            | SessionState::Failed { .. }
+            | SessionState::Throttled => {
+                if detail.is_some() {
+                    rec.detail = detail;
+                }
+            }
+            _ => rec.detail = None,
+        }
+        true
+    }
+
     /// M1 liveness: re-reconcile against the live server on every snapshot so
     /// a session that died shows as exited without waiting for a daemon
     /// restart. (M2 replaces the pull with the pane-died hook push.)
@@ -222,7 +398,8 @@ impl Daemon {
             if let Some(r) = self.board.sessions.iter_mut().find(|s| s.id == *id) {
                 let next = state_for(link, &r.state);
                 if next != r.state {
-                    r.state = next;
+                    r.state = next.clone();
+                    self.machines.insert(*id, Machine::new(next, now_ms()));
                     changed = true;
                 }
             }
@@ -405,6 +582,7 @@ impl Daemon {
         if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &[]) {
             return Response::Err { message: format!("spawn failed: {e}") };
         }
+        self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
         self.board.sessions.push(rec);
         self.persist_and_notify();
         Response::Spawned { id }
@@ -418,6 +596,10 @@ impl Daemon {
         let _ = self.backend.signal_session(&sid);
         let _ = self.backend.kill_session(&sid);
         rec.state = SessionState::Exited { reason: ExitReason::Killed };
+        rec.waiting_since = None;
+        rec.detail = None;
+        let (id, state) = (rec.id, rec.state.clone());
+        self.machines.insert(id, Machine::new(state, now_ms()));
         self.persist_and_notify();
         Response::Ok
     }
