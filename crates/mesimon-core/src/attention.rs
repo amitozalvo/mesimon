@@ -35,7 +35,9 @@ pub fn rank(s: &SessionState) -> u8 {
             Reason::Auth => 5,
             Reason::QuotaResume => 6,
             Reason::Trust => 7,
-            Reason::StartupModal => 8,
+            // Shared rank: both are "session stuck at a spawn-time modal".
+            // D28 forbids moving existing ranks; ties order by waiting_since.
+            Reason::StartupModal | Reason::ResumeDialog => 8,
         },
         SessionState::Failed { .. } => 9,
         SessionState::Throttled => 10,
@@ -64,6 +66,7 @@ pub fn reason_word(r: Reason) -> &'static str {
         Reason::QuotaResume => "QUOTA",
         Reason::Trust => "TRUST",
         Reason::StartupModal => "SETUP",
+        Reason::ResumeDialog => "RESUME",
     }
 }
 
@@ -141,6 +144,21 @@ pub enum AttentionTool {
     ExitPlanMode,
 }
 
+/// What the observe-tier transcript tail saw (09 §4.4). Always applied at
+/// `Confidence::Low` — Tier-0 evidence never enters the attention queue and
+/// never lights the saturated colour.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TailHint {
+    /// A new assistant text block — the session is producing output.
+    AssistantText,
+    AskUserQuestion,
+    ExitPlanMode,
+    TurnComplete,
+    AbortedMidStream,
+    /// Transcript mtime quiet past the threshold while we thought it ran.
+    StaleQuiet,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum NotificationKind {
     PermissionPrompt,
@@ -168,7 +186,11 @@ pub enum Signal {
     /// tmux pane-died — authoritative for exit (spike T-7).
     PaneDied { status: Option<i32> },
     /// Daemon-side probe while `Spawning` (11 §11.5.3 approximation).
-    SpawnProbe { bytes: bool, osc0: bool },
+    /// `resume` marks a `--resume` spawn: a modal there is the resume-from-
+    /// summary dialog (09 §9), not first-run setup.
+    SpawnProbe { bytes: bool, osc0: bool, resume: bool },
+    /// Observe tier: derived from an adopted session's transcript tail.
+    TranscriptHint { kind: TailHint },
 }
 
 /// One debounced, publishable transition.
@@ -227,6 +249,13 @@ impl Machine {
     }
 
     pub fn apply(&mut self, sig: &Signal, now: u64) -> Option<Change> {
+        // Sleeping latches: the daemon's own SIGTERM produces SessionEnd and
+        // pane-died, and neither those nor any straggler frame may flip a
+        // parked session to Exited. Only wake leaves — by re-minting the
+        // machine as Spawning (11 §11.7.3).
+        if self.state == SessionState::Sleeping {
+            return None;
+        }
         // Exited is terminal: publish once (02 §7.3). A late SessionEnd may
         // refine a pane-derived reason in place, silently.
         if let SessionState::Exited { reason } = &self.state {
@@ -391,20 +420,32 @@ impl Machine {
                     ExitReason::Crashed
                 },
             }),
-            Signal::SpawnProbe { bytes, osc0 } => {
+            Signal::SpawnProbe { bytes, osc0, resume } => {
                 if self.state != S::Spawning {
                     return None;
                 }
                 if *bytes && !*osc0 {
-                    Some((
-                        S::RequiresAction { reason: Reason::StartupModal },
-                        Confidence::Medium,
-                    ))
+                    let reason =
+                        if *resume { Reason::ResumeDialog } else { Reason::StartupModal };
+                    Some((S::RequiresAction { reason }, Confidence::Medium))
                 } else if !*bytes {
                     Some((S::unknown(), Confidence::Low))
                 } else {
                     None
                 }
+            }
+            Signal::TranscriptHint { kind } => {
+                let s = match kind {
+                    TailHint::AssistantText => S::Running,
+                    TailHint::AskUserQuestion => S::RequiresAction { reason: Reason::Question },
+                    TailHint::ExitPlanMode => S::RequiresAction { reason: Reason::Plan },
+                    TailHint::TurnComplete => S::Idle { stop_reason: StopReason::EndTurn },
+                    TailHint::AbortedMidStream => {
+                        S::Idle { stop_reason: StopReason::Interrupted }
+                    }
+                    TailHint::StaleQuiet => S::Idle { stop_reason: StopReason::Unknown },
+                };
+                Some((s, Confidence::Low))
             }
         }
     }
@@ -598,21 +639,81 @@ mod tests {
     fn spawn_probe_paths() {
         // Bytes but no Claude title → startup modal, medium confidence.
         let mut m1 = m(SessionState::Spawning);
-        let c = m1.apply(&Signal::SpawnProbe { bytes: true, osc0: false }, 1).unwrap();
+        let c = m1
+            .apply(&Signal::SpawnProbe { bytes: true, osc0: false, resume: false }, 1)
+            .unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::StartupModal });
         assert_eq!(c.confidence, Confidence::Medium);
         // No bytes at all → unknown, never failed, low (out of the queue).
         let mut m2 = m(SessionState::Spawning);
-        let c = m2.apply(&Signal::SpawnProbe { bytes: false, osc0: false }, 1).unwrap();
+        let c = m2
+            .apply(&Signal::SpawnProbe { bytes: false, osc0: false, resume: false }, 1)
+            .unwrap();
         assert_eq!(c.to, SessionState::unknown());
         assert_eq!(c.confidence, Confidence::Low);
         assert!(!c.attention_added);
         // Healthy title → hold Spawning.
         let mut m3 = m(SessionState::Spawning);
-        assert!(m3.apply(&Signal::SpawnProbe { bytes: true, osc0: true }, 1).is_none());
+        assert!(m3
+            .apply(&Signal::SpawnProbe { bytes: true, osc0: true, resume: false }, 1)
+            .is_none());
         // Ignored once no longer spawning.
         let mut m4 = m(SessionState::Running);
-        assert!(m4.apply(&Signal::SpawnProbe { bytes: true, osc0: false }, 1).is_none());
+        assert!(m4
+            .apply(&Signal::SpawnProbe { bytes: true, osc0: false, resume: false }, 1)
+            .is_none());
+    }
+
+    #[test]
+    fn resume_spawn_probe_is_resume_dialog() {
+        assert_eq!(rank(&SessionState::RequiresAction { reason: Reason::ResumeDialog }), 8);
+        assert_eq!(reason_word(Reason::ResumeDialog), "RESUME");
+        let mut m1 = m(SessionState::Spawning);
+        let c = m1
+            .apply(&Signal::SpawnProbe { bytes: true, osc0: false, resume: true }, 1)
+            .unwrap();
+        assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::ResumeDialog });
+        assert_eq!(c.confidence, Confidence::Medium);
+        assert!(c.attention_added);
+    }
+
+    #[test]
+    fn transcript_hints_are_always_low_and_silent() {
+        for (kind, want) in [
+            (TailHint::AssistantText, SessionState::Running),
+            (TailHint::AskUserQuestion, SessionState::RequiresAction { reason: Reason::Question }),
+            (TailHint::ExitPlanMode, SessionState::RequiresAction { reason: Reason::Plan }),
+            (TailHint::TurnComplete, SessionState::Idle { stop_reason: StopReason::EndTurn }),
+            (
+                TailHint::AbortedMidStream,
+                SessionState::Idle { stop_reason: StopReason::Interrupted },
+            ),
+            (TailHint::StaleQuiet, SessionState::Idle { stop_reason: StopReason::Unknown }),
+        ] {
+            let mut ma = m(SessionState::unknown());
+            let c = ma.apply(&Signal::TranscriptHint { kind }, 1).expect("transition");
+            assert_eq!(c.to, want);
+            assert_eq!(c.confidence, Confidence::Low);
+            // Tier-0 evidence never announces — Low is out of the queue.
+            assert!(!c.attention_added);
+        }
+    }
+
+    #[test]
+    fn sleeping_latches_against_all_signals() {
+        let mut ma = m(SessionState::Sleeping);
+        // The daemon's own SIGTERM emits these — none may wake or exit the record.
+        assert!(ma.apply(&Signal::SessionEnd { kind: EndKind::Other }, 1000).is_none());
+        assert!(ma.apply(&Signal::PaneDied { status: Some(1) }, 1000).is_none());
+        assert!(ma
+            .apply(
+                &Signal::Stop { stop_hook_active: false, has_agent_id: false, background_tasks: false },
+                1000
+            )
+            .is_none());
+        assert!(ma.apply(&Signal::PermissionRequest, 1000).is_none());
+        assert!(ma.tick(10_000_000).is_none());
+        assert_eq!(ma.state(), &SessionState::Sleeping);
     }
 
     #[test]
