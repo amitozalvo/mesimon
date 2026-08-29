@@ -276,6 +276,13 @@ impl Daemon {
             Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
             Command::KillSession { .. } => Some(("kill_session", None)),
+            Command::AttachExternal { ticket, .. } => Some(("attach_external", Some(*ticket))),
+            Command::ResumeExternal { ticket, .. } => Some(("resume_external", Some(*ticket))),
+            Command::ResumeSession { .. } => Some(("resume_session", None)),
+            Command::SleepSession { .. } => Some(("sleep_session", None)),
+            Command::WakeSession { .. } => Some(("wake_session", None)),
+            Command::ReclaimAll => Some(("reclaim_all", None)),
+            Command::PinAwake { .. } => Some(("pin_awake", None)),
             _ => None,
         };
 
@@ -324,11 +331,34 @@ impl Daemon {
                 self.shutting_down = true;
                 Response::Ok
             }
-            // Landing with the takeover (WP6) and sleep (WP7) workpackages.
-            Command::AttachExternal { .. }
-            | Command::ResumeExternal { .. }
-            | Command::ResumeSession { .. }
-            | Command::SleepSession { .. }
+            Command::AttachExternal { claude_session_id, ticket } => {
+                match self.attach_external(claude_session_id, ticket) {
+                    Ok(id) => {
+                        self.persist_and_notify();
+                        Response::Spawned { id }
+                    }
+                    Err(message) => Response::Err { message },
+                }
+            }
+            Command::ResumeExternal { claude_session_id, ticket, confirm } => {
+                match self.attach_external(claude_session_id, ticket) {
+                    Ok(id) => {
+                        // Attach stands even if the resume below is refused —
+                        // the session is on the board as observe-only either way.
+                        let resp = self.resume_session(id, confirm);
+                        self.persist_and_notify();
+                        resp
+                    }
+                    Err(message) => Response::Err { message },
+                }
+            }
+            Command::ResumeSession { id, confirm } => {
+                let resp = self.resume_session(id, confirm);
+                self.persist_and_notify();
+                resp
+            }
+            // Landing with the sleep workpackage.
+            Command::SleepSession { .. }
             | Command::WakeSession { .. }
             | Command::ReclaimAll
             | Command::PinAwake { .. } => Response::Err { message: "not implemented".into() },
@@ -580,9 +610,15 @@ impl Daemon {
     }
 
     /// Hooks send the session UUID; the tmux pane-died hook sends the sid16.
+    /// An adopted session may also surface under its claude-side id.
     fn resolve_session(&self, key: &str) -> Option<uuid::Uuid> {
         if let Ok(id) = key.parse::<uuid::Uuid>() {
-            return self.board.sessions.iter().find(|s| s.id == id).map(|s| s.id);
+            return self
+                .board
+                .sessions
+                .iter()
+                .find(|s| s.id == id || s.claude_session_id == Some(id))
+                .map(|s| s.id);
         }
         self.board.sessions.iter().find(|s| s.sid16() == key).map(|s| s.id)
     }
@@ -761,8 +797,10 @@ impl Daemon {
                 for s in &g.sessions {
                     // SIGTERM the group, then remove the pane (docs/19 §1 kill ladder;
                     // the M2 refinement adds the grace-then-kill-pane delay).
-                    let _ = self.backend.signal_session(&s.sid16());
-                    let _ = self.backend.kill_session(&s.sid16());
+                    if s.state.has_pane() {
+                        let _ = self.backend.signal_session(&s.sid16());
+                        let _ = self.backend.kill_session(&s.sid16());
+                    }
                 }
             }
         }
@@ -859,9 +897,11 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return Response::Err { message: "no such session".into() };
         };
-        let sid = rec.sid16();
-        let _ = self.backend.signal_session(&sid);
-        let _ = self.backend.kill_session(&sid);
+        if rec.state.has_pane() {
+            let sid = rec.sid16();
+            let _ = self.backend.signal_session(&sid);
+            let _ = self.backend.kill_session(&sid);
+        }
         rec.state = SessionState::Exited { reason: ExitReason::Killed };
         rec.waiting_since = None;
         rec.detail = None;
@@ -869,6 +909,159 @@ impl Daemon {
         self.machines.insert(id, Machine::new(state, now_ms()));
         self.persist_and_notify();
         Response::Ok
+    }
+
+    /// 19 §4 tier 2: mint an observe-only record for a discovered foreign
+    /// session — no process, no tmux, no hooks. Tier-0 state comes from the
+    /// tail poller; the census preview seeds the card detail.
+    fn attach_external(
+        &mut self,
+        claude_session_id: uuid::Uuid,
+        ticket: ulid::Ulid,
+    ) -> std::result::Result<uuid::Uuid, String> {
+        if self.board.ticket(ticket).is_none() {
+            return Err("no such ticket".into());
+        }
+        if self.board.sessions.iter().any(|s| {
+            s.state.is_live()
+                && (s.id == claude_session_id || s.claude_session_id == Some(claude_session_id))
+        }) {
+            return Err("session already on the board".into());
+        }
+        let Some(pos) =
+            self.external.iter().position(|e| e.claude_session_id == claude_session_id)
+        else {
+            return Err("unknown external session — reopen the drawer to rescan".into());
+        };
+        let item = self.external.remove(pos);
+        let id = uuid::Uuid::new_v4();
+        let mut rec = SessionRecord::new(
+            id,
+            SessionKind::Claude,
+            ticket,
+            vec![], // no process of ours — the discriminator the tail poller keys on
+            item.cwd.clone(),
+            SessionState::unknown(),
+        );
+        rec.provenance = Provenance::Adopted;
+        rec.claude_session_id = Some(claude_session_id);
+        rec.transcript_path = Some(item.transcript_path.clone());
+        rec.confidence = Confidence::Low;
+        rec.state_changed_at = Some(now_ms());
+        rec.detail = item.preview.clone();
+        self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
+        self.board.sessions.push(rec);
+        Ok(id)
+    }
+
+    /// The one resume builder (wake and takeover share it). D24: the argv
+    /// array is the mechanism — resume restores neither `--settings` nor
+    /// `--mcp-config` (09 §9), so we replay ours, swapping the identity flag.
+    fn resume_argv(&self, rec: &SessionRecord) -> std::result::Result<Vec<String>, String> {
+        let target = rec.claude_session_id.unwrap_or(rec.id);
+        if rec.argv.iter().any(|a| a == "--resume") {
+            return Ok(rec.argv.clone()); // already a resume argv — replay verbatim
+        }
+        if !rec.argv.is_empty() {
+            let mut argv = Vec::with_capacity(rec.argv.len());
+            let mut it = rec.argv.iter();
+            while let Some(a) = it.next() {
+                if a == "--session-id" {
+                    let _ = it.next();
+                    argv.push("--resume".into());
+                    argv.push(target.to_string());
+                } else {
+                    argv.push(a.clone());
+                }
+            }
+            return Ok(argv);
+        }
+        // Adopted with no argv of ours: build the full spawn argv fresh —
+        // hooks via --settings keyed on OUR record uuid (never --bare, S-D).
+        let hook_bin = std::env::var("MESIMON_HOOK_BIN")
+            .map(std::path::PathBuf::from)
+            .or_else(|_| std::env::current_exe())
+            .unwrap_or_else(|_| std::path::PathBuf::from("mesimon"));
+        let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+        let settings = crate::hook_settings::write_settings(&self.paths, rec.id, &hook_bin)
+            .map_err(|e| format!("hook settings: {e}"))?;
+        Ok(vec![
+            claude,
+            "--settings".into(),
+            settings.display().to_string(),
+            "--resume".into(),
+            target.to_string(),
+        ])
+    }
+
+    /// Double-resume guard (09 §9: two resumes interleave one transcript).
+    fn resume_guard(
+        &self,
+        rec_id: uuid::Uuid,
+        claude_id: uuid::Uuid,
+        confirm: bool,
+    ) -> Option<String> {
+        // Our own board: a second live record for the same claude session is
+        // always a refusal — mesimon would be interleaving with itself.
+        if self.board.sessions.iter().any(|s| {
+            s.id != rec_id
+                && s.state.has_pane()
+                && !matches!(s.state, SessionState::Unknown { .. })
+                && (s.id == claude_id || s.claude_session_id == Some(claude_id))
+        }) {
+            return Some("already running under mesimon".into());
+        }
+        if !confirm {
+            let home = crate::census::claude_home();
+            if let Some(pid) = crate::census::running_pid_for(&home, claude_id) {
+                return Some(format!(
+                    "running elsewhere (pid {pid}) — resuming would interleave transcripts; resume again to override"
+                ));
+            }
+        }
+        None
+    }
+
+    /// Takeover / wake: spawn `claude --resume` under this record's sid16.
+    fn resume_session(&mut self, id: uuid::Uuid, confirm: bool) -> Response {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return Response::Err { message: "no such session".into() };
+        };
+        if rec.kind != SessionKind::Claude {
+            return Response::Err { message: "only claude sessions resume".into() };
+        }
+        if rec.state.has_pane() && !matches!(rec.state, SessionState::Unknown { .. }) {
+            // Live states keep their pane; resuming over it would double-run.
+            if !rec.argv.is_empty() {
+                return Response::Err { message: "session is live — focus it instead".into() };
+            }
+        }
+        let claude_id = rec.claude_session_id.unwrap_or(rec.id);
+        if let Some(message) = self.resume_guard(id, claude_id, confirm) {
+            return Response::Err { message };
+        }
+        let argv = match self.resume_argv(rec) {
+            Ok(a) => a,
+            Err(message) => return Response::Err { message },
+        };
+        let (sid, cwd) = (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()));
+        let cwd = if cwd.is_dir() { cwd } else { self.paths.repo_root.clone() };
+        let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
+        if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &[]) {
+            return Response::Err { message: format!("resume spawn failed: {e}") };
+        }
+        let now = now_ms();
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.argv = argv;
+            rec.state = SessionState::Spawning;
+            rec.state_changed_at = Some(now);
+            rec.waiting_since = None;
+            rec.confidence = Confidence::High;
+        }
+        self.tails.remove(&id); // hooks own the state from here
+        self.probe_stage.remove(&id);
+        self.machines.insert(id, Machine::new(SessionState::Spawning, now));
+        Response::Spawned { id }
     }
 
     fn focus_start(&mut self, session: uuid::Uuid) -> Response {
@@ -880,6 +1073,13 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
             return Response::Err { message: "no such session".into() };
         };
+        if matches!(rec.state, SessionState::Sleeping) {
+            return Response::Err { message: "asleep — wake it first".into() };
+        }
+        if rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
+            // Observe-only: no pane, no hooks, no input (19 §4 tier 2).
+            return Response::Err { message: "external session — resume it to take over".into() };
+        }
         self.focus = Some(session);
         Response::Attach { argv: self.backend.attach_argv(&rec.sid16()) }
     }

@@ -87,6 +87,27 @@ pub fn scan(home: &Path, roots: &[PathBuf], known: &dyn Fn(uuid::Uuid) -> bool) 
     v
 }
 
+/// Fresh single-session liveness check for the double-resume guard (09 §9):
+/// a live pid claiming this sessionId right now. Best-effort — pid reuse can
+/// false-positive, which is why the guard is confirm-overridable.
+pub fn running_pid_for(home: &Path, session_id: uuid::Uuid) -> Option<i32> {
+    let dir = home.join("sessions");
+    let files = std::fs::read_dir(dir).ok()?;
+    for f in files.flatten() {
+        let Ok(text) = std::fs::read_to_string(f.path()) else { continue };
+        let Ok(pf) = serde_json::from_str::<SessionsPidFile>(&text) else { continue };
+        if pf.session_id != Some(session_id) {
+            continue;
+        }
+        if let Some(pid) = pf.pid {
+            if pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
+                return Some(pid);
+            }
+        }
+    }
+    None
+}
+
 struct PidEntry {
     name: Option<String>,
     alive: bool,
