@@ -15,7 +15,12 @@ use mesimon_core::adopt::{
 use mesimon_core::command::ExternalItem;
 
 const HEAD_BYTES: usize = 8 * 1024;
-const TAIL_BYTES: u64 = 4 * 1024;
+/// Preview scan windows, back from EOF. Real transcripts bury the last
+/// assistant text under tool results, stop_hook_summary and latch records —
+/// often several KB, sometimes one record alone exceeds 4 KB (measured on the
+/// author's tree) — so a small first window escalates once before giving up.
+const TAIL_BYTES: u64 = 32 * 1024;
+const TAIL_BYTES_MAX: u64 = 256 * 1024;
 pub const PREVIEW_MAX: usize = 160;
 
 /// Where Claude keeps its per-user tree. The env override order is a test
@@ -171,13 +176,27 @@ fn read_head(path: &Path) -> Option<String> {
 
 /// Last assistant text from the file's tail — the drawer's one-line preview.
 fn read_tail_preview(path: &Path, len: u64) -> Option<String> {
+    for window in [TAIL_BYTES, TAIL_BYTES_MAX] {
+        if let Some(p) = scan_tail_window(path, len, window) {
+            return Some(p);
+        }
+        if window >= len {
+            break; // the whole file was already in the window
+        }
+    }
+    None
+}
+
+fn scan_tail_window(path: &Path, len: u64, window: u64) -> Option<String> {
     use std::io::{Read, Seek, SeekFrom};
     let mut f = std::fs::File::open(path).ok()?;
-    let start = len.saturating_sub(TAIL_BYTES);
+    let start = len.saturating_sub(window);
     f.seek(SeekFrom::Start(start)).ok()?;
-    let mut buf = String::new();
-    f.read_to_string(&mut buf).ok()?;
-    let mut lines: Vec<&str> = buf.lines().collect();
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    // The seek can land mid-record and mid-UTF-8 — lossy, never fatal.
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
     if start > 0 && !lines.is_empty() {
         lines.remove(0); // the seek landed mid-line
     }
@@ -289,6 +308,31 @@ mod tests {
         let items = scan(&home, &[PathBuf::from(repo)], &|_| false);
         assert_eq!(items.len(), 1);
         assert!(!items[0].running_elsewhere);
+        std::fs::remove_dir_all(home).ok();
+    }
+
+    #[test]
+    fn preview_found_when_buried_under_kilobytes_of_tail_noise() {
+        // Real shape: assistant text, then tool results / stop_hook_summary /
+        // uuid-less latches piling up well past the old 4 KB window.
+        let home = tmp("buried");
+        let repo = "/repo/b";
+        let noise: String = (0..40)
+            .map(|i| {
+                format!(
+                    "{{\"uuid\":\"n{i}\",\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"pad\":\"{}\"}}\n{{\"cost-state\":\"{}\"}}\n",
+                    "x".repeat(300),
+                    "y".repeat(200)
+                )
+            })
+            .collect();
+        let tail = format!(
+            "{{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"buried preview\"}}]}}}}\n{noise}"
+        );
+        assert!(tail.len() > 4 * 1024, "fixture must exceed the old window");
+        write_transcript(&home, "-s", "a.jsonl", SID_A, repo, &tail);
+        let items = scan(&home, &[PathBuf::from(repo)], &|_| false);
+        assert_eq!(items[0].preview.as_deref(), Some("buried preview"));
         std::fs::remove_dir_all(home).ok();
     }
 
