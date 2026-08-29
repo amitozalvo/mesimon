@@ -195,6 +195,38 @@ fn m3_adoption_and_sleep() {
     ));
     assert_eq!(board_of(c.request(Command::Snapshot)).tickets.len(), 2);
 
+    // --- Daemon restart: an observe-only record has no pane by design —
+    // reconcile must not demote it to exited{crashed}.
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+    daemon.join().unwrap();
+    let daemon_repo2 = repo.clone();
+    let daemon = std::thread::spawn(move || {
+        let _ = mesimon_daemon::run_foreground(&daemon_repo2);
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        if sock.exists() {
+            if let Ok(s) = UnixStream::connect(&sock) {
+                drop(s);
+                break;
+            }
+        }
+        assert!(Instant::now() < deadline, "daemon did not come back");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut c = TestClient::connect(&sock);
+    assert!(matches!(
+        c.request(Command::Hello { version: 1, client: "m3b".into() }),
+        Response::Hello { .. }
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    let rec = board.sessions.iter().find(|s| s.id == obs).expect("record survived restart");
+    assert!(
+        rec.state.is_live(),
+        "observe-only record must survive a daemon restart, got {:?}",
+        rec.state
+    );
+
     // --- Takeover: spawn `claude --resume <foreign>` with our hooks.
     let resumed = match c.request(Command::ResumeSession { id: obs, confirm: false }) {
         Response::Spawned { id } => id,

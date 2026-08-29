@@ -129,6 +129,13 @@ pub fn run(paths: Paths) -> Result<()> {
     let rec = reconcile(&board.sessions, &snap);
     for (id, link) in &rec.links {
         if let Some(r) = board.sessions.iter_mut().find(|s| s.id == *id) {
+            // Observe-only records (imported, never spawned) have no pane by
+            // design — Missing is their normal condition, not a crash.
+            let observe_only =
+                r.provenance == Provenance::Adopted && r.argv.is_empty();
+            if observe_only && matches!(link, mesimon_core::reconcile::Link::Missing) {
+                continue;
+            }
             r.state = state_for(link, &r.state);
         }
     }
@@ -792,10 +799,13 @@ impl Daemon {
     fn rescan_external(&mut self) {
         let home = crate::census::claude_home();
         let roots = crate::census::repo_roots(&self.paths.repo_root);
+        // Only working-set records hide a drawer row — an Exited import must
+        // be re-importable, not shadow-banned by its own corpse.
         let known: Vec<uuid::Uuid> = self
             .board
             .sessions
             .iter()
+            .filter(|s| s.state.is_live())
             .flat_map(|s| [Some(s.id), s.claude_session_id].into_iter().flatten())
             .collect();
         self.external = crate::census::scan(&home, &roots, &|id| known.contains(&id));
