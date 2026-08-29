@@ -48,9 +48,12 @@ cleans one up.
    the docs have been wrong twice already. Spike verdicts in `docs/spikes/` are empirical and
    trustworthy.
 
-Visual design is deliberately interim until M6 — judge work on mechanics, not looks. One hard
-visual rule survives from day one: exactly ONE saturated colour on the board, reserved for
-needs-you (`ACCENT_ATTN` in `mesimon-tui/src/ui.rs`), nothing else ever.
+Visual design was deliberately interim through M3; **M3.5 (next) is the design-foundation pass**
+(reordered before M4, 2026-08-29): OSC-11 light/dark palette, cursor-column indication, card
+anatomy per doc 07, ticket screen skeleton. Remaining polish (decay, animation, banners,
+keymap validator) stays in M6. One hard visual rule from day one: exactly ONE saturated colour
+on the board, reserved for needs-you (`ACCENT_ATTN` in `mesimon-tui/src/ui.rs`), nothing else
+ever.
 
 ## Architecture
 
