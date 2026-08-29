@@ -280,8 +280,7 @@ impl App {
         self.board
             .sessions
             .iter()
-            .filter(|s| s.ticket == t.id && matches!(s.state, SessionState::Running | SessionState::Spawning))
-            .next_back()
+            .rfind(|s| s.ticket == t.id && matches!(s.state, SessionState::Running | SessionState::Spawning))
             .map(|s| s.id)
     }
 
@@ -333,11 +332,8 @@ impl App {
     }
 
     fn send(&mut self, command: Command) -> Result<()> {
-        match self.client.request(command)? {
-            Response::Err { message } => {
-                self.status = message;
-            }
-            _ => {}
+        if let Response::Err { message } = self.client.request(command)? {
+            self.status = message;
         }
         self.refresh()
     }

@@ -49,6 +49,7 @@ pub fn run(paths: Paths) -> Result<()> {
     // Singleton (02 §4): flock on the lock file; loser exits quietly.
     let lock = std::fs::OpenOptions::new()
         .create(true)
+        .truncate(false)
         .write(true)
         .open(paths.lock_file())?;
     let rc = unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) };
