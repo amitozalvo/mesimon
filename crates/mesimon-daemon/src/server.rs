@@ -394,14 +394,14 @@ impl Daemon {
             SessionKind::Bash => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())],
         };
         let cwd = self.paths.repo_root.clone();
-        let rec = SessionRecord {
-            id,
-            kind,
-            ticket,
-            argv: argv.clone(),
-            cwd: cwd.display().to_string(),
-            state: SessionState::Running,
+        // Claude enters Spawning; the SessionStart hook flips it to Running.
+        // Bash has no hook surface — a live pane is all "running" means (D15).
+        let state = match kind {
+            SessionKind::Claude => SessionState::Spawning,
+            SessionKind::Bash => SessionState::Running,
         };
+        let rec =
+            SessionRecord::new(id, kind, ticket, argv.clone(), cwd.display().to_string(), state);
         if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &[]) {
             return Response::Err { message: format!("spawn failed: {e}") };
         }

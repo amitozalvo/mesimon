@@ -2,7 +2,6 @@
 //! 1-char accent bar, a 4-step grey ramp, exactly one saturated colour reserved
 //! for "needs you" (unused in M1 — no attention yet — but the slot exists).
 
-use mesimon_core::board::SessionState;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -94,12 +93,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .file_name()
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let live = app
-        .board
-        .sessions
-        .iter()
-        .filter(|s| matches!(s.state, SessionState::Running | SessionState::Spawning))
-        .count();
+    let live = app.board.sessions.iter().filter(|s| s.state.is_live()).count();
     let line = Line::from(vec![
         Span::styled("  mesimon", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {repo}"), Style::default().fg(DIM)),
@@ -153,7 +147,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             .board
             .sessions
             .iter()
-            .filter(|s| s.ticket == t.id && matches!(s.state, SessionState::Running | SessionState::Spawning))
+            .filter(|s| s.ticket == t.id && s.state.is_live())
             .count();
         let accent = if ghosted {
             GHOST

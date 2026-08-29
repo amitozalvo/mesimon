@@ -42,12 +42,18 @@ pub fn state_for(link: &Link, prior: &SessionState) -> SessionState {
     match link {
         Link::Live { .. } => match prior {
             // A live pane proves the process exists; anything the record thought
-            // beyond that is stale after a restart.
-            SessionState::Exited { .. } | SessionState::Unknown => SessionState::Running,
+            // beyond that is stale after a restart. A persisted RequiresAction /
+            // Idle / Throttled survives — the pane is still there and the hook
+            // stream picks up from where it left off.
+            SessionState::Exited { .. } | SessionState::Unknown { .. } => SessionState::Running,
             s => s.clone(),
         },
-        Link::DeadPane { status, .. } => SessionState::Exited {
-            reason: if *status == 0 { ExitReason::UserQuit } else { ExitReason::Crashed },
+        Link::DeadPane { status, .. } => match prior {
+            // Already recorded as exited: keep the richer reason (publish-once).
+            s @ SessionState::Exited { .. } => s.clone(),
+            _ => SessionState::Exited {
+                reason: if *status == 0 { ExitReason::UserQuit } else { ExitReason::Crashed },
+            },
         },
         Link::Missing => match prior {
             // Already recorded as exited: keep the richer reason.
@@ -95,14 +101,14 @@ mod tests {
     use crate::board::{SessionKind, SessionRecord, SessionState};
 
     fn rec(state: SessionState) -> SessionRecord {
-        SessionRecord {
-            id: uuid::Uuid::new_v4(),
-            kind: SessionKind::Claude,
-            ticket: ulid::Ulid::new(),
-            argv: vec!["claude".into()],
-            cwd: "/tmp".into(),
+        SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            ulid::Ulid::new(),
+            vec!["claude".into()],
+            "/tmp".into(),
             state,
-        }
+        )
     }
 
     fn pane(name: &str, dead: bool, status: Option<i32>) -> PaneSnapshot {
@@ -111,7 +117,7 @@ mod tests {
 
     #[test]
     fn live_pane_links_and_runs() {
-        let r = rec(SessionState::Unknown);
+        let r = rec(SessionState::unknown());
         let out = reconcile(&[r.clone()], &[pane(&r.sid16(), false, None)]);
         assert_eq!(out.links.len(), 1);
         let link = &out.links[0].1;
@@ -158,6 +164,24 @@ mod tests {
             state_for(&out2.links[0].1, &r2.state),
             SessionState::Exited { reason: ExitReason::UserQuit }
         );
+    }
+
+    #[test]
+    fn live_pane_preserves_requires_action() {
+        // A daemon restart must not wipe a persisted needs-you state while the
+        // pane is still alive — the hook stream resumes from there.
+        let state = SessionState::RequiresAction { reason: crate::board::Reason::Permission };
+        let r = rec(state.clone());
+        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), false, None)]);
+        assert_eq!(state_for(&out.links[0].1, &r.state), state);
+    }
+
+    #[test]
+    fn dead_pane_keeps_richer_exit_reason() {
+        let state = SessionState::Exited { reason: ExitReason::Killed };
+        let r = rec(state.clone());
+        let out = reconcile(&[r.clone()], &[pane(&r.sid16(), true, Some(1))]);
+        assert_eq!(state_for(&out.links[0].1, &r.state), state);
     }
 
     #[test]

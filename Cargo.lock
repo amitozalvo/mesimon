@@ -397,6 +397,7 @@ name = "mesimon-core"
 version = "0.1.0-dev"
 dependencies = [
  "serde",
+ "serde_json",
  "thiserror",
  "ulid",
  "uuid",

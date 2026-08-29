@@ -5,7 +5,7 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use mesimon_core::board::{Board, SessionKind, SessionState, Ticket};
+use mesimon_core::board::{Board, SessionKind, Ticket};
 use mesimon_core::command::{Command, GraceItem, Response};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
@@ -268,10 +268,7 @@ impl App {
         self.board
             .sessions
             .iter()
-            .filter(|s| {
-                s.ticket == ticket
-                    && matches!(s.state, SessionState::Running | SessionState::Spawning)
-            })
+            .filter(|s| s.ticket == ticket && s.state.is_live())
             .collect()
     }
 
