@@ -1,0 +1,351 @@
+//! Board app: state, keymap (M1 subset — the full 04 keymap lands in M2/M6),
+//! MOVE mode with client-side ghost (07 §7 core rules), focus flow with GATE.
+
+use std::path::PathBuf;
+use std::time::Duration;
+
+use anyhow::Result;
+use mesimon_core::board::{Board, SessionKind, SessionState, Ticket};
+use mesimon_core::command::{Command, GraceItem, Response};
+use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
+
+use crate::client::Client;
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum Mode {
+    Normal,
+    /// MOVE: ghost position tracked client-side, committed on Enter (M-rules).
+    Move { ticket: ulid::Ulid, col: usize, idx: usize },
+    Input { purpose: InputPurpose, buffer: String },
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum InputPurpose {
+    Create,
+    Rename { id: ulid::Ulid },
+}
+
+pub struct App {
+    pub client: Client,
+    pub repo_root: PathBuf,
+    pub board: Board,
+    pub grace: Vec<GraceItem>,
+    pub cursor_col: usize,
+    pub cursor_row: usize,
+    pub mode: Mode,
+    pub status: String,
+    pub quit: bool,
+    /// Set when the user asked to focus: the main loop performs the handover
+    /// outside the render loop.
+    pub pending_attach: Option<Vec<String>>,
+    pub pending_gate_then: Option<uuid::Uuid>,
+    /// The session a running handover holds focus on — released on return.
+    focused_session_hint: Option<uuid::Uuid>,
+}
+
+impl App {
+    pub fn new(mut client: Client, repo_root: PathBuf) -> Result<Self> {
+        let (board, grace) = fetch(&mut client)?;
+        Ok(Self {
+            client,
+            repo_root,
+            board,
+            grace,
+            cursor_col: 0,
+            cursor_row: 0,
+            mode: Mode::Normal,
+            status: String::new(),
+            quit: false,
+            pending_attach: None,
+            pending_gate_then: None,
+            focused_session_hint: None,
+        })
+    }
+
+    pub fn refresh(&mut self) -> Result<()> {
+        let (board, grace) = fetch(&mut self.client)?;
+        self.board = board;
+        self.grace = grace;
+        self.clamp_cursor();
+        Ok(())
+    }
+
+    pub fn columns(&self) -> Vec<String> {
+        self.board.sorted_columns().iter().map(|c| c.name.clone()).collect()
+    }
+
+    pub fn selected_ticket(&self) -> Option<&Ticket> {
+        let cols = self.columns();
+        let col = cols.get(self.cursor_col)?;
+        self.board.column_tickets(col).get(self.cursor_row).copied()
+    }
+
+    fn clamp_cursor(&mut self) {
+        let cols = self.columns();
+        if cols.is_empty() {
+            return;
+        }
+        self.cursor_col = self.cursor_col.min(cols.len() - 1);
+        let n = self.board.column_tickets(&cols[self.cursor_col]).len();
+        self.cursor_row = self.cursor_row.min(n.saturating_sub(1));
+    }
+
+    /// Poll one terminal event; returns whether a redraw is needed.
+    pub fn tick(&mut self) -> Result<bool> {
+        // Async board-changed events from the daemon.
+        let mut dirty = false;
+        while self.client.events.try_recv().is_ok() {
+            dirty = true;
+        }
+        if dirty {
+            self.refresh()?;
+        }
+        if !event::poll(Duration::from_millis(100))? {
+            return Ok(dirty);
+        }
+        let ev = event::read()?;
+        let TermEvent::Key(key) = ev else { return Ok(dirty) };
+        if key.kind != KeyEventKind::Press {
+            return Ok(dirty);
+        }
+        self.status.clear();
+        match self.mode.clone() {
+            Mode::Normal => self.key_normal(key.code, key.modifiers)?,
+            Mode::Move { ticket, col, idx } => self.key_move(key.code, ticket, col, idx)?,
+            Mode::Input { purpose, mut buffer } => match key.code {
+                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Enter => {
+                    self.mode = Mode::Normal;
+                    self.commit_input(purpose, buffer)?;
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                    self.mode = Mode::Input { purpose, buffer };
+                }
+                KeyCode::Char(c) => {
+                    buffer.push(c);
+                    self.mode = Mode::Input { purpose, buffer };
+                }
+                _ => {}
+            },
+        }
+        Ok(true)
+    }
+
+    fn key_normal(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        match code {
+            KeyCode::Char('q') => self.quit = true,
+            KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => self.quit = true,
+            KeyCode::Char('h') | KeyCode::Left => {
+                self.cursor_col = self.cursor_col.saturating_sub(1);
+                self.clamp_cursor();
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                self.cursor_col += 1;
+                self.clamp_cursor();
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.cursor_row += 1;
+                self.clamp_cursor();
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.cursor_row = self.cursor_row.saturating_sub(1);
+            }
+            KeyCode::Char('g') => {
+                self.cursor_row = 0;
+            }
+            KeyCode::Char('G') => {
+                self.cursor_row = usize::MAX;
+                self.clamp_cursor();
+            }
+            KeyCode::Char('o') => {
+                self.mode = Mode::Input { purpose: InputPurpose::Create, buffer: String::new() };
+            }
+            KeyCode::Char('r') => {
+                if let Some(t) = self.selected_ticket() {
+                    self.mode = Mode::Input {
+                        purpose: InputPurpose::Rename { id: t.id },
+                        buffer: t.title.clone(),
+                    };
+                }
+            }
+            KeyCode::Char('d') => {
+                if let Some(t) = self.selected_ticket() {
+                    let id = t.id;
+                    self.send(Command::DeleteTicket { id })?;
+                }
+            }
+            KeyCode::Char('u') => {
+                if let Some(g) = self.grace.last() {
+                    let id = g.id;
+                    self.send(Command::RestoreTicket { id })?;
+                }
+            }
+            KeyCode::Char('m') => {
+                if let Some(t) = self.selected_ticket() {
+                    self.mode = Mode::Move { ticket: t.id, col: self.cursor_col, idx: self.cursor_row };
+                }
+            }
+            KeyCode::Char('s') => {
+                if let Some(t) = self.selected_ticket() {
+                    let id = t.id;
+                    self.send(Command::SpawnSession { ticket: id, kind: SessionKind::Claude })?;
+                }
+            }
+            KeyCode::Char('S') => {
+                if let Some(t) = self.selected_ticket() {
+                    let id = t.id;
+                    self.send(Command::SpawnSession { ticket: id, kind: SessionKind::Bash })?;
+                }
+            }
+            KeyCode::Char('x') => {
+                if let Some(s) = self.newest_live_session() {
+                    self.send(Command::KillSession { id: s })?;
+                }
+            }
+            KeyCode::Enter => self.focus_selected()?,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn key_move(&mut self, code: KeyCode, ticket: ulid::Ulid, col: usize, idx: usize) -> Result<()> {
+        let cols = self.columns();
+        match code {
+            KeyCode::Esc => self.mode = Mode::Normal, // total cancel (M2 rule)
+            KeyCode::Char('h') | KeyCode::Left => {
+                let col = col.saturating_sub(1);
+                let n = self.ghost_len(&cols, col, ticket);
+                self.mode = Mode::Move { ticket, col, idx: idx.min(n) };
+            }
+            KeyCode::Char('l') | KeyCode::Right => {
+                let col = (col + 1).min(cols.len().saturating_sub(1));
+                let n = self.ghost_len(&cols, col, ticket);
+                self.mode = Mode::Move { ticket, col, idx: idx.min(n) };
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                let n = self.ghost_len(&cols, col, ticket);
+                self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n) };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mode = Mode::Move { ticket, col, idx: idx.saturating_sub(1) };
+            }
+            KeyCode::Enter => {
+                let target_col = cols[col.min(cols.len() - 1)].clone();
+                let others: Vec<ulid::Ulid> = self
+                    .board
+                    .column_tickets(&target_col)
+                    .iter()
+                    .filter(|t| t.id != ticket)
+                    .map(|t| t.id)
+                    .collect();
+                let before = others.get(idx).copied();
+                self.mode = Mode::Normal;
+                self.send(Command::MoveTicket { id: ticket, column: target_col, before })?;
+                self.cursor_col = col;
+                self.cursor_row = idx;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Rows in `col` excluding the ghost's own ticket (a drop can land after last).
+    fn ghost_len(&self, cols: &[String], col: usize, ticket: ulid::Ulid) -> usize {
+        cols.get(col)
+            .map(|c| self.board.column_tickets(c).iter().filter(|t| t.id != ticket).count())
+            .unwrap_or(0)
+    }
+
+    fn commit_input(&mut self, purpose: InputPurpose, buffer: String) -> Result<()> {
+        let title = buffer.trim().to_string();
+        if title.is_empty() {
+            return Ok(());
+        }
+        match purpose {
+            InputPurpose::Create => {
+                let cols = self.columns();
+                let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
+                self.send(Command::CreateTicket { column, title })?;
+            }
+            InputPurpose::Rename { id } => {
+                self.send(Command::RenameTicket { id, title })?;
+            }
+        }
+        Ok(())
+    }
+
+    fn newest_live_session(&self) -> Option<uuid::Uuid> {
+        let t = self.selected_ticket()?;
+        self.board
+            .sessions
+            .iter()
+            .filter(|s| s.ticket == t.id && matches!(s.state, SessionState::Running | SessionState::Spawning))
+            .next_back()
+            .map(|s| s.id)
+    }
+
+    fn focus_selected(&mut self) -> Result<()> {
+        let Some(sid) = self.newest_live_session() else {
+            self.status = "no live session on this ticket — s spawns claude".into();
+            return Ok(());
+        };
+        // GATE (D20): prove the unfocus key once before the first real focus.
+        match self.client.request(Command::GateStatus)? {
+            Response::Gate { passed: true, .. } => {
+                match self.client.request(Command::FocusStart { session: sid })? {
+                    Response::Attach { argv } => {
+                        self.pending_attach = Some(argv);
+                        self.focused_session_hint = Some(sid);
+                    }
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
+            }
+            Response::Gate { passed: false, attach_argv: Some(argv) } => {
+                self.pending_attach = Some(argv);
+                self.pending_gate_then = Some(sid);
+            }
+            Response::Err { message } => self.status = message,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Called by the main loop after a handover returns.
+    pub fn after_handover(&mut self) -> Result<()> {
+        if let Some(sid) = self.pending_gate_then.take() {
+            // Detaching from the gate session IS the proof (D20).
+            self.send(Command::GatePassed)?;
+            match self.client.request(Command::FocusStart { session: sid })? {
+                Response::Attach { argv } => {
+                    self.pending_attach = Some(argv);
+                    self.focused_session_hint = Some(sid);
+                    return Ok(());
+                }
+                Response::Err { message } => self.status = message,
+                _ => {}
+            }
+        } else if let Some(sid) = self.focused_session_hint.take() {
+            self.send(Command::FocusEnd { session: sid })?;
+        }
+        self.refresh()
+    }
+
+    fn send(&mut self, command: Command) -> Result<()> {
+        match self.client.request(command)? {
+            Response::Err { message } => {
+                self.status = message;
+            }
+            _ => {}
+        }
+        self.refresh()
+    }
+}
+
+fn fetch(client: &mut Client) -> Result<(Board, Vec<GraceItem>)> {
+    match client.request(Command::Snapshot)? {
+        Response::Board { board, grace } => Ok((board, grace)),
+        other => anyhow::bail!("unexpected snapshot response: {other:?}"),
+    }
+}

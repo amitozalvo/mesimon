@@ -9,8 +9,14 @@ rust-version.workspace = true
 
 [dependencies]
 mesimon-core.workspace = true
+mesimon-daemon = { path = "../mesimon-daemon" }
 anyhow.workspace = true
+serde_json.workspace = true
+ulid.workspace = true
+uuid.workspace = true
 unicode-width.workspace = true
+ratatui = "0.29"
+libc = "0.2"
 
 [lints]
 workspace = true

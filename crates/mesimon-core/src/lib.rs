@@ -6,7 +6,11 @@
 //! on every mutation path anyway.
 
 pub mod authorize;
+pub mod board;
+pub mod command;
+pub mod fracindex;
 pub mod principal;
+pub mod reconcile;
 
 pub use authorize::{authorize, Action, Decision, Resource};
 pub use principal::Principal;
