@@ -1284,10 +1284,12 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .filter(|r| match (r.kind, &r.state) {
-                (SessionKind::Claude, SessionState::Idle { .. }) => true,
-                (SessionKind::Bash, SessionState::Running) => true,
-                _ => false,
+            .filter(|r| {
+                matches!(
+                    (r.kind, &r.state),
+                    (SessionKind::Claude, SessionState::Idle { .. })
+                        | (SessionKind::Bash, SessionState::Running)
+                )
             })
             .map(|r| r.id)
             .collect();

@@ -166,3 +166,50 @@ handover (T-4, an M1 item) · physical Shift+Enter through a real outer terminal
   `"command": "<executable>"` with `"args": [...]` as its arguments — a bare `"args"` array fails
   settings validation ("Expected string, but received undefined" on `hooks.*.command`, whole file
   skipped). Verified live via the Settings Error dialog; generator fixed accordingly.
+
+## D35 — M3 scope decisions (2026-08-29)
+
+- Manual-only sleep: `07` §15.2's offer banner/confirm/receipt strings, `16` §1.4's `[sleep]`
+  block, and D23's automatic tier are **deferred** (not superseded — D23's floors still bind the
+  manual path). The `after_idle` 10-min (`00`/`07`) vs 4-h (`16`) drift stays open.
+- `19` §4 tier 1's "one-shot `claude agents --json` at daemon start" is **not built** in v0.1
+  (D35.4); the census itself is lazy (drawer-open only, D35.3), so `02` §9 step 6 has no M3
+  implementation either.
+- Badge word is **`external`**, superseding `19` §4's "observed" (collision with `07` §14.2's
+  observer-client vocabulary).
+
+## M3 implementation deviations (2026-08-29)
+
+- **`Reason::ResumeDialog` added to `11` §11.7.1 at shared rank 8** (with `startup_modal`) — the
+  resume-from-summary dialog state `19` §4 tier 3 demanded; D28's fixed ranks are untouched.
+- **TIOCGPGRP sleep guard (`14` §6.1a) is tmux-recast**: mesimon holds no PTY master, so the
+  bash-session floor is "pane process has live children" via `pgrep -lP <pane_pid>`. The
+  `never_if_foreground` name list is deferred with the config system; `pinned_awake` ships.
+  A foreground REPL with no child process is NOT caught (the ioctl's coverage is not fully
+  reproduced) — the manual keystroke is the mitigation.
+- **`14` §6.1's 8-step sleep is a 4-step ladder under tmux**: transcript copy (+ cheap B-A22
+  check) → park the record as `sleeping` FIRST (the machine latches: the kill's own
+  `SessionEnd`/pane-died must not flip it) → SIGTERM the pane's process group → `kill-pane`
+  after a 5 s grace. No grid snapshot, no arena, no PTY-master release — the RSS/PTY recovered
+  are the child process's own. Bash sessions may also be slept manually from `Running` (they
+  have no `idle` state; the children guard is the floor); wake respawns a fresh shell.
+- **Sleep age floor is measured from `state_changed_at`** (time in the current state), not
+  session creation time — no created-at field exists on the record. Stricter than D23's wording.
+- **The kill ladder's grace-then-kill-pane gap (M2 note) is closed**: `kill_session`, grace-band
+  expiry, and sleep all SIGTERM then reap the pane via a shared 5 s reaper.
+- **Observe-tier state evidence** is transcript-tail only (`09` §4.3 cursor, `09` §4.4 signals →
+  Low confidence always) — `11` §11.7.5's OSC-glyph row for adopted sessions assumed byte access
+  the tmux backend does not give. 45 s of transcript quiet while `running` demotes to `idle`.
+  The tail cursor starts at EOF on attach: history is not activity (preview comes from the census).
+- **Keymap drift vs `04` (M1/M2-minimal precedent, author hand-check pending)**: board `e` opens
+  the External drawer (04 has no binding — B gap), board `Z` = reclaim-all (04: `Space s Z`),
+  picker `z` = sleep/wake toggle (04: `x`), picker `p` = pin-awake, picker `x` stays kill (M2
+  muscle memory), drawer `a` = attach / `R` = resume-here (04 §2.6's ticket-screen `a` = adopt is
+  the spiritual parent; there is no ticket screen yet).
+- **Header resource line** renders `N live · M asleep   ptys U/T · X.XGiB` in the grey ramp —
+  `07` §15.1's `live N/M` warn-threshold form and quota percentages are not yet built. RSS is a
+  10 s `ps` aggregate over owned pane process groups (ASK-23); the PTY `used` figure is the
+  `/dev/ttys*` high-water count on Darwin (B-D16) and live `/proc` figures on Linux; the spawn
+  gate recounts only at spawn time and refuses only at the OS boundary (D33e), naming the reason.
+- **Test seams added**: `MESIMON_CLAUDE_HOME` (census root override) and
+  `MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s floor).

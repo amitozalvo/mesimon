@@ -97,12 +97,24 @@ can never emit attention (adoption tier is M3).
 **Schema evolution.** `store.rs` hard-fails on parse errors, so every new `SessionRecord` field
 must be `#[serde(default)]` — the defaults ARE the migration (back-compat fixture test in
 `core/src/board.rs`). The `SessionState` enum is matched non-exhaustively in several places; use
-`state.is_live()` for liveness rather than matching variants.
+`state.is_live()` for working-set membership and `state.has_pane()` for pane existence —
+`Sleeping` is live-but-parked (no pane, no process; the attention machine latches until wake).
+
+**Adoption (M3).** Foreign sessions are discovered lazily (drawer open → `RescanExternal`; never
+at startup, never polled) by cwd-field census of `~/.claude/projects/` (`daemon/src/census.rs`;
+pure parsers in `core/src/adopt.rs`). Attached records have `provenance: Adopted` + empty argv =
+observe-only (transcript tail poller, Low confidence, cannot focus); takeover spawns
+`claude --settings <hooks> --resume <claude_session_id>` — argv replay is THE resume mechanism
+(resume restores neither --settings nor --mcp-config), never `--bare`. Sleep = SIGTERM pgid →
+5 s reaper → kill-pane, record parked FIRST; badge word is `external` (see STALE-MAP M3 section
++ D35 for all deviations).
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
 the pane-died notify — required in e2e because the in-process daemon's `current_exe()` is the test
-binary). E2e pattern: in-process daemon thread + real tmux + the real built binary via
-`env!("CARGO_BIN_EXE_mesimon")` (only available in `crates/mesimon/tests/`).
+binary), `MESIMON_CLAUDE_HOME` (census root override for fabricated `~/.claude` trees),
+`MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s sleep floor). E2e pattern: in-process
+daemon thread + real tmux + the real built binary via `env!("CARGO_BIN_EXE_mesimon")` (only
+available in `crates/mesimon/tests/`).
 
 ## Boundaries
 
