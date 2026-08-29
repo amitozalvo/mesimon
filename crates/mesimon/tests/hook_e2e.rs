@@ -213,6 +213,31 @@ fn m2_attention_headless() {
         "{}",
     );
 
+    // Claude spawn: enters Spawning with a generated 0600 settings file.
+    // The stub ignores its args and stays alive so reconcile sees a live pane.
+    let stub = dir.join("claude-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\nsleep 60\n").unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
+    let claude_sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Claude }) {
+        Response::Spawned { id } => id,
+        other => panic!("claude spawn failed: {other:?}"),
+    };
+    let (board, _) = board_of(c.request(Command::Snapshot));
+    let rec = board.sessions.iter().find(|s| s.id == claude_sid).unwrap();
+    assert_eq!(rec.state, SessionState::Spawning);
+    assert!(rec.argv.iter().any(|a| a == "--settings"));
+    let settings = state_dir.join("hooks").join(format!("{claude_sid}.json"));
+    assert!(settings.is_file(), "settings file written");
+    let mode = std::os::unix::fs::MetadataExt::mode(&settings.metadata().unwrap()) & 0o777;
+    assert_eq!(mode, 0o600, "settings must be 0600");
+    let parsed: serde_json::Value =
+        serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
+    let n: usize =
+        parsed["hooks"].as_object().unwrap().values().map(|a| a.as_array().unwrap().len()).sum();
+    assert_eq!(n, 30, "the registered set is 30 entries");
+    let _ = c.request(Command::KillSession { id: claude_sid });
+
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();

@@ -53,6 +53,9 @@ pub struct Daemon {
     shutting_down: bool,
     /// One attention machine per session, keyed by session UUID.
     machines: HashMap<uuid::Uuid, Machine>,
+    /// Startup-modal probe progress per Spawning Claude session:
+    /// 1 = the +10s probe ran, 2 = the +30s probe ran (11 §11.5.3 approx).
+    probe_stage: HashMap<uuid::Uuid, u8>,
     ticks: u64,
 }
 
@@ -151,6 +154,7 @@ pub fn run(paths: Paths) -> Result<()> {
         focus: None,
         shutting_down: false,
         machines,
+        probe_stage: HashMap::new(),
         ticks: 0,
     };
 
@@ -286,6 +290,9 @@ impl Daemon {
         for (id, change) in fired {
             changed |= self.apply_change(id, &change, None);
         }
+        if self.ticks % 4 == 0 {
+            changed |= self.probe_spawning();
+        }
         if self.ticks % SERVER_GUARD_TICKS == 0 {
             changed |= self.guard_server();
         }
@@ -293,6 +300,58 @@ impl Daemon {
             let _ = store::save_sessions(&self.paths, &self.board);
             self.broadcast();
         }
+    }
+
+    /// 11 §11.5.3, approximated without byte streams: a Spawning Claude pane
+    /// that painted output but never set Claude's OSC-0 title and never sent
+    /// `SessionStart` is a startup modal (trust dialog); a pane with no output
+    /// at all by +30s is `unknown`, never `failed`. Two one-shot tmux forks
+    /// per Claude spawn, only while Spawning.
+    fn probe_spawning(&mut self) -> bool {
+        let now = now_ms();
+        let due: Vec<(uuid::Uuid, String, u8)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| r.kind == SessionKind::Claude && r.state == SessionState::Spawning)
+            .filter_map(|r| {
+                let age = now.saturating_sub(r.state_changed_at.unwrap_or(now));
+                let stage = self.probe_stage.get(&r.id).copied().unwrap_or(0);
+                if age >= 30_000 && stage < 2 {
+                    Some((r.id, r.sid16(), 2))
+                } else if age >= 10_000 && stage < 1 {
+                    Some((r.id, r.sid16(), 1))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        let mut changed = false;
+        for (id, sid, stage) in due {
+            self.probe_stage.insert(id, stage);
+            let bytes = self
+                .backend
+                .capture_tail(&sid, 3)
+                .map(|lines| !lines.is_empty())
+                .unwrap_or(false);
+            let osc0 = self
+                .backend
+                .pane_title(&sid)
+                .map(|t| t.contains("Claude") || t.contains('✳'))
+                .unwrap_or(false);
+            // At +10s only the modal case fires; the no-bytes verdict waits
+            // for +30s (a slow spawn is not yet a missing one).
+            if stage == 1 && !(bytes && !osc0) {
+                continue;
+            }
+            let sig = mesimon_core::attention::Signal::SpawnProbe { bytes, osc0 };
+            if let Some(m) = self.machines.get_mut(&id) {
+                if let Some(change) = m.apply(&sig, now) {
+                    changed |= self.apply_change(id, &change, None);
+                }
+            }
+        }
+        changed
     }
 
     /// pane-died cannot fire for a dead tmux server: if the private server is
@@ -567,7 +626,28 @@ impl Daemon {
         }
         let id = uuid::Uuid::new_v4();
         let argv: Vec<String> = match kind {
-            SessionKind::Claude => vec!["claude".into(), "--session-id".into(), id.to_string()],
+            SessionKind::Claude => {
+                // Per-session observer hooks via --settings (11 §11.2.1).
+                // Never --bare / --safe-mode — both silently clear them (S-D).
+                let hook_bin = std::env::var("MESIMON_HOOK_BIN")
+                    .map(std::path::PathBuf::from)
+                    .or_else(|_| std::env::current_exe())
+                    .unwrap_or_else(|_| std::path::PathBuf::from("mesimon"));
+                let claude =
+                    std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+                match crate::hook_settings::write_settings(&self.paths, id, &hook_bin) {
+                    Ok(settings) => vec![
+                        claude,
+                        "--settings".into(),
+                        settings.display().to_string(),
+                        "--session-id".into(),
+                        id.to_string(),
+                    ],
+                    Err(e) => {
+                        return Response::Err { message: format!("hook settings: {e}") };
+                    }
+                }
+            }
             SessionKind::Bash => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())],
         };
         let cwd = self.paths.repo_root.clone();
@@ -577,8 +657,9 @@ impl Daemon {
             SessionKind::Claude => SessionState::Spawning,
             SessionKind::Bash => SessionState::Running,
         };
-        let rec =
+        let mut rec =
             SessionRecord::new(id, kind, ticket, argv.clone(), cwd.display().to_string(), state);
+        rec.state_changed_at = Some(now_ms());
         if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &[]) {
             return Response::Err { message: format!("spawn failed: {e}") };
         }

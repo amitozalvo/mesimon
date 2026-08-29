@@ -134,6 +134,13 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// The pane's OSC-0 title (tmux tracks it in `#{pane_title}`). Defaults to
+    /// the hostname when the app never set one — callers match app-specific
+    /// content, not emptiness (startup-modal probe, 11 §11.5.3).
+    pub fn pane_title(&self, sid16: &str) -> Result<String> {
+        Ok(self.run(&["display-message", "-p", "-t", sid16, "#{pane_title}"])?.trim().to_string())
+    }
+
     /// Last N logical lines of a pane, already SGR-free (spike T-9: no `-e`).
     pub fn capture_tail(&self, sid16: &str, lines: usize) -> Result<Vec<String>> {
         let out = self.run(&["capture-pane", "-p", "-J", "-t", sid16])?;
