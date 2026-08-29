@@ -452,7 +452,7 @@ impl App {
 
 fn fetch(client: &mut Client) -> Result<(Board, Vec<GraceItem>)> {
     match client.request(Command::Snapshot)? {
-        Response::Board { board, grace } => Ok((board, grace)),
+        Response::Board { board, grace, .. } => Ok((board, grace)),
         other => anyhow::bail!("unexpected snapshot response: {other:?}"),
     }
 }

@@ -69,7 +69,7 @@ impl TestClient {
 
 fn board_of(resp: Response) -> (Board, Vec<GraceItem>) {
     match resp {
-        Response::Board { board, grace } => (board, grace),
+        Response::Board { board, grace, .. } => (board, grace),
         other => panic!("expected board, got {other:?}"),
     }
 }

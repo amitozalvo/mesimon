@@ -40,7 +40,7 @@ impl TestClient {
 
 fn board_of(resp: Response) -> (mesimon_core::board::Board, Vec<mesimon_core::command::GraceItem>) {
     match resp {
-        Response::Board { board, grace } => (board, grace),
+        Response::Board { board, grace, .. } => (board, grace),
         other => panic!("expected board, got {other:?}"),
     }
 }

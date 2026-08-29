@@ -14,7 +14,9 @@ use mesimon_core::attention::{self, Change, Machine, Signal};
 use mesimon_core::board::{
     Board, Confidence, ExitReason, SessionKind, SessionRecord, SessionState, Ticket, UnknownReason,
 };
-use mesimon_core::command::{Command, Envelope, Event, GraceItem, Response, PROTOCOL_VERSION};
+use mesimon_core::command::{
+    Command, Envelope, Event, ExternalItem, GraceItem, Resources, Response, PROTOCOL_VERSION,
+};
 use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 use mesimon_backend_tmux::TmuxBackend;
@@ -59,6 +61,9 @@ pub struct Daemon {
     probe_stage: HashMap<uuid::Uuid, u8>,
     ticks: u64,
     feed: FeedWriter,
+    /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
+    /// only on `RescanExternal` (the drawer opening).
+    external: Vec<ExternalItem>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -174,6 +179,7 @@ pub fn run(paths: Paths) -> Result<()> {
         probe_stage: HashMap::new(),
         ticks: 0,
         feed,
+        external: Vec::new(),
     };
 
     for msg in rx {
@@ -239,7 +245,12 @@ impl Daemon {
     fn handle(&mut self, env: Envelope, stream: &Arc<Mutex<UnixStream>>) -> Response {
         // D32c invariant 2: the chokepoint is on every path, even though v0.1 allows.
         let action = match &env.command {
-            Command::Hello { .. } | Command::Snapshot | Command::Subscribe | Command::GateStatus => Action::Read,
+            Command::Hello { .. }
+            | Command::Snapshot
+            | Command::Subscribe
+            | Command::GateStatus
+            // Mutates only the daemon's discovery cache, never board state.
+            | Command::RescanExternal => Action::Read,
             _ => Action::Mutate,
         };
         if let Decision::Deny { reason } = authorize(&env.principal, &action, &Resource::Board) {
@@ -267,6 +278,11 @@ impl Daemon {
                 Response::Hello { version: PROTOCOL_VERSION, daemon_pid: std::process::id() }
             }
             Command::Snapshot => self.snapshot(),
+            Command::RescanExternal => {
+                self.rescan_external();
+                // Reply with the fresh board so the drawer opens in one round trip.
+                self.snapshot()
+            }
             Command::Subscribe => {
                 self.subscribers.push(stream.clone());
                 Response::Ok
@@ -297,6 +313,14 @@ impl Daemon {
                 self.shutting_down = true;
                 Response::Ok
             }
+            // Landing with the takeover (WP6) and sleep (WP7) workpackages.
+            Command::AttachExternal { .. }
+            | Command::ResumeExternal { .. }
+            | Command::ResumeSession { .. }
+            | Command::SleepSession { .. }
+            | Command::WakeSession { .. }
+            | Command::ReclaimAll
+            | Command::PinAwake { .. } => Response::Err { message: "not implemented".into() },
         };
         if let Some((cmd, ticket)) = feed_cmd {
             if matches!(resp, Response::Ok | Response::Spawned { .. }) {
@@ -379,7 +403,13 @@ impl Daemon {
             if stage == 1 && !(bytes && !osc0) {
                 continue;
             }
-            let sig = mesimon_core::attention::Signal::SpawnProbe { bytes, osc0 };
+            let resume = self
+                .board
+                .sessions
+                .iter()
+                .find(|r| r.id == id)
+                .is_some_and(|r| r.argv.iter().any(|a| a == "--resume"));
+            let sig = mesimon_core::attention::Signal::SpawnProbe { bytes, osc0, resume };
             if let Some(m) = self.machines.get_mut(&id) {
                 if let Some(change) = m.apply(&sig, now) {
                     changed |= self.apply_change(id, &change, None, Some("probe"));
@@ -511,7 +541,41 @@ impl Daemon {
                 live_sessions: g.sessions.len(),
             })
             .collect();
-        Response::Board { board: self.board.clone(), grace }
+        Response::Board {
+            board: self.board.clone(),
+            grace,
+            external: self.external.clone(),
+            resources: self.resources(),
+        }
+    }
+
+    /// Header figures (D33e). Placeholder counts until the measurement module
+    /// (WP8) lands; live/asleep are real already.
+    fn resources(&self) -> Resources {
+        Resources {
+            live: self.board.sessions.iter().filter(|s| s.state.has_pane()).count(),
+            asleep: self
+                .board
+                .sessions
+                .iter()
+                .filter(|s| matches!(s.state, SessionState::Sleeping))
+                .count(),
+            ..Resources::default()
+        }
+    }
+
+    /// 19 §4 tier 1: transcript census, filtered to this repo (and worktrees),
+    /// minus sessions already on the board (ours live in the same tree).
+    fn rescan_external(&mut self) {
+        let home = crate::census::claude_home();
+        let roots = crate::census::repo_roots(&self.paths.repo_root);
+        let known: Vec<uuid::Uuid> = self
+            .board
+            .sessions
+            .iter()
+            .flat_map(|s| [Some(s.id), s.claude_session_id].into_iter().flatten())
+            .collect();
+        self.external = crate::census::scan(&home, &roots, &|id| known.contains(&id));
     }
 
     fn broadcast(&mut self) {
