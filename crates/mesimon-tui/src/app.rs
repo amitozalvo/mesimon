@@ -566,14 +566,15 @@ impl App {
         } else if let Some(sid) = self.focused_session_hint.take() {
             self.send(Command::FocusEnd { session: sid })?;
             self.refresh()?;
-            // Unfocus lands on the ticket's session list, not the board root —
-            // the picker stands in for the ticket screen until it exists.
+            // Unfocus lands where a choice remains: the session list only when
+            // the ticket holds several, otherwise the board with the ticket
+            // selected (a one-session picker is a dead stop).
             if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
                 let ticket = rec.ticket;
+                self.select_ticket(ticket);
                 let live = self.live_sessions_of(ticket);
-                if !live.is_empty() {
+                if live.len() > 1 {
                     let idx = live.iter().position(|s| s.id == sid).unwrap_or(0);
-                    self.select_ticket(ticket);
                     self.mode = Mode::Pick { ticket, idx };
                 }
             }
