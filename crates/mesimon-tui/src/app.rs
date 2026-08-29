@@ -383,8 +383,33 @@ impl App {
             }
         } else if let Some(sid) = self.focused_session_hint.take() {
             self.send(Command::FocusEnd { session: sid })?;
+            self.refresh()?;
+            // Unfocus lands on the ticket's session list, not the board root —
+            // the picker stands in for the ticket screen until it exists.
+            if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
+                let ticket = rec.ticket;
+                let live = self.live_sessions_of(ticket);
+                if !live.is_empty() {
+                    let idx = live.iter().position(|s| s.id == sid).unwrap_or(0);
+                    self.select_ticket(ticket);
+                    self.mode = Mode::Pick { ticket, idx };
+                }
+            }
+            return Ok(());
         }
         self.refresh()
+    }
+
+    /// Point the board cursor at a ticket (so Esc from the picker lands on it).
+    fn select_ticket(&mut self, ticket: ulid::Ulid) {
+        let cols = self.columns();
+        for (ci, col) in cols.iter().enumerate() {
+            if let Some(ri) = self.board.column_tickets(col).iter().position(|t| t.id == ticket) {
+                self.cursor_col = ci;
+                self.cursor_row = ri;
+                return;
+            }
+        }
     }
 
     fn send(&mut self, command: Command) -> Result<()> {
