@@ -17,6 +17,8 @@ pub enum Mode {
     /// MOVE: ghost position tracked client-side, committed on Enter (M-rules).
     Move { ticket: ulid::Ulid, col: usize, idx: usize },
     Input { purpose: InputPurpose, buffer: String },
+    /// Session picker: a ticket has more than one live session.
+    Pick { ticket: ulid::Ulid, idx: usize },
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -112,6 +114,7 @@ impl App {
         match self.mode.clone() {
             Mode::Normal => self.key_normal(key.code, key.modifiers)?,
             Mode::Move { ticket, col, idx } => self.key_move(key.code, ticket, col, idx)?,
+            Mode::Pick { ticket, idx } => self.key_pick(key.code, ticket, idx)?,
             Mode::Input { purpose, mut buffer } => match key.code {
                 KeyCode::Esc => self.mode = Mode::Normal,
                 KeyCode::Enter => {
@@ -186,21 +189,14 @@ impl App {
                     self.mode = Mode::Move { ticket: t.id, col: self.cursor_col, idx: self.cursor_row };
                 }
             }
-            KeyCode::Char('s') => {
-                if let Some(t) = self.selected_ticket() {
-                    let id = t.id;
-                    self.send(Command::SpawnSession { ticket: id, kind: SessionKind::Claude })?;
-                }
-            }
-            KeyCode::Char('S') => {
-                if let Some(t) = self.selected_ticket() {
-                    let id = t.id;
-                    self.send(Command::SpawnSession { ticket: id, kind: SessionKind::Bash })?;
-                }
-            }
+            KeyCode::Char('s') => self.spawn_and_focus(SessionKind::Claude)?,
+            KeyCode::Char('S') => self.spawn_and_focus(SessionKind::Bash)?,
             KeyCode::Char('x') => {
-                if let Some(s) = self.newest_live_session() {
-                    self.send(Command::KillSession { id: s })?;
+                if let Some(t) = self.selected_ticket() {
+                    let last = self.live_sessions_of(t.id).last().map(|s| s.id);
+                    if let Some(sid) = last {
+                        self.send(Command::KillSession { id: sid })?;
+                    }
                 }
             }
             KeyCode::Enter => self.focus_selected()?,
@@ -275,20 +271,80 @@ impl App {
         Ok(())
     }
 
-    fn newest_live_session(&self) -> Option<uuid::Uuid> {
-        let t = self.selected_ticket()?;
+    /// Live sessions of a ticket, in spawn order.
+    pub fn live_sessions_of(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
         self.board
             .sessions
             .iter()
-            .rfind(|s| s.ticket == t.id && matches!(s.state, SessionState::Running | SessionState::Spawning))
-            .map(|s| s.id)
+            .filter(|s| {
+                s.ticket == ticket
+                    && matches!(s.state, SessionState::Running | SessionState::Spawning)
+            })
+            .collect()
+    }
+
+    fn spawn_and_focus(&mut self, kind: SessionKind) -> Result<()> {
+        let Some(t) = self.selected_ticket() else { return Ok(()) };
+        let ticket = t.id;
+        match self.client.request(Command::SpawnSession { ticket, kind })? {
+            Response::Spawned { id } => {
+                self.refresh()?;
+                self.focus_session(id)?;
+            }
+            Response::Err { message } => self.status = message,
+            _ => self.refresh()?,
+        }
+        Ok(())
     }
 
     fn focus_selected(&mut self) -> Result<()> {
-        let Some(sid) = self.newest_live_session() else {
-            self.status = "no live session on this ticket — s spawns claude".into();
+        // Enter on nothing does nothing.
+        let Some(t) = self.selected_ticket() else { return Ok(()) };
+        let ticket = t.id;
+        let live: Vec<uuid::Uuid> = self.live_sessions_of(ticket).iter().map(|s| s.id).collect();
+        match live.len() {
+            0 => self.status = "no live session on this ticket — s spawns claude, S bash".into(),
+            1 => self.focus_session(live[0])?,
+            _ => self.mode = Mode::Pick { ticket, idx: live.len() - 1 },
+        }
+        Ok(())
+    }
+
+    fn key_pick(&mut self, code: KeyCode, ticket: ulid::Ulid, idx: usize) -> Result<()> {
+        let live: Vec<uuid::Uuid> = self.live_sessions_of(ticket).iter().map(|s| s.id).collect();
+        if live.is_empty() {
+            self.mode = Mode::Normal;
             return Ok(());
-        };
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => self.mode = Mode::Normal,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.mode = Mode::Pick { ticket, idx: (idx + 1).min(live.len() - 1) };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mode = Mode::Pick { ticket, idx: idx.saturating_sub(1) };
+            }
+            KeyCode::Enter => {
+                let sid = live[idx.min(live.len() - 1)];
+                self.mode = Mode::Normal;
+                self.focus_session(sid)?;
+            }
+            KeyCode::Char('x') => {
+                let sid = live[idx.min(live.len() - 1)];
+                self.send(Command::KillSession { id: sid })?;
+                let remaining = self.live_sessions_of(ticket).len();
+                self.mode = if remaining > 1 {
+                    Mode::Pick { ticket, idx: idx.min(remaining - 1) }
+                } else {
+                    Mode::Normal
+                };
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn focus_session(&mut self, sid: uuid::Uuid) -> Result<()> {
         // GATE (D20): prove the unfocus key once before the first real focus.
         match self.client.request(Command::GateStatus)? {
             Response::Gate { passed: true, .. } => {

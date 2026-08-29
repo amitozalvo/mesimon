@@ -12,13 +12,15 @@ use unicode_width::UnicodeWidthChar;
 
 use crate::app::{App, InputPurpose, Mode};
 
-// Grey ramp (dark theme baseline; theming is M6).
-const FG: Color = Color::Gray;
+// Interim palette until the M6 design pass: body text rides the terminal's
+// default foreground (readable on light AND dark backgrounds); only de-emphasis
+// uses a named colour. Never hardcode white/grey for primary text before OSC-11
+// background detection exists (06 §2.6).
+const FG: Color = Color::Reset;
 const DIM: Color = Color::DarkGray;
-const BRIGHT: Color = Color::White;
 const ACCENT_IDLE: Color = Color::DarkGray;
-const ACCENT_LIVE: Color = Color::Rgb(120, 130, 145); // muted secondary
-const GHOST: Color = Color::Rgb(90, 90, 90);
+const ACCENT_LIVE: Color = Color::Blue; // placeholder for the muted secondary
+const GHOST: Color = Color::DarkGray;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let outer = Layout::default()
@@ -35,6 +37,55 @@ pub fn draw(f: &mut Frame, app: &App) {
     draw_columns(f, outer[1], app);
     draw_grace(f, outer[2], app);
     draw_footer(f, outer[3], app);
+    if let Mode::Pick { ticket, idx } = &app.mode {
+        draw_picker(f, app, *ticket, *idx);
+    }
+}
+
+/// Small centered session picker (M1 stand-in for the ticket screen).
+fn draw_picker(f: &mut Frame, app: &App, ticket: ulid::Ulid, idx: usize) {
+    let live = app.live_sessions_of(ticket);
+    if live.is_empty() {
+        return;
+    }
+    let title = app.board.ticket(ticket).map(|t| t.title.clone()).unwrap_or_default();
+    let w = 44.min(f.area().width.saturating_sub(4));
+    let h = (live.len() as u16 + 4).min(f.area().height.saturating_sub(2));
+    let area = Rect {
+        x: (f.area().width.saturating_sub(w)) / 2,
+        y: (f.area().height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(" {} — sessions", truncate(&title, w as usize - 12)),
+        Style::default().fg(DIM).add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+    for (i, s) in live.iter().enumerate() {
+        let kind = match s.kind {
+            mesimon_core::board::SessionKind::Claude => "claude",
+            mesimon_core::board::SessionKind::Bash => "bash",
+        };
+        let style = if i == idx {
+            Style::default().fg(FG).add_modifier(Modifier::REVERSED)
+        } else {
+            Style::default().fg(FG)
+        };
+        lines.push(Line::from(Span::styled(
+            format!("  {} {kind} · {}  ", if i == idx { "▸" } else { " " }, &s.sid16()[..8]),
+            style,
+        )));
+    }
+    lines.push(Line::default());
+    lines.push(Line::from(Span::styled(
+        " jk · Enter focus · x kill · Esc",
+        Style::default().fg(DIM),
+    )));
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 fn draw_header(f: &mut Frame, area: Rect, app: &App) {
@@ -50,7 +101,7 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .filter(|s| matches!(s.state, SessionState::Running | SessionState::Spawning))
         .count();
     let line = Line::from(vec![
-        Span::styled("  mesimon", Style::default().fg(BRIGHT).add_modifier(Modifier::BOLD)),
+        Span::styled("  mesimon", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {repo}"), Style::default().fg(DIM)),
         Span::styled(format!("   {live} live"), Style::default().fg(DIM)),
     ]);
@@ -115,7 +166,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let width = (area.width as usize).saturating_sub(3 + dots.len() + 1);
         let title = truncate(&t.title, width);
         let style = if selected {
-            Style::default().fg(BRIGHT).add_modifier(Modifier::REVERSED)
+            Style::default().fg(FG).add_modifier(Modifier::REVERSED)
         } else if ghosted {
             Style::default().fg(GHOST)
         } else {
@@ -189,13 +240,17 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             };
             Line::from(vec![
                 Span::styled(format!(" {label}: "), Style::default().fg(DIM)),
-                Span::styled(buffer.clone(), Style::default().fg(BRIGHT)),
-                Span::styled("▏", Style::default().fg(BRIGHT)),
+                Span::styled(buffer.clone(), Style::default().fg(FG)),
+                Span::styled("▏", Style::default().fg(FG)),
             ])
         }
         Mode::Move { .. } => Line::from(Span::styled(
             " MOVE  hjkl move · Enter drop · Esc cancel",
-            Style::default().fg(BRIGHT).add_modifier(Modifier::REVERSED),
+            Style::default().fg(FG).add_modifier(Modifier::REVERSED),
+        )),
+        Mode::Pick { .. } => Line::from(Span::styled(
+            " PICK  jk select · Enter focus · x kill · Esc back",
+            Style::default().fg(FG).add_modifier(Modifier::REVERSED),
         )),
         Mode::Normal => {
             if app.status.is_empty() {
@@ -204,7 +259,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     Style::default().fg(DIM),
                 ))
             } else {
-                Line::from(Span::styled(format!(" {}", app.status), Style::default().fg(BRIGHT)))
+                Line::from(Span::styled(format!(" {}", app.status), Style::default().fg(FG)))
             }
         }
     };

@@ -47,6 +47,7 @@ pub enum Command {
 pub enum Response {
     Hello { version: u32, daemon_pid: u32 },
     Ok,
+    Spawned { id: uuid::Uuid },
     Board { board: Board, grace: Vec<GraceItem> },
     /// argv the client should exec for the focus handover.
     Attach { argv: Vec<String> },

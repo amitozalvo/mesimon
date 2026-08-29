@@ -174,7 +174,10 @@ impl Daemon {
                 }
                 Response::Hello { version: PROTOCOL_VERSION, daemon_pid: std::process::id() }
             }
-            Command::Snapshot => self.snapshot(),
+            Command::Snapshot => {
+                self.refresh_states();
+                self.snapshot()
+            }
             Command::Subscribe => {
                 self.subscribers.push(stream.clone());
                 Response::Ok
@@ -205,6 +208,27 @@ impl Daemon {
                 self.shutting_down = true;
                 Response::Ok
             }
+        }
+    }
+
+    /// M1 liveness: re-reconcile against the live server on every snapshot so
+    /// a session that died shows as exited without waiting for a daemon
+    /// restart. (M2 replaces the pull with the pane-died hook push.)
+    fn refresh_states(&mut self) {
+        let Ok(snap) = self.backend.snapshot() else { return };
+        let rec = reconcile(&self.board.sessions, &snap);
+        let mut changed = false;
+        for (id, link) in &rec.links {
+            if let Some(r) = self.board.sessions.iter_mut().find(|s| s.id == *id) {
+                let next = state_for(link, &r.state);
+                if next != r.state {
+                    r.state = next;
+                    changed = true;
+                }
+            }
+        }
+        if changed {
+            let _ = store::save_sessions(&self.paths, &self.board);
         }
     }
 
@@ -383,7 +407,7 @@ impl Daemon {
         }
         self.board.sessions.push(rec);
         self.persist_and_notify();
-        Response::Ok
+        Response::Spawned { id }
     }
 
     fn kill_session(&mut self, id: uuid::Uuid) -> Response {
