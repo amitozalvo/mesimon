@@ -148,3 +148,17 @@ spike files.
 **NEEDS-MANUAL (author):** Ctrl+] detach across GUI terminals (T-3) · real-ratatui byte-clean
 handover (T-4, an M1 item) · physical Shift+Enter through a real outer terminal + nested chain
 (T-6) · the worktree-trust live A/B (S-C).
+
+## M2 implementation deviations (2026-08-29)
+
+- **Hook transport is `SOCK_STREAM` one-shot, not the DGRAM/SEQPACKET of `11` §11.2.2.** macOS
+  caps unix datagrams at 2 KB (`net.local.dgram.maxdgram`) and has no `AF_UNIX` `SOCK_SEQPACKET`;
+  real payloads (`last_assistant_message`, `tool_input`) exceed the cap, and truncation would force
+  the hook binary to re-serialize JSON (banned by the §11.2.2 rule 6). One connect + one write +
+  EOF-as-frame keeps rule 6's spirit. The binary is `mesimon hook` (14 §1.7's spelling), not the
+  separate `kt-hook` of §11.2.2's argv example.
+- **Startup-modal detector (`11` §11.5.3) is approximated**: without byte streams, "no OSC 0 within
+  3 s of first byte" becomes a +10 s probe of `#{pane_title}` + `capture-pane` while `Spawning`
+  (modal ⇒ medium confidence), with the no-bytes ⇒ `unknown` verdict at +30 s.
+- **`ExitReason` carries a non-normative extra variant `Killed`** (mesimon's own kill ladder ended
+  the session) beyond `11` §11.7.1's five.

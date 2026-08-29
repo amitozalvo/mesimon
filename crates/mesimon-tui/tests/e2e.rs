@@ -52,7 +52,9 @@ fn m1_acceptance_headless() {
         return;
     }
 
-    let dir = PathBuf::from(format!("/tmp/msmn-e2e-{}", std::process::id()));
+    // Per-test dir (pid + name): two e2e binaries or tests must never share a
+    // repo — the daemon flock would silently no-op the second one.
+    let dir = PathBuf::from(format!("/tmp/msmn-e2e-m1-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
     let paths = Paths::for_repo(&dir).unwrap();
     let sock = paths.orch_sock();
