@@ -6,6 +6,7 @@ pub mod feed;
 pub mod hook_settings;
 pub mod ingest;
 pub mod paths;
+pub mod resources;
 pub mod server;
 pub mod store;
 pub mod tail;

@@ -45,6 +45,8 @@ const TAIL_QUIET_MS: u64 = 45_000;
 const REAP_GRACE: Duration = Duration::from_secs(5);
 /// D23 floor: a session younger than this in its current state never sleeps.
 const SLEEP_MIN_AGE_MS: u64 = 60_000;
+/// RSS aggregate refresh (10 s) — one `ps` fork, only while panes exist.
+const RSS_TICKS: u64 = 40;
 
 struct GraceEntry {
     ticket: Ticket,
@@ -80,6 +82,10 @@ pub struct Daemon {
     tails: HashMap<uuid::Uuid, TailCursor>,
     /// Panes SIGTERM'd and awaiting their grace-then-kill-pane (by sid16).
     reaping: HashMap<String, Instant>,
+    /// (bytes, sessions seen) — `ps` aggregate, refreshed on the 10 s bucket.
+    rss_cache: (u64, usize),
+    /// Recounted at startup and immediately before each spawn (14 §5.1).
+    pty_cache: crate::resources::PtyFigures,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -198,6 +204,8 @@ pub fn run(paths: Paths) -> Result<()> {
         external: Vec::new(),
         tails: HashMap::new(),
         reaping: HashMap::new(),
+        rss_cache: (0, 0),
+        pty_cache: crate::resources::pty_figures(),
     };
 
     for msg in rx {
@@ -425,6 +433,9 @@ impl Daemon {
         }
         if self.ticks % TAIL_POLL_TICKS == 0 {
             changed |= self.poll_tails();
+        }
+        if self.ticks % RSS_TICKS == 0 {
+            changed |= self.refresh_rss();
         }
         if self.ticks % SERVER_GUARD_TICKS == 0 {
             changed |= self.guard_server();
@@ -708,8 +719,7 @@ impl Daemon {
         }
     }
 
-    /// Header figures (D33e). Placeholder counts until the measurement module
-    /// (WP8) lands; live/asleep are real already.
+    /// Header figures (D33e) — real measurements only.
     fn resources(&self) -> Resources {
         Resources {
             live: self.board.sessions.iter().filter(|s| s.state.has_pane()).count(),
@@ -719,8 +729,62 @@ impl Daemon {
                 .iter()
                 .filter(|s| matches!(s.state, SessionState::Sleeping))
                 .count(),
-            ..Resources::default()
+            rss_bytes: self.rss_cache.0,
+            rss_measured: self.rss_cache.1,
+            pty_used: self.pty_cache.used,
+            pty_total: self.pty_cache.total,
+            pty_budget: self.pty_cache.budget,
         }
+    }
+
+    /// One `ps` fork on the 10 s bucket, over the pane process groups we own.
+    fn refresh_rss(&mut self) -> bool {
+        if !self.board.sessions.iter().any(|s| s.state.has_pane()) {
+            let had = self.rss_cache != (0, 0);
+            self.rss_cache = (0, 0);
+            return had;
+        }
+        let Ok(snap) = self.backend.snapshot() else { return false };
+        let ours: std::collections::HashSet<String> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| s.state.has_pane())
+            .map(|s| s.sid16())
+            .collect();
+        let pgids: std::collections::HashSet<i32> = snap
+            .iter()
+            .filter(|p| !p.pane_dead && ours.contains(&p.session_name))
+            .map(|p| p.pane_pid)
+            .collect();
+        let fresh = crate::resources::measure_rss(&pgids);
+        // Repaint-worthy only when the figure moves visibly (>1 MiB or count).
+        let moved = fresh.1 != self.rss_cache.1
+            || fresh.0.abs_diff(self.rss_cache.0) > 1024 * 1024;
+        self.rss_cache = fresh;
+        moved
+    }
+
+    /// The D33e spawn gate: refuse only at the OS boundary, naming the reason.
+    /// The PTY recount happens here — "while a spawn is queued, never
+    /// otherwise" (14 §5.1). A failed measurement never blocks a spawn.
+    fn spawn_gate(&mut self) -> Option<String> {
+        self.pty_cache = crate::resources::pty_figures();
+        if self.pty_cache.total > 0 && self.pty_cache.budget == 0 {
+            return Some(format!(
+                "PTY budget exhausted ({} of {} allocated) — sleep sessions (Z)",
+                self.pty_cache.used, self.pty_cache.total
+            ));
+        }
+        if let Some(free) = crate::resources::free_ram_bytes() {
+            if free < crate::resources::SPAWN_PEAK_BYTES {
+                return Some(format!(
+                    "low memory ({} MiB free < 200 MiB spawn peak) — sleep sessions (Z)",
+                    free / (1024 * 1024)
+                ));
+            }
+        }
+        None
     }
 
     /// 19 §4 tier 1: transcript census, filtered to this repo (and worktrees),
@@ -879,6 +943,9 @@ impl Daemon {
     fn spawn_session(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Response {
         if self.board.ticket(ticket).is_none() {
             return Response::Err { message: "no such ticket".into() };
+        }
+        if let Some(message) = self.spawn_gate() {
+            return Response::Err { message };
         }
         let id = uuid::Uuid::new_v4();
         let argv: Vec<String> = match kind {
@@ -1078,6 +1145,9 @@ impl Daemon {
         };
         let (sid, cwd) = (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()));
         let cwd = if cwd.is_dir() { cwd } else { self.paths.repo_root.clone() };
+        if let Some(message) = self.spawn_gate() {
+            return Response::Err { message };
+        }
         self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
         if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &[]) {
@@ -1189,6 +1259,9 @@ impl Daemon {
                 let (sid, argv, cwd) =
                     (rec.sid16(), rec.argv.clone(), std::path::PathBuf::from(rec.cwd.clone()));
                 let cwd = if cwd.is_dir() { cwd } else { self.paths.repo_root.clone() };
+                if let Some(message) = self.spawn_gate() {
+                    return Response::Err { message };
+                }
                 self.reaping.remove(&sid);
                 let _ = self.backend.kill_session(&sid);
                 if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &[]) {
