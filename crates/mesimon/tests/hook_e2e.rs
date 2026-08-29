@@ -276,6 +276,19 @@ fn m2_attention_headless() {
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 
+    // The activity feed carries the transitions and the board mutations.
+    let feed = std::fs::read_to_string(state_dir.join("activity.jsonl")).expect("feed exists");
+    assert!(
+        feed.lines().any(|l| l.contains(r#""kind":"session_state""#)
+            && l.contains(r#""to":"requires_action""#)
+            && l.contains(r#""reason":"permission""#)),
+        "feed must carry the permission transition"
+    );
+    assert!(
+        feed.lines().any(|l| l.contains(r#""kind":"board""#) && l.contains("create_ticket")),
+        "feed must carry board mutations"
+    );
+
     let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state_dir);

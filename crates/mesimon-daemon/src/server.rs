@@ -19,6 +19,7 @@ use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 use mesimon_backend_tmux::TmuxBackend;
 
+use crate::feed::FeedWriter;
 use crate::ingest::{self, HookFrame};
 use crate::paths::Paths;
 use crate::store;
@@ -57,6 +58,7 @@ pub struct Daemon {
     /// 1 = the +10s probe ran, 2 = the +30s probe ran (11 §11.5.3 approx).
     probe_stage: HashMap<uuid::Uuid, u8>,
     ticks: u64,
+    feed: FeedWriter,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -158,6 +160,7 @@ pub fn run(paths: Paths) -> Result<()> {
         .iter()
         .map(|s| (s.id, Machine::new(s.state.clone(), now)))
         .collect();
+    let feed = FeedWriter::open(&paths.activity_log())?;
 
     let mut d = Daemon {
         paths,
@@ -170,6 +173,7 @@ pub fn run(paths: Paths) -> Result<()> {
         machines,
         probe_stage: HashMap::new(),
         ticks: 0,
+        feed,
     };
 
     for msg in rx {
@@ -186,6 +190,7 @@ pub fn run(paths: Paths) -> Result<()> {
             }
         }
     }
+    let _ = d.feed.flush();
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());
     Ok(())
@@ -241,7 +246,18 @@ impl Daemon {
             return Response::Err { message: format!("denied: {reason}") };
         }
 
-        match env.command {
+        let feed_cmd: Option<(&'static str, Option<ulid::Ulid>)> = match &env.command {
+            Command::CreateTicket { .. } => Some(("create_ticket", None)),
+            Command::RenameTicket { id, .. } => Some(("rename_ticket", Some(*id))),
+            Command::DeleteTicket { id } => Some(("delete_ticket", Some(*id))),
+            Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
+            Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
+            Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
+            Command::KillSession { .. } => Some(("kill_session", None)),
+            _ => None,
+        };
+
+        let resp = match env.command {
             Command::Hello { version, .. } => {
                 if version != PROTOCOL_VERSION {
                     return Response::Err {
@@ -281,7 +297,13 @@ impl Daemon {
                 self.shutting_down = true;
                 Response::Ok
             }
+        };
+        if let Some((cmd, ticket)) = feed_cmd {
+            if matches!(resp, Response::Ok | Response::Spawned { .. }) {
+                self.feed.board("local", cmd, ticket);
+            }
         }
+        resp
     }
 
     /// One wheel tick (250 ms): grace expiry at the old 1 s cadence, settle
@@ -299,7 +321,7 @@ impl Daemon {
             .collect();
         let mut changed = false;
         for (id, change) in fired {
-            changed |= self.apply_change(id, &change, None);
+            changed |= self.apply_change(id, &change, None, None);
         }
         if self.ticks % 4 == 0 {
             changed |= self.probe_spawning();
@@ -311,6 +333,8 @@ impl Daemon {
             let _ = store::save_sessions(&self.paths, &self.board);
             self.broadcast();
         }
+        // ≤1 write() per wheel bucket, no fsync (14 §1.7).
+        let _ = self.feed.flush();
     }
 
     /// 11 §11.5.3, approximated without byte streams: a Spawning Claude pane
@@ -358,7 +382,7 @@ impl Daemon {
             let sig = mesimon_core::attention::Signal::SpawnProbe { bytes, osc0 };
             if let Some(m) = self.machines.get_mut(&id) {
                 if let Some(change) = m.apply(&sig, now) {
-                    changed |= self.apply_change(id, &change, None);
+                    changed |= self.apply_change(id, &change, None, Some("probe"));
                 }
             }
         }
@@ -390,6 +414,9 @@ impl Daemon {
 
     /// One hook frame off the ingest socket (Claude hook or tmux pane-died).
     fn on_hook(&mut self, frame: HookFrame) {
+        // Every received frame is feed-logged by NAME only — never its
+        // payload (D11: prompt text is read, never stored).
+        self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
         let Some(id) = self.resolve_session(&frame.session) else { return };
         // D32c invariant 2: the agent-originated path passes the chokepoint too.
         if let Decision::Deny { .. } = authorize(
@@ -415,7 +442,7 @@ impl Daemon {
                 .entry(id)
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
             if let Some(change) = machine.apply(&sig, now) {
-                dirty |= self.apply_change(id, &change, ingest::detail_of(&frame));
+                dirty |= self.apply_change(id, &change, ingest::detail_of(&frame), Some(&frame.event));
             }
             // Harvest done (status came in the frame) — remove the dead pane
             // remain-on-exit was holding (docs/19 §1 lifecycle).
@@ -441,7 +468,13 @@ impl Daemon {
 
     /// Fold one debounced machine transition into the session record.
     /// Returns whether anything visible changed (caller persists/broadcasts).
-    fn apply_change(&mut self, id: uuid::Uuid, change: &Change, detail: Option<String>) -> bool {
+    fn apply_change(
+        &mut self,
+        id: uuid::Uuid,
+        change: &Change,
+        detail: Option<String>,
+        hook: Option<&str>,
+    ) -> bool {
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return false;
         };
@@ -461,6 +494,17 @@ impl Daemon {
             }
             _ => rec.detail = None,
         }
+        let ticket = rec.ticket;
+        let rec_detail = rec.detail.clone();
+        self.feed.session_state(
+            id,
+            ticket,
+            &change.from,
+            &change.to,
+            change.confidence,
+            hook,
+            rec_detail.as_deref(),
+        );
         true
     }
 
