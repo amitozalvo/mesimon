@@ -20,6 +20,9 @@ const DIM: Color = Color::DarkGray;
 const ACCENT_IDLE: Color = Color::DarkGray;
 const ACCENT_LIVE: Color = Color::Blue; // placeholder for the muted secondary
 const GHOST: Color = Color::DarkGray;
+/// THE one saturated colour (D19): needs-you, and nothing else, ever.
+/// Named-ANSI until the M6 OSC-11 palette lands.
+const ACCENT_ATTN: Color = Color::Red;
 
 pub fn draw(f: &mut Frame, app: &App) {
     let outer = Layout::default()
@@ -94,12 +97,20 @@ fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         .map(|s| s.to_string_lossy().into_owned())
         .unwrap_or_default();
     let live = app.board.sessions.iter().filter(|s| s.state.is_live()).count();
-    let line = Line::from(vec![
+    let needs_you = mesimon_core::attention::attention_queue(&app.board).len();
+    let mut spans = vec![
         Span::styled("  mesimon", Style::default().fg(FG).add_modifier(Modifier::BOLD)),
         Span::styled(format!("  {repo}"), Style::default().fg(DIM)),
         Span::styled(format!("   {live} live"), Style::default().fg(DIM)),
-    ]);
-    f.render_widget(Paragraph::new(line), area);
+    ];
+    // `needs you N`, no colon (07 §2.2) — never dropped, absent only at zero.
+    if needs_you > 0 {
+        spans.push(Span::styled(
+            format!("   needs you {needs_you}"),
+            Style::default().fg(ACCENT_ATTN).add_modifier(Modifier::BOLD),
+        ));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
@@ -142,6 +153,26 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         None => tickets,
     };
 
+    // The ticket's card word: the reason of its min-rank attention session
+    // (11 §11.7.2 — ticket state is the minimum rank; low/stale never counts).
+    let attn_word = |tid: ulid::Ulid| -> Option<&'static str> {
+        use mesimon_core::attention::{is_attention, rank, reason_word};
+        use mesimon_core::board::{Confidence, SessionState};
+        app.board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.ticket == tid
+                    && is_attention(&s.state)
+                    && matches!(s.confidence, Confidence::High | Confidence::Medium)
+            })
+            .min_by_key(|s| rank(&s.state))
+            .and_then(|s| match &s.state {
+                SessionState::RequiresAction { reason } => Some(reason_word(*reason)),
+                _ => None,
+            })
+    };
+
     let render_row = |lines: &mut Vec<Line>, t: &mesimon_core::board::Ticket, selected: bool, ghosted: bool| {
         let live = app
             .board
@@ -149,15 +180,23 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             .iter()
             .filter(|s| s.ticket == t.id && s.state.is_live())
             .count();
+        let attn = if ghosted { None } else { attn_word(t.id) };
         let accent = if ghosted {
             GHOST
+        } else if attn.is_some() {
+            ACCENT_ATTN
         } else if live > 0 {
             ACCENT_LIVE
         } else {
             ACCENT_IDLE
         };
-        let dots = if live > 0 { format!(" {}", "•".repeat(live.min(4))) } else { String::new() };
-        let width = (area.width as usize).saturating_sub(3 + dots.len() + 1);
+        // The reason replaces the dots (06 §3: the reason IS the state word).
+        let suffix = match attn {
+            Some(word) => format!(" ● {word}"),
+            None if live > 0 => format!(" {}", "•".repeat(live.min(4))),
+            None => String::new(),
+        };
+        let width = (area.width as usize).saturating_sub(3 + suffix.chars().count() + 1);
         let title = truncate(&t.title, width);
         let style = if selected {
             Style::default().fg(FG).add_modifier(Modifier::REVERSED)
@@ -166,10 +205,15 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         } else {
             Style::default().fg(FG)
         };
+        let suffix_style = if attn.is_some() {
+            Style::default().fg(ACCENT_ATTN)
+        } else {
+            Style::default().fg(DIM)
+        };
         lines.push(Line::from(vec![
             Span::styled("▌ ", Style::default().fg(accent)),
             Span::styled(title, style),
-            Span::styled(dots, Style::default().fg(DIM)),
+            Span::styled(suffix, suffix_style),
         ]));
         lines.push(Line::default()); // vertical rhythm: one blank row between cards (06 §5.5)
     };
@@ -249,7 +293,7 @@ fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         Mode::Normal => {
             if app.status.is_empty() {
                 Line::from(Span::styled(
-                    " BOARD  hjkl · o new · r rename · d delete · u undo · m move · s claude · S bash · Enter open · q quit",
+                    " BOARD  hjkl · Tab needs-you · o new · r rename · d delete · u undo · m move · s claude · S bash · Enter open · q quit",
                     Style::default().fg(DIM),
                 ))
             } else {

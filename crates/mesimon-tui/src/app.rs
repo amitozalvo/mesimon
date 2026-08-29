@@ -111,6 +111,21 @@ impl App {
             return Ok(dirty);
         }
         self.status.clear();
+        // Tab / Shift+Tab: next/previous needs-you card. Global, BEFORE the
+        // mode dispatch (04/07 §21: the only exception is a text field).
+        if !matches!(self.mode, Mode::Input { .. }) {
+            match key.code {
+                KeyCode::Tab => {
+                    self.cycle_attention(false);
+                    return Ok(true);
+                }
+                KeyCode::BackTab => {
+                    self.cycle_attention(true);
+                    return Ok(true);
+                }
+                _ => {}
+            }
+        }
         match self.mode.clone() {
             Mode::Normal => self.key_normal(key.code, key.modifiers)?,
             Mode::Move { ticket, col, idx } => self.key_move(key.code, ticket, col, idx)?,
@@ -387,6 +402,32 @@ impl App {
             return Ok(());
         }
         self.refresh()
+    }
+
+    /// Jump the cursor to the next (or previous) card needing attention.
+    /// Queue order: precedence rank, then longest-waiting (daemon-minted
+    /// `waiting_since`), wrapping. Inert when nothing waits.
+    fn cycle_attention(&mut self, reverse: bool) {
+        let queue = mesimon_core::attention::attention_queue(&self.board);
+        let mut tickets: Vec<ulid::Ulid> = Vec::new();
+        for s in queue {
+            if !tickets.contains(&s.ticket) {
+                tickets.push(s.ticket);
+            }
+        }
+        if tickets.is_empty() {
+            self.status = "nothing needs you".into();
+            return;
+        }
+        self.mode = Mode::Normal;
+        let current = self.selected_ticket().map(|t| t.id);
+        let pos = current.and_then(|id| tickets.iter().position(|t| *t == id));
+        let next = match (pos, reverse) {
+            (Some(i), false) => tickets[(i + 1) % tickets.len()],
+            (Some(i), true) => tickets[(i + tickets.len() - 1) % tickets.len()],
+            (None, _) => tickets[0],
+        };
+        self.select_ticket(next);
     }
 
     /// Point the board cursor at a ticket (so Esc from the picker lands on it).
