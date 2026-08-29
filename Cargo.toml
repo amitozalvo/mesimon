@@ -1,0 +1,36 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/mesimon",
+    "crates/mesimon-core",
+    "crates/mesimon-daemon",
+    "crates/mesimon-tui",
+    "crates/mesimon-backend-tmux",
+]
+
+[workspace.package]
+version = "0.1.0-dev"
+edition = "2021"
+license = "Apache-2.0"
+repository = "https://github.com/amitozalvo/mesimon"
+rust-version = "1.85"
+
+[workspace.dependencies]
+mesimon-core = { path = "crates/mesimon-core" }
+mesimon-daemon = { path = "crates/mesimon-daemon" }
+mesimon-tui = { path = "crates/mesimon-tui" }
+mesimon-backend-tmux = { path = "crates/mesimon-backend-tmux" }
+anyhow = "1"
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.9"
+ulid = { version = "1", features = ["serde"] }
+uuid = { version = "1", features = ["v4", "serde"] }
+tracing = "0.1"
+# D22/05: exactly one unicode-width major across the workspace; CI enforces via `cargo tree -d`
+unicode-width = "0.2"
+
+[workspace.lints.clippy]
+# D26: silent degradation is banned; unwraps in non-test code are review flags
+unwrap_used = "warn"

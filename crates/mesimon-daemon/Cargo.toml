@@ -1,0 +1,18 @@
+[package]
+name = "mesimon-daemon"
+description = "mesimond — per-repo daemon: single writer of board state, session lifecycle, attention"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+mesimon-core.workspace = true
+anyhow.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tracing.workspace = true
+
+[lints]
+workspace = true

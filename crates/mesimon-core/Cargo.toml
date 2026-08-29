@@ -1,0 +1,17 @@
+[package]
+name = "mesimon-core"
+description = "Board model, reconcile(), authorize() — pure logic, no I/O"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+serde.workspace = true
+thiserror.workspace = true
+ulid.workspace = true
+uuid.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,22 @@
+[package]
+name = "mesimon"
+description = "mesimon — a terminal kanban that orchestrates coding-agent sessions"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "mesimon"
+path = "src/main.rs"
+
+[dependencies]
+mesimon-core.workspace = true
+mesimon-daemon.workspace = true
+mesimon-tui.workspace = true
+mesimon-backend-tmux.workspace = true
+anyhow.workspace = true
+
+[lints]
+workspace = true
