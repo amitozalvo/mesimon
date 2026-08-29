@@ -117,6 +117,10 @@ fn m2_attention_headless() {
     let rt_dir = paths.rt_dir.clone();
     let tmux_sock = paths.tmux_sock();
 
+    // The in-process daemon's current_exe() is the TEST binary, which has no
+    // `hook` subcommand — point the pane-died notify at the real one.
+    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+
     let daemon_repo = repo.clone();
     let daemon = std::thread::spawn(move || {
         let _ = mesimon_daemon::run_foreground(&daemon_repo);
@@ -237,6 +241,36 @@ fn m2_attention_headless() {
         parsed["hooks"].as_object().unwrap().values().map(|a| a.as_array().unwrap().len()).sum();
     assert_eq!(n, 30, "the registered set is 30 entries");
     let _ = c.request(Command::KillSession { id: claude_sid });
+
+    // pane-died: SIGKILL the process behind a fresh bash pane; the tmux hook
+    // must push exited{crashed} with no polling anywhere.
+    let sid2 = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Bash }) {
+        Response::Spawned { id } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let (board, _) = board_of(c.request(Command::Snapshot));
+    let sid16 = board.sessions.iter().find(|s| s.id == sid2).unwrap().sid16();
+    let pid_out = Proc::new("tmux")
+        .args(["-S", &tmux_sock.display().to_string(), "display-message", "-p", "-t", &sid16, "#{pane_pid}"])
+        .output()
+        .expect("tmux display-message");
+    let pid = String::from_utf8_lossy(&pid_out.stdout).trim().to_string();
+    assert!(!pid.is_empty(), "pane pid");
+    watcher.drain_events();
+    let t0 = Instant::now();
+    let _ = Proc::new("kill").args(["-9", &pid]).status().unwrap();
+    assert!(
+        watcher.next_event(Duration::from_secs(2)).is_some(),
+        "pane death must push without polling"
+    );
+    let latency = t0.elapsed();
+    let (board, _) = board_of(c.request(Command::Snapshot));
+    let rec = board.sessions.iter().find(|s| s.id == sid2).unwrap();
+    assert_eq!(
+        rec.state,
+        SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed }
+    );
+    assert!(latency < Duration::from_millis(1000), "pane-died push took {latency:?}");
 
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));

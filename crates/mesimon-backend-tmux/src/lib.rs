@@ -22,15 +22,25 @@ pub struct TmuxBackend {
 
 impl TmuxBackend {
     /// `sock` must be short enough for `sun_path` (checked); `conf_dir` holds the
-    /// generated tmux.conf (state dir — long paths fine).
-    pub fn new(sock: PathBuf, conf_dir: &Path) -> Result<Self> {
+    /// generated tmux.conf (state dir — long paths fine). `pane_died_cmd` (from
+    /// `conf::pane_died_cmd`) lands in the conf for FRESH servers only — a
+    /// running server never re-reads `-f`, so callers also issue
+    /// `install_pane_died_hook` against a live one.
+    pub fn new(sock: PathBuf, conf_dir: &Path, pane_died_cmd: Option<&str>) -> Result<Self> {
         if sock.as_os_str().len() > 100 {
             bail!("tmux socket path too long for sun_path: {}", sock.display());
         }
         std::fs::create_dir_all(conf_dir)?;
         let conf = conf_dir.join("tmux.conf");
-        std::fs::write(&conf, conf::render())?;
+        std::fs::write(&conf, conf::render(pane_died_cmd))?;
         Ok(Self { sock, conf })
+    }
+
+    /// (Re-)install the pane-died hook on a live server — idempotent, and how
+    /// a server that outlived a daemon restart learns the new binary path.
+    pub fn install_pane_died_hook(&self, cmd: &str) -> Result<()> {
+        self.run(&["set-hook", "-g", "pane-died", cmd])?;
+        Ok(())
     }
 
     fn tmux(&self) -> Command {
@@ -200,7 +210,7 @@ mod tests {
             return;
         }
         let dir = shortdir();
-        let be = TmuxBackend::new(dir.join("t.sock"), &dir).unwrap();
+        let be = TmuxBackend::new(dir.join("t.sock"), &dir, None).unwrap();
         be.spawn("abc123", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()], &[])
             .unwrap();
         let snap = be.snapshot().unwrap();

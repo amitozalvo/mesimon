@@ -10,7 +10,7 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
-use mesimon_core::attention::{self, Change, Machine};
+use mesimon_core::attention::{self, Change, Machine, Signal};
 use mesimon_core::board::{
     Board, Confidence, ExitReason, SessionKind, SessionRecord, SessionState, Ticket, UnknownReason,
 };
@@ -78,7 +78,21 @@ pub fn run(paths: Paths) -> Result<()> {
     let _ = std::fs::remove_file(&sock_path); // stale — we hold the lock
     let listener = UnixListener::bind(&sock_path).context("bind orch.sock")?;
 
-    let backend = TmuxBackend::new(paths.tmux_sock(), &paths.state_dir)?;
+    // The pane-died notify reuses the hook binary and frame (spike T-7: the
+    // hook is the ONLY timely death signal). Conf covers fresh servers; the
+    // live-server install below covers one that outlived a daemon restart.
+    let hook_bin = std::env::var("MESIMON_HOOK_BIN")
+        .map(std::path::PathBuf::from)
+        .or_else(|_| std::env::current_exe())
+        .unwrap_or_else(|_| std::path::PathBuf::from("mesimon"));
+    let pane_died = mesimon_backend_tmux::conf::pane_died_cmd(
+        &hook_bin.display().to_string(),
+        &paths.hook_sock().display().to_string(),
+    );
+    let backend = TmuxBackend::new(paths.tmux_sock(), &paths.state_dir, Some(&pane_died))?;
+    if backend.server_alive() {
+        let _ = backend.install_pane_died_hook(&pane_died);
+    }
     let mut board = store::load(&paths)?;
 
     // Reconcile persisted records against the live private server (D24).
@@ -236,10 +250,7 @@ impl Daemon {
                 }
                 Response::Hello { version: PROTOCOL_VERSION, daemon_pid: std::process::id() }
             }
-            Command::Snapshot => {
-                self.refresh_states();
-                self.snapshot()
-            }
+            Command::Snapshot => self.snapshot(),
             Command::Subscribe => {
                 self.subscribers.push(stream.clone());
                 Response::Ok
@@ -406,6 +417,13 @@ impl Daemon {
             if let Some(change) = machine.apply(&sig, now) {
                 dirty |= self.apply_change(id, &change, ingest::detail_of(&frame));
             }
+            // Harvest done (status came in the frame) — remove the dead pane
+            // remain-on-exit was holding (docs/19 §1 lifecycle).
+            if matches!(sig, Signal::PaneDied { .. }) {
+                if let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) {
+                    let _ = self.backend.kill_session(&rec.sid16());
+                }
+            }
         }
         if dirty {
             let _ = store::save_sessions(&self.paths, &self.board);
@@ -444,28 +462,6 @@ impl Daemon {
             _ => rec.detail = None,
         }
         true
-    }
-
-    /// M1 liveness: re-reconcile against the live server on every snapshot so
-    /// a session that died shows as exited without waiting for a daemon
-    /// restart. (M2 replaces the pull with the pane-died hook push.)
-    fn refresh_states(&mut self) {
-        let Ok(snap) = self.backend.snapshot() else { return };
-        let rec = reconcile(&self.board.sessions, &snap);
-        let mut changed = false;
-        for (id, link) in &rec.links {
-            if let Some(r) = self.board.sessions.iter_mut().find(|s| s.id == *id) {
-                let next = state_for(link, &r.state);
-                if next != r.state {
-                    r.state = next.clone();
-                    self.machines.insert(*id, Machine::new(next, now_ms()));
-                    changed = true;
-                }
-            }
-        }
-        if changed {
-            let _ = store::save_sessions(&self.paths, &self.board);
-        }
     }
 
     fn snapshot(&self) -> Response {
