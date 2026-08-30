@@ -1173,9 +1173,12 @@ impl Daemon {
         ) {
             return;
         }
+        // Automoved tickets land at the TOP of the destination column: the move
+        // is fresh news (just finished, just started), so it outranks whatever
+        // was already sitting there.
         let order = fracindex::between(
-            &self.board.column_tickets(dest).last().map(|t| t.order.clone()).unwrap_or_default(),
             "",
+            &self.board.column_tickets(dest).first().map(|t| t.order.clone()).unwrap_or_default(),
         );
         let Some(t) = self.board.ticket_mut(ticket) else { return };
         t.column = dest.to_string();

@@ -146,8 +146,10 @@ fn m2_attention_headless() {
     assert!(matches!(watcher.request(Command::Subscribe), Response::Ok));
 
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "attn".into() });
+    // A pre-existing REVIEW ticket: automoved arrivals must land ABOVE it.
+    let _ = c.request(Command::CreateTicket { column: "REVIEW".into(), title: "decoy".into() });
     let (board, _) = board_of(c.request(Command::Snapshot));
-    let ticket = board.tickets[0].id;
+    let ticket = board.tickets.iter().find(|t| t.title == "attn").expect("ticket").id;
 
     // A bash session stands in for the agent pane; hook frames come from us.
     let sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Bash }) {
@@ -225,6 +227,11 @@ fn m2_attention_headless() {
                 rec.state,
                 SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
             );
+            // Automoved tickets land at the TOP of the destination column,
+            // above the pre-existing decoy.
+            let review: Vec<_> = board.column_tickets("REVIEW").iter().map(|t| t.id).collect();
+            assert_eq!(review.first(), Some(&ticket), "automove must land at top of REVIEW");
+            assert_eq!(review.len(), 2, "decoy still in REVIEW");
             break;
         }
         assert!(Instant::now() < deadline, "end_turn never automoved the ticket to REVIEW");
