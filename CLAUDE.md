@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-**mesimon** (repo dir is `kanban-tui`; the product name is mesimon) — a Rust terminal kanban that
+**mesimon** — a Rust terminal kanban that
 orchestrates many coding-agent sessions behind a per-repo daemon and a private tmux server.
 Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), M2 (attention), M3 (adoption +
 resources), M3.5 (design foundation), and M4a (per-ticket worktrees + the staged merge flow)
