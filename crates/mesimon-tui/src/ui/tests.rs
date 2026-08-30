@@ -52,6 +52,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         // Epoch-adjacent so the identity line's age renders a stable `>1y`.
         created_at: "1970-01-01T00:00:00Z".into(),
         workspace: None,
+        archived: None,
     }
 }
 
@@ -143,6 +144,17 @@ fn golden(name: &str, lines: &[String]) {
 
 fn app_graphite(board: Board) -> App {
     App::for_test(board, Theme::new(Flavor::Graphite, Profile::TrueColor))
+}
+
+/// The fixture with T-7 (done, sleeping bash) archived — off the board, in
+/// the dialog, badge on its ticket page. Stable stamp so ages render `>1y`.
+fn fixture_archived() -> Board {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(7)) {
+        t.archived =
+            Some(mesimon_core::board::Archived { at: "@100".into(), by: "local".into() });
+    }
+    b
 }
 
 /// Install a deterministic diff view on ticket 3 and enter `Screen::Diff`.
@@ -281,6 +293,29 @@ fn golden_spine_100() {
     let mut app = app_graphite(fixture(true));
     app.cursor_col = 0;
     golden("board_spine_100x24", &render(&app, 100, 24));
+}
+
+#[test]
+fn golden_archived_board_120() {
+    // T-7 gone from done, header counts 6, the archive offer in the header.
+    let mut app = app_graphite(fixture_archived());
+    app.resources.archive_tickets = 1;
+    golden("board_archived_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_archived_dialog_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Archived { idx: 0 };
+    golden("board_archived_dialog_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_ticket_archived_120() {
+    // The identity line carries the archived badge; A restores from here.
+    let mut app = app_graphite(fixture_archived());
+    app.screen = Screen::Ticket { ticket: ulid_n(7), rail_idx: 0 };
+    golden("ticket_archived_120x30", &render(&app, 120, 30));
 }
 
 #[test]
@@ -586,12 +621,15 @@ const ATTN_GRAPHITE: Color = Color::Rgb(0xF0, 0xA9, 0x3A);
 fn test_attn_provenance_calm() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
-    let buf = cells(&app, 120, 30);
-    for y in 0..30 {
-        for x in 0..120 {
-            let c = &buf[(x, y)];
-            assert_ne!(c.fg, ATTN_GRAPHITE, "attn fg at {x},{y} on a calm board");
-            assert_ne!(c.bg, ATTN_GRAPHITE, "attn bg at {x},{y} on a calm board");
+    let mut arch = app_graphite(fixture_archived());
+    arch.mode = Mode::Archived { idx: 0 };
+    for buf in [cells(&app, 120, 30), cells(&arch, 120, 30)] {
+        for y in 0..30 {
+            for x in 0..120 {
+                let c = &buf[(x, y)];
+                assert_ne!(c.fg, ATTN_GRAPHITE, "attn fg at {x},{y} on a calm board");
+                assert_ne!(c.bg, ATTN_GRAPHITE, "attn bg at {x},{y} on a calm board");
+            }
         }
     }
 }
@@ -638,8 +676,11 @@ fn test_no_banned_sgr() {
     ] {
         let mut app = App::for_test(fixture(true), Theme::new(flavor, profile));
         app.cursor_col = 1;
+        let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, profile));
+        arch.mode = Mode::Archived { idx: 0 };
         for buf in [
             cells(&app, 120, 30),
+            cells(&arch, 120, 30),
             {
                 app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
                 cells(&app, 120, 30)
@@ -669,8 +710,11 @@ fn test_no_banned_sgr() {
 fn test_no_drawn_structure() {
     let mut app = app_graphite(fixture(true));
     app.cursor_col = 1;
+    let mut arch = app_graphite(fixture_archived());
+    arch.mode = Mode::Archived { idx: 0 };
     let screens: Vec<Vec<String>> = vec![
         render(&app, 120, 30),
+        render(&arch, 120, 30),
         {
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
             render(&app, 120, 30)

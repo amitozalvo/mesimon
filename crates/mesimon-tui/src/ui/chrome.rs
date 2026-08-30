@@ -48,8 +48,8 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let r = &app.resources;
     // Board contents, not process stats (author 2026-08-30): the count is
     // tickets on the board. Grace-band deletions are already out of
-    // `board.tickets`; archived doesn't exist until v0.2.
-    let n_tickets = app.board.tickets.len();
+    // `board.tickets`; archived tickets stay in it but are off the board.
+    let n_tickets = app.board.tickets.iter().filter(|t| !t.is_archived()).count();
     let noun = if n_tickets == 1 { "ticket" } else { "tickets" };
     let mut spans = breadcrumb(app);
     spans.push(Span::styled(format!("   {n_tickets} {noun}"), theme.dim2()));
@@ -78,6 +78,14 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         let free = r.reclaim_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         spans.push(Span::styled(
             format!(" ∙ free ~{free:.1}GiB (Z sleeps {} in done)", r.reclaim_sessions),
+            theme.dim2(),
+        ));
+    }
+    // The archive suggestion, same shape: tickets whose sessions all sleep
+    // untouched past the hour — an offer, never an action.
+    if r.archive_tickets > 0 {
+        spans.push(Span::styled(
+            format!(" ∙ {} to archive (A on the card)", r.archive_tickets),
             theme.dim2(),
         ));
     }
@@ -142,6 +150,9 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         }
         Mode::External { .. } => {
             mode_line(app, "EXTERNAL", "jk ∙ a import ∙ R import + resume ∙ esc back")
+        }
+        Mode::Archived { .. } => {
+            mode_line(app, "ARCHIVED", "jk ∙ enter open ∙ A restore ∙ esc back")
         }
         Mode::Normal => {
             if app.status.is_empty() {
@@ -220,5 +231,66 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
         " jk ∙ a import ∙ R import + resume ∙ esc",
         theme.dim2(),
     )));
+    f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The archived-tickets dialog (V): restore or open. Same popup treatment as
+/// the External drawer — no drawn structure, grey ramp only.
+pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
+    let theme = &app.theme;
+    let archived = app.board.archived_tickets();
+    if archived.is_empty() {
+        return;
+    }
+    let idx = idx.min(archived.len() - 1);
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_millis() as u64)
+        .unwrap_or(0);
+    let w = 64.min(f.area().width.saturating_sub(4));
+    let h = ((archived.len() as u16) + 4).min(f.area().height.saturating_sub(2));
+    let area = Rect {
+        x: (f.area().width.saturating_sub(w)) / 2,
+        y: (f.area().height.saturating_sub(h)) / 2,
+        width: w,
+        height: h,
+    };
+    f.render_widget(ratatui::widgets::Clear, area);
+    if let Some(bg) = theme.bg {
+        f.render_widget(
+            ratatui::widgets::Block::default().style(Style::default().bg(bg)),
+            area,
+        );
+    }
+    let mut lines: Vec<Line> = Vec::new();
+    lines.push(Line::from(Span::styled(
+        format!(" archived — {}", archived.len()),
+        theme.dim1().add_modifier(Modifier::BOLD),
+    )));
+    lines.push(Line::default());
+    for (i, t) in archived.iter().enumerate() {
+        // Archive age from the `@<secs>` stamp; unparsable stamps show no age.
+        let age = t
+            .archived
+            .as_ref()
+            .and_then(|a| a.at.strip_prefix('@'))
+            .and_then(|s| s.parse::<u64>().ok())
+            .map(|secs| crate::text::age_slot(now, secs * 1000, false))
+            .unwrap_or_default();
+        let head = format!(
+            " {}  {} ∙ {} ∙ {}",
+            t.short_key,
+            truncate(&t.title, 28),
+            t.column,
+            age
+        );
+        let style = if i == idx {
+            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else {
+            theme.base()
+        };
+        lines.push(Line::from(Span::styled(head, style)));
+    }
+    lines.push(Line::from(Span::styled(" jk ∙ enter open ∙ A restore ∙ esc", theme.dim2())));
     f.render_widget(Paragraph::new(lines), area);
 }

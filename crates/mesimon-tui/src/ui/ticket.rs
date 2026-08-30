@@ -80,6 +80,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // resting branch-state hint for a beat — same spot, so the conversation
     // with the merge key happens in one place, never in the footer.
     let note = (!app.merge_note.is_empty()).then(|| crate::text::one_line(&app.merge_note));
+    if ticket.is_archived() {
+        // Grey ramp only — archived is the quiet condition, not an alarm.
+        ident_spans.push(Span::styled(" ∙ archived ∙ A restores", theme.dim1()));
+    }
     if let Some(w) = app.wt_item(ticket.id) {
         // Quiet-tickets rule: a mid-turn agent blocks the merge, so the hint
         // withholds the key (the count still shows what's waiting).

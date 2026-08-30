@@ -13,8 +13,8 @@ use anyhow::{Context, Result};
 use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool};
 use mesimon_core::attention::{self, Change, Machine, Signal, TailHint};
 use mesimon_core::board::{
-    Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState, Ticket,
-    UnknownReason, WorkspaceStrategy,
+    Archived, Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState,
+    Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     Command, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Resources, Response,
@@ -60,6 +60,9 @@ const PANE_QUIET_MS: u64 = 8_000;
 /// sleep suggestion. Interim hardcode — becomes a per-column sleep policy
 /// (`never|offer|auto`) with M5's column policies.
 const SLEEP_SAFE_COLUMN: &str = "DONE";
+/// A sleep-safe ticket whose sessions have all been asleep this long feeds
+/// the header's archive suggestion (same offer-not-action shape as sleep).
+const ARCHIVE_SUGGEST_MS: u64 = 3_600_000;
 
 struct GraceEntry {
     ticket: Ticket,
@@ -108,6 +111,10 @@ pub struct Daemon {
     /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
+    /// Tickets currently archive-suggestable — recomputed on the 1 s bucket
+    /// (NOT the RSS bucket: refresh_rss early-returns when no pane exists,
+    /// which is exactly the all-asleep scenario archive looks for).
+    archive_cache: usize,
     /// Recounted at startup and immediately before each spawn (14 §5.1).
     pty_cache: crate::resources::PtyFigures,
     /// Last breadcrumb pushed into the tmux status line — dedupes the
@@ -290,6 +297,7 @@ pub fn run(paths: Paths) -> Result<()> {
         rss_cache: (0, 0),
         rss_by: HashMap::new(),
         reclaim_cache: (0, 0),
+        archive_cache: 0,
         pty_cache: crate::resources::pty_figures(),
         last_status_left: None,
         focus_label: String::new(),
@@ -529,6 +537,8 @@ impl Daemon {
             Command::MergeTicket { id } => Some(("merge_ticket", Some(*id))),
             Command::MergeToAgent { id, .. } => Some(("merge_to_agent", Some(*id))),
             Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
+            Command::ArchiveTicket { id } => Some(("archive_ticket", Some(*id))),
+            Command::UnarchiveTicket { id } => Some(("unarchive_ticket", Some(*id))),
             Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
             Command::KillSession { .. } => Some(("kill_session", None)),
@@ -572,6 +582,8 @@ impl Daemon {
             Command::MergeTicket { id } => self.merge_ticket(id),
             Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
             Command::RestoreTicket { id } => self.restore_ticket(id),
+            Command::ArchiveTicket { id } => self.archive_ticket(id),
+            Command::UnarchiveTicket { id } => self.unarchive_ticket(id),
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
             Command::SpawnSession { ticket, kind } => self.spawn_session(ticket, kind),
             Command::KillSession { id } => self.kill_session(id),
@@ -693,6 +705,11 @@ impl Daemon {
         if self.ticks % 4 == 0 {
             changed |= self.probe_spawning();
             changed |= self.probe_activity();
+            let a = self.archive_figures();
+            if a != self.archive_cache {
+                self.archive_cache = a;
+                changed = true;
+            }
         }
         if self.ticks % TAIL_POLL_TICKS == 0 {
             changed |= self.poll_tails();
@@ -1130,6 +1147,11 @@ impl Daemon {
         confidence: Confidence,
     ) {
         let Some(t) = self.board.ticket(ticket) else { return };
+        // Archived tickets never move (defensive — an Unknown-tier re-derive
+        // after a daemon restart could still emit a transition).
+        if t.is_archived() {
+            return;
+        }
         let Some(dest) = mesimon_core::automove::automove(&t.column, to, confidence) else {
             return;
         };
@@ -1221,6 +1243,7 @@ impl Daemon {
             pty_budget: self.pty_cache.budget,
             reclaim_bytes: self.reclaim_cache.0,
             reclaim_sessions: self.reclaim_cache.1,
+            archive_tickets: self.archive_cache,
         }
     }
 
@@ -1293,6 +1316,35 @@ impl Daemon {
             }
         }
         (bytes, n)
+    }
+
+    /// The header's archive suggestion: sleep-safe tickets whose sessions are
+    /// all asleep (the exact predicate the A key gates on — the suggestion
+    /// never offers what the keystroke would refuse) and have been for the
+    /// hour threshold. Pure board scan, no forks — cheap enough for the 1 s
+    /// bucket, which it must use: the RSS bucket's no-pane early-return fires
+    /// precisely when archive candidates exist.
+    fn archive_figures(&self) -> usize {
+        let now = now_ms();
+        let threshold = archive_suggest_ms();
+        self.board
+            .tickets
+            .iter()
+            .filter(|t| !t.is_archived() && t.column == SLEEP_SAFE_COLUMN)
+            .filter(|t| {
+                let sleeping: Vec<_> = self
+                    .board
+                    .sessions
+                    .iter()
+                    .filter(|s| s.ticket == t.id && matches!(s.state, SessionState::Sleeping))
+                    .collect();
+                !sleeping.is_empty()
+                    && self.board.ticket_awake_sessions(t.id) == 0
+                    && sleeping.iter().all(|s| {
+                        s.state_changed_at.is_some_and(|at| now.saturating_sub(at) >= threshold)
+                    })
+            })
+            .count()
     }
 
     /// The D33e spawn gate: refuse only at the OS boundary, naming the reason.
@@ -1389,6 +1441,7 @@ impl Daemon {
             order: fracindex::between(&last, ""),
             created_at: now_iso(),
             workspace: None,
+            archived: None,
         };
         let id = t.id;
         let _ = store::save_ticket(&self.paths, &t);
@@ -1596,6 +1649,66 @@ impl Daemon {
         Response::Ok
     }
 
+    /// Archive: off the board, everything kept (ticket file, sleeping
+    /// sessions, worktree binding + branch). Gated on the ticket holding no
+    /// pane — archive means everything is already asleep.
+    fn archive_ticket(&mut self, id: ulid::Ulid) -> Response {
+        match self.board.ticket(id) {
+            None => return Response::Err { message: "no such ticket".into() },
+            Some(t) if t.is_archived() => {
+                return Response::Err { message: "already archived".into() }
+            }
+            Some(_) => {}
+        }
+        if self.board.ticket_awake_sessions(id) > 0 {
+            return Response::Err { message: "sessions still awake — sleep them first".into() };
+        }
+        let at = now_iso();
+        let resp = self
+            .with_ticket(id, |t| t.archived = Some(Archived { at, by: "local".into() }))
+            .unwrap_or(Response::Err { message: "no such ticket".into() });
+        // Re-price now — a taken offer must not linger until the next bucket.
+        self.archive_cache = self.archive_figures();
+        resp
+    }
+
+    /// Restore lands in the column the ticket was archived from — `column`
+    /// and `order` survived archival untouched.
+    fn unarchive_ticket(&mut self, id: ulid::Ulid) -> Response {
+        match self.board.ticket(id) {
+            None => return Response::Err { message: "no such ticket".into() },
+            Some(t) if !t.is_archived() => {
+                return Response::Err { message: "not archived".into() }
+            }
+            Some(_) => {}
+        }
+        // Guard the landing column (fixed template today; policies in M5).
+        let fallback = {
+            let t = self.board.ticket(id).expect("checked above");
+            if self.board.columns.iter().any(|c| c.name == t.column) {
+                None
+            } else {
+                self.board.sorted_columns().first().map(|c| c.name.clone()).map(|col| {
+                    let tail = self
+                        .board
+                        .column_tickets(&col)
+                        .last()
+                        .map(|t| t.order.clone())
+                        .unwrap_or_default();
+                    (col, fracindex::between(&tail, ""))
+                })
+            }
+        };
+        self.with_ticket(id, |t| {
+            t.archived = None;
+            if let Some((col, order)) = fallback {
+                t.column = col;
+                t.order = order;
+            }
+        })
+        .unwrap_or(Response::Err { message: "no such ticket".into() })
+    }
+
     fn expire_grace(&mut self) {
         let now = Instant::now();
         let expired: Vec<ulid::Ulid> =
@@ -1670,6 +1783,9 @@ impl Daemon {
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
         }
+        if self.board.ticket(id).is_some_and(|t| t.is_archived()) {
+            return Response::Err { message: "ticket archived — restore it first".into() };
+        }
         // M4 DONE gate (author rule 3): DONE means the work landed — an
         // unmerged worktree blocks the move. (Configurable later; magic now.)
         if column == "DONE" {
@@ -1717,6 +1833,10 @@ impl Daemon {
     fn spawn_session(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Response {
         if self.board.ticket(ticket).is_none() {
             return Response::Err { message: "no such ticket".into() };
+        }
+        // An archived ticket must not grow a live pane no board surface shows.
+        if self.board.ticket(ticket).is_some_and(|t| t.is_archived()) {
+            return Response::Err { message: "ticket archived — restore it first".into() };
         }
         if let Some(message) = self.spawn_gate() {
             return Response::Err { message };
@@ -2239,6 +2359,9 @@ impl Daemon {
         if rec.kind != SessionKind::Claude {
             return Response::Err { message: "only claude sessions resume".into() };
         }
+        if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
+            return Response::Err { message: "ticket archived — restore it first".into() };
+        }
         if rec.state.has_pane() && !matches!(rec.state, SessionState::Unknown { .. }) {
             // Live states keep their pane; resuming over it would double-run.
             if !rec.argv.is_empty() {
@@ -2383,6 +2506,9 @@ impl Daemon {
         };
         if !matches!(rec.state, SessionState::Sleeping) {
             return Response::Err { message: "not asleep".into() };
+        }
+        if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
+            return Response::Err { message: "ticket archived — restore it first".into() };
         }
         match rec.kind {
             SessionKind::Claude => self.resume_session(id, false),
@@ -2624,6 +2750,14 @@ fn sleep_min_age_ms() -> u64 {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SLEEP_MIN_AGE_MS)
+}
+
+/// Test seam only — e2e cannot wait out the real hour.
+fn archive_suggest_ms() -> u64 {
+    std::env::var("MESIMON_ARCHIVE_SUGGEST_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(ARCHIVE_SUGGEST_MS)
 }
 
 /// Test seam only — e2e cannot spend 8 real seconds per quiet verdict.

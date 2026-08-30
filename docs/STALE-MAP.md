@@ -677,3 +677,28 @@ Plan §H's adjudications, recorded at ship:
 - **FILES pane widens to 36 at ≥140 cols** (08 §10.2's outline width; 28 below), and the
   selected row's overflowing path reveals marquee-style — same clock behaviour as the board
   card title and the ticket rail (`DiffState.marquee`, reset on landing).
+
+## Archive is A/V (2026-08-30, T-46)
+
+Archive shipped as docs/13 §data-model specifies — `[archived] {at, by}` is a FIELD on
+`ticket.toml`, never a directory move, undo class REVERSIBLE — with one deviation: `by` is
+always `"local"` (v0.1 has no user@host/clone actor plumbing). Archived tickets stay in
+`board.tickets` and every snapshot; `Board::column_tickets` is the one chokepoint that hides
+them from the board, so the ticket page keeps rendering an archived ticket (badge
+`∙ archived ∙ A restores` on the identity line). Restore is exact: `column` and `order`
+survive archival untouched.
+
+Keymap (04 unaware; its `Space t a` leader at 04:1185 and 07 §13.4's `z A` toggle are both
+unbuilt — the M6 sweep stands): BOARD/TICKET `A` archives (on an archived ticket's page `A`
+restores), BOARD `V` opens the archived-list dialog (`jk`/`enter` opens the ticket page/`A`
+restores/`esc`). Gate: refused while any session of the ticket `has_pane()` — sleep everything
+first; Sleeping/Exited pass, zero-session tickets pass. Unmerged worktrees do NOT block
+archive (reversible, binding + branch persist; 12's `on_ticket_archive = "evict"` deferred).
+Spawn/wake/resume/move on an archived ticket refuse with "ticket archived — restore it first".
+
+Header suggestion mirrors the sleep offer (same predicate as the keystroke): DONE tickets
+whose sessions are all `Sleeping` past `ARCHIVE_SUGGEST_MS` (1 h; seam
+`MESIMON_ARCHIVE_SUGGEST_MS`) price ` ∙ N to archive (A on the card)`. Computed on the 1 s
+tick bucket, deliberately NOT in `refresh_rss` — its no-pane early-return fires exactly when
+archive candidates exist. chrome.rs's old "archived doesn't exist until v0.2" header comment
+is refuted; the header count now excludes archived tickets.

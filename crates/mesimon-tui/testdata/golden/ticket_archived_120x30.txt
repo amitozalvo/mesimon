@@ -1,0 +1,30 @@
+ mesimon > kanban-tui > Painted accent bar
+
+ DONE ∙ created by you >1y ago ∙ archived ∙ A restores
+
+
+  DOCUMENTS                                                                         (0)    SESSIONS                  1
+
+    drop files into this ticket's directory                                               z $ bash                 >1y
+    ticket directories land with the adoption IA (M4)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ TICKET  jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ esc board

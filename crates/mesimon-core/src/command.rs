@@ -47,6 +47,11 @@ pub enum Command {
     MergeToAgent { id: ulid::Ulid, request: MergeRequest },
     /// Undo within the grace band.
     RestoreTicket { id: ulid::Ulid },
+    /// Off the board, kept on disk (13: a field, not a directory move).
+    /// Refused while any session holds a pane — archive means everything
+    /// is asleep. Reversible: `UnarchiveTicket` restores to the same column.
+    ArchiveTicket { id: ulid::Ulid },
+    UnarchiveTicket { id: ulid::Ulid },
     MoveTicket { id: ulid::Ulid, column: String, before: Option<ulid::Ulid> },
     SpawnSession { ticket: ulid::Ulid, kind: SessionKind },
     KillSession { id: uuid::Uuid },
@@ -241,6 +246,10 @@ pub struct Resources {
     pub reclaim_bytes: u64,
     #[serde(default)]
     pub reclaim_sessions: usize,
+    /// The header's archive suggestion: tickets whose sessions are all asleep
+    /// and untouched past the hour threshold. Zero tickets = no suggestion.
+    #[serde(default)]
+    pub archive_tickets: usize,
 }
 
 /// Pushed to subscribed clients whenever board state changes.

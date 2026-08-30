@@ -68,4 +68,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::External { idx } = &app.mode {
         chrome::draw_drawer(f, app, *idx);
     }
+    if let Mode::Archived { idx } = &app.mode {
+        chrome::draw_archived(f, app, *idx);
+    }
 }

@@ -71,6 +71,8 @@ pub enum Mode {
     Input { purpose: InputPurpose, buffer: EditBuffer },
     /// External drawer: discovered foreign sessions (19 §4 tier 1).
     External { idx: usize },
+    /// Archived-tickets dialog (V): restore or open from here.
+    Archived { idx: usize },
 }
 
 /// The m key's staged progression (author 2026-08-30): each press shows what
@@ -362,6 +364,12 @@ impl App {
 
     /// A refresh can delete the ticket the ticket screen shows.
     fn clamp_screen(&mut self) {
+        // Same for the archived dialog: a restore (here or from another
+        // client) can empty the list under it.
+        if matches!(self.mode, Mode::Archived { .. }) && self.board.archived_tickets().is_empty()
+        {
+            self.mode = Mode::Normal;
+        }
         match &self.screen {
             Screen::Ticket { ticket, rail_idx } => {
                 if self.board.ticket(*ticket).is_none() {
@@ -532,6 +540,7 @@ impl App {
                 self.key_move(code, ticket, col, idx, grab, home)?
             }
             Mode::External { idx } => self.key_external(code, idx)?,
+            Mode::Archived { idx } => self.key_archived(code, idx)?,
             Mode::Input { .. } => {} // handled above
         }
         Ok(())
@@ -628,6 +637,19 @@ impl App {
                 }
             }
             KeyCode::Char('e') => self.open_drawer()?,
+            KeyCode::Char('A') => {
+                if let Some(t) = self.selected_ticket() {
+                    let id = t.id;
+                    self.archive_gated(id)?;
+                }
+            }
+            KeyCode::Char('V') => {
+                if self.board.archived_tickets().is_empty() {
+                    self.status = "no archived tickets".into();
+                } else {
+                    self.mode = Mode::Archived { idx: 0 };
+                }
+            }
             // Transcript peek toggle. Doc 04's BOARD `p` (duplicate-yanked) is
             // unimplemented; peek borrows the INBOX mnemonic until the M6
             // keymap pass (STALE-MAP, M3.5 deviations).
@@ -806,6 +828,15 @@ impl App {
             KeyCode::Char('m') => self.merge_key(ticket)?,
             // M4b: read-only diff viewer on any ticket with a binding.
             KeyCode::Char('v') => self.open_diff(ticket, rail_idx)?,
+            // A toggles archive here: the page keeps showing the ticket either
+            // way (archived tickets stay in the snapshot), only the badge moves.
+            KeyCode::Char('A') => {
+                if self.board.ticket(ticket).is_some_and(|t| t.is_archived()) {
+                    self.unarchive(ticket)?;
+                } else {
+                    self.archive_gated(ticket)?;
+                }
+            }
             _ => {}
         }
         Ok(())
@@ -1257,6 +1288,61 @@ impl App {
         }
     }
 
+    /// Archive with the advisory pre-check (the daemon gates again): archive
+    /// means everything is already asleep — the same predicate the header
+    /// suggestion prices.
+    fn archive_gated(&mut self, id: ulid::Ulid) -> Result<()> {
+        if self.board.ticket_awake_sessions(id) > 0 {
+            self.status = "sessions awake — sleep them first (z)".into();
+            return Ok(());
+        }
+        let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
+        match self.req(Command::ArchiveTicket { id }) {
+            Response::Err { message } => self.status = message,
+            _ => self.status = format!("archived {key} ∙ V lists ∙ A restores"),
+        }
+        self.refresh()
+    }
+
+    fn unarchive(&mut self, id: ulid::Ulid) -> Result<()> {
+        let col = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
+        match self.req(Command::UnarchiveTicket { id }) {
+            Response::Err { message } => self.status = message,
+            _ => self.status = format!("restored to {col}"),
+        }
+        self.refresh()
+    }
+
+    fn key_archived(&mut self, code: KeyCode, idx: usize) -> Result<()> {
+        let list: Vec<ulid::Ulid> = self.board.archived_tickets().iter().map(|t| t.id).collect();
+        if list.is_empty() {
+            self.mode = Mode::Normal;
+            return Ok(());
+        }
+        let idx = idx.min(list.len() - 1);
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('V') => self.mode = Mode::Normal,
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.mode = Mode::Archived { idx: (idx + 1).min(list.len() - 1) };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.mode = Mode::Archived { idx: idx.saturating_sub(1) };
+            }
+            KeyCode::Char('A') => {
+                // Stay in the dialog; the empty-guard above closes it when the
+                // last ticket leaves.
+                self.mode = Mode::Archived { idx };
+                self.unarchive(list[idx])?;
+            }
+            KeyCode::Enter => {
+                self.mode = Mode::Normal;
+                self.screen = Screen::Ticket { ticket: list[idx], rail_idx: 0 };
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn key_move(
         &mut self,
         code: KeyCode,
@@ -1601,6 +1687,7 @@ pub(crate) mod test_support {
                         order: "zzzz".into(),
                         created_at: "1970-01-01T00:00:00Z".into(),
                         workspace: None,
+                        archived: None,
                     });
                     return Ok(Response::Created { id });
                 }
@@ -1667,6 +1754,38 @@ pub(crate) mod test_support {
                     }
                     Ok(Response::Ok)
                 }
+                // Mirror the daemon's gate so the refusal path is testable.
+                Command::ArchiveTicket { id } => {
+                    if self
+                        .board
+                        .sessions
+                        .iter()
+                        .any(|s| s.ticket == id && s.state.has_pane())
+                    {
+                        return Ok(Response::Err {
+                            message: "sessions still awake — sleep them first".into(),
+                        });
+                    }
+                    match self.board.tickets.iter_mut().find(|t| t.id == id) {
+                        Some(t) => {
+                            t.archived = Some(mesimon_core::board::Archived {
+                                at: "@1000".into(),
+                                by: "local".into(),
+                            });
+                            Ok(Response::Ok)
+                        }
+                        None => Ok(Response::Err { message: "no such ticket".into() }),
+                    }
+                }
+                Command::UnarchiveTicket { id } => {
+                    match self.board.tickets.iter_mut().find(|t| t.id == id) {
+                        Some(t) => {
+                            t.archived = None;
+                            Ok(Response::Ok)
+                        }
+                        None => Ok(Response::Err { message: "no such ticket".into() }),
+                    }
+                }
                 _ => Ok(Response::Ok),
             }
         }
@@ -1719,6 +1838,7 @@ mod tests {
             order: order.into(),
             created_at: "1970-01-01T00:00:00Z".into(),
             workspace: None,
+            archived: None,
         }
     }
 
@@ -2089,5 +2209,83 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
         assert!(app.board.column_tickets("doing").is_empty());
         assert_eq!(app.board.column_tickets("todo").len(), 2);
+    }
+
+    #[test]
+    fn archive_key_removes_ticket_from_board() {
+        let mut app = app_three_columns();
+        press(&mut app, 'A'); // ticket 1 selected, no sessions — gate passes
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(2)]);
+        assert_eq!(app.board.archived_tickets().len(), 1);
+        assert!(app.status.starts_with("archived T-1"));
+        // Cursor clamped onto the surviving row.
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+    }
+
+    #[test]
+    fn archive_refused_while_sessions_awake() {
+        let mut app = app_three_columns();
+        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Running,
+        ));
+        press(&mut app, 'A');
+        assert_eq!(app.status, "sessions awake — sleep them first (z)");
+        // Advisory fired client-side; nothing was sent, nothing archived.
+        assert_eq!(app.board.column_tickets("todo").len(), 2);
+        assert!(app.board.archived_tickets().is_empty());
+    }
+
+    #[test]
+    fn archived_dialog_restores_to_same_column() {
+        let mut app = app_three_columns();
+        app.cursor_col = 2; // "done", ticket 3
+        press(&mut app, 'A');
+        assert!(app.board.column_tickets("done").is_empty());
+        press(&mut app, 'V');
+        assert!(matches!(app.mode, Mode::Archived { idx: 0 }));
+        press(&mut app, 'A'); // restore
+        // Restoring the last archived ticket closes the dialog on refresh.
+        assert!(matches!(app.mode, Mode::Normal));
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(done, vec![ulid::Ulid(3)]);
+        assert!(app.status.starts_with("restored to done"));
+    }
+
+    #[test]
+    fn v_on_empty_archive_is_status_only() {
+        let mut app = app_three_columns();
+        press(&mut app, 'V');
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "no archived tickets");
+    }
+
+    #[test]
+    fn archived_dialog_enter_opens_ticket_screen() {
+        let mut app = app_three_columns();
+        press(&mut app, 'A');
+        press(&mut app, 'V');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid::Ulid(1)));
+    }
+
+    #[test]
+    fn ticket_page_a_toggles_archive() {
+        let mut app = app_three_columns();
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'A');
+        // The page keeps showing the archived ticket (still in the snapshot).
+        assert!(matches!(app.screen, Screen::Ticket { .. }));
+        assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
+        press(&mut app, 'A');
+        assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
     }
 }

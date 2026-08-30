@@ -238,6 +238,21 @@ pub struct Ticket {
     /// default. Must stay after the scalar fields (TOML serialize order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceStrategy>,
+    /// Archival is a field, not a directory move (13 §data-model) — the ticket
+    /// keeps its column and order, so restore is exact. Must stay last: a TOML
+    /// table; any scalar serialized after it errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub archived: Option<Archived>,
+}
+
+/// The `[archived]` table on a ticket. Presence = off the board.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Archived {
+    /// Same clock as `created_at` (`@<unix secs>`).
+    pub at: String,
+    /// Actor. v0.1 has no user@host plumbing — always "local" (STALE-MAP).
+    #[serde(default)]
+    pub by: String,
 }
 
 /// M4 (supersedes D25's column-only enum): how a ticket's sessions get a cwd.
@@ -261,6 +276,10 @@ impl Ticket {
     /// Layered resolution: ticket field, else the board default (column default is M5).
     pub fn workspace_strategy(&self) -> WorkspaceStrategy {
         self.workspace.unwrap_or(DEFAULT_WORKSPACE)
+    }
+
+    pub fn is_archived(&self) -> bool {
+        self.archived.is_some()
     }
 }
 
@@ -297,10 +316,34 @@ impl Board {
     }
 
     /// Tickets of one column, sorted by fractional order (ties by id for stability).
+    /// Archived tickets stay in `tickets` (the ticket page needs them in the
+    /// snapshot) but never surface here — this is the board's one chokepoint.
     pub fn column_tickets(&self, column: &str) -> Vec<&Ticket> {
-        let mut v: Vec<&Ticket> = self.tickets.iter().filter(|t| t.column == column).collect();
+        let mut v: Vec<&Ticket> = self
+            .tickets
+            .iter()
+            .filter(|t| t.column == column && !t.is_archived())
+            .collect();
         v.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
         v
+    }
+
+    /// Archived tickets, newest archive first (`at` stamps sort as strings).
+    pub fn archived_tickets(&self) -> Vec<&Ticket> {
+        let mut v: Vec<&Ticket> = self.tickets.iter().filter(|t| t.is_archived()).collect();
+        v.sort_by(|a, b| {
+            let ka = a.archived.as_ref().map(|x| x.at.as_str()).unwrap_or("");
+            let kb = b.archived.as_ref().map(|x| x.at.as_str()).unwrap_or("");
+            kb.cmp(ka).then(a.id.cmp(&b.id))
+        });
+        v
+    }
+
+    /// Sessions of the ticket that hold (or should hold) a pane. The archive
+    /// gate, its TUI advisory, and the header suggestion all share this — the
+    /// suggestion never offers what the keystroke would refuse.
+    pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
+        self.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).count()
     }
 
     pub fn sorted_columns(&self) -> Vec<&Column> {
@@ -364,6 +407,47 @@ mod tests {
         assert_eq!(rec.provenance, Provenance::Spawned);
         assert!(rec.claude_session_id.is_none());
         assert!(!rec.pinned_awake);
+    }
+
+    fn ticket(id: u128, column: &str, order: &str) -> Ticket {
+        Ticket {
+            id: ulid::Ulid(id),
+            short_key: format!("T-{id}"),
+            title: "t".into(),
+            column: column.into(),
+            order: order.into(),
+            created_at: "@0".into(),
+            workspace: None,
+            archived: None,
+        }
+    }
+
+    /// Archived tickets stay in `tickets` but never surface on the board.
+    #[test]
+    fn column_tickets_excludes_archived() {
+        let mut b = Board::with_default_columns();
+        b.tickets.push(ticket(1, "DONE", "a"));
+        let mut t = ticket(2, "DONE", "b");
+        t.archived = Some(Archived { at: "@10".into(), by: "local".into() });
+        b.tickets.push(t);
+        let done: Vec<_> = b.column_tickets("DONE").iter().map(|t| t.id.0).collect();
+        assert_eq!(done, vec![1]);
+        let arch: Vec<_> = b.archived_tickets().iter().map(|t| t.id.0).collect();
+        assert_eq!(arch, vec![2]);
+    }
+
+    /// Newest archive first; `column` survives so restore is exact.
+    #[test]
+    fn archived_tickets_newest_first() {
+        let mut b = Board::with_default_columns();
+        for (id, at) in [(1u128, "@100"), (2, "@300"), (3, "@200")] {
+            let mut t = ticket(id, "REVIEW", "a");
+            t.archived = Some(Archived { at: at.into(), by: "local".into() });
+            b.tickets.push(t);
+        }
+        let ids: Vec<_> = b.archived_tickets().iter().map(|t| t.id.0).collect();
+        assert_eq!(ids, vec![2, 3, 1]);
+        assert_eq!(b.archived_tickets()[0].column, "REVIEW");
     }
 
     #[test]

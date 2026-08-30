@@ -108,10 +108,55 @@ created_at = "@1788046350"
 "#;
         let t: Ticket = toml::from_str(m3).unwrap();
         assert!(t.workspace.is_none());
+        assert!(t.archived.is_none());
         assert_eq!(
             t.workspace_strategy(),
             mesimon_core::board::WorkspaceStrategy::SharedCheckout
         );
+    }
+
+    /// A ticket with BOTH optional fields round-trips — `[archived]` is a
+    /// table, so it must serialize last or to_string_pretty errors. This is
+    /// the test that catches wrong struct field order.
+    #[test]
+    fn archived_table_roundtrips() {
+        let t = Ticket {
+            id: ulid::Ulid(8),
+            short_key: "T-8".into(),
+            title: "arch".into(),
+            column: "DONE".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+            archived: Some(mesimon_core::board::Archived {
+                at: "@1788046350".into(),
+                by: "local".into(),
+            }),
+        };
+        let s = toml::to_string_pretty(&t).unwrap();
+        let back: Ticket = toml::from_str(&s).unwrap();
+        assert_eq!(back.archived, t.archived);
+        assert_eq!(back.column, "DONE");
+    }
+
+    /// A hand-written ticket.toml with the trailing `[archived]` table parses.
+    #[test]
+    fn archived_toml_parses() {
+        let m5 = r#"
+id = "01J8ZQ7VJ00000000000000000"
+short_key = "T-9"
+title = "archived ticket"
+column = "REVIEW"
+order = "a0"
+created_at = "@1788046350"
+
+[archived]
+at = "@1788050000"
+by = "local"
+"#;
+        let t: Ticket = toml::from_str(m5).unwrap();
+        assert!(t.is_archived());
+        assert_eq!(t.column, "REVIEW");
     }
 
     /// A ticket WITH a workspace field round-trips through the TOML writer
@@ -126,6 +171,7 @@ created_at = "@1788046350"
             order: "a0".into(),
             created_at: "@0".into(),
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+            archived: None,
         };
         let s = toml::to_string_pretty(&t).unwrap();
         let back: Ticket = toml::from_str(&s).unwrap();

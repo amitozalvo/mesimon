@@ -1,0 +1,30 @@
+ mesimon > kanban-tui   6 tickets
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
+
+   Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
+
+   Keymap validator              ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
+
+
+
+
+
+                             archived — 1
+
+                             T-7  Painted accent bar ∙ done ∙ >1y
+                             jk ∙ enter open ∙ A restore ∙ esc
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ARCHIVED  jk ∙ enter open ∙ A restore ∙ esc back
