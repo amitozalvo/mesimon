@@ -2,8 +2,9 @@
 //! Header is a breadcrumb — `mesimon > repo > title` — with the needs-you
 //! glyph + count beside the repo name (same accent as the board), and one
 //! quiet identity line (short key ∙ column ∙ created) instead of the full
-//! board strip. `r` edits the title in place. Zone bands are painted rows,
-//! never drawn rules (L1); the zone divider is a 2-cell gap.
+//! board strip. `r` edits the title in place. Nothing separates the header
+//! from the body but a breathing row — no band, no rule (L1); the zone
+//! divider is a 2-cell gap.
 
 use mesimon_core::board::{Provenance, SessionKind, SessionState};
 use ratatui::layout::Rect;
@@ -136,27 +137,19 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
     let ident = Line::from(ident_spans);
 
-    // The band must carry actual space cells: a Line's style paints only its
-    // text, so the empty-Line idiom rendered nothing (invisible since M3.5;
-    // caught in the M4b diff-tint work).
-    let band = match theme.selected_bg {
-        Some(bg) => Line::from(Span::raw(" ".repeat(area.width as usize)))
-            .style(Style::default().bg(bg)),
-        None => Line::default(),
-    };
-
     // Breathing row between the breadcrumb and the identity line too — the
-    // title never touches its metadata (06 §5.5).
-    let top = vec![Line::from(head), Line::default(), ident, band];
+    // title never touches its metadata (06 §5.5). No band under the identity
+    // line: the ticket header ends with its metadata (author 2026-08-30).
+    let top = vec![Line::from(head), Line::default(), ident];
     f.render_widget(
         Paragraph::new(top),
-        Rect { x: area.x, y: area.y, width: area.width, height: 4.min(area.height) },
+        Rect { x: area.x, y: area.y, width: area.width, height: 3.min(area.height) },
     );
 
     // ---- body zones -------------------------------------------------------
-    // One breathing row under the band (06 §5.5) before the zones begin.
-    let body_y = area.y + 5;
-    let body_h = area.height.saturating_sub(6); // top 4 + breathing 1 + footer 1
+    // One breathing row under the identity line (06 §5.5) before the zones.
+    let body_y = area.y + 4;
+    let body_h = area.height.saturating_sub(5); // top 3 + breathing 1 + footer 1
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant

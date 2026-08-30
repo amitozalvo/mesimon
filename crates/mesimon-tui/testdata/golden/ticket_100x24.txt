@@ -2,11 +2,11 @@
 
  IN PROGRESS ∙ created by you >1y ago
 
-
   SESSIONS                                                                                       1
 
  ! ✻ claude                                                                                    >1y
      Bash(rm -rf node_modules)
+
 
 
 

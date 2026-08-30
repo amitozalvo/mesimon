@@ -499,18 +499,6 @@ fn test_diff_add_del_registers() {
     assert_eq!(buf[(118u16, 3u16)].bg, band_bg, "top band spans the width");
 }
 
-/// The ticket screen's band under the identity line paints too.
-#[test]
-fn test_ticket_band_paints() {
-    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-    let mut app = app_graphite(fixture(false));
-    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-    let buf = cells(&app, 120, 30);
-    let band_bg = theme.selected_bg.expect("graphite truecolor paints selected");
-    assert_eq!(buf[(5u16, 3u16)].bg, band_bg, "ticket band paints");
-    assert_eq!(buf[(118u16, 3u16)].bg, band_bg, "ticket band spans the width");
-}
-
 /// The diff footer mirrors the ticket rule: a status outranks the hints.
 #[test]
 fn test_diff_footer_shows_status() {
