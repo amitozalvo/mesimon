@@ -697,8 +697,11 @@ archive (reversible, binding + branch persist; 12's `on_ticket_archive = "evict"
 Spawn/wake/resume/move on an archived ticket refuse with "ticket archived — restore it first".
 
 Header suggestion mirrors the sleep offer (same predicate as the keystroke): DONE tickets
-whose sessions are all `Sleeping` past `ARCHIVE_SUGGEST_MS` (1 h; seam
-`MESIMON_ARCHIVE_SUGGEST_MS`) price ` ∙ N to archive (A on the card)`. Computed on the 1 s
+holding no pane and untouched past `ARCHIVE_SUGGEST_MS` (1 h; seam
+`MESIMON_ARCHIVE_SUGGEST_MS`) price ` ∙ N to archive (A on the card)` — sleeping sessions all
+asleep that long, or (dogfood 2026-08-30) NO live sessions at all: a session-less or
+corpse-only DONE ticket counts once the newest of `created_at` / corpse `state_changed_at`
+ages past the threshold. Computed on the 1 s
 tick bucket, deliberately NOT in `refresh_rss` — its no-pane early-return fires exactly when
 archive candidates exist. chrome.rs's old "archived doesn't exist until v0.2" header comment
 is refuted; the header count now excludes archived tickets.

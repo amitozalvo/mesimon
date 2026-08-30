@@ -114,8 +114,11 @@ fn archive_gates_suggests_and_restores() {
     ));
 
     let _ = c.request(Command::CreateTicket { column: "DONE".into(), title: "cold".into() });
+    // A session-less DONE ticket: suggested once created_at ages past the
+    // threshold, archivable any time.
+    let _ = c.request(Command::CreateTicket { column: "DONE".into(), title: "empty".into() });
     let (board, _) = snapshot_of(c.request(Command::Snapshot));
-    let cold = board.tickets.iter().find(|t| t.column == "DONE").unwrap().id;
+    let cold = board.tickets.iter().find(|t| t.title == "cold").unwrap().id;
     let key = board.ticket(cold).unwrap().short_key.clone();
     let ticket_toml = repo.join(".mesimon/board/tickets").join(&key).join("ticket.toml");
 
@@ -157,12 +160,13 @@ fn archive_gates_suggests_and_restores() {
     // 1. Awake (idle still holds a pane): archive refuses.
     err_containing(c.request(Command::ArchiveTicket { id: cold }), "awake");
 
-    // 2. Sleep it; the suggestion prices the ticket within the 1 s bucket.
+    // 2. Sleep it; the suggestion prices both tickets within the 1 s bucket
+    // ("cold" all-asleep + the session-less "empty" past its created_at age).
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         let (_, resources) = snapshot_of(c.request(Command::Snapshot));
-        if resources.archive_tickets == 1 {
+        if resources.archive_tickets == 2 {
             break;
         }
         assert!(Instant::now() < deadline, "archive suggestion never priced");
@@ -173,8 +177,9 @@ fn archive_gates_suggests_and_restores() {
     assert!(matches!(c.request(Command::ArchiveTicket { id: cold }), Response::Ok));
     let (board, resources) = snapshot_of(c.request(Command::Snapshot));
     assert!(board.ticket(cold).unwrap().is_archived());
-    assert!(board.column_tickets("DONE").is_empty());
-    assert_eq!(resources.archive_tickets, 0, "a taken offer must not linger");
+    let done: Vec<_> = board.column_tickets("DONE").iter().map(|t| t.title.clone()).collect();
+    assert_eq!(done, vec!["empty"], "only the session-less ticket stays on the board");
+    assert_eq!(resources.archive_tickets, 1, "cold re-priced away; empty still offered");
     let toml = std::fs::read_to_string(&ticket_toml).expect("ticket.toml");
     assert!(toml.contains("[archived]"), "field must persist: {toml}");
 
@@ -196,7 +201,7 @@ fn archive_gates_suggests_and_restores() {
     let t = board.ticket(cold).unwrap();
     assert!(!t.is_archived());
     assert_eq!(t.column, "DONE", "restore must land in the archived-from column");
-    assert_eq!(board.column_tickets("DONE").len(), 1);
+    assert_eq!(board.column_tickets("DONE").len(), 2, "cold back beside empty");
     let toml = std::fs::read_to_string(&ticket_toml).expect("ticket.toml");
     assert!(!toml.contains("[archived]"), "field must clear: {toml}");
 

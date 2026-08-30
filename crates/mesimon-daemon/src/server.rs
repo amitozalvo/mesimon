@@ -1318,12 +1318,14 @@ impl Daemon {
         (bytes, n)
     }
 
-    /// The header's archive suggestion: sleep-safe tickets whose sessions are
-    /// all asleep (the exact predicate the A key gates on — the suggestion
-    /// never offers what the keystroke would refuse) and have been for the
-    /// hour threshold. Pure board scan, no forks — cheap enough for the 1 s
-    /// bucket, which it must use: the RSS bucket's no-pane early-return fires
-    /// precisely when archive candidates exist.
+    /// The header's archive suggestion: sleep-safe tickets that hold no pane
+    /// (the exact predicate the A key gates on — the suggestion never offers
+    /// what the keystroke would refuse) and are untouched past the hour:
+    /// sleeping sessions all asleep that long, or — with no live sessions at
+    /// all (none, or exited corpses only) — the newest of created_at and any
+    /// corpse's last change that old. Pure board scan, no forks — cheap
+    /// enough for the 1 s bucket, which it must use: the RSS bucket's
+    /// no-pane early-return fires precisely when archive candidates exist.
     fn archive_figures(&self) -> usize {
         let now = now_ms();
         let threshold = archive_suggest_ms();
@@ -1332,17 +1334,27 @@ impl Daemon {
             .iter()
             .filter(|t| !t.is_archived() && t.column == SLEEP_SAFE_COLUMN)
             .filter(|t| {
-                let sleeping: Vec<_> = self
-                    .board
-                    .sessions
+                if self.board.ticket_awake_sessions(t.id) > 0 {
+                    return false;
+                }
+                let sessions: Vec<_> =
+                    self.board.sessions.iter().filter(|s| s.ticket == t.id).collect();
+                let sleeping: Vec<_> = sessions
                     .iter()
-                    .filter(|s| s.ticket == t.id && matches!(s.state, SessionState::Sleeping))
+                    .filter(|s| matches!(s.state, SessionState::Sleeping))
                     .collect();
-                !sleeping.is_empty()
-                    && self.board.ticket_awake_sessions(t.id) == 0
-                    && sleeping.iter().all(|s| {
+                if sleeping.is_empty() {
+                    sessions
+                        .iter()
+                        .filter_map(|s| s.state_changed_at)
+                        .chain(created_at_ms(&t.created_at))
+                        .max()
+                        .is_some_and(|at| now.saturating_sub(at) >= threshold)
+                } else {
+                    sleeping.iter().all(|s| {
                         s.state_changed_at.is_some_and(|at| now.saturating_sub(at) >= threshold)
                     })
+                }
             })
             .count()
     }
@@ -2830,6 +2842,12 @@ fn transcript_has_conversation(path: &std::path::Path) -> bool {
         }
     }
     false
+}
+
+/// `created_at`'s `@<unix secs>` stamp as epoch ms; None for anything else
+/// (an unparsable stamp never feeds the archive suggestion).
+fn created_at_ms(created_at: &str) -> Option<u64> {
+    created_at.strip_prefix('@').and_then(|s| s.parse::<u64>().ok()).map(|s| s * 1000)
 }
 
 fn now_iso() -> String {
