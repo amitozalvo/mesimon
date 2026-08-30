@@ -61,8 +61,10 @@ pub enum Mode {
     Normal,
     /// MOVE: ghost position tracked client-side; nothing is sent until the
     /// drop. `grab` is the key that started it (`>` or `<`): the same key
-    /// again (or Enter) commits, the opposite key cancels.
-    Move { ticket: ulid::Ulid, col: usize, idx: usize, grab: char },
+    /// again (or Enter) commits, the opposite key cancels. `home` is where the
+    /// grab happened (col, idx): a foreign column is always entered at the
+    /// top, the home column at the ticket's own position (author 2026-08-30).
+    Move { ticket: ulid::Ulid, col: usize, idx: usize, grab: char, home: (usize, usize) },
     Input { purpose: InputPurpose, buffer: EditBuffer },
     /// External drawer: discovered foreign sessions (19 §4 tier 1).
     External { idx: usize },
@@ -78,6 +80,15 @@ enum MergeStage {
     Rebase,
     /// merged — next m tells the agent.
     Notify,
+}
+
+/// Where a focus handover started — unfocus returns exactly there (author
+/// 2026-08-30): board Enter comes back to the board, ticket-screen focus
+/// comes back to the ticket screen.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FocusOrigin {
+    Board,
+    Ticket,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -104,6 +115,10 @@ pub struct App {
     /// The m flow's armed stage: a first `m` names what the next `m` does;
     /// the second performs it. Any other key disarms.
     merge_armed: Option<(ulid::Ulid, MergeStage)>,
+    /// The m flow's reply — rendered on the ticket screen's identity line
+    /// (next to the branch state it acts on), never the footer. Cleared with
+    /// `status` on the next keypress.
+    pub merge_note: String,
     pub screen: Screen,
     pub cursor_col: usize,
     pub cursor_row: usize,
@@ -134,14 +149,19 @@ pub struct App {
     pub pending_attach: Option<Vec<String>>,
     /// cwd for the pending handover child (`!` shell in the worktree).
     pub pending_attach_cwd: Option<PathBuf>,
-    pub pending_gate_then: Option<uuid::Uuid>,
+    pending_gate_then: Option<(uuid::Uuid, FocusOrigin)>,
     /// M4: `c` on an unprovisioned worktree ticket parks the spawn daemon-side
     /// (`Response::Provisioning`); this parks the focus half of that keypress.
     /// The first refresh that shows the replayed session finishes it; any
     /// other keypress abandons it (the user moved on — never yank focus).
     pending_spawn_focus: Option<(ulid::Ulid, SessionKind)>,
-    /// The session a running handover holds focus on — released on return.
-    focused_session_hint: Option<uuid::Uuid>,
+    /// The session a running handover holds focus on (and where the focus
+    /// started) — released on return.
+    focused_session_hint: Option<(uuid::Uuid, FocusOrigin)>,
+    /// The ticket the composer just minted: its next plain Enter spawns claude
+    /// straight away (the fresh-ticket fast path). Any other key closes the
+    /// window — browsing away means the moment passed.
+    just_created: Option<ulid::Ulid>,
     /// New-binary watch (dev rebuild or prod upgrade — same signal).
     update_watch: crate::update::UpdateWatch,
     /// U on a ready update: the main loop execs the new binary in place.
@@ -165,6 +185,7 @@ impl App {
             theme,
             resume_refused: None,
             merge_armed: None,
+            merge_note: String::new(),
             screen: Screen::Board,
             cursor_col: 0,
             cursor_row: 0,
@@ -184,6 +205,7 @@ impl App {
             pending_gate_then: None,
             pending_spawn_focus: None,
             focused_session_hint: None,
+            just_created: None,
             update_watch: crate::update::UpdateWatch::new(),
             pending_reexec: false,
             daemon_down: false,
@@ -395,6 +417,7 @@ impl App {
         // (A new `c` re-arms it below; the session itself still spawns.)
         self.pending_spawn_focus = None;
         self.status.clear();
+        self.merge_note.clear();
         self.handle_key(key.code, key.modifiers)?;
         Ok(true)
     }
@@ -463,6 +486,12 @@ impl App {
         if !matches!(code, KeyCode::Char('m')) {
             self.merge_armed = None;
         }
+        // The fresh-ticket fast path lives exactly one Enter long: any other
+        // key means the user is browsing, and Enter goes back to meaning
+        // "open" (Shift+Enter consumes it too — they chose the page).
+        if !matches!(code, KeyCode::Enter) {
+            self.just_created = None;
+        }
         // U on a ready update: reload in place — ask the daemon to shut down
         // clean (it comes back as the new binary via connect-spawn), then let
         // the main loop exec ourselves. Opt-in only, never automatic.
@@ -488,11 +517,13 @@ impl App {
             return self.key_diff(code, ticket);
         }
         if let Screen::Ticket { ticket, rail_idx } = self.screen.clone() {
-            return self.key_ticket(code, ticket, rail_idx);
+            return self.key_ticket(code, mods, ticket, rail_idx);
         }
         match self.mode.clone() {
             Mode::Normal => self.key_normal(code, mods)?,
-            Mode::Move { ticket, col, idx, grab } => self.key_move(code, ticket, col, idx, grab)?,
+            Mode::Move { ticket, col, idx, grab, home } => {
+                self.key_move(code, ticket, col, idx, grab, home)?
+            }
             Mode::External { idx } => self.key_external(code, idx)?,
             Mode::Input { .. } => {} // handled above
         }
@@ -571,8 +602,9 @@ impl App {
                         } else {
                             (self.cursor_col + cols.len() - 1) % cols.len()
                         };
-                        let idx = self.cursor_row.min(self.ghost_len(&cols, col, id));
-                        self.mode = Mode::Move { ticket: id, col, idx, grab: c };
+                        let home = (self.cursor_col, self.cursor_row);
+                        let idx = self.ghost_entry_idx(&cols, col, home, id);
+                        self.mode = Mode::Move { ticket: id, col, idx, grab: c, home };
                     }
                 }
             }
@@ -614,14 +646,54 @@ impl App {
                 }
                 self.refresh()?;
             }
-            KeyCode::Enter => {
-                // Enter opens the ticket screen (07 §1) — the direct-focus
-                // fast path moved onto the ticket screen's Enter.
+            // Space always opens the ticket screen — the fallback spelling of
+            // Shift+Enter for terminals without the kitty keyboard protocol
+            // (plain Enter and Shift+Enter are the same byte there).
+            KeyCode::Char(' ') => {
                 if let Some(t) = self.selected_ticket() {
                     self.screen = Screen::Ticket { ticket: t.id, rail_idx: 0 };
                 }
             }
+            KeyCode::Enter => self.board_enter(mods)?,
             _ => {}
+        }
+        Ok(())
+    }
+
+    /// Board Enter is "get me working" (author 2026-08-30): a running claude
+    /// focuses directly, a just-composed ticket spawns one, and only then does
+    /// Enter mean the ticket screen. Shift+Enter forces the screen (kitty-
+    /// protocol terminals only; Space is the everywhere fallback).
+    fn board_enter(&mut self, mods: KeyModifiers) -> Result<()> {
+        let Some(t) = self.selected_ticket() else { return Ok(()) };
+        let ticket = t.id;
+        let fresh = self.just_created.take() == Some(ticket);
+        if mods.contains(KeyModifiers::SHIFT) {
+            self.screen = Screen::Ticket { ticket, rail_idx: 0 };
+            return Ok(());
+        }
+        // Running or needs-you claude (author 2026-08-30): both mean the pane
+        // is where the action is. Anything else — idle, sleeping, unknown —
+        // opens the ticket page, where the state is visible before you commit
+        // to entering the pane.
+        let hot = self.rail_sessions(ticket).iter().position(|s| {
+            s.kind == SessionKind::Claude
+                && matches!(s.state, SessionState::Running | SessionState::RequiresAction { .. })
+        });
+        if let Some(rail_idx) = hot {
+            let sid = self.rail_sessions(ticket)[rail_idx].id;
+            self.focus_session(sid)?;
+            if self.pending_attach.is_none() {
+                // Focus refused (daemon said no / unreachable): fall open to
+                // the ticket screen, where the status explains itself.
+                self.screen = Screen::Ticket { ticket, rail_idx };
+            }
+        } else if fresh {
+            // The composer's Enter-Enter: name the ticket, start the work.
+            // Provisioning worktrees park the focus half as usual.
+            self.spawn_and_focus(ticket, SessionKind::Claude)?;
+        } else {
+            self.screen = Screen::Ticket { ticket, rail_idx: 0 };
         }
         Ok(())
     }
@@ -629,11 +701,22 @@ impl App {
     /// TICKET keymap (04 §2.6 subset; the M3 picker keys re-homed here).
     /// Note: inside TICKET, `s` is the shell session per 04 — this differs
     /// from BOARD's `s` (claude) until the M6 keymap pass reconciles them.
-    fn key_ticket(&mut self, code: KeyCode, ticket: ulid::Ulid, rail_idx: usize) -> Result<()> {
+    fn key_ticket(
+        &mut self,
+        code: KeyCode,
+        mods: KeyModifiers,
+        ticket: ulid::Ulid,
+        rail_idx: usize,
+    ) -> Result<()> {
         let rail: Vec<uuid::Uuid> = self.rail_sessions(ticket).iter().map(|s| s.id).collect();
         let idx = rail_idx.min(rail.len().saturating_sub(1));
         match code {
             KeyCode::Esc | KeyCode::Char('q') => self.to_board(),
+            // Ctrl+] pops to the board too: it is the tmux detach key, so the
+            // hand is already on it right after an unfocus lands here. Legacy
+            // terminals send 0x1D, which crossterm reports as Ctrl+5 (the
+            // kitty protocol reports a true Ctrl+]).
+            KeyCode::Char(']' | '5') if mods.contains(KeyModifiers::CONTROL) => self.to_board(),
             KeyCode::Char('j') | KeyCode::Down => {
                 let idx = (idx + 1).min(rail.len().saturating_sub(1));
                 self.screen = Screen::Ticket { ticket, rail_idx: idx };
@@ -706,7 +789,7 @@ impl App {
                 };
                 let word = match next {
                     Some(WorkspaceStrategy::Worktree) => "worktree",
-                    _ => "shared checkout",
+                    _ => "shared",
                 };
                 self.send(Command::SetWorkspace { id: ticket, workspace: next })?;
                 if self.status.is_empty() {
@@ -938,8 +1021,11 @@ impl App {
     ///   default moved     m → "m asks rebase"      → m → inject rebase+test
     ///   merged            m → "m notifies agent"   → m → inject notice
     fn merge_key(&mut self, ticket: ulid::Ulid) -> Result<()> {
+        // Every reply of this flow goes to `merge_note` — the ticket screen's
+        // identity line, right where the branch state already announces `m`.
+        // The footer never talks about the merge (author 2026-08-30).
         let Some(w) = self.wt_item(ticket) else {
-            self.status = "no worktree on this ticket".into();
+            self.merge_note = "no worktree on this ticket".into();
             return Ok(());
         };
         let (branch, ahead) = (w.branch.clone(), w.ahead);
@@ -950,12 +1036,12 @@ impl App {
         } else if w.ahead > 0 {
             MergeStage::Merge
         } else {
-            self.status = "no commits on the branch yet — nothing to merge".into();
+            self.merge_note = "no commits on the branch yet — nothing to merge".into();
             return Ok(());
         };
         if self.merge_armed != Some((ticket, stage)) {
             self.merge_armed = Some((ticket, stage));
-            self.status = match stage {
+            self.merge_note = match stage {
                 MergeStage::Merge => format!("merge {ahead} commit(s) of {branch}? m confirms"),
                 MergeStage::Rebase => "main moved — m asks the agent to rebase + test".into(),
                 MergeStage::Notify => "merged ∙ m tells the agent".into(),
@@ -966,7 +1052,7 @@ impl App {
         match stage {
             MergeStage::Merge => match self.req(Command::MergeTicket { id: ticket }) {
                 Response::Merge { outcome, detail } => {
-                    self.status = match outcome {
+                    self.merge_note = match outcome {
                         MergeOutcome::Merged => format!("{detail} ∙ m tells the agent"),
                         MergeOutcome::AlreadyMerged => detail,
                         // Raced: main moved between snapshot and keypress.
@@ -977,7 +1063,7 @@ impl App {
                         MergeOutcome::Refused => detail,
                     };
                 }
-                Response::Err { message } => self.status = message,
+                Response::Err { message } => self.merge_note = message,
                 _ => {}
             },
             MergeStage::Rebase => {
@@ -986,9 +1072,9 @@ impl App {
                     request: mesimon_core::command::MergeRequest::Rebase,
                 }) {
                     Response::Ok => {
-                        self.status = "rebase request sent — m merges once it lands".into()
+                        self.merge_note = "rebase request sent — m merges once it lands".into()
                     }
-                    Response::Err { message } => self.status = message,
+                    Response::Err { message } => self.merge_note = message,
                     _ => {}
                 }
             }
@@ -997,8 +1083,8 @@ impl App {
                     id: ticket,
                     request: mesimon_core::command::MergeRequest::MergedNotice,
                 }) {
-                    Response::Ok => self.status = "agent notified".into(),
-                    Response::Err { message } => self.status = message,
+                    Response::Ok => self.merge_note = "agent notified".into(),
+                    Response::Err { message } => self.merge_note = message,
                     _ => {}
                 }
             }
@@ -1102,6 +1188,23 @@ impl App {
         Ok(())
     }
 
+    /// Where the ghost lands when it enters `col`: the top of any foreign
+    /// column (height is adjusted by hand afterwards), its own original
+    /// position when coming back home while still moving.
+    fn ghost_entry_idx(
+        &self,
+        cols: &[String],
+        col: usize,
+        home: (usize, usize),
+        ticket: ulid::Ulid,
+    ) -> usize {
+        if col == home.0 {
+            home.1.min(self.ghost_len(cols, col, ticket))
+        } else {
+            0
+        }
+    }
+
     fn key_move(
         &mut self,
         code: KeyCode,
@@ -1109,26 +1212,28 @@ impl App {
         col: usize,
         idx: usize,
         grab: char,
+        home: (usize, usize),
     ) -> Result<()> {
         let cols = self.columns();
         match code {
             KeyCode::Esc => self.mode = Mode::Normal, // total cancel (M2 rule)
             KeyCode::Char('h') | KeyCode::Left => {
-                let col = col.saturating_sub(1);
-                let n = self.ghost_len(&cols, col, ticket);
-                self.mode = Mode::Move { ticket, col, idx: idx.min(n), grab };
+                let to = col.saturating_sub(1);
+                // A saturated edge press stays put — no entry, no reset.
+                let idx = if to == col { idx } else { self.ghost_entry_idx(&cols, to, home, ticket) };
+                self.mode = Mode::Move { ticket, col: to, idx, grab, home };
             }
             KeyCode::Char('l') | KeyCode::Right => {
-                let col = (col + 1).min(cols.len().saturating_sub(1));
-                let n = self.ghost_len(&cols, col, ticket);
-                self.mode = Mode::Move { ticket, col, idx: idx.min(n), grab };
+                let to = (col + 1).min(cols.len().saturating_sub(1));
+                let idx = if to == col { idx } else { self.ghost_entry_idx(&cols, to, home, ticket) };
+                self.mode = Mode::Move { ticket, col: to, idx, grab, home };
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let n = self.ghost_len(&cols, col, ticket);
-                self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n), grab };
+                self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n), grab, home };
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::Move { ticket, col, idx: idx.saturating_sub(1), grab };
+                self.mode = Mode::Move { ticket, col, idx: idx.saturating_sub(1), grab, home };
             }
             KeyCode::Char(c @ ('>' | '<')) => {
                 if c == grab {
@@ -1188,6 +1293,10 @@ impl App {
                         }
                         self.refresh()?;
                         self.select_ticket(id);
+                        // Enter-Enter: the next plain Enter starts claude on
+                        // the fresh ticket (board_enter's fast path).
+                        self.just_created = Some(id);
+                        self.status = "enter starts claude ∙ space opens the ticket".into();
                     }
                     Response::Err { message } => {
                         self.status = message;
@@ -1252,6 +1361,11 @@ impl App {
     }
 
     fn focus_session(&mut self, sid: uuid::Uuid) -> Result<()> {
+        // Remember where the focus started — unfocus lands back there.
+        let origin = match self.screen {
+            Screen::Ticket { .. } => FocusOrigin::Ticket,
+            _ => FocusOrigin::Board,
+        };
         // Enter means "get me into this session": paneless records (imported
         // observe-only, sleeping, exited claude) resume first, then the focus
         // flow runs. An exited claude is a conversation, not a process — the
@@ -1293,7 +1407,7 @@ impl App {
                 match self.req(Command::FocusStart { session: sid }) {
                     Response::Attach { argv } => {
                         self.pending_attach = Some(argv);
-                        self.focused_session_hint = Some(sid);
+                        self.focused_session_hint = Some((sid, origin));
                     }
                     Response::Err { message } => self.status = message,
                     _ => {}
@@ -1301,7 +1415,7 @@ impl App {
             }
             Response::Gate { passed: false, attach_argv: Some(argv) } => {
                 self.pending_attach = Some(argv);
-                self.pending_gate_then = Some(sid);
+                self.pending_gate_then = Some((sid, origin));
             }
             Response::Err { message } => self.status = message,
             _ => {}
@@ -1311,33 +1425,34 @@ impl App {
 
     /// Called by the main loop after a handover returns.
     pub fn after_handover(&mut self) -> Result<()> {
-        if let Some(sid) = self.pending_gate_then.take() {
+        if let Some((sid, origin)) = self.pending_gate_then.take() {
             // Detaching from the gate session IS the proof (D20).
             self.send(Command::GatePassed)?;
             match self.req(Command::FocusStart { session: sid }) {
                 Response::Attach { argv } => {
                     self.pending_attach = Some(argv);
-                    self.focused_session_hint = Some(sid);
+                    self.focused_session_hint = Some((sid, origin));
                     return Ok(());
                 }
                 Response::Err { message } => self.status = message,
                 _ => {}
             }
-        } else if let Some(sid) = self.focused_session_hint.take() {
+        } else if let Some((sid, origin)) = self.focused_session_hint.take() {
             self.send(Command::FocusEnd { session: sid })?;
             self.refresh()?;
-            // Unfocus lands where a choice remains: the ticket screen when the
-            // ticket still holds several sessions, otherwise the board with
-            // the ticket selected (a one-session screen is a dead stop).
+            // Unfocus returns exactly where the focus started: board Enter
+            // comes back to the board (ticket selected), ticket-screen focus
+            // comes back to the ticket screen (session selected).
             if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
                 let ticket = rec.ticket;
                 self.select_ticket(ticket);
-                let rail = self.rail_sessions(ticket);
-                if rail.len() > 1 {
-                    let idx = rail.iter().position(|s| s.id == sid).unwrap_or(0);
-                    self.screen = Screen::Ticket { ticket, rail_idx: idx };
-                } else {
-                    self.to_board();
+                match origin {
+                    FocusOrigin::Board => self.to_board(),
+                    FocusOrigin::Ticket => {
+                        let idx =
+                            self.rail_sessions(ticket).iter().position(|s| s.id == sid).unwrap_or(0);
+                        self.screen = Screen::Ticket { ticket, rail_idx: idx };
+                    }
                 }
             }
             return Ok(());
@@ -1414,10 +1529,54 @@ pub(crate) mod test_support {
         pub grace: Vec<GraceItem>,
         pub external: Vec<ExternalItem>,
         pub resources: Resources,
+        /// Debug-formatted log of every request, for behavior assertions.
+        pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
+        /// Make FocusStart answer Err (the daemon refusing a focus).
+        pub refuse_focus: bool,
     }
 
     impl Transport for FakeTransport {
         fn request(&mut self, command: Command) -> Result<Response> {
+            self.sent.borrow_mut().push(format!("{command:?}"));
+            match command {
+                Command::CreateTicket { column, title } => {
+                    let id = ulid::Ulid(999);
+                    self.board.tickets.push(Ticket {
+                        id,
+                        short_key: "T-999".into(),
+                        title,
+                        column,
+                        order: "zzzz".into(),
+                        created_at: "1970-01-01T00:00:00Z".into(),
+                        workspace: None,
+                    });
+                    return Ok(Response::Created { id });
+                }
+                Command::GateStatus => {
+                    return Ok(Response::Gate { passed: true, attach_argv: None });
+                }
+                Command::FocusStart { .. } => {
+                    return Ok(if self.refuse_focus {
+                        Response::Err { message: "no pane".into() }
+                    } else {
+                        Response::Attach { argv: vec!["tmux".into()] }
+                    });
+                }
+                Command::SpawnSession { ticket, kind } => {
+                    let rec = mesimon_core::board::SessionRecord::new(
+                        uuid::Uuid::from_u128(4242),
+                        kind,
+                        ticket,
+                        vec!["claude".into()],
+                        "/repo".into(),
+                        SessionState::Running,
+                    );
+                    let id = rec.id;
+                    self.board.sessions.push(rec);
+                    return Ok(Response::Spawned { id });
+                }
+                _ => {}
+            }
             match command {
                 Command::Snapshot => Ok(Response::Board {
                     board: self.board.clone(),
@@ -1461,14 +1620,28 @@ pub(crate) mod test_support {
 
     impl App {
         pub(crate) fn for_test(board: Board, theme: Theme) -> App {
+            Self::for_test_logged(board, theme, false).0
+        }
+
+        /// Like `for_test`, but hands back the request log (and optionally a
+        /// focus-refusing daemon) for behavior assertions.
+        pub(crate) fn for_test_logged(
+            board: Board,
+            theme: Theme,
+            refuse_focus: bool,
+        ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+            let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
             let fake = FakeTransport {
                 board,
                 grace: vec![],
                 external: vec![],
                 resources: Resources::default(),
+                sent: sent.clone(),
+                refuse_focus,
             };
-            App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
-                .expect("fake transport snapshot")
+            let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
+                .expect("fake transport snapshot");
+            (app, sent)
         }
     }
 }
@@ -1491,7 +1664,7 @@ mod tests {
         }
     }
 
-    fn app_three_columns() -> App {
+    fn board_three_columns() -> Board {
         let mut b = Board::default();
         for (i, name) in ["todo", "doing", "done"].iter().enumerate() {
             b.columns.push(Column { name: (*name).into(), order: format!("{i}") });
@@ -1499,11 +1672,157 @@ mod tests {
         b.tickets.push(ticket(1, "todo", "a"));
         b.tickets.push(ticket(2, "todo", "b"));
         b.tickets.push(ticket(3, "done", "a"));
-        App::for_test(b, Theme::new(Flavor::Graphite, Profile::TrueColor))
+        b
+    }
+
+    fn theme() -> Theme {
+        Theme::new(Flavor::Graphite, Profile::TrueColor)
+    }
+
+    fn app_three_columns() -> App {
+        App::for_test(board_three_columns(), theme())
+    }
+
+    /// Three-column board plus one claude session on ticket 1, request log out.
+    fn app_with_claude(
+        state: SessionState,
+        refuse_focus: bool,
+    ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>, uuid::Uuid) {
+        let mut b = board_three_columns();
+        let sid = uuid::Uuid::from_u128(7);
+        b.sessions.push(mesimon_core::board::SessionRecord::new(
+            sid,
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/repo".into(),
+            state,
+        ));
+        let (app, sent) = App::for_test_logged(b, theme(), refuse_focus);
+        (app, sent, sid)
     }
 
     fn press(app: &mut App, c: char) {
         app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+    }
+
+    fn sent_contains(sent: &std::cell::RefCell<Vec<String>>, needle: &str) -> bool {
+        sent.borrow().iter().any(|c| c.contains(needle))
+    }
+
+    #[test]
+    fn enter_on_plain_ticket_opens_the_ticket_screen() {
+        let mut app = app_three_columns();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+    }
+
+    #[test]
+    fn enter_right_after_compose_spawns_claude() {
+        // o, title, Enter mints the ticket; the next Enter starts the work.
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'o');
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.just_created, Some(ulid::Ulid(999)));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "SpawnSession"));
+        assert!(app.pending_attach.is_some(), "spawned session focuses");
+        assert_eq!(app.screen, Screen::Board, "focus starts from the board");
+        // Consumed: a third Enter (post-unfocus) must not spawn again — the
+        // awake-claude fast path owns it now.
+    }
+
+    #[test]
+    fn any_other_key_closes_the_compose_fast_path() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'o');
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'j'); // browsing away — the moment passed
+        assert_eq!(app.just_created, None);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!sent_contains(&sent, "SpawnSession"));
+        assert!(matches!(app.screen, Screen::Ticket { .. }));
+    }
+
+    #[test]
+    fn enter_with_running_claude_focuses_directly() {
+        let (mut app, sent, _sid) = app_with_claude(SessionState::Running, false);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "FocusStart"));
+        assert!(app.pending_attach.is_some());
+        assert_eq!(app.screen, Screen::Board, "no ticket-screen detour");
+    }
+
+    #[test]
+    fn enter_with_needs_you_claude_focuses_directly() {
+        // A waiting permission prompt is exactly where Enter should land.
+        let state =
+            SessionState::RequiresAction { reason: mesimon_core::board::Reason::Permission };
+        let (mut app, sent, _sid) = app_with_claude(state, false);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "FocusStart"));
+        assert_eq!(app.screen, Screen::Board);
+    }
+
+    #[test]
+    fn enter_fast_paths_only_a_hot_claude() {
+        // Neither running nor needs-you — idle, sleeping — opens the ticket
+        // page, where the state is visible before entering the pane.
+        for state in [
+            SessionState::Sleeping,
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+        ] {
+            let (mut app, sent, _sid) = app_with_claude(state.clone(), false);
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert!(!sent_contains(&sent, "FocusStart"), "{state:?} must not focus");
+            assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+        }
+    }
+
+    #[test]
+    fn shift_enter_forces_the_ticket_screen() {
+        let (mut app, sent, _sid) = app_with_claude(SessionState::Running, false);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!sent_contains(&sent, "FocusStart"));
+        assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+    }
+
+    #[test]
+    fn refused_focus_falls_open_to_the_ticket_screen() {
+        let (mut app, _sent, _sid) = app_with_claude(SessionState::Running, true);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.pending_attach.is_none());
+        assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+        assert!(!app.status.is_empty(), "the refusal shows itself");
+    }
+
+    #[test]
+    fn unfocus_returns_to_the_focus_origin() {
+        // Board-born focus lands back on the board…
+        let (mut app, _sent, sid) = app_with_claude(SessionState::Running, false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.focused_session_hint = Some((sid, FocusOrigin::Board));
+        app.after_handover().unwrap();
+        assert_eq!(app.screen, Screen::Board);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+        // …ticket-born focus lands back on the ticket screen.
+        let (mut app, _sent, sid) = app_with_claude(SessionState::Running, false);
+        app.focused_session_hint = Some((sid, FocusOrigin::Ticket));
+        app.after_handover().unwrap();
+        assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+    }
+
+    #[test]
+    fn merge_replies_land_in_the_note_never_the_status() {
+        // The m flow talks through the identity line's merge_note; the footer
+        // (status) stays silent so the hint never doubles top + bottom.
+        let mut app = app_three_columns();
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'm'); // no worktree binding in the fixture
+        assert_eq!(app.merge_note, "no worktree on this ticket");
+        assert!(app.status.is_empty());
     }
 
     #[test]
@@ -1547,7 +1866,7 @@ mod tests {
     }
 
     #[test]
-    fn double_grab_carries_row_position() {
+    fn double_grab_lands_on_top_of_the_next_column() {
         let mut app = app_three_columns();
         app.cursor_col = 2; // "done", holds ticket 3 at row 0
         press(&mut app, '<');
@@ -1555,13 +1874,55 @@ mod tests {
         // no wrap involved: done -> doing
         let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
         assert_eq!(doing, vec![ulid::Ulid(3)]);
-        // hop again into todo, which already has 1 and 2 — the ghost keeps
-        // its row (0), landing before them
+        // hop again into todo, which already has 1 and 2 — a foreign column
+        // is entered at the top, before them
         press(&mut app, '<');
         press(&mut app, '<');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(3), ulid::Ulid(1), ulid::Ulid(2)]);
         assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+    }
+
+    #[test]
+    fn move_enters_a_foreign_column_at_the_top() {
+        let mut b = board_three_columns();
+        b.tickets.push(ticket(4, "doing", "a"));
+        b.tickets.push(ticket(5, "doing", "b"));
+        let mut app = App::for_test(b, theme());
+        app.cursor_row = 1; // ticket 2, second in todo
+        press(&mut app, '>');
+        // Top of doing, NOT the grabbed row — height is adjusted by hand.
+        assert!(matches!(app.mode, Mode::Move { col: 1, idx: 0, .. }));
+    }
+
+    #[test]
+    fn move_back_home_restores_the_original_height() {
+        let mut b = board_three_columns();
+        b.tickets.push(ticket(4, "doing", "a"));
+        b.tickets.push(ticket(5, "doing", "b"));
+        let mut app = App::for_test(b, theme());
+        app.cursor_row = 1; // ticket 2, second in todo
+        press(&mut app, '>');
+        press(&mut app, 'j'); // adjusting abroad must not disturb the memory
+        press(&mut app, 'h'); // back home
+        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 1, .. }));
+        // Dropping home is a perfect no-op move.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+    }
+
+    #[test]
+    fn ctrl_bracket_pops_the_ticket_screen_to_board() {
+        // Ctrl+] is the tmux detach key — right after an unfocus it keeps
+        // popping outward. Both encodings: kitty (']') and legacy 0x1D ('5').
+        let mut app = app_three_columns();
+        for key in [']', '5'] {
+            app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+            app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
+            assert_eq!(app.screen, Screen::Board);
+        }
     }
 
     #[test]

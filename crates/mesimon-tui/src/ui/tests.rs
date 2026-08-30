@@ -261,7 +261,7 @@ fn golden_waiting_board_120() {
 #[test]
 fn golden_move_ghost_120() {
     let mut app = app_graphite(fixture(false));
-    app.mode = Mode::Move { ticket: ulid_n(3), col: 2, idx: 1, grab: '>' };
+    app.mode = Mode::Move { ticket: ulid_n(3), col: 2, idx: 1, grab: '>', home: (1, 0) };
     golden("board_move_120x30", &render(&app, 120, 30));
 }
 
@@ -729,7 +729,7 @@ fn test_move_ghost_blinks() {
     };
     let mut app = app_graphite(fixture(false));
     // Grab ticket 1 ("Decay treatments") in place.
-    app.mode = Mode::Move { ticket: ulid_n(1), col: 0, idx: 0, grab: '<' };
+    app.mode = Mode::Move { ticket: ulid_n(1), col: 0, idx: 0, grab: '<', home: (1, 0) };
     app.spin_epoch.set(Some(std::time::Instant::now()));
     let bright = title_fg(&cells(&app, 120, 30), "Decay").expect("held title, frame 0");
     assert_eq!(bright, theme.sel.base, "bright phase rides sel.base");
@@ -752,7 +752,7 @@ fn test_move_trail_is_semi_transparent() {
     let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     let mut app = app_graphite(fixture(false));
     // Ticket 1 lives in todo (col 0); its ghost is pending in col 1.
-    app.mode = Mode::Move { ticket: ulid_n(1), col: 1, idx: 0, grab: '>' };
+    app.mode = Mode::Move { ticket: ulid_n(1), col: 1, idx: 0, grab: '>', home: (0, 0) };
     app.spin_epoch.set(Some(std::time::Instant::now()));
     let buf = cells(&app, 120, 30);
     let mut fgs = Vec::new();

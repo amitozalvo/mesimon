@@ -76,8 +76,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         Span::styled(format!(" {}", ticket.column.to_uppercase()), theme.dim2()),
         Span::styled(created, theme.dim2()),
     ];
+    // The m flow's live reply (armed prompt, outcome, refusal) replaces the
+    // resting branch-state hint for a beat — same spot, so the conversation
+    // with the merge key happens in one place, never in the footer.
+    let note = (!app.merge_note.is_empty()).then(|| crate::text::one_line(&app.merge_note));
     if let Some(w) = app.wt_item(ticket.id) {
-        let state = if w.conflict {
+        let state = if let Some(n) = &note {
+            format!(" ∙ {n}")
+        } else if w.conflict {
             " ∙ branch shared!".to_string()
         } else if w.merged {
             " ∙ merged".to_string()
@@ -95,7 +101,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         ident_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
         if !state.is_empty() {
             let actionable = !w.merged && w.status == "attached" && (w.ahead > 0 || w.needs_rebase);
-            let style = if w.conflict {
+            let style = if note.is_some() {
+                theme.calm_text()
+            } else if w.conflict {
                 theme.base().add_modifier(ratatui::style::Modifier::BOLD)
             } else if actionable {
                 theme.calm_text()
@@ -104,9 +112,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             };
             ident_spans.push(Span::styled(state, style));
         }
-        if let Some(d) = &w.detail {
-            ident_spans.push(Span::styled(format!(" ∙ {d}"), theme.dim2()));
+        if note.is_none() {
+            if let Some(d) = &w.detail {
+                ident_spans.push(Span::styled(format!(" ∙ {d}"), theme.dim2()));
+            }
         }
+    } else if let Some(n) = &note {
+        // A merge reply with no binding ("no worktree on this ticket").
+        ident_spans.push(Span::styled(format!(" ∙ {n}"), theme.calm_text()));
     } else if ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree {
         ident_spans.push(Span::styled(" ∙ ⎇ worktree", theme.dim2()));
     }
@@ -170,11 +183,17 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // A pending status (a daemon refusal, mostly) outranks the key hints —
     // the board footer does the same in chrome::draw_footer.
     let footer = if app.status.is_empty() {
-        chrome::mode_line(
-            app,
-            "TICKET",
-            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ w workspace ∙ m merge ∙ r rename ∙ esc board",
-        )
+        // `w` only while the daemon would still accept it: locked once the
+        // ticket has sessions or a worktree binding (server::set_workspace).
+        let locked = app.wt_item(ticket_id).is_some()
+            || app.board.sessions.iter().any(|s| s.ticket == ticket_id);
+        // `m` is deliberately absent: the merge lives on the identity line
+        // (its hint and every reply of the flow render up there, once).
+        let w_hint = if locked { "" } else { "w worktree/shared ∙ " };
+        let hint = format!(
+            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ {w_hint}r rename ∙ esc board"
+        );
+        chrome::mode_line(app, "TICKET", &hint)
     } else {
         Line::from(Span::styled(
             format!(" {}", crate::text::one_line(&app.status)),

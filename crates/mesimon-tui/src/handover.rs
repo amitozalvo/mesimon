@@ -9,6 +9,10 @@ use anyhow::{bail, Context, Result};
 /// Run outside raw mode / alt screen — the caller restores the terminal first
 /// and re-initializes after. Returns when the user detaches (Ctrl+]).
 /// `cwd` is for the `!` shell-in-worktree handover (M4b); attach argvs pass None.
+///
+/// Returns as soon as the child exits — the caller must re-enter the alt
+/// screen immediately (the primary screen shows stale shell output) and then
+/// call `drain_stdin`.
 pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
     let Some((prog, rest)) = argv.split_first() else {
         bail!("empty attach argv");
@@ -19,7 +23,6 @@ pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
         cmd.current_dir(d);
     }
     let status = cmd.status().context("attach child")?;
-    drain_stdin();
     if !status.success() {
         bail!("attach exited with {status}");
     }
@@ -27,8 +30,10 @@ pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
 }
 
 /// Spike T-4: tmux queries DA1/DA2/OSC 10/11 at attach; on a fast detach the
-/// terminal's replies can land in our stdin. Drain before re-entering raw mode.
-fn drain_stdin() {
+/// terminal's replies can land in our stdin. Drain before the event loop
+/// reads keys. Called AFTER the alt screen is back up: the 50 ms settle would
+/// otherwise flash the primary screen's stale output at the user.
+pub fn drain_stdin() {
     unsafe {
         let fd = 0;
         let flags = libc::fcntl(fd, libc::F_GETFL);

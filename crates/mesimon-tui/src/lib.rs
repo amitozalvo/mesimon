@@ -16,7 +16,10 @@ mod update;
 use std::path::Path;
 
 use anyhow::Result;
-use ratatui::crossterm::event::DisableMouseCapture;
+use ratatui::crossterm::event::{
+    DisableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
+};
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -88,8 +91,12 @@ fn event_loop(
         while let Some(argv) = app.pending_attach.take() {
             let cwd = app.pending_attach_cwd.take();
             restore_terminal()?;
+            blank_primary_screen()?;
             let ho = handover::run(&argv, cwd.as_deref());
+            // Alt screen back up FIRST — the drain's settle sleep must not
+            // leave the primary screen (stale logs) on display.
             *terminal = init_terminal()?;
+            handover::drain_stdin();
             if let Err(e) = ho {
                 app.status = format!("focus failed: {e}");
                 break;
@@ -109,16 +116,58 @@ fn init_terminal() -> Result<ratatui::Terminal<ratatui::backend::CrosstermBacken
     // No EnableMouseCapture: we handle no mouse events, and capture steals the
     // terminal's native text selection.
     execute!(stdout, EnterAlternateScreen)?;
+    // Kitty keyboard protocol, disambiguate tier only: it is what makes
+    // Shift+Enter distinguishable from Enter (board: force the ticket
+    // screen). The support probe is a terminal query, so it runs once per
+    // process (query hygiene, 06 §2.9) — handovers reuse the cached answer.
+    if kitty_keyboard_supported() {
+        execute!(
+            stdout,
+            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+        )?;
+    }
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut t = ratatui::Terminal::new(backend)?;
     t.clear()?;
     Ok(t)
 }
 
+/// Cached kitty-protocol probe (crossterm writes CSI ? u and reads the reply,
+/// so it needs raw mode — call only between enable/disable_raw_mode).
+fn kitty_keyboard_supported() -> bool {
+    static SUPPORTED: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
+    *SUPPORTED.get_or_init(|| {
+        ratatui::crossterm::terminal::supports_keyboard_enhancement().unwrap_or(false)
+    })
+}
+
 /// Staged restore (05 §13 baseline): reverse order of init, idempotent enough
 /// to call around every handover.
 fn restore_terminal() -> Result<()> {
+    // Pop before leaving raw mode; terminals without the protocol ignore the
+    // sequence, and a pop with nothing pushed is defined as a no-op.
+    if kitty_keyboard_supported() {
+        execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+    }
     disable_raw_mode()?;
     execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    Ok(())
+}
+
+/// Handover-only: the primary screen holds pre-TUI output (build logs, shell
+/// scrollback), and tmux's detach teardown restores it for at least one frame
+/// before we can re-enter the alt screen (T-4 §4 — `?1049l` + `[detached …]`
+/// land before the client exits). Push that content into scrollback and blank
+/// the viewport so the unavoidable flash is empty, not a screenful of logs.
+/// Scrolling (not `ED 2`) keeps the user's history reachable.
+fn blank_primary_screen() -> Result<()> {
+    use ratatui::crossterm::{cursor, style::Print};
+    let (_, rows) = ratatui::crossterm::terminal::size().unwrap_or((80, 24));
+    execute!(
+        std::io::stdout(),
+        cursor::MoveTo(0, rows.saturating_sub(1)),
+        Print("\n".repeat(rows as usize)),
+        cursor::MoveTo(0, 0),
+    )?;
     Ok(())
 }

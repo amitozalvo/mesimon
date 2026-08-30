@@ -148,7 +148,7 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 mode_line(
                     app,
                     "BOARD",
-                    "enter open ticket ∙ tab needs you ∙ a add ∙ >< move ∙ p peek ∙ e external ∙ q quit",
+                    "enter open ∙ space ticket ∙ tab needs you ∙ a add ∙ >< move ∙ p peek ∙ e external ∙ q quit",
                 )
             } else {
                 Line::from(Span::styled(
