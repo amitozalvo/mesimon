@@ -23,11 +23,16 @@ pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
     frames[frame % frames.len()]
 }
 
-/// The plan-review mark: stacked lines read as a list of steps (U+2630,
-/// EAW Neutral so it stays one cell, Emoji=No). Rides the same attention
-/// register as `!` — the reason differs, the urgency does not.
+/// The plan-review mark: stacked lines read as a list of steps (U+2261
+/// IDENTICAL TO — same Ambiguous-width class as the ✓ we already ship).
+/// NOT U+2630 TRIGRAM FOR HEAVEN: Unicode 16 reclassified the trigrams
+/// Neutral→Wide, so terminals with current tables render ☰ two cells while
+/// unicode-width 0.2.0 (ours AND ratatui's) says one — every line after the
+/// glyph shifts on screen and the diff cursor desyncs, leaving stale cells.
+/// Rides the same attention register as `!` — the reason differs, the
+/// urgency does not.
 fn plan_mark(tier: Tier) -> char {
-    if tier == Tier::Ascii { '=' } else { '☰' }
+    if tier == Tier::Ascii { '=' } else { '≡' }
 }
 
 /// Which colour family a glyph rides (06 §2.1: exactly three chromatic tokens;
@@ -220,16 +225,16 @@ mod tests {
         use unicode_width::UnicodeWidthChar;
         let plan = rec(SessionState::RequiresAction { reason: Reason::Plan });
         let perm = rec(SessionState::RequiresAction { reason: Reason::Permission });
-        assert_eq!(card_glyph(&[&plan], Tier::Unicode, 0), Some(('☰', Register::Attn)));
+        assert_eq!(card_glyph(&[&plan], Tier::Unicode, 0), Some(('≡', Register::Attn)));
         assert_eq!(card_glyph(&[&plan], Tier::Ascii, 0), Some(('=', Register::Attn)));
         // A co-pending non-plan reason keeps the generic bang on the card.
         assert_eq!(card_glyph(&[&plan, &perm], Tier::Unicode, 0), Some(('!', Register::Attn)));
         assert_eq!(
             session_glyph(&plan.state, Tier::Unicode, 0),
-            ('☰', Register::Attn)
+            ('≡', Register::Attn)
         );
         assert_eq!(session_glyph(&perm.state, Tier::Unicode, 0).0, '!');
-        assert_eq!('☰'.width(), Some(1));
+        assert_eq!('≡'.width(), Some(1));
     }
 
     #[test]
