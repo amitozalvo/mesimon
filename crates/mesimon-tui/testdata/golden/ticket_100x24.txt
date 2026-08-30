@@ -1,4 +1,4 @@
- mesimon > kanban-tui !1 > Adopt drawer import
+ mesimon > kanban-tui  !1  > Adopt drawer import
 
  IN PROGRESS ∙ created by you >1y ago
 

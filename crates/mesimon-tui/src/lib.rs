@@ -11,6 +11,7 @@ mod peek;
 mod text;
 mod theme;
 mod ui;
+mod update;
 
 use std::path::Path;
 
@@ -44,7 +45,29 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let mut terminal = init_terminal()?;
     let result = event_loop(&mut terminal, &mut app);
     restore_terminal()?;
+    if result.is_ok() && app.pending_reexec {
+        return reexec(repo_root);
+    }
     result
+}
+
+/// U on `update ready`: swap this process for the new binary at our own
+/// path. The daemon was asked to shut down first; wait for its socket to
+/// vanish so the fresh TUI's connect-spawn doesn't race the old flock.
+fn reexec(repo_root: &Path) -> Result<()> {
+    if let Ok(paths) = mesimon_daemon::Paths::for_repo(repo_root) {
+        let sock = paths.orch_sock();
+        for _ in 0..20 {
+            if !sock.exists() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+    }
+    use std::os::unix::process::CommandExt;
+    let exe = std::env::current_exe()?;
+    let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).exec();
+    Err(anyhow::anyhow!("exec of the new binary failed: {err}"))
 }
 
 fn event_loop(
@@ -54,6 +77,12 @@ fn event_loop(
     loop {
         terminal.draw(|f| ui::draw(f, app))?;
         app.tick()?;
+
+        // U on a ready update: fall out to `run`, which execs the new
+        // binary once the terminal is restored.
+        if app.pending_reexec {
+            return Ok(());
+        }
 
         // Focus handover: leave the terminal entirely, attach, come back (docs/19 §2).
         while let Some(argv) = app.pending_attach.take() {

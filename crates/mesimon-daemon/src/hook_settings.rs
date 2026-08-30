@@ -83,7 +83,7 @@ fn entry(
     }
 }
 
-/// The 30-entry registered set for one session.
+/// The 31-entry registered set for one session.
 pub fn render_settings(hook_bin: &Path, hook_sock: &Path, session: uuid::Uuid) -> Value {
     let e = |event: &str, matcher: Option<&str>, reason: Option<&str>| {
         entry(hook_bin, hook_sock, session, event, matcher, reason)
@@ -114,6 +114,14 @@ pub fn render_settings(hook_bin: &Path, hook_sock: &Path, session: uuid::Uuid) -
     hooks.insert(
         "PreToolUse".into(),
         Value::Array(vec![e("PreToolUse", Some("AskUserQuestion,ExitPlanMode"), None)]),
+    );
+    // The mirror PostToolUse pair: completion = the user answered, the only
+    // mid-turn signal that clears RequiresAction (dogfood 2026-08-30: an
+    // answered question stayed needs-you until end of turn). Still narrow —
+    // the verbose-tier ban is on BROAD post hooks, not this matcher.
+    hooks.insert(
+        "PostToolUse".into(),
+        Value::Array(vec![e("PostToolUse", Some("AskUserQuestion,ExitPlanMode"), None)]),
     );
     for ev in SINGLE_EVENTS {
         hooks.insert(ev.into(), Value::Array(vec![e(ev, None, None)]));
@@ -154,8 +162,8 @@ mod tests {
     }
 
     #[test]
-    fn thirty_entries() {
-        assert_eq!(entries(&rendered()).len(), 30);
+    fn thirty_one_entries() {
+        assert_eq!(entries(&rendered()).len(), 31);
     }
 
     #[test]
@@ -173,7 +181,7 @@ mod tests {
 
     #[test]
     fn matchers_only_where_supported() {
-        let allowed = ["SessionStart", "SessionEnd", "StopFailure", "PreToolUse"];
+        let allowed = ["SessionStart", "SessionEnd", "StopFailure", "PreToolUse", "PostToolUse"];
         for (ev, e) in entries(&rendered()) {
             if e.get("matcher").is_some() {
                 assert!(allowed.contains(&ev.as_str()), "matcher on {ev}");
@@ -225,11 +233,15 @@ mod tests {
     fn no_verbose_tier_events() {
         let v = rendered();
         let hooks = v["hooks"].as_object().unwrap();
-        for banned in ["PostToolUse", "PostToolUseFailure", "PostToolBatch", "MessageDisplay"] {
+        for banned in ["PostToolUseFailure", "PostToolBatch", "MessageDisplay"] {
             assert!(!hooks.contains_key(banned), "{banned} is the verbose tier");
         }
-        // The one PreToolUse entry is the narrow two-tool matcher.
-        let p = v["hooks"]["PreToolUse"].as_array().unwrap();
-        assert_eq!(p[0]["matcher"], json!("AskUserQuestion,ExitPlanMode"));
+        // Pre and Post tool entries are ONLY the narrow two-tool matcher —
+        // a broad matcher here would be the banned verbose tier.
+        for ev in ["PreToolUse", "PostToolUse"] {
+            let p = v["hooks"][ev].as_array().unwrap();
+            assert_eq!(p.len(), 1, "{ev} single entry");
+            assert_eq!(p[0]["matcher"], json!("AskUserQuestion,ExitPlanMode"));
+        }
     }
 }

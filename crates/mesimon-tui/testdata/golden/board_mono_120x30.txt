@@ -1,4 +1,4 @@
- mesimon > kanban-tui !1   7 tickets
+ mesimon > kanban-tui  !1    7 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 

@@ -27,11 +27,30 @@ cargo run                            # TUI for cwd; `cargo run -- daemon --repo 
 disk but the RUNNING daemon keeps old code and old `current_exe()` paths. After changing daemon
 code, kill it (`pgrep -f "mesimon daemon"`) so the client respawns the new one. Same for spawned
 Claude sessions: hooks are injected at launch, so sessions spawned by an old daemon never emit
-attention — kill and respawn them too.
+attention — kill and respawn them too. Softener (2026-08-30): a RUNNING TUI watches its own
+binary's mtime and offers `update ready (U reloads)` in the header — `U` shuts the daemon down
+cleanly and execs the new binary in place (`tui/src/update.rs`, `lib.rs::reexec`; STALE-MAP
+"Opt-in binary update reload"), so interactive dogfooding rarely needs the manual kill. The TUI
+also survives daemon death now (reconnect cadence in `tui/src/client.rs`).
 
 E2e tests use per-test dirs `/tmp/msmn-e2e-*`; a test that panics before its cleanup leaks a
 private tmux server (plus an idle zsh). `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server`
 cleans one up.
+
+**You may be running INSIDE mesimon** (dogfooding: a session spawned by the very daemon this repo
+builds). Everything still applies, plus:
+
+- `pkill -f "mesimon daemon"` does NOT kill you. Your pane belongs to the private tmux server,
+  which the daemon does not own; daemon death loses no state (store persisted, TUI reconnects,
+  records re-derive from `Unknown{DaemonRestarted}`). Run it after daemon-side rebuilds as usual.
+- Prefer the opt-in reload over pkill when a TUI is likely attached: after `cargo build`, the
+  user's TUI shows `update ready (U reloads)` and the U press restarts daemon + TUI on the new
+  binary. So: build, mention the chip, only pkill if asked or clearly headless.
+- Never `cargo run` (the TUI) inside your pane — it wedges a nested fullscreen client there.
+  Verify with `cargo test` / goldens; the user runs the real TUI.
+- E2e tests are safe here: they use their own `/tmp/msmn-e2e-*` sockets, never your tmux server.
+- In a git worktree you get a different `proj16` (own daemon, own sockets) and the repo-root
+  auto-memory does not follow you — this file is your only standing context there.
 
 ## Doc authority (read this before trusting any doc)
 
@@ -93,7 +112,7 @@ servers, so live-server changes must also be issued as commands (see `install_pa
 Child env is allowlisted (`env_clear`), never inherited.
 
 **Attention flow (M2).** Claude sessions spawn with `--settings <state>/hooks/<uuid>.json` — a
-30-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's
+31-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's
 silent-failure traps: no `if` off tool events, matchers only where supported). Each hook execs
 `mesimon hook`, a pure observer (`mesimon/src/hook.rs` — reads stdin to EOF first, never writes
 stdout because stdout is injected into the agent's context, exits 0 always, 500 ms self-abort)

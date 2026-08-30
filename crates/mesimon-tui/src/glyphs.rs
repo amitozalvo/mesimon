@@ -3,7 +3,9 @@
 //! `throttled` is deliberately absent from the card tier — it is a board
 //! banner (M6), not a per-card flag (D14/D19).
 
-use mesimon_core::board::{Confidence, ExitReason, SessionRecord, SessionState, StopReason};
+use mesimon_core::board::{
+    Confidence, ExitReason, Reason, SessionRecord, SessionState, StopReason,
+};
 
 /// Working-spinner frames. Braille dots on the unicode tier (one cell, Neutral
 /// width), the classic bar on ascii. Cadence and frames are deliberately
@@ -19,6 +21,13 @@ pub(crate) const SPIN_STEP_MS: u64 = 100;
 pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE };
     frames[frame % frames.len()]
+}
+
+/// The plan-review mark: stacked lines read as a list of steps (U+2630,
+/// EAW Neutral so it stays one cell, Emoji=No). Rides the same attention
+/// register as `!` — the reason differs, the urgency does not.
+fn plan_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii { '=' } else { '☰' }
 }
 
 /// Which colour family a glyph rides (06 §2.1: exactly three chromatic tokens;
@@ -62,12 +71,18 @@ pub(crate) fn card_glyph(
     let usable = |s: &&&SessionRecord| {
         matches!(s.confidence, Confidence::High | Confidence::Medium)
     };
-    if sessions
-        .iter()
-        .filter(usable)
-        .any(|s| matches!(s.state, SessionState::RequiresAction { .. }))
-    {
-        return Some(('!', Register::Attn));
+    // Plan approval gets its own mark, but only when it is the whole story —
+    // any other pending reason (permission ranks above plan) keeps the bang.
+    let mut has_attn = false;
+    let mut all_plan = true;
+    for s in sessions.iter().filter(usable) {
+        if let SessionState::RequiresAction { reason } = &s.state {
+            has_attn = true;
+            all_plan &= matches!(reason, Reason::Plan);
+        }
+    }
+    if has_attn {
+        return Some((if all_plan { plan_mark(tier) } else { '!' }, Register::Attn));
     }
     if sessions.iter().any(|s| {
         matches!(
@@ -104,6 +119,9 @@ pub(crate) fn session_glyph(state: &SessionState, tier: Tier, spin: usize) -> (c
     match state {
         SessionState::Spawning => (if ascii { '.' } else { '◦' }, Register::Grey),
         SessionState::Running => (spinner(tier, spin), Register::Grey),
+        SessionState::RequiresAction { reason: Reason::Plan } => {
+            (plan_mark(tier), Register::Attn)
+        }
         SessionState::RequiresAction { .. } => ('!', Register::Attn),
         SessionState::Idle { stop_reason: StopReason::EndTurn } => {
             (if ascii { '+' } else { '✓' }, Register::Calm)
@@ -195,6 +213,23 @@ mod tests {
         let attn = rec(SessionState::RequiresAction { reason: Reason::Permission });
         let fail = rec(SessionState::Failed { reason: FailReason::Server });
         assert_eq!(card_glyph(&[&fail, &attn], Tier::Unicode, 0), Some(('!', Register::Attn)));
+    }
+
+    #[test]
+    fn plan_gets_its_own_mark_unless_outranked() {
+        use unicode_width::UnicodeWidthChar;
+        let plan = rec(SessionState::RequiresAction { reason: Reason::Plan });
+        let perm = rec(SessionState::RequiresAction { reason: Reason::Permission });
+        assert_eq!(card_glyph(&[&plan], Tier::Unicode, 0), Some(('☰', Register::Attn)));
+        assert_eq!(card_glyph(&[&plan], Tier::Ascii, 0), Some(('=', Register::Attn)));
+        // A co-pending non-plan reason keeps the generic bang on the card.
+        assert_eq!(card_glyph(&[&plan, &perm], Tier::Unicode, 0), Some(('!', Register::Attn)));
+        assert_eq!(
+            session_glyph(&plan.state, Tier::Unicode, 0),
+            ('☰', Register::Attn)
+        );
+        assert_eq!(session_glyph(&perm.state, Tier::Unicode, 0).0, '!');
+        assert_eq!('☰'.width(), Some(1));
     }
 
     #[test]

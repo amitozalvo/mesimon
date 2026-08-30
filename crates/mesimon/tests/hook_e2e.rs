@@ -275,7 +275,7 @@ fn m2_attention_headless() {
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
     let n: usize =
         parsed["hooks"].as_object().unwrap().values().map(|a| a.as_array().unwrap().len()).sum();
-    assert_eq!(n, 30, "the registered set is 30 entries");
+    assert_eq!(n, 31, "the registered set is 31 entries");
     // Prefill: the ticket title is typed into the fresh pane, never submitted
     // (the pty echoes it even though the stub never reads stdin).
     let claude_sid16 = rec.sid16();

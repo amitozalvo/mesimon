@@ -5,7 +5,7 @@
 
 use std::cell::Cell;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mesimon_core::board::{Board, ExitReason, Provenance, SessionKind, SessionState, Ticket};
@@ -78,6 +78,13 @@ pub struct App {
     pub pending_gate_then: Option<uuid::Uuid>,
     /// The session a running handover holds focus on — released on return.
     focused_session_hint: Option<uuid::Uuid>,
+    /// New-binary watch (dev rebuild or prod upgrade — same signal).
+    update_watch: crate::update::UpdateWatch,
+    /// U on a ready update: the main loop execs the new binary in place.
+    pub pending_reexec: bool,
+    /// Daemon connection lost: keep the last board, re-dial on a slow cadence.
+    daemon_down: bool,
+    last_reconnect: Option<Instant>,
 }
 
 impl App {
@@ -107,6 +114,10 @@ impl App {
             pending_attach: None,
             pending_gate_then: None,
             focused_session_hint: None,
+            update_watch: crate::update::UpdateWatch::new(),
+            pending_reexec: false,
+            daemon_down: false,
+            last_reconnect: None,
         })
     }
 
@@ -123,15 +134,47 @@ impl App {
         (epoch.elapsed().as_millis() as u64 / crate::glyphs::SPIN_STEP_MS) as usize
     }
 
+    /// Soft on transport failure: a dead daemon keeps the last board on
+    /// screen and flags the reconnect cadence instead of exiting the TUI.
     pub fn refresh(&mut self) -> Result<()> {
-        let (board, grace, external, resources) = fetch(self.client.as_mut())?;
-        self.board = board;
-        self.grace = grace;
-        self.external = external;
-        self.resources = resources;
-        self.clamp_cursor();
-        self.clamp_screen();
+        match fetch(self.client.as_mut()) {
+            Ok((board, grace, external, resources)) => {
+                self.board = board;
+                self.grace = grace;
+                self.external = external;
+                self.resources = resources;
+                self.clamp_cursor();
+                self.clamp_screen();
+                if self.daemon_down {
+                    self.daemon_down = false;
+                    self.status = "daemon back ∙ board refreshed".into();
+                }
+            }
+            Err(_) => self.note_daemon_down(),
+        }
         Ok(())
+    }
+
+    fn note_daemon_down(&mut self) {
+        self.daemon_down = true;
+        self.status = "daemon unreachable ∙ reconnecting".into();
+    }
+
+    /// Request through the reconnect-tolerant seam: a transport failure
+    /// becomes an ordinary Err response (every call site already surfaces
+    /// those) and flags the reconnect cadence.
+    fn req(&mut self, command: Command) -> Response {
+        match self.client.request(command) {
+            Ok(r) => r,
+            Err(_) => {
+                self.note_daemon_down();
+                Response::Err { message: "daemon unreachable ∙ reconnecting".into() }
+            }
+        }
+    }
+
+    pub fn update_ready(&self) -> bool {
+        self.update_watch.ready()
     }
 
     /// Take whatever board a command replied with (RescanExternal does this).
@@ -188,13 +231,30 @@ impl App {
 
     /// Poll one terminal event; returns whether a redraw is needed.
     pub fn tick(&mut self) -> Result<bool> {
-        // Async board-changed events from the daemon.
         let mut dirty = false;
+        if self.update_watch.tick() {
+            self.status = "update ready ∙ U reloads".into();
+            dirty = true;
+        }
+        // Async board-changed events from the daemon.
         while self.client.poll_event() {
             dirty = true;
         }
         if dirty {
             self.refresh()?;
+        }
+        // Reconnect cadence: the daemon went away (update restart, crash).
+        // The reopen inside `refresh` respawns it when it is truly gone.
+        if !self.client.healthy() && !self.daemon_down {
+            self.note_daemon_down();
+            dirty = true;
+        }
+        if self.daemon_down
+            && self.last_reconnect.is_none_or(|t| t.elapsed() >= Duration::from_secs(2))
+        {
+            self.last_reconnect = Some(Instant::now());
+            self.refresh()?;
+            dirty = true;
         }
         if !event::poll(Duration::from_millis(100))? {
             return Ok(dirty);
@@ -257,6 +317,14 @@ impl App {
                 _ => {}
             }
             self.mode = Mode::Input { purpose, buffer };
+            return Ok(());
+        }
+        // U on a ready update: reload in place — ask the daemon to shut down
+        // clean (it comes back as the new binary via connect-spawn), then let
+        // the main loop exec ourselves. Opt-in only, never automatic.
+        if code == KeyCode::Char('U') && self.update_watch.ready() {
+            let _ = self.client.request(Command::Shutdown);
+            self.pending_reexec = true;
             return Ok(());
         }
         // Tab / Shift+Tab: next/previous needs-you card. Global, BEFORE the
@@ -379,7 +447,7 @@ impl App {
                 };
             }
             KeyCode::Char('Z') => {
-                match self.client.request(Command::ReclaimAll)? {
+                match self.req(Command::ReclaimAll) {
                     Response::Reclaimed { slept, skipped } => {
                         self.status = match (slept, skipped) {
                             (0, 0) => "nothing in done to sleep".into(),
@@ -498,8 +566,13 @@ impl App {
 
     /// `e`: rescan (lazy census — this is the only trigger) and open the drawer.
     fn open_drawer(&mut self) -> Result<()> {
-        let resp = self.client.request(Command::RescanExternal)?;
-        self.absorb_board(resp);
+        match self.req(Command::RescanExternal) {
+            Response::Err { message } => {
+                self.status = message;
+                return Ok(());
+            }
+            resp => self.absorb_board(resp),
+        }
         if self.external.is_empty() {
             self.status = "no external sessions found for this repo".into();
         } else {
@@ -525,10 +598,7 @@ impl App {
             KeyCode::Char('a') => {
                 // Import: the daemon mints a ticket named after the session.
                 let claude_session_id = self.external[idx].claude_session_id;
-                match self
-                    .client
-                    .request(Command::AttachExternal { claude_session_id, ticket: None })?
-                {
+                match self.req(Command::AttachExternal { claude_session_id, ticket: None }) {
                     Response::Spawned { id } => {
                         self.refresh()?;
                         self.status = self
@@ -550,11 +620,11 @@ impl App {
             KeyCode::Char('R') | KeyCode::Enter => {
                 let claude_session_id = self.external[idx].claude_session_id;
                 let confirm = self.resume_refused == Some(claude_session_id);
-                match self.client.request(Command::ResumeExternal {
+                match self.req(Command::ResumeExternal {
                     claude_session_id,
                     ticket: None,
                     confirm,
-                })? {
+                }) {
                     Response::Spawned { .. } => {
                         self.resume_refused = None;
                         self.status = "resumed here".into();
@@ -633,7 +703,7 @@ impl App {
             InputPurpose::Create => {
                 let cols = self.columns();
                 let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
-                match self.client.request(Command::CreateTicket { column, title })? {
+                match self.req(Command::CreateTicket { column, title }) {
                     Response::Created { id } => {
                         self.refresh()?;
                         self.select_ticket(id);
@@ -679,7 +749,7 @@ impl App {
     }
 
     fn spawn_and_focus(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
-        match self.client.request(Command::SpawnSession { ticket, kind })? {
+        match self.req(Command::SpawnSession { ticket, kind }) {
             Response::Spawned { id } => {
                 self.refresh()?;
                 self.focus_session(id)?;
@@ -706,7 +776,7 @@ impl App {
                 } else {
                     Command::ResumeSession { id: sid, confirm: self.resume_refused == Some(sid) }
                 };
-                match self.client.request(cmd)? {
+                match self.req(cmd) {
                     Response::Spawned { .. } => {
                         self.resume_refused = None;
                         self.refresh()?;
@@ -727,9 +797,9 @@ impl App {
             }
         }
         // GATE (D20): prove the unfocus key once before the first real focus.
-        match self.client.request(Command::GateStatus)? {
+        match self.req(Command::GateStatus) {
             Response::Gate { passed: true, .. } => {
-                match self.client.request(Command::FocusStart { session: sid })? {
+                match self.req(Command::FocusStart { session: sid }) {
                     Response::Attach { argv } => {
                         self.pending_attach = Some(argv);
                         self.focused_session_hint = Some(sid);
@@ -753,7 +823,7 @@ impl App {
         if let Some(sid) = self.pending_gate_then.take() {
             // Detaching from the gate session IS the proof (D20).
             self.send(Command::GatePassed)?;
-            match self.client.request(Command::FocusStart { session: sid })? {
+            match self.req(Command::FocusStart { session: sid }) {
                 Response::Attach { argv } => {
                     self.pending_attach = Some(argv);
                     self.focused_session_hint = Some(sid);
@@ -825,7 +895,7 @@ impl App {
     }
 
     fn send(&mut self, command: Command) -> Result<()> {
-        if let Response::Err { message } = self.client.request(command)? {
+        if let Response::Err { message } = self.req(command) {
             self.status = message;
         }
         self.refresh()

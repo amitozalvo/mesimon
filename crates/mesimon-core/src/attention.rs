@@ -180,6 +180,10 @@ pub enum Signal {
     PermissionRequest,
     PermissionDenied,
     PreToolUse { tool: AttentionTool },
+    /// The narrow post-tool pair only: fires when the user has ANSWERED the
+    /// question / resolved the plan dialog, which is the only mid-turn moment
+    /// the `RequiresAction` can truthfully drop back to `Running`.
+    PostToolUse { tool: AttentionTool },
     Notification { kind: NotificationKind },
     Elicitation,
     ElicitationResult,
@@ -409,6 +413,8 @@ impl Machine {
                 AttentionTool::AskUserQuestion => t(S::RequiresAction { reason: Reason::Question }),
                 AttentionTool::ExitPlanMode => t(S::RequiresAction { reason: Reason::Plan }),
             },
+            // Tool completed = the user answered; the turn resumes.
+            Signal::PostToolUse { .. } => t(S::Running),
             Signal::Notification { kind } => match kind {
                 NotificationKind::QuotaStale | NotificationKind::QuotaDisabled => {
                     t(S::RequiresAction { reason: Reason::QuotaResume })
@@ -418,7 +424,16 @@ impl Machine {
                 // PermissionRequest fired (11 §11.2.3). Confirmation-only when
                 // the state is already held.
                 NotificationKind::PermissionPrompt => {
-                    if self.state == (S::RequiresAction { reason: Reason::Permission }) {
+                    // Confirmation-only when a dialog is already held — and a
+                    // held Plan/Question IS this prompt (the interaction tools
+                    // surface as permission dialogs); never blur it to the
+                    // generic reason.
+                    if matches!(
+                        self.state,
+                        S::RequiresAction {
+                            reason: Reason::Permission | Reason::Plan | Reason::Question
+                        }
+                    ) {
                         None
                     } else {
                         Some((
@@ -637,6 +652,33 @@ mod tests {
         let mut m2 = m(SessionState::Running);
         let c = m2.apply(&Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }, 1).unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::Plan });
+    }
+
+    #[test]
+    fn permission_prompt_never_blurs_a_held_plan_or_question() {
+        // The plan dialog is a permission dialog for ExitPlanMode; the
+        // straggler permission_prompt notification must not demote the
+        // sharper reason to generic Permission (dogfood 2026-08-30).
+        for reason in [Reason::Plan, Reason::Question] {
+            let mut m1 = m(SessionState::RequiresAction { reason });
+            let sig = Signal::Notification { kind: NotificationKind::PermissionPrompt };
+            assert_eq!(m1.apply(&sig, 1), None);
+            assert_eq!(m1.state(), &SessionState::RequiresAction { reason });
+        }
+    }
+
+    #[test]
+    fn answered_question_settles_back_to_running() {
+        let mut m = m(SessionState::Running);
+        m.apply(&Signal::PreToolUse { tool: AttentionTool::AskUserQuestion }, 1_000).unwrap();
+        // The answer lands mid-turn: a leave, so it settles, never instant.
+        assert!(m
+            .apply(&Signal::PostToolUse { tool: AttentionTool::AskUserQuestion }, 5_000)
+            .is_none());
+        assert!(m.tick(5_000 + SETTLE_MS - 1).is_none());
+        let c = m.tick(5_000 + SETTLE_MS).unwrap();
+        assert_eq!(c.to, SessionState::Running);
+        assert!(!c.attention_added);
     }
 
     #[test]

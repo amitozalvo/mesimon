@@ -451,3 +451,44 @@ artifacts. **M4's worktree spawn needs no trust gate and no config writes.**
   the drawn-structure range 0x2500–0x259F stripped (the L1 no-drawn-structure law holds for
   transcript content too). Highest-precedence session with a transcript wins (bash rows
   never have one).
+
+## Opt-in binary update reload + daemon-restart resilience (2026-08-30)
+
+New decision — the corpus is silent on updates. Dev rebuilds and production upgrades are
+one mechanism: a newer mtime on the executable at our own path, held for one 2 s check
+interval (`tui/src/update.rs`; the hold debounces a binary still being linked).
+
+- **Never automatic** (nodeterm lesson: the human owns lifecycle). The header shows a grey
+  `update ready (U reloads)` offer — dim2, like the sleep suggestion; attn stays
+  needs-you-only. `U` (global, both screens, not in text input) sends `Command::Shutdown`
+  (already daemon-supported: persists, breaks the msg loop, removes sockets), waits for
+  `orch.sock` to vanish (flock race), then `exec`s the new binary in place
+  (`tui/src/lib.rs::reexec`). The fresh TUI's connect-spawn brings up the NEW daemon.
+- **Daemon restart is the designed story, not damage**: tmux + agent sessions survive;
+  records reconcile to `Unknown{DaemonRestarted}` and re-derive via the observe tier. Hook
+  settings keep working across the swap because they exec `mesimon hook` by path and the
+  path is stable — an in-place swap means old sessions run the new hook code (softens the
+  CLAUDE.md rebuild trap for same-path rebuilds).
+- **The TUI no longer dies with the daemon**: `client.rs` holds a reconnectable `Conn`; a
+  dead connection keeps the last board on screen, shows `daemon unreachable ∙ reconnecting`,
+  and re-dials every 2 s (reopening spawns the daemon when it is truly gone; a protocol-
+  version refusal from a newer daemon surfaces in the status line). Transport failures
+  reach key handlers as ordinary `Response::Err` via `App::req` — no mutation is ever
+  blindly replayed after a lost reply.
+
+## Answered question clears mid-turn — narrow PostToolUse pair (2026-08-30, dogfood)
+
+Dogfood find: an `AskUserQuestion` ticket stayed needs-you AFTER the user answered, until the
+whole turn ended (Stop). Nothing in the registered set fires when the answer lands — 11 §11.2.5
+banned PostToolUse wholesale as verbose tier.
+
+**Supersedes 11 §11.2.5's blanket PostToolUse ban**: the ban is now read as broad-matcher only.
+The registered set gains ONE `PostToolUse` entry with the same narrow
+`AskUserQuestion,ExitPlanMode` matcher as PreToolUse (31 entries total,
+`daemon/src/hook_settings.rs`). Completion of either tool = the user answered; ingest maps it to
+`Signal::PostToolUse` and the machine drops `RequiresAction` → `Running` (a leave, so the
+1500 ms settle applies). Interrupting the question instead of answering still fires nothing —
+that path clears via the next `UserPromptSubmit`, or the 15-min stale demote.
+
+Existing sessions spawned before this change carry the 30-entry settings file and keep the old
+behaviour until respawned (hooks are injected at launch).

@@ -92,13 +92,32 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
                 _ => StopFailureClass::Unknown,
             },
         }),
-        "PermissionRequest" => Some(Signal::PermissionRequest),
+        // The approval dialog for the two interaction tools IS the plan/
+        // question moment — a generic Permission here would clobber the
+        // sharper reason PreToolUse just set (dogfood 2026-08-30: plan
+        // dialogs read as `permission`, never `plan`).
+        "PermissionRequest" => match frame.payload.get("tool_name").and_then(Value::as_str) {
+            Some("AskUserQuestion") => {
+                Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
+            }
+            Some("ExitPlanMode") => Some(Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }),
+            _ => Some(Signal::PermissionRequest),
+        },
         "PermissionDenied" => Some(Signal::PermissionDenied),
         "PreToolUse" => match frame.payload.get("tool_name").and_then(Value::as_str) {
             Some("AskUserQuestion") => {
                 Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
             }
             Some("ExitPlanMode") => Some(Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }),
+            _ => None,
+        },
+        // Same narrow pair — fires when the user answers, clearing the
+        // RequiresAction while the turn keeps going.
+        "PostToolUse" => match frame.payload.get("tool_name").and_then(Value::as_str) {
+            Some("AskUserQuestion") => {
+                Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion })
+            }
+            Some("ExitPlanMode") => Some(Signal::PostToolUse { tool: AttentionTool::ExitPlanMode }),
             _ => None,
         },
         // One registration, no matcher — discriminate here (11 §11.2.3: the
@@ -141,6 +160,11 @@ pub fn detail_of(frame: &HookFrame) -> Option<String> {
             .map(str::to_string),
         "PermissionRequest" => {
             let tool = frame.payload.get("tool_name").and_then(Value::as_str)?;
+            if tool == "ExitPlanMode" {
+                // The dialog is "approve this plan?", not a tool permission —
+                // the raw tool name reads as noise on the card.
+                return Some("plan ready for review".to_string());
+            }
             let arg = frame
                 .payload
                 .get("tool_input")
@@ -282,6 +306,20 @@ mod tests {
         );
         assert_eq!(signal_of(&f), Some(Signal::PermissionRequest));
         assert_eq!(detail_of(&f), Some("Bash(rm -rf node_modules)".into()));
+        // The interaction tools' approval dialogs keep their sharp reason —
+        // never the generic Permission (see signal_of).
+        let f = frame(
+            "PermissionRequest",
+            None,
+            r#"{"tool_name":"ExitPlanMode","tool_input":{"plan":"p"}}"#,
+        );
+        assert_eq!(signal_of(&f), Some(Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }));
+        assert_eq!(detail_of(&f), Some("plan ready for review".into()));
+        let f = frame("PermissionRequest", None, r#"{"tool_name":"AskUserQuestion"}"#);
+        assert_eq!(
+            signal_of(&f),
+            Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
+        );
     }
 
     #[test]
@@ -290,6 +328,10 @@ mod tests {
         assert_eq!(signal_of(&f), Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion }));
         assert_eq!(detail_of(&f), Some("Keep the 301?".into()));
         let f = frame("PreToolUse", None, r#"{"tool_name":"Bash"}"#);
+        assert_eq!(signal_of(&f), None);
+        let f = frame("PostToolUse", None, r#"{"tool_name":"AskUserQuestion","tool_response":{}}"#);
+        assert_eq!(signal_of(&f), Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion }));
+        let f = frame("PostToolUse", None, r#"{"tool_name":"Bash"}"#);
         assert_eq!(signal_of(&f), None);
     }
 

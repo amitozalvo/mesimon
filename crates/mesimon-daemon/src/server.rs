@@ -1710,9 +1710,19 @@ impl Daemon {
             .and_then(|s| self.board.ticket(s.ticket))
             .map(|t| tmux_text(&t.title, 48))
             .unwrap_or_default();
-        let needs_you = mesimon_core::attention::attention_queue(&self.board).len();
-        let attn = if needs_you > 0 {
-            format!("#[noreverse]#[fg=yellow,bold] !{needs_you} #[default]")
+        let queue = mesimon_core::attention::attention_queue(&self.board);
+        let needs_you = queue.len();
+        // The user is looking at this pane: a `!1` that means "the session
+        // you're inside" is noise, so the chip only shows when somewhere
+        // ELSE needs them too.
+        let only_self = needs_you == 1 && queue[0].id == focused;
+        let attn = if needs_you > 0 && !only_self {
+            // Painted chip, not bare fg: `noreverse` alone drops the segment
+            // to the terminal's default background (illegible on light
+            // terminals). Graphite's attn pair (06 §2.2) — legibility is
+            // internal to the chip, so it needs no flavor detection here;
+            // tmux maps the hex down to 256/16 colours itself.
+            format!("#[noreverse]#[fg=#131417,bg=#F0A93A,bold] !{needs_you} #[default]")
         } else {
             String::new()
         };

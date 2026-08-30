@@ -30,9 +30,12 @@ pub(super) fn breadcrumb(app: &App) -> Vec<Span<'static>> {
         Span::styled(repo, theme.base().add_modifier(Modifier::BOLD)),
     ];
     if needs_you > 0 {
+        // Inverted chip (06 §2.4b treatment): attn ground, attn_ink text.
+        // Bare fg text vanished against dark terminal grounds inside tmux.
+        spans.push(Span::raw(" ".to_string()));
         spans.push(Span::styled(
-            format!(" !{needs_you}"),
-            theme.attn_text().add_modifier(Modifier::BOLD),
+            format!(" !{needs_you} "),
+            theme.attn_row().add_modifier(Modifier::BOLD),
         ));
     }
     spans
@@ -77,6 +80,11 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
             format!(" ∙ free ~{free:.1}GiB (Z sleeps {} in done)", r.reclaim_sessions),
             theme.dim2(),
         ));
+    }
+    // A newer binary sits at our own path (dev rebuild or upgrade). Grey
+    // offer like the sleep suggestion — attn stays needs-you-only (L3).
+    if app.update_ready() {
+        spans.push(Span::styled(" ∙ update ready (U reloads)".to_string(), theme.dim2()));
     }
     // Needs-you lives in the breadcrumb's `!N` (07 §2.2's separate
     // `needs you N` word form superseded by the shared component).
