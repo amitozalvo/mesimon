@@ -1100,7 +1100,12 @@ impl App {
             MergeStage::Merge => match self.req(Command::MergeTicket { id: ticket }) {
                 Response::Merge { outcome, detail } => {
                     self.merge_note = match outcome {
-                        MergeOutcome::Merged => format!("{detail} ∙ m tells the agent"),
+                        // The note promises the next press notifies, so arm
+                        // that stage now — same as the NeedsRebase race below.
+                        MergeOutcome::Merged => {
+                            self.merge_armed = Some((ticket, MergeStage::Notify));
+                            format!("{detail} ∙ m tells the agent")
+                        }
                         MergeOutcome::AlreadyMerged => detail,
                         // Raced: main moved between snapshot and keypress.
                         MergeOutcome::NeedsRebase => {
@@ -1609,6 +1614,12 @@ pub(crate) mod test_support {
                         Response::Attach { argv: vec!["tmux".into()] }
                     });
                 }
+                Command::MergeTicket { .. } => {
+                    return Ok(Response::Merge {
+                        outcome: MergeOutcome::Merged,
+                        detail: "merged 2 commit(s)".into(),
+                    });
+                }
                 Command::SpawnSession { ticket, kind } => {
                     let rec = mesimon_core::board::SessionRecord::new(
                         uuid::Uuid::from_u128(4242),
@@ -1899,6 +1910,39 @@ mod tests {
             SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
         press(&mut app, 'm');
         assert!(app.merge_armed.is_some());
+    }
+
+    #[test]
+    fn merged_note_arms_notify_so_one_m_delivers() {
+        // The post-merge note promises "m tells the agent" — that press must
+        // notify, not re-arm a confirm the note already gave (author 2026-08-30).
+        let (mut app, sent, _sid) = app_with_claude(
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+            false,
+        );
+        let wt = |merged, ahead| WorktreeItem {
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1-work".into(),
+            status: "attached".into(),
+            merged,
+            conflict: false,
+            ahead,
+            needs_rebase: false,
+            detail: None,
+            path: None,
+        };
+        app.worktrees.push(wt(false, 2));
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'm'); // arms the merge confirm
+        press(&mut app, 'm'); // ff merge lands
+        assert!(app.merge_note.ends_with("∙ m tells the agent"));
+        assert_eq!(app.merge_armed, Some((ulid::Ulid(1), MergeStage::Notify)));
+        // The refresh's snapshot now carries the merged binding (the fake
+        // transport returns none, so restore it by hand).
+        app.worktrees.push(wt(true, 0));
+        press(&mut app, 'm');
+        assert!(sent_contains(&sent, "MergedNotice"), "one m after the merge notifies");
+        assert_eq!(app.merge_note, "agent notified");
     }
 
     #[test]
