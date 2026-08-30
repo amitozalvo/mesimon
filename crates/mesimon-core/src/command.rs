@@ -47,7 +47,9 @@ pub enum Command {
     ResumeSession { id: uuid::Uuid, confirm: bool },
     SleepSession { id: uuid::Uuid },
     WakeSession { id: uuid::Uuid },
-    /// Sleep every eligible session (04's reclaim).
+    /// Take the header's sleep offer: sleep every eligible session on
+    /// sleep-safe tickets (2026-08-30 rescope — was board-wide; the key must
+    /// sleep exactly what the suggestion names, nothing broader).
     ReclaimAll,
     PinAwake { id: uuid::Uuid, pinned: bool },
     /// Exclusive-focus token (D22). Grants the attach argv for the handover.
@@ -64,6 +66,8 @@ pub enum Command {
 pub enum Response {
     Hello { version: u32, daemon_pid: u32 },
     Ok,
+    /// CreateTicket's receipt: the minted id, so the client can select it.
+    Created { id: ulid::Ulid },
     Spawned { id: uuid::Uuid },
     /// ReclaimAll's receipt: how many actually slept, and why others did not.
     Reclaimed { slept: usize, skipped: usize },
@@ -122,6 +126,13 @@ pub struct Resources {
     pub pty_total: u32,
     /// Remaining spawn budget before the OS boundary (14 §5.1).
     pub pty_budget: u32,
+    /// The header's sleep suggestion (suggestions over shortcuts, dogfood
+    /// 2026-08-29): sessions on sleep-safe tickets passing the D23 floors
+    /// right now, and the RSS they hold. Zero sessions = no suggestion.
+    #[serde(default)]
+    pub reclaim_bytes: u64,
+    #[serde(default)]
+    pub reclaim_sessions: usize,
 }
 
 /// Pushed to subscribed clients whenever board state changes.

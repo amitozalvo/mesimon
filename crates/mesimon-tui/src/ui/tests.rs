@@ -3,8 +3,8 @@
 //! in `testdata/golden/`; regenerate with `MESIMON_UPDATE_GOLDEN=1`.
 
 use mesimon_core::board::{
-    Board, Column, FailReason, Reason, SessionKind, SessionRecord, SessionState, StopReason,
-    Ticket,
+    Board, Column, ExitReason, FailReason, Reason, SessionKind, SessionRecord, SessionState,
+    StopReason, Ticket,
 };
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
@@ -201,10 +201,84 @@ fn golden_ticket_screen_100() {
 }
 
 #[test]
+fn golden_ticket_corpse_120() {
+    // The rail's one resumable corpse: dim row, "enter resumes" hint.
+    let mut b = fixture(false);
+    b.sessions.push(session(
+        39,
+        ulid_n(3),
+        SessionKind::Claude,
+        SessionState::Exited { reason: ExitReason::UserQuit },
+    ));
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    golden("ticket_corpse_120x30", &render(&app, 120, 30));
+}
+
+/// A daemon refusal set into `app.status` must reach the ticket footer —
+/// it outranks the key hints there just as it does on the board.
+#[test]
+fn test_ticket_footer_shows_status() {
+    let mut app = app_graphite(fixture(true));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.status = "pinned awake".into();
+    let lines = render(&app, 120, 30);
+    let footer = lines.last().expect("footer row");
+    assert!(footer.contains("pinned awake"), "status missing from ticket footer: {footer:?}");
+    assert!(!footer.contains("jk select"), "hints should yield to status");
+}
+
+#[test]
+fn golden_peek_board_120() {
+    // `p`: the cursor card grows wrapped transcript-peek rows under its
+    // session rows, read straight from the transcript file at draw time.
+    let dir = std::env::temp_dir().join(format!("msmn-peek-golden-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("peek dir");
+    let path = dir.join("t.jsonl");
+    std::fs::write(
+        &path,
+        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n",
+    )
+    .expect("peek transcript");
+    let mut b = fixture(false);
+    b.sessions
+        .iter_mut()
+        .find(|s| s.id == uuid_n(31))
+        .expect("session 31")
+        .transcript_path = Some(path.to_string_lossy().into_owned());
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    app.peek = true;
+    golden("board_peek_120x30", &render(&app, 120, 30));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn golden_mono_board_120() {
     let mut app = App::for_test(fixture(true), Theme::new(Flavor::Graphite, Profile::Mono));
     app.cursor_col = 1;
     golden("board_mono_120x30", &render(&app, 120, 30));
+}
+
+/// A single-session cursor card lists no session row — line 1's aggregate
+/// glyph + age ARE that session, so the accordion row would be a duplicate.
+#[test]
+fn test_single_session_card_hides_session_row() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1; // "in progress"
+    app.cursor_row = 1; // T-4: exactly one (claude) session
+    let lines = render(&app, 120, 30);
+    assert!(
+        !lines.iter().any(|l| l.contains("claude")),
+        "single-session accordion must not repeat the session as a row"
+    );
+    // Two sessions still list both rows (cursor_row 0 is T-3: claude + bash).
+    app.cursor_row = 0;
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("claude")) && lines.iter().any(|l| l.contains("bash")));
 }
 
 // ---- laws ------------------------------------------------------------------
@@ -374,4 +448,35 @@ fn test_cursor_column_header() {
         assert_eq!(buf[(x, 2)].bg, band, "cursor column header band missing at {x}");
     }
     assert_ne!(buf[(1, 2)].bg, band, "non-cursor column must not carry the band");
+}
+
+#[test]
+fn test_rail_corpse_rules() {
+    // The rail keeps exactly one resumable corpse: the latest exited claude
+    // that was not `x`-dismissed. Bash corpses and older ones stay off.
+    let mut b = fixture(false);
+    let t3 = ulid_n(3);
+    let mut old =
+        session(33, t3, SessionKind::Claude, SessionState::Exited { reason: ExitReason::UserQuit });
+    old.state_changed_at = Some(10);
+    let mut newer =
+        session(34, t3, SessionKind::Claude, SessionState::Exited { reason: ExitReason::Crashed });
+    newer.state_changed_at = Some(20);
+    let mut killed =
+        session(35, t3, SessionKind::Claude, SessionState::Exited { reason: ExitReason::Killed });
+    killed.state_changed_at = Some(30);
+    let mut bash =
+        session(36, t3, SessionKind::Bash, SessionState::Exited { reason: ExitReason::UserQuit });
+    bash.state_changed_at = Some(40);
+    b.sessions.extend([old, newer, killed, bash]);
+    let app = app_graphite(b);
+    let ids: Vec<uuid::Uuid> = app.rail_sessions(t3).iter().map(|s| s.id).collect();
+    assert!(ids.contains(&uuid_n(31)), "live claude stays");
+    assert!(ids.contains(&uuid_n(32)), "live bash stays");
+    assert!(ids.contains(&uuid_n(34)), "latest resumable corpse rides the rail");
+    assert!(!ids.contains(&uuid_n(33)), "only the latest corpse shows");
+    assert!(!ids.contains(&uuid_n(35)), "x-killed stays dismissed");
+    assert!(!ids.contains(&uuid_n(36)), "bash corpses are not resumable");
+    // Fixed creation order (06 §7 R4): the corpse sits where it was spawned.
+    assert_eq!(ids, vec![uuid_n(31), uuid_n(32), uuid_n(34)]);
 }

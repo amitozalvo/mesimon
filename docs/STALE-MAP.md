@@ -195,6 +195,11 @@ handover (T-4, an M1 item) · physical Shift+Enter through a real outer terminal
   have no `idle` state; the children guard is the floor); wake respawns a fresh shell.
 - **Sleep age floor is measured from `state_changed_at`** (time in the current state), not
   session creation time — no created-at field exists on the record. Stricter than D23's wording.
+- **The 60 s age floor binds only bulk reclaim** (author, dogfood 2026-08-30): a manual
+  per-session `z` is explicit intent and sleeps immediately — D23's "never sleep within 60s"
+  hard floor is narrowed to `reclaim_all` and the header reclaim figures. Rationale: the floor
+  guards automation churn; a keypress on one card is not churn. The other eligibility checks
+  (pinned, idle-only, bash live-children) still apply everywhere.
 - **The kill ladder's grace-then-kill-pane gap (M2 note) is closed**: `kill_session`, grace-band
   expiry, and sleep all SIGTERM then reap the pane via a shared 5 s reaper.
 - **Observe-tier state evidence** is transcript-tail only (`09` §4.3 cursor, `09` §4.4 signals →
@@ -234,9 +239,13 @@ What shipped differs from the corpus in these ways:
   disarm → `test_dsr_2031_disarmed` defers with it). The two terminfo rungs are deferred:
   terminfo is a guaranteed false negative under tmux; env rungs carry the weight. OSC 11 goes
   through `terminal-colorsaurus` 1.0.3 (reads `/dev/tty`, sidesteps the T-4 stdin race).
-- **Card anatomy** (`07` §4): the running/spawning/idle-other states render NO badge glyph —
+- **Card anatomy** (`07` §4): the spawning/idle-other states render NO badge glyph —
   `07` §4.1's "glyph pair present only when abnormal" wins over `06` §10.3's gallery, which
   shows `▸`/`◦` on resting cards. Session liveness appears in the meta-strip dots instead.
+  Amended 2026-08-30: a RUNNING card (and running session rows) carries an animated grey
+  spinner (braille frames; `|/-\` on ascii) — the ticking age alone read as ambiguous. This
+  pulls one slice of `06`'s M6 animation forward; frames and cadence are hardcoded
+  (`glyphs.rs`), configurability stays deferred with the rest of M6.
   Tag-pip and stage zones are zero-width (no tags field; D33g), so a session-less card is one
   line with no age (created-at staleness needs a parsed timestamp — deferred).
 - **Density is `normal` only**: `compact`/`detail`/`map` and the `z` ladder are M6. The
@@ -352,3 +361,93 @@ What shipped differs from the corpus in these ways:
   is a full-width painted band on the `selected` surface, name at `sel.base` bold — a shape
   cards never take. Mono/Ansi8 fall back to the sanctioned reverse; light-256 (no painted
   selected) relies on the name's value step alone.
+
+## D25 worktree-trust A/B resolved (2026-08-30, docs/spikes/D25-worktree-trust-ab.md)
+
+Live A/B: a fresh worktree of a trusted repo shows **no trust dialog** and mints **no**
+`~/.claude.json` entry on a bare visit. D25 (trust keyed to the main repo) stands; the M0
+doubt ("worktrees have own ~/.claude.json entries") is retired — those entries were session
+artifacts. **M4's worktree spawn needs no trust gate and no config writes.**
+
+## Tier A− refuted; Esc-interrupt catch rebuilt on pane activity (2026-08-30, docs/spikes/S-E-esc-interrupt-tier-a-minus.md)
+
+- **`11` §11.1 rows #9/#10 and §11.6.2's triad are dead on current Claude Code (2.x, under
+  tmux)**: no OSC `9;4` is ever emitted, and the OSC 0 title glyph is a static `✳` in every
+  state (label changes only) — it no longer distinguishes computing from waiting. §11.7.3's
+  interrupt row (`Running` + `9;4;0`, no `Stop` ≤3 s → `Idle{Interrupted}`) therefore has no
+  trigger as written.
+- **The interrupt emits nothing at all** (dogfood forensics): no hook frame (corpus [D] claim
+  confirmed live), no `Notification` in 15+ min, and — new — an Esc landing before the first
+  assistant output appends **no transcript record** (no `isAbortedMidStream`), so the tail
+  `Aborted` classifier cannot cover it either.
+- **Rebuilt as the pane-activity quiet probe**: `Running` Claude pane of ours with
+  `#{window_activity}` age ≥ 8 s → `Idle{Interrupted}`, conf `medium`, after the standard
+  1.5 s settle; demotion-only (promotion stays hooks-only). Empirical basis: working turns
+  hold the age at 0–1 s (spinner repaints sub-second); idle panes emit only sparse statusline
+  bursts. Seam `MESIMON_PANE_QUIET_MS`; e2e `interrupt_e2e`.
+
+## Exited conversations stay resumable (2026-08-30, dogfood)
+
+- **The ticket rail carries one resumable corpse** — `07` §14.2's "one row per process" is
+  amended: the latest exited claude conversation on a ticket stays on the rail (dim row,
+  `enter resumes` hint) unless `x` dismissed it (`Exited{Killed}` stays hidden, and `x` on
+  the corpse row itself dismisses it). Enter sends `ResumeSession`; the daemon already
+  accepted resume on paneless records — the affordance was the missing half. Motivating
+  case: takeover of an adopted session, then quitting claude in-pane (double ctrl+c) made
+  the conversation unreachable from its ticket. `c` still means "focus a LIVE claude or
+  spawn fresh" — corpse resume is Enter's, deliberately.
+- **Drawer re-import reuses the corpse record**: `attach_external` now returns the existing
+  non-live record (and its ticket) for a re-imported `claude_session_id` instead of minting
+  a duplicate record + ticket — the completion of `rescan_external`'s "re-importable, not
+  shadow-banned" rule. An explicit target ticket still retargets the record.
+
+## Daemon-restart recovery borrows the observe tier (2026-08-30)
+
+- `11` §11.7.3's "daemon restart → `Unknown(DaemonRestarted)` → reconcile" chain had no
+  re-derivation step for OUR sessions: reconcile is honest (never trusts stale activity
+  claims), but a restart mid-turn then showed "?" until the next hook boundary — minutes,
+  while Claude visibly streams (dogfood 2026-08-30; frequent, because dogfooding on the repo
+  itself means killing the daemon at every rebuild). Spawned/takeover Claude sessions now
+  become transcript-tail candidates **while `Unknown{*}` only**: the tail re-derives state at
+  Low confidence (`AssistantText` → `running`, `turn_duration` → `idle`, …); leaving
+  `Unknown` drops the cursor and hooks own the state again. E2e: `restart_e2e`.
+- **Mint-time backfill amends "history is not activity" (`09` §4.3) for exactly this case**: a
+  turn that ENDED before the restart never grows its transcript again, so an at-EOF cursor
+  would leave the card at "?" until the next prompt (dogfood 2026-08-30: 3 of 4 sessions).
+  For an `Unknown` session only, cursor mint classifies the LAST uuid-bearing record —
+  `turn_duration` → `idle (done)`, aborted → `idle (interrupted)`, pending
+  `AskUserQuestion`/`ExitPlanMode` → the reason at Low (never announced, never queued),
+  trailing assistant/user record quiet-gated by file mtime (45 s). One bounded 64 KiB read;
+  the walk stops at the first uuid record so an older `turn_duration` can never claim a
+  freshly-started turn is done. The §4.3 rule's INTENT (no replayed announcements) is
+  preserved — Low confidence structurally cannot announce.
+
+## Header sleep suggestion (2026-08-30) — a first sliver of D23's offer tier
+
+- The header resource line grows `∙ free ~X.XGiB (sleep N in done)` when sessions on
+  sleep-safe tickets pass the D23 floors (same `sleep_eligible` predicate the keys use —
+  the suggestion never offers what a keystroke would refuse). Payoff first, the how in
+  parens, grey ramp; hidden under 0.1 GiB. Suggestions over shortcuts (author 2026-08-29);
+  D35.1 still holds — nothing sleeps without a keystroke, no timer, no `[sleep]` config.
+- **Sleep-safe is hardcoded to the `DONE` column** until M5's column policies land, where it
+  becomes per-column `sleep = never|offer|auto`.
+- RSS measurement now keeps its per-session split (`parse_ps_rss_by`) to price the offer.
+
+## Board transcript peek (2026-08-30) — `p` on BOARD
+
+- **`07` §4.3's "identifiers and glyphs, never sentences" is amended for one opt-in row
+  group**: with the peek toggle on, the cursor card's accordion appends the latest assistant
+  reply (≤4 wrapped rows, `~` cut marker, `sel.dim1`, indent 2). Off by default; the resting
+  board is unchanged. The full sentence still lives one focus away — peek answers "what did
+  it just say" without leaving the board.
+- **`04` §2.4's BOARD `p` (duplicate the yanked ticket) is displaced**: duplicate is
+  unimplemented, and `p` = peek is the product's own mnemonic (INBOX `p`, `04` §2.10). The
+  M6 keymap pass re-homes duplicate.
+- **Mechanism**: zero daemon/wire changes. The snapshot already carries `transcript_path`
+  per session record; the TUI reads the file's last 64 KiB at draw time (census-style
+  reverse scan for the last assistant text block, `core::adopt::classify_tail_record`)
+  behind a one-entry (len, mtime) cache (`tui/src/peek.rs`) — steady cost is one `stat`
+  per frame for the single peeking card. Text is sanitized before render: control chars and
+  the drawn-structure range 0x2500–0x259F stripped (the L1 no-drawn-structure law holds for
+  transcript content too). Highest-precedence session with a transcript wins (bash rows
+  never have one).

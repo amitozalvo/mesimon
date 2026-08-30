@@ -11,6 +11,7 @@ use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputPurpose, Mode};
+use crate::text::EditBuffer;
 use crate::layout::{self, Slot};
 
 use super::card::{self, CardCtx};
@@ -65,7 +66,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
     let count = rows.len() + ghost.map(|_| 1).unwrap_or(0);
 
-    let ctx = CardCtx { theme, width: area.width, now_ms: now_ms() };
+    let ctx = CardCtx { theme, width: area.width, now_ms: now_ms(), spin: app.spin_frame() };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
     let marquee_ms = |t: &Ticket| -> u64 {
@@ -80,11 +81,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 
     // In-place title edit (rename on the card itself; create as a phantom
     // card at the column tail — where the daemon will append it).
-    let editing: Option<(&InputPurpose, &str)> = match &app.mode {
-        Mode::Input { purpose, buffer } => Some((purpose, buffer.as_str())),
+    let editing: Option<(&InputPurpose, &EditBuffer)> = match &app.mode {
+        Mode::Input { purpose, buffer } => Some((purpose, buffer)),
         _ => None,
     };
-    let rename_of = |t: &Ticket| -> Option<&str> {
+    let rename_of = |t: &Ticket| -> Option<&EditBuffer> {
         match editing {
             Some((InputPurpose::Rename { id }, buf)) if *id == t.id => Some(buf),
             _ => None,
@@ -110,7 +111,19 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             return;
         }
         let mq = if selected { Some(marquee_ms(t)) } else { None };
-        let lines = card::render(&ctx, t, &sessions, selected, held, mq);
+        // Transcript peek: the cursor card's highest-precedence session that
+        // has a transcript (bash never does) — read through the draw cache.
+        let peek = if selected && app.peek {
+            let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
+            ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
+            ranked
+                .iter()
+                .find_map(|s| s.transcript_path.as_deref())
+                .and_then(|p| app.peek_cache.text(p))
+        } else {
+            None
+        };
+        let lines = card::render(&ctx, t, &sessions, selected, held, mq, peek.as_deref());
         groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor: None });
     };
     match ghost {

@@ -189,6 +189,13 @@ pub enum Signal {
     /// `resume` marks a `--resume` spawn: a modal there is the resume-from-
     /// summary dialog (09 §9), not first-run setup.
     SpawnProbe { bytes: bool, osc0: bool, resume: bool },
+    /// Daemon-side probe while `Running`: the pane stopped painting past the
+    /// quiet threshold. A turn in flight repaints continuously (spinner), so
+    /// sustained silence means the turn is over — this is the ONLY signal an
+    /// Esc interrupt leaves (spike S-E: no hook fires, the transcript may get
+    /// no record, and the corpus's OSC 9;4 / title-glyph Tier A− channels no
+    /// longer exist).
+    PaneQuiet,
     /// Observe tier: derived from an adopted session's transcript tail.
     TranscriptHint { kind: TailHint },
 }
@@ -294,7 +301,13 @@ impl Machine {
             self.pending = None;
             Some(self.commit(to, conf, now))
         } else {
-            self.pending = Some(Pending { to, confidence: conf, deadline: now + delay });
+            // Re-asserting the target already pending keeps the ORIGINAL
+            // deadline — a repeat cadence faster than the settle would
+            // otherwise push the deadline forever and never commit. Only a
+            // signal re-affirming the CURRENT state cancels a leave.
+            if self.pending.as_ref().is_none_or(|p| p.to != to) {
+                self.pending = Some(Pending { to, confidence: conf, deadline: now + delay });
+            }
             None
         }
     }
@@ -435,6 +448,19 @@ impl Machine {
                     Some((S::RequiresAction { reason }, Confidence::Medium))
                 } else if !*bytes {
                     Some((S::unknown(), Confidence::Low))
+                } else {
+                    None
+                }
+            }
+            // The 11 §11.7.3 interrupt row, activity-approximated: only ever a
+            // demotion out of Running, never a promotion — Medium because byte
+            // silence is inference, not a stated event.
+            Signal::PaneQuiet => {
+                if self.state == S::Running {
+                    Some((
+                        S::Idle { stop_reason: StopReason::Interrupted },
+                        Confidence::Medium,
+                    ))
                 } else {
                     None
                 }
@@ -680,6 +706,56 @@ mod tests {
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::ResumeDialog });
         assert_eq!(c.confidence, Confidence::Medium);
         assert!(c.attention_added);
+    }
+
+    #[test]
+    fn pane_quiet_settles_running_to_idle_interrupted() {
+        let mut m = m(SessionState::Running);
+        // Quiet enters via the same settle as any Running -> Idle leave.
+        assert!(m.apply(&Signal::PaneQuiet, 1000).is_none());
+        assert!(m.tick(2000).is_none());
+        let c = m.tick(2600).expect("settled");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Interrupted });
+        assert_eq!(c.confidence, Confidence::Medium);
+        assert!(!c.attention_added);
+    }
+
+    #[test]
+    fn repeated_pane_quiet_keeps_the_original_deadline() {
+        // The probe fires every second; the settle is 1.5 s. Re-assertion must
+        // not push the deadline out forever.
+        let mut m = m(SessionState::Running);
+        assert!(m.apply(&Signal::PaneQuiet, 1000).is_none());
+        assert!(m.apply(&Signal::PaneQuiet, 2000).is_none());
+        let c = m.tick(2500).expect("committed at the 1000+1500 deadline");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Interrupted });
+    }
+
+    #[test]
+    fn pane_quiet_is_cancelled_by_a_prompt_inside_settle() {
+        let mut m = m(SessionState::Running);
+        assert!(m.apply(&Signal::PaneQuiet, 1000).is_none());
+        // The turn was alive after all — re-affirmation cancels the leave.
+        assert!(m.apply(&Signal::UserPromptSubmit, 1500).is_none());
+        assert!(m.tick(3000).is_none());
+        assert_eq!(m.state(), &SessionState::Running);
+    }
+
+    #[test]
+    fn pane_quiet_only_ever_demotes_running() {
+        // A permission wait is legitimately quiet — never clear attention on
+        // byte silence. Same for every other state: quiet is not evidence.
+        for s in [
+            RA_PERM,
+            SessionState::Spawning,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Throttled,
+            SessionState::unknown(),
+        ] {
+            let mut ma = m(s.clone());
+            assert!(ma.apply(&Signal::PaneQuiet, 1000).is_none(), "moved from {s:?}");
+            assert!(ma.tick(60_000).is_none());
+        }
     }
 
     #[test]

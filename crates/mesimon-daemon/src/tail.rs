@@ -5,7 +5,40 @@
 //! `Confidence::Low` only.
 
 use std::io::{Read, Seek, SeekFrom};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+
+use mesimon_core::adopt::{classify_tail_record, TailEvent};
+
+/// The last uuid-bearing record's classification — how a transcript nobody
+/// is streaming RESTED (daemon-restart recovery). Reads at most the final
+/// 64 KiB. Trailing uuid-less latch records are skipped, but the walk STOPS
+/// at the first uuid record whatever it classifies as — digging past a
+/// trailing user/attachment record to an older `turn_duration` would call a
+/// freshly-started turn "done".
+pub fn last_event(path: &Path) -> Option<TailEvent> {
+    let mut f = std::fs::File::open(path).ok()?;
+    let len = f.metadata().ok()?.len();
+    let start = len.saturating_sub(64 * 1024);
+    f.seek(SeekFrom::Start(start)).ok()?;
+    let mut buf = Vec::new();
+    f.read_to_end(&mut buf).ok()?;
+    let text = String::from_utf8_lossy(&buf);
+    let mut lines: Vec<&str> = text.lines().collect();
+    if start > 0 && !lines.is_empty() {
+        lines.remove(0); // the window may open mid-record
+    }
+    for line in lines.iter().rev() {
+        if line.trim().is_empty() {
+            continue;
+        }
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
+        match classify_tail_record(&v) {
+            TailEvent::Latch => continue,
+            ev => return Some(ev),
+        }
+    }
+    None
+}
 
 /// Per-session cursor, daemon-held, never persisted.
 #[derive(Debug)]
@@ -110,5 +143,44 @@ mod tests {
     fn missing_file_is_quietly_nothing() {
         let mut c = TailCursor::at_end(PathBuf::from("/nonexistent/x.jsonl"), 0);
         assert!(c.poll(1).is_empty());
+    }
+
+    #[test]
+    fn last_event_reads_through_trailing_latches() {
+        let p = tmp("rest");
+        std::fs::write(
+            &p,
+            "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"done work\"}]}}\n\
+             {\"uuid\":\"u2\",\"type\":\"system\",\"subtype\":\"turn_duration\"}\n\
+             {\"type\":\"last-prompt\"}\n{\"type\":\"mode\"}\nnot json at all\n",
+        )
+        .unwrap();
+        assert_eq!(last_event(&p), Some(TailEvent::TurnComplete));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn last_event_stops_at_a_trailing_user_record() {
+        // A user prompt after the previous turn's close: the turn is (maybe)
+        // in flight — the older turn_duration must NOT win.
+        let p = tmp("userlast");
+        std::fs::write(
+            &p,
+            "{\"uuid\":\"u1\",\"type\":\"system\",\"subtype\":\"turn_duration\"}\n\
+             {\"uuid\":\"u2\",\"type\":\"user\",\"message\":{\"content\":\"go again\"}}\n\
+             {\"type\":\"atis-latch\"}\n",
+        )
+        .unwrap();
+        assert_eq!(last_event(&p), Some(TailEvent::Other));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn last_event_empty_or_missing_is_none() {
+        assert_eq!(last_event(Path::new("/nonexistent/x.jsonl")), None);
+        let p = tmp("empty");
+        std::fs::write(&p, "").unwrap();
+        assert_eq!(last_event(&p), None);
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 }

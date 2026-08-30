@@ -2,8 +2,8 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-   Decay treatments              Fix OSC-11 detection   >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
-                                   ✻ claude           ▸ >1y
+   Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+                                   ✻ claude           ⠋ >1y
    Keymap validator                $ bash             ◦ >1y    x Flaky e2e on runner  >1y
 
                                  ! Adopt drawer import  >1y
@@ -27,4 +27,4 @@
 
 
 
- BOARD  enter open ticket ∙ tab needs you ∙ a add ∙ m move ∙ e external ∙ q quit
+ BOARD  enter open ticket ∙ tab needs you ∙ a add ∙ m move ∙ p peek ∙ e external ∙ q quit

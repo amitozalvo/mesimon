@@ -32,10 +32,15 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
 
 /// The 3-cell age slot (06 §5.4): fixed vocabulary, right-aligned by the
 /// caller. `now` under 10 s, then s/m/h/d/w buckets, `>1y` past a year.
-pub(crate) fn age_slot(now_ms: u64, then_ms: u64) -> String {
+///
+/// `ticking` gates the seconds band: only a `Running` session earns a
+/// per-second count-up (watching an agent work). Everywhere else the
+/// sub-minute range holds a stable `now` — an idle board must not tick.
+pub(crate) fn age_slot(now_ms: u64, then_ms: u64, ticking: bool) -> String {
     let secs = now_ms.saturating_sub(then_ms) / 1000;
     match secs {
         0..=9 => "now".into(),
+        10..=99 if !ticking => "now".into(),
         10..=99 => format!("{secs}s"),
         100..=5_999 => format!("{}m", (secs / 60).max(1)),
         6_000..=86_399 => format!("{}h", secs / 3600),
@@ -70,7 +75,8 @@ pub(crate) fn marquee_window(s: &str, max: usize, offset: usize) -> String {
 
 /// How far a marquee has scrolled at `elapsed_ms`, for a title `overflow`
 /// cells too wide: hold at the start, walk one cell per step to the end,
-/// hold, loop.
+/// hold, then rest at 0 for good — one pass per cursor landing, the clock
+/// resets when the cursor returns to the card.
 pub(crate) fn marquee_offset(elapsed_ms: u64, overflow: usize) -> usize {
     const STEP_MS: u64 = 200;
     const HOLD_STEPS: u64 = 6;
@@ -78,9 +84,158 @@ pub(crate) fn marquee_offset(elapsed_ms: u64, overflow: usize) -> usize {
         return 0;
     }
     let cycle = HOLD_STEPS + overflow as u64 + HOLD_STEPS;
-    let step = (elapsed_ms / STEP_MS) % cycle;
+    let step = elapsed_ms / STEP_MS;
+    if step >= cycle {
+        return 0;
+    }
     // Steps 0..HOLD hold at 0; each step after walks one cell.
     (step.saturating_sub(HOLD_STEPS - 1) as usize).min(overflow)
+}
+
+/// In-place title editing: the text plus a byte cursor kept on grapheme
+/// boundaries. Word ops are whitespace-delimited (readline's unix-word):
+/// a title is prose, not code, so `-`/`_` stay inside a word.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct EditBuffer {
+    text: String,
+    cursor: usize,
+}
+
+impl EditBuffer {
+    pub(crate) fn new() -> Self {
+        Self { text: String::new(), cursor: 0 }
+    }
+
+    /// Start editing existing text, cursor at the end.
+    pub(crate) fn from_text(text: String) -> Self {
+        let cursor = text.len();
+        Self { text, cursor }
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    pub(crate) fn into_text(self) -> String {
+        self.text
+    }
+
+    /// Display cells left of the cursor — the renderer's scroll anchor.
+    pub(crate) fn width_before_cursor(&self) -> usize {
+        self.text[..self.cursor].width()
+    }
+
+    fn prev_boundary(&self) -> usize {
+        self.text[..self.cursor]
+            .grapheme_indices(true)
+            .next_back()
+            .map(|(i, _)| i)
+            .unwrap_or(0)
+    }
+
+    fn next_boundary(&self) -> usize {
+        self.text[self.cursor..]
+            .graphemes(true)
+            .next()
+            .map(|g| self.cursor + g.len())
+            .unwrap_or(self.text.len())
+    }
+
+    /// Backward over any whitespace, then over the word — its start.
+    fn word_start_before(&self) -> usize {
+        let mut idx = self.cursor;
+        let mut in_word = false;
+        for (i, ch) in self.text[..self.cursor].char_indices().rev() {
+            if ch.is_whitespace() {
+                if in_word {
+                    break;
+                }
+            } else {
+                in_word = true;
+            }
+            idx = i;
+        }
+        idx
+    }
+
+    /// Forward over any whitespace, then over the word — just past its end.
+    fn word_end_after(&self) -> usize {
+        let mut in_word = false;
+        for (i, ch) in self.text[self.cursor..].char_indices() {
+            if ch.is_whitespace() {
+                if in_word {
+                    return self.cursor + i;
+                }
+            } else {
+                in_word = true;
+            }
+        }
+        self.text.len()
+    }
+
+    pub(crate) fn insert(&mut self, c: char) {
+        self.text.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+    }
+
+    pub(crate) fn backspace(&mut self) {
+        let start = self.prev_boundary();
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    pub(crate) fn delete(&mut self) {
+        let end = self.next_boundary();
+        self.text.drain(self.cursor..end);
+    }
+
+    pub(crate) fn delete_word_back(&mut self) {
+        let start = self.word_start_before();
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+    }
+
+    pub(crate) fn kill_to_start(&mut self) {
+        self.text.drain(..self.cursor);
+        self.cursor = 0;
+    }
+
+    pub(crate) fn left(&mut self) {
+        self.cursor = self.prev_boundary();
+    }
+
+    pub(crate) fn right(&mut self) {
+        self.cursor = self.next_boundary();
+    }
+
+    pub(crate) fn word_left(&mut self) {
+        self.cursor = self.word_start_before();
+    }
+
+    pub(crate) fn word_right(&mut self) {
+        self.cursor = self.word_end_after();
+    }
+
+    pub(crate) fn home(&mut self) {
+        self.cursor = 0;
+    }
+
+    pub(crate) fn end(&mut self) {
+        self.cursor = self.text.len();
+    }
+}
+
+/// The visible window of an edit buffer under a `budget` of cells: scrolls
+/// left only as far as needed to keep the cursor inside, so mid-string edits
+/// show their left context. Returns (shown text, cursor x within the window).
+pub(crate) fn edit_window(text: &str, w_before: usize, budget: usize) -> (String, u16) {
+    let skip = w_before.saturating_sub(budget);
+    let shown = if skip == 0 && text.width() <= budget {
+        text.to_string()
+    } else {
+        marquee_window(text, budget, skip)
+    };
+    (shown, w_before.saturating_sub(skip) as u16)
 }
 
 /// `created_at` → epoch ms. The daemon writes `@<epoch-secs>` (server.rs
@@ -171,9 +326,86 @@ mod tests {
         assert_eq!(marquee_offset(1200, 5), 1);
         assert_eq!(marquee_offset(2000, 5), 5);
         assert_eq!(marquee_offset(2199, 5), 5); // end hold
+        assert_eq!(marquee_offset(3399, 5), 5); // last step of end hold
+        assert_eq!(marquee_offset(3400, 5), 0); // one pass done, rest at 0
+        assert_eq!(marquee_offset(60_000, 5), 0); // no loop
         assert_eq!(marquee_offset(0, 0), 0);
         assert_eq!(marquee_window("abcdefgh", 4, 2), "cdef");
         assert_eq!(marquee_window("你好吗x", 4, 2), "好吗");
+    }
+
+    #[test]
+    fn edit_word_delete() {
+        // ctrl+backspace at the end: word goes, trailing space too.
+        let mut b = EditBuffer::from_text("fix auth bug".into());
+        b.delete_word_back();
+        assert_eq!(b.as_str(), "fix auth ");
+        b.delete_word_back();
+        assert_eq!(b.as_str(), "fix ");
+        // Mid-string: only the word left of the cursor dies.
+        let mut b = EditBuffer::from_text("fix auth bug".into());
+        b.word_left(); // cursor before "bug"
+        b.delete_word_back();
+        assert_eq!(b.as_str(), "fix bug");
+        // Empty and all-whitespace never panic.
+        let mut b = EditBuffer::new();
+        b.delete_word_back();
+        assert_eq!(b.as_str(), "");
+        let mut b = EditBuffer::from_text("   ".into());
+        b.delete_word_back();
+        assert_eq!(b.as_str(), "");
+    }
+
+    #[test]
+    fn edit_word_jump() {
+        let mut b = EditBuffer::from_text("fix auth bug".into());
+        b.word_left();
+        assert_eq!(b.width_before_cursor(), 9); // before "bug"
+        b.word_left();
+        assert_eq!(b.width_before_cursor(), 4); // before "auth"
+        b.word_left();
+        b.word_left(); // clamped at start
+        assert_eq!(b.width_before_cursor(), 0);
+        b.word_right();
+        assert_eq!(b.width_before_cursor(), 3); // after "fix"
+        b.word_right();
+        assert_eq!(b.width_before_cursor(), 8); // after "auth"
+        b.word_right();
+        b.word_right(); // clamped at end
+        assert_eq!(b.width_before_cursor(), 12);
+    }
+
+    #[test]
+    fn edit_cursor_insert_delete() {
+        let mut b = EditBuffer::from_text("abd".into());
+        b.left();
+        b.insert('c');
+        assert_eq!(b.as_str(), "abcd");
+        b.home();
+        b.delete();
+        assert_eq!(b.as_str(), "bcd");
+        b.end();
+        b.backspace();
+        assert_eq!(b.as_str(), "bc");
+        b.kill_to_start();
+        assert_eq!(b.as_str(), "");
+        // Grapheme moves: combining accent travels with its base.
+        let mut b = EditBuffer::from_text("cafe\u{301}!".into());
+        b.left();
+        b.backspace();
+        assert_eq!(b.as_str(), "caf!");
+    }
+
+    #[test]
+    fn edit_window_keeps_cursor_visible() {
+        // Fits: no scroll, cursor at its true column.
+        assert_eq!(edit_window("abc", 3, 10), ("abc".into(), 3));
+        assert_eq!(edit_window("abc", 1, 10), ("abc".into(), 1));
+        // Overflow with cursor at the end: tail shown, cursor pinned right.
+        assert_eq!(edit_window("abcdefgh", 8, 4), ("efgh".into(), 4));
+        // Overflow with cursor at the start: head shown, no scroll.
+        assert_eq!(edit_window("abcdefgh", 0, 4), ("abcd".into(), 0));
+        assert_eq!(edit_window("abcdefgh", 2, 4), ("abcd".into(), 2));
     }
 
     #[test]
@@ -197,16 +429,28 @@ mod tests {
     #[test]
     fn age_vocabulary() {
         let s = 1000u64;
-        assert_eq!(age_slot(9 * s, 0), "now");
-        assert_eq!(age_slot(45 * s, 0), "45s");
-        assert_eq!(age_slot(180 * s, 0), "3m");
-        assert_eq!(age_slot(4 * 3600 * s, 0), "4h");
-        assert_eq!(age_slot(2 * 86_400 * s, 0), "2d");
-        assert_eq!(age_slot(21 * 86_400 * s, 0), "3w");
-        assert_eq!(age_slot(400 * 86_400 * s, 0), ">1y");
+        assert_eq!(age_slot(9 * s, 0, true), "now");
+        assert_eq!(age_slot(45 * s, 0, true), "45s");
+        assert_eq!(age_slot(180 * s, 0, true), "3m");
+        assert_eq!(age_slot(4 * 3600 * s, 0, true), "4h");
+        assert_eq!(age_slot(2 * 86_400 * s, 0, true), "2d");
+        assert_eq!(age_slot(21 * 86_400 * s, 0, true), "3w");
+        assert_eq!(age_slot(400 * 86_400 * s, 0, true), ">1y");
         // Every word fits the 3-cell slot.
         for t in [0, 9, 45, 180, 14_400, 172_800, 1_814_400, 40_000_000] {
-            assert!(age_slot(t * s, 0).len() <= 3, "{}", age_slot(t * s, 0));
+            assert!(age_slot(t * s, 0, true).len() <= 3, "{}", age_slot(t * s, 0, true));
         }
+    }
+
+    #[test]
+    fn age_seconds_only_tick_when_running() {
+        // Non-running sessions hold a stable `now` through the whole seconds
+        // band — an idle board must not repaint every second.
+        let s = 1000u64;
+        assert_eq!(age_slot(45 * s, 0, false), "now");
+        assert_eq!(age_slot(99 * s, 0, false), "now");
+        // The minute band and up is identical either way.
+        assert_eq!(age_slot(180 * s, 0, false), "3m");
+        assert_eq!(age_slot(400 * 86_400 * s, 0, false), ">1y");
     }
 }

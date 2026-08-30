@@ -20,31 +20,36 @@ pub struct PtyFigures {
     pub budget: u32,
 }
 
-/// One `ps axo pgid=,rss=` fork, aggregated over tracked pane process groups.
-/// Returns (bytes, groups actually seen). rss column is KiB on both platforms.
-pub fn parse_ps_rss(pgids: &HashSet<i32>, ps_out: &str) -> (u64, usize) {
-    let mut bytes = 0u64;
-    let mut seen: HashSet<i32> = HashSet::new();
+/// One `ps axo pgid=,rss=` fork, split per tracked pane process group —
+/// the per-session figure the sleep suggestion needs. rss column is KiB on
+/// both platforms.
+pub fn parse_ps_rss_by(pgids: &HashSet<i32>, ps_out: &str) -> std::collections::HashMap<i32, u64> {
+    let mut by: std::collections::HashMap<i32, u64> = std::collections::HashMap::new();
     for line in ps_out.lines() {
         let mut it = line.split_whitespace();
         let (Some(pgid), Some(rss)) = (it.next(), it.next()) else { continue };
         let (Ok(pgid), Ok(rss)) = (pgid.parse::<i32>(), rss.parse::<u64>()) else { continue };
         if pgids.contains(&pgid) {
-            bytes += rss * 1024;
-            seen.insert(pgid);
+            *by.entry(pgid).or_default() += rss * 1024;
         }
     }
-    (bytes, seen.len())
+    by
 }
 
-pub fn measure_rss(pgids: &HashSet<i32>) -> (u64, usize) {
+/// The aggregate view: (bytes, groups actually seen).
+pub fn parse_ps_rss(pgids: &HashSet<i32>, ps_out: &str) -> (u64, usize) {
+    let by = parse_ps_rss_by(pgids, ps_out);
+    (by.values().sum(), by.len())
+}
+
+pub fn measure_rss_by(pgids: &HashSet<i32>) -> std::collections::HashMap<i32, u64> {
     if pgids.is_empty() {
-        return (0, 0);
+        return std::collections::HashMap::new();
     }
     let Ok(out) = std::process::Command::new("ps").args(["axo", "pgid=,rss="]).output() else {
-        return (0, 0);
+        return std::collections::HashMap::new();
     };
-    parse_ps_rss(pgids, &String::from_utf8_lossy(&out.stdout))
+    parse_ps_rss_by(pgids, &String::from_utf8_lossy(&out.stdout))
 }
 
 pub fn budget_of(total: u32, used: u32) -> u32 {
@@ -142,6 +147,16 @@ mod tests {
         assert_eq!(seen, 2);
         let (bytes, seen) = parse_ps_rss(&HashSet::new(), out);
         assert_eq!((bytes, seen), (0, 0));
+    }
+
+    #[test]
+    fn ps_per_group_split_sums_each_group() {
+        let out = "  100  1024\n  200  2048\n  100  512\ngarbage line\n  300  9999\n";
+        let pgids: HashSet<i32> = [100, 200].into_iter().collect();
+        let by = parse_ps_rss_by(&pgids, out);
+        assert_eq!(by.get(&100), Some(&((1024 + 512) * 1024)));
+        assert_eq!(by.get(&200), Some(&(2048 * 1024)));
+        assert_eq!(by.get(&300), None);
     }
 
     #[test]

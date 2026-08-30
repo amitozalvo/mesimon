@@ -184,6 +184,8 @@ fn m2_attention_headless() {
     assert!(rec.waiting_since.is_some(), "attention items carry waiting_since");
     assert_eq!(rec.detail.as_deref(), Some("Bash(npm test)"));
     assert_eq!(rec.transcript_path.as_deref(), Some("/tmp/t.jsonl"));
+    // Automove: requires_action is not "working" — the ticket stays in TODO.
+    assert_eq!(board.ticket(ticket).unwrap().column, "TODO");
 
     // The human-deny path: nothing fires but the next prompt; settle clears.
     watcher.drain_events();
@@ -197,6 +199,8 @@ fn m2_attention_headless() {
     assert_eq!(rec.state, SessionState::Running);
     assert!(rec.waiting_since.is_none());
     assert!(rec.detail.is_none());
+    // Automove: running drags the TODO ticket to IN PROGRESS.
+    assert_eq!(board.ticket(ticket).unwrap().column, "IN PROGRESS");
 
     // Hook binary cost sanity (debug build — the 5 ms p99 budget is a release
     // number; this catches order-of-magnitude regressions only).
@@ -207,6 +211,38 @@ fn m2_attention_headless() {
         worst = worst.max(t0.elapsed());
     }
     assert!(worst < Duration::from_millis(150), "hook exec took {worst:?}");
+
+    // Automove: a real Stop (the cost-loop frames set stop_hook_active, which
+    // the machine's re-entrancy guard drops) → idle{end_turn} after the
+    // 1500 ms leave settle drags the IN PROGRESS ticket to REVIEW.
+    hook_send(&hook_sock, &sid.to_string(), "Stop", None, r#"{"stop_hook_active":false}"#);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let (board, _) = board_of(c.request(Command::Snapshot));
+        if board.ticket(ticket).unwrap().column == "REVIEW" {
+            let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
+            assert_eq!(
+                rec.state,
+                SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+            );
+            break;
+        }
+        assert!(Instant::now() < deadline, "end_turn never automoved the ticket to REVIEW");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
+    // Automove: review feedback reopens the work — running again drags the
+    // REVIEW ticket back to IN PROGRESS.
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{"session_id":"x"}"#);
+    let deadline = Instant::now() + Duration::from_secs(4);
+    loop {
+        let (board, _) = board_of(c.request(Command::Snapshot));
+        if board.ticket(ticket).unwrap().column == "IN PROGRESS" {
+            break;
+        }
+        assert!(Instant::now() < deadline, "running never automoved the ticket back to IN PROGRESS");
+        std::thread::sleep(Duration::from_millis(100));
+    }
 
     // Absent socket must be silently fine (rule 7) — daemon-down is invisible.
     hook_send(
@@ -240,6 +276,22 @@ fn m2_attention_headless() {
     let n: usize =
         parsed["hooks"].as_object().unwrap().values().map(|a| a.as_array().unwrap().len()).sum();
     assert_eq!(n, 30, "the registered set is 30 entries");
+    // Prefill: the ticket title is typed into the fresh pane, never submitted
+    // (the pty echoes it even though the stub never reads stdin).
+    let claude_sid16 = rec.sid16();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let cap = Proc::new("tmux")
+            .args(["-S", &tmux_sock.display().to_string(), "capture-pane", "-p", "-t", &claude_sid16])
+            .output()
+            .expect("tmux capture-pane");
+        // capture-pane trims trailing spaces, so match without the one we send.
+        if String::from_utf8_lossy(&cap.stdout).contains("attn") {
+            break;
+        }
+        assert!(Instant::now() < deadline, "ticket-title prefill never appeared in the pane");
+        std::thread::sleep(Duration::from_millis(100));
+    }
     let _ = c.request(Command::KillSession { id: claude_sid });
 
     // pane-died: SIGKILL the process behind a fresh bash pane; the tmux hook
@@ -287,6 +339,10 @@ fn m2_attention_headless() {
     assert!(
         feed.lines().any(|l| l.contains(r#""kind":"board""#) && l.contains("create_ticket")),
         "feed must carry board mutations"
+    );
+    assert!(
+        feed.lines().any(|l| l.contains(r#""kind":"board""#) && l.contains("automove")),
+        "feed must carry automoves"
     );
 
     let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();

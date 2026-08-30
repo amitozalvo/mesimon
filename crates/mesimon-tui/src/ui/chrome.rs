@@ -50,13 +50,9 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     let noun = if n_tickets == 1 { "ticket" } else { "tickets" };
     let mut spans = breadcrumb(app);
     spans.push(Span::styled(format!("   {n_tickets} {noun}"), theme.dim2()));
-    if r.asleep > 0 {
-        let noun = if r.asleep == 1 { "session" } else { "sessions" };
-        spans.push(Span::styled(
-            format!(" ∙ {} {noun} asleep", r.asleep),
-            theme.dim2(),
-        ));
-    }
+    // Asleep count cut from the header (author 2026-08-30): sleeping is the
+    // quiet, correct condition — the card's own state word carries it; the
+    // header only speaks when something is spendable (the offer) or scarce.
     // PTY headroom is machine-wide noise until it isn't: surface it only past
     // 80% of the OS cap, as a warning (author 2026-08-30: suggestions over
     // dashboards). Grey ramp, not the accent — attn stays needs-you-only (L3).
@@ -71,6 +67,16 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     if r.rss_measured > 0 {
         let gib = r.rss_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         spans.push(Span::styled(format!(" ∙ {gib:.1}GiB"), theme.dim2()));
+    }
+    // The sleep suggestion (suggestions over shortcuts, author 2026-08-29):
+    // payoff first, the how in parens. Grey — it's an offer, not an alarm.
+    // Below a tenth of a GiB the payoff would read "~0.0GiB"; stay quiet.
+    if r.reclaim_sessions > 0 && r.reclaim_bytes >= 107_374_182 {
+        let free = r.reclaim_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+        spans.push(Span::styled(
+            format!(" ∙ free ~{free:.1}GiB (Z sleeps {} in done)", r.reclaim_sessions),
+            theme.dim2(),
+        ));
     }
     // Needs-you lives in the breadcrumb's `!N` (07 §2.2's separate
     // `needs you N` word form superseded by the shared component).
@@ -127,7 +133,7 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 mode_line(
                     app,
                     "BOARD",
-                    "enter open ticket ∙ tab needs you ∙ a add ∙ m move ∙ e external ∙ q quit",
+                    "enter open ticket ∙ tab needs you ∙ a add ∙ m move ∙ p peek ∙ e external ∙ q quit",
                 )
             } else {
                 Line::from(Span::styled(format!(" {}", app.status), theme.base()))
@@ -179,7 +185,7 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
             badges.push_str("  ∙ running elsewhere");
         }
         let head =
-            format!(" {}  {}{badges}", truncate(&name, 24), crate::text::age_slot(now, item.mtime_ms));
+            format!(" {}  {}{badges}", truncate(&name, 24), crate::text::age_slot(now, item.mtime_ms, false));
         let style = if i == idx {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {

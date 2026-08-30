@@ -98,6 +98,16 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Type literal text into a session's pane WITHOUT pressing Enter — a
+    /// prefill for the agent's input box. `-l` disables key-name lookup so
+    /// the text lands verbatim; `--` guards text starting with `-`. Keys
+    /// sent before the agent's TUI is ready sit in the pty buffer, so no
+    /// readiness wait is needed.
+    pub fn send_text(&self, sid16: &str, text: &str) -> Result<()> {
+        self.run(&["send-keys", "-t", sid16, "-l", "--", text])?;
+        Ok(())
+    }
+
     /// Discovery snapshot for `reconcile()` after a daemon restart.
     pub fn snapshot(&self) -> Result<Vec<PaneSnapshot>> {
         if !self.server_alive() {
@@ -125,6 +135,25 @@ impl TmuxBackend {
             });
         }
         Ok(v)
+    }
+
+    /// Per-pane last-output time, epoch seconds (`#{window_activity}`; tmux
+    /// tracks it server-side, attached or not). The working/idle
+    /// discriminator for the Esc-interrupt probe (spike S-E): a turn in
+    /// flight repaints continuously, an idle prompt emits only sparse
+    /// statusline bursts.
+    pub fn activity(&self) -> Result<Vec<(String, u64)>> {
+        if !self.server_alive() {
+            return Ok(Vec::new());
+        }
+        let out = self.run(&["list-panes", "-a", "-F", "#{session_name}\t#{window_activity}"])?;
+        Ok(out
+            .lines()
+            .filter_map(|l| {
+                let (name, t) = l.split_once('\t')?;
+                Some((name.to_string(), t.parse().ok()?))
+            })
+            .collect())
     }
 
     /// Kill ladder rung 1: SIGTERM the pane's process group; caller escalates to

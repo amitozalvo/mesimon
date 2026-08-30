@@ -5,6 +5,22 @@
 
 use mesimon_core::board::{Confidence, ExitReason, SessionRecord, SessionState, StopReason};
 
+/// Working-spinner frames. Braille dots on the unicode tier (one cell, Neutral
+/// width), the classic bar on ascii. Cadence and frames are deliberately
+/// hardcoded — configurability is deferred with the rest of the M6 polish.
+const SPIN_UNICODE: &[char] = &['⠋', '⠙', '⠹', '⠸', '⠼', '⠴', '⠦', '⠧', '⠇', '⠏'];
+const SPIN_ASCII: &[char] = &['|', '/', '-', '\\'];
+
+/// One spinner step per redraw-clock interval (see `App::spin_frame`).
+pub(crate) const SPIN_STEP_MS: u64 = 100;
+
+/// The animated working glyph for `frame` (any monotonically increasing
+/// counter; wraps internally).
+pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
+    let frames = if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE };
+    frames[frame % frames.len()]
+}
+
 /// Which colour family a glyph rides (06 §2.1: exactly three chromatic tokens;
 /// everything else is the grey ramp).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -30,9 +46,16 @@ pub(crate) enum Tier {
 /// a normal card starts its title at T[0] (07 §4.1).
 ///
 /// Precedence (07 §4.2, D34.9 removes unclaimed, no dependency model yet):
-/// requires_action > failed/exited{!=0} > idle{end_turn} unseen > sleeping
-/// (all sessions) > unknown.
-pub(crate) fn card_glyph(sessions: &[&SessionRecord], tier: Tier) -> Option<(char, Register)> {
+/// requires_action > failed/exited{!=0} > idle{end_turn} unseen > running >
+/// sleeping (all sessions) > unknown. Running is a deviation from 07 §4.1's
+/// "normal card has no glyph": the ticking age alone read as ambiguous, so a
+/// working card carries the grey spinner (author 2026-08-30). `spin` is the
+/// redraw-clock frame; it only matters when the result is the working glyph.
+pub(crate) fn card_glyph(
+    sessions: &[&SessionRecord],
+    tier: Tier,
+    spin: usize,
+) -> Option<(char, Register)> {
     if sessions.is_empty() {
         return None;
     }
@@ -61,6 +84,9 @@ pub(crate) fn card_glyph(sessions: &[&SessionRecord], tier: Tier) -> Option<(cha
     {
         return Some((if tier == Tier::Ascii { '+' } else { '✓' }, Register::Calm));
     }
+    if sessions.iter().any(|s| matches!(s.state, SessionState::Running)) {
+        return Some((spinner(tier, spin), Register::Grey));
+    }
     if sessions.iter().all(|s| matches!(s.state, SessionState::Sleeping)) {
         return Some(('z', Register::Grey));
     }
@@ -72,11 +98,12 @@ pub(crate) fn card_glyph(sessions: &[&SessionRecord], tier: Tier) -> Option<(cha
 
 /// Per-session liveness glyph (06 §3.2) — the meta-strip dots, the accordion
 /// rows, and the ticket-screen rail. Never blended with the card glyph (D28).
-pub(crate) fn session_glyph(state: &SessionState, tier: Tier) -> (char, Register) {
+/// `spin` animates the working glyph, exactly as on the card.
+pub(crate) fn session_glyph(state: &SessionState, tier: Tier, spin: usize) -> (char, Register) {
     let ascii = tier == Tier::Ascii;
     match state {
         SessionState::Spawning => (if ascii { '.' } else { '◦' }, Register::Grey),
-        SessionState::Running => (if ascii { '>' } else { '▸' }, Register::Grey),
+        SessionState::Running => (spinner(tier, spin), Register::Grey),
         SessionState::RequiresAction { .. } => ('!', Register::Attn),
         SessionState::Idle { stop_reason: StopReason::EndTurn } => {
             (if ascii { '+' } else { '✓' }, Register::Calm)
@@ -139,18 +166,35 @@ mod tests {
     }
 
     #[test]
-    fn normal_card_has_no_glyph() {
+    fn running_card_shows_spinner() {
         let a = rec(SessionState::Running);
         let b = rec(SessionState::Spawning);
-        assert_eq!(card_glyph(&[&a, &b], Tier::Unicode), None);
-        assert_eq!(card_glyph(&[], Tier::Unicode), None);
+        assert_eq!(card_glyph(&[&a, &b], Tier::Unicode, 0), Some(('⠋', Register::Grey)));
+        assert_eq!(card_glyph(&[&a], Tier::Ascii, 0), Some(('|', Register::Grey)));
+        // The frame advances the glyph — that IS the animation.
+        assert_ne!(card_glyph(&[&a], Tier::Unicode, 1), card_glyph(&[&a], Tier::Unicode, 0));
+        // Spawning alone stays glyph-less: title at T[0] until work starts.
+        assert_eq!(card_glyph(&[&b], Tier::Unicode, 0), None);
+        assert_eq!(card_glyph(&[], Tier::Unicode, 0), None);
+    }
+
+    #[test]
+    fn spinner_frames_wrap_and_stay_one_cell() {
+        use unicode_width::UnicodeWidthChar;
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            for f in 0..24 {
+                let c = spinner(tier, f);
+                assert_eq!(c.width(), Some(1), "{c:?} not one cell");
+            }
+            assert_eq!(spinner(tier, 0), spinner(tier, 20)); // 10- and 4-frame cycles
+        }
     }
 
     #[test]
     fn attention_wins_over_everything() {
         let attn = rec(SessionState::RequiresAction { reason: Reason::Permission });
         let fail = rec(SessionState::Failed { reason: FailReason::Server });
-        assert_eq!(card_glyph(&[&fail, &attn], Tier::Unicode), Some(('!', Register::Attn)));
+        assert_eq!(card_glyph(&[&fail, &attn], Tier::Unicode, 0), Some(('!', Register::Attn)));
     }
 
     #[test]
@@ -158,7 +202,7 @@ mod tests {
         // 11 §11.5.4: Low/Stale never gets the saturated colour.
         let mut attn = rec(SessionState::RequiresAction { reason: Reason::Question });
         attn.confidence = Confidence::Low;
-        assert_eq!(card_glyph(&[&attn], Tier::Unicode), None);
+        assert_eq!(card_glyph(&[&attn], Tier::Unicode, 0), None);
     }
 
     #[test]
@@ -167,11 +211,11 @@ mod tests {
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
         let sleep = rec(SessionState::Sleeping);
         assert_eq!(
-            card_glyph(&[&done, &fail], Tier::Unicode),
+            card_glyph(&[&done, &fail], Tier::Unicode, 0),
             Some(('x', Register::Err))
         );
         assert_eq!(
-            card_glyph(&[&sleep, &done], Tier::Unicode),
+            card_glyph(&[&sleep, &done], Tier::Unicode, 0),
             Some(('✓', Register::Calm))
         );
     }
@@ -180,24 +224,24 @@ mod tests {
     fn z_requires_all_sessions_sleeping() {
         let sleep = rec(SessionState::Sleeping);
         let run = rec(SessionState::Running);
-        assert_eq!(card_glyph(&[&sleep], Tier::Unicode), Some(('z', Register::Grey)));
-        assert_eq!(card_glyph(&[&sleep, &run], Tier::Unicode), None);
+        assert_eq!(card_glyph(&[&sleep], Tier::Unicode, 0), Some(('z', Register::Grey)));
+        assert_eq!(card_glyph(&[&sleep, &run], Tier::Unicode, 0), Some(('⠋', Register::Grey)));
     }
 
     #[test]
     fn crashed_exit_is_err_clean_exit_is_not() {
         let crashed = rec(SessionState::Exited { reason: ExitReason::Crashed });
         let clean = rec(SessionState::Exited { reason: ExitReason::UserQuit });
-        assert_eq!(card_glyph(&[&crashed], Tier::Unicode), Some(('x', Register::Err)));
-        assert_eq!(card_glyph(&[&clean], Tier::Unicode), None);
+        assert_eq!(card_glyph(&[&crashed], Tier::Unicode, 0), Some(('x', Register::Err)));
+        assert_eq!(card_glyph(&[&clean], Tier::Unicode, 0), None);
     }
 
     #[test]
     fn ascii_tier_substitutes() {
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
-        assert_eq!(card_glyph(&[&done], Tier::Ascii), Some(('+', Register::Calm)));
-        assert_eq!(session_glyph(&SessionState::Running, Tier::Ascii).0, '>');
-        assert_eq!(session_glyph(&SessionState::Running, Tier::Unicode).0, '▸');
+        assert_eq!(card_glyph(&[&done], Tier::Ascii, 0), Some(('+', Register::Calm)));
+        assert_eq!(session_glyph(&SessionState::Running, Tier::Ascii, 0).0, '|');
+        assert_eq!(session_glyph(&SessionState::Running, Tier::Unicode, 0).0, '⠋');
     }
 
     #[test]

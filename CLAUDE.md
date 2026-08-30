@@ -100,9 +100,15 @@ stdout because stdout is injected into the agent's context, exits 0 always, 500 
 which forwards one frame to `hook.sock`. `daemon/src/ingest.rs` distills frames into `Signal`s;
 `core/src/attention.rs` holds the pure, time-injected state machine (fixed precedence ranks 0–16;
 ranks 0–8 are the attention set; debounce: enters 0 ms, leaves 1500 ms settle, 15-min stale
-demote). **There is no polling**: tmux's `pane-died` hook is the only exit signal, and a 15 s
-server-alive guard catches wholesale tmux death. Sessions mesimon didn't spawn get no hooks and
-can never emit attention (adoption tier is M3).
+demote). **No polling for exits**: tmux's `pane-died` hook is the only exit signal, and a 15 s
+server-alive guard catches wholesale tmux death. One deliberate poll exists for the Esc
+interrupt, which emits NOTHING (no hook, no transcript record — spike S-E refuted the corpus's
+OSC Tier A−): a `Running` Claude pane whose `#{window_activity}` goes quiet 8 s demotes to
+`Idle{Interrupted}` at medium confidence, demotion-only (`probe_activity` in server.rs). After a
+daemon restart, our own Claude sessions sit at `Unknown{DaemonRestarted}` (reconcile never trusts
+stale claims) and borrow the observe tier while `Unknown`: the transcript tail re-derives state at
+Low confidence until a hook re-asserts. Sessions mesimon didn't spawn get no hooks and can never
+emit attention (adoption tier is M3).
 
 **Schema evolution.** `store.rs` hard-fails on parse errors, so every new `SessionRecord` field
 must be `#[serde(default)]` — the defaults ARE the migration (back-compat fixture test in
@@ -122,7 +128,9 @@ observe-only (transcript tail poller, Low confidence, cannot focus); takeover sp
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
 the pane-died notify — required in e2e because the in-process daemon's `current_exe()` is the test
 binary), `MESIMON_CLAUDE_HOME` (census root override for fabricated `~/.claude` trees),
-`MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s sleep floor). E2e pattern: in-process
+`MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s sleep floor), `MESIMON_PANE_QUIET_MS`
+(shrink the 8 s interrupt-probe quiet threshold), `MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s
+server-alive guard cadence). E2e pattern: in-process
 daemon thread + real tmux + the real built binary via `env!("CARGO_BIN_EXE_mesimon")` (only
 available in `crates/mesimon/tests/`).
 

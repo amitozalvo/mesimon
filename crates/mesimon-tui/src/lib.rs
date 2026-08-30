@@ -7,6 +7,7 @@ mod detect;
 mod glyphs;
 mod handover;
 mod layout;
+mod peek;
 mod text;
 mod theme;
 mod ui;

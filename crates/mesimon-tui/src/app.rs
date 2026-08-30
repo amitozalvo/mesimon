@@ -8,11 +8,12 @@ use std::path::PathBuf;
 use std::time::Duration;
 
 use anyhow::Result;
-use mesimon_core::board::{Board, Provenance, SessionKind, SessionState, Ticket};
+use mesimon_core::board::{Board, ExitReason, Provenance, SessionKind, SessionState, Ticket};
 use mesimon_core::command::{Command, ExternalItem, GraceItem, Resources, Response};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::client::Transport;
+use crate::text::EditBuffer;
 use crate::theme::Theme;
 
 /// Which screen owns the keymap and the frame (07 §1). `Mode` remains the
@@ -28,7 +29,7 @@ pub enum Mode {
     Normal,
     /// MOVE: ghost position tracked client-side, committed on Enter (M-rules).
     Move { ticket: ulid::Ulid, col: usize, idx: usize },
-    Input { purpose: InputPurpose, buffer: String },
+    Input { purpose: InputPurpose, buffer: EditBuffer },
     /// External drawer: discovered foreign sessions (19 §4 tier 1).
     External { idx: usize },
 }
@@ -64,6 +65,13 @@ pub struct App {
     pub marquee: Cell<Option<(ulid::Ulid, std::time::Instant)>>,
     /// First visible card row of the cursor column (draw-side scroll state).
     pub scroll_row: Cell<usize>,
+    /// Transcript peek (`p`): the cursor card also shows its latest assistant
+    /// reply, read from the transcript at draw time (peek.rs).
+    pub peek: bool,
+    pub peek_cache: crate::peek::PeekCache,
+    /// Working-spinner clock: epoch of the first draw (draw-side state, so
+    /// the first rendered frame is always frame 0 — goldens stay stable).
+    pub spin_epoch: Cell<Option<std::time::Instant>>,
     /// Set when the user asked to focus: the main loop performs the handover
     /// outside the render loop.
     pub pending_attach: Option<Vec<String>>,
@@ -93,10 +101,26 @@ impl App {
             col_window: Cell::new(0),
             marquee: Cell::new(None),
             scroll_row: Cell::new(0),
+            peek: false,
+            peek_cache: crate::peek::PeekCache::default(),
+            spin_epoch: Cell::new(None),
             pending_attach: None,
             pending_gate_then: None,
             focused_session_hint: None,
         })
+    }
+
+    /// The working-spinner frame for this draw. The event loop redraws at
+    /// least every 100 ms (`tick`'s poll timeout), which is what actually
+    /// paces the animation; this just makes the frame a function of time so
+    /// event bursts don't fast-forward it.
+    pub fn spin_frame(&self) -> usize {
+        let epoch = self.spin_epoch.get().unwrap_or_else(|| {
+            let e = std::time::Instant::now();
+            self.spin_epoch.set(Some(e));
+            e
+        });
+        (epoch.elapsed().as_millis() as u64 / crate::glyphs::SPIN_STEP_MS) as usize
     }
 
     pub fn refresh(&mut self) -> Result<()> {
@@ -142,11 +166,18 @@ impl App {
         self.cursor_row = self.cursor_row.min(n.saturating_sub(1));
     }
 
+    /// Return to the board. Restarts the marquee clock so the selected
+    /// card's title replays its reveal on re-landing.
+    fn to_board(&mut self) {
+        self.marquee.set(None);
+        self.screen = Screen::Board;
+    }
+
     /// A refresh can delete the ticket the ticket screen shows.
     fn clamp_screen(&mut self) {
         if let Screen::Ticket { ticket, rail_idx } = &self.screen {
             if self.board.ticket(*ticket).is_none() {
-                self.screen = Screen::Board;
+                self.to_board();
             } else {
                 let n = self.rail_sessions(*ticket).len();
                 let idx = (*rail_idx).min(n.saturating_sub(1));
@@ -183,22 +214,49 @@ impl App {
         // Text input first — it is inline (in the card / ticket title) and
         // owns every key on both screens, including Tab.
         if let Mode::Input { purpose, mut buffer } = self.mode.clone() {
+            // Ctrl or Alt both mean "by word" — terminals disagree on which
+            // one ctrl+backspace / option+arrow actually report.
+            let word = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
             match code {
-                KeyCode::Esc => self.mode = Mode::Normal,
+                KeyCode::Esc => {
+                    self.mode = Mode::Normal;
+                    return Ok(());
+                }
                 KeyCode::Enter => {
                     self.mode = Mode::Normal;
-                    self.commit_input(purpose, buffer)?;
+                    self.commit_input(purpose, buffer.into_text())?;
+                    return Ok(());
                 }
-                KeyCode::Backspace => {
-                    buffer.pop();
-                    self.mode = Mode::Input { purpose, buffer };
+                KeyCode::Backspace if word => buffer.delete_word_back(),
+                KeyCode::Backspace => buffer.backspace(),
+                KeyCode::Delete => buffer.delete(),
+                KeyCode::Left if word => buffer.word_left(),
+                KeyCode::Left => buffer.left(),
+                KeyCode::Right if word => buffer.word_right(),
+                KeyCode::Right => buffer.right(),
+                KeyCode::Home => buffer.home(),
+                KeyCode::End => buffer.end(),
+                // Readline chords; ctrl+h is what legacy terminals send for
+                // ctrl+backspace (0x08), so it deletes a word here, not a char.
+                KeyCode::Char('h') if mods.contains(KeyModifiers::CONTROL) => {
+                    buffer.delete_word_back()
                 }
-                KeyCode::Char(c) => {
-                    buffer.push(c);
-                    self.mode = Mode::Input { purpose, buffer };
+                KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
+                    buffer.delete_word_back()
                 }
+                KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
+                    buffer.kill_to_start()
+                }
+                KeyCode::Char('a') if mods.contains(KeyModifiers::CONTROL) => buffer.home(),
+                KeyCode::Char('e') if mods.contains(KeyModifiers::CONTROL) => buffer.end(),
+                KeyCode::Char('b') if mods.contains(KeyModifiers::ALT) => buffer.word_left(),
+                KeyCode::Char('f') if mods.contains(KeyModifiers::ALT) => buffer.word_right(),
+                // Unhandled chords must never type their letter.
+                KeyCode::Char(_) if word => {}
+                KeyCode::Char(c) => buffer.insert(c),
                 _ => {}
             }
+            self.mode = Mode::Input { purpose, buffer };
             return Ok(());
         }
         // Tab / Shift+Tab: next/previous needs-you card. Global, BEFORE the
@@ -253,13 +311,13 @@ impl App {
                 self.clamp_cursor();
             }
             KeyCode::Char('o') | KeyCode::Char('a') => {
-                self.mode = Mode::Input { purpose: InputPurpose::Create, buffer: String::new() };
+                self.mode = Mode::Input { purpose: InputPurpose::Create, buffer: EditBuffer::new() };
             }
             KeyCode::Char('r') => {
                 if let Some(t) = self.selected_ticket() {
                     self.mode = Mode::Input {
                         purpose: InputPurpose::Rename { id: t.id },
-                        buffer: t.title.clone(),
+                        buffer: EditBuffer::from_text(t.title.clone()),
                     };
                 }
             }
@@ -280,6 +338,22 @@ impl App {
                     self.mode = Mode::Move { ticket: t.id, col: self.cursor_col, idx: self.cursor_row };
                 }
             }
+            KeyCode::Char(c @ ('>' | '<')) => {
+                if let Some(t) = self.selected_ticket() {
+                    let id = t.id;
+                    let cols = self.columns();
+                    if cols.len() > 1 {
+                        let target = if c == '>' {
+                            (self.cursor_col + 1) % cols.len()
+                        } else {
+                            (self.cursor_col + cols.len() - 1) % cols.len()
+                        };
+                        let column = cols[target].clone();
+                        self.send(Command::MoveTicket { id, column, before: None })?;
+                        self.select_ticket(id);
+                    }
+                }
+            }
             KeyCode::Char('s') => {
                 if let Some(t) = self.selected_ticket() {
                     let ticket = t.id;
@@ -293,13 +367,24 @@ impl App {
                 }
             }
             KeyCode::Char('e') => self.open_drawer()?,
+            // Transcript peek toggle. Doc 04's BOARD `p` (duplicate-yanked) is
+            // unimplemented; peek borrows the INBOX mnemonic until the M6
+            // keymap pass (STALE-MAP, M3.5 deviations).
+            KeyCode::Char('p') => {
+                self.peek = !self.peek;
+                self.status = if self.peek {
+                    "peek on — latest reply shows under the cursor card".into()
+                } else {
+                    "peek off".into()
+                };
+            }
             KeyCode::Char('Z') => {
                 match self.client.request(Command::ReclaimAll)? {
                     Response::Reclaimed { slept, skipped } => {
                         self.status = match (slept, skipped) {
-                            (0, 0) => "nothing to reclaim".into(),
+                            (0, 0) => "nothing in done to sleep".into(),
                             (n, 0) => format!("slept {n}"),
-                            (n, k) => format!("slept {n} ∙ {k} not eligible"),
+                            (n, k) => format!("slept {n} ∙ {k} not ready"),
                         };
                     }
                     Response::Err { message } => self.status = message,
@@ -326,7 +411,7 @@ impl App {
         let rail: Vec<uuid::Uuid> = self.rail_sessions(ticket).iter().map(|s| s.id).collect();
         let idx = rail_idx.min(rail.len().saturating_sub(1));
         match code {
-            KeyCode::Esc | KeyCode::Char('q') => self.screen = Screen::Board,
+            KeyCode::Esc | KeyCode::Char('q') => self.to_board(),
             KeyCode::Char('j') | KeyCode::Down => {
                 let idx = (idx + 1).min(rail.len().saturating_sub(1));
                 self.screen = Screen::Ticket { ticket, rail_idx: idx };
@@ -340,7 +425,7 @@ impl App {
                 if let Some(t) = self.board.ticket(ticket) {
                     self.mode = Mode::Input {
                         purpose: InputPurpose::Rename { id: t.id },
-                        buffer: t.title.clone(),
+                        buffer: EditBuffer::from_text(t.title.clone()),
                     };
                 }
             }
@@ -389,7 +474,7 @@ impl App {
                 }
             }
             KeyCode::Char('d') => {
-                self.screen = Screen::Board;
+                self.to_board();
                 self.send(Command::DeleteTicket { id: ticket })?;
             }
             _ => {}
@@ -398,10 +483,12 @@ impl App {
     }
 
     fn focus_kind_or_spawn(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
+        // Live sessions only: the rail's resumable corpse is Enter's business —
+        // `c` on a ticket whose claude died spawns fresh, as it always has.
         let existing = self
             .rail_sessions(ticket)
             .iter()
-            .find(|s| s.kind == kind)
+            .find(|s| s.kind == kind && s.state.is_live())
             .map(|s| s.id);
         match existing {
             Some(sid) => self.focus_session(sid),
@@ -546,7 +633,18 @@ impl App {
             InputPurpose::Create => {
                 let cols = self.columns();
                 let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
-                self.send(Command::CreateTicket { column, title })?;
+                match self.client.request(Command::CreateTicket { column, title })? {
+                    Response::Created { id } => {
+                        self.refresh()?;
+                        self.select_ticket(id);
+                    }
+                    Response::Err { message } => {
+                        self.status = message;
+                        self.refresh()?;
+                    }
+                    // Pre-Created daemon (rebuild trap): plain Ok, no id to select.
+                    _ => self.refresh()?,
+                }
             }
             InputPurpose::Rename { id } => {
                 self.send(Command::RenameTicket { id, title })?;
@@ -555,14 +653,28 @@ impl App {
         Ok(())
     }
 
-    /// Live sessions of a ticket, in spawn order. `Sleeping` is live-but-parked;
-    /// only `Exited` drops out. This is the ticket screen's SESSIONS rail —
-    /// fixed creation order, never resorted by activity (06 §7 R4).
+    /// Live sessions of a ticket, in spawn order. `Sleeping` is live-but-parked.
+    /// This is the ticket screen's SESSIONS rail — fixed creation order, never
+    /// resorted by activity (06 §7 R4). `Exited` drops out, with one exception:
+    /// the latest exited claude conversation stays on the rail (Enter resumes
+    /// it — the transcript survives the process) unless `x` dismissed it.
+    /// Older corpses re-import through the drawer.
     pub fn rail_sessions(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
+        let corpse = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.ticket == ticket
+                    && s.kind == SessionKind::Claude
+                    && matches!(s.state, SessionState::Exited { reason } if reason != ExitReason::Killed)
+            })
+            .max_by_key(|s| s.state_changed_at.unwrap_or(0))
+            .map(|s| s.id);
         self.board
             .sessions
             .iter()
-            .filter(|s| s.ticket == ticket && s.state.is_live())
+            .filter(|s| s.ticket == ticket && (s.state.is_live() || Some(s.id) == corpse))
             .collect()
     }
 
@@ -580,11 +692,15 @@ impl App {
 
     fn focus_session(&mut self, sid: uuid::Uuid) -> Result<()> {
         // Enter means "get me into this session": paneless records (imported
-        // observe-only, sleeping) resume first, then the focus flow runs.
+        // observe-only, sleeping, exited claude) resume first, then the focus
+        // flow runs. An exited claude is a conversation, not a process — the
+        // daemon replays its argv (`--resume`) into a fresh pane.
         if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
             let observe_only = rec.provenance == Provenance::Adopted && rec.argv.is_empty();
             let sleeping = matches!(rec.state, SessionState::Sleeping);
-            if observe_only || sleeping {
+            let exited_claude = rec.kind == SessionKind::Claude
+                && matches!(rec.state, SessionState::Exited { .. });
+            if observe_only || sleeping || exited_claude {
                 let cmd = if sleeping && rec.kind == SessionKind::Bash {
                     Command::WakeSession { id: sid }
                 } else {
@@ -660,7 +776,7 @@ impl App {
                     let idx = rail.iter().position(|s| s.id == sid).unwrap_or(0);
                     self.screen = Screen::Ticket { ticket, rail_idx: idx };
                 } else {
-                    self.screen = Screen::Board;
+                    self.to_board();
                 }
             }
             return Ok(());
@@ -684,7 +800,7 @@ impl App {
             self.status = "nothing needs you".into();
             return;
         }
-        self.screen = Screen::Board;
+        self.to_board();
         self.mode = Mode::Normal;
         let current = self.selected_ticket().map(|t| t.id);
         let pos = current.and_then(|id| tickets.iter().position(|t| *t == id));
@@ -746,6 +862,22 @@ pub(crate) mod test_support {
                     external: self.external.clone(),
                     resources: self.resources.clone(),
                 }),
+                // Append-only move (before ignored): enough for the key tests,
+                // which only exercise `before: None`.
+                Command::MoveTicket { id, column, before: _ } => {
+                    let order = self
+                        .board
+                        .column_tickets(&column)
+                        .iter()
+                        .rfind(|t| t.id != id)
+                        .map(|t| format!("{}~", t.order))
+                        .unwrap_or_else(|| "~".into());
+                    if let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == id) {
+                        t.column = column;
+                        t.order = order;
+                    }
+                    Ok(Response::Ok)
+                }
                 _ => Ok(Response::Ok),
             }
         }
@@ -766,5 +898,90 @@ pub(crate) mod test_support {
             App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot")
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::theme::{Flavor, Profile};
+    use mesimon_core::board::{Column, Ticket};
+
+    fn ticket(n: u128, column: &str, order: &str) -> Ticket {
+        Ticket {
+            id: ulid::Ulid(n),
+            short_key: format!("T-{n}"),
+            title: format!("ticket {n}"),
+            column: column.into(),
+            order: order.into(),
+            created_at: "1970-01-01T00:00:00Z".into(),
+        }
+    }
+
+    fn app_three_columns() -> App {
+        let mut b = Board::default();
+        for (i, name) in ["todo", "doing", "done"].iter().enumerate() {
+            b.columns.push(Column { name: (*name).into(), order: format!("{i}") });
+        }
+        b.tickets.push(ticket(1, "todo", "a"));
+        b.tickets.push(ticket(2, "todo", "b"));
+        b.tickets.push(ticket(3, "done", "a"));
+        App::for_test(b, Theme::new(Flavor::Graphite, Profile::TrueColor))
+    }
+
+    #[test]
+    fn gt_moves_selected_ticket_one_column_right_and_follows() {
+        let mut app = app_three_columns();
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+        app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE).unwrap();
+        let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
+        assert_eq!(doing, vec![ulid::Ulid(1)]);
+        assert_eq!(app.cursor_col, 1);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+    }
+
+    #[test]
+    fn gt_appends_to_end_of_target_column() {
+        let mut app = app_three_columns();
+        app.cursor_col = 2; // "done", holds ticket 3
+        app.handle_key(KeyCode::Char('<'), KeyModifiers::NONE).unwrap();
+        // no wrap involved: done -> doing
+        let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
+        assert_eq!(doing, vec![ulid::Ulid(3)]);
+        // now move it into todo, which already has 1 and 2 — lands last
+        app.handle_key(KeyCode::Char('<'), KeyModifiers::NONE).unwrap();
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(3)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 2));
+    }
+
+    #[test]
+    fn gt_cycles_off_last_column_to_first() {
+        let mut app = app_three_columns();
+        app.cursor_col = 2; // "done", ticket 3
+        app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE).unwrap();
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(3)]);
+        assert_eq!(app.cursor_col, 0);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(3)));
+    }
+
+    #[test]
+    fn lt_cycles_off_first_column_to_last() {
+        let mut app = app_three_columns();
+        app.handle_key(KeyCode::Char('<'), KeyModifiers::NONE).unwrap();
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(done, vec![ulid::Ulid(3), ulid::Ulid(1)]);
+        assert_eq!(app.cursor_col, 2);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+    }
+
+    #[test]
+    fn gt_on_empty_column_is_a_noop() {
+        let mut app = app_three_columns();
+        app.cursor_col = 1; // "doing" is empty
+        app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE).unwrap();
+        assert!(app.board.column_tickets("doing").is_empty());
+        assert_eq!(app.board.column_tickets("todo").len(), 2);
     }
 }

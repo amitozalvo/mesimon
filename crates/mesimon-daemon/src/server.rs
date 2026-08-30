@@ -47,6 +47,17 @@ const REAP_GRACE: Duration = Duration::from_secs(5);
 const SLEEP_MIN_AGE_MS: u64 = 60_000;
 /// RSS aggregate refresh (10 s) — one `ps` fork, only while panes exist.
 const RSS_TICKS: u64 = 40;
+/// Pane silent past this while `Running` means the turn is no longer in
+/// flight — the Esc-interrupt catch (spike S-E: an interrupt fires no hook
+/// and may write nothing to the transcript; the pane byte stream is the only
+/// evidence left). A turn in flight repaints sub-second (spinner), so 8 s is
+/// ~8x the largest gap measured while working; idle statusline bursts only
+/// delay the verdict, never defeat it.
+const PANE_QUIET_MS: u64 = 8_000;
+/// Tickets in this column are sleep-safe: their sessions feed the header's
+/// sleep suggestion. Interim hardcode — becomes a per-column sleep policy
+/// (`never|offer|auto`) with M5's column policies.
+const SLEEP_SAFE_COLUMN: &str = "DONE";
 
 struct GraceEntry {
     ticket: Ticket,
@@ -84,6 +95,12 @@ pub struct Daemon {
     reaping: HashMap<String, Instant>,
     /// (bytes, sessions seen) — `ps` aggregate, refreshed on the 10 s bucket.
     rss_cache: (u64, usize),
+    /// Per-session slice of that aggregate, same bucket — feeds the sleep
+    /// suggestion's "free ~X" figure.
+    rss_by: HashMap<uuid::Uuid, u64>,
+    /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
+    /// header suggestion, recomputed on the RSS bucket.
+    reclaim_cache: (u64, usize),
     /// Recounted at startup and immediately before each spawn (14 §5.1).
     pty_cache: crate::resources::PtyFigures,
     /// Last breadcrumb pushed into the tmux status line — dedupes the
@@ -219,6 +236,8 @@ pub fn run(paths: Paths) -> Result<()> {
         tails: HashMap::new(),
         reaping: HashMap::new(),
         rss_cache: (0, 0),
+        rss_by: HashMap::new(),
+        reclaim_cache: (0, 0),
         pty_cache: crate::resources::pty_figures(),
         last_status_left: None,
         focus_label: String::new(),
@@ -388,7 +407,7 @@ impl Daemon {
                 self.persist_and_notify();
                 resp
             }
-            Command::SleepSession { id } => match self.sleep_one(id) {
+            Command::SleepSession { id } => match self.sleep_one(id, false) {
                 Ok(()) => {
                     self.persist_and_notify();
                     Response::Ok
@@ -403,6 +422,9 @@ impl Daemon {
             Command::ReclaimAll => {
                 let (slept, skipped) = self.reclaim_all();
                 if slept > 0 {
+                    // Re-price the offer now — a taken suggestion must not
+                    // linger in the header until the next 10 s RSS bucket.
+                    self.reclaim_cache = self.reclaim_figures();
                     self.persist_and_notify();
                 }
                 Response::Reclaimed { slept, skipped }
@@ -419,8 +441,10 @@ impl Daemon {
             }
         };
         if let Some((cmd, ticket)) = feed_cmd {
-            if matches!(resp, Response::Ok | Response::Spawned { .. }) {
-                self.feed.board("local", cmd, ticket);
+            match &resp {
+                Response::Ok | Response::Spawned { .. } => self.feed.board("local", cmd, ticket),
+                Response::Created { id } => self.feed.board("local", cmd, ticket.or(Some(*id))),
+                _ => {}
             }
         }
         resp
@@ -446,6 +470,7 @@ impl Daemon {
         }
         if self.ticks % 4 == 0 {
             changed |= self.probe_spawning();
+            changed |= self.probe_activity();
         }
         if self.ticks % TAIL_POLL_TICKS == 0 {
             changed |= self.poll_tails();
@@ -453,7 +478,7 @@ impl Daemon {
         if self.ticks % RSS_TICKS == 0 {
             changed |= self.refresh_rss();
         }
-        if self.ticks % SERVER_GUARD_TICKS == 0 {
+        if self.ticks % server_guard_ticks() == 0 {
             changed |= self.guard_server();
         }
         if changed {
@@ -522,8 +547,55 @@ impl Daemon {
         changed
     }
 
+    /// The Esc-interrupt catch (11 §11.7.3's interrupt row, spike S-E): a
+    /// user interrupt fires no hook, so a `Running` pane of ours that has
+    /// stopped painting past the quiet threshold is a turn that ended. One
+    /// `list-panes` fork, and only while something is actually Running.
+    /// Demotion-only — promotion stays hooks-only, so a wrong verdict costs a
+    /// cosmetic "idle" that the next real event corrects.
+    fn probe_activity(&mut self) -> bool {
+        let cands: Vec<(uuid::Uuid, String)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| {
+                r.kind == SessionKind::Claude
+                    && r.state == SessionState::Running
+                    // The observe tier has no pane of ours; its quiet detector
+                    // is the transcript's (poll_tails).
+                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
+            })
+            .map(|r| (r.id, r.sid16()))
+            .collect();
+        if cands.is_empty() {
+            return false;
+        }
+        let Ok(activity) = self.backend.activity() else { return false };
+        let now = now_ms();
+        let quiet_ms = pane_quiet_ms();
+        let mut changed = false;
+        for (id, sid) in cands {
+            // A pane missing from the listing is pane-died territory, not ours.
+            let Some((_, at)) = activity.iter().find(|(name, _)| *name == sid) else { continue };
+            if now.saturating_sub(at * 1000) < quiet_ms {
+                continue;
+            }
+            if let Some(change) =
+                self.machines.get_mut(&id).and_then(|m| m.apply(&Signal::PaneQuiet, now))
+            {
+                changed |= self.apply_change(id, &change, None, Some("activity"));
+            }
+        }
+        changed
+    }
+
     /// Observe tier (19 §4 tier 2): adopted sessions with no process of ours
     /// get their state from the transcript tail, at `Confidence::Low` only.
+    /// Our own Claude sessions borrow the same tier while `Unknown` — a
+    /// daemon restart mid-turn strands them there with no hook due until the
+    /// next turn boundary (dogfood 2026-08-30: "?" while Claude visibly
+    /// streams). Leaving `Unknown` ends the candidacy: hooks own again and
+    /// the cursor is dropped.
     fn poll_tails(&mut self) -> bool {
         let now = now_ms();
         let cands: Vec<(uuid::Uuid, String)> = self
@@ -531,7 +603,11 @@ impl Daemon {
             .sessions
             .iter()
             .filter(|r| {
-                r.provenance == Provenance::Adopted && r.argv.is_empty() && r.state.is_live()
+                let observe_only =
+                    r.provenance == Provenance::Adopted && r.argv.is_empty() && r.state.is_live();
+                let ours_lost = r.kind == SessionKind::Claude
+                    && matches!(r.state, SessionState::Unknown { .. });
+                observe_only || ours_lost
             })
             .filter_map(|r| r.transcript_path.clone().map(|t| (r.id, t)))
             .collect();
@@ -540,6 +616,24 @@ impl Daemon {
         let mut changed = false;
         for (id, tpath) in cands {
             let path = std::path::PathBuf::from(&tpath);
+            // Mint-time backfill for Unknown sessions: a transcript that
+            // never grows again (turn ended before the restart) would leave
+            // the card at "?" until the next prompt. One bounded read of how
+            // the transcript RESTED seeds a state — the only look at history
+            // the "history is not activity" rule permits, because Low
+            // confidence can seed a state but never announce anything.
+            let fresh = self.tails.get(&id).is_none_or(|c| c.path != path);
+            let backfill = if fresh
+                && self
+                    .board
+                    .sessions
+                    .iter()
+                    .any(|r| r.id == id && matches!(r.state, SessionState::Unknown { .. }))
+            {
+                resting_hint(&path, now)
+            } else {
+                None
+            };
             let cursor = self
                 .tails
                 .entry(id)
@@ -551,6 +645,7 @@ impl Daemon {
             let quiet = now.saturating_sub(cursor.grew_at);
 
             let mut hints: Vec<(TailHint, Option<String>)> = Vec::new();
+            hints.extend(backfill.map(|h| (h, None)));
             for line in &lines {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                 match classify_tail_record(&v) {
@@ -600,17 +695,24 @@ impl Daemon {
     }
 
     /// pane-died cannot fire for a dead tmux server: if the private server is
-    /// gone wholesale, every live card demotes to "unavailable" (D5 — never
-    /// render anything from a dead supervisor as blocked).
+    /// gone wholesale, every card whose pane WE hold demotes to "unavailable"
+    /// (D5 — never render anything from a dead supervisor as blocked). Scope:
+    /// records that actually have a pane on our server. Not `Sleeping` (no
+    /// pane, no process — and batch sleep legitimately empties the private
+    /// server, since tmux exits when its last session ends, which must not
+    /// break the Sleeping latch), and not observe-only adopted records (their
+    /// process lives in the user's own terminal, not our tmux).
     fn guard_server(&mut self) -> bool {
-        let any_live = self.board.sessions.iter().any(|s| s.state.is_live());
-        if !any_live || self.backend.server_alive() {
+        fn ours_paned(r: &SessionRecord) -> bool {
+            r.state.has_pane() && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
+        }
+        if !self.board.sessions.iter().any(ours_paned) || self.backend.server_alive() {
             return false;
         }
         let now = now_ms();
         let mut changed = false;
         for rec in &mut self.board.sessions {
-            if rec.state.is_live() {
+            if ours_paned(rec) {
                 rec.state = SessionState::Unknown { reason: UnknownReason::SupervisorDead };
                 rec.confidence = Confidence::Stale;
                 rec.waiting_since = None;
@@ -712,7 +814,44 @@ impl Daemon {
         }
         let snapshot = rec.clone();
         self.feed.session_state(&snapshot, &change.from, hook);
+        self.auto_move(id, snapshot.ticket, &change.to, change.confidence);
         true
+    }
+
+    /// Automove (rules in `core::automove`): a session transition drags its
+    /// ticket along the default template. The ticket file is saved here; the
+    /// caller already persists/broadcasts for the state change itself.
+    fn auto_move(
+        &mut self,
+        session: uuid::Uuid,
+        ticket: ulid::Ulid,
+        to: &SessionState,
+        confidence: Confidence,
+    ) {
+        let Some(t) = self.board.ticket(ticket) else { return };
+        let Some(dest) = mesimon_core::automove::automove(&t.column, to, confidence) else {
+            return;
+        };
+        if !self.board.columns.iter().any(|c| c.name == dest) {
+            return;
+        }
+        if let Decision::Deny { .. } = authorize(
+            &Principal::Agent { session },
+            &Action::Mutate,
+            &Resource::Ticket { id: ticket },
+        ) {
+            return;
+        }
+        let order = fracindex::between(
+            &self.board.column_tickets(dest).last().map(|t| t.order.clone()).unwrap_or_default(),
+            "",
+        );
+        let Some(t) = self.board.ticket_mut(ticket) else { return };
+        t.column = dest.to_string();
+        t.order = order;
+        let t = t.clone();
+        let _ = store::save_ticket(&self.paths, &t);
+        self.feed.board("agent", "automove", Some(ticket));
     }
 
     fn snapshot(&self) -> Response {
@@ -750,14 +889,20 @@ impl Daemon {
             pty_used: self.pty_cache.used,
             pty_total: self.pty_cache.total,
             pty_budget: self.pty_cache.budget,
+            reclaim_bytes: self.reclaim_cache.0,
+            reclaim_sessions: self.reclaim_cache.1,
         }
     }
 
     /// One `ps` fork on the 10 s bucket, over the pane process groups we own.
+    /// The same bucket recomputes the sleep suggestion (nothing here forks
+    /// more than the `ps` and the one snapshot).
     fn refresh_rss(&mut self) -> bool {
         if !self.board.sessions.iter().any(|s| s.state.has_pane()) {
-            let had = self.rss_cache != (0, 0);
+            let had = self.rss_cache != (0, 0) || self.reclaim_cache != (0, 0);
             self.rss_cache = (0, 0);
+            self.rss_by.clear();
+            self.reclaim_cache = (0, 0);
             return had;
         }
         let Ok(snap) = self.backend.snapshot() else { return false };
@@ -773,12 +918,51 @@ impl Daemon {
             .filter(|p| !p.pane_dead && ours.contains(&p.session_name))
             .map(|p| p.pane_pid)
             .collect();
-        let fresh = crate::resources::measure_rss(&pgids);
-        // Repaint-worthy only when the figure moves visibly (>1 MiB or count).
+        let by_pgid = crate::resources::measure_rss_by(&pgids);
+        self.rss_by = snap
+            .iter()
+            .filter(|p| !p.pane_dead)
+            .filter_map(|p| {
+                let bytes = by_pgid.get(&p.pane_pid)?;
+                let rec = self.board.sessions.iter().find(|s| s.sid16() == p.session_name)?;
+                Some((rec.id, *bytes))
+            })
+            .collect();
+        let fresh = (by_pgid.values().sum::<u64>(), by_pgid.len());
+        let reclaim = self.reclaim_figures();
+        // Repaint-worthy only when a figure moves visibly (>1 MiB or count).
         let moved = fresh.1 != self.rss_cache.1
-            || fresh.0.abs_diff(self.rss_cache.0) > 1024 * 1024;
+            || fresh.0.abs_diff(self.rss_cache.0) > 1024 * 1024
+            || reclaim.1 != self.reclaim_cache.1
+            || reclaim.0.abs_diff(self.reclaim_cache.0) > 1024 * 1024;
         self.rss_cache = fresh;
+        self.reclaim_cache = reclaim;
         moved
+    }
+
+    /// The header's sleep suggestion: sessions on sleep-safe tickets that
+    /// pass the D23 floors RIGHT NOW (same predicate the sleep keys use — the
+    /// suggestion never offers what a keystroke would refuse), plus the RSS
+    /// they hold. Column gating is hardcoded until per-column sleep policy
+    /// lands with M5's column policies.
+    fn reclaim_figures(&self) -> (u64, usize) {
+        let safe: std::collections::HashSet<ulid::Ulid> = self
+            .board
+            .tickets
+            .iter()
+            .filter(|t| t.column == SLEEP_SAFE_COLUMN)
+            .map(|t| t.id)
+            .collect();
+        let now = now_ms();
+        let mut bytes = 0u64;
+        let mut n = 0usize;
+        for rec in self.board.sessions.iter().filter(|r| safe.contains(&r.ticket)) {
+            if self.sleep_eligible(rec, now, true).is_ok() {
+                bytes += self.rss_by.get(&rec.id).copied().unwrap_or(0);
+                n += 1;
+            }
+        }
+        (bytes, n)
     }
 
     /// The D33e spawn gate: refuse only at the OS boundary, naming the reason.
@@ -853,9 +1037,9 @@ impl Daemon {
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
         }
-        self.mint_ticket(column, title);
+        let id = self.mint_ticket(column, title);
         self.persist_and_notify();
-        Response::Ok
+        Response::Created { id }
     }
 
     /// Append a new ticket to `column` (caller validated the column).
@@ -1015,6 +1199,18 @@ impl Daemon {
         if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &[]) {
             return Response::Err { message: format!("spawn failed: {e}") };
         }
+        // Prefill the ticket title into the agent's input box — typed, never
+        // submitted; the user edits and presses Enter (zero token injection).
+        // Fresh Claude spawns only: resume/wake replay argv elsewhere and must
+        // not retype into a restored conversation, and a Bash pane would put
+        // the title on a shell command line.
+        if kind == SessionKind::Claude {
+            if let Some(title) =
+                self.board.ticket(ticket).map(|t| t.title.trim()).filter(|t| !t.is_empty())
+            {
+                let _ = self.backend.send_text(&rec.sid16(), &format!("{title} "));
+            }
+        }
         self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
         self.board.sessions.push(rec);
         self.persist_and_notify();
@@ -1057,6 +1253,30 @@ impl Daemon {
                 && (s.id == claude_session_id || s.claude_session_id == Some(claude_session_id))
         }) {
             return Err("session already on the board".into());
+        }
+        // A dead record for this conversation may already sit on the board —
+        // reuse it (and its ticket) instead of minting a duplicate. This is
+        // the other half of rescan_external's "re-importable, not shadow-
+        // banned" rule: the drawer's R lands the session back where it lived.
+        if let Some(id) = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                !s.state.is_live()
+                    && (s.id == claude_session_id
+                        || s.claude_session_id == Some(claude_session_id))
+            })
+            .max_by_key(|s| s.state_changed_at.unwrap_or(0))
+            .map(|s| s.id)
+        {
+            if let Some(t) = ticket {
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.ticket = t;
+                }
+            }
+            self.external.retain(|e| e.claude_session_id != claude_session_id);
+            return Ok(id);
         }
         let Some(pos) =
             self.external.iter().position(|e| e.claude_session_id == claude_session_id)
@@ -1170,6 +1390,31 @@ impl Daemon {
         None
     }
 
+    /// `claude --resume <id>` reads the transcript from Claude's own
+    /// projects dir; a session that ended before its first prompt never
+    /// wrote one, and claude exits 1 ("No conversation found") inside a
+    /// second — which the pane-died path then records as a crash. Refuse
+    /// up front with the honest reason instead.
+    fn resume_transcript_missing(&self, rec: &SessionRecord, claude_id: uuid::Uuid) -> bool {
+        if let Some(t) = &rec.transcript_path {
+            if std::path::Path::new(t).is_file() {
+                return false;
+            }
+        }
+        // transcript_path stale or never learned — the slug dir tracks cwd,
+        // so scan every project dir for the session's file before refusing.
+        let projects = crate::census::claude_home().join("projects");
+        let name = format!("{claude_id}.jsonl");
+        if let Ok(dirs) = std::fs::read_dir(&projects) {
+            for d in dirs.flatten() {
+                if d.path().join(&name).is_file() {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+
     /// Takeover / wake: spawn `claude --resume` under this record's sid16.
     fn resume_session(&mut self, id: uuid::Uuid, confirm: bool) -> Response {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
@@ -1187,6 +1432,12 @@ impl Daemon {
         let claude_id = rec.claude_session_id.unwrap_or(rec.id);
         if let Some(message) = self.resume_guard(id, claude_id, confirm) {
             return Response::Err { message };
+        }
+        if self.resume_transcript_missing(rec, claude_id) {
+            return Response::Err {
+                message: "no transcript to resume — the session ended before its first prompt"
+                    .into(),
+            };
         }
         let argv = match self.resume_argv(rec) {
             Ok(a) => a,
@@ -1217,7 +1468,14 @@ impl Daemon {
     }
 
     /// D23 floors, tmux-recast. `Err` carries the user-facing refusal.
-    fn sleep_eligible(&self, rec: &SessionRecord, now: u64) -> std::result::Result<(), String> {
+    /// The 60 s age floor guards only the bulk reclaim sweep — a deliberate
+    /// keypress on one session is explicit intent and skips it.
+    fn sleep_eligible(
+        &self,
+        rec: &SessionRecord,
+        now: u64,
+        enforce_floor: bool,
+    ) -> std::result::Result<(), String> {
         if rec.pinned_awake {
             return Err("pinned awake".into());
         }
@@ -1230,7 +1488,7 @@ impl Daemon {
             (SessionKind::Bash, _) => return Err("no live shell to sleep".into()),
         }
         let age = now.saturating_sub(rec.state_changed_at.unwrap_or(now));
-        if age < sleep_min_age_ms() {
+        if enforce_floor && age < sleep_min_age_ms() {
             return Err("too young — never sleep within 60s".into());
         }
         if rec.kind == SessionKind::Bash {
@@ -1255,12 +1513,12 @@ impl Daemon {
     /// D23/14 §6.1, tmux-recast: copy transcript, park the record FIRST (the
     /// machine's Sleeping latch swallows the kill's own SessionEnd/pane-died),
     /// SIGTERM the group, kill-pane after grace. Never SIGKILL.
-    fn sleep_one(&mut self, id: uuid::Uuid) -> std::result::Result<(), String> {
+    fn sleep_one(&mut self, id: uuid::Uuid, enforce_floor: bool) -> std::result::Result<(), String> {
         let now = now_ms();
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             return Err("no such session".into());
         };
-        self.sleep_eligible(rec, now)?;
+        self.sleep_eligible(rec, now, enforce_floor)?;
         let (sid, kind, transcript) = (rec.sid16(), rec.kind, rec.transcript_path.clone());
 
         // B-A22's cheap half: a copy with no user+assistant pair means resume
@@ -1329,10 +1587,21 @@ impl Daemon {
 
     /// 04's reclaim: sleep everything eligible, report the honest split.
     fn reclaim_all(&mut self) -> (usize, usize) {
+        // The header offer's action: sleep-safe tickets only. Z must sleep
+        // exactly the set the suggestion prices, never sessions on tickets
+        // still in play (2026-08-30 rescope; per-column policy lands in M5).
+        let safe: std::collections::HashSet<ulid::Ulid> = self
+            .board
+            .tickets
+            .iter()
+            .filter(|t| t.column == SLEEP_SAFE_COLUMN)
+            .map(|t| t.id)
+            .collect();
         let candidates: Vec<uuid::Uuid> = self
             .board
             .sessions
             .iter()
+            .filter(|r| safe.contains(&r.ticket))
             .filter(|r| {
                 matches!(
                     (r.kind, &r.state),
@@ -1345,7 +1614,7 @@ impl Daemon {
         let mut slept = 0;
         let mut skipped = 0;
         for id in candidates {
-            match self.sleep_one(id) {
+            match self.sleep_one(id, true) {
                 Ok(()) => slept += 1,
                 Err(_) => skipped += 1,
             }
@@ -1499,12 +1768,67 @@ fn tmux_text(s: &str, max_chars: usize) -> String {
     out
 }
 
+/// Test seam only — e2e cannot wait out the real 15 s server guard.
+fn server_guard_ticks() -> u64 {
+    std::env::var("MESIMON_SERVER_GUARD_TICKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&t| t > 0)
+        .unwrap_or(SERVER_GUARD_TICKS)
+}
+
 /// Test seam only — e2e cannot wait out the real 60 s floor.
 fn sleep_min_age_ms() -> u64 {
     std::env::var("MESIMON_SLEEP_MIN_AGE_MS")
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(SLEEP_MIN_AGE_MS)
+}
+
+/// Test seam only — e2e cannot spend 8 real seconds per quiet verdict.
+fn pane_quiet_ms() -> u64 {
+    std::env::var("MESIMON_PANE_QUIET_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(PANE_QUIET_MS)
+}
+
+/// How an `Unknown` session's transcript rested → the hint that seeds its
+/// recovered state (Low confidence). Quiet gating uses the file mtime: a
+/// trailing assistant record on a long-quiet file is a turn that died, not
+/// one in flight.
+fn resting_hint(path: &std::path::Path, now: u64) -> Option<TailHint> {
+    let quiet = std::fs::metadata(path)
+        .ok()
+        .and_then(|m| m.modified().ok())
+        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|d| now.saturating_sub(d.as_millis() as u64))
+        .unwrap_or(u64::MAX);
+    match crate::tail::last_event(path)? {
+        TailEvent::TurnComplete => Some(TailHint::TurnComplete),
+        TailEvent::Aborted => Some(TailHint::AbortedMidStream),
+        TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion } => {
+            Some(TailHint::AskUserQuestion)
+        }
+        TailEvent::NeedsHuman { tool: TailTool::ExitPlanMode } => Some(TailHint::ExitPlanMode),
+        TailEvent::AssistantText { .. } => {
+            if quiet < TAIL_QUIET_MS {
+                Some(TailHint::AssistantText)
+            } else {
+                Some(TailHint::StaleQuiet)
+            }
+        }
+        // A trailing user/attachment record: the turn may be in flight — say
+        // nothing while the file is fresh, idle once it has clearly died.
+        TailEvent::Other => {
+            if quiet >= TAIL_QUIET_MS {
+                Some(TailHint::StaleQuiet)
+            } else {
+                None
+            }
+        }
+        TailEvent::Latch => None,
+    }
 }
 
 /// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.

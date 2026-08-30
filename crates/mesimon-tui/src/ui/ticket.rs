@@ -15,7 +15,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputPurpose, Mode};
 use crate::glyphs;
-use crate::text::{age_slot, created_at_epoch_ms, marquee_window, truncate};
+use crate::text::{age_slot, created_at_epoch_ms, edit_window, truncate};
 
 use super::chrome;
 
@@ -41,20 +41,15 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // `r` edits the title right here (hardware cursor, tail kept visible).
     let editing = match &app.mode {
         Mode::Input { purpose: InputPurpose::Rename { id }, buffer } if *id == ticket_id => {
-            Some(buffer.as_str())
+            Some(buffer)
         }
         _ => None,
     };
     match editing {
         Some(buf) => {
             let budget = title_budget.saturating_sub(1);
-            let bw = buf.width();
-            let shown = if bw > budget {
-                marquee_window(buf, budget, bw - budget)
-            } else {
-                buf.to_string()
-            };
-            let x = (prefix_w + shown.width()) as u16;
+            let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
+            let x = prefix_w as u16 + cx;
             // Plain base: the breadcrumb's bold belongs to the project.
             head.push(Span::styled(shown, Style::default().fg(theme.rest.base)));
             f.set_cursor_position((area.x + x.min(area.width - 1), area.y));
@@ -70,7 +65,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // ---- line 1: identity — column ∙ created (short keys are hidden from
     // the UI for now, author 2026-08-30). Single-user v0.1: creator is you.
     let created = created_at_epoch_ms(&ticket.created_at)
-        .map(|ms| format!(" ∙ created by you {} ago", age_slot(now, ms)))
+        .map(|ms| format!(" ∙ created by you {} ago", age_slot(now, ms, false)))
         .unwrap_or_else(|| " ∙ created by you".to_string());
     let ident = Line::from(vec![
         Span::styled(format!(" {}", ticket.column.to_uppercase()), theme.dim2()),
@@ -118,11 +113,17 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
 
     // ---- footer -----------------------------------------------------------
-    let footer = chrome::mode_line(
-        app,
-        "TICKET",
-        "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ z sleep ∙ x kill ∙ esc board",
-    );
+    // A pending status (a daemon refusal, mostly) outranks the key hints —
+    // the board footer does the same in chrome::draw_footer.
+    let footer = if app.status.is_empty() {
+        chrome::mode_line(
+            app,
+            "TICKET",
+            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ z sleep ∙ x kill ∙ esc board",
+        )
+    } else {
+        Line::from(Span::styled(format!(" {}", app.status), theme.base()))
+    };
     f.render_widget(
         Paragraph::new(footer),
         Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 },
@@ -180,7 +181,7 @@ fn draw_rail(
 
     for (i, s) in rail.iter().enumerate() {
         let selected = i == rail_idx;
-        let (g, reg) = glyphs::session_glyph(&s.state, tier);
+        let (g, reg) = glyphs::session_glyph(&s.state, tier, app.spin_frame());
         let glyph_style = match reg {
             glyphs::Register::Attn => theme.attn_text(),
             glyphs::Register::Err => theme.err_text(),
@@ -192,9 +193,16 @@ fn draw_rail(
             SessionKind::Bash => "bash",
         };
         let mark = glyphs::kind_mark(s.kind, tier);
-        let age = s.state_changed_at.map(|ms| age_slot(now, ms)).unwrap_or_default();
+        let age = s
+            .state_changed_at
+            .map(|ms| age_slot(now, ms, s.state == SessionState::Running))
+            .unwrap_or_default();
+        // A dead row (the rail's one resumable corpse) wears the dim register
+        // so the living read first; selection still lifts it to legibility.
         let name_style = if selected {
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else if !s.state.is_live() {
+            theme.dim2()
         } else {
             theme.base()
         };
@@ -235,6 +243,9 @@ fn draw_rail(
             }
             if s.pinned_awake {
                 badges.push("pinned");
+            }
+            if matches!(s.state, SessionState::Exited { .. }) {
+                badges.push("enter resumes");
             }
             if !badges.is_empty() {
                 let text = format!("    {}", badges.join(" ∙ "));

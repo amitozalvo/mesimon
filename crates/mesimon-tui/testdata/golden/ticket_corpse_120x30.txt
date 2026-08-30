@@ -1,14 +1,14 @@
- mesimon > kanban-tui !1 > Fix OSC-11 detection
+ mesimon > kanban-tui > Fix OSC-11 detection
 
  IN PROGRESS ∙ created by you >1y ago
 
 
-  DOCUMENTS                                                                               (0)    SESSIONS            2
+  DOCUMENTS                                                                               (0)    SESSIONS            3
 
     drop files into this ticket's directory                                                     ⠋ ✻ claude         >1y
     ticket directories land with the adoption IA (M4)                                           ◦ $ bash           >1y
-
-
+                                                                                                ✓ ✻ claude         >1y
+                                                                                                    enter resumes
 
 
 

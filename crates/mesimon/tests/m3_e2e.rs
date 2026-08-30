@@ -11,7 +11,7 @@ use std::os::unix::net::UnixStream;
 use std::process::{Command as Proc, Stdio};
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, Provenance, SessionState, StopReason};
+use mesimon_core::board::{Board, Provenance, SessionKind, SessionState, StopReason};
 use mesimon_core::command::{Command, Envelope, Response};
 use mesimon_core::Principal;
 
@@ -137,6 +137,9 @@ fn m3_adoption_and_sleep() {
     std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
     std::env::set_var("MESIMON_CLAUDE_HOME", &claude_home);
     std::env::set_var("MESIMON_SLEEP_MIN_AGE_MS", "0");
+    // 1 s guard cadence so the sleeping-survives-server-death regression below
+    // fits in test time (real cadence 15 s).
+    std::env::set_var("MESIMON_SERVER_GUARD_TICKS", "4");
 
     let daemon_repo = repo.clone();
     let daemon = std::thread::spawn(move || {
@@ -247,6 +250,16 @@ fn m3_adoption_and_sleep() {
         assert!(Instant::now() < deadline, "stub never saw --resume; log: {logged}");
         std::thread::sleep(Duration::from_millis(100));
     }
+    // Prefill is fresh-spawn-only: a resume must not retype the ticket title
+    // into the restored conversation.
+    let title =
+        &board.tickets.iter().find(|t| t.id == rec.ticket).expect("takeover ticket").title;
+    let cap = Proc::new("tmux")
+        .args(["-S", &tmux_sock.display().to_string(), "capture-pane", "-p", "-t", &rec.sid16()])
+        .output()
+        .expect("tmux capture-pane");
+    let pane = String::from_utf8_lossy(&cap.stdout).to_string();
+    assert!(!pane.contains(title.as_str()), "resume must not prefill; pane: {pane}");
     // Double-resume guard path 1: it is live under mesimon now.
     assert!(matches!(
         c.request(Command::ResumeSession { id: obs, confirm: false }),
@@ -294,6 +307,33 @@ fn m3_adoption_and_sleep() {
         SessionState::Sleeping,
         "pane death must not flip a sleeping record"
     );
+    // Sleeping the only session empties the private tmux server, which then
+    // exits (exit-empty). The server-alive guard must not touch a Sleeping
+    // record — it has no pane to lose. Regression: guard keyed off is_live
+    // re-minted slept machines as Unknown{SupervisorDead}, and the tail
+    // backfill flipped them back — a "?"/"✓" flicker forever.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let alive = Proc::new("tmux")
+            .args(["-S", &tmux_sock.display().to_string(), "has-session"])
+            .output()
+            .map(|o| o.status.success())
+            .unwrap_or(false);
+        if !alive {
+            break;
+        }
+        assert!(Instant::now() < deadline, "empty private server never exited");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    // > 2 guard periods at the 1 s seam.
+    std::thread::sleep(Duration::from_millis(2500));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(
+        board.sessions.iter().find(|s| s.id == obs).unwrap().state,
+        SessionState::Sleeping,
+        "tmux server death must not flip a sleeping record"
+    );
+
     // Sleeping refuses focus; a slept session is skipped by the census (known id).
     assert!(matches!(c.request(Command::FocusStart { session: obs }), Response::Err { .. }));
     let external = match c.request(Command::RescanExternal) {
@@ -320,7 +360,76 @@ fn m3_adoption_and_sleep() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
+    // --- Re-import after exit: killing the pane leaves an Exited record; the
+    // census re-lists the conversation (not shadow-banned by its own corpse),
+    // and ResumeExternal reuses the dead record and its ticket — no duplicate.
+    let board = board_of(c.request(Command::Snapshot));
+    let home_ticket = board.sessions.iter().find(|s| s.id == obs).unwrap().ticket;
+    let tickets_before = board.tickets.len();
+    assert!(matches!(c.request(Command::KillSession { id: obs }), Response::Ok));
+    // Let the TERM'd stub die and its pane-died frame land before respawning.
+    let deadline = Instant::now() + Duration::from_secs(8);
+    loop {
+        let panes = Proc::new("tmux")
+            .args(["-S", &tmux_sock.display().to_string(), "list-panes", "-a", "-F", "#{session_name}"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+            .unwrap_or_default();
+        if !panes.contains(&board.sessions.iter().find(|s| s.id == obs).unwrap().sid16()) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "killed pane never reaped: {panes}");
+        std::thread::sleep(Duration::from_millis(250));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    let external = match c.request(Command::RescanExternal) {
+        Response::Board { external, .. } => external,
+        other => panic!("rescan: {other:?}"),
+    };
+    assert_eq!(external.len(), 1, "exited import must re-surface in the drawer");
+    std::fs::write(&argv_log, "").unwrap();
+    let back = match c.request(Command::ResumeExternal {
+        claude_session_id: foreign,
+        ticket: None,
+        confirm: false,
+    }) {
+        Response::Spawned { id } => id,
+        other => panic!("re-import resume: {other:?}"),
+    };
+    assert_eq!(back, obs, "re-import must reuse the dead record, not mint a new one");
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.tickets.len(), tickets_before, "re-import must not mint a ticket");
+    let rec = board.sessions.iter().find(|s| s.id == obs).unwrap();
+    assert_eq!(rec.ticket, home_ticket, "the conversation lands back on its ticket");
+    assert!(rec.argv.iter().any(|a| a == "--resume"));
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let logged = std::fs::read_to_string(&argv_log).unwrap_or_default();
+        if logged.contains("--resume") && logged.contains(FOREIGN_SID) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "re-import never respawned the stub; log: {logged}");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+
     let _ = c.request(Command::KillSession { id: obs });
+
+    // --- Resume with no transcript: a spawned session killed before its
+    // first prompt never wrote one, so resume must refuse up front with the
+    // honest reason — not spawn claude, watch it exit 1, and call it a crash.
+    let ghost = match c.request(Command::SpawnSession { ticket: home_ticket, kind: SessionKind::Claude })
+    {
+        Response::Spawned { id } => id,
+        other => panic!("ghost spawn: {other:?}"),
+    };
+    assert!(matches!(c.request(Command::KillSession { id: ghost }), Response::Ok));
+    match c.request(Command::ResumeSession { id: ghost, confirm: false }) {
+        Response::Err { message } => {
+            assert!(message.contains("no transcript"), "wrong refusal: {message}")
+        }
+        other => panic!("ghost resume must refuse, got {other:?}"),
+    }
+
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 

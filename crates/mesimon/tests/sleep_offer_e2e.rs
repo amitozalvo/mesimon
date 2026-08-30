@@ -1,0 +1,185 @@
+//! The header sleep offer's action (Z, 2026-08-30 rescope): sleeps exactly
+//! the sleep-safe set — idle sessions on DONE tickets — and never touches a
+//! ticket still in play. Real tmux, in-process daemon, stub agents.
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::process::Command as Proc;
+use std::time::{Duration, Instant};
+
+use mesimon_core::board::{Board, SessionKind, SessionState};
+use mesimon_core::command::{Command, Envelope, Response};
+use mesimon_core::Principal;
+
+struct TestClient {
+    write: UnixStream,
+    read: BufReader<UnixStream>,
+}
+
+impl TestClient {
+    fn connect(sock: &std::path::Path) -> Self {
+        let stream = UnixStream::connect(sock).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let read = BufReader::new(stream.try_clone().unwrap());
+        Self { write: stream, read }
+    }
+
+    fn request(&mut self, command: Command) -> Response {
+        let env = Envelope { principal: Principal::Local, command };
+        let line = serde_json::to_string(&env).unwrap();
+        writeln!(self.write, "{line}").unwrap();
+        loop {
+            let mut buf = String::new();
+            self.read.read_line(&mut buf).expect("read");
+            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
+                return resp;
+            }
+        }
+    }
+}
+
+fn board_of(resp: Response) -> Board {
+    match resp {
+        Response::Board { board, .. } => board,
+        other => panic!("expected board, got {other:?}"),
+    }
+}
+
+fn hook_send(sock: &std::path::Path, session: &str, event: &str, body: &str) {
+    let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
+        .args(["hook", "--sock"])
+        .arg(sock)
+        .args(["--session", session, "--event", event])
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .expect("spawn hook");
+    child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
+fn z_sleeps_only_the_done_column() {
+    if Proc::new("tmux").arg("-V").output().is_err() {
+        eprintln!("tmux not installed; skipping");
+        return;
+    }
+    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-offer-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).unwrap();
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let sock = paths.orch_sock();
+    let hook_sock = paths.hook_sock();
+    let state_dir = paths.state_dir.clone();
+    let rt_dir = paths.rt_dir.clone();
+    let tmux_sock = paths.tmux_sock();
+
+    let stub = dir.join("claude-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n")
+        .unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+
+    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
+    std::env::set_var("MESIMON_SLEEP_MIN_AGE_MS", "0");
+
+    let daemon_repo = repo.clone();
+    let daemon = std::thread::spawn(move || {
+        let _ = mesimon_daemon::run_foreground(&daemon_repo);
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !sock.exists() {
+        assert!(Instant::now() < deadline, "daemon socket never appeared");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut c = TestClient::connect(&sock);
+    assert!(matches!(
+        c.request(Command::Hello { version: 1, client: "offer".into() }),
+        Response::Hello { .. }
+    ));
+
+    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "hot".into() });
+    let _ = c.request(Command::CreateTicket { column: "DONE".into(), title: "cold".into() });
+    let board = board_of(c.request(Command::Snapshot));
+    let hot = board.tickets.iter().find(|t| t.column == "TODO").unwrap().id;
+    let cold = board.tickets.iter().find(|t| t.column == "DONE").unwrap().id;
+
+    // One idle claude session on each ticket, driven idle by real hooks.
+    let mut sids = Vec::new();
+    for (ticket, name) in [(hot, "hot"), (cold, "cold")] {
+        let sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Claude }) {
+            Response::Spawned { id } => id,
+            other => panic!("spawn failed: {other:?}"),
+        };
+        // A transcript with one user + one assistant record keeps the sleep
+        // path's B-A22 cheap check quiet.
+        let transcript = dir.join(format!("{name}.jsonl"));
+        std::fs::write(
+            &transcript,
+            "{\"uuid\":\"u0\",\"type\":\"user\",\"message\":{}}\n\
+             {\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"hi\"}]}}\n",
+        )
+        .unwrap();
+        hook_send(
+            &hook_sock,
+            &sid.to_string(),
+            "SessionStart",
+            &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
+        );
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"session_id":"x"}"#);
+        hook_send(
+            &hook_sock,
+            &sid.to_string(),
+            "Stop",
+            r#"{"stop_hook_active":false,"background_tasks":[]}"#,
+        );
+        sids.push((sid, ticket));
+    }
+    // Stop leaves settle (1.5 s) before Idle commits.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        let board = board_of(c.request(Command::Snapshot));
+        let idle = board
+            .sessions
+            .iter()
+            .filter(|s| matches!(s.state, SessionState::Idle { .. }))
+            .count();
+        if idle == 2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "sessions never settled idle");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    // The offer's action: exactly the DONE session sleeps.
+    match c.request(Command::ReclaimAll) {
+        Response::Reclaimed { slept, skipped } => {
+            assert_eq!((slept, skipped), (1, 0), "Z must take only the done column");
+        }
+        other => panic!("reclaim failed: {other:?}"),
+    }
+    let board = board_of(c.request(Command::Snapshot));
+    for (sid, ticket) in sids {
+        let rec = board.sessions.iter().find(|s| s.id == sid).expect("session");
+        if ticket == cold {
+            assert_eq!(rec.state, SessionState::Sleeping, "done session must sleep");
+        } else {
+            assert!(
+                matches!(rec.state, SessionState::Idle { .. }),
+                "in-play ticket's session must stay awake, got {:?}",
+                rec.state
+            );
+        }
+    }
+
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+    daemon.join().unwrap();
+    let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&state_dir);
+    let _ = std::fs::remove_dir_all(&rt_dir);
+}

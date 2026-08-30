@@ -7,6 +7,7 @@
 
 pub mod adopt;
 pub mod attention;
+pub mod automove;
 pub mod authorize;
 pub mod board;
 pub mod command;
