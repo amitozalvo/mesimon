@@ -251,7 +251,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let machines = board
         .sessions
         .iter()
-        .map(|s| (s.id, Machine::new(s.state.clone(), now)))
+        .map(|s| (s.id, Machine::restore(s.state.clone(), s.confidence, now)))
         .collect();
     let feed = FeedWriter::open(&paths.activity_log())?;
 
@@ -997,7 +997,7 @@ impl Daemon {
                 rec.confidence = Confidence::Stale;
                 rec.waiting_since = None;
                 rec.state_changed_at = Some(now);
-                self.machines.insert(rec.id, Machine::new(rec.state.clone(), now));
+                self.machines.insert(rec.id, Machine::restore(rec.state.clone(), Confidence::Stale, now));
                 changed = true;
             }
         }
@@ -2120,7 +2120,7 @@ impl Daemon {
         rec.confidence = Confidence::Low;
         rec.state_changed_at = Some(now_ms());
         rec.detail = item.preview.clone();
-        self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
+        self.machines.insert(id, Machine::restore(rec.state.clone(), Confidence::Low, now_ms()));
         self.board.sessions.push(rec);
         Ok(id)
     }

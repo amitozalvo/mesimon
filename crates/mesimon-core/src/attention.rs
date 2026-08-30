@@ -248,9 +248,17 @@ pub struct Machine {
 
 impl Machine {
     pub fn new(state: SessionState, now: u64) -> Self {
+        Self::restore(state, Confidence::High, now)
+    }
+
+    /// Re-mint from a persisted record, carrying its confidence — a restart
+    /// must not launder a tail-derived Low into High (dogfood 2026-08-30:
+    /// that laundering blinded ToolCompleted's inferred-idle recovery, so a
+    /// misread session stayed glyph-less across restarts).
+    pub fn restore(state: SessionState, confidence: Confidence, now: u64) -> Self {
         Self {
             state,
-            confidence: Confidence::High,
+            confidence,
             entered_at: now,
             pending: None,
             committed: Vec::new(),
@@ -458,13 +466,23 @@ impl Machine {
             // early (no key to join on — PermissionRequest carries no
             // tool_use_id); the idle permission Notification re-asserts at
             // Medium, so the miss self-heals.
-            Signal::ToolCompleted => {
-                if matches!(self.state, S::RequiresAction { reason: Reason::Permission }) {
-                    t(S::Running)
-                } else {
-                    None
-                }
-            }
+            Signal::ToolCompleted => match &self.state {
+                S::RequiresAction { reason: Reason::Permission } => t(S::Running),
+                // A tool completing is stated proof the turn is alive — it
+                // outranks any INFERRED resting state (quiet-probe Medium,
+                // tail-hint Low) and the post-restart Unknown, and is the
+                // recovery probe_activity's "next real event corrects"
+                // promise relies on (dogfood 2026-08-30: a quiet-probe
+                // misfire, then a restart-tail StaleQuiet misread, each left
+                // a working session glyph-less on "idle" while PostToolUse
+                // frames streamed in). A hook-stated Idle stays inert — a
+                // background task's completion must not flip a real
+                // end_turn — and a straggler frame after a real Esc costs a
+                // cosmetic "working" the quiet probe re-demotes.
+                S::Idle { .. } if self.confidence != Confidence::High => t(S::Running),
+                S::Unknown { .. } => t(S::Running),
+                _ => None,
+            },
             Signal::Notification { kind } => match kind {
                 NotificationKind::QuotaStale | NotificationKind::QuotaDisabled => {
                     t(S::RequiresAction { reason: Reason::QuotaResume })
@@ -801,6 +819,66 @@ mod tests {
             assert_eq!(m1.apply(&Signal::ToolCompleted, 1_000), None);
             assert!(m1.pending.is_none(), "no pending leave from {state:?}");
         }
+    }
+
+    #[test]
+    fn tool_completed_recovers_a_quiet_probe_misfire() {
+        // Running → PaneQuiet misfire → Idle{Interrupted}; the next tool
+        // completion is stated proof the turn is alive and flips it back
+        // immediately (Idle→Running has no settle). The real-Esc straggler
+        // costs a cosmetic Running the quiet probe re-demotes.
+        let mut m = m(SessionState::Running);
+        assert!(m.apply(&Signal::PaneQuiet, 10_000).is_none()); // leave settles
+        let c = m.tick(10_000 + SETTLE_MS).expect("demote");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Interrupted });
+        let c = m.apply(&Signal::ToolCompleted, 15_000).expect("recover");
+        assert_eq!(c.to, SessionState::Running);
+        assert_eq!(c.confidence, Confidence::High);
+        assert!(!c.attention_added);
+        // And the probe still owns the demotion if the pane goes quiet again.
+        assert!(m.apply(&Signal::PaneQuiet, 25_000).is_none());
+        assert!(m.tick(25_000 + SETTLE_MS).is_some(), "probe still demotes");
+    }
+
+    #[test]
+    fn tool_completed_recovers_tail_misreads_but_not_stated_idle() {
+        // The restart path: Unknown{DaemonRestarted}, then the tail misreads
+        // a long quiet tool run as StaleQuiet → Idle{Unknown} at Low. Either
+        // rung recovers on the next completion frame.
+        let mut lost = m(SessionState::unknown());
+        let c = lost.apply(&Signal::ToolCompleted, 1_000).expect("recover from unknown");
+        assert_eq!(c.to, SessionState::Running);
+
+        let mut tailed = m(SessionState::unknown());
+        tailed.apply(&Signal::TranscriptHint { kind: TailHint::StaleQuiet }, 1_000).unwrap();
+        assert_eq!(tailed.confidence(), Confidence::Low);
+        let c = tailed.apply(&Signal::ToolCompleted, 2_000).expect("recover from tail idle");
+        assert_eq!(c.to, SessionState::Running);
+
+        // A hook-stated end_turn (High) stays inert — a background task's
+        // completion must not flip a real turn end.
+        let mut done = m(SessionState::Running);
+        let stop = Signal::Stop { stop_hook_active: false, has_agent_id: false, background_tasks: false };
+        assert!(done.apply(&stop, 1_000).is_none()); // leave settles
+        done.tick(1_000 + SETTLE_MS).expect("settle to end_turn");
+        assert_eq!(done.confidence(), Confidence::High);
+        assert!(done.apply(&Signal::ToolCompleted, 10_000).is_none());
+    }
+
+    #[test]
+    fn restore_carries_persisted_confidence() {
+        // A daemon restart re-mints machines from the store; a tail-derived
+        // Low idle must stay recoverable after the restart (dogfood
+        // 2026-08-30: Machine::new laundered it to High and the session
+        // stayed glyph-less across the reload meant to fix it).
+        let mut restored = Machine::restore(
+            SessionState::Idle { stop_reason: StopReason::Unknown },
+            Confidence::Low,
+            0,
+        );
+        assert_eq!(restored.confidence(), Confidence::Low);
+        let c = restored.apply(&Signal::ToolCompleted, 1_000).expect("recover after restore");
+        assert_eq!(c.to, SessionState::Running);
     }
 
     #[test]
