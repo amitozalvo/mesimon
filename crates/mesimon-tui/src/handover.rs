@@ -19,11 +19,32 @@ pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
     };
     let mut cmd = Command::new(prog);
     cmd.args(rest);
+    let shell = cwd.is_some();
     if let Some(d) = cwd {
         cmd.current_dir(d);
     }
-    let status = cmd.status().context("attach child")?;
-    if !status.success() {
+    // system(3) semantics: raw mode is off, so ISIG is live again, and until
+    // the child takes the terminal (tmux client / zsh job control) a Ctrl+C
+    // lands on OUR process group too — default SIGINT then kills the TUI
+    // silently while the interactive child survives, stranding the user
+    // inside it (dogfood 2026-08-30: `!` shell appeared to "crash mesimon").
+    // Ignore INT/QUIT for exactly the wait, restore after. drain_stdin stays
+    // the caller's, after the alt screen is back up.
+    let (old_int, old_quit) = unsafe {
+        (
+            libc::signal(libc::SIGINT, libc::SIG_IGN),
+            libc::signal(libc::SIGQUIT, libc::SIG_IGN),
+        )
+    };
+    let status = cmd.status().context("attach child");
+    unsafe {
+        libc::signal(libc::SIGINT, old_int);
+        libc::signal(libc::SIGQUIT, old_quit);
+    }
+    let status = status?;
+    // An interactive shell exits with its LAST command's status — meaningless
+    // here, never an attach failure. Only the attach path reports non-zero.
+    if !shell && !status.success() {
         bail!("attach exited with {status}");
     }
     Ok(())
