@@ -120,8 +120,22 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let body_h = area.height.saturating_sub(6); // top 4 + breathing 1 + footer 1
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     if two_zone {
+        // Transcript preview: the selected rail session's latest assistant
+        // reply, read through the same draw cache as the board's `p` peek
+        // (one slot is still enough — board and ticket never draw the same
+        // frame). Bash sessions have no transcript and preview nothing.
+        let peek = app
+            .rail_sessions(ticket_id)
+            .get(rail_idx)
+            .and_then(|s| s.transcript_path.as_deref())
+            .and_then(|p| app.peek_cache.text(p));
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
-        draw_documents(f, Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h }, app);
+        draw_documents(
+            f,
+            Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
+            app,
+            peek.as_deref(),
+        );
         draw_rail(
             f,
             Rect { x: area.x + left_w + 3, y: body_y, width: RAIL_W.saturating_sub(1), height: body_h },
@@ -159,7 +173,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     );
 }
 
-fn draw_documents(f: &mut Frame, area: Rect, app: &App) {
+fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>) {
     let theme = &app.theme;
     let mut head = vec![Span::styled(
         " DOCUMENTS",
@@ -169,12 +183,29 @@ fn draw_documents(f: &mut Frame, area: Rect, app: &App) {
     let used: usize = 10 + right.width() + 1;
     head.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
     head.push(Span::styled(right.to_string(), theme.dim2()));
-    let lines = vec![
+    let mut lines = vec![
         Line::from(head),
         Line::default(),
         Line::from(Span::styled("   drop files into this ticket's directory", theme.dim3())),
         Line::from(Span::styled("   ticket directories land with the adoption IA (M4)", theme.dim3())),
     ];
+
+    // The selected session's latest assistant reply, wrapped into whatever
+    // height the zone has left. Absent transcript (bash, fresh spawn) means
+    // no section at all — a heading over nothing is noise.
+    if let Some(text) = peek {
+        lines.push(Line::default());
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(
+            " TRANSCRIPT",
+            theme.dim1().add_modifier(Modifier::BOLD),
+        )));
+        lines.push(Line::default());
+        let budget = (area.height as usize).saturating_sub(lines.len());
+        for row in crate::peek::wrap(text, (area.width as usize).saturating_sub(4), budget) {
+            lines.push(Line::from(Span::styled(format!("   {row}"), theme.dim1())));
+        }
+    }
     f.render_widget(Paragraph::new(lines), area);
 }
 
