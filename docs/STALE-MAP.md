@@ -385,6 +385,18 @@ artifacts. **M4's worktree spawn needs no trust gate and no config writes.**
   1.5 s settle; demotion-only (promotion stays hooks-only). Empirical basis: working turns
   hold the age at 0–1 s (spinner repaints sub-second); idle panes emit only sparse statusline
   bursts. Seam `MESIMON_PANE_QUIET_MS`; e2e `interrupt_e2e`.
+- **Amended same day (T-50 forensics): the transcript IS the primary catch; the quiet probe
+  is the fallback.** Two of the bullets above overstate the spike: (1) a mid-turn Esc (the
+  common case — the pre-first-output Esc is the exception the spike happened to hit) DOES
+  append a transcript record — a `user` record carrying `interruptedMessageId` and the text
+  `[Request interrupted by user]`; (2) "idle panes emit only sparse statusline bursts" is
+  false right after a turn — post-turn/post-interrupt painting held `#{window_activity}` at
+  age 0 for 60–80 s live, so the 8 s probe left an interrupted card on "working" until the
+  user killed it. Fix: `classify_tail_record` treats `interruptedMessageId` as `Aborted`,
+  and `poll_tails` gains an abort-only candidacy class for our own `Running` sessions
+  (only the `Aborted` hint is forwarded; everything else, `StaleQuiet` included, stays
+  hooks-owned) → `Idle{Interrupted}` at Low conf within one 2 s poll + settle. The quiet
+  probe stays for the recordless case. E2e `interrupt_tail_e2e`.
 
 ## Exited conversations stay resumable (2026-08-30, dogfood)
 

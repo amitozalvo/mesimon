@@ -200,10 +200,13 @@ pub enum Signal {
     SpawnProbe { bytes: bool, osc0: bool, resume: bool },
     /// Daemon-side probe while `Running`: the pane stopped painting past the
     /// quiet threshold. A turn in flight repaints continuously (spinner), so
-    /// sustained silence means the turn is over — this is the ONLY signal an
-    /// Esc interrupt leaves (spike S-E: no hook fires, the transcript may get
-    /// no record, and the corpus's OSC 9;4 / title-glyph Tier A− channels no
-    /// longer exist).
+    /// sustained silence means the turn is over. An Esc interrupt still fires
+    /// no hook (spike S-E), but current Claude Code DOES write an interrupt
+    /// record to the transcript, and that is the primary catch (poll_tails'
+    /// abort-only class → `TranscriptHint{AbortedMidStream}`, dogfood
+    /// 2026-08-30: post-turn painting kept panes "active" for 60–80 s, so
+    /// this probe alone left interrupted cards on "working"). PaneQuiet
+    /// remains the fallback for a record that never lands.
     PaneQuiet,
     /// Observe tier: derived from an adopted session's transcript tail.
     TranscriptHint { kind: TailHint },
@@ -404,7 +407,22 @@ impl Machine {
             Signal::Stop { has_agent_id: true, .. } => None,     // nested, never top-level
             Signal::Stop { background_tasks: true, .. } => t(S::Running),
             Signal::Stop { .. } => t(S::Idle { stop_reason: StopReason::EndTurn }),
-            Signal::SubagentStop | Signal::TeammateIdle => None,
+            // A subagent finishing proves the parent is still orchestrating.
+            // The restart-window tail re-derive reads "waiting on background
+            // subagents" as done — the parent's turn genuinely ends in the
+            // transcript while they run — so a sub-High Idle/Unknown here is
+            // a misread: promote back to Running at Medium (inference, not a
+            // stated event). A High-confidence Idle came from a real Stop
+            // (which reports in-flight work via background_tasks) and stands.
+            Signal::SubagentStop => match &self.state {
+                S::Idle { .. } | S::Unknown { .. }
+                    if self.confidence != Confidence::High =>
+                {
+                    Some((S::Running, Confidence::Medium))
+                }
+                _ => None,
+            },
+            Signal::TeammateIdle => None,
             Signal::StopFailure { class } => match class {
                 StopFailureClass::RateLimit | StopFailureClass::Overloaded => t(S::Throttled),
                 StopFailureClass::AuthenticationFailed
@@ -630,6 +648,48 @@ mod tests {
             .is_none());
         assert!(m.tick(9000).is_none());
         assert_eq!(m.state(), &SessionState::Running);
+    }
+
+    #[test]
+    fn subagent_stop_corrects_tail_derived_done() {
+        // Restart window: the tail re-derive reads "parent waiting on
+        // background subagents" as done (the parent's turn genuinely ends in
+        // the transcript while they run). A SubagentStop proves the parent is
+        // still orchestrating.
+        let mut ma = m(SessionState::unknown());
+        let c = ma
+            .apply(&Signal::TranscriptHint { kind: TailHint::TurnComplete }, 1000)
+            .expect("tail derive");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(c.confidence, Confidence::Low);
+        let c = ma.apply(&Signal::SubagentStop, 2000).expect("promote");
+        assert_eq!(c.to, SessionState::Running);
+        assert_eq!(c.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn subagent_stop_corrects_pane_quiet_interrupt_misread() {
+        // Waiting on background subagents stops the pane repainting; the
+        // interrupt probe demotes. The next SubagentStop undoes the misread.
+        let mut ma = m(SessionState::Running);
+        assert!(ma.apply(&Signal::PaneQuiet, 1000).is_none());
+        let c = ma.tick(3000).expect("demoted");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Interrupted });
+        let c = ma.apply(&Signal::SubagentStop, 4000).expect("promote");
+        assert_eq!(c.to, SessionState::Running);
+        assert_eq!(c.confidence, Confidence::Medium);
+    }
+
+    #[test]
+    fn subagent_stop_inert_from_high_confidence_states() {
+        // A High Idle came from a real Stop (background_tasks reports
+        // in-flight work), and Running needs no promotion.
+        let mut idle = m(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert!(idle.apply(&Signal::SubagentStop, 1000).is_none());
+        assert_eq!(idle.state(), &SessionState::Idle { stop_reason: StopReason::EndTurn });
+        let mut run = m(SessionState::Running);
+        assert!(run.apply(&Signal::SubagentStop, 1000).is_none());
+        assert!(run.pending.is_none());
     }
 
     #[test]
@@ -899,6 +959,23 @@ mod tests {
             // Tier-0 evidence never announces — Low is out of the queue.
             assert!(!c.attention_added);
         }
+    }
+
+    #[test]
+    fn aborted_hint_demotes_running_after_settle() {
+        // The Esc-interrupt catch: no hook fires, the transcript's interrupt
+        // record (via poll_tails' abort-only class) must take a
+        // High-confidence Running machine to Idle{Interrupted}, debounced
+        // like any other leave.
+        let mut ma = m(SessionState::Running);
+        assert!(ma
+            .apply(&Signal::TranscriptHint { kind: TailHint::AbortedMidStream }, 1000)
+            .is_none());
+        assert!(ma.tick(1000 + SETTLE_MS - 1).is_none());
+        let c = ma.tick(1000 + SETTLE_MS).expect("settled demote");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Interrupted });
+        assert_eq!(c.confidence, Confidence::Low);
+        assert!(!c.attention_added);
     }
 
     #[test]

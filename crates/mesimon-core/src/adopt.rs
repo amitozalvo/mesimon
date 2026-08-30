@@ -98,8 +98,14 @@ pub fn classify_tail_record(v: &Value) -> TailEvent {
     if v.get("uuid").is_none() {
         return TailEvent::Latch;
     }
+    // Three spellings of an interrupt: the two mid-stream flags, and the Esc
+    // press itself, which current Claude Code records as a `user` record
+    // carrying `interruptedMessageId` ("[Request interrupted by user]";
+    // verified live 2026-08-30 — spike S-E's "the transcript may get no
+    // record" does not hold on current builds).
     if v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true)
         || v.get("interruptedByShutdown").and_then(Value::as_bool) == Some(true)
+        || v.get("interruptedMessageId").is_some_and(|x| !x.is_null())
     {
         return TailEvent::Aborted;
     }
@@ -228,6 +234,15 @@ mod tests {
 
         let v = val(r#"{"uuid":"u5","type":"assistant","isAbortedMidStream":true,"message":{}}"#);
         assert_eq!(classify_tail_record(&v), TailEvent::Aborted);
+
+        // The Esc press itself (verified against a live transcript
+        // 2026-08-30): a `user` record carrying `interruptedMessageId`.
+        let v = val(
+            r#"{"uuid":"u7","type":"user","interruptedMessageId":"msg_011","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+        );
+        assert_eq!(classify_tail_record(&v), TailEvent::Aborted);
+        let v = val(r#"{"uuid":"u8","type":"user","interruptedMessageId":null,"message":{}}"#);
+        assert_eq!(classify_tail_record(&v), TailEvent::Other);
 
         let v = val(r#"{"uuid":"u6","type":"user","message":{}}"#);
         assert_eq!(classify_tail_record(&v), TailEvent::Other);

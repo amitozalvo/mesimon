@@ -752,25 +752,38 @@ impl Daemon {
     /// next turn boundary (dogfood 2026-08-30: "?" while Claude visibly
     /// streams). Leaving `Unknown` ends the candidacy: hooks own again and
     /// the cursor is dropped.
+    ///
+    /// Third class, abort-only: our own `Running` sessions. An Esc interrupt
+    /// fires no hook, and the pane-quiet probe is defeated by Claude Code's
+    /// post-turn painting (dogfood 2026-08-30: an idle pane kept
+    /// `window_activity` fresh for 60–80 s, so the interrupted card read
+    /// "working" until the user killed it) — but the transcript records
+    /// "[Request interrupted by user]" at the keypress. Only the Aborted
+    /// hint is forwarded for this class: everything else stays hooks-owned,
+    /// and a silent transcript during a long tool run must never demote.
     fn poll_tails(&mut self) -> bool {
         let now = now_ms();
-        let cands: Vec<(uuid::Uuid, String)> = self
+        let cands: Vec<(uuid::Uuid, String, bool)> = self
             .board
             .sessions
             .iter()
-            .filter(|r| {
+            .filter_map(|r| {
                 let observe_only =
                     r.provenance == Provenance::Adopted && r.argv.is_empty() && r.state.is_live();
-                let ours_lost = r.kind == SessionKind::Claude
-                    && matches!(r.state, SessionState::Unknown { .. });
-                observe_only || ours_lost
+                let ours = r.kind == SessionKind::Claude
+                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty());
+                let ours_lost = ours && matches!(r.state, SessionState::Unknown { .. });
+                let abort_only = ours && r.state == SessionState::Running;
+                if !(observe_only || ours_lost || abort_only) {
+                    return None;
+                }
+                r.transcript_path.clone().map(|t| (r.id, t, abort_only))
             })
-            .filter_map(|r| r.transcript_path.clone().map(|t| (r.id, t)))
             .collect();
-        self.tails.retain(|id, _| cands.iter().any(|(cid, _)| cid == id));
+        self.tails.retain(|id, _| cands.iter().any(|(cid, _, _)| cid == id));
 
         let mut changed = false;
-        for (id, tpath) in cands {
+        for (id, tpath, abort_only) in cands {
             let path = std::path::PathBuf::from(&tpath);
             // Mint-time backfill for Unknown sessions: a transcript that
             // never grows again (turn ended before the restart) would leave
@@ -805,6 +818,8 @@ impl Daemon {
             for line in &lines {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
                 match classify_tail_record(&v) {
+                    TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
+                    _ if abort_only => {}
                     TailEvent::AssistantText { text } => hints
                         .push((TailHint::AssistantText, Some(crate::census::sanitize(&text)))),
                     TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion } => {
@@ -814,11 +829,11 @@ impl Daemon {
                         hints.push((TailHint::ExitPlanMode, None))
                     }
                     TailEvent::TurnComplete => hints.push((TailHint::TurnComplete, None)),
-                    TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
                     TailEvent::Latch | TailEvent::Other => {}
                 }
             }
-            if hints.is_empty()
+            if !abort_only
+                && hints.is_empty()
                 && quiet >= TAIL_QUIET_MS
                 && self
                     .board
