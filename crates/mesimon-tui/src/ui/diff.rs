@@ -1,9 +1,10 @@
 //! The read-only diff viewer (M4b, docs/08 §1.3 hunk model + §10 layout minus
 //! the dead rail). Review only — no accept, no checkout, no send-back; `!`
 //! opens a shell in the worktree as the escape hatch. Same laws as every
-//! screen: painted bands, never drawn rules (L1); no syntax highlighting ever
-//! (L3 — one saturated colour, reserved); adds/deletes carry glyph AND weight
-//! so review reads correctly in mono.
+//! screen: painted bands, never drawn rules (L1); no syntax highlighting
+//! (L3 — one saturated colour, reserved). Adds/deletes ride the calm/err
+//! registers (muted green/red; author 2026-08-30 amendment) plus glyph AND
+//! weight, so review still reads correctly in mono.
 
 use mesimon_core::diff::{Render, Sign};
 use ratatui::layout::Rect;
@@ -24,6 +25,15 @@ use super::chrome;
 const TWO_PANE_MIN_W: u16 = 100;
 const FILES_W: u16 = 28;
 const TAB_W: usize = 8;
+
+/// The z z density cycle in words — `-U1/-U3/-U8` read as noise in dogfood.
+pub(crate) fn density_word(context: u32) -> &'static str {
+    match context {
+        1 => "tight",
+        8 => "wide",
+        _ => "normal",
+    }
+}
 
 pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     let theme = &app.theme;
@@ -50,7 +60,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     let mut ident = vec![
         Span::styled(format!(" ⎇ {}", d.branch), theme.dim1()),
         Span::styled(
-            format!(" ∙ vs {base8} ∙ {n} {noun} ∙ +{adds} -{dels} ∙ -U{}", d.density),
+            format!(
+                " ∙ vs {base8} ∙ {n} {noun} ∙ +{adds} -{dels} ∙ {}",
+                density_word(d.density)
+            ),
             theme.dim2(),
         ),
     ];
@@ -105,10 +118,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     // ---- footer ----------------------------------------------------------
     let footer = if app.status.is_empty() {
         let hint = if area.width >= TWO_PANE_MIN_W {
-            "jk scroll ∙ hl file ∙ R refresh ∙ zz density ∙ ! shell ∙ q back".to_string()
+            "jk scroll ∙ {} page ∙ hl file ∙ R refresh ∙ zz density ∙ ! shell ∙ q back".to_string()
         } else {
             let other = if d.swap { "files" } else { "diff" };
-            format!("jk scroll ∙ hl file ∙ zp {other} ∙ R refresh ∙ zz density ∙ ! shell ∙ q back")
+            format!("jk scroll ∙ {{}} page ∙ hl file ∙ zp {other} ∙ R refresh ∙ zz density ∙ ! shell ∙ q back")
         };
         chrome::mode_line(app, "DIFF", &hint)
     } else {
@@ -263,10 +276,14 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
                         .style(band_style),
                 );
                 for l in &h.lines {
+                    // Adds/deletes in colour (author 2026-08-30, amending the
+                    // grey-ramp-only rule): the calm/err registers — muted
+                    // green/red, theme- and profile-aware — never raw RGB.
+                    // Glyph + weight stay, so mono still reads.
                     let (sign, num, style) = match l.sign {
                         Sign::Ctx => (' ', l.new_ln, theme.dim2()),
-                        Sign::Add => ('+', l.new_ln, theme.base().add_modifier(Modifier::BOLD)),
-                        Sign::Del => ('-', l.old_ln, theme.dim1()),
+                        Sign::Add => ('+', l.new_ln, theme.calm_text().add_modifier(Modifier::BOLD)),
+                        Sign::Del => ('-', l.old_ln, theme.err_text()),
                     };
                     let num = num.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
                     for (j, seg) in wrap_code(&l.text, code_w).into_iter().enumerate() {

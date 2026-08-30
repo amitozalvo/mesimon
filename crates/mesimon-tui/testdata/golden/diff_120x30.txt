@@ -1,6 +1,6 @@
  mesimon > kanban-tui > Fix OSC-11 detection > diff
 
- ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +3 -1 ∙ -U3
+ ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +3 -1 ∙ normal
 
 
   FILES                  (4)    src/auth/callback.ts ∙ file 1/4 ∙ 2 hunks
@@ -27,4 +27,4 @@
 
 
 
- DIFF  jk scroll ∙ hl file ∙ R refresh ∙ zz density ∙ ! shell ∙ q back
+ DIFF  jk scroll ∙ {} page ∙ hl file ∙ R refresh ∙ zz density ∙ ! shell ∙ q back

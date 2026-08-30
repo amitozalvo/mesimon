@@ -404,6 +404,29 @@ fn golden_composer_selector_120() {
     golden("board_compose_worktree_120x30", &render(&app, 120, 30));
 }
 
+/// Adds ride the calm register, deletes the err register (author 2026-08-30
+/// colour amendment) — and context stays grey, so the registers stay earned.
+#[test]
+fn test_diff_add_del_registers() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let fg_at = |needle: &str| {
+        for (y, l) in lines.iter().enumerate() {
+            if let Some(ix) = l.find(needle) {
+                let x = l[..ix].chars().count() as u16;
+                return Some(buf[(x, y as u16)].fg);
+            }
+        }
+        None
+    };
+    assert_eq!(fg_at("metrics.increment").expect("add line"), theme.calm, "adds = calm");
+    assert_eq!(fg_at("const t = await exchange(code)").expect("del line"), theme.err, "dels = err");
+    assert_eq!(fg_at("return persist").expect("ctx line"), theme.rest.dim2, "ctx = grey");
+}
+
 /// The diff footer mirrors the ticket rule: a status outranks the hints.
 #[test]
 fn test_diff_footer_shows_status() {

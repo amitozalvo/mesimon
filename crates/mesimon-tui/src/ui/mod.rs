@@ -7,7 +7,7 @@
 mod board;
 mod card;
 mod chrome;
-mod diff;
+pub(crate) mod diff;
 #[cfg(test)]
 mod tests;
 mod ticket;

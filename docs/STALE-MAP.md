@@ -644,3 +644,23 @@ Plan §H's adjudications, recorded at ship:
   recompute (no caches, §3.1 deferred); ahead/behind stays `—` all of M4.
 - Stop-of-a-bound-session recompute deferred: the TUI has no per-session Stop signal
   distinct from BoardChanged; `R` covers it.
+
+## M4b dogfood round 1 (2026-08-30)
+
+- **`!` shell handover killed the TUI silently** — system(3) semantics were missing: with raw
+  mode off, a Ctrl+C before the child takes the terminal hits our process group too; default
+  SIGINT killed mesimon while the interactive shell survived, stranding the user inside it
+  ("crashed, moved my pwd to the worktree"). handover now ignores SIGINT/SIGQUIT for exactly
+  the child wait (latent since M1's attach — tmux grabbed the terminal fast enough to hide it).
+  An interactive shell's exit status (= its last command's) is also no longer reported as
+  "focus failed"; only real attach argvs surface non-zero.
+- **Adds/deletes get colour** (author, amending the ship block's glyph+weight-only rule and
+  06's grey-ramp diff line): add lines ride the **calm** register (muted green, bold), delete
+  lines the **err** register (muted red) — theme/profile-aware registers, never raw RGB, so
+  the one-saturated-colour law and mono legibility stand (glyph + weight kept; cell test
+  `test_diff_add_del_registers`). Intraline ("greener/redder") emphasis deferred — needs the
+  `similar`-based word diff from 08 §1.2.
+- **Density words**: `-U1/-U3/-U8` read as noise — identity line + `z z` status now say
+  `tight` / `normal` / `wide` ("N context lines around each change").
+- **`{` / `}` (+ PgUp/PgDn) page the hunk pane** (~20 rows, draw-clamped). `v diff` joined
+  the ticket footer hint (the viewer had no visible affordance).

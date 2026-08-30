@@ -99,6 +99,10 @@ pub enum InputPurpose {
     Rename { id: ulid::Ulid },
 }
 
+/// `{`/`}` (and PgUp/PgDn) hunk-pane page step. The key handler cannot see
+/// the rendered height, so this approximates a screenful; draw clamps.
+const DIFF_PAGE: usize = 20;
+
 pub struct App {
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
@@ -952,7 +956,12 @@ impl App {
                         };
                         d.cache.clear();
                         d.scroll.set(0);
-                        self.status = format!("context -U{}", d.density);
+                        let noun = if d.density == 1 { "line" } else { "lines" };
+                        self.status = format!(
+                            "{} ∙ {} context {noun} around each change",
+                            crate::ui::diff::density_word(d.density),
+                            d.density
+                        );
                         d.file_idx
                     };
                     self.diff_fetch(idx);
@@ -981,6 +990,17 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 if let Some(d) = self.diff.as_ref() {
                     d.scroll.set(d.scroll.get().saturating_sub(1));
+                }
+            }
+            // Vim-adjacent paging; draw clamps against the built content.
+            KeyCode::Char('}') | KeyCode::PageDown => {
+                if let Some(d) = self.diff.as_ref() {
+                    d.scroll.set(d.scroll.get() + DIFF_PAGE);
+                }
+            }
+            KeyCode::Char('{') | KeyCode::PageUp => {
+                if let Some(d) = self.diff.as_ref() {
+                    d.scroll.set(d.scroll.get().saturating_sub(DIFF_PAGE));
                 }
             }
             KeyCode::Char('l') | KeyCode::Char('J') | KeyCode::Right => self.diff_nav(1),
