@@ -192,13 +192,15 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let footer = if app.status.is_empty() {
         // `w` only while the daemon would still accept it: locked once the
         // ticket has sessions or a worktree binding (server::set_workspace).
-        let locked = app.wt_item(ticket_id).is_some()
-            || app.board.sessions.iter().any(|s| s.ticket == ticket_id);
+        let has_wt = app.wt_item(ticket_id).is_some();
+        let locked = has_wt || app.board.sessions.iter().any(|s| s.ticket == ticket_id);
         // `m` is deliberately absent: the merge lives on the identity line
         // (its hint and every reply of the flow render up there, once).
         let w_hint = if locked { "" } else { "w worktree/shared ∙ " };
+        // `v` only once a binding exists — that is when the diff can answer.
+        let v_hint = if has_wt { "v diff ∙ " } else { "" };
         let hint = format!(
-            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ {w_hint}r rename ∙ esc board"
+            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ {w_hint}{v_hint}r rename ∙ esc board"
         );
         chrome::mode_line(app, "TICKET", &hint)
     } else {
