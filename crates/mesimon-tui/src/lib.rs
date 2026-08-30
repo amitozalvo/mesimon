@@ -2,7 +2,9 @@
 //! discipline (docs/05 §13) — exercised on every focus handover (docs/19 §2).
 
 mod app;
-mod client;
+// Public so an integration test can drive the real connect path (the
+// build-skew daemon restart lives in it); the TUI itself uses it internally.
+pub mod client;
 mod detect;
 mod glyphs;
 mod handover;

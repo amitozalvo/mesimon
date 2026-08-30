@@ -374,7 +374,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mesimon"
-version = "0.1.0-dev"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "mesimon-backend-tmux",
@@ -388,7 +388,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-backend-tmux"
-version = "0.1.0-dev"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -397,7 +397,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-core"
-version = "0.1.0-dev"
+version = "0.1.0-alpha.1"
 dependencies = [
  "serde",
  "serde_json",
@@ -408,7 +408,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-daemon"
-version = "0.1.0-dev"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "libc",
@@ -424,13 +424,14 @@ dependencies = [
 
 [[package]]
 name = "mesimon-tui"
-version = "0.1.0-dev"
+version = "0.1.0-alpha.1"
 dependencies = [
  "anyhow",
  "libc",
  "mesimon-core",
  "mesimon-daemon",
  "ratatui",
+ "semver",
  "serde_json",
  "terminal-colorsaurus",
  "ulid",
@@ -620,6 +621,12 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "semver"
+version = "1.0.28"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "8a7852d02fc848982e0c167ef163aaff9cd91dc640ba85e263cb1ce46fae51cd"
 
 [[package]]
 name = "serde"

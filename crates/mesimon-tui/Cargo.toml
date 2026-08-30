@@ -21,6 +21,7 @@ libc = "0.2"
 # 06 §2.9: OSC-11 background query at startup (reads /dev/tty directly, which
 # sidesteps the T-4 attach-query stdin race)
 terminal-colorsaurus = "1"
+semver = "1.0.28"
 
 [lints]
 workspace = true
