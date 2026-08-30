@@ -14,7 +14,7 @@
     Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and
     clippy is clean.
 
-
+    ⠋ working
 
 
 

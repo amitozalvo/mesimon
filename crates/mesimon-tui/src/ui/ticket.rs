@@ -155,17 +155,22 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // reply, read through the same draw cache as the board's `p` peek
         // (one slot is still enough — board and ticket never draw the same
         // frame). Bash sessions have no transcript and preview nothing.
-        let peek = app
-            .rail_sessions(ticket_id)
-            .get(rail_idx)
+        let sel = app.rail_sessions(ticket_id).into_iter().nth(rail_idx);
+        let peek = sel
             .and_then(|s| s.transcript_path.as_deref())
             .and_then(|p| app.peek_cache.text(p));
+        // A mid-turn agent keeps composing past whatever the preview shows,
+        // so the zone says so (bash panes work too, but have no transcript
+        // for the line to qualify — Claude only).
+        let working = sel
+            .is_some_and(|s| s.kind == SessionKind::Claude && s.state == SessionState::Running);
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
         draw_documents(
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
             app,
             peek.as_deref(),
+            working,
         );
         draw_rail(
             f,
@@ -215,7 +220,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     );
 }
 
-fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>) {
+fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>, working: bool) {
     let theme = &app.theme;
     let mut head = vec![Span::styled(
         " DOCUMENTS",
@@ -234,8 +239,10 @@ fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>) {
 
     // The selected session's latest assistant reply, wrapped into whatever
     // height the zone has left. Absent transcript (bash, fresh spawn) means
-    // no section at all — a heading over nothing is noise.
-    if let Some(text) = peek {
+    // no section at all — a heading over nothing is noise — UNLESS the agent
+    // is mid-turn: then the section closes with the rail's own spinner and
+    // state word, so a stale reply (or no reply yet) reads as in-progress.
+    if peek.is_some() || working {
         lines.push(Line::default());
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
@@ -243,9 +250,21 @@ fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>) {
             theme.dim1().add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::default());
-        let budget = (area.height as usize).saturating_sub(lines.len());
-        for row in crate::peek::wrap(text, (area.width as usize).saturating_sub(4), budget) {
-            lines.push(Line::from(Span::styled(format!("   {row}"), theme.dim1())));
+        if let Some(text) = peek {
+            // Reserve the indicator's rows so a long reply never pushes it off.
+            let reserve = if working { 2 } else { 0 };
+            let budget = (area.height as usize).saturating_sub(lines.len() + reserve);
+            for row in crate::peek::wrap(text, (area.width as usize).saturating_sub(4), budget) {
+                lines.push(Line::from(Span::styled(format!("   {row}"), theme.dim1())));
+            }
+            if working {
+                lines.push(Line::default());
+            }
+        }
+        if working {
+            let g = glyphs::spinner(theme.glyph_tier(), app.spin_frame());
+            let word = glyphs::state_word(&SessionState::Running);
+            lines.push(Line::from(Span::styled(format!("   {g} {word}"), theme.dim2())));
         }
     }
     f.render_widget(Paragraph::new(lines), area);
