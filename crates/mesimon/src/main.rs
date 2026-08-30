@@ -1,5 +1,6 @@
 //! mesimon — me-si-MON. The task instrument.
 
+mod doctor;
 mod hook;
 
 use std::path::PathBuf;
@@ -18,8 +19,9 @@ fn main() -> Result<()> {
                 .unwrap_or(std::env::current_dir()?);
             mesimon_daemon::run_foreground(&repo)
         }
+        Some("doctor") => doctor::run(&args[1..]),
         Some("--version" | "-V") => {
-            println!("mesimon {}", env!("CARGO_PKG_VERSION"));
+            println!("mesimon {}", version_line());
             Ok(())
         }
         Some("--help" | "-h") => {
@@ -42,10 +44,22 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
 }
 
+/// `0.1.0-alpha.1 (a1b2c3d, 2026-08-31)` — the string a bug report should
+/// carry (16 §8.1).
+pub fn version_line() -> String {
+    format!(
+        "{} ({}, {})",
+        env!("CARGO_PKG_VERSION"),
+        env!("MESIMON_GIT_SHA"),
+        env!("MESIMON_BUILD_DATE"),
+    )
+}
+
 fn print_help() {
     println!(
         "mesimon (me-si-MON) — a terminal kanban that orchestrates coding-agent sessions\n\n\
          usage:\n  mesimon              open the board for the current directory\n  \
+         mesimon doctor [section]       diagnose the environment; prints fixes, applies none\n  \
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
          mesimon --version\n"
     );
