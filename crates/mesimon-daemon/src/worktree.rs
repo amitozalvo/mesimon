@@ -11,7 +11,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
-use anyhow::{anyhow, bail, Context, Result};
+use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
@@ -431,12 +431,17 @@ pub fn branch_conflicts(rows: &[WtRow]) -> Vec<String> {
 
 // ---- merge story ------------------------------------------------------------
 
-#[derive(Debug, PartialEq, Eq)]
-pub enum MergeCheck {
-    /// Branch tip already an ancestor of the default branch.
-    AlreadyMerged,
-    Clean,
-    Conflicts,
+/// Fast-forward possible: base's tip is an ancestor of the branch tip.
+/// False = base moved since the branch was cut — the agent rebases first
+/// (mesimon never mints merge commits; history stays linear).
+pub fn ff_possible(repo: &Path, branch: &str, base: &str) -> bool {
+    Command::new("git")
+        .arg("-C")
+        .arg(repo)
+        .args(["--no-optional-locks", "merge-base", "--is-ancestor", base, branch])
+        .output()
+        .map(|o| o.status.success())
+        .unwrap_or(false)
 }
 
 /// Current tip of a branch (empty when the ref is gone).
@@ -466,56 +471,20 @@ pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// In-memory preflight (`merge-tree --write-tree`): touches nothing.
-pub fn merge_check(repo: &Path, branch: &str, base: &str) -> Result<MergeCheck> {
-    if is_merged(repo, branch, base) {
-        return Ok(MergeCheck::AlreadyMerged);
-    }
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(["--no-optional-locks", "merge-tree", "--write-tree", base, branch])
-        .output()
-        .context("merge-tree")?;
-    match out.status.code() {
-        Some(0) => Ok(MergeCheck::Clean),
-        Some(1) => Ok(MergeCheck::Conflicts),
-        _ => bail!("merge preflight failed: {}", String::from_utf8_lossy(&out.stderr).trim()),
-    }
-}
-
-/// Perform the clean merge of `branch` into `base`.
+/// Fast-forward `base` to the branch tip — the ONLY merge mesimon performs
+/// (callers verified `ff_possible`; non-ff goes through the agent-rebase
+/// stage instead, so history stays linear and tests ran on the merged state).
 ///
-/// - main checkout HAS `base` checked out: refuse if the working tree is dirty
-///   in paths the merge touches, else `git merge --no-edit branch`.
-/// - main checkout is elsewhere: fast-forward the ref without a checkout
-///   (`git push . branch:refs/heads/base`, ff-only); a non-ff merge with base
-///   not checked out is refused with the reason.
-pub fn merge_into_base(repo: &Path, branch: &str, base: &str) -> Result<()> {
+/// - base checked out in the main checkout: `git merge --ff-only` (git itself
+///   refuses when dirty files would be overwritten — surfaced as the reason).
+/// - base elsewhere: ff-only ref update, no checkout touched.
+pub fn ff_merge(repo: &Path, branch: &str, base: &str) -> Result<()> {
     let head = git_read(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string();
     if head == base {
-        // Overlap check: merge must not eat user working-tree state.
-        let touched = git_read(
-            repo,
-            &["diff", "--name-only", "-z", &format!("{base}...{branch}")],
-        )?;
-        let dirty = git_read(repo, &["status", "--porcelain=v2", "-z", "-uno"])?;
-        let touched: Vec<&str> = touched.split('\0').filter(|s| !s.is_empty()).collect();
-        for line in dirty.split('\0').filter(|s| !s.is_empty()) {
-            // porcelain v2: "1 <XY> ... <path>" — path is the last field.
-            if let Some(path) = line.split(' ').next_back() {
-                if touched.contains(&path) {
-                    bail!("main checkout has uncommitted changes in {path} — commit or stash first");
-                }
-            }
-        }
-        git(repo, &["merge", "--no-edit", branch]).map(|_| ())
+        git(repo, &["merge", "--ff-only", branch]).map(|_| ())
     } else {
-        // ff-only ref update, no checkout touched.
         let refspec = format!("{branch}:refs/heads/{base}");
-        git(repo, &["push", "--quiet", ".", &refspec]).map_err(|_| {
-            anyhow!("{base} is not checked out and the merge is not fast-forward — check out {base} first")
-        }).map(|_| ())
+        git(repo, &["push", "--quiet", ".", &refspec]).map(|_| ())
     }
 }
 
@@ -612,8 +581,8 @@ mod tests {
         run_wt(&["add", "."]);
         run_wt(&["commit", "-qm", "wt work"]);
         assert!(!is_merged(&repo, &b.branch, "main"));
-        assert_eq!(merge_check(&repo, &b.branch, "main").unwrap(), MergeCheck::Clean);
-        merge_into_base(&repo, &b.branch, "main").unwrap();
+        assert!(ff_possible(&repo, &b.branch, "main"));
+        ff_merge(&repo, &b.branch, "main").unwrap();
         assert!(is_merged(&repo, &b.branch, "main"));
         assert!(repo.join("b.txt").is_file());
 
@@ -644,7 +613,10 @@ mod tests {
         std::fs::write(b.path.join("a.txt"), "branch side\n").unwrap();
         run(&b.path, &["commit", "-aqm", "branch change"]);
 
-        assert_eq!(merge_check(&repo, &b.branch, "main").unwrap(), MergeCheck::Conflicts);
+        // Main moved → no fast-forward → the agent-rebase stage, never a
+        // merge commit or an in-repo conflict.
+        assert!(!ff_possible(&repo, &b.branch, "main"));
+        assert!(ff_merge(&repo, &b.branch, "main").is_err());
 
         // Dirty worktree audit counts the stray file.
         std::fs::write(b.path.join("stray.txt"), "x").unwrap();

@@ -128,6 +128,7 @@ pub struct Daemon {
     /// bindings exist.
     wt_merged: HashMap<ulid::Ulid, bool>,
     wt_ahead: HashMap<ulid::Ulid, u32>,
+    wt_needs_rebase: HashMap<ulid::Ulid, bool>,
     wt_conflicts: Vec<String>,
     /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
     base_branch: Option<String>,
@@ -293,6 +294,7 @@ pub fn run(paths: Paths) -> Result<()> {
         pending_spawns: Vec::new(),
         wt_merged: HashMap::new(),
         wt_ahead: HashMap::new(),
+        wt_needs_rebase: HashMap::new(),
         wt_conflicts: Vec::new(),
         base_branch: None,
         pending_teardown: Vec::new(),
@@ -420,7 +422,7 @@ impl Daemon {
             Command::DeleteTicket { id, .. } => Some(("delete_ticket", Some(*id))),
             Command::SetWorkspace { id, .. } => Some(("set_workspace", Some(*id))),
             Command::MergeTicket { id } => Some(("merge_ticket", Some(*id))),
-            Command::MergeToAgent { id } => Some(("merge_to_agent", Some(*id))),
+            Command::MergeToAgent { id, .. } => Some(("merge_to_agent", Some(*id))),
             Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
             Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
@@ -463,7 +465,7 @@ impl Daemon {
             }
             Command::SetWorkspace { id, workspace } => self.set_workspace(id, workspace),
             Command::MergeTicket { id } => self.merge_ticket(id),
-            Command::MergeToAgent { id } => self.merge_to_agent(id),
+            Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
             Command::RestoreTicket { id } => self.restore_ticket(id),
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
             Command::SpawnSession { ticket, kind } => self.spawn_session(ticket, kind),
@@ -1057,6 +1059,7 @@ impl Daemon {
                 merged: self.wt_merged.get(tid).copied().unwrap_or(false),
                 conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
                 ahead: self.wt_ahead.get(tid).copied().unwrap_or(0),
+                needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
                 detail: match &b.status {
                     BindingStatus::Error { stage, message } => {
                         Some(format!("{stage}: {message}"))
@@ -1382,39 +1385,42 @@ impl Daemon {
                 detail: "no commits on the branch yet — nothing to merge".into(),
             };
         }
-        match worktree::merge_check(&self.paths.repo_root, &branch, &base) {
-            Ok(worktree::MergeCheck::AlreadyMerged) => Response::Merge {
+        if worktree::is_merged(&self.paths.repo_root, &branch, &base) {
+            return Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
                 detail: format!("{branch} is already in {base}"),
-            },
-            Ok(worktree::MergeCheck::Conflicts) => Response::Merge {
-                outcome: MergeOutcome::Conflicts,
-                detail: format!("{branch} conflicts with {base}"),
-            },
-            Ok(worktree::MergeCheck::Clean) => {
-                match worktree::merge_into_base(&self.paths.repo_root, &branch, &base) {
-                    Ok(()) => {
-                        self.refresh_worktree_flags();
-                        self.persist_and_notify();
-                        Response::Merge {
-                            outcome: MergeOutcome::Merged,
-                            detail: format!("{branch} merged into {base}"),
-                        }
-                    }
-                    Err(e) => Response::Merge {
-                        outcome: MergeOutcome::Refused,
-                        detail: e.to_string(),
-                    },
+            };
+        }
+        // ff-only policy: base moved past the branch → the agent rebases +
+        // tests in its worktree first. Mesimon never mints merge commits.
+        if !worktree::ff_possible(&self.paths.repo_root, &branch, &base) {
+            return Response::Merge {
+                outcome: MergeOutcome::NeedsRebase,
+                detail: format!("{base} moved — rebase first"),
+            };
+        }
+        match worktree::ff_merge(&self.paths.repo_root, &branch, &base) {
+            Ok(()) => {
+                self.refresh_worktree_flags();
+                self.persist_and_notify();
+                Response::Merge {
+                    outcome: MergeOutcome::Merged,
+                    detail: format!("{branch} merged into {base}"),
                 }
             }
             Err(e) => Response::Merge { outcome: MergeOutcome::Refused, detail: e.to_string() },
         }
     }
 
-    /// Conflict path: paste the merge request into the ticket's live claude
-    /// session and submit it (T-5 delivery). Explicit user gesture — the words
-    /// are mesimon's but the user approved them through the prompt.
-    fn merge_to_agent(&mut self, id: ulid::Ulid) -> Response {
+    /// The m flow's inject stages: paste a rebase request or the merged
+    /// notice into the ticket's live claude session and submit it (T-5
+    /// delivery). Explicit user gesture — the user pressed through the
+    /// staged prompt.
+    fn merge_to_agent(
+        &mut self,
+        id: ulid::Ulid,
+        request: mesimon_core::command::MergeRequest,
+    ) -> Response {
         let Some(b) = self.worktrees.get(&id) else {
             return Response::Err { message: "no worktree on this ticket".into() };
         };
@@ -1433,10 +1439,16 @@ impl Daemon {
                 message: "no live claude session on this ticket — open one first".into(),
             };
         };
-        let text = format!(
-            "Merge branch {base} into your current branch {branch} and resolve any \
-             conflicts, then commit the merge."
-        );
+        let text = match request {
+            mesimon_core::command::MergeRequest::Rebase => format!(
+                "Rebase your current branch {branch} onto {base}, resolve any conflicts, \
+                 then run the tests and fix any failures before we merge."
+            ),
+            mesimon_core::command::MergeRequest::MergedNotice => format!(
+                "Your branch {branch} has been merged into {base}. The main checkout now \
+                 contains this work."
+            ),
+        };
         match self.backend.paste_text(&rec.sid16(), &text) {
             Ok(()) => Response::Ok,
             Err(e) => Response::Err { message: format!("could not deliver: {e}") },
@@ -1517,6 +1529,7 @@ impl Daemon {
             }
             self.wt_merged.remove(&ticket);
             self.wt_ahead.remove(&ticket);
+            self.wt_needs_rebase.remove(&ticket);
         }
         let _ = worktree::save_bindings(&self.paths, &self.worktrees);
         self.refresh_worktree_flags();
@@ -1812,6 +1825,7 @@ impl Daemon {
         if self.worktrees.is_empty() {
             self.wt_merged.clear();
             self.wt_ahead.clear();
+            self.wt_needs_rebase.clear();
             self.wt_conflicts.clear();
             return;
         }
@@ -1840,6 +1854,10 @@ impl Daemon {
             self.wt_merged.insert(tid, merged);
             self.wt_ahead
                 .insert(tid, worktree::ahead_count(&self.paths.repo_root, &branch, &base));
+            self.wt_needs_rebase.insert(
+                tid,
+                !merged && !worktree::ff_possible(&self.paths.repo_root, &branch, &base),
+            );
             // Release the lock once the last session on the ticket is gone.
             if locked && attached {
                 let live = self

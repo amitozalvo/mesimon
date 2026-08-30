@@ -37,14 +37,14 @@ pub enum Command {
     /// M4 layering: set the per-ticket workspace strategy. Refused once the
     /// ticket has any session or a worktree binding (the choice is locked).
     SetWorkspace { id: ulid::Ulid, workspace: Option<WorkspaceStrategy> },
-    /// Merge the ticket's branch into the default branch. Preflights in memory
-    /// (merge-tree); performs the merge only when clean. Never resolves
-    /// conflicts itself — see `MergeToAgent`.
+    /// Merge the ticket's branch into the default branch — fast-forward ONLY.
+    /// A branch the default moved past answers `NeedsRebase`: the agent
+    /// rebases + tests in its worktree first (`MergeToAgent`), so mesimon
+    /// never mints merge commits and tests ran on the merged state.
     MergeTicket { id: ulid::Ulid },
-    /// Conflict path: paste "merge <default> into your branch and resolve
-    /// conflicts" into the ticket's live claude session (explicit user gesture;
-    /// the agent does the resolution, mesimon never grows conflict UI).
-    MergeToAgent { id: ulid::Ulid },
+    /// Paste one of the merge-flow requests into the ticket's live claude
+    /// session (explicit user gesture — the m key's staged progression).
+    MergeToAgent { id: ulid::Ulid, request: MergeRequest },
     /// Undo within the grace band.
     RestoreTicket { id: ulid::Ulid },
     MoveTicket { id: ulid::Ulid, column: String, before: Option<ulid::Ulid> },
@@ -129,6 +129,10 @@ pub struct WorktreeItem {
     /// when > 0.
     #[serde(default)]
     pub ahead: u32,
+    /// The default branch moved past this branch: no fast-forward — the m
+    /// flow's rebase stage comes first.
+    #[serde(default)]
+    pub needs_rebase: bool,
     /// Error detail when status == "error" (names the failing stage).
     #[serde(default)]
     pub detail: Option<String>,
@@ -139,10 +143,22 @@ pub struct WorktreeItem {
 pub enum MergeOutcome {
     Merged,
     AlreadyMerged,
-    /// Preflight found conflicts — offer MergeToAgent.
-    Conflicts,
+    /// The default branch moved past this branch — no fast-forward. The next
+    /// stage asks the agent to rebase + test (`MergeToAgent`).
+    NeedsRebase,
     /// Not performed; `detail` says why (sessions active, dirty checkout, …).
     Refused,
+}
+
+/// What `MergeToAgent` pastes into the agent's session.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeRequest {
+    /// "Rebase onto <base>, resolve conflicts, run the tests" — the
+    /// pre-merge stage when the default branch moved.
+    Rebase,
+    /// "Your branch was merged into <base>" — the post-merge notice.
+    MergedNotice,
 }
 
 /// A deleted ticket riding out its grace band (D21): shown as a ghost row.

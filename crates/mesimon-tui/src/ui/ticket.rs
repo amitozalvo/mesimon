@@ -83,6 +83,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             " ∙ merged".to_string()
         } else if w.status != "attached" {
             format!(" ∙ {}", w.status)
+        } else if w.needs_rebase {
+            // The m flow's rebase stage — main moved past this branch.
+            " ∙ main moved ∙ m rebases".to_string()
         } else if w.ahead > 0 {
             // Merge available — the count and the key, calm register.
             format!(" ∙ {} to merge ∙ m", w.ahead)
@@ -91,9 +94,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         };
         ident_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
         if !state.is_empty() {
+            let actionable = !w.merged && w.status == "attached" && (w.ahead > 0 || w.needs_rebase);
             let style = if w.conflict {
                 theme.base().add_modifier(ratatui::style::Modifier::BOLD)
-            } else if w.ahead > 0 && !w.merged && w.status == "attached" {
+            } else if actionable {
                 theme.calm_text()
             } else {
                 theme.dim2()

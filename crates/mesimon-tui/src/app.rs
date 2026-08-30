@@ -40,6 +40,18 @@ pub enum Mode {
     External { idx: usize },
 }
 
+/// The m key's staged progression (author 2026-08-30): each press shows what
+/// the next press does. Stage is derived from git state, never stored.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum MergeStage {
+    /// ff possible — next m merges.
+    Merge,
+    /// default branch moved — next m asks the agent to rebase + test.
+    Rebase,
+    /// merged — next m tells the agent.
+    Notify,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputPurpose {
     /// New-ticket composer. `workspace` is the Shift+Tab selector below the
@@ -61,8 +73,9 @@ pub struct App {
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
     resume_refused: Option<uuid::Uuid>,
-    /// Ticket armed by a first `m` — the second `m` performs the merge.
-    merge_armed: Option<ulid::Ulid>,
+    /// The m flow's armed stage: a first `m` names what the next `m` does;
+    /// the second performs it. Any other key disarms.
+    merge_armed: Option<(ulid::Ulid, MergeStage)>,
     pub screen: Screen,
     pub cursor_col: usize,
     pub cursor_row: usize,
@@ -601,7 +614,6 @@ impl App {
                 }
             }
             KeyCode::Char('m') => self.merge_key(ticket)?,
-            KeyCode::Char('M') => self.merge_to_agent_key(ticket)?,
             _ => {}
         }
         Ok(())
@@ -630,42 +642,77 @@ impl App {
         self.send(Command::DeleteTicket { id, discard_worktree: discard })
     }
 
-    /// First `m` arms, second performs (confirm default-No shape without a
-    /// dialog). Conflicts answer with the one suggestion: M sends the merge
-    /// to the agent — mesimon never resolves conflicts itself.
+    /// The m state machine: stage derives from git state; the first press
+    /// names what the next press does, the second performs it.
+    ///
+    ///   ahead + ff-able   m → "merge N? m"        → m → ff merge
+    ///   default moved     m → "m asks rebase"      → m → inject rebase+test
+    ///   merged            m → "m notifies agent"   → m → inject notice
     fn merge_key(&mut self, ticket: ulid::Ulid) -> Result<()> {
         let Some(w) = self.wt_item(ticket) else {
             self.status = "no worktree on this ticket".into();
             return Ok(());
         };
-        let branch = w.branch.clone();
-        if self.merge_armed != Some(ticket) {
-            self.merge_armed = Some(ticket);
-            self.status = format!("merge {branch}? m again confirms");
+        let (branch, ahead) = (w.branch.clone(), w.ahead);
+        let stage = if w.merged {
+            MergeStage::Notify
+        } else if w.needs_rebase {
+            MergeStage::Rebase
+        } else if w.ahead > 0 {
+            MergeStage::Merge
+        } else {
+            self.status = "no commits on the branch yet — nothing to merge".into();
+            return Ok(());
+        };
+        if self.merge_armed != Some((ticket, stage)) {
+            self.merge_armed = Some((ticket, stage));
+            self.status = match stage {
+                MergeStage::Merge => format!("merge {ahead} commit(s) of {branch}? m confirms"),
+                MergeStage::Rebase => "main moved — m asks the agent to rebase + test".into(),
+                MergeStage::Notify => "merged ∙ m tells the agent".into(),
+            };
             return Ok(());
         }
         self.merge_armed = None;
-        match self.req(Command::MergeTicket { id: ticket }) {
-            Response::Merge { outcome, detail } => {
-                self.status = match outcome {
-                    MergeOutcome::Merged | MergeOutcome::AlreadyMerged => detail,
-                    MergeOutcome::Conflicts => {
-                        format!("{detail} ∙ M sends the merge to the agent")
+        match stage {
+            MergeStage::Merge => match self.req(Command::MergeTicket { id: ticket }) {
+                Response::Merge { outcome, detail } => {
+                    self.status = match outcome {
+                        MergeOutcome::Merged => format!("{detail} ∙ m tells the agent"),
+                        MergeOutcome::AlreadyMerged => detail,
+                        // Raced: main moved between snapshot and keypress.
+                        MergeOutcome::NeedsRebase => {
+                            self.merge_armed = Some((ticket, MergeStage::Rebase));
+                            format!("{detail} ∙ m asks the agent to rebase + test")
+                        }
+                        MergeOutcome::Refused => detail,
+                    };
+                }
+                Response::Err { message } => self.status = message,
+                _ => {}
+            },
+            MergeStage::Rebase => {
+                match self.req(Command::MergeToAgent {
+                    id: ticket,
+                    request: mesimon_core::command::MergeRequest::Rebase,
+                }) {
+                    Response::Ok => {
+                        self.status = "rebase request sent — m merges once it lands".into()
                     }
-                    MergeOutcome::Refused => detail,
-                };
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
             }
-            Response::Err { message } => self.status = message,
-            _ => {}
-        }
-        self.refresh()
-    }
-
-    fn merge_to_agent_key(&mut self, ticket: ulid::Ulid) -> Result<()> {
-        match self.req(Command::MergeToAgent { id: ticket }) {
-            Response::Ok => self.status = "merge request sent to the agent".into(),
-            Response::Err { message } => self.status = message,
-            _ => {}
+            MergeStage::Notify => {
+                match self.req(Command::MergeToAgent {
+                    id: ticket,
+                    request: mesimon_core::command::MergeRequest::MergedNotice,
+                }) {
+                    Response::Ok => self.status = "agent notified".into(),
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
+            }
         }
         self.refresh()
     }

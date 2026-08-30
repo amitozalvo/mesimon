@@ -99,13 +99,16 @@ fn worktree_mark(
 ) -> Option<(String, WtTone)> {
     let w = wt?;
     let g = if ascii { '&' } else { '⎇' };
-    let (dots, check, up) = if ascii { ('.', '+', '^') } else { ('…', '✓', '↑') };
+    let (dots, check, up, down) =
+        if ascii { ('.', '+', '^', 'v') } else { ('…', '✓', '↑', '↓') };
     Some(match w.status.as_str() {
         "queued" | "provisioning" => (format!("{g}{dots}"), WtTone::Quiet),
         "error" => (format!("{g}x"), WtTone::Err),
         "evicted" => (format!("{g}-"), WtTone::Quiet),
         _ if w.conflict => (format!("{g}!"), WtTone::Err),
         _ if w.merged => (format!("{g}{check}"), WtTone::Quiet),
+        // Behind main — the m flow's rebase stage comes before merge.
+        _ if w.needs_rebase => (format!("{g}{down}"), WtTone::Ready),
         _ if w.ahead > 0 => (format!("{g}{up}"), WtTone::Ready),
         _ => (g.to_string(), WtTone::Quiet),
     })

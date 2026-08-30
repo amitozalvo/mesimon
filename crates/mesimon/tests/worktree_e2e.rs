@@ -259,16 +259,18 @@ fn m4_worktree_lifecycle() {
     let wt2_path = std::path::PathBuf::from(wt2_path);
     std::fs::write(wt2_path.join("a.txt"), "branch side\n").unwrap();
     git(&wt2_path, &["commit", "-aqm", "branch change"]);
-    // Kill the bash session so the ticket is quiet, then merge → Conflicts.
+    // Kill the bash session so the ticket is quiet, then merge → NeedsRebase
+    // (main moved past the branch — ff-only policy sends the agent to rebase;
+    // mesimon never mints merge commits).
     let (b, _) = board_of(c.request(Command::Snapshot));
     let sid2 = b.sessions.iter().find(|s| s.ticket == t2).unwrap().id;
     let _ = c.request(Command::KillSession { id: sid2 });
     let deadline = Instant::now() + Duration::from_secs(15);
     loop {
         match c.request(Command::MergeTicket { id: t2 }) {
-            Response::Merge { outcome: MergeOutcome::Conflicts, .. } => break,
+            Response::Merge { outcome: MergeOutcome::NeedsRebase, .. } => break,
             Response::Merge { outcome: MergeOutcome::Refused, .. } => {
-                assert!(Instant::now() < deadline, "conflict verdict never arrived");
+                assert!(Instant::now() < deadline, "needs-rebase verdict never arrived");
                 std::thread::sleep(Duration::from_millis(300));
             }
             other => panic!("unexpected merge response: {other:?}"),
