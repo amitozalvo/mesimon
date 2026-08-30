@@ -1,0 +1,71 @@
+name: ci
+
+# macOS runners bill at 10x minutes on a private repo, so this does NOT run on
+# every branch push. main, PRs, and tags are the things worth paying for.
+# The release workflow calls this one, so a tag does not run it twice.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+  # The e2e suite skips itself when tmux is missing, which would make a runner
+  # without tmux report a fully green suite that ran almost nothing. This turns
+  # that skip into a hard failure.
+  MESIMON_REQUIRE_TMUX: '1'
+  # Relaxes the two wall-clock assertions (a 150 ms p99 on ten debug-build hook
+  # spawns) that are honest locally and flaky on a shared runner.
+  MESIMON_CI: '1'
+
+jobs:
+  test:
+    # arm64: the only target shipped, so the only one tested.
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install tmux
+        run: brew install tmux
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Versions
+        run: |
+          rustc --version
+          cargo --version
+          tmux -V
+          git --version
+
+      # No `cargo fmt --check` gate. This codebase has never been rustfmt'd —
+      # `--check` reports 878 diffs against a deliberate hand style — so
+      # turning it on would mean a repo-wide reformat, which is a decision for
+      # a quiet day and its own commit, not a side effect of adding CI.
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Duplicate dependency drift
+        run: ./ci/check-dup-deps.sh
+
+      - name: Test
+        run: cargo test --workspace
+
+      # Each e2e kills its private tmux server as its last statement, which is
+      # skipped when a test panics. Leaving servers behind would poison a
+      # self-hosted runner; on a fresh VM this is cheap insurance.
+      - name: Clean up leaked tmux servers
+        if: always()
+        run: |
+          for sock in /tmp/mesimon-*/*/tmux.sock; do
+            [ -S "$sock" ] || continue
+            echo "killing leaked server at $sock"
+            tmux -S "$sock" kill-server 2>/dev/null || true
+          done

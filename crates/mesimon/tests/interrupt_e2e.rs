@@ -4,6 +4,12 @@
 //! in-process daemon, a stub agent that paints for a while and then goes
 //! silent — exactly the byte signature of a turn that was interrupted.
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command as Proc;
@@ -64,8 +70,7 @@ fn hook_send(sock: &std::path::Path, session: &str, event: &str, body: &str) {
 
 #[test]
 fn interrupted_turn_demotes_to_idle_without_any_hook() {
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-intr-{}", std::process::id()));

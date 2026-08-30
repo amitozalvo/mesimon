@@ -5,6 +5,12 @@
 //!
 //! Same harness shape as m3_e2e: in-process daemon, real tmux, stub claude.
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command as Proc;
@@ -80,8 +86,7 @@ fn wait_wt_status(
 
 #[test]
 fn m4_worktree_lifecycle() {
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     if Proc::new("git").arg("--version").output().is_err() {

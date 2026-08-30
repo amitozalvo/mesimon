@@ -1,0 +1,100 @@
+name: release
+
+on:
+  push:
+    tags: ['v*']
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # A tag that says v0.1.0-alpha.2 while the workspace says something else
+  # would ship a binary whose --version lies. Cheapest possible gate, first.
+  guard:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Tag must match the workspace version
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
+          if [ "$TAG" != "v$version" ]; then
+            echo "tag $TAG does not match workspace version $version"
+            echo "bump [workspace.package] version in Cargo.toml, or retag."
+            exit 1
+          fi
+          echo "tag $TAG matches workspace version $version"
+
+  test:
+    needs: guard
+    uses: ./.github/workflows/ci.yml
+
+  build:
+    needs: test
+    runs-on: macos-14
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked --target aarch64-apple-darwin
+
+      # Deliberately NOT stripped. The linker gives every arm64 binary an
+      # ad-hoc signature; `strip` invalidates it, and a broken signature means
+      # the tester's Mac kills the process with SIGKILL and no explanation.
+      - name: Verify the code signature
+        run: codesign -v --verbose=2 target/aarch64-apple-darwin/release/mesimon
+
+      # The check that catches "Killed: 9" here instead of on someone's laptop.
+      - name: Smoke-test the artifact
+        run: |
+          set -euo pipefail
+          ./target/aarch64-apple-darwin/release/mesimon --version
+          ./target/aarch64-apple-darwin/release/mesimon --help > /dev/null
+
+      - name: Package
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          name="mesimon-${TAG}-aarch64-apple-darwin"
+          mkdir -p "dist/$name"
+          cp target/aarch64-apple-darwin/release/mesimon "dist/$name/"
+          cp README.md LICENSE NOTICE TRADEMARK.md "dist/$name/"
+          tar -czf "dist/$name.tar.gz" -C dist "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          cat "dist/$name.tar.gz.sha256"
+
+      - name: Release notes
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          # The CHANGELOG section for this tag, or a placeholder if absent.
+          awk -v tag="## $TAG" '
+            $0 == tag {found=1; next}
+            found && /^## / {exit}
+            found {print}
+          ' CHANGELOG.md > notes.md || true
+          [ -s notes.md ] || echo "See CHANGELOG.md." > notes.md
+          cat notes.md
+
+      - name: Publish
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          gh release create "$TAG" \
+            --title "$TAG" \
+            --notes-file notes.md \
+            --prerelease \
+            dist/*.tar.gz dist/*.sha256

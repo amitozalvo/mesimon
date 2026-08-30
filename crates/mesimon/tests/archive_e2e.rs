@@ -3,6 +3,12 @@
 //! the disk round-trip, the refusal guards hold, restore lands in the same
 //! column. Real tmux, in-process daemon, stub agent.
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command as Proc;
@@ -71,8 +77,7 @@ fn err_containing(resp: Response, needle: &str) {
 
 #[test]
 fn archive_gates_suggests_and_restores() {
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-archive-{}", std::process::id()));

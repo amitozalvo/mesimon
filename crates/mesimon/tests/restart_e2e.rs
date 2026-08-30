@@ -4,6 +4,12 @@
 //! transcript tail must re-derive state at Low confidence until hooks
 //! re-assert. Real tmux, two in-process daemon generations over one board.
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command as Proc;
@@ -76,8 +82,7 @@ static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 #[test]
 fn restart_recovers_state_from_the_transcript() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-restart-mid-{}", std::process::id()));
@@ -205,8 +210,7 @@ fn restart_recovers_state_from_the_transcript() {
 #[test]
 fn restart_recovers_done_from_a_resting_transcript() {
     let _guard = ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner());
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-restart-rest-{}", std::process::id()));

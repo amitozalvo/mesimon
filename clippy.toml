@@ -1,0 +1,7 @@
+# CLAUDE.md records "tests exempt by convention" for D26's unwrap_used lint.
+# Convention is not enforcement: `--all-targets` reported 434 unwrap warnings
+# from test code, which is what kept `-D warnings` from being a usable gate.
+# This makes the exemption real, so CI can fail on anything left.
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true

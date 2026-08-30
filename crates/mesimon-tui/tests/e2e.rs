@@ -1,6 +1,11 @@
 //! End-to-end: in-process daemon + real private tmux server + the wire protocol.
 //! Covers the M1 acceptance except the interactive handover (manual check).
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -47,7 +52,13 @@ fn board_of(resp: Response) -> (mesimon_core::board::Board, Vec<mesimon_core::co
 
 #[test]
 fn m1_acceptance_headless() {
+    // Skip locally, FAIL in CI: a machine without tmux would otherwise run
+    // almost nothing and still report a green suite.
     if std::process::Command::new("tmux").arg("-V").output().is_err() {
+        assert!(
+            std::env::var_os("MESIMON_REQUIRE_TMUX").is_none(),
+            "tmux is required (MESIMON_REQUIRE_TMUX=1) but is not installed",
+        );
         eprintln!("tmux missing; skipping");
         return;
     }

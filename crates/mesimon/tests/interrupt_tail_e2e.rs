@@ -5,6 +5,12 @@
 //! session of ours must demote off that record even while the pane never goes
 //! quiet. Real tmux, in-process daemon, a stub agent that paints forever.
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::Command as Proc;
@@ -65,8 +71,7 @@ fn hook_send(sock: &std::path::Path, session: &str, event: &str, body: &str) {
 
 #[test]
 fn interrupt_record_demotes_running_while_pane_still_paints() {
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-intrtail-{}", std::process::id()));

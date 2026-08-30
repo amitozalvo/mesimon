@@ -6,6 +6,12 @@
 //! real hook binary via CARGO_BIN_EXE. One test fn — env seams are
 //! process-global.
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command as Proc, Stdio};
@@ -88,8 +94,7 @@ const FOREIGN_SID: &str = "cafe0000-1111-4e6f-8b1a-2c3d4e5f6a7b";
 
 #[test]
 fn m3_adoption_and_sleep() {
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-m3-{}", std::process::id()));

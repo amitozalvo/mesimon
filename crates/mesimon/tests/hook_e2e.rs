@@ -2,6 +2,18 @@
 //! machine → subscriber push. Uses an in-process daemon (like the M1 e2e) and
 //! the real built binary for the hook side (CARGO_BIN_EXE lives here).
 
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
+/// Wall-clock budgets are honest on a quiet laptop and flaky on a shared
+/// runner. Only the timing bounds relax — nothing about behaviour does.
+fn is_ci() -> bool {
+    std::env::var_os("MESIMON_CI").is_some()
+}
+
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::process::{Command as Proc, Stdio};
@@ -101,8 +113,7 @@ fn hook_send(sock: &std::path::Path, session: &str, event: &str, reason: Option<
 
 #[test]
 fn m2_attention_headless() {
-    if Proc::new("tmux").arg("-V").output().is_err() {
-        eprintln!("tmux not installed; skipping");
+    if !common::require_tmux() {
         return;
     }
     let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-hook-{}", std::process::id()));
@@ -212,7 +223,11 @@ fn m2_attention_headless() {
         hook_send(&hook_sock, &sid.to_string(), "Stop", None, r#"{"stop_hook_active":true}"#);
         worst = worst.max(t0.elapsed());
     }
-    assert!(worst < Duration::from_millis(150), "hook exec took {worst:?}");
+    // The real budget is 5 ms p99 (14 §1.7); 150 ms is the debug-build slack.
+    // A shared CI runner adds scheduling noise that says nothing about the
+    // hook, so the tight bound stays a local signal.
+    let budget = Duration::from_millis(if is_ci() { 1000 } else { 150 });
+    assert!(worst < budget, "hook exec took {worst:?} (budget {budget:?})");
 
     // Automove: a real Stop (the cost-loop frames set stop_hook_active, which
     // the machine's re-entrancy guard drops) → idle{end_turn} after the
@@ -329,7 +344,8 @@ fn m2_attention_headless() {
         rec.state,
         SessionState::Exited { reason: mesimon_core::board::ExitReason::Crashed }
     );
-    assert!(latency < Duration::from_millis(1000), "pane-died push took {latency:?}");
+    let budget = Duration::from_millis(if is_ci() { 5000 } else { 1000 });
+    assert!(latency < budget, "pane-died push took {latency:?} (budget {budget:?})");
 
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
