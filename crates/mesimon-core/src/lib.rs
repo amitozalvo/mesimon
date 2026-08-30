@@ -14,6 +14,7 @@ pub mod command;
 pub mod fracindex;
 pub mod principal;
 pub mod reconcile;
+pub mod workspace;
 
 pub use authorize::{authorize, Action, Decision, Resource};
 pub use principal::Principal;

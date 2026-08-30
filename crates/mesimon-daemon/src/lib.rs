@@ -10,6 +10,7 @@ pub mod resources;
 pub mod server;
 pub mod store;
 pub mod tail;
+pub mod worktree;
 
 use std::path::Path;
 use std::process::{Command, Stdio};

@@ -118,7 +118,7 @@ fn m1_acceptance_headless() {
     assert!(matches!(r, Response::Gate { passed: true, .. }), "{r:?}");
 
     // Delete → grace band with the detached session; restore resurrects both.
-    c.request(Command::DeleteTicket { id: t.id });
+    c.request(Command::DeleteTicket { id: t.id, discard_worktree: false });
     let (board, grace) = board_of(c.request(Command::Snapshot));
     assert!(board.tickets.is_empty());
     assert_eq!(grace.len(), 1);

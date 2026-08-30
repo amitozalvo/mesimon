@@ -4,7 +4,7 @@
 
 use serde::{Deserialize, Serialize};
 
-use crate::board::{Board, SessionKind};
+use crate::board::{Board, SessionKind, WorkspaceStrategy};
 use crate::Principal;
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -26,8 +26,25 @@ pub enum Command {
     CreateTicket { column: String, title: String },
     RenameTicket { id: ulid::Ulid, title: String },
     /// Starts the grace band; the ticket vanishes from snapshots immediately
-    /// and is destroyed when the band expires (D21).
-    DeleteTicket { id: ulid::Ulid },
+    /// and is destroyed when the band expires (D21). `discard_worktree` is the
+    /// delete-gate's red "remove": the user confirmed losing unmerged work, so
+    /// teardown may delete the branch with `-D` (M4).
+    DeleteTicket {
+        id: ulid::Ulid,
+        #[serde(default)]
+        discard_worktree: bool,
+    },
+    /// M4 layering: set the per-ticket workspace strategy. Refused once the
+    /// ticket has any session or a worktree binding (the choice is locked).
+    SetWorkspace { id: ulid::Ulid, workspace: Option<WorkspaceStrategy> },
+    /// Merge the ticket's branch into the default branch. Preflights in memory
+    /// (merge-tree); performs the merge only when clean. Never resolves
+    /// conflicts itself — see `MergeToAgent`.
+    MergeTicket { id: ulid::Ulid },
+    /// Conflict path: paste "merge <default> into your branch and resolve
+    /// conflicts" into the ticket's live claude session (explicit user gesture;
+    /// the agent does the resolution, mesimon never grows conflict UI).
+    MergeToAgent { id: ulid::Ulid },
     /// Undo within the grace band.
     RestoreTicket { id: ulid::Ulid },
     MoveTicket { id: ulid::Ulid, column: String, before: Option<ulid::Ulid> },
@@ -78,11 +95,50 @@ pub enum Response {
         external: Vec<ExternalItem>,
         #[serde(default)]
         resources: Resources,
+        /// Per-ticket worktree bindings (M4). Serde-additive: absent from an
+        /// older daemon parses as empty.
+        #[serde(default)]
+        worktrees: Vec<WorktreeItem>,
     },
+    /// SpawnSession on a worktree ticket that is not provisioned yet: the
+    /// worktree is being created off-thread; a BoardChanged follows when the
+    /// session actually spawns.
+    Provisioning,
+    /// MergeTicket's receipt.
+    Merge { outcome: MergeOutcome, detail: String },
     /// argv the client should exec for the focus handover.
     Attach { argv: Vec<String> },
     Gate { passed: bool, attach_argv: Option<Vec<String>> },
     Err { message: String },
+}
+
+/// A ticket's worktree binding, as the board renders it (M4). Paths/oids stay
+/// daemon-side; the client gets words and flags.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeItem {
+    pub ticket: ulid::Ulid,
+    pub branch: String,
+    /// Status word: queued | provisioning | attached | evicted | error.
+    pub status: String,
+    /// Branch tip is an ancestor of the default branch.
+    pub merged: bool,
+    /// Duplicate-branch blocker (12 §12.6.7): another worktree holds this
+    /// branch — commits will delete each other.
+    pub conflict: bool,
+    /// Error detail when status == "error" (names the failing stage).
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MergeOutcome {
+    Merged,
+    AlreadyMerged,
+    /// Preflight found conflicts — offer MergeToAgent.
+    Conflicts,
+    /// Not performed; `detail` says why (sessions active, dirty checkout, …).
+    Refused,
 }
 
 /// A deleted ticket riding out its grace band (D21): shown as a ghost row.

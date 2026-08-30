@@ -8,8 +8,12 @@ use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use mesimon_core::board::{Board, ExitReason, Provenance, SessionKind, SessionState, Ticket};
-use mesimon_core::command::{Command, ExternalItem, GraceItem, Resources, Response};
+use mesimon_core::board::{
+    Board, ExitReason, Provenance, SessionKind, SessionState, Ticket, WorkspaceStrategy,
+};
+use mesimon_core::command::{
+    Command, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
+};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::client::Transport;
@@ -36,7 +40,9 @@ pub enum Mode {
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputPurpose {
-    Create,
+    /// New-ticket composer. `workspace` is the Shift+Tab selector below the
+    /// name (M4 layering): None = the board default (shared checkout).
+    Create { workspace: Option<WorkspaceStrategy> },
     Rename { id: ulid::Ulid },
 }
 
@@ -47,10 +53,14 @@ pub struct App {
     pub grace: Vec<GraceItem>,
     pub external: Vec<ExternalItem>,
     pub resources: Resources,
+    /// Per-ticket worktree bindings (M4): branch, status word, merged/conflict.
+    pub worktrees: Vec<WorktreeItem>,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
     resume_refused: Option<uuid::Uuid>,
+    /// Ticket armed by a first `m` — the second `m` performs the merge.
+    merge_armed: Option<ulid::Ulid>,
     pub screen: Screen,
     pub cursor_col: usize,
     pub cursor_row: usize,
@@ -89,7 +99,7 @@ pub struct App {
 
 impl App {
     pub fn new(mut client: Box<dyn Transport>, repo_root: PathBuf, theme: Theme) -> Result<Self> {
-        let (board, grace, external, resources) = fetch(client.as_mut())?;
+        let (board, grace, external, resources, worktrees) = fetch(client.as_mut())?;
         Ok(Self {
             client,
             repo_root,
@@ -97,8 +107,10 @@ impl App {
             grace,
             external,
             resources,
+            worktrees,
             theme,
             resume_refused: None,
+            merge_armed: None,
             screen: Screen::Board,
             cursor_col: 0,
             cursor_row: 0,
@@ -138,11 +150,12 @@ impl App {
     /// screen and flags the reconnect cadence instead of exiting the TUI.
     pub fn refresh(&mut self) -> Result<()> {
         match fetch(self.client.as_mut()) {
-            Ok((board, grace, external, resources)) => {
+            Ok((board, grace, external, resources, worktrees)) => {
                 self.board = board;
                 self.grace = grace;
                 self.external = external;
                 self.resources = resources;
+                self.worktrees = worktrees;
                 self.clamp_cursor();
                 self.clamp_screen();
                 if self.daemon_down {
@@ -179,11 +192,12 @@ impl App {
 
     /// Take whatever board a command replied with (RescanExternal does this).
     fn absorb_board(&mut self, resp: Response) {
-        if let Response::Board { board, grace, external, resources } = resp {
+        if let Response::Board { board, grace, external, resources, worktrees } = resp {
             self.board = board;
             self.grace = grace;
             self.external = external;
             self.resources = resources;
+            self.worktrees = worktrees;
             self.clamp_cursor();
             self.clamp_screen();
         }
@@ -273,7 +287,7 @@ impl App {
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
         // Text input first — it is inline (in the card / ticket title) and
         // owns every key on both screens, including Tab.
-        if let Mode::Input { purpose, mut buffer } = self.mode.clone() {
+        if let Mode::Input { mut purpose, mut buffer } = self.mode.clone() {
             // Ctrl or Alt both mean "by word" — terminals disagree on which
             // one ctrl+backspace / option+arrow actually report.
             let word = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
@@ -281,6 +295,16 @@ impl App {
                 KeyCode::Esc => {
                     self.mode = Mode::Normal;
                     return Ok(());
+                }
+                // Shift+Tab cycles the composer's workspace selector (M4):
+                // shared checkout (default) ↔ own worktree.
+                KeyCode::BackTab => {
+                    if let InputPurpose::Create { workspace } = &mut purpose {
+                        *workspace = match workspace {
+                            None => Some(WorkspaceStrategy::Worktree),
+                            Some(_) => None,
+                        };
+                    }
                 }
                 KeyCode::Enter => {
                     self.mode = Mode::Normal;
@@ -318,6 +342,10 @@ impl App {
             }
             self.mode = Mode::Input { purpose, buffer };
             return Ok(());
+        }
+        // A first `m` arms the merge confirm; any other key disarms it.
+        if !matches!(code, KeyCode::Char('m')) {
+            self.merge_armed = None;
         }
         // U on a ready update: reload in place — ask the daemon to shut down
         // clean (it comes back as the new binary via connect-spawn), then let
@@ -379,7 +407,10 @@ impl App {
                 self.clamp_cursor();
             }
             KeyCode::Char('o') | KeyCode::Char('a') => {
-                self.mode = Mode::Input { purpose: InputPurpose::Create, buffer: EditBuffer::new() };
+                self.mode = Mode::Input {
+                    purpose: InputPurpose::Create { workspace: None },
+                    buffer: EditBuffer::new(),
+                };
             }
             KeyCode::Char('r') => {
                 if let Some(t) = self.selected_ticket() {
@@ -392,7 +423,13 @@ impl App {
             KeyCode::Char('d') => {
                 if let Some(t) = self.selected_ticket() {
                     let id = t.id;
-                    self.send(Command::DeleteTicket { id })?;
+                    self.delete_gated(id, false)?;
+                }
+            }
+            KeyCode::Char('D') => {
+                if let Some(t) = self.selected_ticket() {
+                    let id = t.id;
+                    self.delete_gated(id, true)?;
                 }
             }
             KeyCode::Char('u') => {
@@ -541,13 +578,92 @@ impl App {
                     self.status = if pinned { "pinned awake".into() } else { "unpinned".into() };
                 }
             }
-            KeyCode::Char('d') => {
-                self.to_board();
-                self.send(Command::DeleteTicket { id: ticket })?;
+            KeyCode::Char('d') => self.delete_gated(ticket, false)?,
+            KeyCode::Char('D') => self.delete_gated(ticket, true)?,
+            // M4 workspace cycle: shared checkout ↔ own worktree. The daemon
+            // refuses once sessions or a worktree exist (the choice is locked).
+            KeyCode::Char('w') => {
+                let next = match self.board.ticket(ticket).map(|t| t.workspace_strategy()) {
+                    Some(WorkspaceStrategy::Worktree) => None,
+                    _ => Some(WorkspaceStrategy::Worktree),
+                };
+                let word = match next {
+                    Some(WorkspaceStrategy::Worktree) => "worktree",
+                    _ => "shared checkout",
+                };
+                self.send(Command::SetWorkspace { id: ticket, workspace: next })?;
+                if self.status.is_empty() {
+                    self.status = format!("workspace: {word}");
+                }
             }
+            KeyCode::Char('m') => self.merge_key(ticket)?,
+            KeyCode::Char('M') => self.merge_to_agent_key(ticket)?,
             _ => {}
         }
         Ok(())
+    }
+
+    /// The ticket's worktree binding, as the last snapshot reported it.
+    pub fn wt_item(&self, ticket: ulid::Ulid) -> Option<&WorktreeItem> {
+        self.worktrees.iter().find(|w| w.ticket == ticket)
+    }
+
+    /// Delete with the M4 worktree gate (author rule 2): an unmerged worktree
+    /// must be dealt with first — `m` merges, `D` discards worktree + branch.
+    fn delete_gated(&mut self, id: ulid::Ulid, discard: bool) -> Result<()> {
+        if !discard {
+            if let Some(w) = self.wt_item(id) {
+                if !w.branch.is_empty() && !w.merged {
+                    self.status =
+                        "worktree unmerged ∙ m merge ∙ D delete + discard branch".into();
+                    return Ok(());
+                }
+            }
+        }
+        if matches!(self.screen, Screen::Ticket { .. }) {
+            self.to_board();
+        }
+        self.send(Command::DeleteTicket { id, discard_worktree: discard })
+    }
+
+    /// First `m` arms, second performs (confirm default-No shape without a
+    /// dialog). Conflicts answer with the one suggestion: M sends the merge
+    /// to the agent — mesimon never resolves conflicts itself.
+    fn merge_key(&mut self, ticket: ulid::Ulid) -> Result<()> {
+        let Some(w) = self.wt_item(ticket) else {
+            self.status = "no worktree on this ticket".into();
+            return Ok(());
+        };
+        let branch = w.branch.clone();
+        if self.merge_armed != Some(ticket) {
+            self.merge_armed = Some(ticket);
+            self.status = format!("merge {branch}? m again confirms");
+            return Ok(());
+        }
+        self.merge_armed = None;
+        match self.req(Command::MergeTicket { id: ticket }) {
+            Response::Merge { outcome, detail } => {
+                self.status = match outcome {
+                    MergeOutcome::Merged | MergeOutcome::AlreadyMerged => detail,
+                    MergeOutcome::Conflicts => {
+                        format!("{detail} ∙ M sends the merge to the agent")
+                    }
+                    MergeOutcome::Refused => detail,
+                };
+            }
+            Response::Err { message } => self.status = message,
+            _ => {}
+        }
+        self.refresh()
+    }
+
+    fn merge_to_agent_key(&mut self, ticket: ulid::Ulid) -> Result<()> {
+        match self.req(Command::MergeToAgent { id: ticket }) {
+            Response::Ok => self.status = "merge request sent to the agent".into(),
+            Response::Err { message } => self.status = message,
+            _ => {}
+        }
+        self.refresh()
     }
 
     fn focus_kind_or_spawn(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
@@ -700,11 +816,14 @@ impl App {
             return Ok(());
         }
         match purpose {
-            InputPurpose::Create => {
+            InputPurpose::Create { workspace } => {
                 let cols = self.columns();
                 let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
                 match self.req(Command::CreateTicket { column, title }) {
                     Response::Created { id } => {
+                        if workspace.is_some() {
+                            let _ = self.req(Command::SetWorkspace { id, workspace });
+                        }
                         self.refresh()?;
                         self.select_ticket(id);
                     }
@@ -753,6 +872,12 @@ impl App {
             Response::Spawned { id } => {
                 self.refresh()?;
                 self.focus_session(id)?;
+            }
+            // M4: the worktree is being created off-thread; the session spawns
+            // when it is ready (a BoardChanged follows).
+            Response::Provisioning => {
+                self.status = "provisioning worktree ∙ session starts when ready".into();
+                self.refresh()?;
             }
             Response::Err { message } => self.status = message,
             _ => self.refresh()?,
@@ -902,10 +1027,12 @@ impl App {
     }
 }
 
-fn fetch(client: &mut dyn Transport) -> Result<(Board, Vec<GraceItem>, Vec<ExternalItem>, Resources)> {
+type Snapshot5 = (Board, Vec<GraceItem>, Vec<ExternalItem>, Resources, Vec<WorktreeItem>);
+
+fn fetch(client: &mut dyn Transport) -> Result<Snapshot5> {
     match client.request(Command::Snapshot)? {
-        Response::Board { board, grace, external, resources } => {
-            Ok((board, grace, external, resources))
+        Response::Board { board, grace, external, resources, worktrees } => {
+            Ok((board, grace, external, resources, worktrees))
         }
         other => anyhow::bail!("unexpected snapshot response: {other:?}"),
     }
@@ -931,6 +1058,7 @@ pub(crate) mod test_support {
                     grace: self.grace.clone(),
                     external: self.external.clone(),
                     resources: self.resources.clone(),
+                    worktrees: Vec::new(),
                 }),
                 // Append-only move (before ignored): enough for the key tests,
                 // which only exercise `before: None`.
@@ -985,6 +1113,7 @@ mod tests {
             column: column.into(),
             order: order.into(),
             created_at: "1970-01-01T00:00:00Z".into(),
+            workspace: None,
         }
     }
 

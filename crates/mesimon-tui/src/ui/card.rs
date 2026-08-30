@@ -48,6 +48,26 @@ pub(super) fn render_edit(ctx: &CardCtx, buffer: &EditBuffer) -> (Line<'static>,
     (Line::from(spans).style(theme.selected_row()), x_off)
 }
 
+/// The composer's workspace row (M4): git glyph + one word, Shift+Tab cycles.
+/// Rendered on the phantom card's selected surface, dim — a setting, not text.
+pub(super) fn render_workspace_selector(
+    ctx: &CardCtx,
+    workspace: Option<mesimon_core::board::WorkspaceStrategy>,
+) -> Line<'static> {
+    let theme = ctx.theme;
+    let word = match workspace {
+        Some(mesimon_core::board::WorkspaceStrategy::Worktree) => "worktree",
+        Some(mesimon_core::board::WorkspaceStrategy::AdoptExisting) => "adopt",
+        Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
+    };
+    let spans = vec![
+        Span::raw("  "),
+        Span::styled(format!("⎇ {word}"), Style::default().fg(theme.sel.dim1)),
+        Span::styled("  shift+tab", Style::default().fg(theme.sel.dim2)),
+    ];
+    Line::from(spans).style(theme.selected_row())
+}
+
 fn register_style(theme: &Theme, reg: Register) -> Style {
     match reg {
         Register::Attn => theme.attn_text(),

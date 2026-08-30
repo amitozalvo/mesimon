@@ -89,3 +89,46 @@ pub fn save_sessions(paths: &Paths, board: &Board) -> Result<()> {
         &serde_json::to_string_pretty(&board.sessions)?,
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A pre-M4 ticket.toml (the 6 original keys, no `workspace`) must keep
+    /// parsing — load() hard-fails on parse errors, so defaults ARE the migration.
+    #[test]
+    fn m3_ticket_toml_parses() {
+        let m3 = r#"
+id = "01J8ZQ7VJ00000000000000000"
+short_key = "T-3"
+title = "old ticket"
+column = "TODO"
+order = "a0"
+created_at = "@1788046350"
+"#;
+        let t: Ticket = toml::from_str(m3).unwrap();
+        assert!(t.workspace.is_none());
+        assert_eq!(
+            t.workspace_strategy(),
+            mesimon_core::board::WorkspaceStrategy::SharedCheckout
+        );
+    }
+
+    /// A ticket WITH a workspace field round-trips through the TOML writer
+    /// (Option field must serialize after the scalars or to_string_pretty errors).
+    #[test]
+    fn workspace_field_roundtrips() {
+        let t = Ticket {
+            id: ulid::Ulid(7),
+            short_key: "T-7".into(),
+            title: "wt".into(),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+        };
+        let s = toml::to_string_pretty(&t).unwrap();
+        let back: Ticket = toml::from_str(&s).unwrap();
+        assert_eq!(back.workspace, Some(mesimon_core::board::WorkspaceStrategy::Worktree));
+    }
+}

@@ -14,10 +14,11 @@ use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool};
 use mesimon_core::attention::{self, Change, Machine, Signal, TailHint};
 use mesimon_core::board::{
     Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState, Ticket,
-    UnknownReason,
+    UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    Command, Envelope, Event, ExternalItem, GraceItem, Resources, Response, PROTOCOL_VERSION,
+    Command, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Resources, Response,
+    WorktreeItem, PROTOCOL_VERSION,
 };
 use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
@@ -28,6 +29,7 @@ use crate::ingest::{self, HookFrame};
 use crate::paths::Paths;
 use crate::store;
 use crate::tail::TailCursor;
+use crate::worktree::{self, Binding, BindingStatus};
 
 const GRACE_SECS: u64 = 9;
 const GATE_SESSION: &str = "msmn-gate";
@@ -63,12 +65,17 @@ struct GraceEntry {
     ticket: Ticket,
     sessions: Vec<SessionRecord>,
     expires: Instant,
+    /// The delete-gate's red "remove": the user confirmed losing unmerged
+    /// work, so teardown may `branch -D` (M4).
+    discard_worktree: bool,
 }
 
 enum Msg {
     Request(Envelope, Sender<Response>, Arc<Mutex<UnixStream>>),
     Hook(HookFrame),
     Tick,
+    /// A provisioning thread finished (M4): the binding, or the failing stage.
+    Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>),
 }
 
 pub struct Daemon {
@@ -110,6 +117,20 @@ pub struct Daemon {
     /// title when the agent named itself). Cached at FocusStart — broadcast
     /// refreshes must not query tmux per board change.
     focus_label: String,
+    /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
+    worktrees: worktree::Bindings,
+    /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
+    pending_spawns: Vec<(ulid::Ulid, SessionKind)>,
+    /// merged/conflict flags, refreshed on the 10 s bucket while bindings exist.
+    wt_merged: HashMap<ulid::Ulid, bool>,
+    wt_conflicts: Vec<String>,
+    /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
+    base_branch: Option<String>,
+    /// Tickets whose grace expired while their panes were still reaping —
+    /// worktree teardown waits for the reaper (never remove a live cwd).
+    pending_teardown: Vec<(ulid::Ulid, bool, Vec<String>)>,
+    /// Writer-thread sender, cloned into provisioning threads.
+    tx: Sender<Msg>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -220,6 +241,23 @@ pub fn run(paths: Paths) -> Result<()> {
         .collect();
     let feed = FeedWriter::open(&paths.activity_log())?;
 
+    // M4: load worktree bindings; reconcile (a missing dir is Evicted, not an
+    // error — diffs still render from the object store); sweep our stale locks.
+    let mut worktrees = worktree::load_bindings(&paths).unwrap_or_default();
+    let mut wt_changed = false;
+    for b in worktrees.values_mut() {
+        if b.status == BindingStatus::Attached && !b.path.is_dir() {
+            b.status = BindingStatus::Evicted;
+            wt_changed = true;
+        }
+    }
+    if wt_changed {
+        let _ = worktree::save_bindings(&paths, &worktrees);
+    }
+    if !worktrees.is_empty() {
+        let _ = worktree::sweep_stale_locks(&paths.repo_root);
+    }
+
     let mut d = Daemon {
         paths,
         board,
@@ -241,12 +279,21 @@ pub fn run(paths: Paths) -> Result<()> {
         pty_cache: crate::resources::pty_figures(),
         last_status_left: None,
         focus_label: String::new(),
+        worktrees,
+        pending_spawns: Vec::new(),
+        wt_merged: HashMap::new(),
+        wt_conflicts: Vec::new(),
+        base_branch: None,
+        pending_teardown: Vec::new(),
+        tx: tx.clone(),
     };
+    d.refresh_worktree_flags();
 
     for msg in rx {
         match msg {
             Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
+            Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -321,7 +368,10 @@ impl Daemon {
         let feed_cmd: Option<(&'static str, Option<ulid::Ulid>)> = match &env.command {
             Command::CreateTicket { .. } => Some(("create_ticket", None)),
             Command::RenameTicket { id, .. } => Some(("rename_ticket", Some(*id))),
-            Command::DeleteTicket { id } => Some(("delete_ticket", Some(*id))),
+            Command::DeleteTicket { id, .. } => Some(("delete_ticket", Some(*id))),
+            Command::SetWorkspace { id, .. } => Some(("set_workspace", Some(*id))),
+            Command::MergeTicket { id } => Some(("merge_ticket", Some(*id))),
+            Command::MergeToAgent { id } => Some(("merge_to_agent", Some(*id))),
             Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
             Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
@@ -359,7 +409,12 @@ impl Daemon {
             Command::RenameTicket { id, title } => self
                 .with_ticket(id, |t| t.title = title)
                 .unwrap_or(Response::Err { message: "no such ticket".into() }),
-            Command::DeleteTicket { id } => self.delete_ticket(id),
+            Command::DeleteTicket { id, discard_worktree } => {
+                self.delete_ticket(id, discard_worktree)
+            }
+            Command::SetWorkspace { id, workspace } => self.set_workspace(id, workspace),
+            Command::MergeTicket { id } => self.merge_ticket(id),
+            Command::MergeToAgent { id } => self.merge_to_agent(id),
             Command::RestoreTicket { id } => self.restore_ticket(id),
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
             Command::SpawnSession { ticket, kind } => self.spawn_session(ticket, kind),
@@ -442,8 +497,13 @@ impl Daemon {
         };
         if let Some((cmd, ticket)) = feed_cmd {
             match &resp {
-                Response::Ok | Response::Spawned { .. } => self.feed.board("local", cmd, ticket),
+                Response::Ok | Response::Spawned { .. } | Response::Provisioning => {
+                    self.feed.board("local", cmd, ticket)
+                }
                 Response::Created { id } => self.feed.board("local", cmd, ticket.or(Some(*id))),
+                Response::Merge {
+                    outcome: MergeOutcome::Merged | MergeOutcome::AlreadyMerged, ..
+                } => self.feed.board("local", cmd, ticket),
                 _ => {}
             }
         }
@@ -457,6 +517,7 @@ impl Daemon {
         if self.ticks % 4 == 0 {
             self.expire_grace();
             self.sweep_reaping();
+            self.process_teardowns();
         }
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> = self
@@ -477,6 +538,9 @@ impl Daemon {
         }
         if self.ticks % RSS_TICKS == 0 {
             changed |= self.refresh_rss();
+            if !self.worktrees.is_empty() {
+                self.refresh_worktree_flags();
+            }
         }
         if self.ticks % server_guard_ticks() == 0 {
             changed |= self.guard_server();
@@ -866,11 +930,36 @@ impl Daemon {
                 live_sessions: g.sessions.len(),
             })
             .collect();
+        let worktrees = self
+            .worktrees
+            .iter()
+            .map(|(tid, b)| WorktreeItem {
+                ticket: *tid,
+                branch: b.branch.clone(),
+                status: match &b.status {
+                    BindingStatus::Queued => "queued",
+                    BindingStatus::Provisioning => "provisioning",
+                    BindingStatus::Attached => "attached",
+                    BindingStatus::Evicted => "evicted",
+                    BindingStatus::Error { .. } => "error",
+                }
+                .into(),
+                merged: self.wt_merged.get(tid).copied().unwrap_or(false),
+                conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
+                detail: match &b.status {
+                    BindingStatus::Error { stage, message } => {
+                        Some(format!("{stage}: {message}"))
+                    }
+                    _ => None,
+                },
+            })
+            .collect();
         Response::Board {
             board: self.board.clone(),
             grace,
             external: self.external.clone(),
             resources: self.resources(),
+            worktrees,
         }
     }
 
@@ -1058,6 +1147,7 @@ impl Daemon {
             column,
             order: fracindex::between(&last, ""),
             created_at: now_iso(),
+            workspace: None,
         };
         let id = t.id;
         let _ = store::save_ticket(&self.paths, &t);
@@ -1065,10 +1155,21 @@ impl Daemon {
         id
     }
 
-    fn delete_ticket(&mut self, id: ulid::Ulid) -> Response {
+    fn delete_ticket(&mut self, id: ulid::Ulid, discard_worktree: bool) -> Response {
         let Some(pos) = self.board.tickets.iter().position(|t| t.id == id) else {
             return Response::Err { message: "no such ticket".into() };
         };
+        // M4 delete gate (defense in depth — the TUI prompts first): an
+        // unmerged worktree must be merged or explicitly discarded.
+        if !discard_worktree {
+            if let Some(b) = self.worktrees.get(&id) {
+                if !b.branch.is_empty() && !self.ticket_merged(id, &b.branch) {
+                    return Response::Err {
+                        message: "worktree unmerged — merge it first, or delete with discard".into(),
+                    };
+                }
+            }
+        }
         let ticket = self.board.tickets.remove(pos);
         // Sessions detach and keep running through the grace band (D21).
         let sessions: Vec<SessionRecord> =
@@ -1077,10 +1178,147 @@ impl Daemon {
         let _ = store::delete_ticket_dir(&self.paths, &ticket.short_key);
         self.grace.insert(
             id,
-            GraceEntry { ticket, sessions, expires: Instant::now() + Duration::from_secs(GRACE_SECS) },
+            GraceEntry {
+                ticket,
+                sessions,
+                expires: Instant::now() + Duration::from_secs(GRACE_SECS),
+                discard_worktree,
+            },
         );
         self.persist_and_notify();
         Response::Ok
+    }
+
+    fn ticket_merged(&self, _id: ulid::Ulid, branch: &str) -> bool {
+        // Fresh check on gate paths (the 10 s cache may lag a just-made merge).
+        let base = self
+            .base_branch
+            .clone()
+            .or_else(|| worktree::default_branch(&self.paths.repo_root).ok());
+        base.map(|b| worktree::is_merged(&self.paths.repo_root, branch, &b)).unwrap_or(false)
+    }
+
+    fn set_workspace(
+        &mut self,
+        id: ulid::Ulid,
+        workspace: Option<WorkspaceStrategy>,
+    ) -> Response {
+        if self.board.ticket(id).is_none() {
+            return Response::Err { message: "no such ticket".into() };
+        }
+        // Locked once anything exists that the choice would relocate.
+        if self.board.sessions.iter().any(|s| s.ticket == id) {
+            return Response::Err { message: "workspace locked — ticket has sessions".into() };
+        }
+        if self.worktrees.contains_key(&id) {
+            return Response::Err { message: "workspace locked — worktree exists".into() };
+        }
+        match self.with_ticket(id, |t| t.workspace = workspace) {
+            Some(r) => r,
+            None => Response::Err { message: "no such ticket".into() },
+        }
+    }
+
+    /// The merge key (M4): preflight in memory; merge only when clean; never
+    /// resolve conflicts — that is MergeToAgent's job.
+    fn merge_ticket(&mut self, id: ulid::Ulid) -> Response {
+        let Some(b) = self.worktrees.get(&id) else {
+            return Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: "no worktree on this ticket".into(),
+            };
+        };
+        if b.branch.is_empty() {
+            return Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: "worktree has no branch yet".into(),
+            };
+        }
+        let branch = b.branch.clone();
+        // Quiet-tickets rule (author): never merge under a working agent.
+        let busy = self.board.sessions.iter().any(|s| {
+            s.ticket == id
+                && matches!(
+                    s.state,
+                    SessionState::Spawning
+                        | SessionState::Running
+                        | SessionState::RequiresAction { .. }
+                )
+        });
+        if busy {
+            return Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: "sessions still working — wait for them to finish".into(),
+            };
+        }
+        if self.base_branch.is_none() {
+            self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
+        }
+        let Some(base) = self.base_branch.clone() else {
+            return Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: "no default branch found".into(),
+            };
+        };
+        match worktree::merge_check(&self.paths.repo_root, &branch, &base) {
+            Ok(worktree::MergeCheck::AlreadyMerged) => Response::Merge {
+                outcome: MergeOutcome::AlreadyMerged,
+                detail: format!("{branch} is already in {base}"),
+            },
+            Ok(worktree::MergeCheck::Conflicts) => Response::Merge {
+                outcome: MergeOutcome::Conflicts,
+                detail: format!("{branch} conflicts with {base}"),
+            },
+            Ok(worktree::MergeCheck::Clean) => {
+                match worktree::merge_into_base(&self.paths.repo_root, &branch, &base) {
+                    Ok(()) => {
+                        self.refresh_worktree_flags();
+                        self.persist_and_notify();
+                        Response::Merge {
+                            outcome: MergeOutcome::Merged,
+                            detail: format!("{branch} merged into {base}"),
+                        }
+                    }
+                    Err(e) => Response::Merge {
+                        outcome: MergeOutcome::Refused,
+                        detail: e.to_string(),
+                    },
+                }
+            }
+            Err(e) => Response::Merge { outcome: MergeOutcome::Refused, detail: e.to_string() },
+        }
+    }
+
+    /// Conflict path: paste the merge request into the ticket's live claude
+    /// session and submit it (T-5 delivery). Explicit user gesture — the words
+    /// are mesimon's but the user approved them through the prompt.
+    fn merge_to_agent(&mut self, id: ulid::Ulid) -> Response {
+        let Some(b) = self.worktrees.get(&id) else {
+            return Response::Err { message: "no worktree on this ticket".into() };
+        };
+        let branch = b.branch.clone();
+        if self.base_branch.is_none() {
+            self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
+        }
+        let base = self.base_branch.clone().unwrap_or_else(|| "main".into());
+        let Some(rec) = self
+            .board
+            .sessions
+            .iter()
+            .find(|s| s.ticket == id && s.kind == SessionKind::Claude && s.state.has_pane())
+        else {
+            return Response::Err {
+                message: "no live claude session on this ticket — open one first".into(),
+            };
+        };
+        let text = format!(
+            "Merge branch {base} into your current branch {branch} and resolve any \
+             conflicts, then commit the merge."
+        );
+        match self.backend.paste_text(&rec.sid16(), &text) {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+        }
     }
 
     fn restore_ticket(&mut self, id: ulid::Ulid) -> Response {
@@ -1103,22 +1341,79 @@ impl Daemon {
         }
         for id in expired {
             if let Some(g) = self.grace.remove(&id) {
+                let mut sids = Vec::new();
                 for s in &g.sessions {
                     // SIGTERM the group now; the reaper's grace-then-kill-pane
                     // finishes the ladder (docs/19 §1 — never SIGKILL).
                     if s.state.has_pane() {
                         let _ = self.backend.signal_session(&s.sid16());
                         self.reaping.insert(s.sid16(), Instant::now() + REAP_GRACE);
+                        sids.push(s.sid16());
                     }
+                }
+                // M4: worktree teardown waits for the reaper — never remove a
+                // directory a live process still has as cwd (12 §12.6.5).
+                if self.worktrees.contains_key(&id) {
+                    self.pending_teardown.push((id, g.discard_worktree, sids));
                 }
             }
         }
         self.broadcast();
     }
 
+    /// Teardown transaction (12 §12.6.1), once every pane of the ticket left
+    /// the reaper: unlock → remove --force (single force; NEVER -f -f) →
+    /// branch -d if merged, -D only under the user's discard confirmation.
+    fn process_teardowns(&mut self) {
+        if self.pending_teardown.is_empty() {
+            return;
+        }
+        let ready: Vec<usize> = self
+            .pending_teardown
+            .iter()
+            .enumerate()
+            .filter(|(_, (_, _, sids))| !sids.iter().any(|s| self.reaping.contains_key(s)))
+            .map(|(i, _)| i)
+            .collect();
+        if ready.is_empty() {
+            return;
+        }
+        for i in ready.into_iter().rev() {
+            let (ticket, discard, _) = self.pending_teardown.remove(i);
+            let Some(b) = self.worktrees.remove(&ticket) else { continue };
+            let merged = !b.branch.is_empty() && self.ticket_merged(ticket, &b.branch);
+            if b.path.is_dir() {
+                let _ = worktree::remove(&self.paths.repo_root, &b.path);
+            }
+            if !b.branch.is_empty() {
+                if merged {
+                    let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, false);
+                } else if discard {
+                    let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, true);
+                }
+                // Unmerged without discard: keep the branch (commits survive).
+            }
+            self.wt_merged.remove(&ticket);
+        }
+        let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+        self.refresh_worktree_flags();
+        self.broadcast();
+    }
+
     fn move_ticket(&mut self, id: ulid::Ulid, column: String, before: Option<ulid::Ulid>) -> Response {
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
+        }
+        // M4 DONE gate (author rule 3): DONE means the work landed — an
+        // unmerged worktree blocks the move. (Configurable later; magic now.)
+        if column == "DONE" {
+            if let Some(b) = self.worktrees.get(&id) {
+                if !b.branch.is_empty() && !self.ticket_merged(id, &b.branch) {
+                    return Response::Err {
+                        message: "worktree unmerged — merge before DONE".into(),
+                    };
+                }
+            }
         }
         let order = {
             let siblings = self.board.column_tickets(&column);
@@ -1160,6 +1455,20 @@ impl Daemon {
         if let Some(message) = self.spawn_gate() {
             return Response::Err { message };
         }
+        // M4: resolve the ticket's workspace to a cwd BEFORE any side effects.
+        // A worktree ticket that is not provisioned yet queues provisioning and
+        // parks this spawn; on_provisioned replays it.
+        let cwd = match self.resolve_spawn_cwd(ticket) {
+            Ok(Some(p)) => p,
+            Ok(None) => {
+                if !self.pending_spawns.iter().any(|(t, k)| *t == ticket && *k == kind) {
+                    self.pending_spawns.push((ticket, kind));
+                }
+                self.persist_and_notify();
+                return Response::Provisioning;
+            }
+            Err(message) => return Response::Err { message },
+        };
         let id = uuid::Uuid::new_v4();
         let argv: Vec<String> = match kind {
             SessionKind::Claude => {
@@ -1186,7 +1495,6 @@ impl Daemon {
             }
             SessionKind::Bash => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())],
         };
-        let cwd = self.paths.repo_root.clone();
         // Claude enters Spawning; the SessionStart hook flips it to Running.
         // Bash has no hook surface — a live pane is all "running" means (D15).
         let state = match kind {
@@ -1213,8 +1521,195 @@ impl Daemon {
         }
         self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
         self.board.sessions.push(rec);
+        self.lock_worktree(ticket, id);
         self.persist_and_notify();
         Response::Spawned { id }
+    }
+
+    /// M4 workspace resolution. `Ok(None)` = provisioning queued/in flight.
+    fn resolve_spawn_cwd(
+        &mut self,
+        ticket: ulid::Ulid,
+    ) -> std::result::Result<Option<std::path::PathBuf>, String> {
+        let strategy = self
+            .board
+            .ticket(ticket)
+            .map(|t| t.workspace_strategy())
+            .unwrap_or(mesimon_core::board::DEFAULT_WORKSPACE);
+        match strategy {
+            WorkspaceStrategy::SharedCheckout => Ok(Some(self.paths.repo_root.clone())),
+            WorkspaceStrategy::AdoptExisting => match self.worktrees.get(&ticket) {
+                Some(b) if b.status == BindingStatus::Attached => Ok(Some(b.path.clone())),
+                _ => Err("no worktree bound to this ticket — adopt one first".into()),
+            },
+            WorkspaceStrategy::Worktree => {
+                match self.worktrees.get(&ticket).map(|b| b.status.clone()) {
+                    Some(BindingStatus::Attached) => {
+                        Ok(Some(self.worktrees[&ticket].path.clone()))
+                    }
+                    Some(BindingStatus::Queued) | Some(BindingStatus::Provisioning) => Ok(None),
+                    Some(BindingStatus::Evicted) | Some(BindingStatus::Error { .. }) | None => {
+                        self.queue_provision(ticket);
+                        Ok(None)
+                    }
+                }
+            }
+        }
+    }
+
+    /// Mark Queued and start the off-thread provision if a slot is free
+    /// (concurrency 2 — `worktree add` is ~1.8 s of filesystem work and must
+    /// never run on the writer thread).
+    fn queue_provision(&mut self, ticket: ulid::Ulid) {
+        let prior = self.worktrees.get(&ticket).cloned();
+        let entry = self.worktrees.entry(ticket).or_insert_with(|| Binding {
+            path: std::path::PathBuf::new(),
+            branch: String::new(),
+            base_oid: String::new(),
+            branch_oid: String::new(),
+            status: BindingStatus::Queued,
+            locked: false,
+        });
+        entry.status = BindingStatus::Queued;
+        let in_flight = self
+            .worktrees
+            .values()
+            .filter(|b| b.status == BindingStatus::Provisioning)
+            .count();
+        if in_flight >= 2 {
+            let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+            return;
+        }
+        let Some(t) = self.board.ticket(ticket) else { return };
+        let (key, title) = (t.short_key.clone(), t.title.clone());
+        if let Some(b) = self.worktrees.get_mut(&ticket) {
+            b.status = BindingStatus::Provisioning;
+        }
+        let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+        let repo = self.paths.repo_root.clone();
+        let root = match worktree::ensure_root(&self.paths) {
+            Ok(r) => r,
+            Err(e) => {
+                if let Some(b) = self.worktrees.get_mut(&ticket) {
+                    b.status =
+                        BindingStatus::Error { stage: "root".into(), message: e.to_string() };
+                }
+                return;
+            }
+        };
+        let tx = self.tx.clone();
+        let evicted = prior.filter(|b| b.status == BindingStatus::Evicted && !b.branch.is_empty());
+        std::thread::spawn(move || {
+            let result = match evicted {
+                Some(prior) => worktree::provision_existing(&repo, ticket, &prior),
+                None => worktree::provision(&repo, &root, ticket, &key, &title),
+            };
+            let _ = tx.send(Msg::Provisioned(ticket, result));
+        });
+    }
+
+    fn on_provisioned(
+        &mut self,
+        ticket: ulid::Ulid,
+        result: std::result::Result<Binding, (String, String)>,
+    ) {
+        match result {
+            Ok(b) => {
+                self.worktrees.insert(ticket, b);
+                let pending: Vec<(ulid::Ulid, SessionKind)> = self
+                    .pending_spawns
+                    .iter()
+                    .filter(|(t, _)| *t == ticket)
+                    .cloned()
+                    .collect();
+                self.pending_spawns.retain(|(t, _)| *t != ticket);
+                for (t, kind) in pending {
+                    let _ = self.spawn_session(t, kind);
+                }
+            }
+            Err((stage, message)) => {
+                self.pending_spawns.retain(|(t, _)| *t != ticket);
+                if let Some(b) = self.worktrees.get_mut(&ticket) {
+                    b.status = BindingStatus::Error { stage, message };
+                }
+            }
+        }
+        // A slot opened — start the next queued provision, if any.
+        if let Some(next) = self
+            .worktrees
+            .iter()
+            .find(|(_, b)| b.status == BindingStatus::Queued)
+            .map(|(t, _)| *t)
+        {
+            self.queue_provision(next);
+        }
+        let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+        self.refresh_worktree_flags();
+        self.persist_and_notify();
+    }
+
+    /// Take the worktree lock when a session starts in it (12 §12.3.2).
+    fn lock_worktree(&mut self, ticket: ulid::Ulid, session: uuid::Uuid) {
+        let Some(b) = self.worktrees.get_mut(&ticket) else { return };
+        if b.status != BindingStatus::Attached || b.locked {
+            return;
+        }
+        let key = self
+            .board
+            .ticket(ticket)
+            .map(|t| t.short_key.clone())
+            .unwrap_or_default();
+        if worktree::lock(&self.paths.repo_root, &b.path, &key, session, std::process::id())
+            .is_ok()
+        {
+            b.locked = true;
+            let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+        }
+    }
+
+    /// merged/conflict flags + lazy unlock, on the 10 s bucket while bindings
+    /// exist. One `worktree list` + one `merge-base` per binding — read-only,
+    /// `--no-optional-locks`.
+    fn refresh_worktree_flags(&mut self) {
+        if self.worktrees.is_empty() {
+            self.wt_merged.clear();
+            self.wt_conflicts.clear();
+            return;
+        }
+        if self.base_branch.is_none() {
+            self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
+        }
+        let Some(base) = self.base_branch.clone() else { return };
+        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
+        for tid in tickets {
+            let (branch, locked, attached) = {
+                let b = &self.worktrees[&tid];
+                (b.branch.clone(), b.locked, b.status == BindingStatus::Attached)
+            };
+            if branch.is_empty() {
+                continue;
+            }
+            let merged = worktree::is_merged(&self.paths.repo_root, &branch, &base);
+            self.wt_merged.insert(tid, merged);
+            // Release the lock once the last session on the ticket is gone.
+            if locked && attached {
+                let live = self
+                    .board
+                    .sessions
+                    .iter()
+                    .any(|s| s.ticket == tid && s.state.is_live());
+                if !live {
+                    if let Some(b) = self.worktrees.get_mut(&tid) {
+                        if worktree::unlock(&self.paths.repo_root, &b.path).is_ok() {
+                            b.locked = false;
+                        }
+                    }
+                }
+            }
+        }
+        self.wt_conflicts = worktree::list_worktrees(&self.paths.repo_root)
+            .map(|rows| worktree::branch_conflicts(&rows))
+            .unwrap_or_default();
     }
 
     fn kill_session(&mut self, id: uuid::Uuid) -> Response {
@@ -1444,7 +1939,13 @@ impl Daemon {
             Err(message) => return Response::Err { message },
         };
         let (sid, cwd) = (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()));
-        let cwd = if cwd.is_dir() { cwd } else { self.paths.repo_root.clone() };
+        // M4: never silently relocate an agent — a removed worktree/cwd is an
+        // explicit refusal, not a fallback into the main checkout.
+        if !cwd.is_dir() {
+            return Response::Err {
+                message: format!("session's directory is gone ({}) — cannot resume", cwd.display()),
+            };
+        }
         if let Some(message) = self.spawn_gate() {
             return Response::Err { message };
         }
@@ -1565,7 +2066,14 @@ impl Daemon {
             SessionKind::Bash => {
                 let (sid, argv, cwd) =
                     (rec.sid16(), rec.argv.clone(), std::path::PathBuf::from(rec.cwd.clone()));
-                let cwd = if cwd.is_dir() { cwd } else { self.paths.repo_root.clone() };
+                if !cwd.is_dir() {
+                    return Response::Err {
+                        message: format!(
+                            "session's directory is gone ({}) — cannot wake",
+                            cwd.display()
+                        ),
+                    };
+                }
                 if let Some(message) = self.spawn_gate() {
                     return Response::Err { message };
                 }

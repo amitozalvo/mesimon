@@ -27,4 +27,4 @@
 
 
 
- TICKET  jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ z sleep ∙ x kill ∙ esc board
+ TICKET  jk select ∙ enter focus ∙ c claude ∙ s shell ∙ w workspace ∙ m merge ∙ r rename ∙ esc board

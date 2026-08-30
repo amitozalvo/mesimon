@@ -127,7 +127,7 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
         // the footer only carries the verbs.
         Mode::Input { purpose, .. } => {
             let label = match purpose {
-                InputPurpose::Create => "NEW",
+                InputPurpose::Create { .. } => "NEW",
                 InputPurpose::Rename { .. } => "RENAME",
             };
             mode_line(app, label, "enter save ∙ esc cancel")

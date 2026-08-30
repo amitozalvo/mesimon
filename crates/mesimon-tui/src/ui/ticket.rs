@@ -67,10 +67,39 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let created = created_at_epoch_ms(&ticket.created_at)
         .map(|ms| format!(" ∙ created by you {} ago", age_slot(now, ms, false)))
         .unwrap_or_else(|| " ∙ created by you".to_string());
-    let ident = Line::from(vec![
+    // M4: the workspace joins the identity line — the strategy word until a
+    // binding exists, then the branch and its state (short keys resurface
+    // through the branch name, which embeds them).
+    let mut ident_spans = vec![
         Span::styled(format!(" {}", ticket.column.to_uppercase()), theme.dim2()),
         Span::styled(created, theme.dim2()),
-    ]);
+    ];
+    if let Some(w) = app.wt_item(ticket.id) {
+        let state = if w.conflict {
+            " ∙ branch shared!".to_string()
+        } else if w.merged {
+            " ∙ merged".to_string()
+        } else if w.status != "attached" {
+            format!(" ∙ {}", w.status)
+        } else {
+            String::new()
+        };
+        ident_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
+        if !state.is_empty() {
+            let style = if w.conflict {
+                theme.base().add_modifier(ratatui::style::Modifier::BOLD)
+            } else {
+                theme.dim2()
+            };
+            ident_spans.push(Span::styled(state, style));
+        }
+        if let Some(d) = &w.detail {
+            ident_spans.push(Span::styled(format!(" ∙ {d}"), theme.dim2()));
+        }
+    } else if ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree {
+        ident_spans.push(Span::styled(" ∙ ⎇ worktree", theme.dim2()));
+    }
+    let ident = Line::from(ident_spans);
 
     let band = match theme.selected_bg {
         Some(bg) => Line::default().style(Style::default().bg(bg)),
@@ -119,7 +148,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         chrome::mode_line(
             app,
             "TICKET",
-            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ z sleep ∙ x kill ∙ esc board",
+            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ w workspace ∙ m merge ∙ r rename ∙ esc board",
         )
     } else {
         Line::from(Span::styled(format!(" {}", app.status), theme.base()))

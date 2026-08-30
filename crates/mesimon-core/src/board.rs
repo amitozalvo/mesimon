@@ -220,6 +220,35 @@ pub struct Ticket {
     /// Fractional index within the column.
     pub order: String,
     pub created_at: String,
+    /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
+    /// a column policy only defaults NEW tickets, M5). `None` = inherit the board
+    /// default. Must stay after the scalar fields (TOML serialize order).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceStrategy>,
+}
+
+/// M4 (supersedes D25's column-only enum): how a ticket's sessions get a cwd.
+/// The corpus's fourth value `none` is folded into "worktree, not yet provisioned" —
+/// provisioning is lazy (first spawn), so an idea-card has no git identity anyway.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceStrategy {
+    /// Own worktree at the state-dir root, branch `msmn/<KEY>-<slug>`.
+    Worktree,
+    /// cwd = the main checkout (pre-M4 behavior).
+    SharedCheckout,
+    /// Bound to a branch/worktree mesimon did not create; teardown keeps everything.
+    AdoptExisting,
+}
+
+/// Layer-0 board default until column policies land (M5).
+pub const DEFAULT_WORKSPACE: WorkspaceStrategy = WorkspaceStrategy::SharedCheckout;
+
+impl Ticket {
+    /// Layered resolution: ticket field, else the board default (column default is M5).
+    pub fn workspace_strategy(&self) -> WorkspaceStrategy {
+        self.workspace.unwrap_or(DEFAULT_WORKSPACE)
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]

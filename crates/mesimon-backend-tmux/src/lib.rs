@@ -108,6 +108,36 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Deliver a full prompt and submit it (spike T-5 / 19 §6): `load-buffer -`
+    /// from stdin → `paste-buffer -p` (bracketed paste) → a SEPARATE
+    /// `send-keys Enter`. A single send-keys call truncated 3696→630 bytes and
+    /// ate the Enter; `;`-joined tmux commands split — three forks is the shape.
+    pub fn paste_text(&self, sid16: &str, text: &str) -> Result<()> {
+        use std::io::Write as _;
+        use std::process::Stdio;
+        let mut child = self
+            .tmux()
+            .args(["load-buffer", "-b", "msmn-paste", "-"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::piped())
+            .spawn()
+            .context("spawn tmux load-buffer")?;
+        child
+            .stdin
+            .take()
+            .context("load-buffer stdin")?
+            .write_all(text.as_bytes())
+            .context("write paste buffer")?;
+        let st = child.wait().context("wait load-buffer")?;
+        if !st.success() {
+            bail!("tmux load-buffer failed");
+        }
+        self.run(&["paste-buffer", "-p", "-b", "msmn-paste", "-d", "-t", sid16])?;
+        self.run(&["send-keys", "-t", sid16, "Enter"])?;
+        Ok(())
+    }
+
     /// Discovery snapshot for `reconcile()` after a daemon restart.
     pub fn snapshot(&self) -> Result<Vec<PaneSnapshot>> {
         if !self.server_alive() {

@@ -151,10 +151,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         }
     }
     // New-ticket entry: a phantom card at the column tail, edited in place.
+    // The second line is the M4 workspace selector (Shift+Tab cycles it).
     if is_cursor_col {
-        if let Some((InputPurpose::Create, buf)) = editing {
+        if let Some((InputPurpose::Create { workspace }, buf)) = editing {
             let (line, x_off) = card::render_edit(&ctx, buf);
-            groups.push(Group { lines: vec![line], cursor: true, waiting: false, edit_cursor: Some(x_off) });
+            let selector = card::render_workspace_selector(&ctx, *workspace);
+            groups.push(Group {
+                lines: vec![line, selector],
+                cursor: true,
+                waiting: false,
+                edit_cursor: Some(x_off),
+            });
         }
     }
 

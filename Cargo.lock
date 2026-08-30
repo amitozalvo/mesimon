@@ -382,6 +382,7 @@ dependencies = [
  "mesimon-daemon",
  "mesimon-tui",
  "serde_json",
+ "ulid",
  "uuid",
 ]
 
