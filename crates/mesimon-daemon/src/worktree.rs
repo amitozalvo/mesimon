@@ -196,6 +196,61 @@ pub fn provision(
     })
 }
 
+/// The ticket ULID a worktree's ownership marker names, if the marker exists
+/// and parses. First line of `$(git rev-parse --git-path mesimon-ticket)`.
+pub fn marker_ticket(dir: &Path) -> Option<ulid::Ulid> {
+    let marker = git_read(dir, &["rev-parse", "--git-path", "mesimon-ticket"]).ok()?;
+    let p = PathBuf::from(marker.trim());
+    let p = if p.is_absolute() { p } else { dir.join(p) };
+    let body = std::fs::read_to_string(p).ok()?;
+    body.lines().next()?.parse().ok()
+}
+
+/// Startup settle for bindings a dead daemon left mid-provision. `Queued` and
+/// `Provisioning` are thread-backed states; loaded from disk they have no
+/// thread behind them, and `resolve_spawn_cwd` would park every future spawn
+/// behind them forever ("session starts when ready" that never comes).
+/// Resolve each from what actually landed on disk:
+/// dir + our marker → `Attached`; dir without marker → fail closed (D26);
+/// branch only → `Evicted` (`provision_existing` replays); nothing → drop the
+/// binding, the next spawn provisions fresh. Returns whether anything changed.
+pub fn reconcile_interrupted(repo: &Path, bindings: &mut Bindings) -> bool {
+    let mut changed = false;
+    bindings.retain(|ticket, b| {
+        if !matches!(b.status, BindingStatus::Queued | BindingStatus::Provisioning) {
+            return true;
+        }
+        changed = true;
+        if b.path.is_dir() {
+            if marker_ticket(&b.path) == Some(*ticket) {
+                b.status = BindingStatus::Attached;
+            } else {
+                b.status = BindingStatus::Error {
+                    stage: "reconcile".into(),
+                    message: format!(
+                        "interrupted provision left {} — remove it, then retry",
+                        b.path.display()
+                    ),
+                };
+            }
+            return true;
+        }
+        let branch_exists = !b.branch.is_empty()
+            && git_read(
+                repo,
+                &["rev-parse", "--verify", "--quiet", &format!("refs/heads/{}", b.branch)],
+            )
+            .is_ok();
+        if branch_exists {
+            b.status = BindingStatus::Evicted;
+            true
+        } else {
+            false
+        }
+    });
+    changed
+}
+
 /// Recreate an evicted worktree: the branch already exists, so `add` without
 /// `-b`, then re-mark and re-include. Commits made on the branch survive
 /// eviction — this restores the working directory only.
@@ -488,6 +543,17 @@ pub fn ff_merge(repo: &Path, branch: &str, base: &str) -> Result<()> {
     }
 }
 
+/// A refusal reason fit for the status line: git's dirty-checkout refusal
+/// (multi-line, one path per line) becomes one actionable sentence; anything
+/// else is flattened to a single line — the wire must never carry text a
+/// one-line footer cannot render.
+pub fn merge_refusal_detail(err: &str, base: &str) -> String {
+    if err.contains("local changes") || err.contains("would be overwritten") {
+        return format!("uncommitted changes in the {base} checkout — commit or stash them first");
+    }
+    err.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
 // ---- teardown ---------------------------------------------------------------
 
 /// Step 3 of the teardown order: OUR audit, never git's inverted refusal.
@@ -549,6 +615,67 @@ mod tests {
         run(&["add", "."]);
         run(&["commit", "-qm", "init"]);
         Some(dir)
+    }
+
+    #[test]
+    fn reconcile_interrupted_settles_stuck_statuses() {
+        let Some(repo) = scratch_repo("reconcile") else { return };
+        let root = repo.join("_wtroot");
+        std::fs::create_dir_all(&root).unwrap();
+
+        // Fully-landed provision, but the binding was persisted still
+        // Provisioning (daemon died between the worktree add and the ack).
+        let done = provision(&repo, &root, ulid::Ulid(1), "T-1", "Landed").unwrap();
+        let mut bindings = Bindings::new();
+        bindings.insert(
+            ulid::Ulid(1),
+            Binding { status: BindingStatus::Provisioning, ..done.clone() },
+        );
+        // Branch exists, dir never landed → replay via the evicted path.
+        let evicted = provision(&repo, &root, ulid::Ulid(2), "T-2", "Half").unwrap();
+        remove(&repo, &evicted.path).unwrap();
+        bindings
+            .insert(ulid::Ulid(2), Binding { status: BindingStatus::Queued, ..evicted.clone() });
+        // Nothing landed (queue_provision's placeholder) → binding drops.
+        bindings.insert(
+            ulid::Ulid(3),
+            Binding {
+                path: PathBuf::new(),
+                branch: String::new(),
+                base_oid: String::new(),
+                branch_oid: String::new(),
+                status: BindingStatus::Queued,
+                locked: false,
+            },
+        );
+        // Dir exists but is not ours (no marker) → fail closed.
+        let foreign = root.join("foreign");
+        std::fs::create_dir_all(&foreign).unwrap();
+        bindings.insert(
+            ulid::Ulid(4),
+            Binding {
+                path: foreign,
+                branch: "msmn/T-4-x".into(),
+                base_oid: String::new(),
+                branch_oid: String::new(),
+                status: BindingStatus::Provisioning,
+                locked: false,
+            },
+        );
+        // Attached stays untouched.
+        let ok = provision(&repo, &root, ulid::Ulid(5), "T-5", "Fine").unwrap();
+        bindings.insert(ulid::Ulid(5), ok.clone());
+
+        assert!(reconcile_interrupted(&repo, &mut bindings));
+        assert_eq!(bindings[&ulid::Ulid(1)].status, BindingStatus::Attached);
+        assert_eq!(bindings[&ulid::Ulid(2)].status, BindingStatus::Evicted);
+        assert!(!bindings.contains_key(&ulid::Ulid(3)));
+        assert!(matches!(bindings[&ulid::Ulid(4)].status, BindingStatus::Error { .. }));
+        assert_eq!(bindings[&ulid::Ulid(5)].status, BindingStatus::Attached);
+        // Second pass is a no-op.
+        assert!(!reconcile_interrupted(&repo, &mut bindings));
+
+        std::fs::remove_dir_all(&repo).ok();
     }
 
     #[test]
@@ -622,6 +749,39 @@ mod tests {
         std::fs::write(b.path.join("stray.txt"), "x").unwrap();
         let (n, summary) = audit(&b.path).unwrap();
         assert_eq!(n, 1, "{summary}");
+
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    #[test]
+    fn dirty_main_checkout_refusal_maps_to_one_line() {
+        // Pure mapping: git's multi-line dirty refusal → one actionable
+        // sentence; any other error still flattens to a single line.
+        let raw = "git merge failed: error: Your local changes to the following files \
+                   would be overwritten by merge:\n\ta.txt\nPlease commit your changes \
+                   or stash them before you merge.\nAborting";
+        let d = merge_refusal_detail(raw, "main");
+        assert!(!d.contains('\n') && !d.contains('\t'));
+        assert_eq!(d, "uncommitted changes in the main checkout — commit or stash them first");
+        assert_eq!(merge_refusal_detail("boom\nline two", "main"), "boom line two");
+
+        // The real thing: ff-able branch, dirty base checkout on overlapping
+        // files — git refuses the ff, the mapped detail is the sentence.
+        let Some(repo) = scratch_repo("dirtymain") else { return };
+        let root = repo.join("_wtroot");
+        std::fs::create_dir_all(&root).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(9), "T-9", "dirty").unwrap();
+        let run = |d: &Path, args: &[&str]| {
+            let ok = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+            assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+        };
+        std::fs::write(b.path.join("a.txt"), "branch side\n").unwrap();
+        run(&b.path, &["commit", "-aqm", "branch change"]);
+        std::fs::write(repo.join("a.txt"), "uncommitted main edit\n").unwrap();
+        assert!(ff_possible(&repo, &b.branch, "main"));
+        let err = ff_merge(&repo, &b.branch, "main").unwrap_err();
+        let mapped = merge_refusal_detail(&err.to_string(), "main");
+        assert!(mapped.contains("uncommitted changes"), "unexpected: {mapped}");
 
         std::fs::remove_dir_all(&repo).ok();
     }

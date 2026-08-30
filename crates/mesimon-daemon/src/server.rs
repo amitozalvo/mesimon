@@ -251,7 +251,7 @@ pub fn run(paths: Paths) -> Result<()> {
     // M4: load worktree bindings; reconcile (a missing dir is Evicted, not an
     // error — diffs still render from the object store); sweep our stale locks.
     let mut worktrees = worktree::load_bindings(&paths).unwrap_or_default();
-    let mut wt_changed = false;
+    let mut wt_changed = worktree::reconcile_interrupted(&paths.repo_root, &mut worktrees);
     for b in worktrees.values_mut() {
         if b.status == BindingStatus::Attached && !b.path.is_dir() {
             b.status = BindingStatus::Evicted;
@@ -1424,7 +1424,10 @@ impl Daemon {
                     detail: format!("{branch} merged into {base}"),
                 }
             }
-            Err(e) => Response::Merge { outcome: MergeOutcome::Refused, detail: e.to_string() },
+            Err(e) => Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: worktree::merge_refusal_detail(&e.to_string(), &base),
+            },
         }
     }
 
@@ -1791,7 +1794,13 @@ impl Daemon {
                     .collect();
                 self.pending_spawns.retain(|(t, _)| *t != ticket);
                 for (t, kind) in pending {
-                    let _ = self.spawn_session(t, kind);
+                    // A failed replay has no client waiting on it — leave a
+                    // feed trace (the TUI's parked focus intent surfaces the
+                    // "attached but no session" outcome to the user).
+                    if let Response::Err { message } = self.spawn_session(t, kind) {
+                        eprintln!("mesimon: parked spawn replay failed ({kind:?}): {message}");
+                        self.feed.board("daemon", "spawn_replay_failed", Some(t));
+                    }
                 }
             }
             Err((stage, message)) => {

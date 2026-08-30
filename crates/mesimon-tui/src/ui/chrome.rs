@@ -151,7 +151,10 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                     "enter open ticket ∙ tab needs you ∙ a add ∙ >< move ∙ p peek ∙ e external ∙ q quit",
                 )
             } else {
-                Line::from(Span::styled(format!(" {}", app.status), theme.base()))
+                Line::from(Span::styled(
+                    format!(" {}", crate::text::one_line(&app.status)),
+                    theme.base(),
+                ))
             }
         }
     };

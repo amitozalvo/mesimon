@@ -30,6 +30,19 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
     out
 }
 
+/// Flatten arbitrary text into one renderable status line. Ratatui spans must
+/// never carry control characters — a raw `\n` flushed to the terminal moves
+/// the real cursor while the diff buffer thinks nothing happened, and the
+/// desync leaves stale cells on every later frame (the multi-line git stderr
+/// a merge refusal ships did exactly that). Whitespace runs collapse to one
+/// space so `error:\n\tfile` reads as a sentence, not a gap.
+pub(crate) fn one_line(s: &str) -> String {
+    s.split(|c: char| c.is_whitespace() || c.is_control())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
 /// The 3-cell age slot (06 §5.4): fixed vocabulary, right-aligned by the
 /// caller. `now` under 10 s, then s/m/h/d/w buckets, `>1y` past a year.
 ///
@@ -286,6 +299,17 @@ mod tests {
         // == max; this is the off-by-one regression test.
         assert_eq!(truncate("abcde", 5), "abcde");
         assert_eq!(truncate("abcde", 6), "abcde");
+    }
+
+    #[test]
+    fn one_line_flattens_control_and_whitespace() {
+        // The shape a merge refusal ships: git stderr with newlines + tabs.
+        assert_eq!(
+            one_line("error: Your local changes:\n\tCLAUDE.md\n\tsrc/app.rs\nAborting"),
+            "error: Your local changes: CLAUDE.md src/app.rs Aborting"
+        );
+        assert_eq!(one_line("already ∙ one line"), "already ∙ one line");
+        assert_eq!(one_line(""), "");
     }
 
     #[test]

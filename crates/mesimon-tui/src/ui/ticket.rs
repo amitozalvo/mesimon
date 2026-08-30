@@ -176,7 +176,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ w workspace ∙ m merge ∙ r rename ∙ esc board",
         )
     } else {
-        Line::from(Span::styled(format!(" {}", app.status), theme.base()))
+        Line::from(Span::styled(
+            format!(" {}", crate::text::one_line(&app.status)),
+            theme.base(),
+        ))
     };
     f.render_widget(
         Paragraph::new(footer),

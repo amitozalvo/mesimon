@@ -103,6 +103,11 @@ pub struct App {
     /// outside the render loop.
     pub pending_attach: Option<Vec<String>>,
     pub pending_gate_then: Option<uuid::Uuid>,
+    /// M4: `c` on an unprovisioned worktree ticket parks the spawn daemon-side
+    /// (`Response::Provisioning`); this parks the focus half of that keypress.
+    /// The first refresh that shows the replayed session finishes it; any
+    /// other keypress abandons it (the user moved on — never yank focus).
+    pending_spawn_focus: Option<(ulid::Ulid, SessionKind)>,
     /// The session a running handover holds focus on — released on return.
     focused_session_hint: Option<uuid::Uuid>,
     /// New-binary watch (dev rebuild or prod upgrade — same signal).
@@ -143,6 +148,7 @@ impl App {
             spin_epoch: Cell::new(None),
             pending_attach: None,
             pending_gate_then: None,
+            pending_spawn_focus: None,
             focused_session_hint: None,
             update_watch: crate::update::UpdateWatch::new(),
             pending_reexec: false,
@@ -180,8 +186,50 @@ impl App {
                     self.daemon_down = false;
                     self.status = "daemon back ∙ board refreshed".into();
                 }
+                self.settle_pending_spawn_focus()?;
             }
             Err(_) => self.note_daemon_down(),
+        }
+        Ok(())
+    }
+
+    /// Finish a `c` whose spawn was parked behind worktree provisioning: once
+    /// the replayed session shows up in a snapshot, focus it — that is what
+    /// the keypress meant. A provisioning failure (or a replay that died
+    /// silently after the binding attached) surfaces in the status line
+    /// instead of leaving "session starts when ready" quietly unfulfilled.
+    fn settle_pending_spawn_focus(&mut self) -> Result<()> {
+        let Some((ticket, kind)) = self.pending_spawn_focus else { return Ok(()) };
+        if self.board.ticket(ticket).is_none() {
+            self.pending_spawn_focus = None;
+            return Ok(());
+        }
+        if let Some(sid) = self
+            .rail_sessions(ticket)
+            .iter()
+            .find(|s| s.kind == kind && s.state.is_live())
+            .map(|s| s.id)
+        {
+            self.pending_spawn_focus = None;
+            return self.focus_session(sid);
+        }
+        match self.wt_item(ticket).map(|w| (w.status.clone(), w.detail.clone())) {
+            Some((s, _)) if s == "queued" || s == "provisioning" => {} // still in flight
+            // Binding landed in this snapshot with no session: the daemon's
+            // replayed spawn errored (binding + session land in the same
+            // writer turn, so "attached, no session" is never a race).
+            Some((s, _)) if s == "attached" => {
+                self.pending_spawn_focus = None;
+                self.status = "worktree ready ∙ session spawn failed — c retries".into();
+            }
+            Some((s, detail)) => {
+                self.pending_spawn_focus = None;
+                self.status = format!(
+                    "worktree {s} ∙ {}",
+                    detail.unwrap_or_else(|| "provisioning failed".into())
+                );
+            }
+            None => self.pending_spawn_focus = None, // binding vanished
         }
         Ok(())
     }
@@ -297,6 +345,10 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return Ok(dirty);
         }
+        // Any keypress abandons a parked spawn-focus: the user moved on, and
+        // yanking them into a session mid-thought is worse than not focusing.
+        // (A new `c` re-arms it below; the session itself still spawns.)
+        self.pending_spawn_focus = None;
         self.status.clear();
         self.handle_key(key.code, key.modifiers)?;
         Ok(true)
@@ -949,9 +1001,11 @@ impl App {
                 self.focus_session(id)?;
             }
             // M4: the worktree is being created off-thread; the session spawns
-            // when it is ready (a BoardChanged follows).
+            // when it is ready (a BoardChanged follows) and the parked focus
+            // intent finishes this keypress then.
             Response::Provisioning => {
                 self.status = "provisioning worktree ∙ session starts when ready".into();
+                self.pending_spawn_focus = Some((ticket, kind));
                 self.refresh()?;
             }
             Response::Err { message } => self.status = message,
