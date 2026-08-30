@@ -63,10 +63,12 @@ pub struct DiffState {
 pub enum Mode {
     Normal,
     /// MOVE: ghost position tracked client-side; nothing is sent until the
-    /// drop. `grab` is the key that started it (`>` or `<`): the same key
-    /// again (or Enter) commits, the opposite key cancels. `home` is where the
-    /// grab happened (col, idx): a foreign column is always entered at the
-    /// top, the home column at the ticket's own position (author 2026-08-30).
+    /// drop. `grab` is the key that started it (`>`, `<`, or `m`): the same
+    /// key again (or Enter) commits; for `>`/`<` the opposite key cancels,
+    /// while an `m` grab has no opposite — `>`/`<` shift columns instead.
+    /// `home` is where the grab happened (col, idx): a foreign column is
+    /// always entered at the top, the home column at the ticket's own
+    /// position (author 2026-08-30) — which is why `m` grabs in place.
     Move { ticket: ulid::Ulid, col: usize, idx: usize, grab: char, home: (usize, usize) },
     Input { purpose: InputPurpose, buffer: EditBuffer },
     /// External drawer: discovered foreign sessions (19 §4 tier 1).
@@ -117,6 +119,10 @@ pub struct App {
     pub resources: Resources,
     /// Per-ticket worktree bindings (M4): branch, status word, merged/conflict.
     pub worktrees: Vec<WorktreeItem>,
+    /// Standing advisories from the daemon — a quarantined state file, a file
+    /// a newer mesimon wrote. Refreshed with every snapshot. NOT `status`:
+    /// that is cleared by the next keypress, and these stay true until fixed.
+    pub notices: Vec<mesimon_core::command::Notice>,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -182,7 +188,7 @@ pub struct App {
 
 impl App {
     pub fn new(mut client: Box<dyn Transport>, repo_root: PathBuf, theme: Theme) -> Result<Self> {
-        let (board, grace, external, resources, worktrees) = fetch(client.as_mut())?;
+        let (board, grace, external, resources, worktrees, notices) = fetch(client.as_mut())?;
         Ok(Self {
             client,
             repo_root,
@@ -191,6 +197,7 @@ impl App {
             external,
             resources,
             worktrees,
+            notices,
             theme,
             resume_refused: None,
             merge_armed: None,
@@ -239,12 +246,13 @@ impl App {
     /// screen and flags the reconnect cadence instead of exiting the TUI.
     pub fn refresh(&mut self) -> Result<()> {
         match fetch(self.client.as_mut()) {
-            Ok((board, grace, external, resources, worktrees)) => {
+            Ok((board, grace, external, resources, worktrees, notices)) => {
                 self.board = board;
                 self.grace = grace;
                 self.external = external;
                 self.resources = resources;
                 self.worktrees = worktrees;
+                self.notices = notices;
                 self.clamp_cursor();
                 self.clamp_screen();
                 if self.daemon_down {
@@ -323,12 +331,13 @@ impl App {
 
     /// Take whatever board a command replied with (RescanExternal does this).
     fn absorb_board(&mut self, resp: Response) {
-        if let Response::Board { board, grace, external, resources, worktrees } = resp {
+        if let Response::Board { board, grace, external, resources, worktrees, notices } = resp {
             self.board = board;
             self.grace = grace;
             self.external = external;
             self.resources = resources;
             self.worktrees = worktrees;
+            self.notices = notices;
             self.clamp_cursor();
             self.clamp_screen();
         }
@@ -356,6 +365,9 @@ impl App {
 
     /// Return to the board. Restarts the marquee clock so the selected
     /// card's title replays its reveal on re-landing.
+    // A navigation verb ("go to the board"), not a conversion — the
+    // wrong_self_convention lint reads the `to_` prefix as the latter.
+    #[allow(clippy::wrong_self_convention)]
     fn to_board(&mut self) {
         self.marquee.set(None);
         self.rail_marquee.set(None);
@@ -395,6 +407,12 @@ impl App {
     /// Poll one terminal event; returns whether a redraw is needed.
     pub fn tick(&mut self) -> Result<bool> {
         let mut dirty = false;
+        // A transport-level advisory (build skew that would not settle) joins
+        // the daemon's own notices in the advisory row.
+        if let Some(n) = self.client.take_notice() {
+            self.notices.insert(0, n);
+            dirty = true;
+        }
         if self.update_watch.tick() {
             self.status = "update ready ∙ U reloads".into();
             dirty = true;
@@ -608,15 +626,17 @@ impl App {
             // immediately (doc 04's `m`, remapped — STALE-MAP): the move is
             // pending and blinking; the same key again (or Enter) drops it,
             // the opposite key cancels, hjkl fine-place meanwhile.
-            KeyCode::Char(c @ ('>' | '<')) => {
+            // `m` grabs the card in place — same column, same row — for
+            // reordering (or hjkl travel) before the drop.
+            KeyCode::Char(c @ ('>' | '<' | 'm')) => {
                 if let Some(t) = self.selected_ticket() {
                     let id = t.id;
                     let cols = self.columns();
                     if !cols.is_empty() {
-                        let col = if c == '>' {
-                            (self.cursor_col + 1) % cols.len()
-                        } else {
-                            (self.cursor_col + cols.len() - 1) % cols.len()
+                        let col = match c {
+                            '>' => (self.cursor_col + 1) % cols.len(),
+                            '<' => (self.cursor_col + cols.len() - 1) % cols.len(),
+                            _ => self.cursor_col,
                         };
                         let home = (self.cursor_col, self.cursor_row);
                         let idx = self.ghost_entry_idx(&cols, col, home, id);
@@ -1393,11 +1413,23 @@ impl App {
                     // The grab key again: commit the pending move where the
                     // ghost stands (`>>` / `<<` — one column in one gesture).
                     self.drop_ghost(&cols, ticket, col, idx)?;
+                } else if grab == 'm' {
+                    // An `m` grab has no opposite key: `>` / `<` shift the
+                    // ghost a column, same as `l` / `h`.
+                    let to = if c == '>' {
+                        (col + 1).min(cols.len().saturating_sub(1))
+                    } else {
+                        col.saturating_sub(1)
+                    };
+                    let idx =
+                        if to == col { idx } else { self.ghost_entry_idx(&cols, to, home, ticket) };
+                    self.mode = Mode::Move { ticket, col: to, idx, grab, home };
                 } else {
                     // The opposite key cancels the whole move.
                     self.mode = Mode::Normal;
                 }
             }
+            KeyCode::Char('m') if grab == 'm' => self.drop_ghost(&cols, ticket, col, idx)?,
             KeyCode::Enter => self.drop_ghost(&cols, ticket, col, idx)?,
             _ => {}
         }
@@ -1661,12 +1693,19 @@ impl App {
     }
 }
 
-type Snapshot5 = (Board, Vec<GraceItem>, Vec<ExternalItem>, Resources, Vec<WorktreeItem>);
+type Snapshot6 = (
+    Board,
+    Vec<GraceItem>,
+    Vec<ExternalItem>,
+    Resources,
+    Vec<WorktreeItem>,
+    Vec<mesimon_core::command::Notice>,
+);
 
-fn fetch(client: &mut dyn Transport) -> Result<Snapshot5> {
+fn fetch(client: &mut dyn Transport) -> Result<Snapshot6> {
     match client.request(Command::Snapshot)? {
-        Response::Board { board, grace, external, resources, worktrees } => {
-            Ok((board, grace, external, resources, worktrees))
+        Response::Board { board, grace, external, resources, worktrees, notices } => {
+            Ok((board, grace, external, resources, worktrees, notices))
         }
         other => anyhow::bail!("unexpected snapshot response: {other:?}"),
     }
@@ -1744,6 +1783,7 @@ pub(crate) mod test_support {
                     external: self.external.clone(),
                     resources: self.resources.clone(),
                     worktrees: Vec::new(),
+                    notices: Vec::new(),
                 }),
                 Command::MoveTicket { id, column, before } => {
                     let mut order: Vec<ulid::Ulid> = self
@@ -2213,6 +2253,34 @@ mod tests {
         let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
         assert_eq!(done, vec![ulid::Ulid(3), ulid::Ulid(1)]);
         assert_eq!((app.cursor_col, app.cursor_row), (2, 1));
+    }
+
+    #[test]
+    fn m_grabs_in_place_and_reorders_within_the_column() {
+        let mut app = app_three_columns();
+        press(&mut app, 'm');
+        // Grabbed where it stands: same column, same row, nothing sent yet.
+        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 0, grab: 'm', .. }));
+        press(&mut app, 'j');
+        press(&mut app, 'm'); // the grab key again drops
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+    }
+
+    #[test]
+    fn m_grab_travels_columns_on_gt_lt_instead_of_cancelling() {
+        let mut app = app_three_columns();
+        press(&mut app, 'm');
+        press(&mut app, '>'); // no opposite for m: shifts, like l
+        assert!(matches!(app.mode, Mode::Move { col: 1, idx: 0, grab: 'm', .. }));
+        press(&mut app, '<'); // back home at the remembered row
+        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 0, grab: 'm', .. }));
+        press(&mut app, '>');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
+        assert_eq!(doing, vec![ulid::Ulid(1)]);
     }
 
     #[test]

@@ -63,7 +63,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     chrome::draw_header(f, outer[0], app);
     board::draw_columns(f, outer[2], app);
-    chrome::draw_grace(f, outer[3], app);
+    chrome::draw_advisory(f, outer[3], app);
     chrome::draw_footer(f, outer[4], app);
     if let Mode::External { idx } = &app.mode {
         chrome::draw_drawer(f, app, *idx);

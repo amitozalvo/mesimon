@@ -9,6 +9,56 @@ use crate::Principal;
 
 pub const PROTOCOL_VERSION: u32 = 1;
 
+/// A build fingerprint for the executable a process runs from: the mtime (ms
+/// since epoch) and length of that file, read when the process started. Not a
+/// content hash — hashing a 30 MB debug binary on every connect is not free,
+/// and (mtime, len) is precisely the signal `tui/src/update.rs` already trusts
+/// for the `update ready` offer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ExeStamp {
+    pub mtime_ms: u64,
+    pub len: u64,
+}
+
+/// One non-fatal thing the user should know about persisted state (13 §13.10.3's
+/// quarantine banner, 16 §6.2's schema banner). Standing, not transient: it
+/// describes a condition still true on disk.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Notice {
+    /// Machine tag — a WORD, not an enum, exactly as `WorktreeItem.status` is.
+    /// An unknown enum variant from a newer daemon would fail the whole
+    /// `Response::Board` deserialize, and the client DROPS a line it cannot
+    /// parse (tui/src/client.rs) — one new notice kind would blank the board
+    /// on an older client. One of:
+    /// `quarantined` | `future_version` | `worktrees_barred` | `build_skew`.
+    pub kind: String,
+    /// The headline, in mesimon's voice, ready to render. Never raw serde text.
+    pub text: String,
+    /// The file this is about (absolute), when there is one.
+    #[serde(default)]
+    pub path: Option<String>,
+    /// The parser's own words — file:line:column. For the log and the detail
+    /// line, never the headline (13 §13.10.3).
+    #[serde(default)]
+    pub detail: Option<String>,
+}
+
+impl Notice {
+    pub fn new(kind: &str, text: impl Into<String>) -> Self {
+        Self { kind: kind.into(), text: text.into(), path: None, detail: None }
+    }
+
+    pub fn with_path(mut self, p: impl std::fmt::Display) -> Self {
+        self.path = Some(p.to_string());
+        self
+    }
+
+    pub fn with_detail(mut self, d: impl Into<String>) -> Self {
+        self.detail = Some(d.into());
+        self
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Envelope {
     pub principal: Principal,
@@ -103,7 +153,28 @@ fn default_diff_context() -> u32 {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "resp", rename_all = "snake_case")]
 pub enum Response {
-    Hello { version: u32, daemon_pid: u32 },
+    /// Every field added here after `daemon_pid` MUST be `#[serde(default)]`.
+    /// The TUI's reader thread drops a line it cannot deserialize, so a
+    /// required field would turn "an older daemon answered" into a silent
+    /// 10 s response timeout — a refusal to launch on exactly the version
+    /// skew these fields exist to detect.
+    Hello {
+        version: u32,
+        daemon_pid: u32,
+        /// The daemon's own CARGO_PKG_VERSION (docs/02 §5.2's `server_build`).
+        /// Empty = a daemon predating this field.
+        #[serde(default)]
+        build: String,
+        /// (mtime_ms, len) of the daemon's executable, captured at startup.
+        /// `None` = unknown; callers must read that as "unknown", never as
+        /// "changed" (D26 fails closed).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        exe_stamp: Option<ExeStamp>,
+        /// True only for a daemon mesimon spawned detached. A human's
+        /// foreground `mesimon daemon --repo` is never restarted under them.
+        #[serde(default)]
+        detached: bool,
+    },
     Ok,
     /// CreateTicket's receipt: the minted id, so the client can select it.
     Created { id: ulid::Ulid },
@@ -123,6 +194,11 @@ pub enum Response {
         /// older daemon parses as empty.
         #[serde(default)]
         worktrees: Vec<WorktreeItem>,
+        /// Standing advisories about persisted state — a quarantined file, a
+        /// file newer than this build. Serde-additive: absent from an older
+        /// daemon parses as empty.
+        #[serde(default)]
+        notices: Vec<Notice>,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -262,4 +338,81 @@ pub struct Resources {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     BoardChanged,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// An older daemon's Hello — no `build`, no `exe_stamp`, no `detached` —
+    /// must still parse. The client's reader thread DROPS a line it cannot
+    /// deserialize, so a required field here would surface as a 10 s response
+    /// timeout and a TUI that refuses to launch, on exactly the skew these
+    /// fields exist to detect. This is the test that catches a missing default.
+    #[test]
+    fn old_hello_json_parses() {
+        let old = r#"{"resp":"hello","version":1,"daemon_pid":7}"#;
+        let r: Response = serde_json::from_str(old).unwrap();
+        match r {
+            Response::Hello { version, daemon_pid, build, exe_stamp, detached } => {
+                assert_eq!(version, 1);
+                assert_eq!(daemon_pid, 7);
+                assert!(build.is_empty(), "absent build reads as empty");
+                assert!(exe_stamp.is_none(), "absent stamp is unknown, not changed");
+                assert!(!detached, "absent detached reads as not-ours-to-restart");
+            }
+            other => panic!("expected hello, got {other:?}"),
+        }
+    }
+
+    /// A `Response::Board` from a daemon with no `notices` key parses as empty
+    /// — same drop-on-parse hazard, same rule as `worktrees` before it.
+    #[test]
+    fn old_board_json_parses() {
+        let old = r#"{"resp":"board","board":{"columns":[],"tickets":[],"sessions":[],
+            "next_key":0},"grace":[]}"#;
+        let r: Response = serde_json::from_str(old).unwrap();
+        match r {
+            Response::Board { notices, worktrees, external, .. } => {
+                assert!(notices.is_empty());
+                assert!(worktrees.is_empty());
+                assert!(external.is_empty());
+            }
+            other => panic!("expected board, got {other:?}"),
+        }
+    }
+
+    /// `Notice.kind` is a String precisely so a kind this build has never heard
+    /// of still parses. An enum would fail the whole Board deserialize and the
+    /// client would drop the line — blanking the board on an older client.
+    #[test]
+    fn unknown_notice_kind_parses() {
+        let n: Notice =
+            serde_json::from_str(r#"{"kind":"something_new","text":"hello"}"#).unwrap();
+        assert_eq!(n.kind, "something_new");
+        assert!(n.path.is_none());
+        assert!(n.detail.is_none());
+    }
+
+    /// The new Hello round-trips with every field populated.
+    #[test]
+    fn hello_roundtrips_with_identity() {
+        let h = Response::Hello {
+            version: PROTOCOL_VERSION,
+            daemon_pid: 4711,
+            build: "0.1.0-alpha.1".into(),
+            exe_stamp: Some(ExeStamp { mtime_ms: 1_788_046_350_000, len: 30_000_000 }),
+            detached: true,
+        };
+        let s = serde_json::to_string(&h).unwrap();
+        let back: Response = serde_json::from_str(&s).unwrap();
+        match back {
+            Response::Hello { build, exe_stamp, detached, .. } => {
+                assert_eq!(build, "0.1.0-alpha.1");
+                assert_eq!(exe_stamp.unwrap().len, 30_000_000);
+                assert!(detached);
+            }
+            other => panic!("expected hello, got {other:?}"),
+        }
+    }
 }

@@ -99,8 +99,28 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
-pub(super) fn draw_grace(f: &mut Frame, area: Rect, app: &App) {
+/// The one-line advisory row. Grace wins when both are present: it is a 9 s
+/// countdown with an undo behind it, while a notice is a standing condition
+/// that will still be there next frame.
+///
+/// Notices live here rather than in the header because the header already
+/// carries up to five optional `∙` clauses and a sixth pushes the update chip
+/// off a 100-column terminal. The row early-returns when there is nothing to
+/// say, which is why adding this drifted no existing golden.
+pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
     let Some(g) = app.grace.last() else {
+        if let Some(n) = app.notices.first() {
+            let more = app.notices.len();
+            let tail =
+                if more > 1 { format!(" ∙ +{} more", more - 1) } else { String::new() };
+            // The value step, not the accent: this is a warning, and the one
+            // saturated colour stays reserved for needs-you (L3).
+            let line = Line::from(Span::styled(
+                format!("  {}{tail}", truncate(&n.text, area.width.saturating_sub(4) as usize)),
+                app.theme.base(),
+            ));
+            f.render_widget(Paragraph::new(line), area);
+        }
         return;
     };
     let sessions = if g.live_sessions > 0 {
@@ -141,10 +161,10 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             mode_line(app, label, "enter save ∙ esc cancel")
         }
         Mode::Move { grab, .. } => {
-            let hint = if *grab == '>' {
-                "hjkl move ∙ > or enter drop ∙ < cancels ∙ esc cancel"
-            } else {
-                "hjkl move ∙ < or enter drop ∙ > cancels ∙ esc cancel"
+            let hint = match grab {
+                '>' => "hjkl move ∙ > or enter drop ∙ < cancels ∙ esc cancel",
+                '<' => "hjkl move ∙ < or enter drop ∙ > cancels ∙ esc cancel",
+                _ => "hjkl move ∙ m or enter drop ∙ esc cancel",
             };
             mode_line(app, "MOVE", hint)
         }
@@ -159,7 +179,7 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 mode_line(
                     app,
                     "BOARD",
-                    "enter open ∙ space ticket ∙ tab needs you ∙ a add ∙ >< move ∙ p peek ∙ e external ∙ q quit",
+                    "enter open ∙ space ticket ∙ tab needs you ∙ a add ∙ m>< move ∙ p peek ∙ e external ∙ q quit",
                 )
             } else {
                 Line::from(Span::styled(

@@ -89,6 +89,23 @@ pub struct Daemon {
     subscribers: Vec<Arc<Mutex<UnixStream>>>,
     focus: Option<uuid::Uuid>,
     shutting_down: bool,
+    /// Standing advisories about persisted state, rebuilt at startup and
+    /// carried on every snapshot. Not transient: each one describes a
+    /// condition still true on disk.
+    notices: Vec<mesimon_core::command::Notice>,
+    /// (mtime_ms, len) of our own executable, captured at startup so it
+    /// describes the binary actually running — not whatever landed at that
+    /// path since. A newer client compares it to decide we are stale.
+    exe_stamp: Option<mesimon_core::command::ExeStamp>,
+    /// Set only when `spawn_detached` started us. A human's foreground
+    /// `mesimon daemon --repo` is never restarted under them.
+    detached: bool,
+    /// A state file we could not read (or that a newer mesimon wrote) is
+    /// still on disk. Writing over it would destroy the only copy, so these
+    /// bar the corresponding save. Enforced at the `persist_*` chokepoints.
+    columns_barred: bool,
+    sessions_barred: bool,
+    worktrees_barred: bool,
     /// One attention machine per session, keyed by session UUID.
     machines: HashMap<uuid::Uuid, Machine>,
     /// Startup-modal probe progress per Spawning Claude session:
@@ -147,6 +164,9 @@ pub struct Daemon {
 }
 
 pub fn run(paths: Paths) -> Result<()> {
+    // First statement: the stamp must describe the binary that is executing,
+    // not one that replaced it at the same path while we were starting.
+    let exe_stamp = crate::exe_stamp();
     paths.ensure_dirs()?;
 
     // Singleton (02 §4): flock on the lock file; loser exits quietly.
@@ -181,7 +201,15 @@ pub fn run(paths: Paths) -> Result<()> {
         let _ = backend.install_pane_died_hook(&pane_died);
         let _ = backend.install_copy_bindings();
     }
-    let mut board = store::load(&paths)?;
+    // A malformed state file is a NOTICE, not a startup failure: this runs
+    // after orch.sock is already bound, so a hard fail here left the client
+    // staring at a 5 s blank terminal with the real cause in daemon.log.
+    let store::Loaded {
+        mut board,
+        mut notices,
+        columns_write_barred,
+        sessions_write_barred,
+    } = store::load(&paths)?;
 
     // Reconcile persisted records against the live private server (D24).
     let snap = backend.snapshot().unwrap_or_default();
@@ -198,7 +226,9 @@ pub fn run(paths: Paths) -> Result<()> {
             r.state = state_for(link, &r.state, r.kind == SessionKind::Claude);
         }
     }
-    store::save_sessions(&paths, &board)?;
+    if !sessions_write_barred {
+        store::save_sessions(&paths, &board)?;
+    }
 
     let (tx, rx) = channel::<Msg>();
 
@@ -211,6 +241,29 @@ pub fn run(paths: Paths) -> Result<()> {
         }
     });
 
+    // M4: load worktree bindings; reconcile (a missing dir is Evicted, not an
+    // error — diffs still render from the object store); sweep our stale locks.
+    // NOT unwrap_or_default(): a parse failure used to yield an empty map,
+    // and the next save_bindings wrote it back — orphaning every real
+    // worktree and msmn/* branch with nothing to reconstruct from. Recover
+    // from git + our ownership markers instead, and bar writes until the
+    // recovery verifies.
+    let (mut worktrees, wt_notices, worktrees_barred) = worktree::load_or_recover(&paths);
+    notices.extend(wt_notices);
+    let mut wt_changed = worktree::reconcile_interrupted(&paths.repo_root, &mut worktrees);
+    for b in worktrees.values_mut() {
+        if b.status == BindingStatus::Attached && !b.path.is_dir() {
+            b.status = BindingStatus::Evicted;
+            wt_changed = true;
+        }
+    }
+    if wt_changed && !worktrees_barred {
+        let _ = worktree::save_bindings(&paths, &worktrees);
+    }
+    if !worktrees.is_empty() {
+        let _ = worktree::sweep_stale_locks(&paths.repo_root);
+    }
+
     // Accept loop: one reader thread per client. Diff commands (M4b) are
     // served right there — read-only, off the writer thread, bounded by the
     // permit pool in DiffCtx.
@@ -218,6 +271,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let diff_ctx = Arc::new(DiffCtx {
         paths: paths.clone(),
         permits: Arc::new((Mutex::new(DIFF_PERMITS), std::sync::Condvar::new())),
+        worktrees_barred: Arc::new(std::sync::atomic::AtomicBool::new(worktrees_barred)),
     });
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
@@ -262,22 +316,6 @@ pub fn run(paths: Paths) -> Result<()> {
         .collect();
     let feed = FeedWriter::open(&paths.activity_log())?;
 
-    // M4: load worktree bindings; reconcile (a missing dir is Evicted, not an
-    // error — diffs still render from the object store); sweep our stale locks.
-    let mut worktrees = worktree::load_bindings(&paths).unwrap_or_default();
-    let mut wt_changed = worktree::reconcile_interrupted(&paths.repo_root, &mut worktrees);
-    for b in worktrees.values_mut() {
-        if b.status == BindingStatus::Attached && !b.path.is_dir() {
-            b.status = BindingStatus::Evicted;
-            wt_changed = true;
-        }
-    }
-    if wt_changed {
-        let _ = worktree::save_bindings(&paths, &worktrees);
-    }
-    if !worktrees.is_empty() {
-        let _ = worktree::sweep_stale_locks(&paths.repo_root);
-    }
 
     let mut d = Daemon {
         paths,
@@ -287,6 +325,12 @@ pub fn run(paths: Paths) -> Result<()> {
         subscribers: Vec::new(),
         focus: None,
         shutting_down: false,
+        notices,
+        exe_stamp,
+        detached: std::env::var_os("MESIMON_DETACHED").is_some(),
+        columns_barred: columns_write_barred,
+        sessions_barred: sessions_write_barred,
+        worktrees_barred,
         machines,
         probe_stage: HashMap::new(),
         ticks: 0,
@@ -391,6 +435,11 @@ const DIFF_PERMITS: usize = 2;
 struct DiffCtx {
     paths: Paths,
     permits: Arc<(Mutex<usize>, std::sync::Condvar)>,
+    /// Set when startup could not read `worktrees.json`. Without it this
+    /// thread reads an empty map and tells the user a real worktree ticket
+    /// has no worktree — a lie. It never quarantines: only the writer thread
+    /// renames, so the two can never race.
+    worktrees_barred: Arc<std::sync::atomic::AtomicBool>,
 }
 
 /// RAII permit from the bounded diff pool.
@@ -440,6 +489,14 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
         Err(e) => return Response::Err { message: format!("read bindings: {e}") },
     };
     let Some(binding) = bindings.get(&ticket) else {
+        // Distinguish "this ticket has none" from "we cannot read the file":
+        // after a quarantine the file is gone and load_bindings answers with
+        // an empty map, which would otherwise read as the former.
+        if ctx.worktrees_barred.load(std::sync::atomic::Ordering::Relaxed) {
+            return Response::Err {
+                message: "worktree bindings are unavailable — see the board notice".into(),
+            };
+        }
         return Response::Err { message: "no worktree on this ticket — review is per-branch".into() };
     };
     match &binding.status {
@@ -560,7 +617,16 @@ impl Daemon {
                         message: format!("protocol {version} unsupported; daemon speaks {PROTOCOL_VERSION}"),
                     };
                 }
-                Response::Hello { version: PROTOCOL_VERSION, daemon_pid: std::process::id() }
+                Response::Hello {
+                    version: PROTOCOL_VERSION,
+                    daemon_pid: std::process::id(),
+                    // MESIMON_FAKE_BUILD lets a stale daemon be manufactured
+                    // without shipping two binaries (test seam).
+                    build: std::env::var("MESIMON_FAKE_BUILD")
+                        .unwrap_or_else(|_| env!("CARGO_PKG_VERSION").to_string()),
+                    exe_stamp: self.exe_stamp,
+                    detached: self.detached,
+                }
             }
             Command::Snapshot => self.snapshot(),
             Command::RescanExternal => {
@@ -572,12 +638,26 @@ impl Daemon {
                 self.subscribers.push(stream.clone());
                 Response::Ok
             }
+            // A barred columns.toml means next_key cannot be persisted, so a
+            // new ticket's short_key would regress on the next start and
+            // save_ticket would write over an existing ticket directory.
+            Command::CreateTicket { .. } if self.columns_barred => {
+                Response::Err { message: self.barred_message("columns") }
+            }
             Command::CreateTicket { column, title } => self.create_ticket(column, title),
             Command::RenameTicket { id, title } => self
                 .with_ticket(id, |t| t.title = title)
                 .unwrap_or(Response::Err { message: "no such ticket".into() }),
             Command::DeleteTicket { id, discard_worktree } => {
                 self.delete_ticket(id, discard_worktree)
+            }
+            // Worktree work is refused wholesale while the bindings file is
+            // barred: acting would either strand a new worktree we cannot
+            // record, or tear down a real one on a guess (D26, fail closed).
+            Command::SetWorkspace { .. } | Command::MergeTicket { .. } | Command::MergeToAgent { .. }
+                if self.worktrees_barred =>
+            {
+                Response::Err { message: self.barred_message("worktrees") }
             }
             Command::SetWorkspace { id, workspace } => self.set_workspace(id, workspace),
             Command::MergeTicket { id } => self.merge_ticket(id),
@@ -593,6 +673,11 @@ impl Daemon {
                 Response::Archived { archived, skipped }
             }
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
+            Command::SpawnSession { ticket, .. }
+                if self.worktrees_barred && self.ticket_wants_worktree(ticket) =>
+            {
+                Response::Err { message: self.barred_message("worktrees") }
+            }
             Command::SpawnSession { ticket, kind } => self.spawn_session(ticket, kind),
             Command::KillSession { id } => self.kill_session(id),
             Command::FocusStart { session } => self.focus_start(session),
@@ -733,7 +818,7 @@ impl Daemon {
             changed |= self.guard_server();
         }
         if changed {
-            let _ = store::save_sessions(&self.paths, &self.board);
+            self.persist_sessions();
             self.broadcast();
         }
         // ≤1 write() per wheel bucket, no fsync (14 §1.7).
@@ -1091,7 +1176,7 @@ impl Daemon {
             }
         }
         if dirty {
-            let _ = store::save_sessions(&self.paths, &self.board);
+            self.persist_sessions();
             self.broadcast();
         }
     }
@@ -1234,7 +1319,58 @@ impl Daemon {
             external: self.external.clone(),
             resources: self.resources(),
             worktrees,
+            notices: self.notices.clone(),
         }
+    }
+
+    /// The one sentence every barred refusal says. Names the file that needs
+    /// a human and the command that explains it — never a raw serde error.
+    fn barred_message(&self, which: &str) -> String {
+        let path = match which {
+            "columns" => self.paths.board_dir.join("board/columns.toml"),
+            _ => worktree::bindings_file(&self.paths),
+        };
+        format!(
+            "{} could not be read and is being preserved — run `mesimon doctor` \
+             for the fix; nothing was changed",
+            path.display()
+        )
+    }
+
+    /// Does this ticket resolve to a worktree workspace? A shared-checkout
+    /// spawn touches no bindings and stays allowed while worktrees are barred.
+    fn ticket_wants_worktree(&self, id: ulid::Ulid) -> bool {
+        self.board
+            .ticket(id)
+            .map(|t| t.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree)
+            .unwrap_or(false)
+    }
+
+    /// The single write path for `columns.toml`. Barred means a file we
+    /// could not read — or one a newer mesimon wrote — is still sitting
+    /// there, and writing would destroy the only copy.
+    fn persist_columns(&self) {
+        if self.columns_barred {
+            return;
+        }
+        let _ = store::save_columns(&self.paths, &self.board);
+    }
+
+    fn persist_sessions(&self) {
+        if self.sessions_barred {
+            return;
+        }
+        let _ = store::save_sessions(&self.paths, &self.board);
+    }
+
+    /// The single write path for `worktrees.json`. This one guards real work:
+    /// overwriting an unreadable bindings file orphans live git worktrees and
+    /// `msmn/*` branches, and nothing can reconstruct them afterwards.
+    fn persist_worktrees(&self) {
+        if self.worktrees_barred {
+            return;
+        }
+        let _ = worktree::save_bindings(&self.paths, &self.worktrees);
     }
 
     /// Header figures (D33e) — real measurements only.
@@ -1454,8 +1590,8 @@ impl Daemon {
     }
 
     fn persist_and_notify(&mut self) {
-        let _ = store::save_columns(&self.paths, &self.board);
-        let _ = store::save_sessions(&self.paths, &self.board);
+        self.persist_columns();
+        self.persist_sessions();
         self.broadcast();
     }
 
@@ -1808,6 +1944,12 @@ impl Daemon {
         if ready.is_empty() {
             return;
         }
+        if self.worktrees_barred {
+            // Leave the tree and the branch standing. Removing either while
+            // the bindings file is unreadable would destroy real work on a
+            // guess — the one irreversible move here (D26).
+            return;
+        }
         for i in ready.into_iter().rev() {
             let (ticket, discard, _) = self.pending_teardown.remove(i);
             let Some(b) = self.worktrees.remove(&ticket) else { continue };
@@ -1827,7 +1969,7 @@ impl Daemon {
             self.wt_ahead.remove(&ticket);
             self.wt_needs_rebase.remove(&ticket);
         }
-        let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+        self.persist_worktrees();
         self.refresh_worktree_flags();
         self.broadcast();
     }
@@ -2031,7 +2173,7 @@ impl Daemon {
             .filter(|b| b.status == BindingStatus::Provisioning)
             .count();
         if in_flight >= 2 {
-            let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+            self.persist_worktrees();
             return;
         }
         let Some(t) = self.board.ticket(ticket) else { return };
@@ -2039,7 +2181,7 @@ impl Daemon {
         if let Some(b) = self.worktrees.get_mut(&ticket) {
             b.status = BindingStatus::Provisioning;
         }
-        let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+        self.persist_worktrees();
         let repo = self.paths.repo_root.clone();
         let root = match worktree::ensure_root(&self.paths) {
             Ok(r) => r,
@@ -2103,7 +2245,7 @@ impl Daemon {
         {
             self.queue_provision(next);
         }
-        let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+        self.persist_worktrees();
         self.refresh_worktree_flags();
         self.persist_and_notify();
     }
@@ -2123,7 +2265,7 @@ impl Daemon {
             .is_ok()
         {
             b.locked = true;
-            let _ = worktree::save_bindings(&self.paths, &self.worktrees);
+            self.persist_worktrees();
         }
     }
 

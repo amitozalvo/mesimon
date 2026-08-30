@@ -12,6 +12,7 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use anyhow::{bail, Context, Result};
+use mesimon_core::command::Notice;
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
@@ -45,25 +46,180 @@ pub enum BindingStatus {
 
 pub type Bindings = HashMap<ulid::Ulid, Binding>;
 
+/// On-disk schema stamp for `worktrees.json` (16 §6.2). Its own counter: a
+/// bindings change must not force a sessions or ticket migration.
+pub const BINDINGS_SCHEMA: u32 = 1;
+
+/// `worktrees.json`. The legacy shape is a bare ULID-keyed map, which is why
+/// `load_or_recover` probes for the `schema_version` key instead of reaching
+/// for `#[serde(untagged)]`.
+#[derive(Serialize, Deserialize)]
+pub struct BindingsFile {
+    pub schema_version: u32,
+    pub bindings: Bindings,
+}
+
 pub fn bindings_file(paths: &Paths) -> PathBuf {
     paths.state_dir.join("worktrees.json")
 }
 
+/// Both on-disk shapes, from one parser: the versioned wrapper this build
+/// writes, and the bare ULID-keyed map every existing user still has.
+/// Shape-probed rather than `#[serde(untagged)]`, which would erase the line
+/// and column that make a parse failure actionable. `"schema_version"` is 14
+/// characters and can never be a 26-character ULID key, so this is exact.
+///
+/// `Err(Some(v))` is a file from a NEWER mesimon: valid bytes this build must
+/// refuse rather than guess at. `Err(None)` is genuinely unparseable.
+fn parse_bindings(text: &str) -> std::result::Result<Bindings, (Option<u32>, String)> {
+    let v: serde_json::Value =
+        serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
+    if v.get("schema_version").is_none() {
+        return serde_json::from_value::<Bindings>(v).map_err(|e| (None, e.to_string()));
+    }
+    let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
+    if found > BINDINGS_SCHEMA {
+        return Err((Some(found), format!("schema {found}")));
+    }
+    serde_json::from_value::<BindingsFile>(v)
+        .map(|bf| bf.bindings)
+        .map_err(|e| (None, e.to_string()))
+}
+
+/// Read-only load, safe to call off the writer thread (`serve_diff` does).
+/// Never quarantines: only the writer thread renames, so the two can never
+/// race on the same path.
 pub fn load_bindings(paths: &Paths) -> Result<Bindings> {
     let f = bindings_file(paths);
     if !f.is_file() {
         return Ok(Bindings::new());
     }
-    serde_json::from_str(&std::fs::read_to_string(&f)?)
-        .with_context(|| format!("parse {}", f.display()))
+    let text = std::fs::read_to_string(&f)?;
+    parse_bindings(&text)
+        .map_err(|(_, detail)| anyhow::anyhow!("parse {}: {detail}", f.display()))
 }
 
 pub fn save_bindings(paths: &Paths, b: &Bindings) -> Result<()> {
+    // One durability implementation for every file mesimon authors — this
+    // used to be a second, fsync-less copy of store::write_atomic.
+    let bf = BindingsFile { schema_version: BINDINGS_SCHEMA, bindings: b.clone() };
+    crate::store::write_atomic(&bindings_file(paths), &serde_json::to_string_pretty(&bf)?)
+}
+
+/// Rebuild bindings from what git and our own ownership markers still know.
+///
+/// `git worktree list` gives path + branch; the marker inside each admin dir
+/// gives the ticket ULID (it is written at provision time and dies with
+/// `worktree remove`). Only rows whose marker names a ticket are adopted — a
+/// worktree that is not ours is never claimed (D26, fail closed).
+///
+/// This exists because losing `worktrees.json` used to orphan every worktree
+/// and `msmn/*` branch with nothing to reconstruct from.
+pub fn rebuild_from_disk(repo: &Path) -> Bindings {
+    let mut out = Bindings::new();
+    let Ok(rows) = list_worktrees(repo) else {
+        return out;
+    };
+    let base = default_branch(repo).unwrap_or_else(|_| "main".into());
+    for row in rows {
+        let Some(branch) = row.branch.clone() else { continue }; // detached: not ours
+        if !branch.starts_with(mesimon_core::workspace::BRANCH_NS) {
+            continue;
+        }
+        let Some(ticket) = marker_ticket(&row.path) else { continue };
+        let branch_oid = branch_tip(repo, &branch);
+        // The merge base is what the diff viewer wants (BASE...BRANCH), and
+        // it is recoverable exactly — unlike the original base_oid, which
+        // only the lost file knew.
+        let base_oid = git_read(repo, &["merge-base", &base, &branch])
+            .map(|s| s.trim().to_string())
+            .unwrap_or_else(|_| branch_oid.clone());
+        let status =
+            if row.path.is_dir() { BindingStatus::Attached } else { BindingStatus::Evicted };
+        out.insert(
+            ticket,
+            Binding {
+                path: row.path.canonicalize().unwrap_or(row.path),
+                branch,
+                base_oid,
+                branch_oid,
+                status,
+                locked: row.locked_reason.is_some(),
+            },
+        );
+    }
+    out
+}
+
+/// Startup loader for `worktrees.json`: parse, and on failure quarantine and
+/// rebuild from disk. Returns the bindings, any notices, and whether writes
+/// are barred — barred means a file we could not read is still on disk (or a
+/// rebuild we could not verify), so overwriting it would destroy the only
+/// record of real worktrees and branches.
+///
+/// Never called off the writer thread: `serve_diff` keeps using the pure
+/// `load_bindings`, so two threads can never race on the rename.
+pub fn load_or_recover(paths: &Paths) -> (Bindings, Vec<Notice>, bool) {
     let f = bindings_file(paths);
-    let tmp = f.with_extension("tmp");
-    std::fs::write(&tmp, serde_json::to_string_pretty(b)?)?;
-    std::fs::rename(&tmp, f)?;
-    Ok(())
+    let mut notices = Vec::new();
+    if !f.is_file() {
+        return (Bindings::new(), notices, false);
+    }
+    let text = match std::fs::read_to_string(&f) {
+        Ok(t) => t,
+        Err(e) => {
+            notices.push(
+                Notice::new("worktrees_barred", "worktree bindings could not be opened")
+                    .with_path(f.display())
+                    .with_detail(e.to_string()),
+            );
+            return (rebuild_from_disk(&paths.repo_root), notices, true);
+        }
+    };
+
+    let fault = match parse_bindings(&text) {
+        Ok(b) => return (b, notices, false),
+        Err((Some(found), _)) => {
+            // Valid bytes from a newer mesimon: leave them exactly where they
+            // are and pause worktree work, or the next save downgrades them.
+            notices.push(
+                Notice::new(
+                    "future_version",
+                    format!(
+                        "worktree bindings were written by a newer mesimon \
+                         (schema {found}, this build reads {BINDINGS_SCHEMA}) — \
+                         worktree actions are paused"
+                    ),
+                )
+                .with_path(f.display()),
+            );
+            return (rebuild_from_disk(&paths.repo_root), notices, true);
+        }
+        Err((None, detail)) => detail,
+    };
+
+    let moved = crate::store::quarantine(&f);
+    let rebuilt = rebuild_from_disk(&paths.repo_root);
+    // Unbar only when every rebuilt binding verifies against disk: the
+    // directory is there and its marker still names the same ticket. Anything
+    // less and we keep the bar, so nothing is torn down on a guess.
+    let verified = moved.is_some()
+        && rebuilt
+            .iter()
+            .all(|(id, b)| b.path.is_dir() && marker_ticket(&b.path) == Some(*id));
+    notices.push(
+        Notice::new(
+            "worktrees_barred",
+            format!(
+                "worktree bindings could not be read — {} recovered from git{}",
+                rebuilt.len(),
+                if verified { "" } else { "; worktree actions are paused" }
+            ),
+        )
+        .with_path(f.display())
+        .with_detail(fault),
+    );
+    (rebuilt, notices, !verified)
 }
 
 /// `~/.local/state/mesimon/<proj16>/worktrees/` — created once, 0700, spotlight
@@ -615,6 +771,65 @@ mod tests {
         run(&["add", "."]);
         run(&["commit", "-qm", "init"]);
         Some(dir)
+    }
+
+    /// The recovery that makes a lost worktrees.json survivable: git still
+    /// knows the path and branch, and our marker still names the ticket.
+    #[test]
+    fn rebuild_from_disk_recovers_bindings_from_markers() {
+        let Some(repo) = scratch_repo("rebuild") else { return };
+        let root = repo.join("_wtroot");
+        std::fs::create_dir_all(&root).unwrap();
+        let b = provision(&repo, &root, ulid::Ulid(1), "T-1", "Fix thing").unwrap();
+
+        let rebuilt = rebuild_from_disk(&repo);
+        let got = rebuilt.get(&ulid::Ulid(1)).expect("ticket recovered from its marker");
+        assert_eq!(got.branch, b.branch);
+        assert_eq!(got.path, b.path);
+        assert_eq!(got.status, BindingStatus::Attached);
+        assert!(!got.base_oid.is_empty(), "merge-base recovers the diff base");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// A worktree that is not ours is never claimed (D26, fail closed): no
+    /// marker, no adoption, even inside our own repo.
+    #[test]
+    fn rebuild_ignores_worktrees_without_our_marker() {
+        let Some(repo) = scratch_repo("rebuildforeign") else { return };
+        let foreign = repo.join("_foreign");
+        let ok = Command::new("git")
+            .arg("-C")
+            .arg(&repo)
+            .args(["worktree", "add", "--quiet", foreign.to_str().unwrap(), "-b", "msmn/hand-made"])
+            .output()
+            .unwrap();
+        assert!(ok.status.success(), "{}", String::from_utf8_lossy(&ok.stderr));
+        assert!(rebuild_from_disk(&repo).is_empty(), "no marker, no claim");
+        std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// Every existing user's worktrees.json is a bare ULID-keyed map; it must
+    /// keep loading, and what we write must load back.
+    #[test]
+    fn bindings_accept_legacy_and_versioned_shapes() {
+        let legacy = r#"{"00000000000000000000000001":{"path":"/tmp/x","branch":"msmn/T-1-x",
+            "base_oid":"a","branch_oid":"b","status":{"status":"attached"}}}"#;
+        let b = parse_bindings(legacy).expect("legacy bare map still loads");
+        assert_eq!(b.len(), 1);
+
+        let versioned = serde_json::to_string(&BindingsFile {
+            schema_version: BINDINGS_SCHEMA,
+            bindings: b.clone(),
+        })
+        .unwrap();
+        assert_eq!(parse_bindings(&versioned).unwrap().len(), 1);
+
+        // A newer file is refused with its version, not treated as garbage.
+        let future = versioned.replace(
+            &format!("\"schema_version\":{BINDINGS_SCHEMA}"),
+            "\"schema_version\":99",
+        );
+        assert_eq!(parse_bindings(&future).unwrap_err().0, Some(99));
     }
 
     #[test]
