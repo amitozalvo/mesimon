@@ -231,6 +231,7 @@ fn install_diff(app: &mut App) {
         files,
         file_idx: 0,
         scroll: std::cell::Cell::new(0),
+        marquee: std::cell::Cell::new(None),
         density: 3,
         cache,
         z_armed: false,
@@ -346,6 +347,14 @@ fn golden_diff_screen_120() {
 }
 
 #[test]
+fn golden_diff_screen_140() {
+    // ≥140: the file list widens to the 08 §10.2 outline width (36).
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    golden("diff_140x40", &render(&app, 140, 40));
+}
+
+#[test]
 fn golden_diff_screen_100() {
     // 100 is the two-pane floor (08 §10.2 minus the rail): soft-wrap is
     // doing real work in the 68-column hunk pane here.
@@ -425,6 +434,28 @@ fn test_diff_add_del_registers() {
     assert_eq!(fg_at("metrics.increment").expect("add line"), theme.calm, "adds = calm");
     assert_eq!(fg_at("const t = await exchange(code)").expect("del line"), theme.err, "dels = err");
     assert_eq!(fg_at("return persist").expect("ctx line"), theme.rest.dim2, "ctx = grey");
+
+    // Full-line grounds (M4b dogfood): the tint spans the WHOLE row — the
+    // text cells and the trailing empty cells alike — and context rows stay
+    // on the page ground.
+    let bg_row = |needle: &str| {
+        for (y, l) in lines.iter().enumerate() {
+            if let Some(ix) = l.find(needle) {
+                let x = l[..ix].chars().count() as u16;
+                return Some((buf[(x, y as u16)].bg, buf[(118, y as u16)].bg));
+            }
+        }
+        None
+    };
+    let add_bg = theme.diff_add_bg().expect("graphite truecolor has a tint");
+    let del_bg = theme.diff_del_bg().expect("graphite truecolor has a tint");
+    let (text, tail) = bg_row("metrics.increment").expect("add line");
+    assert_eq!((text, tail), (add_bg, add_bg), "add tint spans the row");
+    let (text, tail) = bg_row("const t = await exchange(code)").expect("del line");
+    assert_eq!((text, tail), (del_bg, del_bg), "del tint spans the row");
+    let (text, _) = bg_row("return persist").expect("ctx line");
+    assert_ne!(text, add_bg, "ctx stays on the page ground");
+    assert_ne!(text, del_bg, "ctx stays on the page ground");
 }
 
 /// The diff footer mirrors the ticket rule: a status outranks the hints.

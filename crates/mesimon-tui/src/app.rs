@@ -44,6 +44,9 @@ pub struct DiffState {
     pub file_idx: usize,
     /// Hunk-pane top row; draw clamps against the rendered height.
     pub scroll: Cell<usize>,
+    /// Marquee clock for the selected file row's overflowing path — same
+    /// behaviour as the board card title and the ticket rail (draw-side).
+    pub marquee: Cell<Option<(usize, std::time::Instant)>>,
     /// -U context: 1 | 3 | 8 (`z z` cycles).
     pub density: u32,
     /// Fetched files, keyed by path — valid for the current density only.
@@ -851,6 +854,7 @@ impl App {
                     files,
                     file_idx: 0,
                     scroll: Cell::new(0),
+                    marquee: Cell::new(None),
                     density: 3,
                     cache: std::collections::HashMap::new(),
                     z_armed: false,

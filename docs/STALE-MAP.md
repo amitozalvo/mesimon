@@ -664,3 +664,16 @@ Plan §H's adjudications, recorded at ship:
   `tight` / `normal` / `wide` ("N context lines around each change").
 - **`{` / `}` (+ PgUp/PgDn) page the hunk pane** (~20 rows, draw-clamped). `v diff` joined
   the ticket footer hint (the viewer had no visible affordance).
+
+## M4b dogfood round 2 (2026-08-30)
+
+- **Full-line add/del grounds** ("like normal diff viewers"): page bg blended one step toward
+  the calm/err registers (`Theme::diff_add_bg/diff_del_bg`; graphite 0x1E2C28/0x2E2127, chalk
+  0xDFEBE4/0xF2E0E4) — TrueColor both flavors only; the indexed cube has no tint this quiet, so
+  256/16/8/mono keep the fg-register + glyph encoding. Ratatui fact worth keeping: a Line's
+  style paints only its TEXT cells — full-row grounds require padding the row to the pane
+  width by hand (the M3.5 "painted band" empty-Line idiom paints nothing; the diff hunk band
+  now pads too).
+- **FILES pane widens to 36 at ≥140 cols** (08 §10.2's outline width; 28 below), and the
+  selected row's overflowing path reveals marquee-style — same clock behaviour as the board
+  card title and the ticket rail (`DiffState.marquee`, reset on landing).

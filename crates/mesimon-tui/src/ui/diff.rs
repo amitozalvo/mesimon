@@ -24,7 +24,18 @@ use super::chrome;
 /// screen is a single pane and `z p` swaps file list ⇄ diff.
 const TWO_PANE_MIN_W: u16 = 100;
 const FILES_W: u16 = 28;
+/// ≥140 the file list gets the 08 §10.2 outline width — 28 truncates paths
+/// early once the terminal has room to spare (dogfood 2026-08-30).
+const FILES_W_WIDE: u16 = 36;
 const TAB_W: usize = 8;
+
+fn files_w(total: u16) -> u16 {
+    if total >= 140 {
+        FILES_W_WIDE
+    } else {
+        FILES_W
+    }
+}
 
 /// The z z density cycle in words — `-U1/-U3/-U8` read as noise in dogfood.
 pub(crate) fn density_word(context: u32) -> &'static str {
@@ -86,13 +97,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     let body_y = area.y + 5;
     let body_h = area.height.saturating_sub(6);
     if area.width >= TWO_PANE_MIN_W {
+        let fw = files_w(area.width);
         draw_files(
             f,
-            Rect { x: area.x + 1, y: body_y, width: FILES_W, height: body_h },
+            Rect { x: area.x + 1, y: body_y, width: fw, height: body_h },
             app,
             d,
         );
-        let hx = area.x + 1 + FILES_W + 3;
+        let hx = area.x + 1 + fw + 3;
         draw_hunks(
             f,
             Rect { x: hx, y: body_y, width: area.width.saturating_sub(hx + 1), height: body_h },
@@ -175,7 +187,27 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         };
         // Row: " SF" gutter (3) + " path" + ≥2 fill + badge + 1 right pad.
         let name_budget = w.saturating_sub(4 + badge.width() + 3);
-        let path = truncate(&entry.path, name_budget);
+        // An overflowing path on the selected row reveals itself marquee-style
+        // (same clock behaviour as the board card title and the ticket rail:
+        // reset on landing, one pass, rest truncated).
+        let overflow = entry.path.width().saturating_sub(name_budget);
+        let scroll = if selected && overflow > 0 {
+            let ms = match d.marquee.get() {
+                Some((idx, epoch)) if idx == i => epoch.elapsed().as_millis() as u64,
+                _ => {
+                    d.marquee.set(Some((i, std::time::Instant::now())));
+                    0
+                }
+            };
+            crate::text::marquee_offset(ms, overflow)
+        } else {
+            0
+        };
+        let path = if scroll > 0 {
+            crate::text::marquee_window(&entry.path, name_budget, scroll)
+        } else {
+            truncate(&entry.path, name_budget)
+        };
         let fill = w
             .saturating_sub(4 + path.width() + badge.width() + 1)
             .max(2);
@@ -263,6 +295,8 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
             let code_w = w.saturating_sub(9).max(8);
             for h in &fd.hunks {
                 // Hunk header: a painted band row, never a drawn rule (L1).
+                // A Line's style covers only its text cells, so the band (and
+                // every tinted row below) pads to the pane width by hand.
                 let band_text = format!(
                     "@@ -{},{} +{},{} @@ {}",
                     h.old_start, h.old_len, h.new_start, h.new_len, h.header
@@ -272,18 +306,25 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
                     None => Style::default(),
                 };
                 body.push(
-                    Line::from(Span::styled(truncate(&band_text, w), theme.dim1()))
+                    Line::from(Span::styled(pad_to(truncate(&band_text, w), w), theme.dim1()))
                         .style(band_style),
                 );
                 for l in &h.lines {
                     // Adds/deletes in colour (author 2026-08-30, amending the
                     // grey-ramp-only rule): the calm/err registers — muted
                     // green/red, theme- and profile-aware — never raw RGB.
-                    // Glyph + weight stay, so mono still reads.
-                    let (sign, num, style) = match l.sign {
-                        Sign::Ctx => (' ', l.new_ln, theme.dim2()),
-                        Sign::Add => ('+', l.new_ln, theme.calm_text().add_modifier(Modifier::BOLD)),
-                        Sign::Del => ('-', l.old_ln, theme.err_text()),
+                    // Full-line grounds ride the diff tints where the profile
+                    // has them (a Line's style paints the whole row, the
+                    // band-row precedent). Glyph + weight stay for mono.
+                    let (sign, num, style, line_bg) = match l.sign {
+                        Sign::Ctx => (' ', l.new_ln, theme.dim2(), None),
+                        Sign::Add => (
+                            '+',
+                            l.new_ln,
+                            theme.calm_text().add_modifier(Modifier::BOLD),
+                            theme.diff_add_bg(),
+                        ),
+                        Sign::Del => ('-', l.old_ln, theme.err_text(), theme.diff_del_bg()),
                     };
                     let num = num.map(|n| format!("{n:>5}")).unwrap_or_else(|| "     ".into());
                     for (j, seg) in wrap_code(&l.text, code_w).into_iter().enumerate() {
@@ -296,7 +337,12 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
                             // row overflows the pane (docs/08 §1.3).
                             format!("{cont}        {seg}")
                         };
-                        body.push(Line::from(Span::styled(row, style)));
+                        let line = match line_bg {
+                            Some(bg) => Line::from(Span::styled(pad_to(row, w), style))
+                                .style(Style::default().bg(bg)),
+                            None => Line::from(Span::styled(row, style)),
+                        };
+                        body.push(line);
                     }
                 }
                 body.push(Line::default());
@@ -340,6 +386,16 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     d.scroll.set(scroll);
     lines.extend(body.into_iter().skip(scroll).take(visible));
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Pad with trailing spaces to `width` cells so a row's ground colour spans
+/// the pane (a Line's style paints only its text cells).
+fn pad_to(mut s: String, width: usize) -> String {
+    let have: usize = s.width();
+    for _ in have..width {
+        s.push(' ');
+    }
+    s
 }
 
 /// Soft-wrap one code line to `width` columns — long lines wrap, never

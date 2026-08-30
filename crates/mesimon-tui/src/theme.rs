@@ -271,6 +271,27 @@ impl Theme {
         }
     }
 
+    /// Diff-pane line tints (M4b dogfood: full-line green/red grounds like
+    /// every diff viewer): the page bg blended a step toward the calm/err
+    /// registers — low-chroma by construction, so the one-saturated-colour
+    /// law stands. TrueColor only; the indexed cube has no tint this quiet,
+    /// so 256/16/8/mono keep the fg-register + glyph encoding alone.
+    pub fn diff_add_bg(&self) -> Option<Color> {
+        match (self.flavor, self.profile) {
+            (Flavor::Graphite, Profile::TrueColor) => Some(hex(0x1E2C28)),
+            (Flavor::Chalk, Profile::TrueColor) => Some(hex(0xDFEBE4)),
+            _ => None,
+        }
+    }
+
+    pub fn diff_del_bg(&self) -> Option<Color> {
+        match (self.flavor, self.profile) {
+            (Flavor::Graphite, Profile::TrueColor) => Some(hex(0x2E2127)),
+            (Flavor::Chalk, Profile::TrueColor) => Some(hex(0xF2E0E4)),
+            _ => None,
+        }
+    }
+
     pub fn glyph_tier(&self) -> Tier {
         if self.profile == Profile::Mono {
             Tier::Ascii
