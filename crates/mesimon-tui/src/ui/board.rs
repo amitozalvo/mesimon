@@ -123,7 +123,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         } else {
             None
         };
-        let lines = card::render(&ctx, t, &sessions, selected, held, mq, peek.as_deref());
+        let wt = app.wt_item(t.id);
+        let lines = card::render(&ctx, t, &sessions, wt, selected, held, mq, peek.as_deref());
         groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor: None });
     };
     match ghost {

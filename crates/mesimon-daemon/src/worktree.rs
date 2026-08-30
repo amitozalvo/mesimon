@@ -439,6 +439,14 @@ pub enum MergeCheck {
     Conflicts,
 }
 
+/// Current tip of a branch (empty when the ref is gone).
+pub fn branch_tip(repo: &Path, branch: &str) -> String {
+    let refname = format!("refs/heads/{branch}");
+    git_read(repo, &["rev-parse", "--verify", "--quiet", &refname])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default()
+}
+
 pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
     Command::new("git")
         .arg("-C")

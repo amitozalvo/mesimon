@@ -184,6 +184,11 @@ pub enum Signal {
     /// question / resolved the plan dialog, which is the only mid-turn moment
     /// the `RequiresAction` can truthfully drop back to `Running`.
     PostToolUse { tool: AttentionTool },
+    /// Broad PostToolUse (any other tool). A tool only completes after its
+    /// dialog was allowed, so this is the accept path for a held generic
+    /// permission — there is no "permission answered" event (11 §11.7.3).
+    /// Inert from every other state.
+    ToolCompleted,
     Notification { kind: NotificationKind },
     Elicitation,
     ElicitationResult,
@@ -415,6 +420,22 @@ impl Machine {
             },
             // Tool completed = the user answered; the turn resumes.
             Signal::PostToolUse { .. } => t(S::Running),
+            // Generic tool completion clears ONLY a held permission dialog
+            // (the accept path — dogfood 2026-08-30: an accepted tool stayed
+            // needs-you until end of turn). From anywhere else it says
+            // nothing: a completion from a parallel sibling must not clear a
+            // Question/Plan, and mid-turn Running needs no re-assert. A
+            // sibling completing while a DIFFERENT dialog is held can clear
+            // early (no key to join on — PermissionRequest carries no
+            // tool_use_id); the idle permission Notification re-asserts at
+            // Medium, so the miss self-heals.
+            Signal::ToolCompleted => {
+                if matches!(self.state, S::RequiresAction { reason: Reason::Permission }) {
+                    t(S::Running)
+                } else {
+                    None
+                }
+            }
             Signal::Notification { kind } => match kind {
                 NotificationKind::QuotaStale | NotificationKind::QuotaDisabled => {
                     t(S::RequiresAction { reason: Reason::QuotaResume })
@@ -679,6 +700,36 @@ mod tests {
         let c = m.tick(5_000 + SETTLE_MS).unwrap();
         assert_eq!(c.to, SessionState::Running);
         assert!(!c.attention_added);
+    }
+
+    #[test]
+    fn accepted_permission_settles_back_to_running() {
+        // The accept path: no "permission answered" event exists — the
+        // tool's own completion is the clear (dogfood 2026-08-30: an
+        // accepted tool stayed needs-you until end of turn).
+        let mut m = m(SessionState::Running);
+        m.apply(&Signal::PermissionRequest, 1_000).unwrap();
+        assert!(m.apply(&Signal::ToolCompleted, 5_000).is_none()); // leave settles
+        assert!(m.tick(5_000 + SETTLE_MS - 1).is_none());
+        let c = m.tick(5_000 + SETTLE_MS).unwrap();
+        assert_eq!(c.to, SessionState::Running);
+        assert!(!c.attention_added);
+    }
+
+    #[test]
+    fn tool_completed_is_inert_outside_a_held_permission() {
+        // A sibling's completion must not clear a Question/Plan, and
+        // mid-turn Running needs no re-assert.
+        for state in [
+            SessionState::Running,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::RequiresAction { reason: Reason::Question },
+            SessionState::RequiresAction { reason: Reason::Plan },
+        ] {
+            let mut m1 = m(state.clone());
+            assert_eq!(m1.apply(&Signal::ToolCompleted, 1_000), None);
+            assert!(m1.pending.is_none(), "no pending leave from {state:?}");
+        }
     }
 
     #[test]

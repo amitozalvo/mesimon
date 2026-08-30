@@ -492,3 +492,26 @@ that path clears via the next `UserPromptSubmit`, or the 15-min stale demote.
 
 Existing sessions spawned before this change carry the 30-entry settings file and keep the old
 behaviour until respawned (hooks are injected at launch).
+
+## Accepted permission clears mid-turn — PostToolUse goes broad (2026-08-30, dogfood)
+
+Same shape one tool wider: a GENERIC permission (`RequiresAction{Permission}`, e.g. a Bash
+approval) also stayed needs-you after the user accepted, until Stop. 11 §11.7.3 already said it
+plainly — "There is no permission answered event"; the allow path is the tool's own
+`PostToolUse` — but the narrow matcher above meant no frame ever fired for it.
+
+**Supersedes the previous entry's narrow-matcher reading**: the single `PostToolUse` entry now
+carries matcher `*` (still 31 entries). Ingest keeps the sharp `AskUserQuestion`/`ExitPlanMode`
+signals and maps every other completion to `Signal::ToolCompleted`, which the machine honours
+ONLY from `RequiresAction{Permission}` → `Running` (1500 ms settle) and ignores everywhere else
+— so a parallel sibling's completion cannot clear a held Question/Plan. The broad matcher is one
+short-lived `mesimon hook` exec per tool completion; the verbose-tier ban stays in force for
+broad `PreToolUse`, `PostToolBatch`, `MessageDisplay`.
+
+Known miss, accepted: with no join key (`PermissionRequest` carries no `tool_use_id`, 11
+§11.2.4), a parallel sibling finishing while a DIFFERENT generic dialog is held clears the badge
+early; the idle `Notification{permission_prompt}` re-asserts it at Medium, so the miss
+self-heals. Human DENY still fires nothing — that path clears via the next
+`UserPromptSubmit`/`Stop` as before.
+
+Existing sessions keep the narrow matcher until respawned (hooks are injected at launch).

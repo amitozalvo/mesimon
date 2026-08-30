@@ -310,6 +310,26 @@ pub fn run(paths: Paths) -> Result<()> {
     Ok(())
 }
 
+/// The user's own configured permission default mode, read from the same
+/// config-home ladder the census uses (MESIMON_CLAUDE_HOME → CLAUDE_CONFIG_DIR
+/// → ~/.claude). `permissions.defaultMode` first, top-level `defaultMode` as
+/// the legacy spelling. Read-only — mesimon never writes config (doctor rule).
+fn user_default_mode() -> Option<String> {
+    let home = std::env::var("MESIMON_CLAUDE_HOME")
+        .or_else(|_| std::env::var("CLAUDE_CONFIG_DIR"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
+        });
+    let text = std::fs::read_to_string(home.join("settings.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("permissions")
+        .and_then(|p| p.get("defaultMode"))
+        .or_else(|| v.get("defaultMode"))
+        .and_then(|m| m.as_str())
+        .map(str::to_string)
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -1481,13 +1501,27 @@ impl Daemon {
                 let claude =
                     std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
                 match crate::hook_settings::write_settings(&self.paths, id, &hook_bin) {
-                    Ok(settings) => vec![
-                        claude,
-                        "--settings".into(),
-                        settings.display().to_string(),
-                        "--session-id".into(),
-                        id.to_string(),
-                    ],
+                    Ok(settings) => {
+                        let mut argv = vec![
+                            claude,
+                            "--settings".into(),
+                            settings.display().to_string(),
+                            "--session-id".into(),
+                            id.to_string(),
+                        ];
+                        // Replicate the user's own configured permission mode
+                        // as an explicit flag (dogfood 2026-08-30: a session in
+                        // a fresh worktree lost the global defaultMode; the
+                        // flag is the only mode source Claude Code checks
+                        // deterministically, and --settings merge semantics
+                        // are a documented gap). Pass-through only — mesimon
+                        // never picks a mode the user didn't configure.
+                        if let Some(mode) = user_default_mode() {
+                            argv.push("--permission-mode".into());
+                            argv.push(mode);
+                        }
+                        argv
+                    }
                     Err(e) => {
                         return Response::Err { message: format!("hook settings: {e}") };
                     }
@@ -1689,7 +1723,15 @@ impl Daemon {
             if branch.is_empty() {
                 continue;
             }
-            let merged = worktree::is_merged(&self.paths.repo_root, &branch, &base);
+            // "merged" means WORK landed: everything on the branch is in base
+            // AND the tip moved past the creation base. A fresh branch is
+            // trivially an ancestor of base — that is "no work yet", never
+            // "merged" (dogfood 2026-08-30).
+            let tip = worktree::branch_tip(&self.paths.repo_root, &branch);
+            let base_oid = self.worktrees[&tid].base_oid.clone();
+            let merged = !tip.is_empty()
+                && tip != base_oid
+                && worktree::is_merged(&self.paths.repo_root, &branch, &base);
             self.wt_merged.insert(tid, merged);
             // Release the lock once the last session on the ticket is gone.
             if locked && attached {
@@ -1848,13 +1890,18 @@ impl Daemon {
         let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
         let settings = crate::hook_settings::write_settings(&self.paths, rec.id, &hook_bin)
             .map_err(|e| format!("hook settings: {e}"))?;
-        Ok(vec![
+        let mut argv = vec![
             claude,
             "--settings".into(),
             settings.display().to_string(),
             "--resume".into(),
             target.to_string(),
-        ])
+        ];
+        if let Some(mode) = user_default_mode() {
+            argv.push("--permission-mode".into());
+            argv.push(mode);
+        }
+        Ok(argv)
     }
 
     /// Double-resume guard (09 §9: two resumes interleave one transcript).

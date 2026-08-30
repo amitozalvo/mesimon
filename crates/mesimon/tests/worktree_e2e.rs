@@ -148,6 +148,9 @@ fn m4_worktree_lifecycle() {
     ));
     let wt = wait_wt_status(&mut c, t1, "attached", Duration::from_secs(10));
     assert_eq!(wt.branch, "msmn/T-1-fix-thing");
+    // A fresh branch is trivially an ancestor of main — that must read as
+    // "no work yet", never "merged" (dogfood regression 2026-08-30).
+    assert!(!wt.merged, "fresh branch must not read merged");
     // The parked spawn replayed: the session exists and its cwd is the worktree.
     let deadline = Instant::now() + Duration::from_secs(10);
     let sid = loop {

@@ -28,8 +28,10 @@ const STOP_FAILURE_MATCHERS: [&str; 10] = [
     "max_output_tokens",
     "unknown",
 ];
-/// Matcherless single entries. The verbose tier (PostToolUse, PostToolBatch,
-/// MessageDisplay, broad PreToolUse) is deliberately absent (11 §11.2.5).
+/// Matcherless single entries. The verbose tier (PostToolBatch,
+/// MessageDisplay, broad PreToolUse) is deliberately absent (11 §11.2.5);
+/// broad PostToolUse is the one exception — it is the permission-accept
+/// clear path (STALE-MAP deviation, dogfood 2026-08-30).
 const SINGLE_EVENTS: [&str; 9] = [
     "UserPromptSubmit",
     "Stop",
@@ -115,13 +117,15 @@ pub fn render_settings(hook_bin: &Path, hook_sock: &Path, session: uuid::Uuid) -
         "PreToolUse".into(),
         Value::Array(vec![e("PreToolUse", Some("AskUserQuestion,ExitPlanMode"), None)]),
     );
-    // The mirror PostToolUse pair: completion = the user answered, the only
-    // mid-turn signal that clears RequiresAction (dogfood 2026-08-30: an
-    // answered question stayed needs-you until end of turn). Still narrow —
-    // the verbose-tier ban is on BROAD post hooks, not this matcher.
+    // PostToolUse is BROAD (deviation from 11 §11.2.5's verbose-tier ban,
+    // recorded in STALE-MAP): completion is the ONLY mid-turn signal that
+    // clears RequiresAction, and that holds for generic permissions too —
+    // dogfood 2026-08-30, an ACCEPTED tool stayed needs-you until end of
+    // turn, because there is no "permission answered" event (11 §11.7.3).
+    // One entry, star matcher; the daemon discriminates on tool_name.
     hooks.insert(
         "PostToolUse".into(),
-        Value::Array(vec![e("PostToolUse", Some("AskUserQuestion,ExitPlanMode"), None)]),
+        Value::Array(vec![e("PostToolUse", Some("*"), None)]),
     );
     for ev in SINGLE_EVENTS {
         hooks.insert(ev.into(), Value::Array(vec![e(ev, None, None)]));
@@ -236,12 +240,14 @@ mod tests {
         for banned in ["PostToolUseFailure", "PostToolBatch", "MessageDisplay"] {
             assert!(!hooks.contains_key(banned), "{banned} is the verbose tier");
         }
-        // Pre and Post tool entries are ONLY the narrow two-tool matcher —
-        // a broad matcher here would be the banned verbose tier.
-        for ev in ["PreToolUse", "PostToolUse"] {
-            let p = v["hooks"][ev].as_array().unwrap();
-            assert_eq!(p.len(), 1, "{ev} single entry");
-            assert_eq!(p[0]["matcher"], json!("AskUserQuestion,ExitPlanMode"));
-        }
+        // PreToolUse stays the narrow two-tool matcher (broad pre IS the
+        // banned verbose tier). PostToolUse is deliberately broad — the
+        // permission-accept clear path (STALE-MAP deviation).
+        let p = v["hooks"]["PreToolUse"].as_array().unwrap();
+        assert_eq!(p.len(), 1, "PreToolUse single entry");
+        assert_eq!(p[0]["matcher"], json!("AskUserQuestion,ExitPlanMode"));
+        let p = v["hooks"]["PostToolUse"].as_array().unwrap();
+        assert_eq!(p.len(), 1, "PostToolUse single entry");
+        assert_eq!(p[0]["matcher"], json!("*"));
     }
 }

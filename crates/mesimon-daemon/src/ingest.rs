@@ -111,14 +111,17 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
             Some("ExitPlanMode") => Some(Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }),
             _ => None,
         },
-        // Same narrow pair — fires when the user answers, clearing the
-        // RequiresAction while the turn keeps going.
+        // Broad since dogfood 2026-08-30 (an ACCEPTED permission stayed
+        // needs-you until end of turn): the interaction pair keeps its sharp
+        // signal; any other completion is the generic permission-accept path
+        // — there is no "permission answered" event (11 §11.7.3), a tool
+        // finishing is the only proof the dialog resolved.
         "PostToolUse" => match frame.payload.get("tool_name").and_then(Value::as_str) {
             Some("AskUserQuestion") => {
                 Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion })
             }
             Some("ExitPlanMode") => Some(Signal::PostToolUse { tool: AttentionTool::ExitPlanMode }),
-            _ => None,
+            _ => Some(Signal::ToolCompleted),
         },
         // One registration, no matcher — discriminate here (11 §11.2.3: the
         // documented matcher list is shorter than the shipping enum).
@@ -331,8 +334,12 @@ mod tests {
         assert_eq!(signal_of(&f), None);
         let f = frame("PostToolUse", None, r#"{"tool_name":"AskUserQuestion","tool_response":{}}"#);
         assert_eq!(signal_of(&f), Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion }));
+        // Any other completion is the generic permission-accept path.
         let f = frame("PostToolUse", None, r#"{"tool_name":"Bash"}"#);
-        assert_eq!(signal_of(&f), None);
+        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted));
+        // Missing/truncated tool_name still counts as a completion.
+        let f = frame("PostToolUse", None, "{truncated");
+        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted));
     }
 
     #[test]

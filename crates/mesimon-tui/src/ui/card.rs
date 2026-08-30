@@ -84,10 +84,31 @@ fn register_style(theme: &Theme, reg: Register) -> Style {
 /// sanitized latest assistant reply (cursor card, peek toggle on): wrapped
 /// under the session rows, a deliberate sentence in the accordion — 07 §4.3's
 /// "never sentences" is amended for this opt-in toggle (STALE-MAP).
+/// The card's right-side worktree mark (M4): branch glyph + one state char.
+/// Returns (text, err_toned) — err tone for conflict/error, quiet otherwise.
+fn worktree_mark(
+    wt: Option<&mesimon_core::command::WorktreeItem>,
+    ascii: bool,
+) -> Option<(String, bool)> {
+    let w = wt?;
+    let g = if ascii { '&' } else { '⎇' };
+    let (dots, check) = if ascii { ('.', '+') } else { ('…', '✓') };
+    Some(match w.status.as_str() {
+        "queued" | "provisioning" => (format!("{g}{dots}"), false),
+        "error" => (format!("{g}x"), true),
+        "evicted" => (format!("{g}-"), false),
+        _ if w.conflict => (format!("{g}!"), true),
+        _ if w.merged => (format!("{g}{check}"), false),
+        _ => (g.to_string(), false),
+    })
+}
+
+#[allow(clippy::too_many_arguments)] // one call site; a params struct would just rename the args
 pub(super) fn render(
     ctx: &CardCtx,
     ticket: &Ticket,
     sessions: &[&SessionRecord],
+    wt: Option<&mesimon_core::command::WorktreeItem>,
     selected: bool,
     held: bool,
     marquee_ms: Option<u64>,
@@ -125,10 +146,12 @@ pub(super) fn render(
     };
     let (bar_ch, bar_style) = theme.bar(bar);
 
-    // ---- line 1: [glyph sp?][title][fill][age] ----------------------------
+    // ---- line 1: [glyph sp?][title][fill][wt][age] ------------------------
+    let wt_mark = worktree_mark(wt, tier == crate::glyphs::Tier::Ascii);
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
-    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells);
+    let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
+    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells);
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
     let scroll = match (marquee_ms, overflow) {
@@ -175,6 +198,14 @@ pub(super) fn render(
     }
     spans.push(Span::styled(title, title_style));
     spans.push(Span::raw(" ".repeat(fill)));
+    if let Some((m, err)) = &wt_mark {
+        let style = if *err && !attn_card {
+            theme.err_text()
+        } else {
+            quiet_style
+        };
+        spans.push(Span::styled(format!(" {m}"), style));
+    }
     if let Some(a) = &age {
         spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
     }
