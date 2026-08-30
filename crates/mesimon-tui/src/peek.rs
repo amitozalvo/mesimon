@@ -83,12 +83,25 @@ impl PeekCache {
 /// Strip what a card row must never carry: control chars (newlines become
 /// spaces — the wrap re-breaks) and the drawn-structure range 0x2500–0x259F,
 /// which the L1 law bans anywhere on the board and which transcript text is
-/// full of the moment the agent prints a table.
+/// full of the moment the agent prints a table. Also dropped: the invisible
+/// width hazards — VS15/VS16 (U+FE0F turns a narrow symbol into a two-cell
+/// emoji the width crate still counts as one), ZWJ and the other zero-width
+/// format chars, and the combining keycap. A terminal-vs-unicode-width
+/// disagreement on a peek row shifts every later cell of the selected
+/// surface one column right, stranding a `selected_bg` cell past the card
+/// edge that the diff never repaints (dogfood 2026-08-30, same trap as the
+/// ☰ plan mark).
 fn sanitize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         let cp = c as u32;
-        if (0x2500..=0x259F).contains(&cp) {
+        if (0x2500..=0x259F).contains(&cp)
+            || (0xFE00..=0xFE0F).contains(&cp) // variation selectors
+            || (0x200B..=0x200F).contains(&cp) // zero-width space/joiners/marks
+            || cp == 0x2060 // word joiner
+            || cp == 0xFEFF // BOM / zero-width no-break space
+            || cp == 0x20E3 // combining enclosing keycap
+        {
             continue;
         }
         if c == '\n' || c == '\t' {
@@ -236,6 +249,15 @@ mod tests {
     #[test]
     fn sanitize_strips_structure_and_control() {
         assert_eq!(sanitize("a\u{2502}b\nc\td\u{7}e"), "ab c de");
+    }
+
+    #[test]
+    fn sanitize_strips_width_hazards() {
+        // VS16 emoji presentation, ZWJ sequences, keycaps, BOM: the base
+        // chars survive, the invisible width-flippers don't.
+        assert_eq!(sanitize("done \u{2705} ok \u{26A0}\u{FE0F}!"), "done \u{2705} ok \u{26A0}!");
+        assert_eq!(sanitize("a\u{200D}b\u{200B}c 1\u{FE0F}\u{20E3}"), "abc 1");
+        assert_eq!(sanitize("\u{FEFF}x\u{2060}y"), "xy");
     }
 
     #[test]
