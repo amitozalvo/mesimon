@@ -1349,6 +1349,17 @@ impl Daemon {
                 detail: "no default branch found".into(),
             };
         };
+        // A branch whose tip never left the creation base is trivially an
+        // ancestor of main — merge_check would call it "already merged".
+        // Truth: there is nothing to merge yet (dogfood 2026-08-30).
+        let tip = worktree::branch_tip(&self.paths.repo_root, &branch);
+        let base_oid = self.worktrees.get(&id).map(|b| b.base_oid.clone()).unwrap_or_default();
+        if tip.is_empty() || tip == base_oid {
+            return Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: "no commits on the branch yet — nothing to merge".into(),
+            };
+        }
         match worktree::merge_check(&self.paths.repo_root, &branch, &base) {
             Ok(worktree::MergeCheck::AlreadyMerged) => Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
