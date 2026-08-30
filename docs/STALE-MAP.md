@@ -707,3 +707,65 @@ archive candidates exist. BOARD `X` takes the offer (`ArchiveAll` — the Z/Recl
 archives exactly the priced candidate set, per-ticket gate re-checked, honest
 archived/skipped split). chrome.rs's old "archived doesn't exist until v0.2" header comment
 is refuted; the header count now excludes archived tickets.
+
+## Alpha-1 survivability + lifecycle (2026-08-31)
+
+Three deviations, recorded because each one contradicts text that is still
+sitting in the corpus.
+
+**1. A newer client restarts a stale daemon, with no keypress.** This reverses
+02 §5.2's *"The daemon never self-restarts on its own — that would fail D6/P1
+(a behaviour the user cannot see before it runs)"* and this map's own "Opt-in
+binary update reload" entry, *"Never automatic (nodeterm lesson: the human owns
+lifecycle)"*, which is 24 hours old. The letter of 02 survives — the daemon does
+not restart *itself*, the client does it — but the spirit does not, and pretending
+otherwise would be dishonest. The reasoning: the version string is frozen at
+`0.1.0-dev` across every dev rebuild, so build skew is invisible, and a client
+silently driving a daemon that runs last week's code is *also* a behaviour the
+user cannot see — with no chip to notice and no way to find out except odd
+behaviour later. Shipping to people who are not the author made "invisible until
+something breaks" the worse of the two. Guard rails, all structural:
+`daemon_pid == our pid` is never restarted (that is the in-process e2e daemon —
+no test can trip it); only a daemon carrying `MESIMON_DETACHED=1` is restarted,
+so a human's foreground `mesimon daemon --repo` is left alone; at most one
+attempt per connect, then the mechanism disables itself for the process; and the
+comparison is ORDERED, not merely "different" — only a strictly newer client
+acts, which is what stops two TUIs of different builds from taking turns
+restarting the daemon to their own version forever (semver when both name a
+version, exe mtime when they agree, and nothing at all when neither can be
+ordered). `restart_skew_e2e` covers both directions with the real client. Seam:
+`MESIMON_NO_DAEMON_RESTART=1`. 02's `Welcome`/`Refused` frames and
+`mesimon daemon upgrade` remain unbuilt; `Response::Hello` grew `build`,
+`exe_stamp` and `detached` instead, where `build` is 02's `server_build`.
+
+**2. `schema_version` applies to four STATE files, not 16 §6.2's three config
+files.** `config`/`keymap`/`policy` do not exist in v0.1. The rules are adopted
+verbatim (== load; absent → treat as 1; newer → refuse THAT file and do not
+guess), applied to `columns.toml`, `ticket.toml`, `sessions.json` and
+`worktrees.json` as four independent counters. The `older → migrate in memory`
+arm is unreachable while every counter is 1 and is where the migration chain
+goes when a second version lands. Two mechanical consequences worth recording:
+the stamp on a ticket lives on a `TicketFile` wrapper in `store.rs`, not on
+`Ticket`, so it stays off the wire and out of every fixture; and nothing uses
+`#[serde(untagged)]` to accept the legacy shapes, because untagged collapses
+every failure into "did not match any variant" and 13 §13.10.3 requires
+file:line:column. A shape probe plus a two-pass parse keeps the span.
+
+**3. Quarantine is 13 §13.10.3's disposition without its mechanism.** The doc
+specifies quarantine for the *watcher*: a three-way merge against the last known
+daemon write, per-field resolution, a resolution screen. v0.1 has no watcher and
+no undo journal. What ships is the same disposition at load time only — bytes
+preserved by rename to `<name>.quarantine-<epoch_ms>`, the entity excluded from
+the board, a non-blocking notice carrying the parser's own file:line:column, and
+`KT-C002`'s "unresolved merge conflict" rather than a syntax error pointing at
+line 43. No merge, no resolution screen. Also fixed while here: `write_atomic`
+had been shipping without the fsync 13 §13.9.1 requires ("No exceptions, no fast
+path") since M1 — recorded as a closed deviation, not a new decision.
+
+Notices reach the board on `Response::Board.notices` (serde-additive, like
+`worktrees` before it) and render in the grace row, now an advisory row: the
+header already carries five optional `∙` clauses and a sixth pushes the update
+chip off a 100-column terminal. `Notice.kind` is a String, not an enum, because
+an unknown variant from a newer daemon would fail the whole `Response::Board`
+deserialize and the client drops lines it cannot parse — one new notice kind
+would blank the board on an older client.

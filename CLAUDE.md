@@ -143,9 +143,16 @@ stale claims) and borrow the observe tier while `Unknown`: the transcript tail r
 Low confidence until a hook re-asserts. Sessions mesimon didn't spawn get no hooks and can never
 emit attention (adoption tier is M3).
 
-**Schema evolution.** `store.rs` hard-fails on parse errors, so every new `SessionRecord` field
-must be `#[serde(default)]` — the defaults ARE the migration (back-compat fixture test in
-`core/src/board.rs`). The `SessionState` enum is matched non-exhaustively in several places; use
+**Schema evolution.** Every new `SessionRecord` field must still be `#[serde(default)]` — the
+defaults ARE the migration (back-compat fixture test in `core/src/board.rs`) — but the stakes
+changed in alpha-1: `store.rs` no longer hard-fails on a parse error, so a missing default now
+QUARANTINES the file (bytes preserved as `<name>.quarantine-<ms>`, board up on a default, notice
+in the advisory row) instead of killing the daemon. Each of the four state files carries its own
+`schema_version`; a file from a NEWER build is left untouched and its writes are barred rather
+than downgraded. `store::load` returns `Loaded { board, notices, columns_write_barred,
+sessions_write_barred }`, and every save goes through `persist_columns`/`persist_sessions`/
+`persist_worktrees`, which honour the bars — never call `store::save_*` or
+`worktree::save_bindings` directly from the daemon. The `SessionState` enum is matched non-exhaustively in several places; use
 `state.is_live()` for working-set membership and `state.has_pane()` for pane existence —
 `Sleeping` is live-but-parked (no pane, no process; the attention machine latches until wake).
 
@@ -179,7 +186,14 @@ E2e: `crates/mesimon/tests/worktree_e2e.rs` (the one e2e with a real git repo).
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
 the pane-died notify — required in e2e because the in-process daemon's `current_exe()` is the test
-binary), `MESIMON_CLAUDE_HOME` (census root override for fabricated `~/.claude` trees),
+binary), `MESIMON_REQUIRE_TMUX` (turns the e2e tmux skip into a hard failure — set in CI, because a
+runner without tmux otherwise reports a green suite that ran almost nothing), `MESIMON_CI` (relaxes
+the two wall-clock budgets in `hook_e2e`), `MESIMON_NO_DAEMON_RESTART` (disables the build-skew
+daemon restart), `MESIMON_FAKE_BUILD` (makes the daemon report that build in `Hello`, to
+manufacture a stale — or a newer — one), `MESIMON_DAEMON_BIN` (what `spawn_detached` respawns;
+required by `restart_skew_e2e`, the only test that drives the real `Client::connect`, because a
+test binary has no `daemon` subcommand), `MESIMON_CLAUDE_HOME` (census root override for fabricated `~/.claude`
+trees),
 `MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s sleep floor), `MESIMON_PANE_QUIET_MS`
 (shrink the 8 s interrupt-probe quiet threshold), `MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s
 server-alive guard cadence). E2e pattern: in-process
