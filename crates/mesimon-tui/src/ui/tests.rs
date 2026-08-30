@@ -456,6 +456,24 @@ fn test_diff_add_del_registers() {
     let (text, _) = bg_row("return persist").expect("ctx line");
     assert_ne!(text, add_bg, "ctx stays on the page ground");
     assert_ne!(text, del_bg, "ctx stays on the page ground");
+
+    // The top band (row 3) actually paints — the empty-Line idiom regressed
+    // silently once already (invisible since M3.5).
+    let band_bg = theme.selected_bg.expect("graphite truecolor paints selected");
+    assert_eq!(buf[(5u16, 3u16)].bg, band_bg, "top band paints");
+    assert_eq!(buf[(118u16, 3u16)].bg, band_bg, "top band spans the width");
+}
+
+/// The ticket screen's band under the identity line paints too.
+#[test]
+fn test_ticket_band_paints() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let mut app = app_graphite(fixture(false));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let buf = cells(&app, 120, 30);
+    let band_bg = theme.selected_bg.expect("graphite truecolor paints selected");
+    assert_eq!(buf[(5u16, 3u16)].bg, band_bg, "ticket band paints");
+    assert_eq!(buf[(118u16, 3u16)].bg, band_bg, "ticket band spans the width");
 }
 
 /// The diff footer mirrors the ticket rule: a status outranks the hints.

@@ -132,8 +132,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
     let ident = Line::from(ident_spans);
 
+    // The band must carry actual space cells: a Line's style paints only its
+    // text, so the empty-Line idiom rendered nothing (invisible since M3.5;
+    // caught in the M4b diff-tint work).
     let band = match theme.selected_bg {
-        Some(bg) => Line::default().style(Style::default().bg(bg)),
+        Some(bg) => Line::from(Span::raw(" ".repeat(area.width as usize)))
+            .style(Style::default().bg(bg)),
         None => Line::default(),
     };
 

@@ -82,8 +82,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
         ident.push(Span::styled(" ∙ worktree evicted".to_string(), theme.dim2()));
     }
 
+    // Real space cells — the empty-Line band idiom paints nothing (see the
+    // identical note in ticket.rs).
     let band = match theme.selected_bg {
-        Some(bg) => Line::default().style(Style::default().bg(bg)),
+        Some(bg) => Line::from(Span::raw(" ".repeat(area.width as usize)))
+            .style(Style::default().bg(bg)),
         None => Line::default(),
     };
     let top = vec![Line::from(head), Line::default(), Line::from(ident), band];
