@@ -7,9 +7,22 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **mesimon** (repo dir is `kanban-tui`; the product name is mesimon) — a Rust terminal kanban that
 orchestrates many coding-agent sessions behind a per-repo daemon and a private tmux server.
 Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), M2 (attention), M3 (adoption +
-resources), and M3.5 (design foundation) are built; M4 is next. The milestone plan and current
-execution state live in the auto-memory (`mesimon-project-state`) and
-`~/.claude/plans/reactive-painting-umbrella.md`.
+resources), M3.5 (design foundation), and M4a (per-ticket worktrees + the staged merge flow)
+are built; **M4b (read-only diff viewer) is next** — full spec in
+`~/.claude/plans/smooth-puzzling-sphinx.md` §F (entry: ticket `v`; wire: DiffList/DiffFile
+served read-only OFF the writer thread; corpus git flags are load-bearing — see the plan).
+The roadmap and execution state live in the auto-memory (`mesimon-project-state`) and
+`~/.claude/plans/reactive-painting-umbrella.md` — note the auto-memory does NOT follow into
+worktree sessions; the plan files (absolute paths) and this file do.
+
+If the current git branch starts with `msmn/`, you are in a mesimon ticket worktree: an
+isolated checkout dedicated to one ticket (env carries `MESIMON_TICKET` and
+`MESIMON_WORKTREE_BRANCH`). Work and commit freely on this branch — **commit your work when
+done** (uncommitted changes can't merge and block cleanup), and when the user asks for a
+rebase, rebase onto the default branch, resolve conflicts, then run the tests and fix
+failures before reporting done. Never `git checkout main` here (it will fail — main belongs
+to another worktree) and never merge or push to main yourself: the user merges through
+mesimon (fast-forward only, so a green rebased branch is the deliverable).
 
 ## Commands
 
@@ -143,6 +156,25 @@ observe-only (transcript tail poller, Low confidence, cannot focus); takeover sp
 (resume restores neither --settings nor --mcp-config), never `--bare`. Sleep = SIGTERM pgid →
 5 s reaper → kill-pane, record parked FIRST; badge word is `external` (see STALE-MAP M3 section
 + D35 for all deviations).
+
+**Worktrees + merge (M4a).** Workspace is a per-ticket field (`Ticket.workspace`, layered:
+column policy will only default NEW tickets in M5; board default = shared_checkout — composer
+Shift+Tab / ticket `w` cycle it, LOCKED once a session or binding exists). Worktrees live at
+`~/.local/state/mesimon/<proj16>/worktrees/<KEY>-<slug>/`, branch `msmn/<KEY>-<slug>`
+(doc-12 slugger in `core/src/workspace.rs`; argv arrays always — a ticket title is an
+injection vector). Provisioning is lazy (first spawn; `daemon/src/worktree.rs` stages
+precheck/add/mark/include/ready, OFF the writer thread via `Msg::Provisioned`, concurrency 2
+— trap: `tmutil addexclusion` stalls 11 s on TCC, keep it detached); the parked spawn replays
+on ready. Bindings persist in `worktrees.json` (state dir); ownership marker in the git admin
+dir; pid-bearing locks + crash-safe sweep. **Merges are ff-only** — TUI `m` is a staged flow
+(stage derived from git state): ahead+ff → confirm→merge; main moved → inject
+"rebase+test" to the agent (conflicts resolve in the worktree, tests run pre-main); merged →
+inject the notice. Delete gates on unmerged bindings (`D` discards, branch `-D`); DONE move
+blocked while unmerged; teardown waits for the reaper (never remove a live cwd), single
+`--force` only. Card mark `⎇ ⎇… ⎇↑ ⎇↓ ⎇✓ ⎇! ⎇x ⎇-`; sessions in worktrees carry
+`MESIMON_TICKET`/`MESIMON_WORKTREE_BRANCH`, and spawns pass the user's own
+`permissions.defaultMode` as `--permission-mode` (fresh worktree paths lost it otherwise).
+E2e: `crates/mesimon/tests/worktree_e2e.rs` (the one e2e with a real git repo).
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
 the pane-died notify — required in e2e because the in-process daemon's `current_exe()` is the test
