@@ -216,6 +216,33 @@ fn golden_ticket_corpse_120() {
     golden("ticket_corpse_120x30", &render(&app, 120, 30));
 }
 
+#[test]
+fn golden_ticket_peek_120() {
+    // The left zone previews the selected rail session's latest assistant
+    // reply under a TRANSCRIPT heading — always on, no toggle (the zone is
+    // otherwise empty until documents land in M4).
+    let dir = std::env::temp_dir().join(format!("msmn-tpeek-golden-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("peek dir");
+    let path = dir.join("t.jsonl");
+    std::fs::write(
+        &path,
+        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n",
+    )
+    .expect("peek transcript");
+    let mut b = fixture(false);
+    b.sessions
+        .iter_mut()
+        .find(|s| s.id == uuid_n(31))
+        .expect("session 31")
+        .transcript_path = Some(path.to_string_lossy().into_owned());
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    golden("ticket_peek_120x30", &render(&app, 120, 30));
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
 /// A daemon refusal set into `app.status` must reach the ticket footer —
 /// it outranks the key hints there just as it does on the board.
 #[test]
