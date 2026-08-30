@@ -73,8 +73,11 @@ pub enum StopReason {
     Unknown,
 }
 
-/// The reason, never the code (11 §11.7.1). `Killed` is a deliberate
-/// non-normative extra: mesimon's own kill ladder ended the session.
+/// The reason, never the code (11 §11.7.1). `Killed` and `Dismissed` are
+/// deliberate non-normative extras: `Killed` means mesimon's own kill ladder
+/// ended a live session (the conversation survives — its corpse stays
+/// resumable), `Dismissed` means the user x-ed an already-dead corpse off
+/// the ticket rail (the only exit the rail hides).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExitReason {
@@ -84,6 +87,7 @@ pub enum ExitReason {
     LoggedOut,
     Crashed,
     Killed,
+    Dismissed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,7 +143,8 @@ pub struct SessionRecord {
     pub id: uuid::Uuid,
     pub kind: SessionKind,
     pub ticket: ulid::Ulid,
-    /// Full argv, persisted and replayed verbatim on resume (D24).
+    /// Full argv, persisted and replayed on resume (D24) — with the identity
+    /// flag (`--session-id`/`--resume`) rewritten to the current conversation.
     pub argv: Vec<String>,
     pub cwd: String,
     pub state: SessionState,
@@ -155,13 +160,20 @@ pub struct SessionRecord {
     /// Short excerpt for the card (e.g. the rendered API error string). ≤200 chars.
     #[serde(default)]
     pub detail: Option<String>,
+    /// The session's self-declared name (OSC-0 pane title — Claude keeps its
+    /// conversation summary there). None until the agent sets one; latched so
+    /// a parked/paneless session keeps the last name it had.
+    #[serde(default)]
+    pub title: Option<String>,
     #[serde(default)]
     pub confidence: Confidence,
     #[serde(default)]
     pub provenance: Provenance,
-    /// The claude-side session id when it differs from `id` — set only for
-    /// adopted sessions (mesimon-spawned ones pass `--session-id id`, so the
-    /// two coincide and this stays None).
+    /// The claude-side session id when it differs from `id` — set for adopted
+    /// sessions, and relearned from the SessionStart transcript filename when
+    /// an in-app /resume hands the pane a different conversation. Stays None
+    /// while the pane hosts the record's own minted conversation
+    /// (mesimon-spawned ones pass `--session-id id`, so the two coincide).
     #[serde(default)]
     pub claude_session_id: Option<uuid::Uuid>,
     /// Manual override: never sleep this session (D23 guard, third part).
@@ -189,6 +201,7 @@ impl SessionRecord {
             state_changed_at: None,
             transcript_path: None,
             detail: None,
+            title: None,
             confidence: Confidence::default(),
             provenance: Provenance::default(),
             claude_session_id: None,

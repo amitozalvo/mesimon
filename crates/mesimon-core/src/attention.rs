@@ -273,10 +273,14 @@ impl Machine {
             return None;
         }
         // Exited is terminal: publish once (02 §7.3). A late SessionEnd may
-        // refine a pane-derived reason in place, silently.
+        // refine a pane-derived reason in place, silently — except the
+        // resume kind, which is a conversation handoff, not an exit, and
+        // must never relabel a real death.
         if let SessionState::Exited { reason } = &self.state {
             if let Signal::SessionEnd { kind } = sig {
-                if matches!(reason, ExitReason::UserQuit | ExitReason::Crashed) {
+                if !matches!(kind, EndKind::Resume)
+                    && matches!(reason, ExitReason::UserQuit | ExitReason::Crashed)
+                {
                     self.state = SessionState::Exited { reason: kind.exit_reason() };
                 }
             }
@@ -387,6 +391,13 @@ impl Machine {
             // SessionStart mid-turn and the turn continues.
             Signal::SessionStart { source: StartSource::Compact } => t(S::Running),
             Signal::SessionStart { .. } => t(S::Idle { stop_reason: StopReason::Unknown }),
+            // In-app `/resume` ends the CONVERSATION, not the process: Claude
+            // Code fires SessionEnd{reason:resume} then SessionStart
+            // {source:resume} in the same live pane (dogfood 2026-08-30:
+            // honoring it as an exit stranded a live session as a corpse and
+            // wedged every later resume). Identity moves via the SessionStart
+            // frame's transcript_path; real death still arrives as PaneDied.
+            Signal::SessionEnd { kind: EndKind::Resume } => None,
             Signal::SessionEnd { kind } => t(S::Exited { reason: kind.exit_reason() }),
             Signal::UserPromptSubmit => t(S::Running),
             Signal::Stop { stop_hook_active: true, .. } => None, // re-entrancy guard
@@ -748,7 +759,6 @@ mod tests {
     fn session_end_kinds_map() {
         for (kind, reason) in [
             (EndKind::Clear, ExitReason::Cleared),
-            (EndKind::Resume, ExitReason::Resumed),
             (EndKind::Logout, ExitReason::LoggedOut),
             (EndKind::PromptInputExit, ExitReason::UserQuit),
             (EndKind::Other, ExitReason::Crashed),
@@ -757,6 +767,24 @@ mod tests {
             let c = ma.apply(&Signal::SessionEnd { kind }, 1).unwrap();
             assert_eq!(c.to, SessionState::Exited { reason });
         }
+    }
+
+    #[test]
+    fn in_app_resume_is_not_an_exit() {
+        // SessionEnd{resume} = conversation handoff inside a live pane:
+        // no transition from any live state, and no relabeling of a death.
+        for state in [SessionState::Running, SessionState::Idle { stop_reason: StopReason::EndTurn }]
+        {
+            let mut ma = m(state.clone());
+            assert!(
+                ma.apply(&Signal::SessionEnd { kind: EndKind::Resume }, 1).is_none(),
+                "resume end must be inert from {state:?}"
+            );
+            assert_eq!(ma.state(), &state);
+        }
+        let mut ma = m(SessionState::Exited { reason: ExitReason::Crashed });
+        assert!(ma.apply(&Signal::SessionEnd { kind: EndKind::Resume }, 1).is_none());
+        assert_eq!(ma.state(), &SessionState::Exited { reason: ExitReason::Crashed });
     }
 
     #[test]

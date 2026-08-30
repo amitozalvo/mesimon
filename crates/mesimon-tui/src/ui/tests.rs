@@ -166,7 +166,7 @@ fn golden_waiting_board_120() {
 #[test]
 fn golden_move_ghost_120() {
     let mut app = app_graphite(fixture(false));
-    app.mode = Mode::Move { ticket: ulid_n(3), col: 2, idx: 1 };
+    app.mode = Mode::Move { ticket: ulid_n(3), col: 2, idx: 1, grab: '>' };
     golden("board_move_120x30", &render(&app, 120, 30));
 }
 
@@ -454,30 +454,96 @@ fn test_cursor_column_header() {
 #[test]
 fn test_rail_corpse_rules() {
     // The rail keeps exactly one resumable corpse: the latest exited claude
-    // that was not `x`-dismissed. Bash corpses and older ones stay off.
+    // that was not dismissed. A deliberate kill stays resumable (the
+    // conversation survives the process); only `Dismissed` — `x` on a corpse
+    // — hides. Bash corpses and older ones stay off.
     let mut b = fixture(false);
     let t3 = ulid_n(3);
     let mut old =
         session(33, t3, SessionKind::Claude, SessionState::Exited { reason: ExitReason::UserQuit });
     old.state_changed_at = Some(10);
-    let mut newer =
-        session(34, t3, SessionKind::Claude, SessionState::Exited { reason: ExitReason::Crashed });
-    newer.state_changed_at = Some(20);
     let mut killed =
-        session(35, t3, SessionKind::Claude, SessionState::Exited { reason: ExitReason::Killed });
-    killed.state_changed_at = Some(30);
+        session(34, t3, SessionKind::Claude, SessionState::Exited { reason: ExitReason::Killed });
+    killed.state_changed_at = Some(20);
+    let mut dismissed = session(
+        35,
+        t3,
+        SessionKind::Claude,
+        SessionState::Exited { reason: ExitReason::Dismissed },
+    );
+    dismissed.state_changed_at = Some(30);
     let mut bash =
         session(36, t3, SessionKind::Bash, SessionState::Exited { reason: ExitReason::UserQuit });
     bash.state_changed_at = Some(40);
-    b.sessions.extend([old, newer, killed, bash]);
+    b.sessions.extend([old, killed, dismissed, bash]);
     let app = app_graphite(b);
     let ids: Vec<uuid::Uuid> = app.rail_sessions(t3).iter().map(|s| s.id).collect();
     assert!(ids.contains(&uuid_n(31)), "live claude stays");
     assert!(ids.contains(&uuid_n(32)), "live bash stays");
-    assert!(ids.contains(&uuid_n(34)), "latest resumable corpse rides the rail");
+    assert!(ids.contains(&uuid_n(34)), "latest non-dismissed corpse rides the rail — killed included");
     assert!(!ids.contains(&uuid_n(33)), "only the latest corpse shows");
-    assert!(!ids.contains(&uuid_n(35)), "x-killed stays dismissed");
+    assert!(!ids.contains(&uuid_n(35)), "dismissed corpse stays hidden");
     assert!(!ids.contains(&uuid_n(36)), "bash corpses are not resumable");
     // Fixed creation order (06 §7 R4): the corpse sits where it was spawned.
     assert_eq!(ids, vec![uuid_n(31), uuid_n(32), uuid_n(34)]);
+}
+
+/// The MOVE ghost blinks in place (STALE-MAP 2026-08-30): the held card's
+/// title cell paints `sel.base` in the bright phase and `sel.dim3` in the
+/// dark one, while an ordinary card's title holds still across frames.
+#[test]
+fn test_move_ghost_blinks() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let title_fg = |buf: &ratatui::buffer::Buffer, needle: &str| {
+        for y in 0..30u16 {
+            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect::<String>();
+            if let Some(ix) = row.find(needle) {
+                let x = row[..ix].chars().count() as u16;
+                return Some(buf[(x, y)].fg);
+            }
+        }
+        None
+    };
+    let mut app = app_graphite(fixture(false));
+    // Grab ticket 1 ("Decay treatments") in place.
+    app.mode = Mode::Move { ticket: ulid_n(1), col: 0, idx: 0, grab: '<' };
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    let bright = title_fg(&cells(&app, 120, 30), "Decay").expect("held title, frame 0");
+    assert_eq!(bright, theme.sel.base, "bright phase rides sel.base");
+    let calm0 = title_fg(&cells(&app, 120, 30), "Grapheme").expect("bystander title");
+    // 410 ms back → frame 4 (or 5 under scheduler slop) — both the dark phase.
+    app.spin_epoch
+        .set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+    let dark = title_fg(&cells(&app, 120, 30), "Decay").expect("held title, frame 4");
+    assert_eq!(dark, theme.sel.dim3, "dark phase rides sel.dim3");
+    // The blink belongs to the held card alone.
+    let calm4 = title_fg(&cells(&app, 120, 30), "Grapheme").expect("bystander title");
+    assert_eq!(calm0, calm4, "bystander cards hold still");
+}
+
+/// Requirement 2 of the pending-move gesture: while the ghost blinks in its
+/// target column, the ORIGINAL card stays visible semi-transparent (dim3
+/// title, ghost bar) — and the same title therefore appears twice on the row.
+#[test]
+fn test_move_trail_is_semi_transparent() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let mut app = app_graphite(fixture(false));
+    // Ticket 1 lives in todo (col 0); its ghost is pending in col 1.
+    app.mode = Mode::Move { ticket: ulid_n(1), col: 1, idx: 0, grab: '>' };
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    let buf = cells(&app, 120, 30);
+    let mut fgs = Vec::new();
+    for y in 0..30u16 {
+        let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
+        let mut from = 0;
+        while let Some(ix) = row[from..].find("Decay") {
+            let x = row[..from + ix].chars().count() as u16;
+            fgs.push(buf[(x, y)].fg);
+            from += ix + 5;
+        }
+    }
+    assert_eq!(fgs.len(), 2, "trail + ghost both render");
+    // Column order: the trail (todo) sits left of the ghost (in progress).
+    assert_eq!(fgs[0], theme.rest.dim3, "original is semi-transparent");
+    assert_eq!(fgs[1], theme.sel.base, "ghost blinks at full value (bright phase)");
 }

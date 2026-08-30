@@ -6,10 +6,15 @@
 pub fn render(pane_died_cmd: Option<&str>) -> String {
     // Spike references: T-2 (update-environment), T-6 (extended-keys, focus-events),
     // T-7 (remain-on-exit + pane-died), T-10 (clipboard/passthrough containment).
+    // C-5 needs its own bind: `extended-keys always` negotiates CSI-u with the outer
+    // terminal, so Ctrl+5 arrives as a distinct key (CSI 53;5u), not the legacy 0x1D
+    // alias docs/04 §2.14 rung 1b assumed. It is the layout-independent unfocus key
+    // (digits don't move on non-US layouts; Ctrl+physical-] sends Esc on Hebrew).
     let mut conf = r##"# mesimon private tmux server — generated, do not edit (docs/19-tmux-backend-v01.md)
 set -g prefix None
 unbind-key -a
 bind-key -n C-] detach-client
+bind-key -n C-5 detach-client
 set -g remain-on-exit on
 set -g update-environment ""
 set -g set-clipboard off
@@ -24,7 +29,7 @@ set -g escape-time 10
 set -g status-style "reverse"
 set -g status-left " mesimon "
 set -g status-left-length 120
-set -g status-right " Ctrl+] back  "
+set -g status-right " Ctrl+]/^5 back  "
 set -g status-right-length 20
 set -g window-status-format ""
 set -g window-status-current-format ""

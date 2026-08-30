@@ -27,4 +27,4 @@
 
 
 
- BOARD  enter open ticket ∙ tab needs you ∙ a add ∙ m move ∙ p peek ∙ e external ∙ q quit
+ BOARD  enter open ticket ∙ tab needs you ∙ a add ∙ >< move ∙ p peek ∙ e external ∙ q quit

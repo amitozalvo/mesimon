@@ -316,6 +316,24 @@ impl Theme {
         Style::default().fg(self.calm)
     }
 
+    /// The MOVE ghost's blink (author 2026-08-30, "I press `<`, I expect the
+    /// ticket to blink in place"): the grabbed card's title fg square-waves
+    /// down the sel ramp — `sel.base` 400 ms, `sel.dim3` 400 ms — until it is
+    /// dropped or the grab is cancelled. Grey ramp only, so the
+    /// one-saturated-colour law (`test_attn_provenance*`) is untouched, and
+    /// this is fg repainting on the redraw clock — real SGR blink stays
+    /// banned for everything else (06 §8; the held card is the one sanctioned
+    /// exception, superseding D19's blanket ban — STALE-MAP). BOLD rides both
+    /// phases: it is the cursor-title treatment, not the blink. Mono's ramp
+    /// is all Reset — no luminance to blink — so the ghost holds the steady
+    /// cursor treatment there; its reversed surface already marks the grab.
+    pub fn move_blink(&self, frame: usize) -> Style {
+        const PHASE_FRAMES: usize = 4; // 4 × 100 ms redraw-clock frames
+        let dark = self.has_colour() && (frame / PHASE_FRAMES) % 2 == 1;
+        let fg = if dark { self.sel.dim3 } else { self.sel.base };
+        Style::default().fg(fg).add_modifier(Modifier::BOLD)
+    }
+
     /// The inverted needs-you title row (06 §2.4b): `attn` ground, `attn_ink`
     /// text. In mono this is one of the three sanctioned SGR-7 uses.
     pub fn attn_row(&self) -> Style {
@@ -525,5 +543,38 @@ mod tests {
         let t = Theme::graphite(Profile::Ansi8);
         assert!(t.attn_row().bg.is_some());
         assert!(t.selected_row().add_modifier.contains(Modifier::REVERSED));
+    }
+
+    #[test]
+    fn move_blink_rides_the_sel_ramp_only() {
+        for flavor in [Flavor::Graphite, Flavor::Chalk] {
+            for p in [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8] {
+                let t = Theme::new(flavor, p);
+                let chromatic = [t.attn, t.err, t.calm];
+                let ramp = [t.sel.base, t.sel.dim3];
+                let mut seen = std::collections::HashSet::new();
+                for f in 0..16 {
+                    let s = t.move_blink(f);
+                    let fg = s.fg.expect("blink always paints a fg");
+                    // Mono's "chromatic" tokens are Reset like the ramp —
+                    // the collision check only means something with colour.
+                    if t.has_colour() {
+                        assert!(
+                            !chromatic.contains(&fg),
+                            "{flavor:?}/{p:?} frame {f}: chromatic blink"
+                        );
+                    }
+                    assert!(ramp.contains(&fg), "{flavor:?}/{p:?} frame {f}: off-ramp blink");
+                    // Luminance repainting only — never real SGR blink.
+                    assert!(!s.add_modifier.contains(Modifier::SLOW_BLINK));
+                    seen.insert(format!("{fg:?}"));
+                }
+                // It actually blinks: both phases appear across a cycle.
+                assert_eq!(seen.len(), 2, "{flavor:?}/{p:?}: blink is flat");
+            }
+            // Mono has no ramp to blink: steady cursor treatment.
+            let t = Theme::new(flavor, Profile::Mono);
+            assert_eq!(t.move_blink(0), t.move_blink(5));
+        }
     }
 }

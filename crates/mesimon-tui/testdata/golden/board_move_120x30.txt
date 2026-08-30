@@ -27,4 +27,4 @@
 
 
 
- MOVE  hjkl move ∙ enter drop ∙ esc cancel
+ MOVE  hjkl move ∙ > or enter drop ∙ < cancels ∙ esc cancel

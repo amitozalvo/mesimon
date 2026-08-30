@@ -55,7 +55,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let tickets = app.board.column_tickets(name);
     let is_cursor_col = app.cursor_col == ci;
     let ghost = match &app.mode {
-        Mode::Move { ticket, col, idx } if *col == ci => Some((*ticket, *idx)),
+        Mode::Move { ticket, col, idx, .. } if *col == ci => Some((*ticket, *idx)),
+        _ => None,
+    };
+    // While a move is pending, the card at its ORIGINAL spot stays visible
+    // but semi-transparent — the trail under the blinking ghost.
+    let moving: Option<ulid::Ulid> = match &app.mode {
+        Mode::Move { ticket, .. } => Some(*ticket),
         _ => None,
     };
 
@@ -110,6 +116,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             groups.push(Group { lines: vec![line], cursor: true, waiting, edit_cursor: Some(x_off) });
             return;
         }
+        let trail = !held && moving == Some(t.id);
         let mq = if selected { Some(marquee_ms(t)) } else { None };
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
@@ -124,7 +131,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             None
         };
         let wt = app.wt_item(t.id);
-        let lines = card::render(&ctx, t, &sessions, wt, selected, held, mq, peek.as_deref());
+        let lines = card::render(&ctx, t, &sessions, wt, selected, held, trail, mq, peek.as_deref());
         groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor: None });
     };
     match ghost {

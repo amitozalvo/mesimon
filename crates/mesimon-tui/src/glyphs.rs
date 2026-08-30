@@ -88,7 +88,7 @@ pub(crate) fn card_glyph(
         matches!(
             s.state,
             SessionState::Failed { .. }
-                | SessionState::Exited { reason: ExitReason::Crashed | ExitReason::Killed }
+                | SessionState::Exited { reason: ExitReason::Crashed }
         )
     }) {
         return Some(('x', Register::Err));
@@ -128,9 +128,7 @@ pub(crate) fn session_glyph(state: &SessionState, tier: Tier, spin: usize) -> (c
         }
         SessionState::Idle { .. } => (if ascii { '.' } else { '◦' }, Register::Grey),
         SessionState::Sleeping => ('z', Register::Grey),
-        SessionState::Exited { reason: ExitReason::Crashed | ExitReason::Killed } => {
-            ('x', Register::Err)
-        }
+        SessionState::Exited { reason: ExitReason::Crashed } => ('x', Register::Err),
         SessionState::Exited { .. } => (if ascii { '+' } else { '✓' }, Register::Grey),
         SessionState::Failed { .. } => ('x', Register::Err),
         SessionState::Throttled => ('~', Register::Grey),
@@ -159,7 +157,9 @@ pub(crate) fn state_word(state: &SessionState) -> &'static str {
         SessionState::Idle { stop_reason: StopReason::EndTurn } => "done",
         SessionState::Idle { .. } => "idle",
         SessionState::Sleeping => "sleeping",
-        SessionState::Exited { reason: ExitReason::Crashed | ExitReason::Killed } => "FAILED",
+        // A deliberate kill is not a failure — the corpse stays resumable.
+        SessionState::Exited { reason: ExitReason::Killed } => "killed",
+        SessionState::Exited { reason: ExitReason::Crashed } => "FAILED",
         SessionState::Exited { .. } => "exited",
         SessionState::Failed { .. } => "FAILED",
         SessionState::Throttled => "throttled",

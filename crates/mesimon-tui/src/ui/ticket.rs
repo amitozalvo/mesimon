@@ -15,14 +15,16 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, InputPurpose, Mode};
 use crate::glyphs;
-use crate::text::{age_slot, created_at_epoch_ms, edit_window, truncate};
+use crate::text::{
+    age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
+};
 
 use super::chrome;
 
 /// Below this width the rail IS the screen (06 §6.5 band model, simplified:
 /// M3.5 has no PTY pane on this screen yet, so the left zone is what yields).
 const TWO_ZONE_MIN_W: u16 = 107;
-const RAIL_W: u16 = 24;
+const RAIL_W: u16 = 30;
 
 pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: usize) {
     let theme = &app.theme;
@@ -217,9 +219,34 @@ fn draw_rail(
             glyphs::Register::Calm => theme.calm_text(),
             glyphs::Register::Grey => theme.dim2(),
         };
-        let kind = match s.kind {
+        // The session's own name (OSC-0 title, same as the tmux status bar's
+        // breadcrumb leaf) when it set one, else the kind word.
+        let kind = s.title.as_deref().unwrap_or(match s.kind {
             SessionKind::Claude => "claude",
             SessionKind::Bash => "bash",
+        });
+        // Row budget: glyph + " {mark} {name}" + ≥1 fill + age. An
+        // overflowing name on the selected row reveals itself marquee-style
+        // (same clock behaviour as the board's card title: reset on landing,
+        // one pass, rest truncated).
+        let budget = w.saturating_sub(9);
+        let overflow = kind.width().saturating_sub(budget);
+        let scroll = if selected && overflow > 0 {
+            let ms = match app.rail_marquee.get() {
+                Some((id, epoch)) if id == s.id => epoch.elapsed().as_millis() as u64,
+                _ => {
+                    app.rail_marquee.set(Some((s.id, std::time::Instant::now())));
+                    0
+                }
+            };
+            marquee_offset(ms, overflow)
+        } else {
+            0
+        };
+        let kind = if scroll > 0 {
+            marquee_window(kind, budget, scroll)
+        } else {
+            truncate(kind, budget)
         };
         let mark = glyphs::kind_mark(s.kind, tier);
         let age = s

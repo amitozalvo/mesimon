@@ -117,6 +117,9 @@ pub struct Daemon {
     /// title when the agent named itself). Cached at FocusStart — broadcast
     /// refreshes must not query tmux per board change.
     focus_label: String,
+    /// tmux reports the hostname as `#{pane_title}` when the app never set
+    /// one — cached once so title filtering doesn't fork per tick.
+    hostname: String,
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
@@ -279,6 +282,11 @@ pub fn run(paths: Paths) -> Result<()> {
         pty_cache: crate::resources::pty_figures(),
         last_status_left: None,
         focus_label: String::new(),
+        hostname: std::process::Command::new("hostname")
+            .output()
+            .ok()
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+            .unwrap_or_default(),
         worktrees,
         pending_spawns: Vec::new(),
         wt_merged: HashMap::new(),
@@ -555,6 +563,7 @@ impl Daemon {
         }
         if self.ticks % TAIL_POLL_TICKS == 0 {
             changed |= self.poll_tails();
+            changed |= self.refresh_titles();
         }
         if self.ticks % RSS_TICKS == 0 {
             changed |= self.refresh_rss();
@@ -668,6 +677,45 @@ impl Daemon {
                 self.machines.get_mut(&id).and_then(|m| m.apply(&Signal::PaneQuiet, now))
             {
                 changed |= self.apply_change(id, &change, None, Some("activity"));
+            }
+        }
+        changed
+    }
+
+    /// Session names for the board: latch each live pane's OSC-0 title onto
+    /// its record (one batched tmux fork on the tail-poll bucket) so the TUI
+    /// shows what the agent calls itself — the same source the focused tmux
+    /// status line's breadcrumb leaf uses. The hostname means never-set (see
+    /// `pane_title`) and a missing pane keeps the last name: latch, never
+    /// clear, so sleeping/parked sessions stay recognizable.
+    fn refresh_titles(&mut self) -> bool {
+        if !self.board.sessions.iter().any(|r| r.state.has_pane()) {
+            return false;
+        }
+        let Ok(titles) = self.backend.titles() else { return false };
+        let mut changed = false;
+        for rec in self.board.sessions.iter_mut().filter(|r| r.state.has_pane()) {
+            let sid = rec.sid16();
+            let Some((_, t)) = titles.iter().find(|(name, _)| *name == sid) else { continue };
+            if t.is_empty() || *t == self.hostname {
+                continue;
+            }
+            // Bound what rides the wire and the store; control chars out.
+            // Claude Code prefixes its own spinner glyph inside the title
+            // ("✳ fix the parser") — strip leading marks so the TUI's kind
+            // mark isn't doubled (dogfood 2026-08-30: "✻ ✳ name" rows).
+            let clean: String = t.chars().filter(|c| !c.is_control()).take(80).collect();
+            let clean = clean
+                .trim_start_matches(|c: char| {
+                    matches!(c, '✳' | '✻' | '✽' | '✶' | '✢' | '*' | '·') || c.is_whitespace()
+                })
+                .to_string();
+            if clean.is_empty() {
+                continue;
+            }
+            if rec.title.as_deref() != Some(clean.as_str()) {
+                rec.title = Some(clean);
+                changed = true;
             }
         }
         changed
@@ -827,8 +875,29 @@ impl Daemon {
         if let Some(t) = ingest::transcript_of(&frame) {
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 if rec.transcript_path.as_deref() != Some(t.as_str()) {
-                    rec.transcript_path = Some(t);
+                    rec.transcript_path = Some(t.clone());
                     dirty = true;
+                }
+                // The transcript filename IS the conversation id — after an
+                // in-app /resume the pane hosts a conversation that is not
+                // the record's minted uuid, and this stem is the only place
+                // the handoff surfaces (dogfood 2026-08-30: without it,
+                // resume targeted the record's own id — a conversation that
+                // never existed). Resume targets claude_session_id, so
+                // relearn it here.
+                let stem = std::path::Path::new(&t)
+                    .file_stem()
+                    .and_then(|s| s.to_str())
+                    .and_then(|s| s.parse::<uuid::Uuid>().ok());
+                if let Some(cid) = stem {
+                    // Own-id conversations keep the field empty (the rec.id
+                    // fallback covers them); a later handoff back also
+                    // clears a previously learned foreign id.
+                    let learned = (cid != rec.id).then_some(cid);
+                    if rec.claude_session_id != learned {
+                        rec.claude_session_id = learned;
+                        dirty = true;
+                    }
                 }
             }
         }
@@ -1759,7 +1828,12 @@ impl Daemon {
             return Response::Err { message: "no such session".into() };
         };
         let reap = rec.state.has_pane().then(|| rec.sid16());
-        rec.state = SessionState::Exited { reason: ExitReason::Killed };
+        // Kill on a live session ends the process; the conversation survives
+        // and its corpse stays on the ticket rail. Kill on an already-dead
+        // record is the rail's dismissal gesture — the one exit the rail hides.
+        let reason =
+            if rec.state.is_live() { ExitReason::Killed } else { ExitReason::Dismissed };
+        rec.state = SessionState::Exited { reason };
         rec.waiting_since = None;
         rec.detail = None;
         let (id, state) = (rec.id, rec.state.clone());
@@ -1864,14 +1938,17 @@ impl Daemon {
     /// `--mcp-config` (09 §9), so we replay ours, swapping the identity flag.
     fn resume_argv(&self, rec: &SessionRecord) -> std::result::Result<Vec<String>, String> {
         let target = rec.claude_session_id.unwrap_or(rec.id);
-        if rec.argv.iter().any(|a| a == "--resume") {
-            return Ok(rec.argv.clone()); // already a resume argv — replay verbatim
-        }
         if !rec.argv.is_empty() {
-            let mut argv = Vec::with_capacity(rec.argv.len());
+            // Swap the identity flag to `--resume <target>`. An existing
+            // `--resume` operand is rewritten too, never replayed verbatim:
+            // an in-app /resume may have moved the pane onto a different
+            // conversation since the argv was persisted (dogfood
+            // 2026-08-30: a verbatim replay of a stale target crash-looped
+            // "No conversation found" forever).
+            let mut argv = Vec::with_capacity(rec.argv.len() + 1);
             let mut it = rec.argv.iter();
             while let Some(a) = it.next() {
-                if a == "--session-id" {
+                if a == "--session-id" || a == "--resume" {
                     let _ = it.next();
                     argv.push("--resume".into());
                     argv.push(target.to_string());
@@ -1938,15 +2015,20 @@ impl Daemon {
     /// second — which the pane-died path then records as a crash. Refuse
     /// up front with the honest reason instead.
     fn resume_transcript_missing(&self, rec: &SessionRecord, claude_id: uuid::Uuid) -> bool {
+        let name = format!("{claude_id}.jsonl");
+        // The record's path only vouches for the TARGET conversation when its
+        // filename matches — after an in-app /resume it names a different
+        // conversation, and trusting it waved a nonexistent target through
+        // (dogfood 2026-08-30).
         if let Some(t) = &rec.transcript_path {
-            if std::path::Path::new(t).is_file() {
+            let p = std::path::Path::new(t);
+            if p.file_name().and_then(|f| f.to_str()) == Some(name.as_str()) && p.is_file() {
                 return false;
             }
         }
         // transcript_path stale or never learned — the slug dir tracks cwd,
         // so scan every project dir for the session's file before refusing.
         let projects = crate::census::claude_home().join("projects");
-        let name = format!("{claude_id}.jsonl");
         if let Ok(dirs) = std::fs::read_dir(&projects) {
             for d in dirs.flatten() {
                 if d.path().join(&name).is_file() {
@@ -2221,15 +2303,10 @@ impl Daemon {
             SessionKind::Claude => "claude",
             SessionKind::Bash => "bash",
         };
-        let hostname = std::process::Command::new("hostname")
-            .output()
-            .ok()
-            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
-            .unwrap_or_default();
         self.focus_label = match self.backend.pane_title(&sid16) {
             Ok(t) => {
                 let t = t.trim();
-                if t.is_empty() || t == hostname {
+                if t.is_empty() || t == self.hostname {
                     kind_word.to_string()
                 } else {
                     tmux_text(t, 24)
@@ -2297,7 +2374,7 @@ impl Daemon {
             return Response::Gate { passed: true, attach_argv: None };
         }
         // Create (idempotently) the gate session the first-run ceremony attaches to (D20).
-        let msg = "mesimon first-run check:\\n\\n  This is a live session view.\\n  Press Ctrl+] to return to the board.\\n";
+        let msg = "mesimon first-run check:\\n\\n  This is a live session view.\\n  Press Ctrl+] (or Ctrl+5, on any layout) to return to the board.\\n";
         let argv = vec![
             "sh".into(),
             "-c".into(),

@@ -31,8 +31,10 @@ pub enum Screen {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Normal,
-    /// MOVE: ghost position tracked client-side, committed on Enter (M-rules).
-    Move { ticket: ulid::Ulid, col: usize, idx: usize },
+    /// MOVE: ghost position tracked client-side; nothing is sent until the
+    /// drop. `grab` is the key that started it (`>` or `<`): the same key
+    /// again (or Enter) commits, the opposite key cancels.
+    Move { ticket: ulid::Ulid, col: usize, idx: usize, grab: char },
     Input { purpose: InputPurpose, buffer: EditBuffer },
     /// External drawer: discovered foreign sessions (19 §4 tier 1).
     External { idx: usize },
@@ -73,6 +75,8 @@ pub struct App {
     /// Marquee clock for the selected card's truncated title: which ticket is
     /// scrolling and since when (draw-side state).
     pub marquee: Cell<Option<(ulid::Ulid, std::time::Instant)>>,
+    /// Same clock for the ticket rail's selected session name.
+    pub rail_marquee: Cell<Option<(uuid::Uuid, std::time::Instant)>>,
     /// First visible card row of the cursor column (draw-side scroll state).
     pub scroll_row: Cell<usize>,
     /// Transcript peek (`p`): the cursor card also shows its latest assistant
@@ -119,6 +123,7 @@ impl App {
             quit: false,
             col_window: Cell::new(0),
             marquee: Cell::new(None),
+            rail_marquee: Cell::new(None),
             scroll_row: Cell::new(0),
             peek: false,
             peek_cache: crate::peek::PeekCache::default(),
@@ -227,6 +232,7 @@ impl App {
     /// card's title replays its reveal on re-landing.
     fn to_board(&mut self) {
         self.marquee.set(None);
+        self.rail_marquee.set(None);
         self.screen = Screen::Board;
     }
 
@@ -373,7 +379,7 @@ impl App {
         }
         match self.mode.clone() {
             Mode::Normal => self.key_normal(code, mods)?,
-            Mode::Move { ticket, col, idx } => self.key_move(code, ticket, col, idx)?,
+            Mode::Move { ticket, col, idx, grab } => self.key_move(code, ticket, col, idx, grab)?,
             Mode::External { idx } => self.key_external(code, idx)?,
             Mode::Input { .. } => {} // handled above
         }
@@ -438,24 +444,22 @@ impl App {
                     self.send(Command::RestoreTicket { id })?;
                 }
             }
-            KeyCode::Char('m') => {
-                if let Some(t) = self.selected_ticket() {
-                    self.mode = Mode::Move { ticket: t.id, col: self.cursor_col, idx: self.cursor_row };
-                }
-            }
+            // `>` / `<` grab the card and shift its ghost one column that way
+            // immediately (doc 04's `m`, remapped — STALE-MAP): the move is
+            // pending and blinking; the same key again (or Enter) drops it,
+            // the opposite key cancels, hjkl fine-place meanwhile.
             KeyCode::Char(c @ ('>' | '<')) => {
                 if let Some(t) = self.selected_ticket() {
                     let id = t.id;
                     let cols = self.columns();
-                    if cols.len() > 1 {
-                        let target = if c == '>' {
+                    if !cols.is_empty() {
+                        let col = if c == '>' {
                             (self.cursor_col + 1) % cols.len()
                         } else {
                             (self.cursor_col + cols.len() - 1) % cols.len()
                         };
-                        let column = cols[target].clone();
-                        self.send(Command::MoveTicket { id, column, before: None })?;
-                        self.select_ticket(id);
+                        let idx = self.cursor_row.min(self.ghost_len(&cols, col, id));
+                        self.mode = Mode::Move { ticket: id, col, idx, grab: c };
                     }
                 }
             }
@@ -762,44 +766,66 @@ impl App {
         Ok(())
     }
 
-    fn key_move(&mut self, code: KeyCode, ticket: ulid::Ulid, col: usize, idx: usize) -> Result<()> {
+    fn key_move(
+        &mut self,
+        code: KeyCode,
+        ticket: ulid::Ulid,
+        col: usize,
+        idx: usize,
+        grab: char,
+    ) -> Result<()> {
         let cols = self.columns();
         match code {
             KeyCode::Esc => self.mode = Mode::Normal, // total cancel (M2 rule)
             KeyCode::Char('h') | KeyCode::Left => {
                 let col = col.saturating_sub(1);
                 let n = self.ghost_len(&cols, col, ticket);
-                self.mode = Mode::Move { ticket, col, idx: idx.min(n) };
+                self.mode = Mode::Move { ticket, col, idx: idx.min(n), grab };
             }
             KeyCode::Char('l') | KeyCode::Right => {
                 let col = (col + 1).min(cols.len().saturating_sub(1));
                 let n = self.ghost_len(&cols, col, ticket);
-                self.mode = Mode::Move { ticket, col, idx: idx.min(n) };
+                self.mode = Mode::Move { ticket, col, idx: idx.min(n), grab };
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 let n = self.ghost_len(&cols, col, ticket);
-                self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n) };
+                self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n), grab };
             }
             KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::Move { ticket, col, idx: idx.saturating_sub(1) };
+                self.mode = Mode::Move { ticket, col, idx: idx.saturating_sub(1), grab };
             }
-            KeyCode::Enter => {
-                let target_col = cols[col.min(cols.len() - 1)].clone();
-                let others: Vec<ulid::Ulid> = self
-                    .board
-                    .column_tickets(&target_col)
-                    .iter()
-                    .filter(|t| t.id != ticket)
-                    .map(|t| t.id)
-                    .collect();
-                let before = others.get(idx).copied();
-                self.mode = Mode::Normal;
-                self.send(Command::MoveTicket { id: ticket, column: target_col, before })?;
-                self.cursor_col = col;
-                self.cursor_row = idx;
+            KeyCode::Char(c @ ('>' | '<')) => {
+                if c == grab {
+                    // The grab key again: commit the pending move where the
+                    // ghost stands (`>>` / `<<` — one column in one gesture).
+                    self.drop_ghost(&cols, ticket, col, idx)?;
+                } else {
+                    // The opposite key cancels the whole move.
+                    self.mode = Mode::Normal;
+                }
             }
+            KeyCode::Enter => self.drop_ghost(&cols, ticket, col, idx)?,
             _ => {}
         }
+        Ok(())
+    }
+
+    /// Commit the MOVE ghost: reinsert `ticket` at (`col`, `idx`) and land the
+    /// cursor on it.
+    fn drop_ghost(&mut self, cols: &[String], ticket: ulid::Ulid, col: usize, idx: usize) -> Result<()> {
+        let target_col = cols[col.min(cols.len() - 1)].clone();
+        let others: Vec<ulid::Ulid> = self
+            .board
+            .column_tickets(&target_col)
+            .iter()
+            .filter(|t| t.id != ticket)
+            .map(|t| t.id)
+            .collect();
+        let before = others.get(idx).copied();
+        self.mode = Mode::Normal;
+        self.send(Command::MoveTicket { id: ticket, column: target_col, before })?;
+        self.cursor_col = col;
+        self.cursor_row = idx;
         Ok(())
     }
 
@@ -846,8 +872,10 @@ impl App {
     /// This is the ticket screen's SESSIONS rail — fixed creation order, never
     /// resorted by activity (06 §7 R4). `Exited` drops out, with one exception:
     /// the latest exited claude conversation stays on the rail (Enter resumes
-    /// it — the transcript survives the process) unless `x` dismissed it.
-    /// Older corpses re-import through the drawer.
+    /// it — the transcript survives the process, a deliberate `x` kill
+    /// included) unless dismissed (`x` on the corpse marks it `Dismissed` —
+    /// the one exit the rail hides). Older corpses re-import through the
+    /// drawer.
     pub fn rail_sessions(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
         let corpse = self
             .board
@@ -856,7 +884,7 @@ impl App {
             .filter(|s| {
                 s.ticket == ticket
                     && s.kind == SessionKind::Claude
-                    && matches!(s.state, SessionState::Exited { reason } if reason != ExitReason::Killed)
+                    && matches!(s.state, SessionState::Exited { reason } if reason != ExitReason::Dismissed)
             })
             .max_by_key(|s| s.state_changed_at.unwrap_or(0))
             .map(|s| s.id);
@@ -1060,19 +1088,27 @@ pub(crate) mod test_support {
                     resources: self.resources.clone(),
                     worktrees: Vec::new(),
                 }),
-                // Append-only move (before ignored): enough for the key tests,
-                // which only exercise `before: None`.
-                Command::MoveTicket { id, column, before: _ } => {
-                    let order = self
+                Command::MoveTicket { id, column, before } => {
+                    let mut order: Vec<ulid::Ulid> = self
                         .board
                         .column_tickets(&column)
                         .iter()
-                        .rfind(|t| t.id != id)
-                        .map(|t| format!("{}~", t.order))
-                        .unwrap_or_else(|| "~".into());
+                        .map(|t| t.id)
+                        .filter(|t| *t != id)
+                        .collect();
+                    let pos = before
+                        .and_then(|b| order.iter().position(|t| *t == b))
+                        .unwrap_or(order.len());
+                    order.insert(pos, id);
                     if let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == id) {
                         t.column = column;
-                        t.order = order;
+                    }
+                    // Renumber the whole target column: orders only compare
+                    // within a column, so clobbering them is safe here.
+                    for (i, tid) in order.iter().enumerate() {
+                        if let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == *tid) {
+                            t.order = format!("{i:04}");
+                        }
                     }
                     Ok(Response::Ok)
                 }
@@ -1128,58 +1164,110 @@ mod tests {
         App::for_test(b, Theme::new(Flavor::Graphite, Profile::TrueColor))
     }
 
+    fn press(app: &mut App, c: char) {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+    }
+
     #[test]
-    fn gt_moves_selected_ticket_one_column_right_and_follows() {
+    fn single_grab_shifts_ghost_one_column_pending() {
+        let mut app = app_three_columns();
+        press(&mut app, '>');
+        // Ghost already sits one column over; nothing sent yet.
+        assert!(matches!(app.mode, Mode::Move { col: 1, idx: 0, grab: '>', .. }));
+        assert_eq!(app.board.column_tickets("todo").len(), 2);
+        assert!(app.board.column_tickets("doing").is_empty());
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.board.column_tickets("todo").len(), 2);
+    }
+
+    #[test]
+    fn opposite_key_cancels_pending_move() {
+        let mut app = app_three_columns();
+        press(&mut app, '>');
+        press(&mut app, '<');
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.board.column_tickets("todo").len(), 2);
+        assert!(app.board.column_tickets("doing").is_empty());
+        press(&mut app, '<');
+        press(&mut app, '>');
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.board.column_tickets("todo").len(), 2);
+    }
+
+    #[test]
+    fn double_gt_moves_one_column_right_and_follows() {
         let mut app = app_three_columns();
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
-        app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE).unwrap();
+        press(&mut app, '>');
+        press(&mut app, '>');
         let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
         assert_eq!(doing, vec![ulid::Ulid(1)]);
+        assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.cursor_col, 1);
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
     }
 
     #[test]
-    fn gt_appends_to_end_of_target_column() {
+    fn double_grab_carries_row_position() {
         let mut app = app_three_columns();
-        app.cursor_col = 2; // "done", holds ticket 3
-        app.handle_key(KeyCode::Char('<'), KeyModifiers::NONE).unwrap();
+        app.cursor_col = 2; // "done", holds ticket 3 at row 0
+        press(&mut app, '<');
+        press(&mut app, '<');
         // no wrap involved: done -> doing
         let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
         assert_eq!(doing, vec![ulid::Ulid(3)]);
-        // now move it into todo, which already has 1 and 2 — lands last
-        app.handle_key(KeyCode::Char('<'), KeyModifiers::NONE).unwrap();
+        // hop again into todo, which already has 1 and 2 — the ghost keeps
+        // its row (0), landing before them
+        press(&mut app, '<');
+        press(&mut app, '<');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
-        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(3)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 2));
+        assert_eq!(todo, vec![ulid::Ulid(3), ulid::Ulid(1), ulid::Ulid(2)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
     }
 
     #[test]
-    fn gt_cycles_off_last_column_to_first() {
+    fn double_gt_cycles_off_last_column_to_first() {
         let mut app = app_three_columns();
         app.cursor_col = 2; // "done", ticket 3
-        app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE).unwrap();
+        press(&mut app, '>');
+        press(&mut app, '>');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
-        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(3)]);
+        assert_eq!(todo, vec![ulid::Ulid(3), ulid::Ulid(1), ulid::Ulid(2)]);
         assert_eq!(app.cursor_col, 0);
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(3)));
     }
 
     #[test]
-    fn lt_cycles_off_first_column_to_last() {
+    fn double_lt_cycles_off_first_column_to_last() {
         let mut app = app_three_columns();
-        app.handle_key(KeyCode::Char('<'), KeyModifiers::NONE).unwrap();
+        press(&mut app, '<');
+        press(&mut app, '<');
         let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
-        assert_eq!(done, vec![ulid::Ulid(3), ulid::Ulid(1)]);
+        assert_eq!(done, vec![ulid::Ulid(1), ulid::Ulid(3)]);
         assert_eq!(app.cursor_col, 2);
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
     }
 
     #[test]
-    fn gt_on_empty_column_is_a_noop() {
+    fn grab_then_fine_placement_still_drops_on_enter() {
+        let mut app = app_three_columns();
+        press(&mut app, '>'); // grab ticket 1 — ghost lands in doing
+        press(&mut app, 'l'); // ghost to done (holds 3)
+        press(&mut app, 'j'); // below 3
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(done, vec![ulid::Ulid(3), ulid::Ulid(1)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (2, 1));
+    }
+
+    #[test]
+    fn grab_on_empty_column_is_a_noop() {
         let mut app = app_three_columns();
         app.cursor_col = 1; // "doing" is empty
-        app.handle_key(KeyCode::Char('>'), KeyModifiers::NONE).unwrap();
+        press(&mut app, '>');
+        press(&mut app, '>');
+        assert!(matches!(app.mode, Mode::Normal));
         assert!(app.board.column_tickets("doing").is_empty());
         assert_eq!(app.board.column_tickets("todo").len(), 2);
     }

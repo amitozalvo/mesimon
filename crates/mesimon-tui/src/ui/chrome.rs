@@ -132,7 +132,14 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
             };
             mode_line(app, label, "enter save ∙ esc cancel")
         }
-        Mode::Move { .. } => mode_line(app, "MOVE", "hjkl move ∙ enter drop ∙ esc cancel"),
+        Mode::Move { grab, .. } => {
+            let hint = if *grab == '>' {
+                "hjkl move ∙ > or enter drop ∙ < cancels ∙ esc cancel"
+            } else {
+                "hjkl move ∙ < or enter drop ∙ > cancels ∙ esc cancel"
+            };
+            mode_line(app, "MOVE", hint)
+        }
         Mode::External { .. } => {
             mode_line(app, "EXTERNAL", "jk ∙ a import ∙ R import + resume ∙ esc back")
         }
@@ -141,7 +148,7 @@ pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
                 mode_line(
                     app,
                     "BOARD",
-                    "enter open ticket ∙ tab needs you ∙ a add ∙ m move ∙ p peek ∙ e external ∙ q quit",
+                    "enter open ticket ∙ tab needs you ∙ a add ∙ >< move ∙ p peek ∙ e external ∙ q quit",
                 )
             } else {
                 Line::from(Span::styled(format!(" {}", app.status), theme.base()))

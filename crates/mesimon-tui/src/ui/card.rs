@@ -111,6 +111,7 @@ pub(super) fn render(
     wt: Option<&mesimon_core::command::WorktreeItem>,
     selected: bool,
     held: bool,
+    trail: bool,
     marquee_ms: Option<u64>,
     peek: Option<&str>,
 ) -> Vec<Line<'static>> {
@@ -118,7 +119,9 @@ pub(super) fn render(
     let t_cells = (ctx.width as usize).saturating_sub(3);
     let tier = theme.glyph_tier();
     let glyph = glyphs::card_glyph(sessions, tier, ctx.spin);
-    let attn_card = matches!(glyph, Some((_, Register::Attn)));
+    // A pending move's trail is semi-transparent everything — even an attn
+    // card demotes while its ghost is in hand (the ghost carries the weight).
+    let attn_card = !trail && matches!(glyph, Some((_, Register::Attn)));
     let cursorish = selected || held;
 
     // Age: newest state change across the ticket's sessions; suppressed on a
@@ -131,8 +134,11 @@ pub(super) fn render(
         .map(|(ms, running)| age_slot(ctx.now_ms, ms, running));
 
     // Accent bar weight (06 §2.4a). An alarm card never demotes to
-    // dormant/ghost — it holds its state hue in every de-emphasis context.
-    let bar = if cursorish {
+    // dormant/ghost — it holds its state hue in every de-emphasis context
+    // (except as a move trail, which is the one whole-card demotion).
+    let bar = if trail {
+        BarWeight::Ghost
+    } else if cursorish {
         BarWeight::Cursor
     } else {
         match glyph {
@@ -175,14 +181,23 @@ pub(super) fn render(
         Style::default()
     };
 
-    let title_style = if attn_card {
+    let title_style = if trail {
+        // The original spot of a pending move: semi-transparent.
+        theme.dim3()
+    } else if attn_card {
         Style::default() // inherits attn_ink from the row
+    } else if held {
+        // The MOVE ghost blinks in place until dropped or cancelled — the
+        // grabbed card must read as "in hand" (STALE-MAP 2026-08-30).
+        theme.move_blink(ctx.spin)
     } else if cursorish {
         Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.rest.base)
     };
-    let quiet_style = if attn_card {
+    let quiet_style = if trail {
+        theme.dim3()
+    } else if attn_card {
         Style::default()
     } else if cursorish {
         Style::default().fg(theme.sel.dim2)
@@ -193,13 +208,19 @@ pub(super) fn render(
     let mut spans: Vec<Span<'static>> = vec![Span::styled(bar_ch.to_string(), bar_style)];
     spans.push(Span::styled(" ".to_string(), Style::default()));
     if let Some((g, reg)) = glyph {
-        let gs = if attn_card { Style::default() } else { register_style(theme, reg) };
+        let gs = if trail {
+            theme.dim3()
+        } else if attn_card {
+            Style::default()
+        } else {
+            register_style(theme, reg)
+        };
         spans.push(Span::styled(format!("{g} "), gs));
     }
     spans.push(Span::styled(title, title_style));
     spans.push(Span::raw(" ".repeat(fill)));
     if let Some((m, err)) = &wt_mark {
-        let style = if *err && !attn_card {
+        let style = if *err && !attn_card && !trail {
             theme.err_text()
         } else {
             quiet_style
@@ -241,9 +262,26 @@ pub(super) fn render(
         let listed: &[&&SessionRecord] = if ranked.len() > 1 { &ranked } else { &[] };
         for s in listed.iter().take(2) {
             let mark = glyphs::kind_mark(s.kind, tier);
-            let word = match s.kind {
+            // The session's own name (OSC-0 title, same as the tmux status
+            // bar's breadcrumb leaf) when it set one, else the kind word.
+            let word = s.title.as_deref().unwrap_or(match s.kind {
                 SessionKind::Claude => "claude",
                 SessionKind::Bash => "bash",
+            });
+            // Row budget: "  {mark} {word}" + ≥1 fill + glyph + " {age:>3}".
+            // An overflowing name reveals itself marquee-style on the same
+            // clock as the card title (accordion rows exist on the cursor
+            // card only, so the clock is always live here).
+            let budget = t_cells.saturating_sub(10);
+            let overflow = word.width().saturating_sub(budget);
+            let scroll = match (marquee_ms, overflow) {
+                (Some(ms), o) if o > 0 => marquee_offset(ms, o),
+                _ => 0,
+            };
+            let word = if scroll > 0 {
+                marquee_window(word, budget, scroll)
+            } else {
+                truncate(word, budget)
             };
             let (g, reg) = glyphs::session_glyph(&s.state, tier, ctx.spin);
             let a = s

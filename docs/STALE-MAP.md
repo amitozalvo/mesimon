@@ -515,3 +515,85 @@ self-heals. Human DENY still fires nothing — that path clears via the next
 `UserPromptSubmit`/`Stop` as before.
 
 Existing sessions keep the narrow matcher until respawned (hooks are injected at launch).
+
+## Board grab key is `>`/`<`, not `m` (2026-08-30, dogfood; final shape same day)
+
+04 §BOARD's `m grab` is superseded. Final gesture ("move the item from the first press,
+blinking, pending"): the first `>`/`<` grabs the cursor card AND shifts its ghost one column
+that way immediately (wrapping at the ends) — a pending, blinking move, nothing sent to the
+daemon yet. The same key again (or `enter`) commits where the ghost stands, so `>>` / `<<` is
+one column in one gesture; the OPPOSITE key cancels outright; `esc` cancels; hjkl fine-place
+meanwhile (the grab direction rides in `Mode::Move::grab`). Every commit goes through the same
+ghost drop, so the card keeps its row, `idx.min(ghost_len)`. Board `m` is unbound (free for a
+future board-level merge mnemonic; ticket-screen `m` merge is untouched). This retires two
+earlier same-day shapes: single-press immediate move (appended to column end), and
+grab-in-place-then-double-press. Doc 04's keymap table gets the sweep in M6.
+
+## In-app /resume is a conversation handoff, not an exit (2026-08-30, dogfood)
+
+Implementation-verified refutation of the 11 §11.2.3 reading that every `SessionEnd` marks a
+dead session: Claude Code's in-app `/resume` fires `SessionEnd{reason:resume}` +
+`SessionStart{source:resume}` **in the same live pane** — the process survives, hosting a
+different conversation. Honoring the End as an exit stranded a live session as a corpse, and
+the next rail Enter killed the user's real pane and crash-looped
+`claude --resume <record-uuid>` on a conversation that never existed ("No conversation
+found", exit 1, forever — the argv was replayed verbatim). Dogfood case: T-36.
+
+The fixes, all landed together:
+
+- **Attention machine**: `SessionEnd{Resume}` is inert — no transition from any state, and it
+  never refines an already-exited reason (`ExitReason::Resumed` is now unreachable from hooks;
+  kept for serde back-compat). Real death still arrives as `PaneDied` (T-7 authority).
+- **Identity relearn**: the `SessionStart` frame's `transcript_path` filename IS the
+  conversation id — `on_hook` derives `claude_session_id` from the stem when it differs from
+  the record's minted uuid (and clears it on a handoff back). The one deliberate exception to
+  D24's "identity is never discovered": the handoff surfaces nowhere else.
+- **`resume_argv` never replays a stale target**: the identity flag (`--session-id` OR a
+  previous `--resume`) is rewritten to `claude_session_id.unwrap_or(rec.id)` on every resume.
+- **`resume_transcript_missing`** trusts the record's `transcript_path` only when its filename
+  matches the target id; otherwise it scans the projects dirs for `<target>.jsonl`.
+
+## Kill ≠ dismiss: `Killed` corpses stay on the rail (2026-08-30, dogfood)
+
+Amends "Exited conversations stay resumable" above: `x` on a LIVE session kills the process
+but the conversation survives — its corpse now stays on the rail (state word `killed`, grey,
+not `FAILED`/Err; a deliberate kill is not a failure). The rail hides only the new
+`ExitReason::Dismissed`, which `kill_session` records when the target is already non-live —
+i.e. `x` on a corpse row is the dismissal gesture, exactly as before, but it no longer
+shadows the kill semantics. Dismissed corpses remain drawer-re-importable (only live records
+shadow-ban drawer rows).
+
+## MOVE ghost blinks in place (2026-08-30, dogfood)
+
+"I press `<`, I expect the ticket to blink in place; h/l move the blinking ticket." The grabbed
+card (MOVE mode's held ghost) blinks its title until dropped or cancelled: an 800 ms square wave
+down the sel ramp — `sel.base` 400 ms / `sel.dim3` 400 ms (`Theme::move_blink`; BOLD rides both
+phases, it is the cursor-title treatment, not the blink). This supersedes D19/06 §8's blanket
+blink ban for exactly this one element — grab feedback is the point — via luminance repainting
+on the redraw clock, never real SGR blink. Grey ramp only, so the one-saturated-colour law holds
+(`move_blink_rides_the_sel_ramp_only` + `test_move_ghost_blinks` are the spec). Mono degrades to
+the steady cursor treatment (its ramp is all Reset; the reversed surface marks the grab).
+While the move is pending the card at its ORIGINAL spot stays visible semi-transparent — dim3
+title, ghost-weight bar, even an attn card demotes there (the ghost carries the weight;
+`test_move_trail_is_semi_transparent`).
+
+Two abandoned detours the same day (misread of "this session is currently moving" as the
+WORKING state): a breath, then a hard blink, on the running spinner glyph — both reverted; the
+working glyph is back to the rotating spinner at steady `dim2`, and D19's "working is
+motion-free" stands except for the rotation itself.
+
+## Ctrl+5 unfocus needs its own bind — extended-keys refutes rung 1b's "same byte" (2026-08-30, dogfood)
+
+docs/04 §2.14 rung 1b claims `Ctrl+5` is a free alias of `Ctrl+]` because both are legacy byte
+`0x1D`. True at the terminal (verified: `cat -v` outside tmux shows `^]` for both, iTerm-class
+terminal, English AND Hebrew layouts) — but our own conf sets `extended-keys always` (spike T-6),
+so tmux negotiates CSI-u with the outer terminal and `Ctrl+5` arrives as the DISTINCT key
+`CSI 53;5u`, never folding into `C-]`. The lone `bind-key -n C-]` therefore misses it and the
+byte falls through into the focused pane. Fix: an explicit `bind-key -n C-5 detach-client` in the
+conf plus the live-server replay in `set_status_left` (running servers never re-read conf).
+Status-right and the first-run gate message now name both keys.
+
+The motivating failure is D20's scariest-failure prophecy come true on Hebrew layout: brackets
+mirror under RTL, so Ctrl+physical-`]` emits `0x1B` = Esc — straight into the Claude pane as an
+interrupt. No bind can intercept that (it IS Esc); `Ctrl+5` is the layout-safe unfocus. Rung 1b's
+mechanism survives, its "no code change" conclusion does not.

@@ -186,6 +186,23 @@ impl TmuxBackend {
             .collect())
     }
 
+    /// Every pane's OSC-0 title in one fork (`#{pane_title}`; tmux reports
+    /// the hostname when the app never set one — callers filter, same rule
+    /// as `pane_title`).
+    pub fn titles(&self) -> Result<Vec<(String, String)>> {
+        if !self.server_alive() {
+            return Ok(Vec::new());
+        }
+        let out = self.run(&["list-panes", "-a", "-F", "#{session_name}\t#{pane_title}"])?;
+        Ok(out
+            .lines()
+            .filter_map(|l| {
+                let (name, t) = l.split_once('\t')?;
+                Some((name.to_string(), t.trim().to_string()))
+            })
+            .collect())
+    }
+
     /// Kill ladder rung 1: SIGTERM the pane's process group; caller escalates to
     /// `kill_pane` after grace (D23 — never SIGKILL mid-turn from here).
     pub fn signal_session(&self, sid16: &str) -> Result<()> {
@@ -211,7 +228,10 @@ impl TmuxBackend {
         self.run(&["set-option", "-g", "status-left-length", "120"])?;
         self.run(&["set-option", "-g", "status-left", text])?;
         // Live servers predate conf wording changes; keep the right side in step.
-        self.run(&["set-option", "-g", "status-right", " Ctrl+] back  "])?;
+        self.run(&["set-option", "-g", "status-right", " Ctrl+]/^5 back  "])?;
+        // Live servers also predate the C-5 bind (extended-keys makes Ctrl+5 a
+        // distinct key, so the C-] bind alone doesn't catch it).
+        self.run(&["bind-key", "-T", "root", "C-5", "detach-client"])?;
         Ok(())
     }
 
