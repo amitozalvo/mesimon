@@ -539,6 +539,7 @@ impl Daemon {
             Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
             Command::ArchiveTicket { id } => Some(("archive_ticket", Some(*id))),
             Command::UnarchiveTicket { id } => Some(("unarchive_ticket", Some(*id))),
+            Command::ArchiveAll => Some(("archive_all", None)),
             Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
             Command::KillSession { .. } => Some(("kill_session", None)),
@@ -584,6 +585,13 @@ impl Daemon {
             Command::RestoreTicket { id } => self.restore_ticket(id),
             Command::ArchiveTicket { id } => self.archive_ticket(id),
             Command::UnarchiveTicket { id } => self.unarchive_ticket(id),
+            Command::ArchiveAll => {
+                let (archived, skipped) = self.archive_all();
+                if archived > 0 {
+                    self.persist_and_notify();
+                }
+                Response::Archived { archived, skipped }
+            }
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
             Command::SpawnSession { ticket, kind } => self.spawn_session(ticket, kind),
             Command::KillSession { id } => self.kill_session(id),
@@ -1327,6 +1335,12 @@ impl Daemon {
     /// enough for the 1 s bucket, which it must use: the RSS bucket's
     /// no-pane early-return fires precisely when archive candidates exist.
     fn archive_figures(&self) -> usize {
+        self.archive_candidates().len()
+    }
+
+    /// The offer's exact candidate set — ArchiveAll takes THIS, nothing
+    /// broader (the Z/ReclaimAll rule).
+    fn archive_candidates(&self) -> Vec<ulid::Ulid> {
         let now = now_ms();
         let threshold = archive_suggest_ms();
         self.board
@@ -1356,7 +1370,31 @@ impl Daemon {
                     })
                 }
             })
-            .count()
+            .map(|t| t.id)
+            .collect()
+    }
+
+    /// X: archive every ticket the offer prices. Per-ticket gate re-checked
+    /// (a session can wake between pricing and the keypress); one broadcast.
+    fn archive_all(&mut self) -> (usize, usize) {
+        let ids = self.archive_candidates();
+        let at = now_iso();
+        let mut archived = 0;
+        let mut skipped = 0;
+        for id in ids {
+            if self.board.ticket_awake_sessions(id) > 0 {
+                skipped += 1;
+                continue;
+            }
+            if let Some(t) = self.board.ticket_mut(id) {
+                t.archived = Some(Archived { at: at.clone(), by: "local".into() });
+                let t = t.clone();
+                let _ = store::save_ticket(&self.paths, &t);
+                archived += 1;
+            }
+        }
+        self.archive_cache = self.archive_figures();
+        (archived, skipped)
     }
 
     /// The D33e spawn gate: refuse only at the OS boundary, naming the reason.

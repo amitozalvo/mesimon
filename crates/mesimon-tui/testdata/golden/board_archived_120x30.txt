@@ -1,4 +1,4 @@
- mesimon > kanban-tui   6 tickets ∙ 1 to archive (A on the card)
+ mesimon > kanban-tui   6 tickets ∙ 1 to archive in done (X all ∙ A one)
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 

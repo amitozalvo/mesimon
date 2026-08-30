@@ -205,6 +205,26 @@ fn archive_gates_suggests_and_restores() {
     let toml = std::fs::read_to_string(&ticket_toml).expect("ticket.toml");
     assert!(!toml.contains("[archived]"), "field must clear: {toml}");
 
+    // 6. X takes the whole offer: both tickets re-price, ArchiveAll takes
+    // exactly that set, the offer reads zero after.
+    let deadline = Instant::now() + Duration::from_secs(6);
+    loop {
+        let (_, resources) = snapshot_of(c.request(Command::Snapshot));
+        if resources.archive_tickets == 2 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "offer never re-priced after restore");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+    match c.request(Command::ArchiveAll) {
+        Response::Archived { archived, skipped } => assert_eq!((archived, skipped), (2, 0)),
+        other => panic!("archive_all failed: {other:?}"),
+    }
+    let (board, resources) = snapshot_of(c.request(Command::Snapshot));
+    assert!(board.column_tickets("DONE").is_empty());
+    assert_eq!(board.archived_tickets().len(), 2);
+    assert_eq!(resources.archive_tickets, 0);
+
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
     let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();

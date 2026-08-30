@@ -52,6 +52,9 @@ pub enum Command {
     /// is asleep. Reversible: `UnarchiveTicket` restores to the same column.
     ArchiveTicket { id: ulid::Ulid },
     UnarchiveTicket { id: ulid::Ulid },
+    /// Take the header's archive offer: archive exactly the tickets the
+    /// suggestion prices (the offer's own candidate set, nothing broader).
+    ArchiveAll,
     MoveTicket { id: ulid::Ulid, column: String, before: Option<ulid::Ulid> },
     SpawnSession { ticket: ulid::Ulid, kind: SessionKind },
     KillSession { id: uuid::Uuid },
@@ -107,6 +110,8 @@ pub enum Response {
     Spawned { id: uuid::Uuid },
     /// ReclaimAll's receipt: how many actually slept, and why others did not.
     Reclaimed { slept: usize, skipped: usize },
+    /// ArchiveAll's receipt: the honest split (skipped = woke since pricing).
+    Archived { archived: usize, skipped: usize },
     Board {
         board: Board,
         grace: Vec<GraceItem>,

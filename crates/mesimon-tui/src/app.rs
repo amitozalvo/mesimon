@@ -650,6 +650,21 @@ impl App {
                     self.mode = Mode::Archived { idx: 0 };
                 }
             }
+            // X takes the header's archive offer (the Z of archiving).
+            KeyCode::Char('X') => {
+                match self.req(Command::ArchiveAll) {
+                    Response::Archived { archived, skipped } => {
+                        self.status = match (archived, skipped) {
+                            (0, 0) => "nothing to archive".into(),
+                            (n, 0) => format!("archived {n} ∙ V lists"),
+                            (n, k) => format!("archived {n} ∙ {k} not ready"),
+                        };
+                    }
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
+                self.refresh()?;
+            }
             // Transcript peek toggle. Doc 04's BOARD `p` (duplicate-yanked) is
             // unimplemented; peek borrows the INBOX mnemonic until the M6
             // keymap pass (STALE-MAP, M3.5 deviations).

@@ -85,7 +85,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
     // untouched past the hour — an offer, never an action.
     if r.archive_tickets > 0 {
         spans.push(Span::styled(
-            format!(" ∙ {} to archive (A on the card)", r.archive_tickets),
+            format!(" ∙ {} to archive in done (X all ∙ A one)", r.archive_tickets),
             theme.dim2(),
         ));
     }

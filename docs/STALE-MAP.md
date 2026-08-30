@@ -703,5 +703,7 @@ asleep that long, or (dogfood 2026-08-30) NO live sessions at all: a session-les
 corpse-only DONE ticket counts once the newest of `created_at` / corpse `state_changed_at`
 ages past the threshold. Computed on the 1 s
 tick bucket, deliberately NOT in `refresh_rss` — its no-pane early-return fires exactly when
-archive candidates exist. chrome.rs's old "archived doesn't exist until v0.2" header comment
+archive candidates exist. BOARD `X` takes the offer (`ArchiveAll` — the Z/ReclaimAll rule:
+archives exactly the priced candidate set, per-ticket gate re-checked, honest
+archived/skipped split). chrome.rs's old "archived doesn't exist until v0.2" header comment
 is refuted; the header count now excludes archived tickets.
