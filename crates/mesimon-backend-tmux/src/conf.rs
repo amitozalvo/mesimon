@@ -35,11 +35,46 @@ set -g window-status-format ""
 set -g window-status-current-format ""
 "##
     .to_string();
+    for (table, key, pipe) in copy_pipe_bindings() {
+        conf.push_str(&format!(
+            "bind-key -T {table} {key} send-keys -X copy-pipe-and-cancel \"{pipe}\"\n"
+        ));
+    }
     if let Some(cmd) = pane_died_cmd {
         // Brace literal keeps the nested quoting sane (tmux ≥ 3.1).
         conf.push_str(&format!("set-hook -g pane-died {{ {cmd} }}\n"));
     }
     conf
+}
+
+/// The command tmux pipes a finished copy-mode selection into, reaching the
+/// system clipboard WITHOUT `set-clipboard on` — T-10's OSC-52 containment
+/// stays: inner apps still can't touch the clipboard, only tmux's own copy
+/// does, via a local pipe. None on platforms without a known clipboard tool
+/// (defaults keep the selection in tmux's buffer, as before).
+fn copy_pipe_cmd() -> Option<&'static str> {
+    if cfg!(target_os = "macos") {
+        Some("pbcopy")
+    } else {
+        None
+    }
+}
+
+/// Copy-mode bindings `(table, key, pipe_cmd)` that end a selection through
+/// `copy_pipe_cmd`. Rendered into the conf for fresh servers AND issued as
+/// live commands (`TmuxBackend::install_copy_bindings`) — a running server
+/// never re-reads `-f`. Mouse drag-end plus the two keyboard copy keys;
+/// `copy-pipe-and-cancel` matches the default bindings' cancel behavior.
+pub fn copy_pipe_bindings() -> Vec<(&'static str, &'static str, &'static str)> {
+    let Some(pipe) = copy_pipe_cmd() else {
+        return Vec::new();
+    };
+    vec![
+        ("copy-mode", "MouseDragEnd1Pane", pipe),
+        ("copy-mode-vi", "MouseDragEnd1Pane", pipe),
+        ("copy-mode", "Enter", pipe),
+        ("copy-mode-vi", "y", pipe),
+    ]
 }
 
 /// The `run-shell` command the `pane-died` hook executes: one invocation of
@@ -58,6 +93,16 @@ mod tests {
     #[test]
     fn hookless_render_has_no_hook() {
         assert!(!render(None).contains("pane-died"));
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn render_pipes_copy_to_the_clipboard_without_osc52() {
+        let conf = render(None);
+        assert!(conf.contains(r#"copy-pipe-and-cancel "pbcopy""#));
+        assert!(conf.contains("bind-key -T copy-mode-vi MouseDragEnd1Pane"));
+        // T-10 containment must survive the clipboard fix.
+        assert!(conf.contains("set-clipboard off"));
     }
 
     #[test]

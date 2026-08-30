@@ -16,7 +16,7 @@ mod update;
 use std::path::Path;
 
 use anyhow::Result;
-use ratatui::crossterm::event::{DisableMouseCapture, EnableMouseCapture};
+use ratatui::crossterm::event::DisableMouseCapture;
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -105,7 +105,9 @@ fn event_loop(
 fn init_terminal() -> Result<ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
-    execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+    // No EnableMouseCapture: we handle no mouse events, and capture steals the
+    // terminal's native text selection.
+    execute!(stdout, EnterAlternateScreen)?;
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
     let mut t = ratatui::Terminal::new(backend)?;
     t.clear()?;

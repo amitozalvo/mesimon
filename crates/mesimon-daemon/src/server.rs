@@ -172,6 +172,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let backend = TmuxBackend::new(paths.tmux_sock(), &paths.state_dir, Some(&pane_died))?;
     if backend.server_alive() {
         let _ = backend.install_pane_died_hook(&pane_died);
+        let _ = backend.install_copy_bindings();
     }
     let mut board = store::load(&paths)?;
 

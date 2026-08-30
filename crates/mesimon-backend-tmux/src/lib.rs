@@ -43,6 +43,24 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// (Re-)install the copy-pipe bindings on a live server — same reason as
+    /// the hook: a running server never re-reads the conf.
+    pub fn install_copy_bindings(&self) -> Result<()> {
+        for (table, key, pipe) in conf::copy_pipe_bindings() {
+            self.run(&[
+                "bind-key",
+                "-T",
+                table,
+                key,
+                "send-keys",
+                "-X",
+                "copy-pipe-and-cancel",
+                pipe,
+            ])?;
+        }
+        Ok(())
+    }
+
     fn tmux(&self) -> Command {
         let mut c = Command::new("tmux");
         c.arg("-S").arg(&self.sock).arg("-f").arg(&self.conf);
