@@ -81,6 +81,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // with the merge key happens in one place, never in the footer.
     let note = (!app.merge_note.is_empty()).then(|| crate::text::one_line(&app.merge_note));
     if let Some(w) = app.wt_item(ticket.id) {
+        // Quiet-tickets rule: a mid-turn agent blocks the merge, so the hint
+        // withholds the key (the count still shows what's waiting).
+        let busy = app.ticket_busy(ticket.id);
         let state = if let Some(n) = &note {
             format!(" ∙ {n}")
         } else if w.conflict {
@@ -92,6 +95,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         } else if w.needs_rebase {
             // The m flow's rebase stage — main moved past this branch.
             " ∙ main moved ∙ m rebases".to_string()
+        } else if w.ahead > 0 && busy {
+            format!(" ∙ {} to merge", w.ahead)
         } else if w.ahead > 0 {
             // Merge available — the count and the key, calm register.
             format!(" ∙ {} to merge ∙ m", w.ahead)
@@ -100,7 +105,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         };
         ident_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
         if !state.is_empty() {
-            let actionable = !w.merged && w.status == "attached" && (w.ahead > 0 || w.needs_rebase);
+            let actionable = !w.merged
+                && w.status == "attached"
+                && (w.needs_rebase || (w.ahead > 0 && !busy));
             let style = if note.is_some() {
                 theme.calm_text()
             } else if w.conflict {

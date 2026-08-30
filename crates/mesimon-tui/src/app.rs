@@ -809,6 +809,21 @@ impl App {
         self.worktrees.iter().find(|w| w.ticket == ticket)
     }
 
+    /// A session on this ticket is mid-turn — the daemon's quiet-tickets
+    /// predicate (server.rs merge_ticket), mirrored so the m flow can refuse
+    /// before arming rather than after the confirm press.
+    pub(crate) fn ticket_busy(&self, ticket: ulid::Ulid) -> bool {
+        self.board.sessions.iter().any(|s| {
+            s.ticket == ticket
+                && matches!(
+                    s.state,
+                    SessionState::Spawning
+                        | SessionState::Running
+                        | SessionState::RequiresAction { .. }
+                )
+        })
+    }
+
     /// Ticket `v` (M4b): enter the read-only diff viewer. Column-agnostic
     /// (D34.7); attached or evicted both work — evicted renders from the
     /// object store.
@@ -1039,6 +1054,14 @@ impl App {
             self.merge_note = "no commits on the branch yet — nothing to merge".into();
             return Ok(());
         };
+        // Quiet-tickets rule, surfaced up front: the daemon refuses a merge
+        // under a working agent, so the first press says so instead of arming
+        // a confirm the second press can only lose.
+        if stage == MergeStage::Merge && self.ticket_busy(ticket) {
+            self.merge_armed = None;
+            self.merge_note = "agent still working — wait for it to finish".into();
+            return Ok(());
+        }
         if self.merge_armed != Some((ticket, stage)) {
             self.merge_armed = Some((ticket, stage));
             self.merge_note = match stage {
@@ -1823,6 +1846,35 @@ mod tests {
         press(&mut app, 'm'); // no worktree binding in the fixture
         assert_eq!(app.merge_note, "no worktree on this ticket");
         assert!(app.status.is_empty());
+    }
+
+    #[test]
+    fn merge_refuses_up_front_while_the_agent_works() {
+        // Quiet-tickets rule in the TUI: a mid-turn agent means the first m
+        // refuses outright — never an armed confirm the daemon would bounce.
+        let (mut app, sent, _sid) = app_with_claude(SessionState::Running, false);
+        app.worktrees.push(WorktreeItem {
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1-work".into(),
+            status: "attached".into(),
+            merged: false,
+            conflict: false,
+            ahead: 2,
+            needs_rebase: false,
+            detail: None,
+            path: None,
+        });
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'm');
+        assert_eq!(app.merge_note, "agent still working — wait for it to finish");
+        assert!(app.merge_armed.is_none(), "the flow never arms under a working agent");
+        press(&mut app, 'm');
+        assert!(!sent_contains(&sent, "MergeTicket"));
+        // An idle agent lifts the gate: the first m arms as usual.
+        app.board.sessions[0].state =
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn };
+        press(&mut app, 'm');
+        assert!(app.merge_armed.is_some());
     }
 
     #[test]
