@@ -7,6 +7,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
+#[derive(Clone)]
 pub struct Paths {
     pub repo_root: PathBuf,
     pub proj16: String,

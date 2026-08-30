@@ -1,0 +1,24 @@
+ mesimon > kanban-tui > Fix OSC-11 detection > diff
+
+ ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +3 -1 ∙ -U3
+
+
+ src/auth/callback.ts ∙ file 1/4 ∙ 2 hunks
+
+ @@ -18,3 +18,4 @@ export async function handleCallback(
+      18    const code = url.searchParams.get('code')
+ -    19    const t = await exchange(code)
+ +    19    const verifier = sessionStore.take(state) // a deliberately long line that so
+ ↳          ft-wraps at every pane width so the continuation gutter earns its keep
+ +    20    const t = await exchange(code, verifier)^M
+      21    return persist(t)
+
+ @@ -41,2 +43,3 @@ function persist(token: Token) {
+      43    const enc = seal(token)
+ +    44    metrics.increment('auth.callback.ok')
+
+
+
+
+
+ DIFF  jk scroll ∙ hl file ∙ zp files ∙ R refresh ∙ zz density ∙ ! shell ∙ q back

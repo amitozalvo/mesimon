@@ -7,10 +7,11 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 **mesimon** — a Rust terminal kanban that
 orchestrates many coding-agent sessions behind a per-repo daemon and a private tmux server.
 Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), M2 (attention), M3 (adoption +
-resources), M3.5 (design foundation), and M4a (per-ticket worktrees + the staged merge flow)
-are built; **M4b (read-only diff viewer) is next** — full spec in
-`~/.claude/plans/smooth-puzzling-sphinx.md` §F (entry: ticket `v`; wire: DiffList/DiffFile
-served read-only OFF the writer thread; corpus git flags are load-bearing — see the plan).
+resources), M3.5 (design foundation), M4a (per-ticket worktrees + the staged merge flow),
+and M4b (read-only diff viewer: ticket `v` → `Screen::Diff`; DiffList/DiffFile served
+read-only off the writer thread on the connection threads; `!` shell-in-worktree; STALE-MAP
+"M4b read-only diff viewer shipped" records the deviations) are built. M4 spec:
+`~/.claude/plans/smooth-puzzling-sphinx.md`.
 The roadmap and execution state live in the auto-memory (`mesimon-project-state`) and
 `~/.claude/plans/reactive-painting-umbrella.md` — note the auto-memory does NOT follow into
 worktree sessions; the plan files (absolute paths) and this file do.

@@ -187,6 +187,46 @@ fn m4_worktree_lifecycle() {
     std::fs::write(wt_path.join("b.txt"), "agent work\n").unwrap();
     git(&wt_path, &["add", "."]);
     git(&wt_path, &["commit", "-qm", "agent work"]);
+
+    // ---- M4b: the diff wire, end to end (connection-thread serving) -------
+    std::fs::write(wt_path.join("stray.txt"), "never added\n").unwrap();
+    match c.request(Command::DiffList { ticket: t1 }) {
+        Response::DiffList { branch, files, worktree_present, branch_oid, .. } => {
+            assert_eq!(branch, "msmn/T-1-fix-thing");
+            assert!(worktree_present);
+            assert_eq!(branch_oid.len(), 40);
+            let b = files.iter().find(|f| f.path == "b.txt").expect("committed file listed");
+            assert_eq!(b.status, "A");
+            assert_eq!((b.adds, b.dels), (Some(1), Some(0)));
+            // The un-added agent file is invisible to git diff — the status
+            // call must surface it as a display-only row.
+            let stray = files.iter().find(|f| f.path == "stray.txt").expect("untracked row");
+            assert!(stray.untracked);
+            assert_eq!(stray.status, "");
+        }
+        other => panic!("expected DiffList, got {other:?}"),
+    }
+    match c.request(Command::DiffFile { ticket: t1, path: "b.txt".into(), context: 3 }) {
+        Response::DiffFile { file } => {
+            assert_eq!(file.render, mesimon_core::diff::Render::Text);
+            assert!(
+                file.hunks[0]
+                    .lines
+                    .iter()
+                    .any(|l| l.sign == mesimon_core::diff::Sign::Add && l.text == "agent work"),
+                "hunks: {:?}",
+                file.hunks
+            );
+        }
+        other => panic!("expected DiffFile, got {other:?}"),
+    }
+    // No binding → the mesimon-worded refusal, served off the writer thread.
+    match c.request(Command::DiffList { ticket: ulid::Ulid(999) }) {
+        Response::Err { message } => assert!(message.contains("no worktree"), "{message}"),
+        other => panic!("expected refusal, got {other:?}"),
+    }
+    std::fs::remove_file(wt_path.join("stray.txt")).unwrap();
+
     // Merge refused while the (stub) session is Running.
     match c.request(Command::MergeTicket { id: t1 }) {
         Response::Merge { outcome, .. } => assert_eq!(outcome, MergeOutcome::Refused),

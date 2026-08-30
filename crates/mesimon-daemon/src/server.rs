@@ -204,12 +204,19 @@ pub fn run(paths: Paths) -> Result<()> {
         }
     });
 
-    // Accept loop: one reader thread per client.
+    // Accept loop: one reader thread per client. Diff commands (M4b) are
+    // served right there — read-only, off the writer thread, bounded by the
+    // permit pool in DiffCtx.
     let accept_tx = tx.clone();
+    let diff_ctx = Arc::new(DiffCtx {
+        paths: paths.clone(),
+        permits: Arc::new((Mutex::new(DIFF_PERMITS), std::sync::Condvar::new())),
+    });
     std::thread::spawn(move || {
         for stream in listener.incoming().flatten() {
             let tx = accept_tx.clone();
-            std::thread::spawn(move || client_loop(stream, tx));
+            let ctx = diff_ctx.clone();
+            std::thread::spawn(move || client_loop(stream, tx, ctx));
         }
     });
 
@@ -369,7 +376,92 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-fn client_loop(stream: UnixStream, tx: Sender<Msg>) {
+/// How many git-backed diff requests run at once, across all connections.
+const DIFF_PERMITS: usize = 2;
+
+/// Everything the off-writer diff service needs, shared across connections.
+struct DiffCtx {
+    paths: Paths,
+    permits: Arc<(Mutex<usize>, std::sync::Condvar)>,
+}
+
+/// RAII permit from the bounded diff pool.
+struct PermitGuard<'a>(&'a (Mutex<usize>, std::sync::Condvar));
+
+impl<'a> PermitGuard<'a> {
+    fn acquire(pool: &'a (Mutex<usize>, std::sync::Condvar)) -> Self {
+        let (lock, cv) = pool;
+        let mut n = lock.lock().unwrap_or_else(|p| p.into_inner());
+        while *n == 0 {
+            n = cv.wait(n).unwrap_or_else(|p| p.into_inner());
+        }
+        *n -= 1;
+        PermitGuard(pool)
+    }
+}
+
+impl Drop for PermitGuard<'_> {
+    fn drop(&mut self) {
+        let (lock, cv) = self.0;
+        if let Ok(mut n) = lock.lock() {
+            *n += 1;
+        } else {
+            return;
+        }
+        cv.notify_one();
+    }
+}
+
+/// DiffList/DiffFile, served on the connection thread (M4b): read-only, no
+/// board access, no BoardChanged — the writer thread never sees them.
+fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
+    let ticket = match &env.command {
+        Command::DiffList { ticket } | Command::DiffFile { ticket, .. } => *ticket,
+        _ => return Response::Err { message: "not a diff command".into() },
+    };
+    // D32c invariant 2 holds on this path too — the short-circuit must not
+    // bypass the chokepoint.
+    if let Decision::Deny { reason } =
+        authorize(&env.principal, &Action::Read, &Resource::Ticket { id: ticket })
+    {
+        return Response::Err { message: format!("denied: {reason}") };
+    }
+    let _permit = PermitGuard::acquire(&ctx.permits);
+    let bindings = match worktree::load_bindings(&ctx.paths) {
+        Ok(b) => b,
+        Err(e) => return Response::Err { message: format!("read bindings: {e}") },
+    };
+    let Some(binding) = bindings.get(&ticket) else {
+        return Response::Err { message: "no worktree on this ticket — review is per-branch".into() };
+    };
+    match &binding.status {
+        BindingStatus::Queued | BindingStatus::Provisioning => {
+            return Response::Err {
+                message: "worktree is still provisioning — try again in a moment".into(),
+            };
+        }
+        BindingStatus::Error { stage, .. } if binding.branch.is_empty() => {
+            return Response::Err {
+                message: format!("worktree failed at {stage} — no branch to diff"),
+            };
+        }
+        _ => {}
+    }
+    let repo = &ctx.paths.repo_root;
+    match &env.command {
+        Command::DiffList { .. } => crate::diff::diff_list(repo, binding)
+            .unwrap_or_else(|e| Response::Err { message: e.to_string() }),
+        Command::DiffFile { path, context, .. } => {
+            match crate::diff::diff_file(repo, binding, path, *context) {
+                Ok(file) => Response::DiffFile { file },
+                Err(e) => Response::Err { message: e.to_string() },
+            }
+        }
+        _ => unreachable!(),
+    }
+}
+
+fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
     let writer = Arc::new(Mutex::new(match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
@@ -381,20 +473,30 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>) {
             continue;
         }
         let resp = match serde_json::from_str::<Envelope>(&line) {
-            Ok(env) => {
-                let (rtx, rrx) = channel();
-                if tx.send(Msg::Request(env, rtx, writer.clone())).is_err() {
-                    break;
+            Ok(env) => match env.command {
+                // Read-only diff service: answered here, never forwarded —
+                // a slow git must not stall the single writer (M4b).
+                Command::DiffList { .. } | Command::DiffFile { .. } => {
+                    serve_diff(&diff_ctx, &env)
                 }
-                rrx.recv().unwrap_or(Response::Err { message: "daemon gone".into() })
-            }
+                _ => {
+                    let (rtx, rrx) = channel();
+                    if tx.send(Msg::Request(env, rtx, writer.clone())).is_err() {
+                        break;
+                    }
+                    rrx.recv().unwrap_or(Response::Err { message: "daemon gone".into() })
+                }
+            },
             Err(e) => Response::Err { message: format!("bad envelope: {e}") },
         };
+        // Serialize BEFORE taking the writer lock: this same Arc sits in
+        // `Daemon::subscribers`, and the writer thread's broadcast() blocks
+        // on it — a large response must hold it only for the write itself.
+        let Ok(json) = serde_json::to_string(&resp) else { break };
         let mut w = match writer.lock() {
             Ok(w) => w,
             Err(_) => break,
         };
-        let Ok(json) = serde_json::to_string(&resp) else { break };
         if writeln!(w, "{json}").is_err() {
             break;
         }
@@ -410,7 +512,9 @@ impl Daemon {
             | Command::Subscribe
             | Command::GateStatus
             // Mutates only the daemon's discovery cache, never board state.
-            | Command::RescanExternal => Action::Read,
+            | Command::RescanExternal
+            | Command::DiffList { .. }
+            | Command::DiffFile { .. } => Action::Read,
             _ => Action::Mutate,
         };
         if let Decision::Deny { reason } = authorize(&env.principal, &action, &Resource::Board) {
@@ -488,6 +592,11 @@ impl Daemon {
                 self.shutting_down = true;
                 Response::Ok
             }
+            // Never reaches the writer — client_loop short-circuits these to
+            // serve_diff on the connection thread (M4b). Defensive arm only.
+            Command::DiffList { .. } | Command::DiffFile { .. } => Response::Err {
+                message: "diff commands are served on the connection thread".into(),
+            },
             Command::AttachExternal { claude_session_id, ticket } => {
                 match self.attach_external(claude_session_id, ticket) {
                     Ok(id) => {
@@ -1082,6 +1191,8 @@ impl Daemon {
                     }
                     _ => None,
                 },
+                path: (b.status == BindingStatus::Attached)
+                    .then(|| b.path.display().to_string()),
             })
             .collect();
         Response::Board {

@@ -86,8 +86,9 @@ fn event_loop(
 
         // Focus handover: leave the terminal entirely, attach, come back (docs/19 §2).
         while let Some(argv) = app.pending_attach.take() {
+            let cwd = app.pending_attach_cwd.take();
             restore_terminal()?;
-            let ho = handover::run(&argv);
+            let ho = handover::run(&argv, cwd.as_deref());
             *terminal = init_terminal()?;
             if let Err(e) = ho {
                 app.status = format!("focus failed: {e}");

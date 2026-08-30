@@ -2,6 +2,7 @@
 //! owns session lifecycle through the tmux backend (docs/19).
 
 pub mod census;
+pub mod diff;
 pub mod feed;
 pub mod hook_settings;
 pub mod ingest;

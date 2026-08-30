@@ -76,6 +76,20 @@ pub enum Command {
     GateStatus,
     GatePassed,
     Shutdown,
+    /// Read-only diff viewer (M4b): the ticket's stable file list,
+    /// BASE...BRANCH. Served on the connection thread, never the writer.
+    DiffList { ticket: ulid::Ulid },
+    /// One file's hunks on demand. `context` is the -U density (1 | 3 | 8).
+    DiffFile {
+        ticket: ulid::Ulid,
+        path: String,
+        #[serde(default = "default_diff_context")]
+        context: u32,
+    },
+}
+
+fn default_diff_context() -> u32 {
+    3
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -110,10 +124,25 @@ pub enum Response {
     Attach { argv: Vec<String> },
     Gate { passed: bool, attach_argv: Option<Vec<String>> },
     Err { message: String },
+    /// DiffList's answer: the stable file list plus display-only in-flight
+    /// flags. `branch_oid` is the live tip at serve time.
+    DiffList {
+        branch: String,
+        base_oid: String,
+        branch_oid: String,
+        files: Vec<crate::diff::FileEntry>,
+        /// false = evicted: no worktree directory, so no dirty/untracked
+        /// flags and no `!` shell — the diff itself still renders from the
+        /// object store.
+        #[serde(default)]
+        worktree_present: bool,
+    },
+    DiffFile { file: crate::diff::FileDiff },
 }
 
-/// A ticket's worktree binding, as the board renders it (M4). Paths/oids stay
-/// daemon-side; the client gets words and flags.
+/// A ticket's worktree binding, as the board renders it (M4). Oids stay
+/// daemon-side; the client gets words, flags, and (M4b) the worktree path —
+/// carried solely so `!` on the diff screen can open a shell there.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeItem {
     pub ticket: ulid::Ulid,
@@ -136,6 +165,9 @@ pub struct WorktreeItem {
     /// Error detail when status == "error" (names the failing stage).
     #[serde(default)]
     pub detail: Option<String>,
+    /// Worktree directory — Some only while attached (M4b, `!` handover).
+    #[serde(default)]
+    pub path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

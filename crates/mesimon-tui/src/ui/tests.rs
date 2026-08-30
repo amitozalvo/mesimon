@@ -145,6 +145,101 @@ fn app_graphite(board: Board) -> App {
     App::for_test(board, Theme::new(Flavor::Graphite, Profile::TrueColor))
 }
 
+/// Install a deterministic diff view on ticket 3 and enter `Screen::Diff`.
+/// Seeded directly: FakeTransport's snapshot carries no worktrees and its
+/// catch-all answers `Ok`, so the `v` entry path dead-ends in tests.
+fn install_diff(app: &mut App) {
+    use mesimon_core::diff::{FileDiff, FileEntry, Hunk, HunkLine, Render, Sign};
+    let entry = |path: &str, status: &str, adds: Option<u32>, dels: Option<u32>| FileEntry {
+        path: path.into(),
+        old_path: None,
+        status: status.into(),
+        old_mode: "100644".into(),
+        new_mode: "100644".into(),
+        old_blob: "a".repeat(40),
+        new_blob: "b".repeat(40),
+        adds,
+        dels,
+        dirty: false,
+        untracked: false,
+    };
+    let mut files = vec![
+        entry("src/auth/callback.ts", "M", Some(3), Some(1)),
+        entry("img/logo.bin", "M", None, None),
+        entry("tool.sh", "M", Some(0), Some(0)),
+        entry(".env.local", "", None, None),
+    ];
+    files[0].dirty = true;
+    files[3].untracked = true;
+    let text_hunks = vec![
+        Hunk {
+            old_start: 18,
+            old_len: 3,
+            new_start: 18,
+            new_len: 4,
+            header: "export async function handleCallback(".into(),
+            lines: vec![
+                HunkLine { sign: Sign::Ctx, old_ln: Some(18), new_ln: Some(18), text: "  const code = url.searchParams.get('code')".into() },
+                HunkLine { sign: Sign::Del, old_ln: Some(19), new_ln: None, text: "  const t = await exchange(code)".into() },
+                HunkLine { sign: Sign::Add, old_ln: None, new_ln: Some(19), text: "  const verifier = sessionStore.take(state) // a deliberately long line that soft-wraps at every pane width so the continuation gutter earns its keep".into() },
+                HunkLine { sign: Sign::Add, old_ln: None, new_ln: Some(20), text: "  const t = await exchange(code, verifier)\r".into() },
+                HunkLine { sign: Sign::Ctx, old_ln: Some(20), new_ln: Some(21), text: "  return persist(t)".into() },
+            ],
+        },
+        Hunk {
+            old_start: 41,
+            old_len: 2,
+            new_start: 43,
+            new_len: 3,
+            header: "function persist(token: Token) {".into(),
+            lines: vec![
+                HunkLine { sign: Sign::Ctx, old_ln: Some(41), new_ln: Some(43), text: "  const enc = seal(token)".into() },
+                HunkLine { sign: Sign::Add, old_ln: None, new_ln: Some(44), text: "  metrics.increment('auth.callback.ok')".into() },
+            ],
+        },
+    ];
+    let fd = |path: &str, render: Render, hunks: Vec<Hunk>| FileDiff {
+        path: path.into(),
+        old_path: None,
+        render,
+        hunks,
+    };
+    let mut cache = std::collections::HashMap::new();
+    cache.insert("src/auth/callback.ts".to_string(), fd("src/auth/callback.ts", Render::Text, text_hunks));
+    cache.insert("img/logo.bin".to_string(), fd("img/logo.bin", Render::Binary, vec![]));
+    cache.insert(
+        "tool.sh".to_string(),
+        fd("tool.sh", Render::ModeOnly { old_mode: "100644".into(), new_mode: "100755".into() }, vec![]),
+    );
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(3),
+        branch: "msmn/T-3-fix-osc-11-detection".into(),
+        status: "attached".into(),
+        merged: false,
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-3-fix-osc-11-detection".into()),
+    }];
+    app.diff = Some(crate::app::DiffState {
+        ticket: ulid_n(3),
+        rail_idx: 0,
+        branch: "msmn/T-3-fix-osc-11-detection".into(),
+        base_oid: "a1b2c3d4".repeat(5),
+        branch_oid: "b".repeat(40),
+        files,
+        file_idx: 0,
+        scroll: std::cell::Cell::new(0),
+        density: 3,
+        cache,
+        z_armed: false,
+        swap: false,
+        worktree_present: true,
+    });
+    app.screen = Screen::Diff { ticket: ulid_n(3) };
+}
+
 // ---- goldens ---------------------------------------------------------------
 
 #[test]
@@ -243,6 +338,84 @@ fn golden_ticket_peek_120() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
+#[test]
+fn golden_diff_screen_120() {
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    golden("diff_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_diff_screen_100() {
+    // 100 is the two-pane floor (08 §10.2 minus the rail): soft-wrap is
+    // doing real work in the 68-column hunk pane here.
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    golden("diff_100x24", &render(&app, 100, 24));
+}
+
+#[test]
+fn golden_diff_screen_narrow_90() {
+    // Below the breakpoint: single pane (file list first, z p swaps).
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    golden("diff_90x24", &render(&app, 90, 24));
+    if let Some(d) = app.diff.as_mut() {
+        d.swap = true;
+    }
+    golden("diff_90x24_swap", &render(&app, 90, 24));
+}
+
+#[test]
+fn golden_card_branch_line_120() {
+    // The board card's worktree mark + merge-available state (M4a surface,
+    // golden owed since; spec §G item 7).
+    let mut app = app_graphite(fixture(false));
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(3),
+        branch: "msmn/T-3-fix-osc-11-detection".into(),
+        status: "attached".into(),
+        merged: false,
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-3-fix-osc-11-detection".into()),
+    }];
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    golden("board_worktree_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_composer_selector_120() {
+    // The quick-add composer's Shift+Tab workspace selector (M4a surface).
+    let mut app = app_graphite(fixture(false));
+    let mut buffer = crate::text::EditBuffer::new();
+    for c in "Ship the diff viewer".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Create {
+            workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+        },
+        buffer,
+    };
+    golden("board_compose_worktree_120x30", &render(&app, 120, 30));
+}
+
+/// The diff footer mirrors the ticket rule: a status outranks the hints.
+#[test]
+fn test_diff_footer_shows_status() {
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    app.status = "context -U8".into();
+    let lines = render(&app, 120, 30);
+    let footer = lines.last().expect("footer row");
+    assert!(footer.contains("context -U8"), "status missing from diff footer: {footer:?}");
+    assert!(!footer.contains("jk scroll"), "hints should yield to status");
+}
+
 /// A daemon refusal set into `app.status` must reach the ticket footer —
 /// it outranks the key hints there just as it does on the board.
 #[test]
@@ -321,6 +494,15 @@ fn test_layout_arithmetic() {
                 app.cursor_col = cursor;
                 let _ = render(&app, w, h);
             }
+            // The diff screen across the same matrix, both single-pane swaps.
+            for swap in [false, true] {
+                let mut app = app_graphite(fixture(true));
+                install_diff(&mut app);
+                if let Some(d) = app.diff.as_mut() {
+                    d.swap = swap;
+                }
+                let _ = render(&app, w, h);
+            }
         }
     }
 }
@@ -384,10 +566,17 @@ fn test_no_banned_sgr() {
     ] {
         let mut app = App::for_test(fixture(true), Theme::new(flavor, profile));
         app.cursor_col = 1;
-        for buf in [cells(&app, 120, 30), {
-            app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-            cells(&app, 120, 30)
-        }] {
+        for buf in [
+            cells(&app, 120, 30),
+            {
+                app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+                cells(&app, 120, 30)
+            },
+            {
+                install_diff(&mut app);
+                cells(&app, 120, 30)
+            },
+        ] {
             for y in 0..30 {
                 for x in 0..120 {
                     let m = buf[(x, y)].modifier;
@@ -408,10 +597,17 @@ fn test_no_banned_sgr() {
 fn test_no_drawn_structure() {
     let mut app = app_graphite(fixture(true));
     app.cursor_col = 1;
-    let screens: Vec<Vec<String>> = vec![render(&app, 120, 30), {
-        app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-        render(&app, 120, 30)
-    }];
+    let screens: Vec<Vec<String>> = vec![
+        render(&app, 120, 30),
+        {
+            app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+            render(&app, 120, 30)
+        },
+        {
+            install_diff(&mut app);
+            render(&app, 120, 30)
+        },
+    ];
     for lines in screens {
         for l in &lines {
             for ch in l.chars() {

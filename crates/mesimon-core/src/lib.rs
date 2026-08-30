@@ -11,6 +11,7 @@ pub mod automove;
 pub mod authorize;
 pub mod board;
 pub mod command;
+pub mod diff;
 pub mod fracindex;
 pub mod principal;
 pub mod reconcile;

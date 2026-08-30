@@ -7,6 +7,7 @@
 mod board;
 mod card;
 mod chrome;
+mod diff;
 #[cfg(test)]
 mod tests;
 mod ticket;
@@ -42,6 +43,10 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if let Screen::Ticket { ticket, rail_idx } = &app.screen {
         ticket::draw(f, app, *ticket, *rail_idx);
+        return;
+    }
+    if let Screen::Diff { ticket } = &app.screen {
+        diff::draw(f, app, *ticket);
         return;
     }
 

@@ -609,3 +609,38 @@ The motivating failure is D20's scariest-failure prophecy come true on Hebrew la
 mirror under RTL, so Ctrl+physical-`]` emits `0x1B` = Esc — straight into the Claude pane as an
 interrupt. No bind can intercept that (it IS Esc); `Ctrl+5` is the layout-safe unfocus. Rung 1b's
 mechanism survives, its "no code change" conclusion does not.
+
+## M4b read-only diff viewer shipped (2026-08-30)
+
+Plan §H's adjudications, recorded at ship:
+
+- **Diff view is read-only** — `08`'s accept (`a`/`A`), selective checkout (`X`), send-back
+  (`s`), land (`L`), both caches (§3.1), and the PostToolUse invalidation trigger are all
+  **deferred, not dead**: the plumbing (`--raw -z --abbrev=40 --find-renames`, per-file
+  `-U{n}` on demand, the `FileDiff`/`Hunk`/`Render` model, S/D/U display flags) shipped as
+  specified and actions can land on it later. Entry is ticket `v` (attached | evicted,
+  column-agnostic per D34.7); `!` opens `$SHELL` in the worktree via the focus-handover
+  path — `08` §1.4's configurable `[review] external` + consent grant deferred with the
+  actions.
+- **`--raw` beats `--name-only`** (08 §0.1 over 12 §12.7.4) — implemented as written.
+- **Per-file rename diffs need `--find-renames` + both pathspecs** — `08` §1.2's per-file
+  command run verbatim on a renamed file emits an add-only patch (or nothing); the daemon
+  adds `--find-renames -- <old> <new>` for `R` entries. Flag table otherwise verbatim.
+- **Binary detection is the patch marker alone** — `08` §1.3's "numstat `-` `-`" detector
+  misfires on pure renames (also no counts, empty patch); `Binary files … differ` /
+  `GIT binary patch` is the classifier, numstat `None` only feeds the badge.
+- **`WorktreeItem.path` narrows 12 §12.10.1** — oids stay daemon-side, but the worktree
+  path now travels in the snapshot (attached bindings only) solely so the TUI can hand
+  `!`'s shell its cwd.
+- **Wire**: `DiffList`/`DiffFile` are served on the daemon's connection threads (never the
+  writer), bounded by a 2-permit pool, authorize()d explicitly (`Action::Read`,
+  `Resource::Ticket`) — D22's single-writer rule now has a documented read-only bypass
+  lane, D32c's chokepoint held on it. Responses serialize before taking the socket writer
+  lock (the same handle broadcast() blocks on).
+- **`08` §10.1's drawn rules translate to painted bands** — the ASCII mock's `│`/`────`
+  are L1-illegal in the shipped design system; hunk headers are `selected`-surface band
+  rows, the pane divider is a 3-cell gap. Breakpoints per §10.2 minus the dead rail
+  (D33k): two panes ≥100 cols, single pane + `z p` swap below. `z z` density and `R`
+  recompute (no caches, §3.1 deferred); ahead/behind stays `—` all of M4.
+- Stop-of-a-bound-session recompute deferred: the TUI has no per-session Stop signal
+  distinct from BoardChanged; `R` covers it.

@@ -26,6 +26,34 @@ use crate::theme::Theme;
 pub enum Screen {
     Board,
     Ticket { ticket: ulid::Ulid, rail_idx: usize },
+    /// Read-only diff viewer (M4b): ticket `v`. State lives in `App::diff`,
+    /// not here — Screen is cloned on every keypress.
+    Diff { ticket: ulid::Ulid },
+}
+
+/// Everything the diff screen holds (M4b). Per-view and in-memory only —
+/// no persistent caches; R and the density cycle recompute.
+pub struct DiffState {
+    pub ticket: ulid::Ulid,
+    /// Restore `Screen::Ticket` on q/esc.
+    pub rail_idx: usize,
+    pub branch: String,
+    pub base_oid: String,
+    pub branch_oid: String,
+    pub files: Vec<mesimon_core::diff::FileEntry>,
+    pub file_idx: usize,
+    /// Hunk-pane top row; draw clamps against the rendered height.
+    pub scroll: Cell<usize>,
+    /// -U context: 1 | 3 | 8 (`z z` cycles).
+    pub density: u32,
+    /// Fetched files, keyed by path — valid for the current density only.
+    pub cache: std::collections::HashMap<String, mesimon_core::diff::FileDiff>,
+    /// A first `z` arms the view chord (`z z` density, `z p` pane swap).
+    pub z_armed: bool,
+    /// Below the two-pane breakpoint: false shows the file list, true the diff.
+    pub swap: bool,
+    /// false = evicted: no dirty/untracked flags, `!` refused.
+    pub worktree_present: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -99,9 +127,13 @@ pub struct App {
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
+    /// Diff-viewer state, Some while `Screen::Diff` is (or was just) open.
+    pub diff: Option<DiffState>,
     /// Set when the user asked to focus: the main loop performs the handover
     /// outside the render loop.
     pub pending_attach: Option<Vec<String>>,
+    /// cwd for the pending handover child (`!` shell in the worktree).
+    pub pending_attach_cwd: Option<PathBuf>,
     pub pending_gate_then: Option<uuid::Uuid>,
     /// M4: `c` on an unprovisioned worktree ticket parks the spawn daemon-side
     /// (`Response::Provisioning`); this parks the focus half of that keypress.
@@ -146,7 +178,9 @@ impl App {
             peek: false,
             peek_cache: crate::peek::PeekCache::default(),
             spin_epoch: Cell::new(None),
+            diff: None,
             pending_attach: None,
+            pending_attach_cwd: None,
             pending_gate_then: None,
             pending_spawn_focus: None,
             focused_session_hint: None,
@@ -299,14 +333,25 @@ impl App {
 
     /// A refresh can delete the ticket the ticket screen shows.
     fn clamp_screen(&mut self) {
-        if let Screen::Ticket { ticket, rail_idx } = &self.screen {
-            if self.board.ticket(*ticket).is_none() {
-                self.to_board();
-            } else {
-                let n = self.rail_sessions(*ticket).len();
-                let idx = (*rail_idx).min(n.saturating_sub(1));
-                self.screen = Screen::Ticket { ticket: *ticket, rail_idx: idx };
+        match &self.screen {
+            Screen::Ticket { ticket, rail_idx } => {
+                if self.board.ticket(*ticket).is_none() {
+                    self.to_board();
+                } else {
+                    let n = self.rail_sessions(*ticket).len();
+                    let idx = (*rail_idx).min(n.saturating_sub(1));
+                    self.screen = Screen::Ticket { ticket: *ticket, rail_idx: idx };
+                }
             }
+            // Ticket-vanish only. A binding going away must NOT exit: evicted
+            // worktrees still render from the object store.
+            Screen::Diff { ticket } => {
+                if self.board.ticket(*ticket).is_none() {
+                    self.diff = None;
+                    self.to_board();
+                }
+            }
+            Screen::Board => {}
         }
     }
 
@@ -438,6 +483,9 @@ impl App {
                 return Ok(());
             }
             _ => {}
+        }
+        if let Screen::Diff { ticket } = self.screen.clone() {
+            return self.key_diff(code, ticket);
         }
         if let Screen::Ticket { ticket, rail_idx } = self.screen.clone() {
             return self.key_ticket(code, ticket, rail_idx);
@@ -666,6 +714,8 @@ impl App {
                 }
             }
             KeyCode::Char('m') => self.merge_key(ticket)?,
+            // M4b: read-only diff viewer on any ticket with a binding.
+            KeyCode::Char('v') => self.open_diff(ticket, rail_idx)?,
             _ => {}
         }
         Ok(())
@@ -674,6 +724,193 @@ impl App {
     /// The ticket's worktree binding, as the last snapshot reported it.
     pub fn wt_item(&self, ticket: ulid::Ulid) -> Option<&WorktreeItem> {
         self.worktrees.iter().find(|w| w.ticket == ticket)
+    }
+
+    /// Ticket `v` (M4b): enter the read-only diff viewer. Column-agnostic
+    /// (D34.7); attached or evicted both work — evicted renders from the
+    /// object store.
+    fn open_diff(&mut self, ticket: ulid::Ulid, rail_idx: usize) -> Result<()> {
+        let viewable = self
+            .wt_item(ticket)
+            .map(|w| matches!(w.status.as_str(), "attached" | "evicted"))
+            .unwrap_or(false);
+        if !viewable {
+            self.status = "no worktree to diff — review is per-branch".into();
+            return Ok(());
+        }
+        match self.req(Command::DiffList { ticket }) {
+            Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
+                self.diff = Some(DiffState {
+                    ticket,
+                    rail_idx,
+                    branch,
+                    base_oid,
+                    branch_oid,
+                    files,
+                    file_idx: 0,
+                    scroll: Cell::new(0),
+                    density: 3,
+                    cache: std::collections::HashMap::new(),
+                    z_armed: false,
+                    swap: false,
+                    worktree_present,
+                });
+                self.screen = Screen::Diff { ticket };
+                self.diff_fetch(0);
+            }
+            Response::Err { message } => self.status = message,
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Re-run DiffList in place (R, and the density cycle's cache flush).
+    /// Keeps the cursor on the same path when it survives the recompute.
+    fn diff_refresh(&mut self, ticket: ulid::Ulid) {
+        let Some(d) = self.diff.as_ref() else { return };
+        let keep = d.files.get(d.file_idx).map(|f| f.path.clone());
+        match self.req(Command::DiffList { ticket }) {
+            Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
+                let Some(d) = self.diff.as_mut() else { return };
+                d.file_idx = keep
+                    .and_then(|p| files.iter().position(|f| f.path == p))
+                    .unwrap_or(0);
+                d.branch = branch;
+                d.base_oid = base_oid;
+                d.branch_oid = branch_oid;
+                d.files = files;
+                d.worktree_present = worktree_present;
+                d.cache.clear();
+                d.scroll.set(0);
+                let idx = d.file_idx;
+                self.diff_fetch(idx);
+            }
+            Response::Err { message } => self.status = message,
+            _ => {}
+        }
+    }
+
+    /// Fetch the cursor file plus one prefetch each side (~10 ms/file [M]),
+    /// skipping cached entries and untracked-only rows (nothing to fetch —
+    /// git diff cannot see them).
+    fn diff_fetch(&mut self, idx: usize) {
+        for (i, cursor) in [(idx as isize, true), (idx as isize + 1, false), (idx as isize - 1, false)]
+        {
+            let Some(d) = self.diff.as_ref() else { return };
+            if i < 0 {
+                continue;
+            }
+            let Some(f) = d.files.get(i as usize) else { continue };
+            if f.status.is_empty() || d.cache.contains_key(&f.path) {
+                continue;
+            }
+            let (ticket, path, context) = (d.ticket, f.path.clone(), d.density);
+            match self.req(Command::DiffFile { ticket, path: path.clone(), context }) {
+                Response::DiffFile { file } => {
+                    if let Some(d) = self.diff.as_mut() {
+                        d.cache.insert(path, file);
+                    }
+                }
+                Response::Err { message } if cursor => self.status = message,
+                _ => {}
+            }
+        }
+    }
+
+    /// Move the diff cursor by whole files (h/l, J/K).
+    fn diff_nav(&mut self, delta: isize) {
+        let Some(d) = self.diff.as_mut() else { return };
+        if d.files.is_empty() {
+            return;
+        }
+        let max = d.files.len() as isize - 1;
+        let idx = (d.file_idx as isize + delta).clamp(0, max) as usize;
+        if idx == d.file_idx {
+            return;
+        }
+        d.file_idx = idx;
+        d.scroll.set(0);
+        self.diff_fetch(idx);
+    }
+
+    /// The diff screen's keys: j/k scroll, h/l (or J/K) file, R refresh,
+    /// z z density, z p pane swap, ! shell in the worktree, q back.
+    fn key_diff(&mut self, code: KeyCode, ticket: ulid::Ulid) -> Result<()> {
+        // The z view-chord: a first z arms, z z cycles density, z p swaps
+        // panes below the breakpoint; any other key disarms and acts.
+        let armed = self.diff.as_ref().map(|d| d.z_armed).unwrap_or(false);
+        if let Some(d) = self.diff.as_mut() {
+            d.z_armed = false;
+        }
+        if armed {
+            match code {
+                KeyCode::Char('z') => {
+                    let idx = {
+                        let Some(d) = self.diff.as_mut() else { return Ok(()) };
+                        d.density = match d.density {
+                            1 => 3,
+                            3 => 8,
+                            _ => 1,
+                        };
+                        d.cache.clear();
+                        d.scroll.set(0);
+                        self.status = format!("context -U{}", d.density);
+                        d.file_idx
+                    };
+                    self.diff_fetch(idx);
+                    return Ok(());
+                }
+                KeyCode::Char('p') => {
+                    if let Some(d) = self.diff.as_mut() {
+                        d.swap = !d.swap;
+                    }
+                    return Ok(());
+                }
+                _ => {} // disarmed; fall through to act on the key
+            }
+        }
+        match code {
+            KeyCode::Esc | KeyCode::Char('q') => {
+                let rail_idx = self.diff.as_ref().map(|d| d.rail_idx).unwrap_or(0);
+                self.diff = None;
+                self.screen = Screen::Ticket { ticket, rail_idx };
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if let Some(d) = self.diff.as_ref() {
+                    d.scroll.set(d.scroll.get() + 1);
+                }
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                if let Some(d) = self.diff.as_ref() {
+                    d.scroll.set(d.scroll.get().saturating_sub(1));
+                }
+            }
+            KeyCode::Char('l') | KeyCode::Char('J') | KeyCode::Right => self.diff_nav(1),
+            KeyCode::Char('h') | KeyCode::Char('K') | KeyCode::Left => self.diff_nav(-1),
+            KeyCode::Char('R') => self.diff_refresh(ticket),
+            KeyCode::Char('z') => {
+                if let Some(d) = self.diff.as_mut() {
+                    d.z_armed = true;
+                }
+            }
+            KeyCode::Char('!') => {
+                let present = self.diff.as_ref().map(|d| d.worktree_present).unwrap_or(false);
+                let path = self.wt_item(ticket).and_then(|w| w.path.clone());
+                match (present, path) {
+                    (true, Some(p)) => {
+                        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+                        // Plain argv, no sh -c; the main loop's handover runs
+                        // it with this cwd. Gate/focus hints stay None so
+                        // after_handover leaves the diff screen alone.
+                        self.pending_attach = Some(vec![shell]);
+                        self.pending_attach_cwd = Some(PathBuf::from(p));
+                    }
+                    _ => self.status = "worktree evicted — no directory to open".into(),
+                }
+            }
+            _ => {}
+        }
+        Ok(())
     }
 
     /// Delete with the M4 worktree gate (author rule 2): an unmerged worktree

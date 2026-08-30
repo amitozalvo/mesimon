@@ -8,11 +8,17 @@ use anyhow::{bail, Context, Result};
 
 /// Run outside raw mode / alt screen — the caller restores the terminal first
 /// and re-initializes after. Returns when the user detaches (Ctrl+]).
-pub fn run(argv: &[String]) -> Result<()> {
+/// `cwd` is for the `!` shell-in-worktree handover (M4b); attach argvs pass None.
+pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
     let Some((prog, rest)) = argv.split_first() else {
         bail!("empty attach argv");
     };
-    let status = Command::new(prog).args(rest).status().context("attach child")?;
+    let mut cmd = Command::new(prog);
+    cmd.args(rest);
+    if let Some(d) = cwd {
+        cmd.current_dir(d);
+    }
+    let status = cmd.status().context("attach child")?;
     drain_stdin();
     if !status.success() {
         bail!("attach exited with {status}");
