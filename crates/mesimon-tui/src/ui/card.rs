@@ -85,21 +85,29 @@ fn register_style(theme: &Theme, reg: Register) -> Style {
 /// under the session rows, a deliberate sentence in the accordion — 07 §4.3's
 /// "never sentences" is amended for this opt-in toggle (STALE-MAP).
 /// The card's right-side worktree mark (M4): branch glyph + one state char.
-/// Returns (text, err_toned) — err tone for conflict/error, quiet otherwise.
+enum WtTone {
+    Quiet,
+    /// Conflict/error — something is wrong.
+    Err,
+    /// Commits waiting — merge available (a suggestion, calm register).
+    Ready,
+}
+
 fn worktree_mark(
     wt: Option<&mesimon_core::command::WorktreeItem>,
     ascii: bool,
-) -> Option<(String, bool)> {
+) -> Option<(String, WtTone)> {
     let w = wt?;
     let g = if ascii { '&' } else { '⎇' };
-    let (dots, check) = if ascii { ('.', '+') } else { ('…', '✓') };
+    let (dots, check, up) = if ascii { ('.', '+', '^') } else { ('…', '✓', '↑') };
     Some(match w.status.as_str() {
-        "queued" | "provisioning" => (format!("{g}{dots}"), false),
-        "error" => (format!("{g}x"), true),
-        "evicted" => (format!("{g}-"), false),
-        _ if w.conflict => (format!("{g}!"), true),
-        _ if w.merged => (format!("{g}{check}"), false),
-        _ => (g.to_string(), false),
+        "queued" | "provisioning" => (format!("{g}{dots}"), WtTone::Quiet),
+        "error" => (format!("{g}x"), WtTone::Err),
+        "evicted" => (format!("{g}-"), WtTone::Quiet),
+        _ if w.conflict => (format!("{g}!"), WtTone::Err),
+        _ if w.merged => (format!("{g}{check}"), WtTone::Quiet),
+        _ if w.ahead > 0 => (format!("{g}{up}"), WtTone::Ready),
+        _ => (g.to_string(), WtTone::Quiet),
     })
 }
 
@@ -219,11 +227,13 @@ pub(super) fn render(
     }
     spans.push(Span::styled(title, title_style));
     spans.push(Span::raw(" ".repeat(fill)));
-    if let Some((m, err)) = &wt_mark {
-        let style = if *err && !attn_card && !trail {
-            theme.err_text()
-        } else {
-            quiet_style
+    if let Some((m, tone)) = &wt_mark {
+        // Trail/attn contexts demote the mark to the quiet tone with the row.
+        let style = match tone {
+            _ if attn_card || trail => quiet_style,
+            WtTone::Err => theme.err_text(),
+            WtTone::Ready => register_style(theme, Register::Calm),
+            WtTone::Quiet => quiet_style,
         };
         spans.push(Span::styled(format!(" {m}"), style));
     }

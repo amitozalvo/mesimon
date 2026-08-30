@@ -83,6 +83,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             " ∙ merged".to_string()
         } else if w.status != "attached" {
             format!(" ∙ {}", w.status)
+        } else if w.ahead > 0 {
+            // Merge available — the count and the key, calm register.
+            format!(" ∙ {} to merge ∙ m", w.ahead)
         } else {
             String::new()
         };
@@ -90,6 +93,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         if !state.is_empty() {
             let style = if w.conflict {
                 theme.base().add_modifier(ratatui::style::Modifier::BOLD)
+            } else if w.ahead > 0 && !w.merged && w.status == "attached" {
+                theme.calm_text()
             } else {
                 theme.dim2()
             };

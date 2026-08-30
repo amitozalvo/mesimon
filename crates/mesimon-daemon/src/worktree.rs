@@ -447,6 +447,15 @@ pub fn branch_tip(repo: &Path, branch: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Commits on the branch not yet in base — "merge available" when > 0.
+pub fn ahead_count(repo: &Path, branch: &str, base: &str) -> u32 {
+    let range = format!("{base}..{branch}");
+    git_read(repo, &["rev-list", "--count", &range])
+        .ok()
+        .and_then(|s| s.trim().parse().ok())
+        .unwrap_or(0)
+}
+
 pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
     Command::new("git")
         .arg("-C")

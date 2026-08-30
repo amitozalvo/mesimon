@@ -125,6 +125,10 @@ pub struct WorktreeItem {
     /// Duplicate-branch blocker (12 §12.6.7): another worktree holds this
     /// branch — commits will delete each other.
     pub conflict: bool,
+    /// Commits on the branch not yet in the default branch — merge available
+    /// when > 0.
+    #[serde(default)]
+    pub ahead: u32,
     /// Error detail when status == "error" (names the failing stage).
     #[serde(default)]
     pub detail: Option<String>,

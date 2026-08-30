@@ -124,8 +124,10 @@ pub struct Daemon {
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
     pending_spawns: Vec<(ulid::Ulid, SessionKind)>,
-    /// merged/conflict flags, refreshed on the 10 s bucket while bindings exist.
+    /// merged/ahead/conflict flags, refreshed on the 10 s bucket while
+    /// bindings exist.
     wt_merged: HashMap<ulid::Ulid, bool>,
+    wt_ahead: HashMap<ulid::Ulid, u32>,
     wt_conflicts: Vec<String>,
     /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
     base_branch: Option<String>,
@@ -290,6 +292,7 @@ pub fn run(paths: Paths) -> Result<()> {
         worktrees,
         pending_spawns: Vec::new(),
         wt_merged: HashMap::new(),
+        wt_ahead: HashMap::new(),
         wt_conflicts: Vec::new(),
         base_branch: None,
         pending_teardown: Vec::new(),
@@ -316,6 +319,24 @@ pub fn run(paths: Paths) -> Result<()> {
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());
     Ok(())
+}
+
+impl Daemon {
+    /// Per-session env for a worktree-bound ticket (M4 layer 1: silent,
+    /// zero-token indication that the session lives in a ticket worktree —
+    /// hooks and scripts key off it; the agent sees it when it looks).
+    fn worktree_env(&self, ticket: ulid::Ulid, cwd: &std::path::Path) -> Vec<(String, String)> {
+        let Some(b) = self.worktrees.get(&ticket) else { return Vec::new() };
+        if b.status != BindingStatus::Attached || b.path != cwd {
+            return Vec::new();
+        }
+        let key =
+            self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+        vec![
+            ("MESIMON_TICKET".into(), key),
+            ("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone()),
+        ]
+    }
 }
 
 /// The user's own configured permission default mode, read from the same
@@ -1035,6 +1056,7 @@ impl Daemon {
                 .into(),
                 merged: self.wt_merged.get(tid).copied().unwrap_or(false),
                 conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
+                ahead: self.wt_ahead.get(tid).copied().unwrap_or(0),
                 detail: match &b.status {
                     BindingStatus::Error { stage, message } => {
                         Some(format!("{stage}: {message}"))
@@ -1494,6 +1516,7 @@ impl Daemon {
                 // Unmerged without discard: keep the branch (commits survive).
             }
             self.wt_merged.remove(&ticket);
+            self.wt_ahead.remove(&ticket);
         }
         let _ = worktree::save_bindings(&self.paths, &self.worktrees);
         self.refresh_worktree_flags();
@@ -1618,7 +1641,8 @@ impl Daemon {
         let mut rec =
             SessionRecord::new(id, kind, ticket, argv.clone(), cwd.display().to_string(), state);
         rec.state_changed_at = Some(now_ms());
-        if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &[]) {
+        let env = self.worktree_env(ticket, &cwd);
+        if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &env) {
             return Response::Err { message: format!("spawn failed: {e}") };
         }
         // Prefill the ticket title into the agent's input box — typed, never
@@ -1787,6 +1811,7 @@ impl Daemon {
     fn refresh_worktree_flags(&mut self) {
         if self.worktrees.is_empty() {
             self.wt_merged.clear();
+            self.wt_ahead.clear();
             self.wt_conflicts.clear();
             return;
         }
@@ -1813,6 +1838,8 @@ impl Daemon {
                 && tip != base_oid
                 && worktree::is_merged(&self.paths.repo_root, &branch, &base);
             self.wt_merged.insert(tid, merged);
+            self.wt_ahead
+                .insert(tid, worktree::ahead_count(&self.paths.repo_root, &branch, &base));
             // Release the lock once the last session on the ticket is gone.
             if locked && attached {
                 let live = self
@@ -2078,7 +2105,8 @@ impl Daemon {
             Ok(a) => a,
             Err(message) => return Response::Err { message },
         };
-        let (sid, cwd) = (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()));
+        let (sid, cwd, ticket) =
+            (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()), rec.ticket);
         // M4: never silently relocate an agent — a removed worktree/cwd is an
         // explicit refusal, not a fallback into the main checkout.
         if !cwd.is_dir() {
@@ -2091,7 +2119,8 @@ impl Daemon {
         }
         self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
-        if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &[]) {
+        let env = self.worktree_env(ticket, &cwd);
+        if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
             return Response::Err { message: format!("resume spawn failed: {e}") };
         }
         let now = now_ms();
@@ -2204,8 +2233,12 @@ impl Daemon {
         match rec.kind {
             SessionKind::Claude => self.resume_session(id, false),
             SessionKind::Bash => {
-                let (sid, argv, cwd) =
-                    (rec.sid16(), rec.argv.clone(), std::path::PathBuf::from(rec.cwd.clone()));
+                let (sid, argv, cwd, ticket) = (
+                    rec.sid16(),
+                    rec.argv.clone(),
+                    std::path::PathBuf::from(rec.cwd.clone()),
+                    rec.ticket,
+                );
                 if !cwd.is_dir() {
                     return Response::Err {
                         message: format!(
@@ -2219,7 +2252,8 @@ impl Daemon {
                 }
                 self.reaping.remove(&sid);
                 let _ = self.backend.kill_session(&sid);
-                if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &[]) {
+                let env = self.worktree_env(ticket, &cwd);
+                if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
                     return Response::Err { message: format!("wake spawn failed: {e}") };
                 }
                 let now = now_ms();
