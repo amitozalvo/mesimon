@@ -574,3 +574,77 @@ fn test_move_trail_is_semi_transparent() {
     assert_eq!(fgs[0], theme.rest.dim3, "original is semi-transparent");
     assert_eq!(fgs[1], theme.sel.base, "ghost blinks at full value (bright phase)");
 }
+
+/// A column clipped below keeps every fitting card at full value and shows
+/// the next not-fully-visible card as a one-line dim3 ghost at the edge,
+/// separated by the card-rhythm blank — same demotion both directions
+/// (author 2026-08-30). A board that fits whole fades nothing.
+#[test]
+fn test_clipped_column_edge_peeks() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let mut b = Board::default();
+    b.columns.push(Column { name: "todo".into(), order: "0".into() });
+    b.columns.push(Column { name: "done".into(), order: "1".into() });
+    for i in 0..12u128 {
+        b.tickets.push(ticket(i + 1, &format!("T-{i}"), &format!("Load {i}"), "todo", &format!("{i:02}")));
+    }
+    b.tickets.push(ticket(99, "T-99", "Elsewhere", "done", "00"));
+    let mut app = app_graphite(b);
+    app.cursor_col = 1; // todo is a bystander column: scroll pinned to 0
+
+    let rows = |app: &App, h: u16| -> Vec<(u16, ratatui::style::Color)> {
+        let buf = cells(app, 120, h);
+        let mut out = Vec::new();
+        for y in 0..h {
+            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
+            if let Some(ix) = row.find("Load ") {
+                let x = row[..ix].chars().count() as u16;
+                out.push((y, buf[(x, y)].fg));
+            }
+        }
+        out
+    };
+
+    // Clipped below: fewer than 12 cards visible; the bottom-most is the
+    // dim3 ghost, a blank row away from the last full-value card.
+    let clipped = rows(&app, 20);
+    assert!(clipped.len() > 2 && clipped.len() < 12, "20 rows must clip; visible={}", clipped.len());
+    let (gy, gfg) = *clipped.last().unwrap();
+    assert_eq!(gfg, theme.rest.dim3, "bottom edge is a ghost peek");
+    assert!(gy - clipped[clipped.len() - 2].0 >= 2, "blank row before the bottom ghost");
+    for (_, fg) in &clipped[..clipped.len() - 1] {
+        assert_eq!(*fg, theme.rest.base, "cards above the edge hold full value");
+    }
+
+    // Clipped above: cursor at the tail scrolls the column; the top-most
+    // visible card is the ghost, blank-separated, and the cursor card holds
+    // full value.
+    app.cursor_col = 0;
+    app.cursor_row = 11;
+    let scrolled = rows(&app, 20);
+    assert!(scrolled.len() < 12, "still clipped after scrolling to the tail");
+    let (ty, tfg) = *scrolled.first().unwrap();
+    assert_eq!(tfg, theme.rest.dim3, "top edge is a ghost peek");
+    assert!(scrolled[1].0 - ty >= 2, "blank row after the top ghost");
+    assert_eq!(scrolled.last().unwrap().1, theme.sel.base, "cursor card at full value");
+    for (_, fg) in &scrolled[1..scrolled.len() - 1] {
+        assert_eq!(*fg, theme.rest.base, "interior cards hold full value");
+    }
+
+    // Mid-column cursor: both edges peek at once (scroll reset first — the
+    // Cell carries the tail scroll from the case above).
+    app.scroll_row.set(0);
+    app.cursor_row = 6;
+    let mid = rows(&app, 20);
+    assert_eq!(mid.first().unwrap().1, theme.rest.dim3, "top ghost with a mid cursor");
+    assert_eq!(mid.last().unwrap().1, theme.rest.dim3, "bottom ghost with a mid cursor");
+
+    // Whole: nothing fades.
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    let whole = rows(&app, 40);
+    assert_eq!(whole.len(), 12, "40 rows fit the whole column");
+    for (_, fg) in &whole {
+        assert_eq!(*fg, theme.rest.base, "a fully visible column never fades");
+    }
+}
