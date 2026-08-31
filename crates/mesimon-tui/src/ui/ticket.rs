@@ -164,9 +164,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             budget -= text.width() + 1;
             ident_spans.push(Span::raw(" "));
             let tint = theme.pip(app.board.tint_of(t) as usize);
-            if theme.paints_bands() {
-                ident_spans
-                    .push(Span::styled(text, Style::default().bg(tint).fg(theme.band_ink())));
+            if theme.paints_tags() {
+                ident_spans.push(Span::styled(text, Style::default().bg(tint).fg(theme.tag_ink())));
             } else {
                 ident_spans.push(Span::styled(text, Style::default().fg(theme.rest.dim1)));
             }

@@ -1161,3 +1161,34 @@ it and draws it. What that cost, and what it refutes:
 
 `ticket_peek_120x30` is unchanged byte for byte: prose with no markdown in it renders exactly as
 it did. `ticket_richtext_120x30` is the new golden.
+
+## The tag mark is an underline, not a glyph (2026-08-31, T-83 round 3)
+
+Author: use the space row below the ticket, with coloured top-only glyphs; and stop entering an
+edit mode to name a tag. Both landed, but the first one could not land as asked:
+
+- **`▀` U+2580 and `▔` U+2594 are unavailable, twice over.** They sit inside the
+  `0x2500-0x259F` range `test_no_drawn_structure` bans, and they are East Asian Width
+  **Ambiguous** — the class `glyphs.rs` documents as having cost this project a real render bug
+  (terminal spends two cells, `unicode-width` counts one, every later cell shifts and strands
+  paint the diff never repaints). Lower risk than the `☰` case, which broke because Unicode 16
+  *reclassified* it mid-flight, but the same class.
+- **So the mark is an SGR attribute instead**: `UNDERLINED` + `underline_color` (SGR 58, ratatui's
+  `underline-color` feature) on the card block's bottom row, segmented left to right when a ticket
+  wears several. It has no width at all, so the hazard cannot arise, and it costs the card no row
+  — which is what the author actually wanted when the per-tag band rows were rejected. Degradation
+  is visible rather than silent: a terminal without SGR 58 still draws the underline in the row's
+  own foreground, so "tagged" survives even where "which tag" does not.
+- **Peek loses its tag role.** An underline has no room for text, so `p` goes back to meaning
+  replies only; the names live in the picker and on the ticket page. D31b's colour-only grant is
+  still paid for — the names are one keystroke away, just through `^t` rather than `p`.
+- **`test_no_drawn_structure` covered four screens and not the picker, and a `█` cursor shipped
+  through the hole.** It was in `board_tag_naming_120x30.txt`. The test now renders the picker
+  open and mid-rename too, and the cursor is the real hardware cursor rather than a glyph.
+- **Naming edits the cell in place.** The first cut replaced the whole row with a `new: …` field,
+  which is the "edit mode" the author rejected: it hid the rest of the vocabulary at exactly the
+  moment you are choosing a name that has to sit beside it.
+
+`06` §2.4's pip letter and the painted bands that replaced it are both superseded; the tint ramp
+and its contrast floors are unchanged, and `test_tag_underlines_never_spend_the_accent` moves
+D19's check onto the underline channel.

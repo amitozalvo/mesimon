@@ -736,15 +736,11 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('p')],
         verb: Verb::Peek,
         show: "p",
-        // Peek is the toggle that spells out what the resting board only
-        // encodes — the reply under the card, and the tag names behind the
-        // pips. D31b's colour-only grant to tags depends on that second half
-        // being one keystroke away, so the hint names it.
         hint: |c| {
             if c.peek_on {
-                "hide replies + tags"
+                "hide replies"
             } else {
-                "show replies + tags"
+                "show replies"
             }
         },
         avail: always,
@@ -1441,12 +1437,12 @@ static MENU_ITEMS: &[MenuItem] = &[
         verb: Verb::Peek,
         label: |c| {
             if c.peek_on {
-                "Hide agent replies and tag names".into()
+                "Hide agent replies".into()
             } else {
-                "Show agent replies and tag names".into()
+                "Show agent replies".into()
             }
         },
-        detail: |_| "the latest reply and the full tags under the selected card".into(),
+        detail: |_| "the latest reply under the selected card".into(),
         avail: always,
         key: "p",
     },

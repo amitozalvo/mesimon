@@ -699,35 +699,66 @@ fn fixture_tagged() -> Board {
     b
 }
 
-/// Goldens capture `.symbol()` only, so a PAINTED band reads as blank rows
-/// there and nothing above would catch a band that lost its colour. This is
-/// the test that actually looks at the paint.
+/// Goldens capture `.symbol()` only, and the tags are an SGR attribute with
+/// no symbol at all — so nothing above would notice if they vanished. This is
+/// the test that actually looks at the underline.
 #[test]
-fn test_tag_bands_are_painted_in_their_own_tint() {
-    let board = fixture_tagged();
-    let mut app = app_graphite(board);
+fn test_tags_underline_the_card_in_their_own_tint() {
+    let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
 
-    // T-1 "Decay treatments" wears one tag (FTR), so exactly one band sits
-    // under its title row, painted with that tag's tint.
-    let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card");
+    // T-1 "Decay treatments" wears exactly one tag (FTR), so its whole row
+    // carries that tag's tint on the underline — and no row of its own.
+    let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card") as u16;
     let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("registered").tint() as usize);
-    let band_y = y + 1;
-    // Interior cells carry the tint as BACKGROUND — the band is painted, not
-    // drawn, because every rule glyph is banned board-wide.
-    let painted: usize = (0..30u16).filter(|x| buf[(*x, band_y as u16)].bg == tint).count();
-    assert!(painted > 10, "band under T-1 is not painted: {painted} cells");
-    // The row above it is the title and must NOT be painted.
-    let above: usize = (0..30u16).filter(|x| buf[(*x, y as u16)].bg == tint).count();
-    assert_eq!(above, 0, "the title row got painted");
+    let underlined = (0..28u16)
+        .filter(|x| {
+            let c = &buf[(*x, y)];
+            c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == tint
+        })
+        .count();
+    assert!(underlined > 20, "the card is not underlined in its tag tint: {underlined} cells");
+
+    // An untagged card is untouched — no underline anywhere on its row.
+    let uy = lines.iter().position(|l| l.contains("Keymap validator")).expect("card") as u16;
+    let stray =
+        (0..28u16).filter(|x| buf[(*x, uy)].modifier.contains(Modifier::UNDERLINED)).count();
+    assert_eq!(stray, 0, "an untagged card got underlined");
 }
 
-/// The bands are the one place tags spend real ink, so the one-saturated-
-/// colour law is checked here too: no band may carry the attention accent.
+/// Several tags split the row left to right, so the proportions read the
+/// count back without anyone counting.
 #[test]
-fn test_tag_bands_never_spend_the_accent() {
+fn test_several_tags_segment_the_underline() {
+    let mut app = app_graphite(fixture_tagged());
+    // Cursor elsewhere, so T-3 is a plain one-row card and its own row IS the
+    // block's bottom row. On a SELECTED card the underline moves to the last
+    // accordion row — the bottom of the block, which is the point.
+    app.cursor_col = 0;
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    // T-3 wears two tags (BUG in group 1, STAGING in group 2).
+    let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+    let mut seen: Vec<ratatui::style::Color> = Vec::new();
+    for x in 30..56u16 {
+        let c = &buf[(x, y)];
+        if !c.modifier.contains(Modifier::UNDERLINED) {
+            continue;
+        }
+        if seen.last() != Some(&c.underline_color) {
+            seen.push(c.underline_color);
+        }
+    }
+    assert_eq!(seen.len(), 2, "two tags should give two segments, got {seen:?}");
+    assert_ne!(seen[0], seen[1]);
+}
+
+/// Tags now spend ink on the underline channel, so the one-saturated-colour
+/// law is checked there too: no tag may wear the attention accent.
+#[test]
+fn test_tag_underlines_never_spend_the_accent() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
     for peek in [false, true] {
@@ -735,7 +766,11 @@ fn test_tag_bands_never_spend_the_accent() {
         let buf = cells(&app, 120, 30);
         for y in 0..30u16 {
             for x in 0..120u16 {
-                assert_ne!(buf[(x, y)].bg, ATTN_GRAPHITE, "attn bg at {x},{y} peek={peek}");
+                let c = &buf[(x, y)];
+                assert_ne!(c.bg, ATTN_GRAPHITE, "attn bg at {x},{y} peek={peek}");
+                if c.modifier.contains(Modifier::UNDERLINED) {
+                    assert_ne!(c.underline_color, ATTN_GRAPHITE, "attn underline at {x},{y}");
+                }
             }
         }
     }
@@ -748,28 +783,6 @@ fn golden_board_tags_120() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
     golden("board_tags_120x30", &render(&app, 120, 30));
-}
-
-#[test]
-fn golden_board_tags_peek_120() {
-    // Peek spells them out under the cursor card. D31b's colour-only grant to
-    // tags holds only while this is one keystroke away.
-    let mut app = app_graphite(fixture_tagged());
-    app.peek = true;
-    app.cursor_col = 1;
-    app.cursor_row = 0;
-    golden("board_tags_peek_120x30", &render(&app, 120, 30));
-}
-
-#[test]
-fn golden_board_tags_peek_sessionless_120() {
-    // A tagged ticket with NO sessions still expands under peek — the
-    // accordion used to early-return here, and the reveal is load-bearing.
-    let mut app = app_graphite(fixture_tagged());
-    app.peek = true;
-    app.cursor_col = 0;
-    app.cursor_row = 0;
-    golden("board_tags_peek_sessionless_120x30", &render(&app, 120, 30));
 }
 
 #[test]
@@ -1216,6 +1229,34 @@ fn test_no_drawn_structure() {
         {
             install_diff(&mut app);
             render(&app, 120, 30)
+        },
+        // The tag picker, open and mid-rename. It was NOT covered here, and
+        // that is exactly how a U+2588 cursor got shipped into it.
+        {
+            let mut t = app_graphite(fixture_tagged());
+            t.tag_armed = Some(crate::app::TagArm {
+                ticket: Some(ulid_n(3)),
+                row: 0,
+                col: 0,
+                naming: None,
+                forget_armed: false,
+            });
+            render(&t, 120, 30)
+        },
+        {
+            let mut t = app_graphite(fixture_tagged());
+            let mut buf = crate::text::EditBuffer::new();
+            for c in "HOTFIX".chars() {
+                buf.insert(c);
+            }
+            t.tag_armed = Some(crate::app::TagArm {
+                ticket: Some(ulid_n(3)),
+                row: 0,
+                col: 0,
+                naming: Some((crate::app::Naming::Rename, buf)),
+                forget_armed: false,
+            });
+            render(&t, 120, 30)
         },
     ];
     for lines in screens {

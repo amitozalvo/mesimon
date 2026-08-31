@@ -20,6 +20,7 @@ use unicode_width::UnicodeWidthStr;
 use mesimon_core::board::MAX_TAGS_PER_GROUP;
 
 use crate::app::App;
+use crate::text::EditBuffer;
 
 /// Groups the picker shows. Ten, addressed by `1`–`9` and `0`.
 pub(crate) const GROUPS: u8 = 10;
@@ -65,6 +66,11 @@ fn digit_of(group: u8) -> char {
     }
 }
 
+/// Display width of the spans built so far — where the next one starts.
+fn x_of(spans: &[Span<'static>]) -> usize {
+    spans.iter().map(|s| s.content.width()).sum()
+}
+
 pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     let Some(arm) = app.tag_armed.as_ref() else { return };
     let theme = &app.theme;
@@ -77,6 +83,10 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Clear, panel);
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Where the hardware cursor goes while a name is being typed — the real
+    // cursor, not a glyph. The block character that stood in for it was
+    // inside the range the L1 law bans, and Ambiguous-width besides.
+    let mut cursor: Option<usize> = None;
     // Title row: what is being tagged, so the panel is never ambiguous about
     // its subject — especially in the composer, where the ticket has no name
     // on the board yet.
@@ -95,12 +105,17 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
             if arm.row == row { theme.base().add_modifier(Modifier::BOLD) } else { theme.dim3() },
         )];
         let entries = app.board.group_entries(*g);
+        // The cell being named, if it is on this row.
+        let naming_here = |col: usize| -> Option<&EditBuffer> {
+            let (_, buf) = arm.naming.as_ref()?;
+            (arm.row == row && arm.col == col).then_some(buf)
+        };
         for (col, def) in entries.iter().enumerate() {
             let here = arm.row == row && arm.col == col;
             let is_worn = worn.iter().any(|w| w.group == *g && w.name == def.name);
             // The swatch is the tag's own colour — the same paint the card
             // band will use, so the picker is a preview and not a legend.
-            let swatch = if theme.paints_bands() {
+            let swatch = if theme.paints_tags() {
                 Style::default().bg(theme.pip(def.tint() as usize))
             } else {
                 Style::default().fg(theme.rest.dim2).add_modifier(Modifier::REVERSED)
@@ -120,34 +135,34 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
             let (open, close) = if here { ('[', ']') } else { (' ', ' ') };
             spans.push(Span::styled(open.to_string(), theme.base()));
             spans.push(Span::styled("  ".to_string(), swatch));
-            spans.push(Span::styled(format!("{mark}{}", def.name), label));
+            // A rename edits the cell WHERE IT SITS: the row keeps its shape
+            // and the rest of the vocabulary stays readable beside it. The
+            // old form replaced the whole row with a field, which is the
+            // "edit mode" this is not supposed to have.
+            match naming_here(col) {
+                Some(buf) => {
+                    cursor = Some(x_of(&spans) + 1 + buf.width_before_cursor());
+                    spans.push(Span::styled(format!(" {}", buf.as_str()), theme.base()));
+                }
+                None => spans.push(Span::styled(format!("{mark}{}", def.name), label)),
+            }
             spans.push(Span::styled(close.to_string(), theme.base()));
             spans.push(Span::raw(" ".to_string()));
         }
         if entries.len() < MAX_TAGS_PER_GROUP {
             let here = arm.row == row && arm.col == entries.len();
             let style = if here { theme.base().add_modifier(Modifier::BOLD) } else { theme.dim3() };
-            spans.push(Span::styled(
-                if here { "[+ new]".to_string() } else { " + new ".to_string() },
-                style,
-            ));
-        }
-        // Naming happens in place, on the cell it belongs to.
-        if arm.row == row {
-            if let Some((purpose, buf)) = arm.naming.as_ref() {
-                let verb = match purpose {
-                    crate::app::Naming::New => "new",
-                    crate::app::Naming::Rename => "rename",
-                };
-                spans = vec![
-                    Span::styled(
-                        format!("  {}  ", digit_of(*g)),
-                        theme.base().add_modifier(Modifier::BOLD),
-                    ),
-                    Span::styled(format!("{verb}: "), theme.dim2()),
-                    Span::styled(buf.as_str().to_string(), theme.base()),
-                    Span::styled("\u{2588}".to_string(), theme.dim2()),
-                ];
+            if let Some(buf) = naming_here(entries.len()) {
+                // A new tag is typed in the `+ new` slot it will occupy.
+                spans.push(Span::styled("[".to_string(), theme.base()));
+                cursor = Some(x_of(&spans) + buf.width_before_cursor());
+                spans.push(Span::styled(buf.as_str().to_string(), theme.base()));
+                spans.push(Span::styled("]".to_string(), theme.base()));
+            } else {
+                spans.push(Span::styled(
+                    if here { "[+ new]".to_string() } else { " + new ".to_string() },
+                    style,
+                ));
             }
         }
         let used: usize = spans.iter().map(|s| s.content.width()).sum();
@@ -156,5 +171,13 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         lines.push(Line::from(spans));
     }
 
+    let rows = lines.len();
     f.render_widget(Paragraph::new(lines), panel);
+    if let Some(x) = cursor {
+        // The naming row is the group row at `arm.row`, one below the title.
+        let y = panel.y + 1 + arm.row as u16;
+        if (arm.row + 1) < rows {
+            f.set_cursor_position((panel.x + (x as u16).min(panel.width.saturating_sub(1)), y));
+        }
+    }
 }

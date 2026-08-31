@@ -16,7 +16,7 @@ ulid.workspace = true
 uuid.workspace = true
 unicode-width.workspace = true
 unicode-segmentation.workspace = true
-ratatui = "0.29"
+ratatui = { version = "0.29", features = ["underline-color"] }
 libc = "0.2"
 # 06 §2.9: OSC-11 background query at startup (reads /dev/tty directly, which
 # sidesteps the T-4 attach-query stdin race)

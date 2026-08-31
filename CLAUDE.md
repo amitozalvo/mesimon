@@ -208,17 +208,22 @@ the only legacy-floor atom a text field cannot swallow — `ctrl+<digit>` is a b
 STALE-MAP "Ticket tags"). The picker is a grid: `hjkl` walks it, a digit jumps to that group's
 row and steps along it on a repeat, `enter` wears/unwears (or opens the name field on `+ new`),
 `tab` cycles the tint, `r` renames, `d` deletes board-wide in two presses, `esc` leaves the field
-then the picker. **While naming, resolve against `Scope::TagChord`, never `Scope::Input`** — that
+then the picker. Naming edits the cell **in place**, in its own slot in the grid, with the real
+hardware cursor — there is no edit mode, and no block glyph standing in for a cursor. **While naming, resolve against `Scope::TagChord`, never `Scope::Input`** — that
 borrow leaked the composer's own hints ("shift+enter save + ask claude") under a tag-name field.
 An atom may not appear twice in a scope even with different `avail`, so `enter`/`esc` are one
 binding each whose hint switches on `Ctx::tag_naming`.
 
-A tag renders as a **painted band across the bottom of the card block**, one row per tag, in the
-tag's tint; `p` writes the names onto the bands. Painted, never drawn — every rule glyph
-(`─ ▁ █`) sits in the `0x2500-0x259F` range the L1 law bans. Below TrueColor the tint collapses to
-one grey, so the band carries `#name` as text instead (`Theme::paints_bands`). Untagged tickets
-cost zero rows, which is what keeps the resting board identical to the pre-tags one.
-`board::sanitize_tag` runs at the daemon boundary: a tag name is user text on a card row.
+A tag renders as a **segmented coloured UNDERLINE on the card block's bottom row** — its own row
+when resting, the last accordion row when selected. Several tags split it left to right, one equal
+segment each. It costs the card no row and no cell: `tags::underline` restyles the line that is
+already there and changes not one character. **Never a glyph**: `▀` U+2580, `▔` U+2594 and `█`
+U+2588 all sit inside the `0x2500-0x259F` range the L1 law bans AND are East Asian Width
+*Ambiguous*, the class that already cost a render bug here — SGR 58 has no width, so it cannot.
+Needs ratatui's `underline-color` feature; a terminal without SGR 58 still draws the underline in
+the row's own foreground, so "this ticket is tagged" survives even where "which tag" does not.
+Untagged tickets are not restyled at all, which keeps the resting board identical to the pre-tags
+one. `board::sanitize_tag` runs at the daemon boundary: a tag name is user text on a card row.
 
 **The ticket page's transcript zone reads markdown (`tui/src/rich.rs`).** An agent reply is
 markdown, so the zone draws it instead of showing its source — but 06 §5.1 bans SGR 2/3/5/9 and

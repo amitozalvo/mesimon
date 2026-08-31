@@ -380,18 +380,18 @@ impl Theme {
         hex(ramp[n % PIPS])
     }
 
-    /// Can a tag band be PAINTED, or must it fall back to its name in text?
+    /// Are the six tag tints actually distinguishable here?
     ///
-    /// Only TrueColor. `pip()` collapses every tint to one grey below it, and
-    /// six identical grey bands say strictly less than six names do — the
-    /// same call the pip letter made, for the same reason.
-    pub fn paints_bands(&self) -> bool {
+    /// Only in TrueColor. `pip()` collapses every tint to one grey below it,
+    /// so anything that leans on colour alone (the picker's swatches, the
+    /// ticket page's chips) has to say the name instead.
+    pub fn paints_tags(&self) -> bool {
         self.profile == Profile::TrueColor
     }
 
-    /// Ink for a name written across a painted band: the page ground, which
+    /// Ink for a name written on a tag-tinted ground: the page ground, which
     /// is the surface every tint was contrast-checked against.
-    pub fn band_ink(&self) -> Color {
+    pub fn tag_ink(&self) -> Color {
         self.bg.unwrap_or(match self.flavor {
             Flavor::Graphite => hex(0x131417),
             Flavor::Chalk => hex(0xFAF8F4),

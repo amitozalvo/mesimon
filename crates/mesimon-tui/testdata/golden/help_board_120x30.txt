@@ -24,7 +24,7 @@
                                     x         sleep sessions
 
                                   VIEW
-                                    p         show replies + tags
+                                    p         show replies
 
                                   APP
  BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ c claude ∙ s shell ∙ > < move card ∙ ^t tags ∙ ? keys

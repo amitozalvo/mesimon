@@ -74,13 +74,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
     let count = rows.len() + ghost.map(|_| 1).unwrap_or(0);
 
-    let ctx = CardCtx {
-        theme,
-        width: area.width,
-        now_ms: now_ms(),
-        spin: app.spin_frame(),
-        peek_on: app.peek,
-    };
+    let ctx = CardCtx { theme, width: area.width, now_ms: now_ms(), spin: app.spin_frame() };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
     let marquee_ms = |t: &Ticket| -> u64 {
@@ -197,22 +191,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if let Some((InputPurpose::Create { workspace, tags }, buf)) = editing {
             let (line, x_off) = card::render_edit(&ctx, buf);
             let selector = card::render_workspace_selector(&ctx, *workspace);
-            // The tags picked with `^t` band the phantom card exactly as they
-            // will band the real one — otherwise you are picking blind until
-            // the ticket exists.
-            let mut lines = vec![line, selector];
-            for t in crate::tags::painted(&app.board, tags) {
-                let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
-                let mut row = vec![Span::styled(bar_ch.to_string(), bar_style)];
-                row.extend(crate::tags::band(
-                    theme,
-                    &t,
-                    (ctx.width as usize).saturating_sub(1),
-                    app.peek,
-                ));
-                lines.push(Line::from(row));
-            }
-            groups.push(Group { lines, cursor: true, waiting: false, edit_cursor: Some(x_off) });
+            // The tags picked with `^t` underline the phantom card exactly as
+            // they will underline the real one — otherwise you are picking
+            // blind until the ticket exists.
+            let painted = crate::tags::painted(&app.board, tags);
+            let selector = crate::tags::underline(theme, selector, &painted, ctx.width as usize);
+            groups.push(Group {
+                lines: vec![line, selector],
+                cursor: true,
+                waiting: false,
+                edit_cursor: Some(x_off),
+            });
         }
     }
 

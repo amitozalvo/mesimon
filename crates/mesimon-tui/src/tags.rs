@@ -17,8 +17,9 @@
 //!   matters more here, not less. Tab cycles a tag through the six tints in
 //!   `Theme::pip` and nothing else — there is no free-colour path.
 
-use ratatui::style::{Modifier, Style};
-use ratatui::text::Span;
+use ratatui::style::Modifier;
+use ratatui::text::{Line, Span};
+use unicode_width::UnicodeWidthChar;
 
 use mesimon_core::board::{Board, TagRef};
 
@@ -41,97 +42,158 @@ pub(crate) fn painted(board: &Board, tags: &[TagRef]) -> Vec<Painted> {
     out
 }
 
-/// One band: `width` cells painted in the tag's tint.
+/// Paint the tag colours onto a card line as a segmented UNDERLINE.
 ///
-/// With `name`, the name is written across it in the page ground, which is
-/// the peek reveal. Without, the band is solid — the minimal indication.
-pub(crate) fn band(theme: &Theme, tag: &Painted, width: usize, named: bool) -> Vec<Span<'static>> {
-    // Below TrueColor the tint collapses to one grey, so six identical bands
-    // would say less than six names do. The row keeps its place in the layout
-    // and carries the name instead — the same call the ramp makes everywhere.
-    if !theme.paints_bands() {
-        let label = crate::text::truncate(&format!("#{}", tag.name), width);
-        let pad = width.saturating_sub(label.chars().count());
-        return vec![
-            Span::styled(label, theme.dim2()),
-            Span::styled(" ".repeat(pad), Style::default()),
-        ];
+/// The line is the card block's bottom row, so the colour hugs the card
+/// instead of costing it one. With several tags the row divides left to
+/// right, one equal segment each — the proportions make the count readable
+/// without anyone counting.
+///
+/// An underline rather than a glyph because every glyph that would draw a
+/// rule — `▀` U+2580, `▔` U+2594, `█` U+2588 — is inside the `0x2500–0x259F`
+/// range the L1 law bans AND is East Asian Width *Ambiguous*, the class that
+/// already cost this project a render bug: the terminal spends two cells, the
+/// width crate counts one, and every later cell shifts right leaving paint
+/// the diff never repaints. SGR 58 has no width at all, so it cannot.
+///
+/// Degradation is honest rather than silent: a terminal without SGR 58 still
+/// draws the underline, just in the row's own foreground — you can still see
+/// that the ticket is tagged, only not with which.
+pub(crate) fn underline(
+    theme: &Theme,
+    line: Line<'static>,
+    tags: &[Painted],
+    width: usize,
+) -> Line<'static> {
+    if tags.is_empty() || width == 0 {
+        return line;
     }
-    let tint = theme.pip(tag.tint as usize);
-    let painted = Style::default().bg(tint);
-    if !named {
-        return vec![Span::styled(" ".repeat(width), painted)];
+    // Which tag owns column `x`.
+    let owner = |x: usize| -> usize { (x * tags.len() / width).min(tags.len() - 1) };
+
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut x = 0usize;
+    for span in line.spans {
+        // A span can straddle a boundary, so cut it where the owner changes.
+        let mut chunk = String::new();
+        let mut chunk_owner = owner(x);
+        for ch in span.content.chars() {
+            let o = owner(x);
+            if o != chunk_owner && !chunk.is_empty() {
+                out.push(paint(theme, &span, std::mem::take(&mut chunk), tags[chunk_owner].tint));
+                chunk_owner = o;
+            }
+            chunk.push(ch);
+            x += ch.width().unwrap_or(0);
+        }
+        if !chunk.is_empty() {
+            out.push(paint(theme, &span, chunk, tags[chunk_owner].tint));
+        }
     }
-    // Ink that reads on the band: the page ground, which every tint was
-    // contrast-checked against.
-    let ink = Style::default().bg(tint).fg(theme.band_ink()).add_modifier(Modifier::BOLD);
-    let label = crate::text::truncate(&tag.name, width.saturating_sub(2));
-    let pad = width.saturating_sub(label.chars().count() + 1);
-    vec![
-        Span::styled(" ".to_string(), painted),
-        Span::styled(label, ink),
-        Span::styled(" ".repeat(pad), painted),
-    ]
+    Line::from(out).style(line.style)
+}
+
+fn paint(theme: &Theme, span: &Span<'static>, text: String, tint: u8) -> Span<'static> {
+    let style =
+        span.style.add_modifier(Modifier::UNDERLINED).underline_color(theme.pip(tint as usize));
+    Span::styled(text, style)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
+    use ratatui::style::Style;
     use unicode_width::UnicodeWidthStr;
 
     fn tags(n: usize) -> Vec<Painted> {
         (0..n).map(|i| Painted { name: format!("T{i}"), tint: i as u8 % 6 }).collect()
     }
 
-    /// A band fills its width exactly, named or not. One cell over and the
-    /// card's right edge strands a painted cell the diff never repaints.
+    fn line(text: &str) -> Line<'static> {
+        Line::from(vec![Span::styled(text.to_string(), Style::default())])
+    }
+
+    /// The row keeps its exact width and text: the tags ride the underline,
+    /// so they cost the card no cell and no row.
     #[test]
-    fn a_band_is_exactly_its_width() {
+    fn underlining_changes_no_text() {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        for width in [4usize, 10, 26, 40] {
-            for named in [false, true] {
-                for t in tags(3) {
-                    let w: usize =
-                        band(&theme, &t, width, named).iter().map(|s| s.content.width()).sum();
-                    assert_eq!(w, width, "width {width}, named {named}, tag {}", t.name);
-                }
-            }
+        for n in 0..5usize {
+            let before = line("Fix OSC-11 detection   >1y");
+            let want: String = before.spans.iter().map(|s| s.content.to_string()).collect();
+            let after = underline(&theme, before, &tags(n), 26);
+            let got: String = after.spans.iter().map(|s| s.content.to_string()).collect();
+            assert_eq!(got, want, "{n} tags changed the text");
+            assert_eq!(got.width(), 26);
         }
     }
 
-    /// A name too long for the band truncates rather than overflowing.
+    /// An untagged ticket is untouched — no underline, no restyle at all.
+    /// This is what keeps a board with no tags rendering as it always did.
     #[test]
-    fn a_long_name_truncates_into_the_band() {
+    fn untagged_rows_are_left_alone() {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let t = Painted { name: "a-very-long-tag-name-indeed".into(), tint: 0 };
-        let spans = band(&theme, &t, 12, true);
-        let w: usize = spans.iter().map(|s| s.content.width()).sum();
-        assert_eq!(w, 12);
+        let out = underline(&theme, line("plain row"), &[], 26);
+        for s in &out.spans {
+            assert!(!s.style.add_modifier.contains(Modifier::UNDERLINED));
+            assert_eq!(s.style.underline_color, None);
+        }
     }
 
-    /// The band is PAINTED, never drawn: no codepoint may land in the
-    /// structure range the L1 law bans, whatever the tier.
+    /// Every cell is underlined, and the colour changes across the row — one
+    /// equal segment per tag, so the proportions read the count back.
     #[test]
-    fn bands_never_use_drawn_structure() {
-        for (flavor, profile) in [
-            (Flavor::Graphite, Profile::TrueColor),
-            (Flavor::Chalk, Profile::Ansi256),
-            (Flavor::Graphite, Profile::Mono),
-        ] {
-            let theme = Theme::new(flavor, profile);
-            for t in tags(6) {
-                for named in [false, true] {
-                    for s in band(&theme, &t, 20, named) {
-                        for ch in s.content.chars() {
-                            let cp = ch as u32;
-                            assert!(
-                                !(0x2500..=0x259F).contains(&cp),
-                                "{flavor:?}/{profile:?} band used drawn structure {ch:?}"
-                            );
-                        }
-                    }
+    fn the_row_splits_into_one_segment_per_tag() {
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        for n in 1..=4usize {
+            let out = underline(&theme, line(&"x".repeat(24)), &tags(n), 24);
+            let mut seen: Vec<ratatui::style::Color> = Vec::new();
+            let mut cells = 0usize;
+            for s in &out.spans {
+                assert!(
+                    s.style.add_modifier.contains(Modifier::UNDERLINED),
+                    "{n}: a cell missed the underline"
+                );
+                let c = s.style.underline_color.expect("tinted");
+                if seen.last() != Some(&c) {
+                    seen.push(c);
                 }
+                cells += s.content.width();
+            }
+            assert_eq!(cells, 24, "{n}: width changed");
+            assert_eq!(seen.len(), n, "{n}: wrong number of segments");
+            // Distinct tints, so the segments actually read apart.
+            let mut uniq = seen.clone();
+            uniq.dedup();
+            assert_eq!(uniq.len(), n);
+        }
+    }
+
+    /// A span straddling a segment boundary is cut, not rounded — otherwise a
+    /// long title would swallow the whole row into one colour.
+    #[test]
+    fn a_long_span_is_cut_at_the_boundary() {
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        // One span covering the whole row, two tags: it must become two.
+        let out = underline(&theme, line(&"y".repeat(20)), &tags(2), 20);
+        assert!(out.spans.len() >= 2, "the span was not cut: {:?}", out.spans.len());
+        let first = out.spans[0].content.width();
+        assert_eq!(first, 10, "the cut landed off-centre");
+    }
+
+    /// No codepoint anywhere: the tags are an SGR attribute, which is the
+    /// whole reason this is not `▀`/`▔`/`█` — those are inside the range the
+    /// L1 law bans AND East Asian Width Ambiguous, the class that already
+    /// cost a render bug here.
+    #[test]
+    fn tags_add_no_glyph_at_all() {
+        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        let out = underline(&theme, line("Fix OSC-11 detection"), &tags(3), 20);
+        for s in &out.spans {
+            for ch in s.content.chars() {
+                let cp = ch as u32;
+                assert!(!(0x2500..=0x259F).contains(&cp), "drawn structure {ch:?}");
             }
         }
     }

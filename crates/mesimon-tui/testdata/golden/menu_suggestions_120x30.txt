@@ -15,8 +15,8 @@
                                   claude sessions in this repo that mesimon did not start
                                 Archived tickets
                                   off the board, still here
-                                Show agent replies and tag names                         p
-                                  the latest reply and the full tags under the selected c~
+                                Show agent replies                                       p
+                                  the latest reply under the selected card
                                 All keys on this screen                                  ?
 
                                 Quit mesimon                                             q

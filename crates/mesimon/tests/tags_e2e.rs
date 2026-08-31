@@ -273,7 +273,23 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
+    for d in [&dir, &state_dir, &rt_dir] {
+        sweep(d);
+    }
+}
+
+/// Remove a test tree, retrying briefly.
+///
+/// A single `remove_dir_all` leaked the tree intermittently under a full
+/// `cargo test --workspace` — the test itself had passed and the board was
+/// complete, so something was still touching the directory as it went. Rather
+/// than guess at which thread, retry: the cost of being wrong about the cause
+/// is one more `/tmp` tree nobody cleans up.
+fn sweep(dir: &std::path::Path) {
+    for _ in 0..20 {
+        if std::fs::remove_dir_all(dir).is_ok() || !dir.exists() {
+            return;
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }

@@ -25,10 +25,6 @@ pub(super) struct CardCtx<'a> {
     pub now_ms: u64,
     /// Redraw-clock frame for the working spinner (`App::spin_frame`).
     pub spin: usize,
-    /// The peek toggle is on. Distinct from the `peek` argument, which is
-    /// `Some` only when a session actually has a transcript to show: a tagged
-    /// ticket with no sessions still spells its tags out under `p`.
-    pub peek_on: bool,
 }
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -250,20 +246,13 @@ pub(super) fn render(
     spans.push(Span::raw(" "));
     let mut lines = vec![Line::from(spans).style(row_style)];
 
-    // The bands close the block, under whatever the card put above them —
-    // accordion, peek rows, or nothing. Written as a closure because the card
-    // has four exits and a band missed on one of them is a card that changes
-    // height when you select it.
+    // The tags colour the block's BOTTOM ROW as a segmented underline —
+    // costing the card no row of its own, which is the whole point of moving
+    // them here. Written as a closure because the card has four exits, and a
+    // line missed on one of them is a card that loses its tags when selected.
     let close = |mut lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
-        for t in tags {
-            let mut row = vec![Span::styled(bar_ch.to_string(), bar_style)];
-            row.extend(crate::tags::band(
-                theme,
-                t,
-                (ctx.width as usize).saturating_sub(1),
-                ctx.peek_on,
-            ));
-            lines.push(Line::from(row));
+        if let Some(last) = lines.pop() {
+            lines.push(crate::tags::underline(theme, last, tags, ctx.width as usize));
         }
         lines
     };
@@ -275,9 +264,6 @@ pub(super) fn render(
     // ---- accordion (07 §4.3; session rows only — short keys are hidden
     // from the UI for now, author 2026-08-30) -------------------------------
     //
-    // Peek writes the names ONTO the bands (see `close` above), so it no
-    // longer needs to force the accordion open — which is what it used to do
-    // for a tagged, session-less ticket.
     if selected && !sessions.is_empty() {
         let acc_style = theme.selected_row();
         let dim = Style::default().fg(theme.sel.dim1);

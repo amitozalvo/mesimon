@@ -4,11 +4,11 @@
 
    Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
                                    ✻ claude           ⠋ >1y
-                                   $ bash             ◦ >1y
-   Keymap validator
+   Keymap validator                $ bash             ◦ >1y    x Flaky e2e on runner  >1y
+
+                                 ⠋ Adopt drawer import  >1y
 
 
-                                 ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
 
 
@@ -22,7 +22,7 @@
 
 
  TAGS Fix OSC-11 detection
-  1  new: HOTFIX█
+  1  [   HOTFIX]     FTR      REGR   + new
   2     •STAGING      PRODUCTION   + new
   3      auth   + new
   4      p1   + new
