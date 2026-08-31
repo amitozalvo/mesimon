@@ -9,7 +9,11 @@ fn idx(c: u8) -> usize {
 }
 
 fn mid(a: usize, b: usize) -> Option<usize> {
-    if b > a + 1 { Some((a + b) / 2) } else { None }
+    if b > a + 1 {
+        Some((a + b) / 2)
+    } else {
+        None
+    }
 }
 
 /// A key strictly between `a` and `b` (lexicographically). `""` = unbounded.

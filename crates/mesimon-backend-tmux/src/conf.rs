@@ -10,7 +10,8 @@ pub fn render(pane_died_cmd: Option<&str>) -> String {
     // terminal, so Ctrl+5 arrives as a distinct key (CSI 53;5u), not the legacy 0x1D
     // alias docs/04 §2.14 rung 1b assumed. It is the layout-independent unfocus key
     // (digits don't move on non-US layouts; Ctrl+physical-] sends Esc on Hebrew).
-    let mut conf = r##"# mesimon private tmux server — generated, do not edit (docs/19-tmux-backend-v01.md)
+    let mut conf =
+        r##"# mesimon private tmux server — generated, do not edit (docs/19-tmux-backend-v01.md)
 set -g prefix None
 unbind-key -a
 bind-key -n C-] detach-client
@@ -34,7 +35,7 @@ set -g status-right-length 20
 set -g window-status-format ""
 set -g window-status-current-format ""
 "##
-    .to_string();
+        .to_string();
     for (table, key, pipe) in copy_pipe_bindings() {
         conf.push_str(&format!(
             "bind-key -T {table} {key} send-keys -X copy-pipe-and-cancel \"{pipe}\"\n"

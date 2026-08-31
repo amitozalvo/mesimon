@@ -45,9 +45,7 @@ mod tests {
     #[test]
     fn v01_allows_agent() {
         let d = authorize(
-            &Principal::Agent {
-                session: uuid::Uuid::new_v4(),
-            },
+            &Principal::Agent { session: uuid::Uuid::new_v4() },
             &Action::Read,
             &Resource::Board,
         );

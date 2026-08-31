@@ -132,9 +132,7 @@ pub fn quarantine(path: &Path) -> Option<std::path::PathBuf> {
 /// and says so — never a TOML syntax error pointing at line 43. `.mesimon/` is
 /// git-excluded, but a board can still arrive through a copied checkout.
 fn conflict_marker_line(text: &str) -> Option<usize> {
-    text.lines()
-        .position(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> "))
-        .map(|i| i + 1)
+    text.lines().position(|l| l.starts_with("<<<<<<< ") || l.starts_with(">>>>>>> ")).map(|i| i + 1)
 }
 
 /// What to do with a file whose stamp we managed to read.
@@ -203,9 +201,7 @@ fn recover_next_key(tickets_dir: &Path, parsed: &[Ticket]) -> u64 {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| {
-            e.file_name().to_string_lossy().strip_prefix("T-")?.parse::<u64>().ok()
-        })
+        .filter_map(|e| e.file_name().to_string_lossy().strip_prefix("T-")?.parse::<u64>().ok())
         .max()
         .unwrap_or(0);
     let from_parsed = parsed
@@ -231,11 +227,7 @@ fn readd_missing_columns(board: &mut Board) {
         }
         out
     };
-    let mut prev = board
-        .sorted_columns()
-        .last()
-        .map(|c| c.order.clone())
-        .unwrap_or_default();
+    let mut prev = board.sorted_columns().last().map(|c| c.order.clone()).unwrap_or_default();
     for name in missing {
         let order = mesimon_core::fracindex::between(&prev, "");
         board.columns.push(Column { name, order: order.clone() });
@@ -365,10 +357,7 @@ fn load_sessions(sf: &Path, notices: &mut Vec<Notice>) -> (Vec<SessionRecord>, b
                     Err(e) => e.to_string(),
                 }
             } else {
-                let found = v
-                    .get("schema_version")
-                    .and_then(|s| s.as_u64())
-                    .unwrap_or(1) as u32;
+                let found = v.get("schema_version").and_then(|s| s.as_u64()).unwrap_or(1) as u32;
                 match verdict(found, SESSIONS_SCHEMA) {
                     Verdict::Newer(n) => {
                         notices.push(future_notice(sf, n, SESSIONS_SCHEMA));
@@ -399,8 +388,7 @@ pub fn load(paths: &Paths) -> Result<Loaded> {
     let mut notices = Vec::new();
     let cols_path = paths.board_dir.join("board/columns.toml");
     let fresh = !cols_path.is_file();
-    let (mut board, columns_write_barred, columns_lost) =
-        load_columns(&cols_path, &mut notices);
+    let (mut board, columns_write_barred, columns_lost) = load_columns(&cols_path, &mut notices);
 
     let tickets_dir = paths.board_dir.join("board/tickets");
     if tickets_dir.is_dir() {
@@ -437,10 +425,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         next_key: board.next_key,
         columns: board.columns.clone(),
     };
-    write_atomic(
-        &paths.board_dir.join("board/columns.toml"),
-        &toml::to_string_pretty(&cf)?,
-    )
+    write_atomic(&paths.board_dir.join("board/columns.toml"), &toml::to_string_pretty(&cf)?)
 }
 
 pub fn save_ticket(paths: &Paths, t: &Ticket) -> Result<()> {
@@ -721,10 +706,7 @@ created_at = "@1788046350"
         let t: Ticket = toml::from_str(m3).unwrap();
         assert!(t.workspace.is_none());
         assert!(t.archived.is_none());
-        assert_eq!(
-            t.workspace_strategy(),
-            mesimon_core::board::WorkspaceStrategy::SharedCheckout
-        );
+        assert_eq!(t.workspace_strategy(), mesimon_core::board::WorkspaceStrategy::SharedCheckout);
     }
 
     /// A ticket with BOTH optional fields round-trips — `[archived]` is a

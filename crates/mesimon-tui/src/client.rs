@@ -187,9 +187,7 @@ fn open_current(repo_root: &Path, allow_restart: bool) -> Result<(Conn, Option<N
             let conn = open(repo_root)?;
             let notice = Notice::new(
                 "build_skew",
-                format!(
-                    "the daemon is running an older mesimon than this client — {why}",
-                ),
+                format!("the daemon is running an older mesimon than this client — {why}",),
             )
             .with_detail(format!(
                 "daemon {} (pid {}), client {}",
@@ -231,8 +229,8 @@ fn restart_daemon(repo_root: &Path, conn: Conn) -> std::result::Result<Conn, Str
         return Err("it did not shut down".into());
     }
 
-    let stream = connect_or_spawn(repo_root, &sock, Duration::from_secs(8))
-        .map_err(|e| e.to_string())?;
+    let stream =
+        connect_or_spawn(repo_root, &sock, Duration::from_secs(8)).map_err(|e| e.to_string())?;
     let fresh = handshake(stream).map_err(|e| e.to_string())?;
     if fresh.daemon.pid == old_pid {
         return Err("it came back as the same process".into());
@@ -292,8 +290,7 @@ fn handshake(stream: UnixStream) -> Result<Conn> {
         }
     });
 
-    let mut c =
-        Conn { write, responses: rrx, events: erx, daemon: DaemonIdent::default() };
+    let mut c = Conn { write, responses: rrx, events: erx, daemon: DaemonIdent::default() };
     let hello = c.request(Command::Hello {
         version: PROTOCOL_VERSION,
         client: format!("mesimon-tui/{}", env!("CARGO_PKG_VERSION")),
@@ -314,9 +311,7 @@ impl Conn {
         let env = Envelope { principal: Principal::Local, command };
         let json = serde_json::to_string(&env)?;
         writeln!(self.write, "{json}").context("write to daemon")?;
-        self.responses
-            .recv_timeout(Duration::from_secs(10))
-            .context("daemon response timeout")
+        self.responses.recv_timeout(Duration::from_secs(10)).context("daemon response timeout")
     }
 }
 

@@ -45,7 +45,16 @@ pub fn diff_list(repo: &Path, binding: &Binding) -> Result<Response> {
     let range = format!("{}...{}", binding.base_oid, binding.branch);
     let raw = git_bytes(
         repo,
-        &["--no-pager", "diff", "--raw", "-z", "--abbrev=40", "--find-renames", "--no-ext-diff", &range],
+        &[
+            "--no-pager",
+            "diff",
+            "--raw",
+            "-z",
+            "--abbrev=40",
+            "--find-renames",
+            "--no-ext-diff",
+            &range,
+        ],
     )
     .map_err(|e| anyhow::anyhow!("git diff failed: {}", first_line(&e.to_string())))?;
     let mut files = parse_raw_z(&raw);
@@ -54,8 +63,7 @@ pub fn diff_list(repo: &Path, binding: &Binding) -> Result<Response> {
     {
         merge_numstat(&mut files, &parse_numstat_z(&numstat));
     }
-    let worktree_present =
-        binding.status == BindingStatus::Attached && binding.path.is_dir();
+    let worktree_present = binding.status == BindingStatus::Attached && binding.path.is_dir();
     if worktree_present {
         // Display only: an un-added agent file is invisible to every diff
         // query, and it is exactly the change the reviewer least wants to
@@ -84,7 +92,16 @@ pub fn diff_file(repo: &Path, binding: &Binding, path: &str, context: u32) -> Re
     // source path). ~30 ms even on huge diffs [M]; keeps the wire stateless.
     let raw = git_bytes(
         repo,
-        &["--no-pager", "diff", "--raw", "-z", "--abbrev=40", "--find-renames", "--no-ext-diff", &range],
+        &[
+            "--no-pager",
+            "diff",
+            "--raw",
+            "-z",
+            "--abbrev=40",
+            "--find-renames",
+            "--no-ext-diff",
+            &range,
+        ],
     )?;
     let files = parse_raw_z(&raw);
     let Some(entry) = files.iter().find(|f| f.path == path) else {
@@ -92,8 +109,13 @@ pub fn diff_file(repo: &Path, binding: &Binding, path: &str, context: u32) -> Re
     };
     let ctx = format!("-U{}", context.clamp(0, 999));
     let mut args: Vec<&str> = vec![
-        "--no-pager", "diff", "--no-color", "--no-ext-diff", &ctx,
-        "--src-prefix=a/", "--dst-prefix=b/",
+        "--no-pager",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        &ctx,
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
     ];
     // Deviation from 08 §1.2's verbatim command: on a rename the per-file
     // call needs rename detection and both pathspecs, or git emits an
@@ -219,7 +241,10 @@ mod tests {
         let Some((repo, b)) = scratch("file") else { return };
         let fd = diff_file(&repo, &b, "keep.txt", 3).unwrap();
         assert_eq!(fd.render, Render::Text);
-        assert!(fd.hunks[0].lines.iter().any(|l| l.sign == Sign::Add && l.text.contains("CHANGED")));
+        assert!(fd.hunks[0]
+            .lines
+            .iter()
+            .any(|l| l.sign == Sign::Add && l.text.contains("CHANGED")));
 
         // Rename resolves to hunks (the --find-renames + both-paths fix);
         // content unchanged → rename record with zero hunks, never add-only.

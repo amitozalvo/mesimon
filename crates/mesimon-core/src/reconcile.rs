@@ -64,9 +64,9 @@ pub fn state_for(link: &Link, prior: &SessionState, hook_instrumented: bool) -> 
         },
         Link::Live { .. } => match prior {
             // No hook stream: the pane is the whole truth.
-            SessionState::Exited { .. }
-            | SessionState::Unknown { .. }
-            | SessionState::Sleeping => SessionState::Running,
+            SessionState::Exited { .. } | SessionState::Unknown { .. } | SessionState::Sleeping => {
+                SessionState::Running
+            }
             s => s.clone(),
         },
         Link::DeadPane { status, .. } => match prior {
@@ -102,7 +102,10 @@ pub fn reconcile(records: &[SessionRecord], snapshot: &[PaneSnapshot]) -> Reconc
                 claimed[i] = true;
                 let p = &snapshot[i];
                 if p.pane_dead {
-                    Link::DeadPane { session_name: p.session_name.clone(), status: p.dead_status.unwrap_or(-1) }
+                    Link::DeadPane {
+                        session_name: p.session_name.clone(),
+                        status: p.dead_status.unwrap_or(-1),
+                    }
                 } else {
                     Link::Live { session_name: p.session_name.clone(), pane_pid: p.pane_pid }
                 }
@@ -139,7 +142,12 @@ mod tests {
     }
 
     fn pane(name: &str, dead: bool, status: Option<i32>) -> PaneSnapshot {
-        PaneSnapshot { session_name: name.into(), pane_pid: 42, pane_dead: dead, dead_status: status }
+        PaneSnapshot {
+            session_name: name.into(),
+            pane_pid: 42,
+            pane_dead: dead,
+            dead_status: status,
+        }
     }
 
     #[test]

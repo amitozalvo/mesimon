@@ -60,7 +60,11 @@ pub fn repo_roots(repo_root: &Path) -> Vec<PathBuf> {
     roots
 }
 
-pub fn scan(home: &Path, roots: &[PathBuf], known: &dyn Fn(uuid::Uuid) -> bool) -> Vec<ExternalItem> {
+pub fn scan(
+    home: &Path,
+    roots: &[PathBuf],
+    known: &dyn Fn(uuid::Uuid) -> bool,
+) -> Vec<ExternalItem> {
     let pid_files = read_pid_files(&home.join("sessions"));
     let mut by_session: HashMap<uuid::Uuid, ExternalItem> = HashMap::new();
 
@@ -88,7 +92,9 @@ pub fn scan(home: &Path, roots: &[PathBuf], known: &dyn Fn(uuid::Uuid) -> bool) 
         }
     }
     let mut v: Vec<ExternalItem> = by_session.into_values().collect();
-    v.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms).then(a.claude_session_id.cmp(&b.claude_session_id)));
+    v.sort_by(|a, b| {
+        b.mtime_ms.cmp(&a.mtime_ms).then(a.claude_session_id.cmp(&b.claude_session_id))
+    });
     v
 }
 
@@ -156,8 +162,7 @@ fn candidate(
     // The user's own words are an honest preview when the session's final
     // stretch holds no assistant text (measured: one real session ended with
     // 6.8 MB of attachments/snapshots after the last assistant turn).
-    let preview =
-        tail.assistant.or_else(|| tail.last_prompt.map(|p| sanitize(&format!("> {p}"))));
+    let preview = tail.assistant.or_else(|| tail.last_prompt.map(|p| sanitize(&format!("> {p}"))));
     let pid = pid_files.get(&head.session_id);
     let name = pid
         .and_then(|p| p.name.clone())
@@ -262,7 +267,13 @@ fn scan_tail_window(path: &Path, len: u64, window: u64) -> TailInfo {
 pub fn sanitize(text: &str) -> String {
     let cleaned: String = text
         .chars()
-        .map(|c| if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') { ' ' } else { c })
+        .map(|c| {
+            if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
+                ' '
+            } else {
+                c
+            }
+        })
         .collect();
     let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = String::new();
@@ -291,11 +302,20 @@ mod tests {
         d
     }
 
-    fn write_transcript(home: &Path, slug: &str, file: &str, sid: &str, cwd: &str, tail: &str) -> PathBuf {
+    fn write_transcript(
+        home: &Path,
+        slug: &str,
+        file: &str,
+        sid: &str,
+        cwd: &str,
+        tail: &str,
+    ) -> PathBuf {
         let dir = home.join("projects").join(slug);
         std::fs::create_dir_all(&dir).unwrap();
         let p = dir.join(file);
-        let head = format!("{{\"sessionId\":\"{sid}\",\"cwd\":\"{cwd}\",\"type\":\"user\",\"uuid\":\"u0\"}}\n");
+        let head = format!(
+            "{{\"sessionId\":\"{sid}\",\"cwd\":\"{cwd}\",\"type\":\"user\",\"uuid\":\"u0\"}}\n"
+        );
         std::fs::write(&p, format!("{head}{tail}")).unwrap();
         p
     }

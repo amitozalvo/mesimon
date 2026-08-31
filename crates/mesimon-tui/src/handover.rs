@@ -31,10 +31,7 @@ pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
     // Ignore INT/QUIT for exactly the wait, restore after. drain_stdin stays
     // the caller's, after the alt screen is back up.
     let (old_int, old_quit) = unsafe {
-        (
-            libc::signal(libc::SIGINT, libc::SIG_IGN),
-            libc::signal(libc::SIGQUIT, libc::SIG_IGN),
-        )
+        (libc::signal(libc::SIGINT, libc::SIG_IGN), libc::signal(libc::SIGQUIT, libc::SIG_IGN))
     };
     let status = cmd.status().context("attach child");
     unsafe {

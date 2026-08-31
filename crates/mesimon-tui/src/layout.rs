@@ -121,7 +121,7 @@ mod tests {
             })
             .collect();
         assert_eq!(widths, vec![29, 29, 29, 28]); // T = 26,26,26,25
-        // Total consumed = pads + gutters + widths == 120.
+                                                  // Total consumed = pads + gutters + widths == 120.
         let total: u16 = LPAD + RPAD + 3 * GUT + widths.iter().sum::<u16>();
         assert_eq!(total, 120);
     }

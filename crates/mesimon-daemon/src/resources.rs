@@ -61,9 +61,8 @@ pub fn budget_of(total: u32, used: u32) -> u32 {
 pub fn pty_figures() -> PtyFigures {
     #[cfg(target_os = "linux")]
     {
-        let read = |p: &str| -> Option<u32> {
-            std::fs::read_to_string(p).ok()?.trim().parse().ok()
-        };
+        let read =
+            |p: &str| -> Option<u32> { std::fs::read_to_string(p).ok()?.trim().parse().ok() };
         let total = read("/proc/sys/kernel/pty/max").unwrap_or(0);
         let used = read("/proc/sys/kernel/pty/nr").unwrap_or(0);
         return PtyFigures { total, used, budget: budget_of(total, used) };
@@ -78,9 +77,8 @@ pub fn pty_figures() -> PtyFigures {
             .unwrap_or(511);
         let used = std::fs::read_dir("/dev")
             .map(|d| {
-                d.flatten()
-                    .filter(|e| e.file_name().to_string_lossy().starts_with("ttys"))
-                    .count() as u32
+                d.flatten().filter(|e| e.file_name().to_string_lossy().starts_with("ttys")).count()
+                    as u32
             })
             .unwrap_or(0);
         PtyFigures { total, used, budget: budget_of(total, used) }

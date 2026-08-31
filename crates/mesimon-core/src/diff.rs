@@ -90,12 +90,22 @@ pub enum Sign {
 pub enum Render {
     Text,
     Binary,
-    ModeOnly { old_mode: String, new_mode: String },
+    ModeOnly {
+        old_mode: String,
+        new_mode: String,
+    },
     Symlink,
-    Submodule { old_oid: String, new_oid: String },
-    TooLarge { bytes: u64 },
+    Submodule {
+        old_oid: String,
+        new_oid: String,
+    },
+    TooLarge {
+        bytes: u64,
+    },
     /// The per-file git call exited non-zero: stderr verbatim.
-    Unresolvable { message: String },
+    Unresolvable {
+        message: String,
+    },
 }
 
 /// Split `-z` output into NUL-terminated tokens (the trailing empty token from
@@ -508,7 +518,10 @@ mod tests {
         assert!(flags.dirty.contains("src/x.rs"));
         assert!(flags.dirty.contains("new.rs"));
         assert!(flags.dirty.contains("conflicted.rs"), "u record after rename stays synced");
-        assert!(!flags.dirty.contains("orig.rs"), "origPath token consumed, not parsed as a record");
+        assert!(
+            !flags.dirty.contains("orig.rs"),
+            "origPath token consumed, not parsed as a record"
+        );
         assert_eq!(flags.untracked, vec!["scratch.txt".to_string()]);
     }
 
@@ -532,7 +545,8 @@ mod tests {
 
     #[test]
     fn patch_no_newline_marker_skipped_and_cr_preserved() {
-        let patch = b"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\r\n+new\n\\ No newline at end of file\n";
+        let patch =
+            b"--- a/x\n+++ b/x\n@@ -1,1 +1,1 @@\n-old\r\n+new\n\\ No newline at end of file\n";
         let (hunks, _) = parse_patch(patch);
         assert_eq!(hunks[0].lines.len(), 2, "the backslash marker is not a content line");
         assert_eq!(hunks[0].lines[0].text, "old\r", "lone \\r preserved for the renderer's ^M");
@@ -561,10 +575,7 @@ mod tests {
     #[test]
     fn classify_submodule() {
         let fd = build_file_diff(&entry("M", "160000", "160000"), b"", 1024);
-        assert_eq!(
-            fd.render,
-            Render::Submodule { old_oid: OID_A.into(), new_oid: OID_B.into() }
-        );
+        assert_eq!(fd.render, Render::Submodule { old_oid: OID_A.into(), new_oid: OID_B.into() });
     }
 
     #[test]

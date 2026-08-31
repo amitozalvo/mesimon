@@ -41,7 +41,10 @@ pub enum BindingStatus {
     /// Directory removed, branch kept — diffs still render from the object store.
     Evicted,
     /// Fail closed (D26); `stage` names what failed, in mesimon's words.
-    Error { stage: String, message: String },
+    Error {
+        stage: String,
+        message: String,
+    },
 }
 
 pub type Bindings = HashMap<ulid::Ulid, Binding>;
@@ -72,8 +75,7 @@ pub fn bindings_file(paths: &Paths) -> PathBuf {
 /// `Err(Some(v))` is a file from a NEWER mesimon: valid bytes this build must
 /// refuse rather than guess at. `Err(None)` is genuinely unparseable.
 fn parse_bindings(text: &str) -> std::result::Result<Bindings, (Option<u32>, String)> {
-    let v: serde_json::Value =
-        serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
+    let v: serde_json::Value = serde_json::from_str(text).map_err(|e| (None, e.to_string()))?;
     if v.get("schema_version").is_none() {
         return serde_json::from_value::<Bindings>(v).map_err(|e| (None, e.to_string()));
     }
@@ -95,8 +97,7 @@ pub fn load_bindings(paths: &Paths) -> Result<Bindings> {
         return Ok(Bindings::new());
     }
     let text = std::fs::read_to_string(&f)?;
-    parse_bindings(&text)
-        .map_err(|(_, detail)| anyhow::anyhow!("parse {}: {detail}", f.display()))
+    parse_bindings(&text).map_err(|(_, detail)| anyhow::anyhow!("parse {}: {detail}", f.display()))
 }
 
 pub fn save_bindings(paths: &Paths, b: &Bindings) -> Result<()> {
@@ -204,9 +205,7 @@ pub fn load_or_recover(paths: &Paths) -> (Bindings, Vec<Notice>, bool) {
     // directory is there and its marker still names the same ticket. Anything
     // less and we keep the bar, so nothing is torn down on a guess.
     let verified = moved.is_some()
-        && rebuilt
-            .iter()
-            .all(|(id, b)| b.path.is_dir() && marker_ticket(&b.path) == Some(*id));
+        && rebuilt.iter().all(|(id, b)| b.path.is_dir() && marker_ticket(&b.path) == Some(*id));
     notices.push(
         Notice::new(
             "worktrees_barred",
@@ -247,12 +246,7 @@ pub fn ensure_root(paths: &Paths) -> Result<PathBuf> {
 /// Run git with argv, capture stdout; non-zero exit becomes an error carrying
 /// stderr (callers rewrap into mesimon-voiced messages before the UI).
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .args(args)
-        .output()
-        .context("run git")?;
+    let out = Command::new("git").arg("-C").arg(repo).args(args).output().context("run git")?;
     if !out.status.success() {
         bail!(
             "git {} failed: {}",
@@ -328,7 +322,11 @@ pub fn provision(
         .map_err(|e| ("mark".into(), e.to_string()))?;
     let marker_path = {
         let p = PathBuf::from(marker.trim());
-        if p.is_absolute() { p } else { dir.join(p) }
+        if p.is_absolute() {
+            p
+        } else {
+            dir.join(p)
+        }
     };
     std::fs::write(&marker_path, format!("{ticket_id}\n{}\n1\n", repo.display()))
         .map_err(|e| ("mark".into(), e.to_string()))?;
@@ -450,11 +448,8 @@ pub fn provision_existing(
 fn copy_worktreeinclude(repo: &Path, dest: &Path) -> Result<()> {
     let inc = repo.join(".worktreeinclude");
     let Ok(patterns) = std::fs::read_to_string(&inc) else { return Ok(()) };
-    let patterns: Vec<&str> = patterns
-        .lines()
-        .map(str::trim)
-        .filter(|l| !l.is_empty() && !l.starts_with('#'))
-        .collect();
+    let patterns: Vec<&str> =
+        patterns.lines().map(str::trim).filter(|l| !l.is_empty() && !l.starts_with('#')).collect();
     if patterns.is_empty() {
         return Ok(());
     }
@@ -462,7 +457,14 @@ fn copy_worktreeinclude(repo: &Path, dest: &Path) -> Result<()> {
     let out = Command::new("git")
         .arg("-C")
         .arg(repo)
-        .args(["--no-optional-locks", "ls-files", "--others", "--ignored", "--exclude-standard", "-z"])
+        .args([
+            "--no-optional-locks",
+            "ls-files",
+            "--others",
+            "--ignored",
+            "--exclude-standard",
+            "-z",
+        ])
         .output()?;
     if !out.status.success() {
         bail!("ls-files failed: {}", String::from_utf8_lossy(&out.stderr).trim());
@@ -478,8 +480,7 @@ fn copy_worktreeinclude(repo: &Path, dest: &Path) -> Result<()> {
             if let Some(parent) = to.parent() {
                 std::fs::create_dir_all(parent)?;
             }
-            std::fs::copy(&from, &to)
-                .with_context(|| format!("copy {rel}"))?;
+            std::fs::copy(&from, &to).with_context(|| format!("copy {rel}"))?;
         }
     }
     Ok(())
@@ -508,9 +509,7 @@ fn segments_match(pattern: &str, path: &str) -> bool {
     fn rec(pat: &[&str], path: &[&str]) -> bool {
         match (pat.first(), path.first()) {
             (None, None) => true,
-            (Some(&"**"), _) => {
-                rec(&pat[1..], path) || (!path.is_empty() && rec(pat, &path[1..]))
-            }
+            (Some(&"**"), _) => rec(&pat[1..], path) || (!path.is_empty() && rec(pat, &path[1..])),
             (Some(p), Some(s)) => glob_seg(p, s) && rec(&pat[1..], &path[1..]),
             _ => false,
         }
@@ -616,10 +615,7 @@ pub fn sweep_stale_locks(repo: &Path) -> Result<()> {
         if !reason.starts_with("mesimon: ") {
             continue;
         }
-        let pid = reason
-            .rsplit(' ')
-            .next()
-            .and_then(|p| p.parse::<i32>().ok());
+        let pid = reason.rsplit(' ').next().and_then(|p| p.parse::<i32>().ok());
         let dead = pid.map(|p| unsafe { libc::kill(p, 0) } != 0).unwrap_or(true);
         if dead {
             let _ = unlock(repo, &row.path);
@@ -825,10 +821,8 @@ mod tests {
         assert_eq!(parse_bindings(&versioned).unwrap().len(), 1);
 
         // A newer file is refused with its version, not treated as garbage.
-        let future = versioned.replace(
-            &format!("\"schema_version\":{BINDINGS_SCHEMA}"),
-            "\"schema_version\":99",
-        );
+        let future = versioned
+            .replace(&format!("\"schema_version\":{BINDINGS_SCHEMA}"), "\"schema_version\":99");
         assert_eq!(parse_bindings(&future).unwrap_err().0, Some(99));
     }
 
@@ -842,10 +836,8 @@ mod tests {
         // Provisioning (daemon died between the worktree add and the ack).
         let done = provision(&repo, &root, ulid::Ulid(1), "T-1", "Landed").unwrap();
         let mut bindings = Bindings::new();
-        bindings.insert(
-            ulid::Ulid(1),
-            Binding { status: BindingStatus::Provisioning, ..done.clone() },
-        );
+        bindings
+            .insert(ulid::Ulid(1), Binding { status: BindingStatus::Provisioning, ..done.clone() });
         // Branch exists, dir never landed → replay via the evicted path.
         let evicted = provision(&repo, &root, ulid::Ulid(2), "T-2", "Half").unwrap();
         remove(&repo, &evicted.path).unwrap();

@@ -123,10 +123,7 @@ pub fn render_settings(hook_bin: &Path, hook_sock: &Path, session: uuid::Uuid) -
     // dogfood 2026-08-30, an ACCEPTED tool stayed needs-you until end of
     // turn, because there is no "permission answered" event (11 §11.7.3).
     // One entry, star matcher; the daemon discriminates on tool_name.
-    hooks.insert(
-        "PostToolUse".into(),
-        Value::Array(vec![e("PostToolUse", Some("*"), None)]),
-    );
+    hooks.insert("PostToolUse".into(), Value::Array(vec![e("PostToolUse", Some("*"), None)]));
     for ev in SINGLE_EVENTS {
         hooks.insert(ev.into(), Value::Array(vec![e(ev, None, None)]));
     }

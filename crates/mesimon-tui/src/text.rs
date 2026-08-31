@@ -139,11 +139,7 @@ impl EditBuffer {
     }
 
     fn prev_boundary(&self) -> usize {
-        self.text[..self.cursor]
-            .grapheme_indices(true)
-            .next_back()
-            .map(|(i, _)| i)
-            .unwrap_or(0)
+        self.text[..self.cursor].grapheme_indices(true).next_back().map(|(i, _)| i).unwrap_or(0)
     }
 
     fn next_boundary(&self) -> usize {
@@ -440,10 +436,7 @@ mod tests {
         // RFC3339 compatibility.
         assert_eq!(created_at_epoch_ms("1970-01-01T00:00:00Z"), Some(0));
         assert_eq!(created_at_epoch_ms("1970-01-02T00:00:00Z"), Some(86_400_000));
-        assert_eq!(
-            created_at_epoch_ms("2026-08-29T00:00:00Z"),
-            Some(1_787_961_600_000)
-        );
+        assert_eq!(created_at_epoch_ms("2026-08-29T00:00:00Z"), Some(1_787_961_600_000));
         assert_eq!(created_at_epoch_ms("1970-01-01T02:00:00+02:00"), Some(0));
         assert_eq!(created_at_epoch_ms("1970-01-01T00:00:00.123Z"), Some(0));
         assert_eq!(created_at_epoch_ms("garbage"), None);

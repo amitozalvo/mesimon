@@ -105,8 +105,7 @@ impl FeedWriter {
         if self.bytes >= self.rotate_at {
             let old = self.path.with_extension("jsonl.1");
             let _ = std::fs::rename(&self.path, old);
-            self.file =
-                std::fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
+            self.file = std::fs::OpenOptions::new().create(true).append(true).open(&self.path)?;
             self.bytes = 0;
         }
         Ok(())

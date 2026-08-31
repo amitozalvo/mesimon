@@ -95,12 +95,7 @@ fn render(sections: &[Section], verbose: bool) -> String {
             if r.level == Level::Note && !verbose {
                 continue;
             }
-            out.push_str(&format!(
-                "  {:<6}{:<17}{}\n",
-                r.level.marker(),
-                r.label,
-                r.value
-            ));
+            out.push_str(&format!("  {:<6}{:<17}{}\n", r.level.marker(), r.label, r.value));
             if let Some(a) = &r.advice {
                 for (i, line) in wrap(a, 58).into_iter().enumerate() {
                     let tag = if i == 0 { "ADVICE" } else { "      " };
@@ -222,10 +217,7 @@ fn install(verbose: bool) -> Section {
             // path, and the TUI's `update ready` offer watches its mtime. A
             // binary that moves per version breaks both, silently.
             let dir = exe.parent().map(|d| d.display().to_string()).unwrap_or_default();
-            let on_path = std::env::var("PATH")
-                .unwrap_or_default()
-                .split(':')
-                .any(|p| p == dir);
+            let on_path = std::env::var("PATH").unwrap_or_default().split(':').any(|p| p == dir);
             records.push(if on_path {
                 rec(Level::Ok, "on PATH", redact(&dir, verbose))
             } else {
@@ -346,7 +338,11 @@ fn daemon(repo: &Path, verbose: bool) -> Section {
     match daemon_hello(&paths.orch_sock()) {
         None => records.push(rec(Level::Ok, "daemon", "not running (starts with the board)")),
         Some((proto, pid, build)) => {
-            records.push(rec(Level::Ok, "daemon", format!("running (pid {pid}, protocol {proto})")));
+            records.push(rec(
+                Level::Ok,
+                "daemon",
+                format!("running (pid {pid}, protocol {proto})"),
+            ));
             let ours = env!("CARGO_PKG_VERSION");
             records.push(if build.is_empty() {
                 rec(Level::Warn, "daemon build", "too old to report its version").advice(
@@ -410,10 +406,8 @@ pub fn run(args: &[String]) -> Result<()> {
             std::process::exit(2);
         }
     }
-    let sections: Vec<Section> = all
-        .into_iter()
-        .filter(|s| wanted.is_empty() || wanted.contains(&s.name))
-        .collect();
+    let sections: Vec<Section> =
+        all.into_iter().filter(|s| wanted.is_empty() || wanted.contains(&s.name)).collect();
 
     print!("{}", render(&sections, verbose));
     let fails: usize = sections.iter().map(|s| count(s, Level::Fail)).sum();
@@ -435,10 +429,8 @@ mod tests {
         for name in ["environment", "daemon", "git", "multiplexer", "install", "agents"] {
             let clean = section_rule(name, &[]);
             assert_eq!(clean.chars().count(), 78, "clean {name}: {clean:?}");
-            let dirty = section_rule(
-                name,
-                &[rec(Level::Fail, "x", "y"), rec(Level::Warn, "a", "b")],
-            );
+            let dirty =
+                section_rule(name, &[rec(Level::Fail, "x", "y"), rec(Level::Warn, "a", "b")]);
             assert_eq!(dirty.chars().count(), 78, "dirty {name}: {dirty:?}");
         }
     }
@@ -470,10 +462,7 @@ mod tests {
     fn notes_are_verbose_only() {
         let s = Section {
             name: "install",
-            records: vec![
-                rec(Level::Note, "quiet", "hidden"),
-                rec(Level::Warn, "loud", "shown"),
-            ],
+            records: vec![rec(Level::Note, "quiet", "hidden"), rec(Level::Warn, "loud", "shown")],
         };
         assert!(!render(std::slice::from_ref(&s), false).contains("hidden"));
         assert!(render(std::slice::from_ref(&s), false).contains("shown"));
