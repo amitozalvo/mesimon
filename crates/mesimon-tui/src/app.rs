@@ -541,8 +541,10 @@ impl App {
             self.notices.insert(0, n);
             dirty = true;
         }
+        // The header chip is the whole offer (`◦ update ready (U ∙ esc)`);
+        // the footer would only say it twice, so this just asks for the
+        // redraw that paints the chip.
         if self.update_watch.tick() {
-            self.status = "update ready ∙ U reloads".into();
             dirty = true;
         }
         // Async board-changed events from the daemon.
