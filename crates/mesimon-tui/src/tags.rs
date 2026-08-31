@@ -1,208 +1,138 @@
-//! Tag pips: the minimal at-rest indication of a ticket's tags (D18/D31b).
+//! Tag rendering: the colour bands stacked under a card, and the tint ramp
+//! they draw from.
 //!
-//! A pip is the tag's **first letter, lowercase**, tinted `pip.N` where
-//! `N = stable_hash(name) % PIPS`. Two properties make that the right shape:
+//! A tag is a **painted band across the bottom of the card block**, one row
+//! per tag. Not a glyph and not text: at rest the colour alone says which
+//! tags a ticket wears, and `p` writes the names onto the bands.
 //!
-//! - The colour is a pure function of the name, so `auth` is the same colour
-//!   on every machine and in every screenshot — never the tag's position in a
-//!   list, or two people looking at the same board see different colours.
-//! - The letter, not the tint, carries the identity. That is what lets the
-//!   tint be abandoned wholesale below TrueColor (`Theme::pip`) and what keeps
-//!   D31b's colour-only exception honest at the bottom of the ladder.
+//! Two constraints shape the band and are not negotiable:
 //!
-//! Lowercase is deliberate and not cosmetic: uppercase is reserved board-wide
-//! for "a human is required", and a tag never means that.
+//! - **It is painted, never drawn.** The obvious ways to draw a rule —
+//!   `─` U+2500, `▁` U+2581, `█` U+2588 — all sit in the `0x2500–0x259F`
+//!   range the L1 no-drawn-structure law bans board-wide
+//!   (`test_no_drawn_structure`). A band is spaces with a background colour,
+//!   the same trick the accent bar uses.
+//! - **The tints stay low-chroma.** D19 reserves exactly one saturated colour
+//!   for "needs you", and a band is a lot more ink than a pip, so the ramp
+//!   matters more here, not less. Tab cycles a tag through the six tints in
+//!   `Theme::pip` and nothing else — there is no free-colour path.
 
-use ratatui::style::{Color, Style};
+use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
-use mesimon_core::board::Tag;
+use mesimon_core::board::{Board, TagRef};
 
-use crate::theme::{Theme, PIPS};
+use crate::theme::Theme;
 
-/// How many pips render before the run collapses to `+N` (D31b). Three is the
-/// count at which a run still reads as a set rather than a bar code.
-pub(crate) const PIP_CAP: usize = 3;
-
-/// FNV-1a over the name's bytes. Any stable hash would do; what matters is
-/// that it is stable ACROSS MACHINES, which rules out `DefaultHasher`
-/// (randomly seeded per process, so the same tag would change colour on every
-/// restart).
-pub(crate) fn tint_index(name: &str) -> usize {
-    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
-    for b in name.as_bytes() {
-        h ^= *b as u64;
-        h = h.wrapping_mul(0x0000_0100_0000_01b3);
-    }
-    (h % PIPS as u64) as usize
+/// A tag resolved for rendering: its name and the tint index the registry
+/// says to paint it with.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Painted {
+    pub name: String,
+    pub tint: u8,
 }
 
-/// The pip character for a tag: its first letter, lowercased, or `#` for a
-/// name that starts with something unalphabetic.
+/// Resolve a ticket's tag references against the registry, in group order so
+/// the bands never reshuffle under the reader.
+pub(crate) fn painted(board: &Board, tags: &[TagRef]) -> Vec<Painted> {
+    let mut out: Vec<Painted> =
+        tags.iter().map(|t| Painted { name: t.name.clone(), tint: board.tint_of(t) }).collect();
+    out.sort_by_key(|_| 0); // keep input order; tags are already group-sorted
+    out
+}
+
+/// One band: `width` cells painted in the tag's tint.
 ///
-/// Restricted to ASCII on purpose. A pip occupies exactly one cell, and the
-/// only way to guarantee that is to refuse anything whose width the terminal
-/// and `unicode-width` might disagree about — the disagreement strands a
-/// `selected_bg` cell past the card edge that the diff never repaints.
-pub(crate) fn pip_char(name: &str) -> char {
-    name.chars().find(|c| c.is_ascii_alphanumeric()).map(|c| c.to_ascii_lowercase()).unwrap_or('#')
-}
-
-/// Cells the pip run will occupy, including its leading space. Zero when the
-/// ticket has no tags — the zone collapses, which is what keeps an untagged
-/// board byte-identical to the one before this feature.
-pub(crate) fn pip_cells(tags: &[Tag]) -> usize {
-    if tags.is_empty() {
-        return 0;
+/// With `name`, the name is written across it in the page ground, which is
+/// the peek reveal. Without, the band is solid — the minimal indication.
+pub(crate) fn band(theme: &Theme, tag: &Painted, width: usize, named: bool) -> Vec<Span<'static>> {
+    // Below TrueColor the tint collapses to one grey, so six identical bands
+    // would say less than six names do. The row keeps its place in the layout
+    // and carries the name instead — the same call the ramp makes everywhere.
+    if !theme.paints_bands() {
+        let label = crate::text::truncate(&format!("#{}", tag.name), width);
+        let pad = width.saturating_sub(label.chars().count());
+        return vec![
+            Span::styled(label, theme.dim2()),
+            Span::styled(" ".repeat(pad), Style::default()),
+        ];
     }
-    let shown = tags.len().min(PIP_CAP);
-    let extra = tags.len().saturating_sub(PIP_CAP);
-    // sp + one cell per pip + "+N" when the run is capped.
-    1 + shown + if extra > 0 { 1 + digits(extra) } else { 0 }
-}
-
-fn digits(n: usize) -> usize {
-    if n >= 10 {
-        2
-    } else {
-        1
+    let tint = theme.pip(tag.tint as usize);
+    let painted = Style::default().bg(tint);
+    if !named {
+        return vec![Span::styled(" ".repeat(width), painted)];
     }
-}
-
-/// The pip run: `" b d p"` style, one span per pip so each keeps its tint.
-///
-/// `quiet` is the style a demoted row wants (a trail ghost, or the inverted
-/// needs-you row): there, the pips give up their tint entirely rather than
-/// fight the row for attention. Colour-only encoding is only defensible while
-/// the tags are ambient, and a card that is shouting is not the moment.
-pub(crate) fn pip_spans(theme: &Theme, tags: &[Tag], quiet: Option<Style>) -> Vec<Span<'static>> {
-    if tags.is_empty() {
-        return Vec::new();
-    }
-    let mut spans = vec![Span::raw(" ".to_string())];
-    for tag in tags.iter().take(PIP_CAP) {
-        let style = quiet.unwrap_or_else(|| Style::default().fg(theme.pip(tint_index(&tag.name))));
-        spans.push(Span::styled(pip_char(&tag.name).to_string(), style));
-    }
-    let extra = tags.len().saturating_sub(PIP_CAP);
-    if extra > 0 {
-        let style = quiet.unwrap_or_else(|| theme.dim2());
-        spans.push(Span::styled(format!("+{extra}"), style));
-    }
-    spans
-}
-
-/// The spelled-out form, one span per tag: `#BUG #STAGING`. This is what the
-/// peek toggle reveals, and it is load-bearing rather than decorative —
-/// D31b's grant of colour-only encoding to tags holds only while "the full
-/// names appear on selection one keystroke away" stays true.
-pub(crate) fn name_spans(theme: &Theme, tags: &[Tag], dim: Color) -> Vec<Span<'static>> {
-    let mut spans = Vec::new();
-    for (i, tag) in tags.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::raw(" ".to_string()));
-        }
-        spans.push(Span::styled("#".to_string(), Style::default().fg(dim)));
-        spans.push(Span::styled(
-            tag.name.clone(),
-            Style::default().fg(theme.pip(tint_index(&tag.name))),
-        ));
-    }
-    spans
-}
-
-/// Display width of [`name_spans`].
-pub(crate) fn names_width(tags: &[Tag]) -> usize {
-    use unicode_width::UnicodeWidthStr;
-    let mut w = 0;
-    for (i, tag) in tags.iter().enumerate() {
-        if i > 0 {
-            w += 1;
-        }
-        w += 1 + tag.name.width();
-    }
-    w
+    // Ink that reads on the band: the page ground, which every tint was
+    // contrast-checked against.
+    let ink = Style::default().bg(tint).fg(theme.band_ink()).add_modifier(Modifier::BOLD);
+    let label = crate::text::truncate(&tag.name, width.saturating_sub(2));
+    let pad = width.saturating_sub(label.chars().count() + 1);
+    vec![
+        Span::styled(" ".to_string(), painted),
+        Span::styled(label, ink),
+        Span::styled(" ".repeat(pad), painted),
+    ]
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::theme::{Flavor, Profile};
+    use unicode_width::UnicodeWidthStr;
 
-    fn tag(name: &str, group: u8) -> Tag {
-        Tag { name: name.into(), group }
+    fn tags(n: usize) -> Vec<Painted> {
+        (0..n).map(|i| Painted { name: format!("T{i}"), tint: i as u8 % 6 }).collect()
     }
 
-    /// The tint is a pure function of the NAME, so the same tag is the same
-    /// colour everywhere. A per-process hash would repaint the board on every
-    /// restart.
+    /// A band fills its width exactly, named or not. One cell over and the
+    /// card's right edge strands a painted cell the diff never repaints.
     #[test]
-    fn tint_is_stable_and_name_derived() {
-        assert_eq!(tint_index("BUG"), tint_index("BUG"));
-        assert_ne!(tint_index("BUG"), tint_index("REGR"));
-        // Pinned: if the hash changes, every board changes colour.
-        assert!(tint_index("BUG") < PIPS);
-        assert!(tint_index("") < PIPS);
-    }
-
-    /// A pip is exactly one cell, whatever the name. Anything wider strands a
-    /// selected-surface cell past the card edge.
-    #[test]
-    fn a_pip_is_always_one_ascii_cell() {
-        for name in ["BUG", "regr", "9lives", "  spaced", "→arrow", "日本語", "!", ""] {
-            let c = pip_char(name);
-            assert!(c.is_ascii(), "{name:?} gave a non-ascii pip {c:?}");
-            assert!(!c.is_ascii_uppercase(), "{name:?} gave an uppercase pip");
-        }
-        assert_eq!(pip_char("BUG"), 'b');
-        assert_eq!(pip_char("→arrow"), 'a');
-        // Uppercase is reserved for "a human is required"; a tag is never that.
-        assert_eq!(pip_char("日本語"), '#');
-        assert_eq!(pip_char(""), '#');
-    }
-
-    /// The run caps at 3 then `+N`, and the advertised width matches what is
-    /// actually rendered — the card's title budget is computed from it.
-    #[test]
-    fn pip_cells_match_what_renders() {
+    fn a_band_is_exactly_its_width() {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        for n in 0..8usize {
-            let tags: Vec<Tag> = (0..n).map(|i| tag(&format!("t{i}"), i as u8 + 1)).collect();
-            let spans = pip_spans(&theme, &tags, None);
-            let rendered: usize =
-                spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(&*s.content)).sum();
-            assert_eq!(rendered, pip_cells(&tags), "{n} tags");
-        }
-        // An untagged ticket costs nothing — the zone collapses.
-        assert_eq!(pip_cells(&[]), 0);
-        assert!(pip_spans(&theme, &[], None).is_empty());
-        // Four tags: sp + 3 pips + "+1".
-        let four: Vec<Tag> = (0..4).map(|i| tag(&format!("t{i}"), i as u8 + 1)).collect();
-        assert_eq!(pip_cells(&four), 1 + 3 + 2);
-    }
-
-    /// A demoted row gives up the tint rather than fighting for attention.
-    #[test]
-    fn quiet_rows_drop_the_tint() {
-        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let tags = [tag("BUG", 1)];
-        let quiet = theme.dim3();
-        for s in pip_spans(&theme, &tags, Some(quiet)) {
-            if s.content.trim().is_empty() {
-                continue;
+        for width in [4usize, 10, 26, 40] {
+            for named in [false, true] {
+                for t in tags(3) {
+                    let w: usize =
+                        band(&theme, &t, width, named).iter().map(|s| s.content.width()).sum();
+                    assert_eq!(w, width, "width {width}, named {named}, tag {}", t.name);
+                }
             }
-            assert_eq!(s.style, quiet);
         }
     }
 
+    /// A name too long for the band truncates rather than overflowing.
     #[test]
-    fn names_width_matches_the_spans() {
+    fn a_long_name_truncates_into_the_band() {
         let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        for tags in [vec![], vec![tag("BUG", 1)], vec![tag("BUG", 1), tag("STAGING", 2)]] {
-            let spans = name_spans(&theme, &tags, theme.rest.dim2);
-            let rendered: usize =
-                spans.iter().map(|s| unicode_width::UnicodeWidthStr::width(&*s.content)).sum();
-            assert_eq!(rendered, names_width(&tags));
+        let t = Painted { name: "a-very-long-tag-name-indeed".into(), tint: 0 };
+        let spans = band(&theme, &t, 12, true);
+        let w: usize = spans.iter().map(|s| s.content.width()).sum();
+        assert_eq!(w, 12);
+    }
+
+    /// The band is PAINTED, never drawn: no codepoint may land in the
+    /// structure range the L1 law bans, whatever the tier.
+    #[test]
+    fn bands_never_use_drawn_structure() {
+        for (flavor, profile) in [
+            (Flavor::Graphite, Profile::TrueColor),
+            (Flavor::Chalk, Profile::Ansi256),
+            (Flavor::Graphite, Profile::Mono),
+        ] {
+            let theme = Theme::new(flavor, profile);
+            for t in tags(6) {
+                for named in [false, true] {
+                    for s in band(&theme, &t, 20, named) {
+                        for ch in s.content.chars() {
+                            let cp = ch as u32;
+                            assert!(
+                                !(0x2500..=0x259F).contains(&cp),
+                                "{flavor:?}/{profile:?} band used drawn structure {ch:?}"
+                            );
+                        }
+                    }
+                }
+            }
         }
     }
 }

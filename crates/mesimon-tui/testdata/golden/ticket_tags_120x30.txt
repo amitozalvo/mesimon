@@ -1,6 +1,6 @@
  mesimon > kanban-tui > Fix OSC-11 detection
 
- IN PROGRESS ∙ created by you >1y ago ∙ #BUG #STAGING
+ IN PROGRESS ∙ created by you >1y ago ∙  BUG   STAGING
 
   DOCUMENTS                                                                         (0)    SESSIONS                  2
 

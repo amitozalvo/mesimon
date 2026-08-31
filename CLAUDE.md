@@ -194,26 +194,31 @@ subcommand, and `--` does not shield it. Retries stop outside `Spawning`/`Idle`/
 startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026-08-31 addendum
 + correction and STALE-MAP "Shift+Enter composes and asks".
 
-**Tags are ticket metadata on an axis, and the registry is board-level and persisted.**
-`Ticket.tags` is a `Vec<Tag>` of `{name, group}`; a group (1-9) is an axis and a ticket wears at
-most one tag per group, so a digit press cycles `none -> first -> ... -> last -> none`. The
-vocabulary lives in `Board.tags`, persisted in `columns.toml` (schema **2**; the bump exists so
-an older build bars its writes instead of silently dropping the registry). Nothing is seeded —
-"create on the fly" means no setup step, NOT a derived list: typing a name once registers it
-(`register_tag`, called from the daemon's `set_tag`), and it stays in the cycle after the last
-ticket drops it. Only `ForgetTag` removes one, and it strips the name from every wearer in the
-same pass — a ticket left wearing a retired tag would show a pip the cycle can neither reach nor
-clear. `group_tags(g)` reads the registry in creation order; do NOT re-derive it from the
-tickets, which breaks twice (a tag vanishes with its last wearer, and the ticket being cycled
-reorders its own vocabulary so `none` becomes unreachable). The key is `^t` (a fourth chord
-tail) and NOT `ctrl+<digit>`,
-which `no_banned_atoms` rejects — see STALE-MAP "Ticket tags" for why, and note the binding
-must exist in `INPUT` too or the composer types the letter instead. At rest a tag renders as
-one lowercase letter tinted `Theme::pip(stable_hash(name) % 6)` on card line 1 (zero-width
-when untagged, cap 3 then `+N`); `p` spells the names out, which is not optional — D31b grants
-tags the system's one colour-only encoding only while the names are one keystroke away. Below
-TrueColor the tint is dropped and the letter carries. `board::sanitize_tag` runs at the daemon
-boundary: a tag name is user text on a card row.
+**Tags are ticket metadata on an axis, and `^t` opens a picker.** `Board.tags` is the registry
+(`Tag {name, group, color}`), persisted in `columns.toml` (schema 2 — the bump exists so an older
+build bars its writes instead of dropping the registry); `Ticket.tags` is `Vec<TagRef {name,
+group}>`, a pointer into it. Colour lives on the REGISTRY, never on the ticket, so recolouring
+repaints every card at once instead of leaving 40 tickets holding a stale copy. Nothing is seeded:
+"create on the fly" means no setup step, not a derived list — a name enters by being typed in the
+picker and stays until `ForgetTag`. Max `MAX_TAGS_PER_GROUP` (5) per axis; groups are 1-10 (`0`
+addresses 10).
+
+`^t` opens `Scope::TagChord` from the board, the ticket screen AND the composer (a Ctrl-letter is
+the only legacy-floor atom a text field cannot swallow — `ctrl+<digit>` is a banned atom, see
+STALE-MAP "Ticket tags"). The picker is a grid: `hjkl` walks it, a digit jumps to that group's
+row and steps along it on a repeat, `enter` wears/unwears (or opens the name field on `+ new`),
+`tab` cycles the tint, `r` renames, `d` deletes board-wide in two presses, `esc` leaves the field
+then the picker. **While naming, resolve against `Scope::TagChord`, never `Scope::Input`** — that
+borrow leaked the composer's own hints ("shift+enter save + ask claude") under a tag-name field.
+An atom may not appear twice in a scope even with different `avail`, so `enter`/`esc` are one
+binding each whose hint switches on `Ctx::tag_naming`.
+
+A tag renders as a **painted band across the bottom of the card block**, one row per tag, in the
+tag's tint; `p` writes the names onto the bands. Painted, never drawn — every rule glyph
+(`─ ▁ █`) sits in the `0x2500-0x259F` range the L1 law bans. Below TrueColor the tint collapses to
+one grey, so the band carries `#name` as text instead (`Theme::paints_bands`). Untagged tickets
+cost zero rows, which is what keeps the resting board identical to the pre-tags one.
+`board::sanitize_tag` runs at the daemon boundary: a tag name is user text on a card row.
 
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
 NO key — they live in the Esc menu (`ui/menu.rs`, rows from `keymap::menu_items`), because

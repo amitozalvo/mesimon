@@ -2,15 +2,13 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-   Decay treatments         f    ⠋ Fix OSC-11 detec~ bs >1y    ✓ Grapheme trun~ rpa+1 >1y    z Painted accent bar  >1y
+   Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
                                    ✻ claude           ⠋ >1y
-   Keymap validator                $ bash             ◦ >1y    x Flaky e2e on runner  >1y
-
-                                 ⠋ Adopt drawer import  >1y
-
+                                   $ bash             ◦ >1y
+   Keymap validator
 
 
-
+                                 ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
 
 
@@ -23,8 +21,10 @@
 
 
 
-
-
-
- TAG  5 #HOTFIX█
+ TAGS Fix OSC-11 detection
+  1  new: HOTFIX█
+  2     •STAGING      PRODUCTION   + new
+  3      auth   + new
+  4      p1   + new
+  5   + new
  TAG  enter save ∙ esc cancel ∙ ? keys

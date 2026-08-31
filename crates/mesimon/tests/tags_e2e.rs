@@ -144,8 +144,8 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     ));
 
     // ---- the boundary sanitizes and refuses --------------------------------
-    err_containing(set(&mut c, 0, Some("x")), "1-9");
-    err_containing(set(&mut c, 10, Some("x")), "1-9");
+    err_containing(set(&mut c, 0, Some("x")), "1-10");
+    err_containing(set(&mut c, 11, Some("x")), "1-10");
     err_containing(set(&mut c, 3, Some("   ")), "empty");
     // Control chars and the drawn-structure range never reach a card row.
     assert!(matches!(set(&mut c, 3, Some("a\nb\u{2500}c")), Response::Ok));
@@ -167,6 +167,50 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
         let at = raw.find(scalar).unwrap_or_else(|| panic!("{scalar} missing from\n{raw}"));
         assert!(at < tags_at, "{scalar} must serialize before [[tags]]");
     }
+
+    // ---- creating, colouring, renaming, and the cap -------------------------
+    // Registering is its own gesture: it puts a name in the vocabulary and
+    // touches no ticket.
+    assert!(matches!(
+        c.request(Command::RegisterTag { group: 5, name: "SOLO".into() }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.group_tags(5), vec!["SOLO"]);
+    assert!(board.tickets.iter().all(|t| t.tag_in(5).is_none()), "registering tags nothing");
+    err_containing(c.request(Command::RegisterTag { group: 5, name: "SOLO".into() }), "already");
+
+    // Colour is a registry property, so it is set once and every card follows.
+    assert_eq!(board.tag_def(5, "SOLO").unwrap().color, None, "unchosen by default");
+    assert!(matches!(
+        c.request(Command::SetTagColor { group: 5, name: "SOLO".into(), color: 3 }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.tag_def(5, "SOLO").unwrap().tint(), 3);
+
+    // Renaming carries the wearers.
+    assert!(matches!(
+        c.request(Command::SetTag { id, group: 5, name: Some("SOLO".into()) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::RenameTag { group: 5, from: "SOLO".into(), to: "DUET".into() }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.group_tags(5), vec!["DUET"]);
+    assert_eq!(board.ticket(id).unwrap().tag_in(5).unwrap().name, "DUET", "the wearer followed");
+    assert_eq!(board.tag_def(5, "DUET").unwrap().tint(), 3, "and kept its colour");
+
+    // A group is a small readable set, not a list.
+    for i in 0..4 {
+        assert!(matches!(
+            c.request(Command::RegisterTag { group: 5, name: format!("f{i}") }),
+            Response::Ok
+        ));
+    }
+    err_containing(c.request(Command::RegisterTag { group: 5, name: "overflow".into() }), "full");
 
     // ---- the registry on disk ----------------------------------------------
     let cols = std::fs::read_to_string(repo.join(".mesimon/board/columns.toml")).unwrap();

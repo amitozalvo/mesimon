@@ -152,10 +152,24 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // so a long vocabulary truncates the clause instead of wrapping the row.
     if !ticket.tags.is_empty() {
         let used: usize = ident_spans.iter().map(|s| s.content.width()).sum();
-        let budget = (area.width as usize).saturating_sub(used + 4);
-        if crate::tags::names_width(&ticket.tags) <= budget {
-            ident_spans.push(Span::styled(" ∙ ", theme.dim2()));
-            ident_spans.extend(crate::tags::name_spans(theme, &ticket.tags, theme.rest.dim2));
+        let mut budget = (area.width as usize).saturating_sub(used + 4);
+        ident_spans.push(Span::styled(" ∙", theme.dim2()));
+        // Each tag as a short painted chip carrying its name — the same paint
+        // the card band uses, so the two surfaces agree at a glance.
+        for t in &ticket.tags {
+            let text = format!(" {} ", t.name);
+            if text.width() + 1 > budget {
+                break;
+            }
+            budget -= text.width() + 1;
+            ident_spans.push(Span::raw(" "));
+            let tint = theme.pip(app.board.tint_of(t) as usize);
+            if theme.paints_bands() {
+                ident_spans
+                    .push(Span::styled(text, Style::default().bg(tint).fg(theme.band_ink())));
+            } else {
+                ident_spans.push(Span::styled(text, Style::default().fg(theme.rest.dim1)));
+            }
         }
     }
     let ident = Line::from(ident_spans);

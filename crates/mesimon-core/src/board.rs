@@ -261,7 +261,7 @@ pub struct Ticket {
     /// of tables, and a scalar after a table errors. Tables may follow tables,
     /// so it sits between `workspace` (a scalar) and `[archived]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub tags: Vec<Tag>,
+    pub tags: Vec<TagRef>,
     /// Archival is a field, not a directory move (13 §data-model) — the ticket
     /// keeps its column and order, so restore is exact. Must stay last: a TOML
     /// table; any scalar serialized after it errors.
@@ -269,22 +269,61 @@ pub struct Ticket {
     pub archived: Option<Archived>,
 }
 
-/// One tag on a ticket, and the axis it belongs to.
+/// What a TICKET wears: a pointer into the registry by (group, name).
 ///
-/// `group` is a plain `u8`, deliberately never an enum: an unknown enum
-/// variant from a newer daemon fails the WHOLE `Response::Board` deserialize
-/// and the client drops the line (the same reasoning that makes
-/// `Notice.kind` and `WorktreeItem.status` `String`s).
+/// Deliberately no colour here. Colour lives on the registry entry, so
+/// recolouring a tag repaints every card at once instead of leaving 40
+/// tickets holding a stale copy.
 ///
-/// There is no tag registry file. The vocabulary is derived from the tickets
-/// that wear the tags (`Board::group_tags`), which is what "create on the
-/// fly, nothing seeded" means: a tag exists exactly as long as some ticket
-/// carries it.
+/// `group` is a plain `u8`, never an enum: an unknown enum variant from a
+/// newer daemon fails the WHOLE `Response::Board` deserialize and the client
+/// drops the line (the same reasoning that makes `Notice.kind` and
+/// `WorktreeItem.status` `String`s).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TagRef {
+    pub name: String,
+    /// The axis this tag belongs to — the digit that reaches it. 1–9, 0 = 10.
+    pub group: u8,
+}
+
+/// A REGISTRY entry: the vocabulary, and what each name looks like.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Tag {
     pub name: String,
-    /// The axis this tag belongs to — the digit that cycles it. 1–9.
     pub group: u8,
+    /// Index into the tag tint ramp, chosen by the user (Tab cycles it).
+    /// `None` means "never chosen" and falls back to a hash of the name, so a
+    /// tag has a stable colour from the moment it exists without anyone
+    /// having to pick one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub color: Option<u8>,
+}
+
+/// How many tints the tag ramp offers. Mirrors `mesimon-tui`'s `theme::PIPS`;
+/// core cannot see the theme, and the colour index is stored here, so the
+/// modulus has to live on both sides. `tag_tints_agree` pins them together.
+pub const TAG_TINTS: u8 = 6;
+
+/// Most tags one axis may hold. A group is a small, readable set — past this
+/// it is not an axis any more, it is a list, and the picker row stops fitting.
+pub const MAX_TAGS_PER_GROUP: usize = 5;
+
+/// The colour a name falls back to when nobody has picked one: stable across
+/// machines and screenshots, never the order it was created in.
+pub fn default_tint(name: &str) -> u8 {
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for b in name.as_bytes() {
+        h ^= *b as u64;
+        h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    (h % TAG_TINTS as u64) as u8
+}
+
+impl Tag {
+    /// The tint to paint this tag with.
+    pub fn tint(&self) -> u8 {
+        self.color.unwrap_or_else(|| default_tint(&self.name)) % TAG_TINTS
+    }
 }
 
 /// The longest a tag name may be, in bytes (13 §data-model). Enforced at the
@@ -367,15 +406,19 @@ impl Ticket {
 
     /// This ticket's tag on axis `group`, if it wears one. At most one per
     /// group by construction — `set_tag` replaces rather than appends.
-    pub fn tag_in(&self, group: u8) -> Option<&Tag> {
+    pub fn tag_in(&self, group: u8) -> Option<&TagRef> {
         self.tags.iter().find(|t| t.group == group)
+    }
+
+    pub fn wears(&self, group: u8, name: &str) -> bool {
+        self.tag_in(group).is_some_and(|t| t.name == name)
     }
 
     /// Set (or with `None`, clear) this ticket's tag on axis `group`.
     pub fn set_tag(&mut self, group: u8, name: Option<String>) {
         self.tags.retain(|t| t.group != group);
         if let Some(name) = name {
-            self.tags.push(Tag { name, group });
+            self.tags.push(TagRef { name, group });
         }
         // Stable on disk and on the wire: a card's pips must not reorder
         // because an unrelated group changed.
@@ -441,18 +484,81 @@ impl Board {
         self.tags.iter().filter(|t| t.group == group).map(|t| t.name.as_str()).collect()
     }
 
-    /// Add a name to axis `group` if it is not already there. Returns whether
-    /// the registry changed, so the caller knows to persist.
-    ///
-    /// This is the ONLY way tags enter the vocabulary, and it happens as a
-    /// side effect of using one — type a name once and it is in the cycle
-    /// from then on, on every ticket, with no setup step.
-    pub fn register_tag(&mut self, group: u8, name: &str) -> bool {
+    /// The registry entries of axis `group`, in creation order.
+    pub fn group_entries(&self, group: u8) -> Vec<&Tag> {
+        self.tags.iter().filter(|t| t.group == group).collect()
+    }
+
+    /// Look a name up in the registry.
+    pub fn tag_def(&self, group: u8, name: &str) -> Option<&Tag> {
+        self.tags.iter().find(|t| t.group == group && t.name == name)
+    }
+
+    /// The tint a ticket's tag should be painted with. Falls back to the
+    /// name's own hash for a reference whose registry entry has gone missing,
+    /// so a card can never render a colourless band.
+    pub fn tint_of(&self, t: &TagRef) -> u8 {
+        self.tag_def(t.group, &t.name).map(|d| d.tint()).unwrap_or_else(|| default_tint(&t.name))
+    }
+
+    /// Add a name to axis `group`. `Err` says why not, so the caller can show
+    /// it rather than failing silently.
+    pub fn register_tag(&mut self, group: u8, name: &str) -> Result<(), String> {
         if self.tags.iter().any(|t| t.group == group && t.name == name) {
-            return false;
+            return Err(format!("{name} is already in group {group}"));
         }
-        self.tags.push(Tag { name: name.to_string(), group });
-        true
+        if self.group_entries(group).len() >= MAX_TAGS_PER_GROUP {
+            return Err(format!("group {group} is full ({MAX_TAGS_PER_GROUP} tags)"));
+        }
+        self.tags.push(Tag { name: name.to_string(), group, color: None });
+        Ok(())
+    }
+
+    /// Rename a tag, carrying every ticket wearing it along. Returns the ids
+    /// that changed so the caller writes only those files.
+    pub fn rename_tag(
+        &mut self,
+        group: u8,
+        from: &str,
+        to: &str,
+    ) -> Result<Vec<ulid::Ulid>, String> {
+        if self.tag_def(group, from).is_none() {
+            return Err(format!("no tag {from:?} in group {group}"));
+        }
+        if from != to && self.tag_def(group, to).is_some() {
+            return Err(format!("{to} is already in group {group}"));
+        }
+        for t in self.tags.iter_mut() {
+            if t.group == group && t.name == from {
+                t.name = to.to_string();
+            }
+        }
+        let mut touched = Vec::new();
+        for t in self.tickets.iter_mut() {
+            let mut hit = false;
+            for r in t.tags.iter_mut() {
+                if r.group == group && r.name == from {
+                    r.name = to.to_string();
+                    hit = true;
+                }
+            }
+            if hit {
+                touched.push(t.id);
+            }
+        }
+        Ok(touched)
+    }
+
+    /// Set a tag's tint. `None` on the entry means "unchosen"; this always
+    /// writes an explicit choice.
+    pub fn set_tag_color(&mut self, group: u8, name: &str, color: u8) -> Result<(), String> {
+        match self.tags.iter_mut().find(|t| t.group == group && t.name == name) {
+            Some(t) => {
+                t.color = Some(color % TAG_TINTS);
+                Ok(())
+            }
+            None => Err(format!("no tag {name:?} in group {group}")),
+        }
     }
 
     /// Remove a name from the registry AND from every ticket wearing it.
@@ -590,7 +696,7 @@ mod tests {
             let mut t = ticket(id, "TODO", "a");
             for (g, name) in tags {
                 t.set_tag(*g, Some((*name).to_string()));
-                b.register_tag(*g, name);
+                let _ = b.register_tag(*g, name);
             }
             b.tickets.push(t);
         };
@@ -602,7 +708,7 @@ mod tests {
         assert_eq!(b.group_tags(1), vec!["BUG", "REGR"]);
         assert_eq!(b.group_tags(2), vec!["DEV", "PRODUCTION"]);
         assert_eq!(b.group_tags(3), Vec::<&str>::new());
-        assert!(!b.register_tag(1, "BUG"), "registering twice is a no-op");
+        assert!(b.register_tag(1, "BUG").is_err(), "registering twice is refused");
 
         // The vocabulary is independent of what the tickets wear. Derive it
         // from them instead and it breaks twice: a tag vanishes when its last
@@ -634,6 +740,63 @@ mod tests {
         // Archiving must not renumber a cycle either.
         b.tickets[0].archived = Some(Archived { at: "@1".into(), by: "local".into() });
         assert_eq!(b.group_tags(1), vec!["REGR"]);
+    }
+
+    /// A group is a small readable set, not a list: past the cap the picker
+    /// row stops fitting and the axis stops being an axis.
+    #[test]
+    fn a_group_fills_up() {
+        let mut b = Board::with_default_columns();
+        for i in 0..MAX_TAGS_PER_GROUP {
+            assert!(b.register_tag(1, &format!("t{i}")).is_ok(), "{i}");
+        }
+        let err = b.register_tag(1, "one-too-many").expect_err("cap enforced");
+        assert!(err.contains("full"), "{err}");
+        // Other axes are unaffected, and a freed slot can be refilled.
+        assert!(b.register_tag(2, "elsewhere").is_ok());
+        assert!(b.forget_tag(1, "t0"));
+        assert!(b.register_tag(1, "one-too-many").is_ok());
+    }
+
+    /// Colour is a registry property, so recolouring repaints every card at
+    /// once. Unchosen falls back to a hash of the name — stable across
+    /// machines, so a tag has a colour from the moment it exists.
+    #[test]
+    fn colour_lives_on_the_registry() {
+        let mut b = Board::with_default_columns();
+        b.register_tag(1, "BUG").expect("registered");
+        let def = b.tag_def(1, "BUG").expect("in registry");
+        assert_eq!(def.color, None);
+        assert_eq!(def.tint(), default_tint("BUG"));
+        assert!(def.tint() < TAG_TINTS);
+
+        b.set_tag_color(1, "BUG", 3).expect("recoloured");
+        assert_eq!(b.tag_def(1, "BUG").expect("still there").tint(), 3);
+        // Out of range wraps rather than being refused.
+        b.set_tag_color(1, "BUG", TAG_TINTS + 1).expect("wrapped");
+        assert_eq!(b.tag_def(1, "BUG").expect("still there").tint(), 1);
+        assert!(b.set_tag_color(1, "NOPE", 0).is_err());
+    }
+
+    /// A rename carries every wearer along, and reports which files changed.
+    #[test]
+    fn renaming_carries_the_wearers() {
+        let mut b = Board::with_default_columns();
+        b.register_tag(1, "BUG").expect("registered");
+        let mut t = ticket(1, "TODO", "a");
+        t.set_tag(1, Some("BUG".into()));
+        b.tickets.push(t);
+        b.tickets.push(ticket(2, "TODO", "b"));
+
+        let touched = b.rename_tag(1, "BUG", "DEFECT").expect("renamed");
+        assert_eq!(touched, vec![ulid::Ulid(1)], "only the wearer's file changed");
+        assert_eq!(b.group_tags(1), vec!["DEFECT"]);
+        assert!(b.tickets[0].wears(1, "DEFECT"));
+        assert!(b.tickets[1].tag_in(1).is_none());
+        // A name already in the group, and a name that is not there at all.
+        b.register_tag(1, "OTHER").expect("registered");
+        assert!(b.rename_tag(1, "DEFECT", "OTHER").is_err());
+        assert!(b.rename_tag(1, "GHOST", "X").is_err());
     }
 
     /// One tag per group: setting replaces, `None` clears, and the set stays

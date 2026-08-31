@@ -215,18 +215,23 @@ pub enum Verb {
     /// `^t` — open the tag tail. Works on the board, the ticket screen, and
     /// inside the composer.
     TagPrefix,
-    /// A digit inside the tag tail: pick the axis and advance its tag one
-    /// step (`none -> first -> … -> last -> none`). The digit is read off the
-    /// key in `dispatch`, the way `DropColumn` does.
+    /// Move the picker cursor. The direction is read off the key, the way
+    /// the board's `hjkl` motions are.
+    TagLeft,
+    TagRight,
+    TagUp,
+    TagDown,
+    /// A digit: jump to that group's row, and step along it on a repeat.
     TagGroup,
-    /// Name a new tag on the axis last picked.
-    TagNew,
-    /// Clear the axis last picked.
-    TagClear,
-    /// Retire the picked axis's current tag from the registry and from every
-    /// ticket wearing it. Two presses, like every other board-wide removal.
+    /// Put the cell's tag on the ticket (or take it off again).
+    TagToggle,
+    /// Cycle the cell's tag through the tint ramp.
+    TagColor,
+    /// Rename the cell's tag.
+    TagRename,
+    /// Delete the cell's tag from the registry and every ticket. Two presses.
     TagForget,
-    /// Leave the tag tail.
+    /// Leave the picker.
     TagDone,
     Merge,
     OpenDiff,
@@ -359,17 +364,15 @@ pub struct Ctx {
     /// workspace still open to change (it locks the moment work starts).
     pub composing: bool,
     // ---- tags ----
-    /// The axis the tag tail is pointed at, if one has been picked.
-    pub tag_group: Option<u8>,
     /// A tag name is being typed. While true every binding in the tag tail
     /// stands down, so the digits are text and not axis picks.
     pub tag_naming: bool,
-    /// The picked axis already has a vocabulary, so a digit press cycles it
-    /// rather than falling straight into naming.
-    pub tag_group_has_tags: bool,
-    /// The ticket wears a tag on the picked axis — the one `d` would retire.
+    /// The cursor is on a real tag, not the `+ new` cell — so there is
+    /// something to wear, recolour, rename or delete.
+    pub tag_on_entry: bool,
+    /// The cursor's tag is already on this ticket, so Enter takes it off.
     pub tag_worn: bool,
-    /// `d` is armed: the next `d` retires that tag board-wide.
+    /// `d` is armed: the next `d` deletes that tag board-wide.
     pub tag_forget_armed: bool,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
@@ -411,9 +414,8 @@ impl Default for Ctx {
             worktree_present: false,
             density_word: "context lines",
             composing: false,
-            tag_group: None,
             tag_naming: false,
-            tag_group_has_tags: false,
+            tag_on_entry: false,
             tag_worn: false,
             tag_forget_armed: false,
             rich_keys: false,
@@ -1139,6 +1141,26 @@ static ARCHIVE: &[Binding] = &[Binding {
 static TAG: &[Binding] = &[
     Binding {
         keys: &[
+            Key::Char('h'),
+            Key::Char('j'),
+            Key::Char('k'),
+            Key::Char('l'),
+            Key::Left,
+            Key::Down,
+            Key::Up,
+            Key::Right,
+        ],
+        verb: Verb::TagLeft,
+        show: "hjkl",
+        hint: |_| "move",
+        avail: |c| !c.tag_naming,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[
             Key::Char('1'),
             Key::Char('2'),
             Key::Char('3'),
@@ -1148,72 +1170,96 @@ static TAG: &[Binding] = &[
             Key::Char('7'),
             Key::Char('8'),
             Key::Char('9'),
+            Key::Char('0'),
         ],
         verb: Verb::TagGroup,
-        show: "1-9",
-        hint: |c| {
-            if c.tag_group_has_tags {
-                "cycle this group"
-            } else {
-                "pick a group"
-            }
-        },
+        show: "1-0",
+        hint: |_| "group",
         avail: |c| !c.tag_naming,
         class: Class::Plain,
-        group: Group::Ticket,
-        mutates: true,
-        prio: 10,
-    },
-    Binding {
-        keys: &[Key::Char('n')],
-        verb: Verb::TagNew,
-        show: "n",
-        hint: |_| "new tag here",
-        avail: |c| !c.tag_naming && c.tag_group.is_some(),
-        class: Class::Plain,
-        group: Group::Ticket,
-        mutates: true,
+        group: Group::Navigate,
+        mutates: false,
         prio: 20,
     },
     Binding {
-        keys: &[Key::Char('x')],
-        verb: Verb::TagClear,
-        show: "x",
-        hint: |_| "clear this group",
-        avail: |c| !c.tag_naming && c.tag_group.is_some(),
+        keys: &[Key::Enter],
+        verb: Verb::TagToggle,
+        show: "enter",
+        hint: |c| {
+            if c.tag_naming {
+                "save"
+            } else if !c.tag_on_entry {
+                "new tag"
+            } else if c.tag_worn {
+                "remove"
+            } else {
+                "add"
+            }
+        },
+        avail: always,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
         prio: 30,
     },
     Binding {
-        // Retiring a tag reaches every ticket that wears it, so it takes two
+        keys: &[Key::Tab],
+        verb: Verb::TagColor,
+        show: "tab",
+        hint: |_| "colour",
+        avail: |c| !c.tag_naming && c.tag_on_entry,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: true,
+        prio: 40,
+    },
+    Binding {
+        keys: &[Key::Char('r')],
+        verb: Verb::TagRename,
+        show: "r",
+        hint: |_| "rename",
+        avail: |c| !c.tag_naming && c.tag_on_entry,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 50,
+    },
+    Binding {
+        // Deleting reaches every ticket wearing the tag, so it takes two
         // deliberate presses — the same grace the `d` and `a` chords give a
         // single card, for a change with a wider blast radius.
         keys: &[Key::Char('d')],
         verb: Verb::TagForget,
         show: "d",
         hint: |c| {
-            // The `show` already prints the key, so the hint must not
-            // repeat it — the footer composes them as "d <hint>".
+            // `show` already prints the key; the footer composes "d <hint>".
             if c.tag_forget_armed {
-                "again to retire it everywhere"
+                "again to delete it everywhere"
             } else {
-                "retire this tag"
+                "delete"
             }
         },
-        avail: |c| !c.tag_naming && c.tag_worn,
+        avail: |c| !c.tag_naming && c.tag_on_entry,
         class: Class::Grace,
         group: Group::Ticket,
         mutates: true,
-        prio: 40,
+        prio: 60,
     },
     Binding {
-        keys: &[Key::Esc, Key::Enter],
+        // One Esc binding, two meanings, because an atom may not appear twice
+        // in a scope whatever its `avail`. Naming backs out of the field;
+        // otherwise it closes the picker.
+        keys: &[Key::Esc, Key::Ctrl('t')],
         verb: Verb::TagDone,
         show: "esc",
-        hint: |_| "done",
-        avail: |c| !c.tag_naming,
+        hint: |c| {
+            if c.tag_naming {
+                "cancel"
+            } else {
+                "done"
+            }
+        },
+        avail: always,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -1805,6 +1851,12 @@ fn directional(verb: Verb, key: Key) -> Verb {
             Key::Char('k') | Key::Up => Verb::CursorUp,
             _ => Verb::CursorDown,
         },
+        (Verb::TagLeft | Verb::TagRight | Verb::TagUp | Verb::TagDown, k) => match k {
+            Key::Char('h') | Key::Left => Verb::TagLeft,
+            Key::Char('l') | Key::Right => Verb::TagRight,
+            Key::Char('k') | Key::Up => Verb::TagUp,
+            _ => Verb::TagDown,
+        },
         (Verb::ScrollDown, Key::Char('k') | Key::Up) => Verb::ScrollUp,
         (Verb::PageDown, Key::Char('{') | Key::PageUp) => Verb::PageUp,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
@@ -2024,40 +2076,76 @@ mod tests {
         }
     }
 
-    /// The tag tail behaves like the delete and archive tails: it inherits
-    /// nothing, so a key it does not bind resolves to `None` and the handler
-    /// reads that as "cancel" rather than falling through to the board.
+    /// The picker owns its scope: it inherits nothing, so a key it does not
+    /// bind cancels rather than falling through to the board.
     #[test]
-    fn tag_chord_is_a_barrier() {
-        let ctx = Ctx { has_ticket: true, tag_group: Some(1), ..Default::default() };
+    fn tag_picker_is_a_barrier() {
+        let ctx = Ctx { has_ticket: true, tag_on_entry: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Ctrl('t'), &ctx), Some(Verb::TagPrefix));
         assert_eq!(resolve(Scope::Ticket, Key::Ctrl('t'), &ctx), Some(Verb::TagPrefix));
-        for d in '1'..='9' {
+        for (k, v) in [
+            (Key::Char('h'), Verb::TagLeft),
+            (Key::Char('l'), Verb::TagRight),
+            (Key::Char('k'), Verb::TagUp),
+            (Key::Char('j'), Verb::TagDown),
+            (Key::Enter, Verb::TagToggle),
+            (Key::Tab, Verb::TagColor),
+            (Key::Char('r'), Verb::TagRename),
+            (Key::Char('d'), Verb::TagForget),
+            (Key::Esc, Verb::TagDone),
+        ] {
+            assert_eq!(resolve(Scope::TagChord, k, &ctx), Some(v), "{k:?}");
+        }
+        for d in ['0', '1', '5', '9'] {
             assert_eq!(resolve(Scope::TagChord, Key::Char(d), &ctx), Some(Verb::TagGroup), "{d}");
         }
-        assert_eq!(resolve(Scope::TagChord, Key::Char('n'), &ctx), Some(Verb::TagNew));
-        assert_eq!(resolve(Scope::TagChord, Key::Char('x'), &ctx), Some(Verb::TagClear));
-        assert_eq!(resolve(Scope::TagChord, Key::Esc, &ctx), Some(Verb::TagDone));
-        // Nothing else binds — a stray key cancels instead of acting.
-        for k in [Key::Char('d'), Key::Char('c'), Key::Char('?'), Key::Char('q'), Key::Tab] {
+        // Arrows alias the motions, as everywhere else.
+        assert_eq!(resolve(Scope::TagChord, Key::Left, &ctx), Some(Verb::TagLeft));
+        assert_eq!(resolve(Scope::TagChord, Key::Down, &ctx), Some(Verb::TagDown));
+        // Nothing else binds.
+        for k in [Key::Char('c'), Key::Char('?'), Key::Char('q'), Key::Char('x')] {
             assert_eq!(resolve(Scope::TagChord, k, &ctx), None, "{k:?}");
         }
-        // Without a picked group there is nothing to name or clear yet.
-        let fresh = Ctx { has_ticket: true, ..Default::default() };
-        assert_eq!(resolve(Scope::TagChord, Key::Char('n'), &fresh), None);
-        assert_eq!(resolve(Scope::TagChord, Key::Char('x'), &fresh), None);
+        // On the `+ new` cell there is no tag to recolour, rename or delete.
+        let empty = Ctx { has_ticket: true, ..Default::default() };
+        for k in [Key::Tab, Key::Char('r'), Key::Char('d')] {
+            assert_eq!(resolve(Scope::TagChord, k, &empty), None, "{k:?}");
+        }
+        assert_eq!(resolve(Scope::TagChord, Key::Enter, &empty), Some(Verb::TagToggle));
     }
 
-    /// While a tag name is being typed the whole tail stands down, so the
-    /// digits are text and not axis picks. This is what lets the name field
-    /// live on the arm instead of needing a second `Mode::Input`.
+    /// While a name is being typed the picker stands down and the field owns
+    /// the keys — and the hints come from the TAG table, not from `INPUT`.
+    /// Borrowing `Scope::Input` here leaked the composer's own hints
+    /// ("shift+enter save + ask claude") into a field that does no such thing.
     #[test]
-    fn naming_a_tag_silences_the_tail() {
+    fn naming_a_tag_shows_only_its_own_keys() {
         let naming =
-            Ctx { has_ticket: true, tag_group: Some(1), tag_naming: true, ..Default::default() };
-        for k in [Key::Char('1'), Key::Char('9'), Key::Char('n'), Key::Char('x'), Key::Esc] {
+            Ctx { has_ticket: true, tag_on_entry: true, tag_naming: true, ..Default::default() };
+        // One atom, two meanings: the hint says which, and dispatch does it.
+        assert_eq!(resolve(Scope::TagChord, Key::Enter, &naming), Some(Verb::TagToggle));
+        assert_eq!(hint_for(Scope::TagChord, Verb::TagToggle, &naming), Some(("enter", "save")));
+        assert_eq!(resolve(Scope::TagChord, Key::Esc, &naming), Some(Verb::TagDone));
+        assert_eq!(hint_for(Scope::TagChord, Verb::TagDone, &naming), Some(("esc", "cancel")));
+        // Every picker key is inert: the digits and letters are text now.
+        for k in [
+            Key::Char('1'),
+            Key::Char('h'),
+            Key::Char('j'),
+            Key::Char('r'),
+            Key::Char('d'),
+            Key::Tab,
+        ] {
             assert_eq!(resolve(Scope::TagChord, k, &naming), None, "{k:?}");
         }
+        // And the composer's own hints are nowhere near this scope.
+        let hints: Vec<&str> = overlay(Scope::TagChord, &naming)
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .map(|(_, h)| h)
+            .collect();
+        assert!(!hints.iter().any(|h| h.contains("claude")), "{hints:?}");
+        assert!(!hints.iter().any(|h| h.contains("worktree")), "{hints:?}");
     }
 
     /// `^t` reaches the composer. A bare letter could not: `INPUT` is a

@@ -10,6 +10,7 @@ mod chrome;
 pub(crate) mod diff;
 mod help;
 mod menu;
+mod tagpicker;
 #[cfg(test)]
 mod tests;
 mod ticket;
@@ -73,6 +74,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     board::draw_columns(f, outer[2], app);
     chrome::draw_advisory(f, outer[3], app);
     chrome::draw_footer(f, outer[4], app);
+    // Over the board, above the footer: the picker is a panel because the
+    // vocabulary is the user's own and a one-line hint cannot show it.
+    if app.tag_armed.is_some() {
+        tagpicker::draw(f, f.area(), app);
+        chrome::draw_footer(f, outer[4], app);
+    }
     if let Mode::External { idx } = &app.mode {
         chrome::draw_drawer(f, app, *idx);
     }
@@ -87,4 +94,15 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help {
         help::draw(f, app);
     }
+}
+
+/// The picker's visible group rows, and how many cells one holds. Both live
+/// in the panel module (it owns the layout) and are re-exported here so the
+/// key handler steers by exactly what is drawn.
+pub(crate) fn tag_rows(app: &crate::app::App) -> Vec<u8> {
+    tagpicker::visible_groups(app)
+}
+
+pub(crate) fn tag_row_len(app: &crate::app::App, group: u8) -> usize {
+    tagpicker::row_len(app, group)
 }

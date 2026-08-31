@@ -126,6 +126,7 @@ pub(super) fn render(
     trail: bool,
     marquee_ms: Option<u64>,
     peek: Option<&crate::peek::Peek>,
+    tags: &[crate::tags::Painted],
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
@@ -169,10 +170,9 @@ pub(super) fn render(
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
-    // The tag zone (D18): zero-width on an untagged ticket, so a board with no
-    // tags renders exactly as it did before tags existed.
-    let tag_cells = crate::tags::pip_cells(&ticket.tags);
-    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells + tag_cells);
+    // Tags cost the title NOTHING: they are bands under the block, not a zone
+    // on this line. That is the point of moving them off it.
+    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells);
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
     let scroll = match (marquee_ms, overflow) {
@@ -234,11 +234,6 @@ pub(super) fn render(
     }
     spans.push(Span::styled(title, title_style));
     spans.push(Span::raw(" ".repeat(fill)));
-    // Tag pips: after the title, before the worktree mark and the age. A
-    // demoted row (trail ghost, inverted needs-you row) drops the tint — the
-    // colour-only encoding is only defensible while tags stay ambient.
-    let pip_quiet = if attn_card || trail { Some(quiet_style) } else { None };
-    spans.extend(crate::tags::pip_spans(theme, &ticket.tags, pip_quiet));
     if let Some((m, tone)) = &wt_mark {
         // Trail/attn contexts demote the mark to the quiet tone with the row.
         let style = match tone {
@@ -255,19 +250,35 @@ pub(super) fn render(
     spans.push(Span::raw(" "));
     let mut lines = vec![Line::from(spans).style(row_style)];
 
+    // The bands close the block, under whatever the card put above them —
+    // accordion, peek rows, or nothing. Written as a closure because the card
+    // has four exits and a band missed on one of them is a card that changes
+    // height when you select it.
+    let close = |mut lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
+        for t in tags {
+            let mut row = vec![Span::styled(bar_ch.to_string(), bar_style)];
+            row.extend(crate::tags::band(
+                theme,
+                t,
+                (ctx.width as usize).saturating_sub(1),
+                ctx.peek_on,
+            ));
+            lines.push(Line::from(row));
+        }
+        lines
+    };
+
     if held {
-        return lines;
+        return close(lines);
     }
 
     // ---- accordion (07 §4.3; session rows only — short keys are hidden
     // from the UI for now, author 2026-08-30) -------------------------------
     //
-    // Peek spells the tags out. This is not decoration: D31b grants tags the
-    // ONE colour-only encoding in the system, and the grant holds only while
-    // "the full names appear one keystroke away" stays true. So a tagged
-    // ticket expands under `p` even with no sessions to list.
-    let tag_names = ctx.peek_on && !ticket.tags.is_empty();
-    if selected && (!sessions.is_empty() || tag_names) {
+    // Peek writes the names ONTO the bands (see `close` above), so it no
+    // longer needs to force the accordion open — which is what it used to do
+    // for a tagged, session-less ticket.
+    if selected && !sessions.is_empty() {
         let acc_style = theme.selected_row();
         let dim = Style::default().fg(theme.sel.dim1);
         let quiet = Style::default().fg(theme.sel.dim2);
@@ -283,11 +294,7 @@ pub(super) fn render(
             all.push(Span::raw(" ".repeat(pad)));
             lines.push(Line::from(all).style(acc_style));
         };
-        if tag_names {
-            let mut row = vec![Span::raw("  ".to_string())];
-            row.extend(crate::tags::name_spans(theme, &ticket.tags, theme.sel.dim2));
-            push(row);
-        }
+
         let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
         ranked.sort_by_key(|s| (rank(&s.state), s.id));
         // A single session duplicates line 1 (aggregate glyph + age ARE that
@@ -364,16 +371,17 @@ pub(super) fn render(
                 ]);
             }
         }
-        return lines;
+        return close(lines);
     }
     if selected {
-        return lines; // session-less card: nothing to expand, nothing shifts
+        // Session-less card: nothing to expand, nothing shifts.
+        return close(lines);
     }
 
     // No meta strip at rest (author 2026-08-30): the session dots repeated
-    // the aggregate glyph — a resting card is always ONE line. Per-session
-    // detail lives in the accordion and the ticket rail.
-    lines
+    // the aggregate glyph — a resting card is one line plus its bands.
+    // Per-session detail lives in the accordion and the ticket rail.
+    close(lines)
 }
 
 /// Does this ticket currently hold a usable-confidence attention session?

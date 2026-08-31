@@ -596,6 +596,9 @@ impl Daemon {
             Command::SetWorkspace { id, .. } => Some(("set_workspace", Some(*id))),
             Command::SetTag { id, .. } => Some(("set_tag", Some(*id))),
             Command::ForgetTag { .. } => Some(("forget_tag", None)),
+            Command::RegisterTag { .. } => Some(("register_tag", None)),
+            Command::RenameTag { .. } => Some(("rename_tag", None)),
+            Command::SetTagColor { .. } => Some(("set_tag_color", None)),
             Command::MergeTicket { id } => Some(("merge_ticket", Some(*id))),
             Command::MergeToAgent { id, .. } => Some(("merge_to_agent", Some(*id))),
             Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
@@ -671,6 +674,9 @@ impl Daemon {
             Command::SetWorkspace { id, workspace } => self.set_workspace(id, workspace),
             Command::SetTag { id, group, name } => self.set_tag(id, group, name),
             Command::ForgetTag { group, name } => self.forget_tag(group, name),
+            Command::RegisterTag { group, name } => self.register_tag(group, name),
+            Command::RenameTag { group, from, to } => self.rename_tag(group, from, to),
+            Command::SetTagColor { group, name, color } => self.set_tag_color(group, name, color),
             Command::MergeTicket { id } => self.merge_ticket(id),
             Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
             Command::RestoreTicket { id } => self.restore_ticket(id),
@@ -1822,8 +1828,8 @@ impl Daemon {
         if self.board.ticket(id).is_none() {
             return Response::Err { message: "no such ticket".into() };
         }
-        if !(1..=9).contains(&group) {
-            return Response::Err { message: "tag group must be 1-9".into() };
+        if !(1..=10).contains(&group) {
+            return Response::Err { message: "tag group must be 1-10".into() };
         }
         let clean = match name {
             None => None,
@@ -1837,7 +1843,7 @@ impl Daemon {
         // so it outlives the tickets: clearing this ticket's tag below never
         // retires the name, and the cycle keeps its shape.
         if let Some(name) = clean.as_deref() {
-            if self.board.register_tag(group, name) {
+            if self.board.register_tag(group, name).is_ok() {
                 self.persist_columns();
             }
         }
@@ -1847,12 +1853,61 @@ impl Daemon {
         }
     }
 
+    /// Put a name in the registry. Creating and wearing are separate gestures
+    /// in the picker, so this touches no ticket.
+    fn register_tag(&mut self, group: u8, name: String) -> Response {
+        if !(1..=10).contains(&group) {
+            return Response::Err { message: "tag group must be 1-10".into() };
+        }
+        let Some(clean) = sanitize_tag(&name) else {
+            return Response::Err { message: "empty tag name".into() };
+        };
+        match self.board.register_tag(group, &clean) {
+            Ok(()) => {
+                self.persist_columns();
+                self.broadcast();
+                Response::Ok
+            }
+            Err(message) => Response::Err { message },
+        }
+    }
+
+    fn rename_tag(&mut self, group: u8, from: String, to: String) -> Response {
+        let Some(clean) = sanitize_tag(&to) else {
+            return Response::Err { message: "empty tag name".into() };
+        };
+        match self.board.rename_tag(group, &from, &clean) {
+            Ok(touched) => {
+                let files: Vec<Ticket> =
+                    touched.iter().filter_map(|id| self.board.ticket(*id).cloned()).collect();
+                for t in &files {
+                    let _ = store::save_ticket(&self.paths, t);
+                }
+                self.persist_columns();
+                self.broadcast();
+                Response::Ok
+            }
+            Err(message) => Response::Err { message },
+        }
+    }
+
+    fn set_tag_color(&mut self, group: u8, name: String, color: u8) -> Response {
+        match self.board.set_tag_color(group, &name, color) {
+            Ok(()) => {
+                self.persist_columns();
+                self.broadcast();
+                Response::Ok
+            }
+            Err(message) => Response::Err { message },
+        }
+    }
+
     /// Retire a name from the registry and strip it from every ticket wearing
     /// it. The two must move together: a ticket left wearing a retired tag
     /// shows a pip the cycle can neither reach nor clear.
     fn forget_tag(&mut self, group: u8, name: String) -> Response {
-        if !(1..=9).contains(&group) {
-            return Response::Err { message: "tag group must be 1-9".into() };
+        if !(1..=10).contains(&group) {
+            return Response::Err { message: "tag group must be 1-10".into() };
         }
         // Note who wears it BEFORE the removal: only those files changed, and
         // rewriting every ticket on the board to retire one tag would be a

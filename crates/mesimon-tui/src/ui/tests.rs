@@ -635,7 +635,7 @@ fn fixture_tagged() -> Board {
     let mut b = fixture(false);
     let tag = |b: &mut Board, id: u128, pairs: &[(u8, &str)]| {
         for (g, name) in pairs {
-            b.register_tag(*g, name);
+            let _ = b.register_tag(*g, name);
         }
         if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(id)) {
             for (g, name) in pairs {
@@ -648,6 +648,48 @@ fn fixture_tagged() -> Board {
     // Four tags on one card: the run caps at three and collapses to `+1`.
     tag(&mut b, 5, &[(1, "REGR"), (2, "PRODUCTION"), (3, "auth"), (4, "p1")]);
     b
+}
+
+/// Goldens capture `.symbol()` only, so a PAINTED band reads as blank rows
+/// there and nothing above would catch a band that lost its colour. This is
+/// the test that actually looks at the paint.
+#[test]
+fn test_tag_bands_are_painted_in_their_own_tint() {
+    let board = fixture_tagged();
+    let mut app = app_graphite(board);
+    app.cursor_col = 0;
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+
+    // T-1 "Decay treatments" wears one tag (FTR), so exactly one band sits
+    // under its title row, painted with that tag's tint.
+    let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card");
+    let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("registered").tint() as usize);
+    let band_y = y + 1;
+    // Interior cells carry the tint as BACKGROUND — the band is painted, not
+    // drawn, because every rule glyph is banned board-wide.
+    let painted: usize = (0..30u16).filter(|x| buf[(*x, band_y as u16)].bg == tint).count();
+    assert!(painted > 10, "band under T-1 is not painted: {painted} cells");
+    // The row above it is the title and must NOT be painted.
+    let above: usize = (0..30u16).filter(|x| buf[(*x, y as u16)].bg == tint).count();
+    assert_eq!(above, 0, "the title row got painted");
+}
+
+/// The bands are the one place tags spend real ink, so the one-saturated-
+/// colour law is checked here too: no band may carry the attention accent.
+#[test]
+fn test_tag_bands_never_spend_the_accent() {
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 0;
+    for peek in [false, true] {
+        app.peek = peek;
+        let buf = cells(&app, 120, 30);
+        for y in 0..30u16 {
+            for x in 0..120u16 {
+                assert_ne!(buf[(x, y)].bg, ATTN_GRAPHITE, "attn bg at {x},{y} peek={peek}");
+            }
+        }
+    }
 }
 
 #[test]
@@ -690,7 +732,8 @@ fn golden_tag_chord_120() {
     app.cursor_row = 0;
     app.tag_armed = Some(crate::app::TagArm {
         ticket: Some(ulid_n(3)),
-        group: Some(1),
+        row: 0,
+        col: 1,
         naming: None,
         forget_armed: false,
     });
@@ -706,7 +749,8 @@ fn golden_tag_forget_armed_120() {
     app.cursor_row = 0;
     app.tag_armed = Some(crate::app::TagArm {
         ticket: Some(ulid_n(3)),
-        group: Some(1),
+        row: 0,
+        col: 0,
         naming: None,
         forget_armed: true,
     });
@@ -725,8 +769,9 @@ fn golden_tag_naming_120() {
     }
     app.tag_armed = Some(crate::app::TagArm {
         ticket: Some(ulid_n(3)),
-        group: Some(5),
-        naming: Some(buffer),
+        row: 0,
+        col: 0,
+        naming: Some((crate::app::Naming::New, buffer)),
         forget_armed: false,
     });
     golden("board_tag_naming_120x30", &render(&app, 120, 30));
@@ -745,16 +790,27 @@ fn golden_compose_tags_120() {
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Create {
             workspace: None,
-            tags: vec![mesimon_core::board::Tag { name: "BUG".into(), group: 1 }],
+            tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
         },
         buffer,
     };
     app.tag_armed = Some(crate::app::TagArm {
         ticket: None,
-        group: Some(1),
+        row: 0,
+        col: 0,
         naming: None,
         forget_armed: false,
     });
+    // The picked tag bands the phantom card, and the picker marks it worn —
+    // the two surfaces have to agree before the ticket even exists.
+    app.peek = true;
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("BUG")),
+        "the composer must show what it is about to tag:\n{}",
+        lines.join("\n")
+    );
+    app.peek = false;
     golden("board_compose_tags_120x30", &render(&app, 120, 30));
 }
 

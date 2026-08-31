@@ -1076,3 +1076,45 @@ disagreement there strands a `selected_bg` cell the diff never repaints.
 
 `15`'s "`set_tags`: NO TIER, NO TOOL, EVER" stands — tagging is human curation and there is no MCP
 surface yet.
+
+## Tags become a picker, and the pips become bands (2026-08-31, T-83 round 2)
+
+Author dogfood found the first cut "really messy and not intuitive", plus a concrete bug. What
+replaced it, and what each change refutes:
+
+- **`^t` opens a PICKER, not a cycle.** The first cut made a digit cycle its axis blind: nothing
+  on screen said what the digits held, so a vocabulary the user had to build themselves was also
+  one they had to remember. Now `^t` opens a grid panel — one row per group, its tags across it,
+  a `+ new` cell at the end — and `hjkl`/digits steer a cursor over it. Digits survive as the
+  fast path (jump to a row, step along it on a repeat). `enter` wears or unwears, `tab` cycles
+  the tint, `r` renames, `d` deletes in two presses.
+- **Naming must resolve against `Scope::TagChord`, not `Scope::Input`.** The bug the author hit:
+  the tag-name field borrowed the composer's scope for its editing keys, so the footer offered
+  "shift+enter save + ask claude" and "shift+tab workspace" under a field that does neither. The
+  editing keys are now handled directly off the `KeyCode` and only `enter`/`esc` resolve. A scope
+  barrier must own its hints, not sublet them.
+- **One atom, one binding per scope — even with disjoint `avail`.** `no_key_bound_twice_in_a_chain`
+  rejects two `Enter` bindings gated on `tag_naming` and `!tag_naming`. So `enter` and `esc` are
+  single bindings whose HINT switches on `Ctx::tag_naming` and whose dispatch branches. Worth
+  knowing before designing another modal tail.
+- **Pips became bands.** `D18`/`06` §2.4's "pip is the tag's first letter" is refuted by use: at
+  three tags a card read `rpa+1`, which is a bar code, not a set. A tag is now a painted row
+  across the bottom of the card block, and `p` writes the name onto it. Painted, never drawn —
+  `─` U+2500, `▁` U+2581 and `█` U+2588 are all inside the `0x2500-0x259F` range the L1 law bans,
+  so a band is spaces with a background, the trick the accent bar already uses. Below TrueColor
+  the tint collapses to one grey and the band carries `#name` as text instead: six identical grey
+  bands say less than six names do. Goldens capture `.symbol()` only, so bands read as blank rows
+  there — `test_tag_bands_are_painted_in_their_own_tint` is what actually checks the paint, and
+  `test_tag_bands_never_spend_the_accent` holds D19's line where tags now spend real ink.
+- **Colour is on the registry and user-chosen.** `Tag.color: Option<u8>` indexes the tag ramp;
+  `None` falls back to a hash of the name, so a tag is coloured from the moment it exists and Tab
+  only overrides. Storing it on the registry rather than the ticket is what makes a recolour
+  repaint every card instead of leaving old copies behind. The ramp is still the six low-chroma
+  tints and there is no free-colour path — D31b's law binds harder here than it did for pips,
+  because a band is far more ink.
+- **`MAX_TAGS_PER_GROUP = 5`**, and groups run 1-10 with `0` addressing 10. Past five a row stops
+  fitting and an axis stops being an axis.
+
+The composer shows what it is about to tag: the phantom card carries the same bands, and the
+picker marks the picks worn. The first cut showed neither, which is why the author could not tell
+whether tagging while composing had worked at all.

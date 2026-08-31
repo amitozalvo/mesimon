@@ -149,7 +149,21 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             None
         };
         let wt = app.wt_item(t.id);
-        let lines = card::render(&ctx, t, &sessions, wt, selected, held, trail, mq, peek.as_ref());
+        // The registry lives on the board, so colours resolve here rather
+        // than inside the card, which never sees it.
+        let painted = crate::tags::painted(&app.board, &t.tags);
+        let lines = card::render(
+            &ctx,
+            t,
+            &sessions,
+            wt,
+            selected,
+            held,
+            trail,
+            mq,
+            peek.as_ref(),
+            &painted,
+        );
         groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor: None });
     };
     match ghost {
@@ -180,15 +194,25 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // New-ticket entry: a phantom card at the column tail, edited in place.
     // The second line is the M4 workspace selector (Shift+Tab cycles it).
     if is_cursor_col {
-        if let Some((InputPurpose::Create { workspace, .. }, buf)) = editing {
+        if let Some((InputPurpose::Create { workspace, tags }, buf)) = editing {
             let (line, x_off) = card::render_edit(&ctx, buf);
             let selector = card::render_workspace_selector(&ctx, *workspace);
-            groups.push(Group {
-                lines: vec![line, selector],
-                cursor: true,
-                waiting: false,
-                edit_cursor: Some(x_off),
-            });
+            // The tags picked with `^t` band the phantom card exactly as they
+            // will band the real one — otherwise you are picking blind until
+            // the ticket exists.
+            let mut lines = vec![line, selector];
+            for t in crate::tags::painted(&app.board, tags) {
+                let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
+                let mut row = vec![Span::styled(bar_ch.to_string(), bar_style)];
+                row.extend(crate::tags::band(
+                    theme,
+                    &t,
+                    (ctx.width as usize).saturating_sub(1),
+                    app.peek,
+                ));
+                lines.push(Line::from(row));
+            }
+            groups.push(Group { lines, cursor: true, waiting: false, edit_cursor: Some(x_off) });
         }
     }
 

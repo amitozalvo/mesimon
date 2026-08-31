@@ -119,6 +119,26 @@ pub enum Command {
         group: u8,
         name: String,
     },
+    /// Put a new name in the registry without putting it on any ticket.
+    /// Creating and wearing are separate gestures in the picker.
+    RegisterTag {
+        group: u8,
+        name: String,
+    },
+    /// Rename a tag, carrying every ticket wearing it along.
+    RenameTag {
+        group: u8,
+        from: String,
+        to: String,
+    },
+    /// Pick a tag's tint (Tab in the picker). `color` indexes the tag ramp
+    /// and is taken modulo its size, so an out-of-range value from a newer
+    /// client wraps rather than being refused.
+    SetTagColor {
+        group: u8,
+        name: String,
+        color: u8,
+    },
     /// Merge the ticket's branch into the default branch — fast-forward ONLY.
     /// A branch the default moved past answers `NeedsRebase`: the agent
     /// rebases + tests in its worktree first (`MergeToAgent`), so mesimon

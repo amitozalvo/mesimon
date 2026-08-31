@@ -884,14 +884,19 @@ order = "a0"
             next_key: 3,
             columns: vec![Column { name: "TODO".into(), order: "a0".into() }],
             tags: vec![
-                mesimon_core::board::Tag { name: "BUG".into(), group: 1 },
-                mesimon_core::board::Tag { name: "STAGING".into(), group: 2 },
+                mesimon_core::board::Tag { name: "BUG".into(), group: 1, color: None },
+                mesimon_core::board::Tag { name: "STAGING".into(), group: 2, color: Some(4) },
             ],
         };
         let text = toml::to_string_pretty(&cf).unwrap();
         let back: ColumnsFile = toml::from_str(&text).unwrap();
         assert_eq!(back.tags.len(), 2);
         assert_eq!(back.tags[0].name, "BUG");
+        // An unchosen colour stays absent on disk and falls back to the
+        // name's hash; a chosen one round-trips.
+        assert_eq!(back.tags[0].color, None);
+        assert!(!text.contains("color") || text.matches("color").count() == 1, "{text}");
+        assert_eq!(back.tags[1].color, Some(4));
         assert_eq!(back.next_key, 3);
         // The stamp is what stops an older build silently dropping the
         // registry on its next write: at v1 it would parse, ignore `tags`,
