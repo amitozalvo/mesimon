@@ -40,10 +40,7 @@ pub(super) fn render_edit(ctx: &CardCtx, buffer: &EditBuffer) -> (Line<'static>,
     let spans = vec![
         Span::styled(bar_ch.to_string(), bar_style),
         Span::raw(" "),
-        Span::styled(
-            shown,
-            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
-        ),
+        Span::styled(shown, Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)),
     ];
     (Line::from(spans).style(theme.selected_row()), x_off)
 }
@@ -124,7 +121,7 @@ pub(super) fn render(
     held: bool,
     trail: bool,
     marquee_ms: Option<u64>,
-    peek: Option<&str>,
+    peek: Option<&crate::peek::Peek>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
@@ -318,9 +315,30 @@ pub(super) fn render(
         }
         // Peek rows: the latest assistant reply, wrapped inside the card's
         // interior. Capped at 4 rows — the transcript itself is one focus away.
-        if let Some(text) = peek {
-            for row in crate::peek::wrap(text, t_cells.saturating_sub(2), 4) {
-                push(vec![Span::styled(format!("  {row}"), dim)]);
+        if let Some(pk) = peek {
+            if let Some(text) = pk.text.as_deref() {
+                for row in crate::peek::wrap(text, t_cells.saturating_sub(2), 4) {
+                    push(vec![Span::styled(format!("  {row}"), dim)]);
+                }
+            }
+            // One more row for the step running under those words — the
+            // spinner marks it as now, and quiet keeps the reply the loudest
+            // thing in the accordion.
+            if let Some(act) = pk.activity.as_ref() {
+                let word = match act {
+                    crate::peek::Doing::Tool(t) => t.as_str(),
+                    crate::peek::Doing::Thinking => "thinking",
+                };
+                let row = crate::text::truncate(word, t_cells.saturating_sub(4));
+                let mark = if glyphs::pulse_lit(ctx.spin) {
+                    quiet
+                } else {
+                    Style::default().fg(theme.sel.dim3)
+                };
+                push(vec![
+                    Span::styled(format!("  {} ", glyphs::pulse(tier)), mark),
+                    Span::styled(row, quiet),
+                ]);
             }
         }
         return lines;

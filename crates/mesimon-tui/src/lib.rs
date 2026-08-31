@@ -2,6 +2,7 @@
 //! discipline (docs/05 §13) — exercised on every focus handover (docs/19 §2).
 
 mod app;
+mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
 pub mod client;
@@ -39,7 +40,11 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // Hard floor (07 §2.4): refuse to start below 60x20.
     if let Ok((w, h)) = ratatui::crossterm::terminal::size() {
         if w < layout::MIN_W || h < layout::MIN_H {
-            eprintln!("mesimon needs {}x{}; this terminal is {w}x{h}", layout::MIN_W, layout::MIN_H);
+            eprintln!(
+                "mesimon needs {}x{}; this terminal is {w}x{h}",
+                layout::MIN_W,
+                layout::MIN_H
+            );
             std::process::exit(2);
         }
     }
@@ -48,6 +53,10 @@ pub fn run(repo_root: &Path) -> Result<()> {
     let mut app = App::new(Box::new(client), repo_root.to_path_buf(), theme)?;
 
     let mut terminal = init_terminal()?;
+    // Set AFTER init_terminal, which is what runs (and caches) the probe —
+    // asking before raw mode is on gets a false negative. This is the single
+    // gate on every `Key::ShiftEnter` binding.
+    app.rich_keys = kitty_keyboard_supported();
     let result = event_loop(&mut terminal, &mut app);
     restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
@@ -89,6 +98,27 @@ fn event_loop(
             return Ok(());
         }
 
+        // ^L (04 §2.2): throw away what we think is on screen and repaint
+        // from nothing. This is the Terminal.app probe-garbage recovery, and
+        // the answer to any stray write from a program that escaped its pane.
+        if std::mem::take(&mut app.force_redraw) {
+            terminal.clear()?;
+        }
+
+        // ^Z: suspend THIS client only. The terminal goes back the way we
+        // found it, we stop, and on SIGCONT we take it again — the daemon and
+        // every session run through all of it untouched.
+        if std::mem::take(&mut app.pending_suspend) {
+            restore_terminal()?;
+            // SAFETY: raising a signal at a point of our choosing, with the
+            // terminal already restored, is the whole contract of ^Z.
+            unsafe {
+                libc::raise(libc::SIGTSTP);
+            }
+            *terminal = init_terminal()?;
+            terminal.clear()?;
+        }
+
         // Focus handover: leave the terminal entirely, attach, come back (docs/19 §2).
         while let Some(argv) = app.pending_attach.take() {
             let cwd = app.pending_attach_cwd.take();
@@ -112,7 +142,8 @@ fn event_loop(
     }
 }
 
-fn init_terminal() -> Result<ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>> {
+fn init_terminal() -> Result<ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>>
+{
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     // No EnableMouseCapture: we handle no mouse events, and capture steals the

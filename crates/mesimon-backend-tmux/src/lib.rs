@@ -11,9 +11,8 @@ use anyhow::{bail, Context, Result};
 use mesimon_core::reconcile::PaneSnapshot;
 
 /// D29: the child environment is built from an allowlist, never inherited.
-const ENV_ALLOWLIST: &[&str] = &[
-    "HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "PATH",
-];
+const ENV_ALLOWLIST: &[&str] =
+    &["HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "PATH"];
 
 pub struct TmuxBackend {
     sock: PathBuf,
@@ -88,16 +87,18 @@ impl TmuxBackend {
     }
 
     pub fn server_alive(&self) -> bool {
-        self.tmux()
-            .args(["has-session"])
-            .output()
-            .map(|o| o.status.success())
-            .unwrap_or(false)
+        self.tmux().args(["has-session"]).output().map(|o| o.status.success()).unwrap_or(false)
     }
 
     /// Spawn a session: tmux session name = sid16, running `argv` in `cwd`.
     /// Extra env vars go through `-e` (per-session, spike T-2).
-    pub fn spawn(&self, sid16: &str, cwd: &Path, argv: &[String], env: &[(String, String)]) -> Result<()> {
+    pub fn spawn(
+        &self,
+        sid16: &str,
+        cwd: &Path,
+        argv: &[String],
+        env: &[(String, String)],
+    ) -> Result<()> {
         let mut args: Vec<String> = vec![
             "new-session".into(),
             "-d".into(),
@@ -123,6 +124,18 @@ impl TmuxBackend {
     /// readiness wait is needed.
     pub fn send_text(&self, sid16: &str, text: &str) -> Result<()> {
         self.run(&["send-keys", "-t", sid16, "-l", "--", text])?;
+        Ok(())
+    }
+
+    /// Press Enter in a session's pane, and nothing else — the second half of
+    /// a `send_text` prefill the user asked to have submitted. It is a
+    /// SEPARATE tmux call issued at a SEPARATE time for the same reason
+    /// `paste_text` splits its Enter out: a CR arriving in the same byte burst
+    /// as the text is absorbed as pasted content and never submits (T-5's
+    /// negative test, reconfirmed 2026-08-31 against a fresh Claude pane).
+    /// The caller owns the timing — see `Daemon::deliver_pending_submit`.
+    pub fn send_enter(&self, sid16: &str) -> Result<()> {
+        self.run(&["send-keys", "-t", sid16, "Enter"])?;
         Ok(())
     }
 
@@ -320,13 +333,17 @@ mod tests {
         }
         let dir = shortdir();
         let be = TmuxBackend::new(dir.join("t.sock"), &dir, None).unwrap();
-        be.spawn("abc123", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()], &[])
-            .unwrap();
+        be.spawn("abc123", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()], &[]).unwrap();
         let snap = be.snapshot().unwrap();
         assert!(snap.iter().any(|p| p.session_name == "abc123" && !p.pane_dead));
         // Dead pane preserved by remain-on-exit:
-        be.spawn("dead1", &PathBuf::from("/tmp"), &["sh".into(), "-c".into(), "exit 7".into()], &[])
-            .unwrap();
+        be.spawn(
+            "dead1",
+            &PathBuf::from("/tmp"),
+            &["sh".into(), "-c".into(), "exit 7".into()],
+            &[],
+        )
+        .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         let snap = be.snapshot().unwrap();
         let d = snap.iter().find(|p| p.session_name == "dead1").unwrap();

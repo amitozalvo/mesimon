@@ -1,0 +1,30 @@
+ mesimon > kanban-tui  !1  > Fix OSC-11 detection
+                                  ticket — everything you can press here
+ IN PROGRESS ∙ created by you >1y
+                                  MOVE AROUND
+  DOCUMENTS                         jk        select session                               SESSIONS                  2
+                                    q         board
+    drop files into this ticket's   tab       needs you                                   ⠋ ✻ claude               >1y
+    ticket directories land with    shift+tab previous needs you                          ◦ $ bash                 >1y
+
+                                  TICKETS
+  TRANSCRIPT                        r         rename
+                                    a         archive
+    ● working                       d         delete
+
+                                  SESSIONS
+                                    enter     focus
+                                    c         claude
+                                    s         shell
+                                    C         another claude
+                                    S         another shell
+                                    x         sleep
+                                    P         keep awake
+
+                                  APP
+                                    ?         keys
+                                    ^L        redraw
+                                    ^Z        suspend mesimon
+
+
+ TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ q board ∙ ? keys

@@ -15,11 +15,19 @@ pub enum SessionKind {
 pub enum SessionState {
     Spawning,
     Running,
-    RequiresAction { reason: Reason },
-    Idle { stop_reason: StopReason },
+    RequiresAction {
+        reason: Reason,
+    },
+    Idle {
+        stop_reason: StopReason,
+    },
     Sleeping,
-    Exited { reason: ExitReason },
-    Failed { reason: FailReason },
+    Exited {
+        reason: ExitReason,
+    },
+    Failed {
+        reason: FailReason,
+    },
     Throttled,
     Unknown {
         #[serde(default)]
@@ -179,6 +187,15 @@ pub struct SessionRecord {
     /// Manual override: never sleep this session (D23 guard, third part).
     #[serde(default)]
     pub pinned_awake: bool,
+    /// The ticket title was typed into this session's box and is still
+    /// waiting for its Enter. Spike T-5 arm C (2026-08-31): an Enter sent in
+    /// the same breath as the text is swallowed by Claude's paste detection,
+    /// so the submit is deferred to the `SessionStart` frame — the earliest
+    /// point the pane provably accepts a keystroke as a keystroke. Cleared
+    /// the moment it is delivered; a session that never starts just keeps the
+    /// prefill, which is the ordinary spawn's behaviour anyway.
+    #[serde(default)]
+    pub pending_submit: bool,
 }
 
 impl SessionRecord {
@@ -206,6 +223,7 @@ impl SessionRecord {
             provenance: Provenance::default(),
             claude_session_id: None,
             pinned_awake: false,
+            pending_submit: false,
         }
     }
 
@@ -319,11 +337,8 @@ impl Board {
     /// Archived tickets stay in `tickets` (the ticket page needs them in the
     /// snapshot) but never surface here — this is the board's one chokepoint.
     pub fn column_tickets(&self, column: &str) -> Vec<&Ticket> {
-        let mut v: Vec<&Ticket> = self
-            .tickets
-            .iter()
-            .filter(|t| t.column == column && !t.is_archived())
-            .collect();
+        let mut v: Vec<&Ticket> =
+            self.tickets.iter().filter(|t| t.column == column && !t.is_archived()).collect();
         v.sort_by(|a, b| a.order.cmp(&b.order).then(a.id.cmp(&b.id)));
         v
     }

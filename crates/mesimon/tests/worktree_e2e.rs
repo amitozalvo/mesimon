@@ -56,11 +56,7 @@ fn board_of(resp: Response) -> (Board, Vec<WorktreeItem>) {
 
 fn git(repo: &std::path::Path, args: &[&str]) -> String {
     let out = Proc::new("git").arg("-C").arg(repo).args(args).output().unwrap();
-    assert!(
-        out.status.success(),
-        "git {args:?}: {}",
-        String::from_utf8_lossy(&out.stderr)
-    );
+    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
     String::from_utf8_lossy(&out.stdout).into_owned()
 }
 
@@ -115,7 +111,10 @@ fn m4_worktree_lifecycle() {
     let stub = dir.join("claude-stub.sh");
     std::fs::write(
         &stub,
-        format!("#!/bin/sh\npwd >> \"{}\"\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n", cwd_log.display()),
+        format!(
+            "#!/bin/sh\npwd >> \"{}\"\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n",
+            cwd_log.display()
+        ),
     )
     .unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
@@ -148,7 +147,11 @@ fn m4_worktree_lifecycle() {
     ));
     // First spawn queues provisioning and parks the spawn.
     assert!(matches!(
-        c.request(Command::SpawnSession { ticket: t1, kind: SessionKind::Claude }),
+        c.request(Command::SpawnSession {
+            ticket: t1,
+            kind: SessionKind::Claude,
+            submit_prompt: false
+        }),
         Response::Provisioning
     ));
     let wt = wait_wt_status(&mut c, t1, "attached", Duration::from_secs(10));
@@ -187,7 +190,11 @@ fn m4_worktree_lifecycle() {
 
     // ---- work + merge (clean) --------------------------------------------
     let wt_path = std::path::PathBuf::from(
-        String::from_utf8_lossy(&std::fs::read(&cwd_log).unwrap()).lines().next().unwrap().to_string(),
+        String::from_utf8_lossy(&std::fs::read(&cwd_log).unwrap())
+            .lines()
+            .next()
+            .unwrap()
+            .to_string(),
     );
     std::fs::write(wt_path.join("b.txt"), "agent work\n").unwrap();
     git(&wt_path, &["add", "."]);
@@ -270,8 +277,8 @@ fn m4_worktree_lifecycle() {
     let deadline = Instant::now() + Duration::from_secs(25);
     loop {
         let gone_dir = !wt_path.exists();
-        let gone_branch = !git(&repo, &["branch", "--list", "msmn/T-1-fix-thing"])
-            .contains("T-1-fix-thing");
+        let gone_branch =
+            !git(&repo, &["branch", "--list", "msmn/T-1-fix-thing"]).contains("T-1-fix-thing");
         if gone_dir && gone_branch {
             break;
         }
@@ -286,8 +293,13 @@ fn m4_worktree_lifecycle() {
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "clash".into() });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let t2 = board.tickets.iter().find(|t| t.title == "clash").unwrap().id;
-    let _ = c.request(Command::SetWorkspace { id: t2, workspace: Some(WorkspaceStrategy::Worktree) });
-    let _ = c.request(Command::SpawnSession { ticket: t2, kind: SessionKind::Bash });
+    let _ =
+        c.request(Command::SetWorkspace { id: t2, workspace: Some(WorkspaceStrategy::Worktree) });
+    let _ = c.request(Command::SpawnSession {
+        ticket: t2,
+        kind: SessionKind::Bash,
+        submit_prompt: false,
+    });
     let wt2 = wait_wt_status(&mut c, t2, "attached", Duration::from_secs(10));
     assert_eq!(wt2.branch, "msmn/T-2-clash");
     // Diverge the same file on both sides.

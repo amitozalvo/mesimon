@@ -84,8 +84,7 @@ fn z_sleeps_only_the_done_column() {
     let tmux_sock = paths.tmux_sock();
 
     let stub = dir.join("claude-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n")
-        .unwrap();
+    std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n").unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
     std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
@@ -116,7 +115,11 @@ fn z_sleeps_only_the_done_column() {
     // One idle claude session on each ticket, driven idle by real hooks.
     let mut sids = Vec::new();
     for (ticket, name) in [(hot, "hot"), (cold, "cold")] {
-        let sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Claude }) {
+        let sid = match c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Claude,
+            submit_prompt: false,
+        }) {
             Response::Spawned { id } => id,
             other => panic!("spawn failed: {other:?}"),
         };
@@ -148,11 +151,8 @@ fn z_sleeps_only_the_done_column() {
     let deadline = Instant::now() + Duration::from_secs(6);
     loop {
         let board = board_of(c.request(Command::Snapshot));
-        let idle = board
-            .sessions
-            .iter()
-            .filter(|s| matches!(s.state, SessionState::Idle { .. }))
-            .count();
+        let idle =
+            board.sessions.iter().filter(|s| matches!(s.state, SessionState::Idle { .. })).count();
         if idle == 2 {
             break;
         }

@@ -27,4 +27,4 @@
 
 
 
- MOVE  hjkl move ∙ > or enter drop ∙ < cancels ∙ esc cancel
+ MOVE  hjkl place ∙ 1-9 column ∙ enter drop ∙ esc cancel ∙ ? keys

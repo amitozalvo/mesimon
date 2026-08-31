@@ -1,0 +1,30 @@
+ mesimon > kanban-tui   6 tickets                                                              ◦ update ready (U ∙ esc)
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
+
+   Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
+                              menu
+   Keymap validator
+                              ◦ Restart on the new build                                 U
+                                  a newer mesimon is on disk ∙ sessions keep running
+                              ◦ Sleep 3 agents in done
+                                  frees ~3.0GiB ∙ they wake where they left off
+                              ◦ Archive 2 tickets in done
+                                  clears the column ∙ restore any of them later
+                                External sessions
+                                  claude sessions in this repo that mesimon did not start
+                                Archived tickets
+                                  off the board, still here
+                                Show agent replies                                       p
+                                  the latest reply under the selected card
+                                All keys on this screen                                  ?
+
+                                Quit mesimon                                             q
+                                  sessions keep running
+
+
+
+
+
+
+ MENU  jk select ∙ enter choose ∙ esc close ∙ ? keys

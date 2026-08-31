@@ -9,6 +9,10 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
+use unicode_width::UnicodeWidthStr;
+
+use mesimon_core::keymap;
+
 use crate::app::{App, InputPurpose, Mode};
 use crate::text::truncate;
 
@@ -18,11 +22,8 @@ use crate::text::truncate;
 /// padding (06 §5.5), aligned with the accent-bar column.
 pub(super) fn breadcrumb(app: &App) -> Vec<Span<'static>> {
     let theme = &app.theme;
-    let repo = app
-        .repo_root
-        .file_name()
-        .map(|s| s.to_string_lossy().into_owned())
-        .unwrap_or_default();
+    let repo =
+        app.repo_root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let needs_you = mesimon_core::attention::attention_queue(&app.board).len();
     let mut spans = vec![
         Span::styled(" mesimon".to_string(), theme.dim2()),
@@ -71,32 +72,52 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
         let gib = r.rss_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
         spans.push(Span::styled(format!(" ∙ {gib:.1}GiB"), theme.dim2()));
     }
-    // The sleep suggestion (suggestions over shortcuts, author 2026-08-29):
-    // payoff first, the how in parens. Grey — it's an offer, not an alarm.
-    // Below a tenth of a GiB the payoff would read "~0.0GiB"; stay quiet.
-    if r.reclaim_sessions > 0 && r.reclaim_bytes >= 107_374_182 {
-        let free = r.reclaim_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        spans.push(Span::styled(
-            format!(" ∙ free ~{free:.1}GiB (Z sleeps {} in done)", r.reclaim_sessions),
-            theme.dim2(),
-        ));
-    }
-    // The archive suggestion, same shape: tickets whose sessions all sleep
-    // untouched past the hour — an offer, never an action.
-    if r.archive_tickets > 0 {
-        spans.push(Span::styled(
-            format!(" ∙ {} to archive in done (X all ∙ A one)", r.archive_tickets),
-            theme.dim2(),
-        ));
-    }
-    // A newer binary sits at our own path (dev rebuild or upgrade). Grey
-    // offer like the sleep suggestion — attn stays needs-you-only (L3).
-    if app.update_ready() {
-        spans.push(Span::styled(" ∙ update ready (U reloads)".to_string(), theme.dim2()));
+    // What the board is, on the left. What it offers, on the right.
+    let used: usize = spans.iter().map(|s| s.content.width()).sum();
+    // One cell of page padding at the right edge (06 §5.5), and never less
+    // than a three-cell gap — a chip touching the state text reads as part of
+    // it. Whatever is left is the chip's budget.
+    let budget = (area.width as usize).saturating_sub(used + 4);
+    let chip = suggestion_chip(app, budget);
+    let chip_w: usize = chip.iter().map(|s| s.content.width()).sum();
+    if chip_w > 0 {
+        let pad = (area.width as usize).saturating_sub(used + chip_w + 1);
+        spans.push(Span::raw(" ".repeat(pad)));
+        spans.extend(chip);
     }
     // Needs-you lives in the breadcrumb's `!N` (07 §2.2's separate
     // `needs you N` word form superseded by the shared component).
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// The standing offer, right-aligned: the highest-priority one, in full words,
+/// with the key that takes it. One at a time, and no count of the ones behind
+/// it — a header that says how much is queued is a dashboard, and the point of
+/// a suggestion is that it is the next thing. The rest are one Esc away, marked
+/// with the same `◦` and in the same order, which is where they are read.
+///
+/// Grey: an offer is never an alarm, and attn stays needs-you-only (L3).
+fn suggestion_chip(app: &App, budget: usize) -> Vec<Span<'static>> {
+    let theme = &app.theme;
+    let ctx = app.ctx();
+    let offers = keymap::suggestions(&ctx);
+    let Some(top) = offers.first() else {
+        return Vec::new();
+    };
+    let mut text = (top.headline)(&ctx);
+    // Every offer is taken from the menu, so every chip names `esc`. One that
+    // also has a key of its own names that first — a key that works right now
+    // should not need a menu to be found.
+    if top.key.is_empty() {
+        text.push_str(" (esc)");
+    } else {
+        text.push_str(&format!(" ({} ∙ esc)", top.key));
+    }
+    let mark = crate::glyphs::suggest_mark(theme.glyph_tier());
+    if text.width() + 2 > budget {
+        return Vec::new();
+    }
+    vec![Span::styled(format!("{mark} "), theme.dim3()), Span::styled(text, theme.dim2())]
 }
 
 /// The one-line advisory row. Grace wins when both are present: it is a 9 s
@@ -111,8 +132,7 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
     let Some(g) = app.grace.last() else {
         if let Some(n) = app.notices.first() {
             let more = app.notices.len();
-            let tail =
-                if more > 1 { format!(" ∙ +{} more", more - 1) } else { String::new() };
+            let tail = if more > 1 { format!(" ∙ +{} more", more - 1) } else { String::new() };
             // The value step, not the accent: this is a warning, and the one
             // saturated colour stays reserved for needs-you (L3).
             let line = Line::from(Span::styled(
@@ -148,48 +168,32 @@ pub(super) fn mode_line(app: &App, word: &str, hint: &str) -> Line<'static> {
     ])
 }
 
+/// THE footer, for every screen. A pending status outranks the hints — it is
+/// the answer to the key just pressed — and otherwise the line is rendered
+/// from the keymap, filtered to what this screen can actually do right now.
+/// There are no hint literals anywhere in `ui/`: a key that is hinted works,
+/// and a key that works is hinted, because one table decides both.
 pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    let theme = &app.theme;
-    let line = match &app.mode {
-        // The text itself is edited in place (in the card / ticket title);
-        // the footer only carries the verbs.
-        Mode::Input { purpose, .. } => {
-            let label = match purpose {
-                InputPurpose::Create { .. } => "NEW",
-                InputPurpose::Rename { .. } => "RENAME",
-            };
-            mode_line(app, label, "enter save ∙ esc cancel")
-        }
-        Mode::Move { grab, .. } => {
-            let hint = match grab {
-                '>' => "hjkl move ∙ > or enter drop ∙ < cancels ∙ esc cancel",
-                '<' => "hjkl move ∙ < or enter drop ∙ > cancels ∙ esc cancel",
-                _ => "hjkl move ∙ m or enter drop ∙ esc cancel",
-            };
-            mode_line(app, "MOVE", hint)
-        }
-        Mode::External { .. } => {
-            mode_line(app, "EXTERNAL", "jk ∙ a import ∙ R import + resume ∙ esc back")
-        }
-        Mode::Archived { .. } => {
-            mode_line(app, "ARCHIVED", "jk ∙ enter open ∙ A restore ∙ esc back")
-        }
-        Mode::Normal => {
-            if app.status.is_empty() {
-                mode_line(
-                    app,
-                    "BOARD",
-                    "enter open ∙ space ticket ∙ tab needs you ∙ a add ∙ m>< move ∙ p peek ∙ e external ∙ q quit",
-                )
-            } else {
-                Line::from(Span::styled(
-                    format!(" {}", crate::text::one_line(&app.status)),
-                    theme.base(),
-                ))
-            }
-        }
+    f.render_widget(Paragraph::new(footer_line(app, area.width)), area);
+}
+
+pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
+    if !app.status.is_empty() {
+        return Line::from(Span::styled(
+            format!(" {}", crate::text::one_line(&app.status)),
+            app.theme.base(),
+        ));
+    }
+    let scope = app.scope();
+    // A text field says which field it is; "INPUT" would be true and useless.
+    let word = match &app.mode {
+        Mode::Input { purpose: InputPurpose::Create { .. }, .. } => "NEW",
+        Mode::Input { purpose: InputPurpose::Rename { .. }, .. } => "RENAME",
+        _ => scope.word(),
     };
-    f.render_widget(Paragraph::new(line), area);
+    // The mode word plus its two-space gutter and the leading pad.
+    let budget = (width as usize).saturating_sub(word.len() + 4);
+    mode_line(app, word, &keymap::footer(scope, &app.ctx(), budget))
 }
 
 /// The External drawer (19 §4): discovered foreign sessions, observe/resume.
@@ -212,10 +216,7 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
     };
     f.render_widget(ratatui::widgets::Clear, area);
     if let Some(bg) = theme.bg {
-        f.render_widget(
-            ratatui::widgets::Block::default().style(Style::default().bg(bg)),
-            area,
-        );
+        f.render_widget(ratatui::widgets::Block::default().style(Style::default().bg(bg)), area);
     }
 
     let mut lines: Vec<Line> = Vec::new();
@@ -233,8 +234,11 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
         if item.running_elsewhere {
             badges.push_str("  ∙ running elsewhere");
         }
-        let head =
-            format!(" {}  {}{badges}", truncate(&name, 24), crate::text::age_slot(now, item.mtime_ms, false));
+        let head = format!(
+            " {}  {}{badges}",
+            truncate(&name, 24),
+            crate::text::age_slot(now, item.mtime_ms, false)
+        );
         let style = if i == idx {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {
@@ -248,7 +252,7 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
         )));
     }
     lines.push(Line::from(Span::styled(
-        " jk ∙ a import ∙ R import + resume ∙ esc",
+        format!(" {}", keymap::footer(keymap::Scope::Drawer, &app.ctx(), w as usize - 2)),
         theme.dim2(),
     )));
     f.render_widget(Paragraph::new(lines), area);
@@ -277,10 +281,7 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
     };
     f.render_widget(ratatui::widgets::Clear, area);
     if let Some(bg) = theme.bg {
-        f.render_widget(
-            ratatui::widgets::Block::default().style(Style::default().bg(bg)),
-            area,
-        );
+        f.render_widget(ratatui::widgets::Block::default().style(Style::default().bg(bg)), area);
     }
     let mut lines: Vec<Line> = Vec::new();
     lines.push(Line::from(Span::styled(
@@ -297,13 +298,7 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
             .and_then(|s| s.parse::<u64>().ok())
             .map(|secs| crate::text::age_slot(now, secs * 1000, false))
             .unwrap_or_default();
-        let head = format!(
-            " {}  {} ∙ {} ∙ {}",
-            t.short_key,
-            truncate(&t.title, 28),
-            t.column,
-            age
-        );
+        let head = format!(" {}  {} ∙ {} ∙ {}", t.short_key, truncate(&t.title, 28), t.column, age);
         let style = if i == idx {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {
@@ -311,6 +306,9 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
         };
         lines.push(Line::from(Span::styled(head, style)));
     }
-    lines.push(Line::from(Span::styled(" jk ∙ enter open ∙ A restore ∙ esc", theme.dim2())));
+    lines.push(Line::from(Span::styled(
+        format!(" {}", keymap::footer(keymap::Scope::Archived, &app.ctx(), w as usize - 2)),
+        theme.dim2(),
+    )));
     f.render_widget(Paragraph::new(lines), area);
 }

@@ -122,7 +122,11 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "intrtail".into() });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 
-    let sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Claude }) {
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("spawn failed: {other:?}"),
     };

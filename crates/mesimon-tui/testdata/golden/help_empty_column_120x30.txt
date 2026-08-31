@@ -1,0 +1,30 @@
+ mesimon > kanban-tui   6 tickets
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
+
+   Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    o  open ticket
+                                  board — everything you can press here
+   Keymap validator                                                                    1y
+                                  MOVE AROUND
+                                    hjkl      move around
+
+                                  TICKETS
+                                    o         open ticket
+
+                                  VIEW
+                                    p         show replies
+
+                                  APP
+                                    esc       menu
+                                    q         quit
+                                    ?         keys
+                                    ^L        redraw
+                                    ^Z        suspend mesimon
+
+
+
+
+
+
+
+ BOARD  o open ticket ∙ p show replies ∙ esc menu ∙ q quit ∙ ? keys

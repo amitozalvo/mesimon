@@ -2,7 +2,7 @@
 
    TODO                     0    IN PROGRESS              0    REVIEW                   0    DONE                    0
 
-   a  add here
+   o  open ticket
 
 
 
@@ -27,4 +27,4 @@
 
 
 
- BOARD  enter open ∙ space ticket ∙ tab needs you ∙ a add ∙ m>< move ∙ p peek ∙ e external ∙ q quit
+ BOARD  o open ticket ∙ p show replies ∙ esc menu ∙ q quit ∙ ? keys

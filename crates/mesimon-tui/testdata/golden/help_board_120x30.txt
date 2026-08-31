@@ -1,0 +1,30 @@
+ mesimon > kanban-tui  !1    7 tickets
+                                  board — everything you can press here
+   TODO                     2                                                           2    DONE                    1
+                                  MOVE AROUND
+   Decay treatments                 hjkl      move around                              1y    z Painted accent bar  >1y
+                                    g         top of column
+   Keymap validator                 G         bottom of column                         1y
+                                    enter     go to the agent
+                                    space     ticket page, even past a live agent
+                                    tab       needs you
+                                    shift+tab previous needs you
+
+                                  TICKETS
+                                    o         open ticket
+                                    > <       move card
+                                    r         rename
+                                    a         archive
+                                    d         delete
+
+                                  SESSIONS
+                                    c         claude
+                                    s         shell
+                                    x         sleep sessions
+
+                                  VIEW
+                                    p         show replies
+
+                                  APP
+                                    esc       menu
+ BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ c claude ∙ s shell ∙ > < move card ∙ q quit ∙ ? keys

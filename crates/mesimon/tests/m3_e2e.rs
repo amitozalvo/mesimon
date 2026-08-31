@@ -179,11 +179,11 @@ fn m3_adoption_and_sleep() {
     // --- Import: mints its own ticket (named from the preview here — no
     // pid-file name exists), record is observe-only: no pane, no argv.
     let foreign: uuid::Uuid = FOREIGN_SID.parse().unwrap();
-    let obs =
-        match c.request(Command::AttachExternal { claude_session_id: foreign, ticket: None }) {
-            Response::Spawned { id } => id,
-            other => panic!("attach: {other:?}"),
-        };
+    let obs = match c.request(Command::AttachExternal { claude_session_id: foreign, ticket: None })
+    {
+        Response::Spawned { id } => id,
+        other => panic!("attach: {other:?}"),
+    };
     let board = board_of(c.request(Command::Snapshot));
     let rec = board.sessions.iter().find(|s| s.id == obs).unwrap();
     assert_eq!(rec.provenance, Provenance::Adopted);
@@ -257,8 +257,7 @@ fn m3_adoption_and_sleep() {
     }
     // Prefill is fresh-spawn-only: a resume must not retype the ticket title
     // into the restored conversation.
-    let title =
-        &board.tickets.iter().find(|t| t.id == rec.ticket).expect("takeover ticket").title;
+    let title = &board.tickets.iter().find(|t| t.id == rec.ticket).expect("takeover ticket").title;
     let cap = Proc::new("tmux")
         .args(["-S", &tmux_sock.display().to_string(), "capture-pane", "-p", "-t", &rec.sid16()])
         .output()
@@ -296,7 +295,14 @@ fn m3_adoption_and_sleep() {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         let panes = Proc::new("tmux")
-            .args(["-S", &tmux_sock.display().to_string(), "list-panes", "-a", "-F", "#{session_name}"])
+            .args([
+                "-S",
+                &tmux_sock.display().to_string(),
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}",
+            ])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
@@ -376,7 +382,14 @@ fn m3_adoption_and_sleep() {
     let deadline = Instant::now() + Duration::from_secs(8);
     loop {
         let panes = Proc::new("tmux")
-            .args(["-S", &tmux_sock.display().to_string(), "list-panes", "-a", "-F", "#{session_name}"])
+            .args([
+                "-S",
+                &tmux_sock.display().to_string(),
+                "list-panes",
+                "-a",
+                "-F",
+                "#{session_name}",
+            ])
             .output()
             .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
             .unwrap_or_default();
@@ -422,8 +435,11 @@ fn m3_adoption_and_sleep() {
     // --- Resume with no transcript: a spawned session killed before its
     // first prompt never wrote one, so resume must refuse up front with the
     // honest reason — not spawn claude, watch it exit 1, and call it a crash.
-    let ghost = match c.request(Command::SpawnSession { ticket: home_ticket, kind: SessionKind::Claude })
-    {
+    let ghost = match c.request(Command::SpawnSession {
+        ticket: home_ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("ghost spawn: {other:?}"),
     };

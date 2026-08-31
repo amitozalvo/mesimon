@@ -49,7 +49,9 @@ pub(crate) fn density_word(context: u32) -> &'static str {
 pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     let theme = &app.theme;
     let area = f.area();
-    let Some(ticket) = app.board.ticket(ticket_id) else { return };
+    let Some(ticket) = app.board.ticket(ticket_id) else {
+        return;
+    };
     let Some(d) = app.diff.as_ref() else { return };
 
     // ---- top block: breadcrumb > title > diff, identity, painted band -----
@@ -62,19 +64,17 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     head.push(Span::styled(" > ".to_string(), sep));
     head.push(Span::styled("diff".to_string(), theme.dim1()));
 
-    let (adds, dels) = d.files.iter().fold((0u32, 0u32), |(a, del), f| {
-        (a + f.adds.unwrap_or(0), del + f.dels.unwrap_or(0))
-    });
+    let (adds, dels) = d
+        .files
+        .iter()
+        .fold((0u32, 0u32), |(a, del), f| (a + f.adds.unwrap_or(0), del + f.dels.unwrap_or(0)));
     let base8: String = d.base_oid.chars().take(8).collect();
     let n = d.files.len();
     let noun = if n == 1 { "file" } else { "files" };
     let mut ident = vec![
         Span::styled(format!(" ⎇ {}", d.branch), theme.dim1()),
         Span::styled(
-            format!(
-                " ∙ vs {base8} ∙ {n} {noun} ∙ +{adds} -{dels} ∙ {}",
-                density_word(d.density)
-            ),
+            format!(" ∙ vs {base8} ∙ {n} {noun} ∙ +{adds} -{dels} ∙ {}", density_word(d.density)),
             theme.dim2(),
         ),
     ];
@@ -85,8 +85,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     // Real space cells — the empty-Line band idiom paints nothing (see the
     // identical note in ticket.rs).
     let band = match theme.selected_bg {
-        Some(bg) => Line::from(Span::raw(" ".repeat(area.width as usize)))
-            .style(Style::default().bg(bg)),
+        Some(bg) => {
+            Line::from(Span::raw(" ".repeat(area.width as usize))).style(Style::default().bg(bg))
+        }
         None => Line::default(),
     };
     let top = vec![Line::from(head), Line::default(), Line::from(ident), band];
@@ -101,12 +102,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     let body_h = area.height.saturating_sub(6);
     if area.width >= TWO_PANE_MIN_W {
         let fw = files_w(area.width);
-        draw_files(
-            f,
-            Rect { x: area.x + 1, y: body_y, width: fw, height: body_h },
-            app,
-            d,
-        );
+        draw_files(f, Rect { x: area.x + 1, y: body_y, width: fw, height: body_h }, app, d);
         let hx = area.x + 1 + fw + 3;
         draw_hunks(
             f,
@@ -131,17 +127,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     }
 
     // ---- footer ----------------------------------------------------------
-    let footer = if app.status.is_empty() {
-        let hint = if area.width >= TWO_PANE_MIN_W {
-            "jk scroll ∙ {} page ∙ hl file ∙ R refresh ∙ zz density ∙ ! shell ∙ q back".to_string()
-        } else {
-            let other = if d.swap { "files" } else { "diff" };
-            format!("jk scroll ∙ {{}} page ∙ hl file ∙ zp {other} ∙ R refresh ∙ zz density ∙ ! shell ∙ q back")
-        };
-        chrome::mode_line(app, "DIFF", &hint)
-    } else {
-        Line::from(Span::styled(format!(" {}", app.status), theme.base()))
-    };
+    // From the keymap, like every other screen. `z s` drops itself above the
+    // two-pane breakpoint because there is nothing to swap up there — which
+    // is why draw records the breakpoint for the keymap to read.
+    app.diff_two_pane.set(area.width >= TWO_PANE_MIN_W);
+    let footer = chrome::footer_line(app, area.width);
     f.render_widget(
         Paragraph::new(footer),
         Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 },
@@ -170,9 +160,10 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
 
     // Window the list around the cursor when it overflows the pane.
     let visible = (area.height as usize).saturating_sub(2).max(1);
-    let first = d.file_idx.saturating_sub(visible.saturating_sub(1) / 2).min(
-        d.files.len().saturating_sub(visible),
-    );
+    let first = d
+        .file_idx
+        .saturating_sub(visible.saturating_sub(1) / 2)
+        .min(d.files.len().saturating_sub(visible));
     for (i, entry) in d.files.iter().enumerate().skip(first).take(visible) {
         let selected = i == d.file_idx;
         let stable = if entry.status.is_empty() { "·" } else { entry.status.as_str() };
@@ -211,9 +202,7 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         } else {
             truncate(&entry.path, name_budget)
         };
-        let fill = w
-            .saturating_sub(4 + path.width() + badge.width() + 1)
-            .max(2);
+        let fill = w.saturating_sub(4 + path.width() + badge.width() + 1).max(2);
         let name_style = if selected {
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {
@@ -477,7 +466,8 @@ mod tests {
     fn wide_graphemes_do_not_overflow() {
         let rows = wrap_code("אאאא 統一碼統一碼統一碼", 8);
         for (i, r) in rows.iter().enumerate() {
-            let w: usize = r.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum();
+            let w: usize =
+                r.chars().map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0)).sum();
             assert!(w <= 8, "row {i} width {w}: {r:?}");
         }
     }

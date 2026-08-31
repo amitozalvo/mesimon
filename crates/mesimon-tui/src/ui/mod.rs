@@ -8,6 +8,8 @@ mod board;
 mod card;
 mod chrome;
 pub(crate) mod diff;
+mod help;
+mod menu;
 #[cfg(test)]
 mod tests;
 mod ticket;
@@ -31,22 +33,28 @@ pub fn draw(f: &mut Frame, app: &App) {
     // Live-resize floor (07 §2.4): a notice, never a broken layout.
     let area = f.area();
     if area.width < MIN_W || area.height < MIN_H {
-        let msg = format!("mesimon needs {MIN_W}x{MIN_H}; this terminal is {}x{}", area.width, area.height);
+        let msg = format!(
+            "mesimon needs {MIN_W}x{MIN_H}; this terminal is {}x{}",
+            area.width, area.height
+        );
         let y = area.height / 2;
         let rect = ratatui::layout::Rect { x: 0, y, width: area.width, height: 1 };
-        f.render_widget(
-            Paragraph::new(Line::from(msg)).style(app.theme.dim1()).centered(),
-            rect,
-        );
+        f.render_widget(Paragraph::new(Line::from(msg)).style(app.theme.dim1()).centered(), rect);
         return;
     }
 
     if let Screen::Ticket { ticket, rail_idx } = &app.screen {
         ticket::draw(f, app, *ticket, *rail_idx);
+        if app.help {
+            help::draw(f, app);
+        }
         return;
     }
     if let Screen::Diff { ticket } = &app.screen {
         diff::draw(f, app, *ticket);
+        if app.help {
+            help::draw(f, app);
+        }
         return;
     }
 
@@ -70,5 +78,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Mode::Archived { idx } = &app.mode {
         chrome::draw_archived(f, app, *idx);
+    }
+    if let Mode::Menu { idx } = &app.mode {
+        menu::draw(f, app, *idx);
+    }
+    // The overlay is the last thing drawn on every screen: it answers a
+    // question about whatever is underneath it.
+    if app.help {
+        help::draw(f, app);
     }
 }

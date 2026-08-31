@@ -70,11 +70,20 @@ pub struct Envelope {
 pub enum Command {
     /// First message on every connection. Reserved fields are the D32c/D33a
     /// seams: identity & caps travel even when both are trivial.
-    Hello { version: u32, client: String },
+    Hello {
+        version: u32,
+        client: String,
+    },
     Snapshot,
     Subscribe,
-    CreateTicket { column: String, title: String },
-    RenameTicket { id: ulid::Ulid, title: String },
+    CreateTicket {
+        column: String,
+        title: String,
+    },
+    RenameTicket {
+        id: ulid::Ulid,
+        title: String,
+    },
     /// Starts the grace band; the ticket vanishes from snapshots immediately
     /// and is destroyed when the band expires (D21). `discard_worktree` is the
     /// delete-gate's red "remove": the user confirmed losing unmerged work, so
@@ -86,57 +95,111 @@ pub enum Command {
     },
     /// M4 layering: set the per-ticket workspace strategy. Refused once the
     /// ticket has any session or a worktree binding (the choice is locked).
-    SetWorkspace { id: ulid::Ulid, workspace: Option<WorkspaceStrategy> },
+    SetWorkspace {
+        id: ulid::Ulid,
+        workspace: Option<WorkspaceStrategy>,
+    },
     /// Merge the ticket's branch into the default branch — fast-forward ONLY.
     /// A branch the default moved past answers `NeedsRebase`: the agent
     /// rebases + tests in its worktree first (`MergeToAgent`), so mesimon
     /// never mints merge commits and tests ran on the merged state.
-    MergeTicket { id: ulid::Ulid },
+    MergeTicket {
+        id: ulid::Ulid,
+    },
     /// Paste one of the merge-flow requests into the ticket's live claude
     /// session (explicit user gesture — the m key's staged progression).
-    MergeToAgent { id: ulid::Ulid, request: MergeRequest },
+    MergeToAgent {
+        id: ulid::Ulid,
+        request: MergeRequest,
+    },
     /// Undo within the grace band.
-    RestoreTicket { id: ulid::Ulid },
+    RestoreTicket {
+        id: ulid::Ulid,
+    },
     /// Off the board, kept on disk (13: a field, not a directory move).
     /// Refused while any session holds a pane — archive means everything
     /// is asleep. Reversible: `UnarchiveTicket` restores to the same column.
-    ArchiveTicket { id: ulid::Ulid },
-    UnarchiveTicket { id: ulid::Ulid },
+    ArchiveTicket {
+        id: ulid::Ulid,
+    },
+    UnarchiveTicket {
+        id: ulid::Ulid,
+    },
     /// Take the header's archive offer: archive exactly the tickets the
     /// suggestion prices (the offer's own candidate set, nothing broader).
     ArchiveAll,
-    MoveTicket { id: ulid::Ulid, column: String, before: Option<ulid::Ulid> },
-    SpawnSession { ticket: ulid::Ulid, kind: SessionKind },
-    KillSession { id: uuid::Uuid },
+    MoveTicket {
+        id: ulid::Ulid,
+        column: String,
+        before: Option<ulid::Ulid>,
+    },
+    SpawnSession {
+        ticket: ulid::Ulid,
+        kind: SessionKind,
+        /// Submit the ticket title as the session's first prompt instead of
+        /// only typing it into the box. The board's Shift+Enter compose sets
+        /// it; nothing else does. Serde-additive: a frame from an older
+        /// client parses as `false`, which is the prefill-only behaviour that
+        /// has always been the default (README: zero token injection by
+        /// default — this is the user asking, explicitly, per session).
+        #[serde(default)]
+        submit_prompt: bool,
+    },
+    KillSession {
+        id: uuid::Uuid,
+    },
     /// Re-run the external-session census (19 §4 tier 1). Lazy by design:
     /// fired when the drawer opens, never on a timer.
     RescanExternal,
     /// Tier 2: import a discovered foreign session as an `external` record —
     /// observe-only, no process, no hooks. `ticket: None` mints a fresh
     /// ticket named after the session (the drawer's default gesture).
-    AttachExternal { claude_session_id: uuid::Uuid, ticket: Option<ulid::Ulid> },
+    AttachExternal {
+        claude_session_id: uuid::Uuid,
+        ticket: Option<ulid::Ulid>,
+    },
     /// Tier 3 in one step: import + take over via `claude --resume`.
-    ResumeExternal { claude_session_id: uuid::Uuid, ticket: Option<ulid::Ulid>, confirm: bool },
+    ResumeExternal {
+        claude_session_id: uuid::Uuid,
+        ticket: Option<ulid::Ulid>,
+        confirm: bool,
+    },
     /// Take over (or re-take) an attached record. `confirm` overrides the
     /// running-elsewhere refusal (double-resume guard, 09 §9).
-    ResumeSession { id: uuid::Uuid, confirm: bool },
-    SleepSession { id: uuid::Uuid },
-    WakeSession { id: uuid::Uuid },
+    ResumeSession {
+        id: uuid::Uuid,
+        confirm: bool,
+    },
+    SleepSession {
+        id: uuid::Uuid,
+    },
+    WakeSession {
+        id: uuid::Uuid,
+    },
     /// Take the header's sleep offer: sleep every eligible session on
     /// sleep-safe tickets (2026-08-30 rescope — was board-wide; the key must
     /// sleep exactly what the suggestion names, nothing broader).
     ReclaimAll,
-    PinAwake { id: uuid::Uuid, pinned: bool },
+    PinAwake {
+        id: uuid::Uuid,
+        pinned: bool,
+    },
     /// Exclusive-focus token (D22). Grants the attach argv for the handover.
-    FocusStart { session: uuid::Uuid },
-    FocusEnd { session: uuid::Uuid },
+    FocusStart {
+        session: uuid::Uuid,
+    },
+    FocusEnd {
+        session: uuid::Uuid,
+    },
     /// Has the GATE ceremony been passed on this machine?
     GateStatus,
     GatePassed,
     Shutdown,
     /// Read-only diff viewer (M4b): the ticket's stable file list,
     /// BASE...BRANCH. Served on the connection thread, never the writer.
-    DiffList { ticket: ulid::Ulid },
+    DiffList {
+        ticket: ulid::Ulid,
+    },
     /// One file's hunks on demand. `context` is the -U density (1 | 3 | 8).
     DiffFile {
         ticket: ulid::Ulid,
@@ -177,12 +240,22 @@ pub enum Response {
     },
     Ok,
     /// CreateTicket's receipt: the minted id, so the client can select it.
-    Created { id: ulid::Ulid },
-    Spawned { id: uuid::Uuid },
+    Created {
+        id: ulid::Ulid,
+    },
+    Spawned {
+        id: uuid::Uuid,
+    },
     /// ReclaimAll's receipt: how many actually slept, and why others did not.
-    Reclaimed { slept: usize, skipped: usize },
+    Reclaimed {
+        slept: usize,
+        skipped: usize,
+    },
     /// ArchiveAll's receipt: the honest split (skipped = woke since pricing).
-    Archived { archived: usize, skipped: usize },
+    Archived {
+        archived: usize,
+        skipped: usize,
+    },
     Board {
         board: Board,
         grace: Vec<GraceItem>,
@@ -205,11 +278,21 @@ pub enum Response {
     /// session actually spawns.
     Provisioning,
     /// MergeTicket's receipt.
-    Merge { outcome: MergeOutcome, detail: String },
+    Merge {
+        outcome: MergeOutcome,
+        detail: String,
+    },
     /// argv the client should exec for the focus handover.
-    Attach { argv: Vec<String> },
-    Gate { passed: bool, attach_argv: Option<Vec<String>> },
-    Err { message: String },
+    Attach {
+        argv: Vec<String>,
+    },
+    Gate {
+        passed: bool,
+        attach_argv: Option<Vec<String>>,
+    },
+    Err {
+        message: String,
+    },
     /// DiffList's answer: the stable file list plus display-only in-flight
     /// flags. `branch_oid` is the live tip at serve time.
     DiffList {
@@ -223,7 +306,9 @@ pub enum Response {
         #[serde(default)]
         worktree_present: bool,
     },
-    DiffFile { file: crate::diff::FileDiff },
+    DiffFile {
+        file: crate::diff::FileDiff,
+    },
 }
 
 /// A ticket's worktree binding, as the board renders it (M4). Oids stay
@@ -387,8 +472,7 @@ mod tests {
     /// client would drop the line — blanking the board on an older client.
     #[test]
     fn unknown_notice_kind_parses() {
-        let n: Notice =
-            serde_json::from_str(r#"{"kind":"something_new","text":"hello"}"#).unwrap();
+        let n: Notice = serde_json::from_str(r#"{"kind":"something_new","text":"hello"}"#).unwrap();
         assert_eq!(n.kind, "something_new");
         assert!(n.path.is_none());
         assert!(n.detail.is_none());

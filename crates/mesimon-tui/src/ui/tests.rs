@@ -21,12 +21,7 @@ fn uuid_n(n: u128) -> uuid::Uuid {
     uuid::Uuid::from_u128(n)
 }
 
-fn session(
-    n: u128,
-    ticket: ulid::Ulid,
-    kind: SessionKind,
-    state: SessionState,
-) -> SessionRecord {
+fn session(n: u128, ticket: ulid::Ulid, kind: SessionKind, state: SessionState) -> SessionRecord {
     let mut s = session_record(n, ticket, kind, state);
     // Deterministic age slot: epoch-adjacent timestamps always render `>1y`.
     s.state_changed_at = Some(1);
@@ -151,8 +146,7 @@ fn app_graphite(board: Board) -> App {
 fn fixture_archived() -> Board {
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(7)) {
-        t.archived =
-            Some(mesimon_core::board::Archived { at: "@100".into(), by: "local".into() });
+        t.archived = Some(mesimon_core::board::Archived { at: "@100".into(), by: "local".into() });
     }
     b
 }
@@ -217,11 +211,18 @@ fn install_diff(app: &mut App) {
         hunks,
     };
     let mut cache = std::collections::HashMap::new();
-    cache.insert("src/auth/callback.ts".to_string(), fd("src/auth/callback.ts", Render::Text, text_hunks));
+    cache.insert(
+        "src/auth/callback.ts".to_string(),
+        fd("src/auth/callback.ts", Render::Text, text_hunks),
+    );
     cache.insert("img/logo.bin".to_string(), fd("img/logo.bin", Render::Binary, vec![]));
     cache.insert(
         "tool.sh".to_string(),
-        fd("tool.sh", Render::ModeOnly { old_mode: "100644".into(), new_mode: "100755".into() }, vec![]),
+        fd(
+            "tool.sh",
+            Render::ModeOnly { old_mode: "100644".into(), new_mode: "100755".into() },
+            vec![],
+        ),
     );
     app.worktrees = vec![mesimon_core::command::WorktreeItem {
         ticket: ulid_n(3),
@@ -303,6 +304,201 @@ fn golden_archived_board_120() {
     golden("board_archived_120x30", &render(&app, 120, 30));
 }
 
+/// The `?` overlay, the surface the audit found missing. It is rendered from
+/// the keymap, so this golden is also a picture of what the board can do.
+#[test]
+fn golden_help_overlay_120() {
+    let mut app = app_graphite(fixture(true));
+    app.cursor_col = 1;
+    app.help = true;
+    golden("help_board_120x30", &render(&app, 120, 30));
+}
+
+/// The same overlay on the ticket screen lists a different set — the proof
+/// that it answers "here", not "in general".
+#[test]
+fn golden_help_ticket_120() {
+    let mut app = app_graphite(fixture(true));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.help = true;
+    golden("help_ticket_120x30", &render(&app, 120, 30));
+}
+
+/// The armed archive chord: the footer becomes the chord's own scope and
+/// names the key still to press. The resting hint said only `a`.
+#[test]
+fn golden_archive_armed_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Char('a'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let lines = render(&app, 120, 30);
+    // Armed, and saying so — not silently waiting.
+    assert!(
+        lines.last().is_some_and(|l| l.contains("archives")),
+        "the armed state must say what the next press does: {:?}",
+        lines.last()
+    );
+    golden("board_archive_armed_120x30", &lines);
+}
+
+/// The Esc menu: the board-wide actions, which deliberately have no keys.
+#[test]
+fn golden_menu_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Menu { idx: 0 };
+    golden("menu_120x30", &render(&app, 120, 30));
+}
+
+/// The three standing offers, in priority order, right-aligned in the header —
+/// and the same three at the top of the menu wearing the same `›`. This golden
+/// is the whole suggestion language in one picture.
+#[test]
+fn golden_suggestions_120() {
+    let mut app = suggesting_app();
+    golden("board_suggestions_120x30", &render(&app, 120, 30));
+    app.mode = Mode::Menu { idx: 0 };
+    golden("menu_suggestions_120x30", &render(&app, 120, 30));
+}
+
+/// A board with all three offers standing.
+fn suggesting_app() -> App {
+    let mut app = app_graphite(fixture_archived());
+    app.force_update_ready();
+    app.resources.reclaim_sessions = 3;
+    app.resources.reclaim_bytes = 3 << 30;
+    app.resources.archive_tickets = 2;
+    app
+}
+
+/// One offer at a time, right-aligned: the highest priority, in words, with the
+/// key that takes it. No count of what is queued behind it — the menu is where
+/// the rest are read.
+#[test]
+fn test_header_offers_one_suggestion_at_a_time() {
+    let app = suggesting_app();
+    let head = &render(&app, 120, 30)[0];
+    assert!(
+        head.ends_with("◦ update ready (U ∙ esc)"),
+        "the top offer sits at the right edge, alone: {head:?}"
+    );
+    assert!(!head.contains("sleep"), "only one offer is spelled out: {head:?}");
+    assert!(!head.contains('+'), "no queue depth in the header: {head:?}");
+    assert!(
+        head.find('◦').expect("mark") > head.find("tickets").expect("count"),
+        "the offer sits right of the state"
+    );
+    // A lone offer names itself the same way — the chip has no other shape.
+    let mut app = app_graphite(fixture(false));
+    app.force_update_ready();
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.ends_with("◦ update ready (U ∙ esc)"), "{head:?}");
+    // Nothing standing, nothing said.
+    let quiet = &render(&app_graphite(fixture(false)), 120, 30)[0];
+    assert!(!quiet.contains('◦'), "a quiet board offers nothing: {quiet:?}");
+}
+
+/// Priority decides which one is spoken, not which one is loudest: with no
+/// update on disk the sleep offer takes the chip, and archive waits in the menu.
+#[test]
+fn test_suggestion_priority_picks_the_chip() {
+    let mut app = app_graphite(fixture_archived());
+    app.resources.reclaim_sessions = 3;
+    app.resources.reclaim_bytes = 3 << 30;
+    app.resources.archive_tickets = 2;
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.ends_with("◦ sleep 3 agents (esc)"), "{head:?}");
+    // A chip that cannot fit says nothing rather than shearing the line — the
+    // menu is still one Esc away. Scarcity outranks an offer for the room.
+    app.resources.pty_total = 511;
+    app.resources.pty_used = 409;
+    let narrow = &render(&app, 80, 30)[0];
+    assert!(narrow.contains("close to the limit"), "the warning keeps its words: {narrow:?}");
+    assert!(!narrow.contains('◦'), "no room, no chip: {narrow:?}");
+}
+
+/// The header and the menu can never disagree about what is on offer.
+///
+/// They did, and it shipped (author 2026-08-31: "the suggestion hint showed
+/// archive even though sleep was in the menu as well"): the header gated its
+/// sleep clause on a 0.1 GiB payoff while the menu row gated on session count,
+/// so a small sleep offer was a menu row with no chip and archive took the
+/// header alone. The payoff floor now lives on the words in the row's detail,
+/// never on whether the offer exists.
+#[test]
+fn test_a_sub_floor_sleep_offer_still_outranks_archive() {
+    let mut app = app_graphite(fixture_archived());
+    app.resources.reclaim_sessions = 2;
+    app.resources.reclaim_bytes = 4 << 20; // well under the old 0.1 GiB floor
+    app.resources.archive_tickets = 3;
+    let head = &render(&app, 120, 30)[0];
+    assert!(
+        head.ends_with("◦ sleep 2 agents (esc)"),
+        "sleep outranks archive at any size: {head:?}"
+    );
+    // And the row it points at says so in words rather than claiming ~0.0GiB.
+    app.mode = Mode::Menu { idx: 0 };
+    let lines = render(&app, 120, 30);
+    let top = lines.iter().find(|l| l.contains("Sleep 2 agents")).expect("the sleep row leads");
+    assert!(top.trim_start().starts_with('◦'), "the chip's row is marked: {top:?}");
+    let detail = lines.iter().find(|l| l.contains("wake where they left off")).expect("detail");
+    assert!(!detail.contains("GiB"), "a payoff that rounds to nothing is spelled: {detail:?}");
+}
+
+/// The chip names one offer; the menu holds them all, marked, in the same
+/// order — so Esc then Enter takes the one the header named and the rest are
+/// right there under it. One glyph, two places.
+#[test]
+fn test_suggested_rows_lead_the_menu_and_wear_the_mark() {
+    let mut app = suggesting_app();
+    app.mode = Mode::Menu { idx: 0 };
+    let lines = render(&app, 120, 30);
+    let marked: Vec<&String> = lines.iter().filter(|l| l.trim_start().starts_with('◦')).collect();
+    assert_eq!(marked.len(), 3, "one marked row per chip: {marked:?}");
+    assert!(marked[0].contains("Restart on the new build"), "{marked:?}");
+    assert!(marked[1].contains("Sleep 3 agents in done"), "{marked:?}");
+    assert!(marked[2].contains("Archive 2 tickets in done"), "{marked:?}");
+    // The chip named the first of them and nothing else.
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("◦ update ready"), "{head:?}");
+    assert!(!head.contains("Sleep"), "the menu spells out what the chip does not");
+    // Marked rows come before the unmarked ones.
+    let first_plain =
+        lines.iter().position(|l| l.contains("External sessions")).expect("the plain rows follow");
+    let last_marked =
+        lines.iter().rposition(|l| l.trim_start().starts_with('◦')).expect("marked rows");
+    assert!(last_marked < first_plain, "offers must lead the menu");
+    // And the mark is the header's mark, nowhere else on the screen.
+    let board = render(&app_graphite(fixture(false)), 120, 30);
+    assert!(!board.iter().any(|l| l.contains('◦')), "the mark is not board furniture");
+}
+
+/// Nothing selected: the footer offers only what an empty column can do, and
+/// the overlay agrees with it. This is the user's rule made visible.
+#[test]
+fn golden_help_empty_column_120() {
+    let mut board = fixture(false);
+    board.tickets.retain(|t| t.column != "done"); // leave one column empty
+    let mut app = app_graphite(board);
+    app.cursor_col = 3;
+    app.help = true;
+    let lines = render(&app, 120, 30);
+    // The user's rule, asserted and not merely pictured: with no card under
+    // the cursor, nothing that needs one is offered — in the footer or the
+    // overlay, because both read the same predicate.
+    for absent in ["move card", "rename", "archive", "delete", "start claude"] {
+        assert!(
+            !lines.iter().any(|l| l.contains(absent)),
+            "{absent:?} offered with an empty column selected"
+        );
+    }
+    assert!(lines.iter().any(|l| l.contains("open ticket")), "creating must always be offered");
+    golden("help_empty_column_120x30", &lines);
+}
+
 #[test]
 fn golden_archived_dialog_120() {
     let mut app = app_graphite(fixture_archived());
@@ -351,7 +547,8 @@ fn golden_ticket_corpse_120() {
 fn golden_ticket_peek_120() {
     // The left zone previews the selected rail session's latest assistant
     // reply under a TRANSCRIPT heading — always on, no toggle (the zone is
-    // otherwise empty until documents land in M4).
+    // otherwise empty until documents land in M4). A running session's
+    // indicator names the step underway, not just that one is.
     let dir = std::env::temp_dir().join(format!("msmn-tpeek-golden-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("peek dir");
@@ -359,15 +556,14 @@ fn golden_ticket_peek_120() {
     std::fs::write(
         &path,
         "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
-         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n",
+         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n\
+         {\"uuid\":\"u2\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\
+         \"input\":{\"command\":\"cargo test -p mesimon-tui\",\"description\":\"Run the golden tests\"}}]}}\n",
     )
     .expect("peek transcript");
     let mut b = fixture(false);
-    b.sessions
-        .iter_mut()
-        .find(|s| s.id == uuid_n(31))
-        .expect("session 31")
-        .transcript_path = Some(path.to_string_lossy().into_owned());
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
+        Some(path.to_string_lossy().into_owned());
     let mut app = app_graphite(b);
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     golden("ticket_peek_120x30", &render(&app, 120, 30));
@@ -433,8 +629,12 @@ fn golden_card_branch_line_120() {
 
 #[test]
 fn golden_composer_selector_120() {
-    // The quick-add composer's Shift+Tab workspace selector (M4a surface).
+    // The quick-add composer's Shift+Tab workspace selector (M4a surface) and
+    // its Shift+Enter save+start. `rich_keys` is what puts the second one in
+    // the footer at all — on the legacy floor the row is one hint shorter,
+    // which `shift_enter_is_inert_without_rich_keys` pins from the keymap side.
     let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
     let mut buffer = crate::text::EditBuffer::new();
     for c in "Ship the diff viewer".chars() {
         buffer.insert(c);
@@ -525,9 +725,47 @@ fn test_ticket_footer_shows_status() {
 }
 
 #[test]
+fn thinking_replaces_the_state_word_when_the_prompt_is_newer() {
+    // A running agent whose transcript holds nothing since the user's
+    // message: the reply below it answers an older question, so the zone
+    // shows the question instead and says what the agent is doing about it.
+    let dir = std::env::temp_dir().join(format!("msmn-think-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("peek dir");
+    let path = dir.join("t.jsonl");
+    std::fs::write(
+        &path,
+        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
+         \"text\":\"Fixed the OSC-11 race.\"}]}}\n\
+         {\"uuid\":\"u2\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"now do the other thing\"}}\n",
+    )
+    .expect("peek transcript");
+    let mut b = fixture(false);
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
+        Some(path.to_string_lossy().into_owned());
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("> now do the other thing")),
+        "the zone shows the question the agent is on, not the stale answer"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("Fixed the OSC-11 race")),
+        "the stale reply must not sit under a live spinner"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("● thinking")),
+        "and `thinking` replaces `working`: it has the prompt and nothing to show yet"
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+#[test]
 fn golden_peek_board_120() {
     // `p`: the cursor card grows wrapped transcript-peek rows under its
-    // session rows, read straight from the transcript file at draw time.
+    // session rows, read straight from the transcript file at draw time,
+    // closing with the step the agent is on right now.
     let dir = std::env::temp_dir().join(format!("msmn-peek-golden-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("peek dir");
@@ -535,15 +773,14 @@ fn golden_peek_board_120() {
     std::fs::write(
         &path,
         "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
-         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n",
+         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n\
+         {\"uuid\":\"u2\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\
+         \"input\":{\"command\":\"cargo test -p mesimon-tui\",\"description\":\"Run the golden tests\"}}]}}\n",
     )
     .expect("peek transcript");
     let mut b = fixture(false);
-    b.sessions
-        .iter_mut()
-        .find(|s| s.id == uuid_n(31))
-        .expect("session 31")
-        .transcript_path = Some(path.to_string_lossy().into_owned());
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
+        Some(path.to_string_lossy().into_owned());
     let mut app = app_graphite(b);
     app.cursor_col = 1;
     app.cursor_row = 0;
@@ -566,14 +803,19 @@ fn test_single_session_card_hides_session_row() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1; // "in progress"
     app.cursor_row = 1; // T-4: exactly one (claude) session
-    let lines = render(&app, 120, 30);
+                        // The columns only — the footer legitimately names `c claude` now that
+                        // hints come from the keymap, and that is not an accordion row.
+    let body = |app: &App| -> Vec<String> {
+        let lines = render(app, 120, 30);
+        lines[..lines.len() - 1].to_vec()
+    };
     assert!(
-        !lines.iter().any(|l| l.contains("claude")),
+        !body(&app).iter().any(|l| l.contains("claude")),
         "single-session accordion must not repeat the session as a row"
     );
     // Two sessions still list both rows (cursor_row 0 is T-3: claude + bash).
     app.cursor_row = 0;
-    let lines = render(&app, 120, 30);
+    let lines = body(&app);
     assert!(lines.iter().any(|l| l.contains("claude")) && lines.iter().any(|l| l.contains("bash")));
 }
 
@@ -639,8 +881,7 @@ fn test_attn_provenance_waiting() {
         .map(|(y, _)| y)
         .collect();
     assert!(!card_rows.is_empty());
-    let legal: Vec<usize> =
-        card_rows.iter().flat_map(|y| [*y, *y + 1]).chain([0usize]).collect();
+    let legal: Vec<usize> = card_rows.iter().flat_map(|y| [*y, *y + 1]).chain([0usize]).collect();
     let mut seen_attn = false;
     for y in 0..30usize {
         for x in 0..120u16 {
@@ -734,10 +975,8 @@ fn test_alarm_never_dimmed() {
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
     let err = Color::Rgb(0xD5, 0x80, 0x9A);
-    let y = lines
-        .iter()
-        .position(|l| l.contains("Flaky e2e on runner"))
-        .expect("failed card rendered");
+    let y =
+        lines.iter().position(|l| l.contains("Flaky e2e on runner")).expect("failed card rendered");
     // Its bar cell is the first cell of the review column's slot.
     let mut found = false;
     for x in 0..120 {
@@ -807,7 +1046,10 @@ fn test_rail_corpse_rules() {
     let ids: Vec<uuid::Uuid> = app.rail_sessions(t3).iter().map(|s| s.id).collect();
     assert!(ids.contains(&uuid_n(31)), "live claude stays");
     assert!(ids.contains(&uuid_n(32)), "live bash stays");
-    assert!(ids.contains(&uuid_n(34)), "latest non-dismissed corpse rides the rail — killed included");
+    assert!(
+        ids.contains(&uuid_n(34)),
+        "latest non-dismissed corpse rides the rail — killed included"
+    );
     assert!(!ids.contains(&uuid_n(33)), "only the latest corpse shows");
     assert!(!ids.contains(&uuid_n(35)), "dismissed corpse stays hidden");
     assert!(!ids.contains(&uuid_n(36)), "bash corpses are not resumable");
@@ -839,8 +1081,7 @@ fn test_move_ghost_blinks() {
     assert_eq!(bright, theme.sel.base, "bright phase rides sel.base");
     let calm0 = title_fg(&cells(&app, 120, 30), "Grapheme").expect("bystander title");
     // 410 ms back → frame 4 (or 5 under scheduler slop) — both the dark phase.
-    app.spin_epoch
-        .set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+    app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
     let dark = title_fg(&cells(&app, 120, 30), "Decay").expect("held title, frame 4");
     assert_eq!(dark, theme.sel.dim3, "dark phase rides sel.dim3");
     // The blink belongs to the held card alone.
@@ -886,7 +1127,13 @@ fn test_clipped_column_edge_peeks() {
     b.columns.push(Column { name: "todo".into(), order: "0".into() });
     b.columns.push(Column { name: "done".into(), order: "1".into() });
     for i in 0..12u128 {
-        b.tickets.push(ticket(i + 1, &format!("T-{i}"), &format!("Load {i}"), "todo", &format!("{i:02}")));
+        b.tickets.push(ticket(
+            i + 1,
+            &format!("T-{i}"),
+            &format!("Load {i}"),
+            "todo",
+            &format!("{i:02}"),
+        ));
     }
     b.tickets.push(ticket(99, "T-99", "Elsewhere", "done", "00"));
     let mut app = app_graphite(b);
@@ -908,7 +1155,11 @@ fn test_clipped_column_edge_peeks() {
     // Clipped below: fewer than 12 cards visible; the bottom-most is the
     // dim3 ghost, a blank row away from the last full-value card.
     let clipped = rows(&app, 20);
-    assert!(clipped.len() > 2 && clipped.len() < 12, "20 rows must clip; visible={}", clipped.len());
+    assert!(
+        clipped.len() > 2 && clipped.len() < 12,
+        "20 rows must clip; visible={}",
+        clipped.len()
+    );
     let (gy, gfg) = *clipped.last().unwrap();
     assert_eq!(gfg, theme.rest.dim3, "bottom edge is a ghost peek");
     assert!(gy - clipped[clipped.len() - 2].0 >= 2, "blank row before the bottom ghost");

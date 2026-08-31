@@ -14,9 +14,8 @@ fn main() -> Result<()> {
         // docs/14 §1.7) and must touch nothing else in the binary.
         Some("hook") => hook::run(&args[1..]),
         Some("daemon") => {
-            let repo = arg_value(&args, "--repo")
-                .map(PathBuf::from)
-                .unwrap_or(std::env::current_dir()?);
+            let repo =
+                arg_value(&args, "--repo").map(PathBuf::from).unwrap_or(std::env::current_dir()?);
             mesimon_daemon::run_foreground(&repo)
         }
         Some("doctor") => doctor::run(&args[1..]),

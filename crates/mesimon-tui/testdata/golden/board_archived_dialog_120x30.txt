@@ -13,7 +13,7 @@
                              archived — 1
 
                              T-7  Painted accent bar ∙ done ∙ >1y
-                             jk ∙ enter open ∙ A restore ∙ esc
+                             jk select ∙ enter open ∙ a restore ∙ esc close ∙ ? keys
 
 
 
@@ -27,4 +27,4 @@
 
 
 
- ARCHIVED  jk ∙ enter open ∙ A restore ∙ esc back
+ ARCHIVED  jk select ∙ enter open ∙ a restore ∙ esc close ∙ ? keys

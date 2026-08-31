@@ -6,8 +6,6 @@
 
    Keymap validator              ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
-   Ship the diff viewer
-   ⎇ worktree  shift+tab
 
 
 
@@ -27,4 +25,6 @@
 
 
 
- NEW  enter save ∙ shift+enter save + ask claude ∙ esc cancel ∙ shift+tab shared checkout / own worktree ∙ ? keys
+
+
+ a again archives

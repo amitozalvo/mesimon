@@ -5,7 +5,6 @@
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
@@ -110,7 +109,11 @@ fn m1_acceptance_headless() {
     assert_eq!(t2.column, "IN PROGRESS");
 
     // Spawn a bash session → live pane in the private tmux server.
-    let r = c.request(Command::SpawnSession { ticket: t.id, kind: SessionKind::Bash });
+    let r = c.request(Command::SpawnSession {
+        ticket: t.id,
+        kind: SessionKind::Bash,
+        submit_prompt: false,
+    });
     assert!(matches!(r, Response::Spawned { .. }), "{r:?}");
     let (board, _) = board_of(c.request(Command::Snapshot));
     let s = board.sessions.first().expect("session record").clone();

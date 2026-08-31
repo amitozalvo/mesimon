@@ -48,6 +48,11 @@ impl UpdateWatch {
     pub fn ready(&self) -> bool {
         self.ready
     }
+
+    #[cfg(test)]
+    pub(crate) fn force_ready(&mut self) {
+        self.ready = true;
+    }
 }
 
 fn mtime(p: &Path) -> Option<SystemTime> {

@@ -27,4 +27,4 @@
 
 
 
- BOARD  enter open ∙ space ticket ∙ tab needs you ∙ a add ∙ m>< move ∙ p peek ∙ e external ∙ q quit
+ BOARD  enter go to the agent ∙ o open ticket ∙ c claude ∙ s shell ∙ > < move card ∙ r rename ∙ a archive ∙ ? keys

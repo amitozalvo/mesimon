@@ -14,6 +14,8 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
+use mesimon_core::keymap;
+
 use crate::app::{App, InputPurpose, Mode};
 use crate::glyphs;
 use crate::text::{
@@ -30,7 +32,9 @@ const RAIL_W: u16 = 30;
 pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: usize) {
     let theme = &app.theme;
     let area = f.area();
-    let Some(ticket) = app.board.ticket(ticket_id) else { return };
+    let Some(ticket) = app.board.ticket(ticket_id) else {
+        return;
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
@@ -83,36 +87,44 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let note = (!app.merge_note.is_empty()).then(|| crate::text::one_line(&app.merge_note));
     if ticket.is_archived() {
         // Grey ramp only — archived is the quiet condition, not an alarm.
-        ident_spans.push(Span::styled(" ∙ archived ∙ A restores", theme.dim1()));
+        // The restore key comes from the table, which is also what makes the
+        // word flip to "restore" while we are here.
+        let how = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Archive, &app.ctx())
+            .map(|(show, hint)| format!(" ∙ {show} {hint}s"))
+            .unwrap_or_default();
+        ident_spans.push(Span::styled(format!(" ∙ archived{how}"), theme.dim1()));
     }
     if let Some(w) = app.wt_item(ticket.id) {
         // Quiet-tickets rule: a mid-turn agent blocks the merge, so the hint
         // withholds the key (the count still shows what's waiting).
         let busy = app.ticket_busy(ticket.id);
+        // What `m` would do next, in the keymap's own words — or nothing at
+        // all when `m` is inert here, so the line never names a dead key.
+        let ctx = app.ctx();
+        let offer = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Merge, &ctx)
+            .map(|(show, word)| format!(" ∙ {show} {word}"))
+            .unwrap_or_default();
         let state = if let Some(n) = &note {
             format!(" ∙ {n}")
         } else if w.conflict {
             " ∙ branch shared!".to_string()
         } else if w.merged {
-            " ∙ merged".to_string()
+            format!(" ∙ merged{offer}")
         } else if w.status != "attached" {
             format!(" ∙ {}", w.status)
         } else if w.needs_rebase {
-            // The m flow's rebase stage — main moved past this branch.
-            " ∙ main moved ∙ m rebases".to_string()
+            format!(" ∙ main moved{offer}")
         } else if w.ahead > 0 && busy {
             format!(" ∙ {} to merge", w.ahead)
         } else if w.ahead > 0 {
-            // Merge available — the count and the key, calm register.
-            format!(" ∙ {} to merge ∙ m", w.ahead)
+            format!(" ∙ {} to merge{offer}", w.ahead)
         } else {
             String::new()
         };
         ident_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
         if !state.is_empty() {
-            let actionable = !w.merged
-                && w.status == "attached"
-                && (w.needs_rebase || (w.ahead > 0 && !busy));
+            let actionable =
+                !w.merged && w.status == "attached" && (w.needs_rebase || (w.ahead > 0 && !busy));
             let style = if note.is_some() {
                 theme.calm_text()
             } else if w.conflict {
@@ -157,25 +169,29 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // (one slot is still enough — board and ticket never draw the same
         // frame). Bash sessions have no transcript and preview nothing.
         let sel = app.rail_sessions(ticket_id).into_iter().nth(rail_idx);
-        let peek = sel
-            .and_then(|s| s.transcript_path.as_deref())
-            .and_then(|p| app.peek_cache.text(p));
+        let peek =
+            sel.and_then(|s| s.transcript_path.as_deref()).and_then(|p| app.peek_cache.peek(p));
         // A mid-turn agent keeps composing past whatever the preview shows,
         // so the zone says so (bash panes work too, but have no transcript
         // for the line to qualify — Claude only).
-        let working = sel
-            .is_some_and(|s| s.kind == SessionKind::Claude && s.state == SessionState::Running);
+        let working =
+            sel.is_some_and(|s| s.kind == SessionKind::Claude && s.state == SessionState::Running);
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
         draw_documents(
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
             app,
-            peek.as_deref(),
+            peek.as_ref(),
             working,
         );
         draw_rail(
             f,
-            Rect { x: area.x + left_w + 3, y: body_y, width: RAIL_W.saturating_sub(1), height: body_h },
+            Rect {
+                x: area.x + left_w + 3,
+                y: body_y,
+                width: RAIL_W.saturating_sub(1),
+                height: body_h,
+            },
             app,
             ticket_id,
             rail_idx,
@@ -193,40 +209,25 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
 
     // ---- footer -----------------------------------------------------------
-    // A pending status (a daemon refusal, mostly) outranks the key hints —
-    // the board footer does the same in chrome::draw_footer.
-    let footer = if app.status.is_empty() {
-        // `w` only while the daemon would still accept it: locked once the
-        // ticket has sessions or a worktree binding (server::set_workspace).
-        let has_wt = app.wt_item(ticket_id).is_some();
-        let locked = has_wt || app.board.sessions.iter().any(|s| s.ticket == ticket_id);
-        // `m` is deliberately absent: the merge lives on the identity line
-        // (its hint and every reply of the flow render up there, once).
-        let w_hint = if locked { "" } else { "w worktree/shared ∙ " };
-        // `v` only once a binding exists — that is when the diff can answer.
-        let v_hint = if has_wt { "v diff ∙ " } else { "" };
-        let hint = format!(
-            "jk select ∙ enter focus ∙ c claude ∙ s shell ∙ {w_hint}{v_hint}r rename ∙ esc board"
-        );
-        chrome::mode_line(app, "TICKET", &hint)
-    } else {
-        Line::from(Span::styled(
-            format!(" {}", crate::text::one_line(&app.status)),
-            theme.base(),
-        ))
-    };
+    // Rendered from the keymap like every other screen (`m` stays out of it
+    // by carrying prio 0 — the merge conversation happens on the identity
+    // line, next to the branch state it acts on).
+    let footer = chrome::footer_line(app, area.width);
     f.render_widget(
         Paragraph::new(footer),
         Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 },
     );
 }
 
-fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>, working: bool) {
+fn draw_documents(
+    f: &mut Frame,
+    area: Rect,
+    app: &App,
+    peek: Option<&crate::peek::Peek>,
+    working: bool,
+) {
     let theme = &app.theme;
-    let mut head = vec![Span::styled(
-        " DOCUMENTS",
-        theme.dim1().add_modifier(Modifier::BOLD),
-    )];
+    let mut head = vec![Span::styled(" DOCUMENTS", theme.dim1().add_modifier(Modifier::BOLD))];
     let right = "(0)";
     let used: usize = 10 + right.width() + 1;
     head.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
@@ -235,7 +236,10 @@ fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>, work
         Line::from(head),
         Line::default(),
         Line::from(Span::styled("   drop files into this ticket's directory", theme.dim3())),
-        Line::from(Span::styled("   ticket directories land with the adoption IA (M4)", theme.dim3())),
+        Line::from(Span::styled(
+            "   ticket directories land with the adoption IA (M4)",
+            theme.dim3(),
+        )),
     ];
 
     // The selected session's latest assistant reply, wrapped into whatever
@@ -243,7 +247,8 @@ fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>, work
     // no section at all — a heading over nothing is noise — UNLESS the agent
     // is mid-turn: then the section closes with the rail's own spinner and
     // state word, so a stale reply (or no reply yet) reads as in-progress.
-    if peek.is_some() || working {
+    let reply = peek.and_then(|p| p.text.as_deref());
+    if reply.is_some() || working {
         lines.push(Line::default());
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
@@ -251,7 +256,7 @@ fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>, work
             theme.dim1().add_modifier(Modifier::BOLD),
         )));
         lines.push(Line::default());
-        if let Some(text) = peek {
+        if let Some(text) = reply {
             // Reserve the indicator's rows so a long reply never pushes it off.
             let reserve = if working { 2 } else { 0 };
             let budget = (area.height as usize).saturating_sub(lines.len() + reserve);
@@ -263,9 +268,24 @@ fn draw_documents(f: &mut Frame, area: Rect, app: &App, peek: Option<&str>, work
             }
         }
         if working {
-            let g = glyphs::spinner(theme.glyph_tier(), app.spin_frame());
-            let word = glyphs::state_word(&SessionState::Running);
-            lines.push(Line::from(Span::styled(format!("   {g} {word}"), theme.dim2())));
+            // The indicator says what the agent is doing, not just that it
+            // is: the newest tool call's own title, after the state word so
+            // the vocabulary stays the rail's (07 §11.3). `thinking` REPLACES
+            // the state word — "working ∙ thinking" says one thing twice.
+            let tier = theme.glyph_tier();
+            let working_word = glyphs::state_word(&SessionState::Running);
+            let row = match peek.and_then(|p| p.activity.as_ref()) {
+                Some(crate::peek::Doing::Tool(t)) => format!("{working_word} ∙ {t}"),
+                Some(crate::peek::Doing::Thinking) => "thinking".to_string(),
+                None => working_word.to_string(),
+            };
+            let row = crate::text::truncate(&row, (area.width as usize).saturating_sub(6));
+            let mark =
+                if glyphs::pulse_lit(app.spin_frame()) { theme.dim2() } else { theme.dim3() };
+            lines.push(Line::from(vec![
+                Span::styled(format!("   {} ", glyphs::pulse(tier)), mark),
+                Span::styled(row, theme.dim2()),
+            ]));
         }
     }
     f.render_widget(Paragraph::new(lines), area);
@@ -284,10 +304,7 @@ fn draw_rail(
     let rail = app.rail_sessions(ticket_id);
     let w = area.width as usize;
 
-    let mut head = vec![Span::styled(
-        " SESSIONS",
-        theme.dim1().add_modifier(Modifier::BOLD),
-    )];
+    let mut head = vec![Span::styled(" SESSIONS", theme.dim1().add_modifier(Modifier::BOLD))];
     let right = rail.len().to_string();
     let used: usize = 9 + right.width() + 1;
     head.push(Span::raw(" ".repeat(w.saturating_sub(used))));
@@ -295,8 +312,16 @@ fn draw_rail(
     let mut lines: Vec<Line<'static>> = vec![Line::from(head), Line::default()];
 
     if rail.is_empty() {
-        // 07 §16.2: the empty state names the two spawn verbs and nothing else.
-        lines.push(Line::from(Span::styled(" c claude ∙ s bash", theme.dim3())));
+        // 07 §16.2: the empty state names the two spawn verbs and nothing
+        // else — in the keymap's words, so it cannot drift from the keys.
+        let ctx = app.ctx();
+        let nudge = [keymap::Verb::Claude, keymap::Verb::Shell]
+            .iter()
+            .filter_map(|v| keymap::hint_for(keymap::Scope::Ticket, *v, &ctx))
+            .map(|(show, hint)| format!("{show} {hint}"))
+            .collect::<Vec<_>>()
+            .join(" ∙ ");
+        lines.push(Line::from(Span::styled(format!(" {nudge}"), theme.dim3())));
         f.render_widget(Paragraph::new(lines), area);
         return;
     }
@@ -334,11 +359,8 @@ fn draw_rail(
         } else {
             0
         };
-        let kind = if scroll > 0 {
-            marquee_window(kind, budget, scroll)
-        } else {
-            truncate(kind, budget)
-        };
+        let kind =
+            if scroll > 0 { marquee_window(kind, budget, scroll) } else { truncate(kind, budget) };
         let mark = glyphs::kind_mark(s.kind, tier);
         let age = s
             .state_changed_at
@@ -354,10 +376,8 @@ fn draw_rail(
             theme.base()
         };
         let name = format!(" {mark} {kind}");
-        let mut spans = vec![
-            Span::styled(g.to_string(), glyph_style),
-            Span::styled(name.clone(), name_style),
-        ];
+        let mut spans =
+            vec![Span::styled(g.to_string(), glyph_style), Span::styled(name.clone(), name_style)];
         let used: usize = 1 + name.width() + age.width() + 1;
         spans.push(Span::raw(" ".repeat(w.saturating_sub(used))));
         spans.push(Span::styled(age, theme.dim2()));
@@ -370,18 +390,12 @@ fn draw_rail(
         // same row surface so it reads as part of its session, never as an
         // item of its own.
         if matches!(s.state, SessionState::RequiresAction { .. }) {
-            let q = s
-                .detail
-                .clone()
-                .unwrap_or_else(|| glyphs::state_word(&s.state).to_lowercase());
+            let q = s.detail.clone().unwrap_or_else(|| glyphs::state_word(&s.state).to_lowercase());
             let text = format!("    {}", truncate(&q, w.saturating_sub(4)));
             let pad = w.saturating_sub(text.width());
             lines.push(
-                Line::from(vec![
-                    Span::styled(text, theme.attn_text()),
-                    Span::raw(" ".repeat(pad)),
-                ])
-                .style(row_style),
+                Line::from(vec![Span::styled(text, theme.attn_text()), Span::raw(" ".repeat(pad))])
+                    .style(row_style),
             );
         } else {
             let mut badges: Vec<&str> = Vec::new();
@@ -398,11 +412,8 @@ fn draw_rail(
                 let text = format!("    {}", badges.join(" ∙ "));
                 let pad = w.saturating_sub(text.width());
                 lines.push(
-                    Line::from(vec![
-                        Span::styled(text, theme.dim2()),
-                        Span::raw(" ".repeat(pad)),
-                    ])
-                    .style(row_style),
+                    Line::from(vec![Span::styled(text, theme.dim2()), Span::raw(" ".repeat(pad))])
+                        .style(row_style),
                 );
             }
         }

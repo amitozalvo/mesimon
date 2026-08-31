@@ -125,7 +125,11 @@ fn restart_recovers_state_from_the_transcript() {
     ));
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "restart".into() });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
-    let sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Claude }) {
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("spawn failed: {other:?}"),
     };
@@ -213,7 +217,8 @@ fn restart_recovers_done_from_a_resting_transcript() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-restart-rest-{}", std::process::id()));
+    let dir =
+        std::path::PathBuf::from(format!("/tmp/msmn-e2e-restart-rest-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).unwrap();
     let repo = dir.join("repo");
@@ -259,7 +264,11 @@ fn restart_recovers_done_from_a_resting_transcript() {
     ));
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "rest".into() });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
-    let sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Claude }) {
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("spawn failed: {other:?}"),
     };

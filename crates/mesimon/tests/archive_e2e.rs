@@ -94,8 +94,7 @@ fn archive_gates_suggests_and_restores() {
     let tmux_sock = paths.tmux_sock();
 
     let stub = dir.join("claude-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n")
-        .unwrap();
+    std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n").unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
     std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
@@ -128,7 +127,11 @@ fn archive_gates_suggests_and_restores() {
     let ticket_toml = repo.join(".mesimon/board/tickets").join(&key).join("ticket.toml");
 
     // One claude session, driven idle by real hooks.
-    let sid = match c.request(Command::SpawnSession { ticket: cold, kind: SessionKind::Claude }) {
+    let sid = match c.request(Command::SpawnSession {
+        ticket: cold,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("spawn failed: {other:?}"),
     };
@@ -190,7 +193,11 @@ fn archive_gates_suggests_and_restores() {
 
     // 4. The refusal guards.
     err_containing(
-        c.request(Command::SpawnSession { ticket: cold, kind: SessionKind::Bash }),
+        c.request(Command::SpawnSession {
+            ticket: cold,
+            kind: SessionKind::Bash,
+            submit_prompt: false,
+        }),
         "archived",
     );
     err_containing(c.request(Command::WakeSession { id: sid }), "archived");

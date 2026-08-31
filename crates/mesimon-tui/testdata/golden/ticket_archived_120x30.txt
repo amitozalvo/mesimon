@@ -1,6 +1,6 @@
  mesimon > kanban-tui > Painted accent bar
 
- DONE ∙ created by you >1y ago ∙ archived ∙ A restores
+ DONE ∙ created by you >1y ago ∙ archived
 
   DOCUMENTS                                                                         (0)    SESSIONS                  1
 
@@ -27,4 +27,4 @@
 
 
 
- TICKET  jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ esc board
+ TICKET  jk select session ∙ enter wake ∙ c start claude ∙ s shell ∙ x wake ∙ r rename ∙ q board ∙ ? keys

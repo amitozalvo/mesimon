@@ -10,7 +10,8 @@ Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), M2 (attention), M3 (ado
 resources), M3.5 (design foundation), M4a (per-ticket worktrees + the staged merge flow),
 and M4b (read-only diff viewer: ticket `v` → `Screen::Diff`; DiffList/DiffFile served
 read-only off the writer thread on the connection threads; `!` shell-in-worktree; STALE-MAP
-"M4b read-only diff viewer shipped" records the deviations) are built. M4 spec:
+"M4b read-only diff viewer shipped" records the deviations) are built, plus the M6 keymap
+pass (below). M4 spec:
 `~/.claude/plans/smooth-puzzling-sphinx.md`.
 The roadmap and execution state live in the auto-memory (`mesimon-project-state`) and
 `~/.claude/plans/reactive-painting-umbrella.md` — note the auto-memory does NOT follow into
@@ -143,6 +144,61 @@ stale claims) and borrow the observe tier while `Unknown`: the transcript tail r
 Low confidence until a hook re-asserts. Sessions mesimon didn't spawn get no hooks and can never
 emit attention (adoption tier is M3).
 
+**The keymap is data (`core/src/keymap.rs`), and this is load-bearing.** Nothing in `ui/`
+contains a hint literal and nothing in `app.rs` matches on a raw key. A keypress becomes a
+`Verb` only through `keymap::resolve(scope, key, &ctx)`, and `App::dispatch` matches `Verb`
+exhaustively — so a binding with no handler will not compile. Every `Binding` carries an
+availability predicate over `Ctx`, and the SAME predicate gates the key and its hint: a key
+that is hinted works, a key that is not available is inert. That is why the footer changes
+with the selection (an empty column offers no `rename`) and why `?` lists a different set on
+every screen. `Ctx` is built once per keypress and per frame by `App::ctx()`.
+
+To add a binding: add the `Binding` (with its `avail` and `hint`), add the `Verb`, handle it
+in `dispatch` — the compiler finds the third step for you. `prio: 0` means overlay-only.
+Chord tails (`d`, `a`, `z`) are scopes with no parent, so a stray key inside one resolves to
+`None` and cancels rather than acting. A prefix's `show` is the single key (`d`, `a`) — never
+`d d`: pressing it swaps the footer to the tail's scope, which names the key still to press. Twelve validator tests in `keymap.rs` enforce 04 §2.0:
+no key bound twice in a scope chain, legacy-floor atoms only, no banned atoms, and the
+product rules (one verb per key across screens, Shift stays on one axis, `q` pops, `?`
+everywhere). The `mutates` field is what the D22 `--observer` client will be generated from.
+
+`Key::ShiftEnter` is the ONE atom off the legacy floor, and it is only admissible because every
+binding on it is gated on `Ctx::rich_keys` — the cached kitty-protocol probe, set on `App` by
+`lib.rs` after `init_terminal`. A terminal that reports Shift+Enter as a bare Enter therefore
+gets the key unbound AND unhinted, never half-working; `shift_enter_is_inert_without_rich_keys`
+is what keeps that exception honest. Do not add a second off-floor atom without the same gate.
+
+**Composing a ticket: Enter saves, Shift+Enter saves and asks.** A fresh Claude spawn always
+types the ticket title into the agent's box and stops (zero token injection, a README promise).
+The composer's Shift+Enter is the one gesture that also presses Enter — it mints the ticket,
+spawns claude, submits the title as the first prompt, and stays on the board (no handover; the
+card is how you watch it). It travels as `Command::SpawnSession { submit_prompt }` →
+`SessionRecord.pending_submit` → `send-keys Enter`, started on the
+`SessionStart{source: Startup}` frame and **repeated every 500 ms until the `UserPromptSubmit`
+ack** (`deliver_pending_submit` / `retry_pending_submits` / `ack_pending_submit`). The retry is
+not belt-and-braces: Claude fires SessionStart *during* startup, so a single press on that edge
+loses a race it lost in the first real use. Two other traps are measured, not assumed: an Enter
+sent *with* the text is swallowed by Claude's paste detection, and the prompt must never ride
+argv — commander dispatches a title that names a subcommand ("doctor", "update") to that
+subcommand, and `--` does not shield it. Retries stop outside `Spawning`/`Idle`/`Running` so a
+startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026-08-31 addendum
++ correction and STALE-MAP "Shift+Enter composes and asks".
+
+Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
+NO key — they live in the Esc menu (`ui/menu.rs`, rows from `keymap::menu_items`), because
+they are rare, are not about the selection, and a menu row has room to say what it will do.
+
+**Suggestions are pointers at menu rows, never their own surface.** `keymap::SUGGESTIONS` is a
+priority-ordered list (update ready > sleep N agents > archive N tickets); each entry's
+availability IS its menu row's `avail`, so the header cannot offer what the menu will not do,
+and `menu_items` floats the suggested rows to the top in that order. The header shows exactly
+ONE — right-aligned, `(esc)` or `(U ∙ esc)` for the route, no count of the rest — and `◦`
+marks both the chip and the rows it stands in front of. To add one: add the menu row, add the
+`Suggestion`, done. (STALE-MAP "Suggestions are one right-hand chip and a marked menu".)
+
+`?` (`ui/help.rs`) renders `keymap::overlay` and is the complete answer for the current
+screen and state.
+
 **Schema evolution.** Every new `SessionRecord` field must still be `#[serde(default)]` — the
 defaults ARE the migration (back-compat fixture test in `core/src/board.rs`) — but the stakes
 changed in alpha-1: `store.rs` no longer hard-fails on a parse error, so a missing default now
@@ -166,18 +222,20 @@ observe-only (transcript tail poller, Low confidence, cannot focus); takeover sp
 + D35 for all deviations).
 
 **Worktrees + merge (M4a).** Workspace is a per-ticket field (`Ticket.workspace`, layered:
-column policy will only default NEW tickets in M5; board default = shared_checkout — composer
-Shift+Tab / ticket `w` cycle it, LOCKED once a session or binding exists). Worktrees live at
+column policy will only default NEW tickets in M5; board default = shared_checkout — the
+composer's Shift+Tab sets it, LOCKED once a session or binding exists). Worktrees live at
 `~/.local/state/mesimon/<proj16>/worktrees/<KEY>-<slug>/`, branch `msmn/<KEY>-<slug>`
 (doc-12 slugger in `core/src/workspace.rs`; argv arrays always — a ticket title is an
 injection vector). Provisioning is lazy (first spawn; `daemon/src/worktree.rs` stages
 precheck/add/mark/include/ready, OFF the writer thread via `Msg::Provisioned`, concurrency 2
 — trap: `tmutil addexclusion` stalls 11 s on TCC, keep it detached); the parked spawn replays
 on ready. Bindings persist in `worktrees.json` (state dir); ownership marker in the git admin
-dir; pid-bearing locks + crash-safe sweep. **Merges are ff-only** — TUI `m` is a staged flow
+dir; pid-bearing locks + crash-safe sweep. Workspace is chosen ONCE, in the composer
+(Shift+Tab) — it locks the moment a session or binding exists, so the ticket screen has no
+`w`. **Merges are ff-only** — TUI `m` is a staged flow
 (stage derived from git state): ahead+ff → confirm→merge; main moved → inject
 "rebase+test" to the agent (conflicts resolve in the worktree, tests run pre-main); merged →
-inject the notice. Delete gates on unmerged bindings (`D` discards, branch `-D`); DONE move
+inject the notice. Delete gates on unmerged bindings (`d` then `D` discards, branch `-D`); DONE move
 blocked while unmerged; teardown waits for the reaper (never remove a live cwd), single
 `--force` only. Card mark `⎇ ⎇… ⎇↑ ⎇↓ ⎇✓ ⎇! ⎇x ⎇-`; sessions in worktrees carry
 `MESIMON_TICKET`/`MESIMON_WORKTREE_BRANCH`, and spawns pass the user's own

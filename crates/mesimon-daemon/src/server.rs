@@ -10,8 +10,9 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
+use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool};
-use mesimon_core::attention::{self, Change, Machine, Signal, TailHint};
+use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
 use mesimon_core::board::{
     Archived, Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState,
     Ticket, UnknownReason, WorkspaceStrategy,
@@ -22,7 +23,6 @@ use mesimon_core::command::{
 };
 use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
-use mesimon_backend_tmux::TmuxBackend;
 
 use crate::feed::FeedWriter;
 use crate::ingest::{self, HookFrame};
@@ -44,6 +44,12 @@ const TAIL_POLL_TICKS: u64 = 8;
 /// Transcript quiet past this while "running" (Tier-0) demotes to idle.
 const TAIL_QUIET_MS: u64 = 45_000;
 /// SIGTERM-to-kill-pane grace (docs/19 §1 kill ladder — never SIGKILL).
+/// Gap between presses of an owed, unacknowledged Enter, and how many presses
+/// to spend before giving up. T-5 measured the `UserPromptSubmit` ack at
+/// ~94 ms, so 500 ms is a wide margin, and 10 attempts covers ~5 s of Claude
+/// startup — well past the ~1 s at which a fresh pane starts reading.
+const SUBMIT_RETRY_MS: u64 = 500;
+const SUBMIT_ATTEMPTS: u8 = 10;
 const REAP_GRACE: Duration = Duration::from_secs(5);
 /// D23 floor: a session younger than this in its current state never sleeps.
 const SLEEP_MIN_AGE_MS: u64 = 60_000;
@@ -111,6 +117,11 @@ pub struct Daemon {
     /// Startup-modal probe progress per Spawning Claude session:
     /// 1 = the +10s probe ran, 2 = the +30s probe ran (11 §11.5.3 approx).
     probe_stage: HashMap<uuid::Uuid, u8>,
+    /// Sessions whose owed Enter has been pressed but not yet acknowledged:
+    /// `(next attempt epoch-ms, attempts left)`. Transient, never persisted —
+    /// a daemon restart abandons the offer rather than typing into a pane it
+    /// no longer understands.
+    submit_retry: HashMap<uuid::Uuid, (u64, u8)>,
     ticks: u64,
     feed: FeedWriter,
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
@@ -147,7 +158,9 @@ pub struct Daemon {
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
-    pending_spawns: Vec<(ulid::Ulid, SessionKind)>,
+    /// The bool is the request's `submit_prompt` — a parked Shift+Enter must
+    /// still submit its prompt when the worktree finally lands.
+    pending_spawns: Vec<(ulid::Ulid, SessionKind, bool)>,
     /// merged/ahead/conflict flags, refreshed on the 10 s bucket while
     /// bindings exist.
     wt_merged: HashMap<ulid::Ulid, bool>,
@@ -175,7 +188,9 @@ pub fn run(paths: Paths) -> Result<()> {
         .truncate(false)
         .write(true)
         .open(paths.lock_file())?;
-    let rc = unsafe { libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB) };
+    let rc = unsafe {
+        libc::flock(std::os::unix::io::AsRawFd::as_raw_fd(&lock), libc::LOCK_EX | libc::LOCK_NB)
+    };
     if rc != 0 {
         return Ok(()); // another daemon owns this repo
     }
@@ -204,12 +219,8 @@ pub fn run(paths: Paths) -> Result<()> {
     // A malformed state file is a NOTICE, not a startup failure: this runs
     // after orch.sock is already bound, so a hard fail here left the client
     // staring at a 5 s blank terminal with the real cause in daemon.log.
-    let store::Loaded {
-        mut board,
-        mut notices,
-        columns_write_barred,
-        sessions_write_barred,
-    } = store::load(&paths)?;
+    let store::Loaded { mut board, mut notices, columns_write_barred, sessions_write_barred } =
+        store::load(&paths)?;
 
     // Reconcile persisted records against the live private server (D24).
     let snap = backend.snapshot().unwrap_or_default();
@@ -218,8 +229,7 @@ pub fn run(paths: Paths) -> Result<()> {
         if let Some(r) = board.sessions.iter_mut().find(|s| s.id == *id) {
             // Observe-only records (imported, never spawned) have no pane by
             // design — Missing is their normal condition, not a crash.
-            let observe_only =
-                r.provenance == Provenance::Adopted && r.argv.is_empty();
+            let observe_only = r.provenance == Provenance::Adopted && r.argv.is_empty();
             if observe_only && matches!(link, mesimon_core::reconcile::Link::Missing) {
                 continue;
             }
@@ -286,10 +296,7 @@ pub fn run(paths: Paths) -> Result<()> {
     let hook_path = paths.hook_sock();
     let _ = std::fs::remove_file(&hook_path);
     let hook_listener = UnixListener::bind(&hook_path).context("bind hook.sock")?;
-    std::fs::set_permissions(
-        &hook_path,
-        std::os::unix::fs::PermissionsExt::from_mode(0o600),
-    )?;
+    std::fs::set_permissions(&hook_path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     let hook_tx = tx.clone();
     std::thread::spawn(move || {
         for stream in hook_listener.incoming().flatten() {
@@ -316,7 +323,6 @@ pub fn run(paths: Paths) -> Result<()> {
         .collect();
     let feed = FeedWriter::open(&paths.activity_log())?;
 
-
     let mut d = Daemon {
         paths,
         board,
@@ -333,6 +339,7 @@ pub fn run(paths: Paths) -> Result<()> {
         worktrees_barred,
         machines,
         probe_stage: HashMap::new(),
+        submit_retry: HashMap::new(),
         ticks: 0,
         feed,
         external: Vec::new(),
@@ -392,12 +399,8 @@ impl Daemon {
         if b.status != BindingStatus::Attached || b.path != cwd {
             return Vec::new();
         }
-        let key =
-            self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
-        vec![
-            ("MESIMON_TICKET".into(), key),
-            ("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone()),
-        ]
+        let key = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+        vec![("MESIMON_TICKET".into(), key), ("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone())]
     }
 }
 
@@ -497,7 +500,9 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
                 message: "worktree bindings are unavailable — see the board notice".into(),
             };
         }
-        return Response::Err { message: "no worktree on this ticket — review is per-branch".into() };
+        return Response::Err {
+            message: "no worktree on this ticket — review is per-branch".into(),
+        };
     };
     match &binding.status {
         BindingStatus::Queued | BindingStatus::Provisioning => {
@@ -541,9 +546,7 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
             Ok(env) => match env.command {
                 // Read-only diff service: answered here, never forwarded —
                 // a slow git must not stall the single writer (M4b).
-                Command::DiffList { .. } | Command::DiffFile { .. } => {
-                    serve_diff(&diff_ctx, &env)
-                }
+                Command::DiffList { .. } | Command::DiffFile { .. } => serve_diff(&diff_ctx, &env),
                 _ => {
                     let (rtx, rrx) = channel();
                     if tx.send(Msg::Request(env, rtx, writer.clone())).is_err() {
@@ -614,7 +617,9 @@ impl Daemon {
             Command::Hello { version, .. } => {
                 if version != PROTOCOL_VERSION {
                     return Response::Err {
-                        message: format!("protocol {version} unsupported; daemon speaks {PROTOCOL_VERSION}"),
+                        message: format!(
+                            "protocol {version} unsupported; daemon speaks {PROTOCOL_VERSION}"
+                        ),
                     };
                 }
                 Response::Hello {
@@ -654,7 +659,9 @@ impl Daemon {
             // Worktree work is refused wholesale while the bindings file is
             // barred: acting would either strand a new worktree we cannot
             // record, or tear down a real one on a guess (D26, fail closed).
-            Command::SetWorkspace { .. } | Command::MergeTicket { .. } | Command::MergeToAgent { .. }
+            Command::SetWorkspace { .. }
+            | Command::MergeTicket { .. }
+            | Command::MergeToAgent { .. }
                 if self.worktrees_barred =>
             {
                 Response::Err { message: self.barred_message("worktrees") }
@@ -678,7 +685,9 @@ impl Daemon {
             {
                 Response::Err { message: self.barred_message("worktrees") }
             }
-            Command::SpawnSession { ticket, kind } => self.spawn_session(ticket, kind),
+            Command::SpawnSession { ticket, kind, submit_prompt } => {
+                self.spawn_session(ticket, kind, submit_prompt)
+            }
             Command::KillSession { id } => self.kill_session(id),
             Command::FocusStart { session } => self.focus_start(session),
             Command::FocusEnd { session } => {
@@ -768,7 +777,8 @@ impl Daemon {
                 }
                 Response::Created { id } => self.feed.board("local", cmd, ticket.or(Some(*id))),
                 Response::Merge {
-                    outcome: MergeOutcome::Merged | MergeOutcome::AlreadyMerged, ..
+                    outcome: MergeOutcome::Merged | MergeOutcome::AlreadyMerged,
+                    ..
                 } => self.feed.board("local", cmd, ticket),
                 _ => {}
             }
@@ -778,6 +788,10 @@ impl Daemon {
 
     /// One wheel tick (250 ms): grace expiry at the old 1 s cadence, settle
     /// timers, the wholesale-server guard.
+    /// How long to wait for the `UserPromptSubmit` ack before pressing Enter
+    /// again, and how many presses to spend before giving up and leaving the
+    /// title typed. T-5 measured the ack at ~94 ms, so 500 ms is a wide
+    /// margin; 10 attempts covers ~5 s of Claude startup.
     fn on_tick(&mut self) {
         self.ticks += 1;
         if self.ticks % 4 == 0 {
@@ -786,11 +800,8 @@ impl Daemon {
             self.process_teardowns();
         }
         let now = now_ms();
-        let fired: Vec<(uuid::Uuid, Change)> = self
-            .machines
-            .iter_mut()
-            .filter_map(|(id, m)| m.tick(now).map(|c| (*id, c)))
-            .collect();
+        let fired: Vec<(uuid::Uuid, Change)> =
+            self.machines.iter_mut().filter_map(|(id, m)| m.tick(now).map(|c| (*id, c))).collect();
         let mut changed = false;
         for (id, change) in fired {
             changed |= self.apply_change(id, &change, None, None);
@@ -817,6 +828,7 @@ impl Daemon {
         if self.ticks % server_guard_ticks() == 0 {
             changed |= self.guard_server();
         }
+        changed |= self.retry_pending_submits(now);
         if changed {
             self.persist_sessions();
             self.broadcast();
@@ -852,11 +864,8 @@ impl Daemon {
         let mut changed = false;
         for (id, sid, stage) in due {
             self.probe_stage.insert(id, stage);
-            let bytes = self
-                .backend
-                .capture_tail(&sid, 3)
-                .map(|lines| !lines.is_empty())
-                .unwrap_or(false);
+            let bytes =
+                self.backend.capture_tail(&sid, 3).map(|lines| !lines.is_empty()).unwrap_or(false);
             let osc0 = self
                 .backend
                 .pane_title(&sid)
@@ -1022,10 +1031,8 @@ impl Daemon {
             } else {
                 None
             };
-            let cursor = self
-                .tails
-                .entry(id)
-                .or_insert_with(|| TailCursor::at_end(path.clone(), now));
+            let cursor =
+                self.tails.entry(id).or_insert_with(|| TailCursor::at_end(path.clone(), now));
             if cursor.path != path {
                 *cursor = TailCursor::at_end(path.clone(), now);
             }
@@ -1039,8 +1046,9 @@ impl Daemon {
                 match classify_tail_record(&v) {
                     TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
                     _ if abort_only => {}
-                    TailEvent::AssistantText { text } => hints
-                        .push((TailHint::AssistantText, Some(crate::census::sanitize(&text)))),
+                    TailEvent::AssistantText { text } => {
+                        hints.push((TailHint::AssistantText, Some(crate::census::sanitize(&text))))
+                    }
                     TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion } => {
                         hints.push((TailHint::AskUserQuestion, None))
                     }
@@ -1065,8 +1073,7 @@ impl Daemon {
 
             for (hint, preview) in hints {
                 let sig = Signal::TranscriptHint { kind: hint };
-                if let Some(change) = self.machines.get_mut(&id).and_then(|m| m.apply(&sig, now))
-                {
+                if let Some(change) = self.machines.get_mut(&id).and_then(|m| m.apply(&sig, now)) {
                     changed |= self.apply_change(id, &change, None, Some("tail"));
                 }
                 // The preview outlives the state word (apply_change wipes
@@ -1107,7 +1114,8 @@ impl Daemon {
                 rec.confidence = Confidence::Stale;
                 rec.waiting_since = None;
                 rec.state_changed_at = Some(now);
-                self.machines.insert(rec.id, Machine::restore(rec.state.clone(), Confidence::Stale, now));
+                self.machines
+                    .insert(rec.id, Machine::restore(rec.state.clone(), Confidence::Stale, now));
                 changed = true;
             }
         }
@@ -1121,11 +1129,9 @@ impl Daemon {
         self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
         let Some(id) = self.resolve_session(&frame.session) else { return };
         // D32c invariant 2: the agent-originated path passes the chokepoint too.
-        if let Decision::Deny { .. } = authorize(
-            &Principal::Agent { session: id },
-            &Action::Mutate,
-            &Resource::Session { id },
-        ) {
+        if let Decision::Deny { .. } =
+            authorize(&Principal::Agent { session: id }, &Action::Mutate, &Resource::Session { id })
+        {
             return;
         }
         let now = now_ms();
@@ -1165,7 +1171,8 @@ impl Daemon {
                 .entry(id)
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
             if let Some(change) = machine.apply(&sig, now) {
-                dirty |= self.apply_change(id, &change, ingest::detail_of(&frame), Some(&frame.event));
+                dirty |=
+                    self.apply_change(id, &change, ingest::detail_of(&frame), Some(&frame.event));
             }
             // Harvest done (status came in the frame) — remove the dead pane
             // remain-on-exit was holding (docs/19 §1 lifecycle).
@@ -1174,10 +1181,126 @@ impl Daemon {
                     let _ = self.backend.kill_session(&rec.sid16());
                 }
             }
+            // The composer's Shift+Enter, second half: the pane is provably
+            // alive and reading, so press the Enter its prefilled title has
+            // been waiting for. `Startup` only — a Resume/Clear/Compact
+            // SessionStart lands in a conversation that already has the
+            // prompt, and an Enter there would submit an empty turn.
+            if matches!(sig, Signal::SessionStart { source: StartSource::Startup }) {
+                dirty |= self.deliver_pending_submit(id);
+            }
+            // ...and its ack. Any prompt reaching Claude closes the offer,
+            // including one the user typed themselves — either way there is
+            // nothing left to press Enter for.
+            if matches!(sig, Signal::UserPromptSubmit) {
+                dirty |= self.ack_pending_submit(id);
+            }
         }
         if dirty {
             self.persist_sessions();
             self.broadcast();
+        }
+    }
+
+    /// Press Enter on a session whose prefilled title is still sitting
+    /// unsubmitted, and keep pressing until Claude says it took.
+    ///
+    /// `SessionStart` is the earliest moment the pane MIGHT be reading
+    /// keystrokes, but it is not proof that it is: Claude fires that hook
+    /// during startup, so the frame can reach the daemon milliseconds before
+    /// Claude's input loop exists (dogfood 2026-08-31 — the press landed 5 ms
+    /// after the frame and was lost; the same sequence with a 750 ms gap
+    /// submits). One press on that edge is therefore a race, and this is the
+    /// side that must not lose it.
+    ///
+    /// So the edge only STARTS the delivery. `UserPromptSubmit` is the ack —
+    /// T-5 named it the "prompt accepted" signal and measured it at ~94 ms —
+    /// and until it arrives `retry_pending_submits` presses again. An Enter
+    /// into an already-submitted (hence empty) box is a no-op, so a redundant
+    /// press costs nothing; a lost one costs the whole feature.
+    fn deliver_pending_submit(&mut self, id: uuid::Uuid) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        if !rec.pending_submit || self.submit_retry.contains_key(&id) {
+            return false;
+        }
+        let sid16 = rec.sid16();
+        let _ = self.backend.send_enter(&sid16);
+        self.submit_retry.insert(id, (now_ms() + SUBMIT_RETRY_MS, SUBMIT_ATTEMPTS));
+        false
+    }
+
+    /// The unacknowledged half of the above: press Enter again, on cadence,
+    /// until `UserPromptSubmit` clears the flag or the attempts run out.
+    /// Giving up leaves the title typed in the box — which is exactly what an
+    /// ordinary spawn leaves behind, so the worst case is the old behaviour.
+    fn retry_pending_submits(&mut self, now: u64) -> bool {
+        if self.submit_retry.is_empty() {
+            return false;
+        }
+        let due: Vec<uuid::Uuid> =
+            self.submit_retry.iter().filter(|(_, (at, _))| *at <= now).map(|(id, _)| *id).collect();
+        let mut changed = false;
+        for id in due {
+            let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+                self.submit_retry.remove(&id);
+                continue;
+            };
+            // A pane that died, or one showing a startup modal, is not a pane
+            // to keep pressing Enter into — the modal's Enter is an ANSWER,
+            // and mesimon does not answer dialogs on the user's behalf.
+            let pressable = rec.pending_submit
+                && rec.state.has_pane()
+                && matches!(
+                    rec.state,
+                    SessionState::Spawning | SessionState::Idle { .. } | SessionState::Running
+                );
+            if !pressable {
+                self.submit_retry.remove(&id);
+                if rec.pending_submit {
+                    let ticket = rec.ticket;
+                    self.clear_pending_submit(id);
+                    self.feed.board("daemon", "prompt_submit_abandoned", Some(ticket));
+                    changed = true;
+                }
+                continue;
+            }
+            let sid16 = rec.sid16();
+            let ticket = rec.ticket;
+            let (_, left) = self.submit_retry[&id];
+            let _ = self.backend.send_enter(&sid16);
+            if left <= 1 {
+                self.submit_retry.remove(&id);
+                self.clear_pending_submit(id);
+                self.feed.board("daemon", "prompt_submit_gave_up", Some(ticket));
+                changed = true;
+            } else {
+                self.submit_retry.insert(id, (now + SUBMIT_RETRY_MS, left - 1));
+            }
+        }
+        changed
+    }
+
+    /// Claude acknowledged a prompt: the owed Enter is paid (by us or by the
+    /// user typing their own), so stop pressing.
+    fn ack_pending_submit(&mut self, id: uuid::Uuid) -> bool {
+        self.submit_retry.remove(&id);
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        if !rec.pending_submit {
+            return false;
+        }
+        let ticket = rec.ticket;
+        self.clear_pending_submit(id);
+        self.feed.board("user", "prompt_submitted", Some(ticket));
+        true
+    }
+
+    fn clear_pending_submit(&mut self, id: uuid::Uuid) {
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.pending_submit = false;
         }
     }
 
@@ -1211,8 +1334,7 @@ impl Daemon {
         rec.state = change.to.clone();
         rec.confidence = change.confidence;
         rec.state_changed_at = Some(now);
-        rec.waiting_since =
-            if attention::is_attention(&change.to) { Some(now) } else { None };
+        rec.waiting_since = if attention::is_attention(&change.to) { Some(now) } else { None };
         match &change.to {
             SessionState::RequiresAction { .. }
             | SessionState::Failed { .. }
@@ -1304,13 +1426,10 @@ impl Daemon {
                 ahead: self.wt_ahead.get(tid).copied().unwrap_or(0),
                 needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
                 detail: match &b.status {
-                    BindingStatus::Error { stage, message } => {
-                        Some(format!("{stage}: {message}"))
-                    }
+                    BindingStatus::Error { stage, message } => Some(format!("{stage}: {message}")),
                     _ => None,
                 },
-                path: (b.status == BindingStatus::Attached)
-                    .then(|| b.path.display().to_string()),
+                path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
             })
             .collect();
         Response::Board {
@@ -1406,13 +1525,8 @@ impl Daemon {
             return had;
         }
         let Ok(snap) = self.backend.snapshot() else { return false };
-        let ours: std::collections::HashSet<String> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|s| s.state.has_pane())
-            .map(|s| s.sid16())
-            .collect();
+        let ours: std::collections::HashSet<String> =
+            self.board.sessions.iter().filter(|s| s.state.has_pane()).map(|s| s.sid16()).collect();
         let pgids: std::collections::HashSet<i32> = snap
             .iter()
             .filter(|p| !p.pane_dead && ours.contains(&p.session_name))
@@ -1492,10 +1606,8 @@ impl Daemon {
                 }
                 let sessions: Vec<_> =
                     self.board.sessions.iter().filter(|s| s.ticket == t.id).collect();
-                let sleeping: Vec<_> = sessions
-                    .iter()
-                    .filter(|s| matches!(s.state, SessionState::Sleeping))
-                    .collect();
+                let sleeping: Vec<_> =
+                    sessions.iter().filter(|s| matches!(s.state, SessionState::Sleeping)).collect();
                 if sleeping.is_empty() {
                     sessions
                         .iter()
@@ -1616,12 +1728,8 @@ impl Daemon {
     /// Append a new ticket to `column` (caller validated the column).
     fn mint_ticket(&mut self, column: String, title: String) -> ulid::Ulid {
         self.board.next_key += 1;
-        let last = self
-            .board
-            .column_tickets(&column)
-            .last()
-            .map(|t| t.order.clone())
-            .unwrap_or_default();
+        let last =
+            self.board.column_tickets(&column).last().map(|t| t.order.clone()).unwrap_or_default();
         let t = Ticket {
             id: ulid::Ulid::new(),
             short_key: format!("T-{}", self.board.next_key),
@@ -1648,7 +1756,8 @@ impl Daemon {
             if let Some(b) = self.worktrees.get(&id) {
                 if !b.branch.is_empty() && !self.ticket_merged(id, &b.branch) {
                     return Response::Err {
-                        message: "worktree unmerged — merge it first, or delete with discard".into(),
+                        message: "worktree unmerged — merge it first, or delete with discard"
+                            .into(),
                     };
                 }
             }
@@ -1681,11 +1790,7 @@ impl Daemon {
         base.map(|b| worktree::is_merged(&self.paths.repo_root, branch, &b)).unwrap_or(false)
     }
 
-    fn set_workspace(
-        &mut self,
-        id: ulid::Ulid,
-        workspace: Option<WorkspaceStrategy>,
-    ) -> Response {
+    fn set_workspace(&mut self, id: ulid::Ulid, workspace: Option<WorkspaceStrategy>) -> Response {
         if self.board.ticket(id).is_none() {
             return Response::Err { message: "no such ticket".into() };
         }
@@ -1866,9 +1971,7 @@ impl Daemon {
     fn unarchive_ticket(&mut self, id: ulid::Ulid) -> Response {
         match self.board.ticket(id) {
             None => return Response::Err { message: "no such ticket".into() },
-            Some(t) if !t.is_archived() => {
-                return Response::Err { message: "not archived".into() }
-            }
+            Some(t) if !t.is_archived() => return Response::Err { message: "not archived".into() },
             Some(_) => {}
         }
         // Guard the landing column (fixed template today; policies in M5).
@@ -1974,7 +2077,12 @@ impl Daemon {
         self.broadcast();
     }
 
-    fn move_ticket(&mut self, id: ulid::Ulid, column: String, before: Option<ulid::Ulid>) -> Response {
+    fn move_ticket(
+        &mut self,
+        id: ulid::Ulid,
+        column: String,
+        before: Option<ulid::Ulid>,
+    ) -> Response {
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
         }
@@ -2001,7 +2109,8 @@ impl Daemon {
                     match idx {
                         Some(i) => {
                             let hi = siblings[i].order.clone();
-                            let lo = if i == 0 { String::new() } else { siblings[i - 1].order.clone() };
+                            let lo =
+                                if i == 0 { String::new() } else { siblings[i - 1].order.clone() };
                             fracindex::between(&lo, &hi)
                         }
                         None => fracindex::between(
@@ -2025,7 +2134,12 @@ impl Daemon {
         }
     }
 
-    fn spawn_session(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Response {
+    fn spawn_session(
+        &mut self,
+        ticket: ulid::Ulid,
+        kind: SessionKind,
+        submit_prompt: bool,
+    ) -> Response {
         if self.board.ticket(ticket).is_none() {
             return Response::Err { message: "no such ticket".into() };
         }
@@ -2042,8 +2156,8 @@ impl Daemon {
         let cwd = match self.resolve_spawn_cwd(ticket) {
             Ok(Some(p)) => p,
             Ok(None) => {
-                if !self.pending_spawns.iter().any(|(t, k)| *t == ticket && *k == kind) {
-                    self.pending_spawns.push((ticket, kind));
+                if !self.pending_spawns.iter().any(|(t, k, _)| *t == ticket && *k == kind) {
+                    self.pending_spawns.push((ticket, kind, submit_prompt));
                 }
                 self.persist_and_notify();
                 return Response::Provisioning;
@@ -2108,11 +2222,25 @@ impl Daemon {
         // Fresh Claude spawns only: resume/wake replay argv elsewhere and must
         // not retype into a restored conversation, and a Bash pane would put
         // the title on a shell command line.
+        //
+        // `submit_prompt` (the composer's Shift+Enter) does not change WHAT is
+        // delivered — the same typed title — only whether mesimon also presses
+        // Enter on the user's behalf. That press cannot happen here: T-5 arm C
+        // (2026-08-31) showed Claude's paste detection eats a CR that arrives
+        // with the text. It is parked on the record and delivered on the
+        // `SessionStart` frame instead (`deliver_pending_submit`).
+        //
+        // The title rides argv nowhere: `claude <title>` would dispatch a
+        // title that happens to name a subcommand ("doctor", "update") to that
+        // subcommand instead, silently, and `--` does not shield it (measured
+        // 2026-08-31). Keystrokes have no such vocabulary.
         if kind == SessionKind::Claude {
             if let Some(title) =
                 self.board.ticket(ticket).map(|t| t.title.trim()).filter(|t| !t.is_empty())
             {
-                let _ = self.backend.send_text(&rec.sid16(), &format!("{title} "));
+                if self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok() {
+                    rec.pending_submit = submit_prompt;
+                }
             }
         }
         self.machines.insert(id, Machine::new(rec.state.clone(), now_ms()));
@@ -2140,9 +2268,7 @@ impl Daemon {
             },
             WorkspaceStrategy::Worktree => {
                 match self.worktrees.get(&ticket).map(|b| b.status.clone()) {
-                    Some(BindingStatus::Attached) => {
-                        Ok(Some(self.worktrees[&ticket].path.clone()))
-                    }
+                    Some(BindingStatus::Attached) => Ok(Some(self.worktrees[&ticket].path.clone())),
                     Some(BindingStatus::Queued) | Some(BindingStatus::Provisioning) => Ok(None),
                     Some(BindingStatus::Evicted) | Some(BindingStatus::Error { .. }) | None => {
                         self.queue_provision(ticket);
@@ -2167,11 +2293,8 @@ impl Daemon {
             locked: false,
         });
         entry.status = BindingStatus::Queued;
-        let in_flight = self
-            .worktrees
-            .values()
-            .filter(|b| b.status == BindingStatus::Provisioning)
-            .count();
+        let in_flight =
+            self.worktrees.values().filter(|b| b.status == BindingStatus::Provisioning).count();
         if in_flight >= 2 {
             self.persist_worktrees();
             return;
@@ -2212,36 +2335,29 @@ impl Daemon {
         match result {
             Ok(b) => {
                 self.worktrees.insert(ticket, b);
-                let pending: Vec<(ulid::Ulid, SessionKind)> = self
-                    .pending_spawns
-                    .iter()
-                    .filter(|(t, _)| *t == ticket)
-                    .cloned()
-                    .collect();
-                self.pending_spawns.retain(|(t, _)| *t != ticket);
-                for (t, kind) in pending {
+                let pending: Vec<(ulid::Ulid, SessionKind, bool)> =
+                    self.pending_spawns.iter().filter(|(t, _, _)| *t == ticket).cloned().collect();
+                self.pending_spawns.retain(|(t, _, _)| *t != ticket);
+                for (t, kind, submit) in pending {
                     // A failed replay has no client waiting on it — leave a
                     // feed trace (the TUI's parked focus intent surfaces the
                     // "attached but no session" outcome to the user).
-                    if let Response::Err { message } = self.spawn_session(t, kind) {
+                    if let Response::Err { message } = self.spawn_session(t, kind, submit) {
                         eprintln!("mesimon: parked spawn replay failed ({kind:?}): {message}");
                         self.feed.board("daemon", "spawn_replay_failed", Some(t));
                     }
                 }
             }
             Err((stage, message)) => {
-                self.pending_spawns.retain(|(t, _)| *t != ticket);
+                self.pending_spawns.retain(|(t, _, _)| *t != ticket);
                 if let Some(b) = self.worktrees.get_mut(&ticket) {
                     b.status = BindingStatus::Error { stage, message };
                 }
             }
         }
         // A slot opened — start the next queued provision, if any.
-        if let Some(next) = self
-            .worktrees
-            .iter()
-            .find(|(_, b)| b.status == BindingStatus::Queued)
-            .map(|(t, _)| *t)
+        if let Some(next) =
+            self.worktrees.iter().find(|(_, b)| b.status == BindingStatus::Queued).map(|(t, _)| *t)
         {
             self.queue_provision(next);
         }
@@ -2256,13 +2372,8 @@ impl Daemon {
         if b.status != BindingStatus::Attached || b.locked {
             return;
         }
-        let key = self
-            .board
-            .ticket(ticket)
-            .map(|t| t.short_key.clone())
-            .unwrap_or_default();
-        if worktree::lock(&self.paths.repo_root, &b.path, &key, session, std::process::id())
-            .is_ok()
+        let key = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+        if worktree::lock(&self.paths.repo_root, &b.path, &key, session, std::process::id()).is_ok()
         {
             b.locked = true;
             self.persist_worktrees();
@@ -2303,19 +2414,14 @@ impl Daemon {
                 && tip != base_oid
                 && worktree::is_merged(&self.paths.repo_root, &branch, &base);
             self.wt_merged.insert(tid, merged);
-            self.wt_ahead
-                .insert(tid, worktree::ahead_count(&self.paths.repo_root, &branch, &base));
+            self.wt_ahead.insert(tid, worktree::ahead_count(&self.paths.repo_root, &branch, &base));
             self.wt_needs_rebase.insert(
                 tid,
                 !merged && !worktree::ff_possible(&self.paths.repo_root, &branch, &base),
             );
             // Release the lock once the last session on the ticket is gone.
             if locked && attached {
-                let live = self
-                    .board
-                    .sessions
-                    .iter()
-                    .any(|s| s.ticket == tid && s.state.is_live());
+                let live = self.board.sessions.iter().any(|s| s.ticket == tid && s.state.is_live());
                 if !live {
                     if let Some(b) = self.worktrees.get_mut(&tid) {
                         if worktree::unlock(&self.paths.repo_root, &b.path).is_ok() {
@@ -2338,8 +2444,7 @@ impl Daemon {
         // Kill on a live session ends the process; the conversation survives
         // and its corpse stays on the ticket rail. Kill on an already-dead
         // record is the rail's dismissal gesture — the one exit the rail hides.
-        let reason =
-            if rec.state.is_live() { ExitReason::Killed } else { ExitReason::Dismissed };
+        let reason = if rec.state.is_live() { ExitReason::Killed } else { ExitReason::Dismissed };
         rec.state = SessionState::Exited { reason };
         rec.waiting_since = None;
         rec.detail = None;
@@ -2382,8 +2487,7 @@ impl Daemon {
             .iter()
             .filter(|s| {
                 !s.state.is_live()
-                    && (s.id == claude_session_id
-                        || s.claude_session_id == Some(claude_session_id))
+                    && (s.id == claude_session_id || s.claude_session_id == Some(claude_session_id))
             })
             .max_by_key(|s| s.state_changed_at.unwrap_or(0))
             .map(|s| s.id)
@@ -2396,8 +2500,7 @@ impl Daemon {
             self.external.retain(|e| e.claude_session_id != claude_session_id);
             return Ok(id);
         }
-        let Some(pos) =
-            self.external.iter().position(|e| e.claude_session_id == claude_session_id)
+        let Some(pos) = self.external.iter().position(|e| e.claude_session_id == claude_session_id)
         else {
             return Err("unknown external session — reopen the drawer to rescan".into());
         };
@@ -2602,6 +2705,10 @@ impl Daemon {
             rec.state_changed_at = Some(now);
             rec.waiting_since = None;
             rec.confidence = Confidence::High;
+            // The new pane carries no prefill (resume restores the
+            // conversation, and the prompt is already in it), so an Enter
+            // owed by the old one is stale — never carry it across.
+            rec.pending_submit = false;
         }
         self.tails.remove(&id); // hooks own the state from here
         self.probe_stage.remove(&id);
@@ -2655,7 +2762,11 @@ impl Daemon {
     /// D23/14 §6.1, tmux-recast: copy transcript, park the record FIRST (the
     /// machine's Sleeping latch swallows the kill's own SessionEnd/pane-died),
     /// SIGTERM the group, kill-pane after grace. Never SIGKILL.
-    fn sleep_one(&mut self, id: uuid::Uuid, enforce_floor: bool) -> std::result::Result<(), String> {
+    fn sleep_one(
+        &mut self,
+        id: uuid::Uuid,
+        enforce_floor: bool,
+    ) -> std::result::Result<(), String> {
         let now = now_ms();
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             return Err("no such session".into());
@@ -2784,12 +2895,8 @@ impl Daemon {
     /// meanwhile, and pane-died usually beats us here).
     fn sweep_reaping(&mut self) {
         let now = Instant::now();
-        let due: Vec<String> = self
-            .reaping
-            .iter()
-            .filter(|(_, t)| **t <= now)
-            .map(|(s, _)| s.clone())
-            .collect();
+        let due: Vec<String> =
+            self.reaping.iter().filter(|(_, t)| **t <= now).map(|(s, _)| s.clone()).collect();
         for sid in due {
             self.reaping.remove(&sid);
             let _ = self.backend.kill_session(&sid);

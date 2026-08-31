@@ -14,6 +14,7 @@ use mesimon_core::board::{
 use mesimon_core::command::{
     Command, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
 };
+use mesimon_core::keymap::{self, Ctx, Key, Scope, Verb};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::client::Transport;
@@ -25,10 +26,15 @@ use crate::theme::Theme;
 #[derive(Debug, Clone, PartialEq)]
 pub enum Screen {
     Board,
-    Ticket { ticket: ulid::Ulid, rail_idx: usize },
+    Ticket {
+        ticket: ulid::Ulid,
+        rail_idx: usize,
+    },
     /// Read-only diff viewer (M4b): ticket `v`. State lives in `App::diff`,
     /// not here — Screen is cloned on every keypress.
-    Diff { ticket: ulid::Ulid },
+    Diff {
+        ticket: ulid::Ulid,
+    },
 }
 
 /// Everything the diff screen holds (M4b). Per-view and in-memory only —
@@ -69,12 +75,30 @@ pub enum Mode {
     /// `home` is where the grab happened (col, idx): a foreign column is
     /// always entered at the top, the home column at the ticket's own
     /// position (author 2026-08-30) — which is why `m` grabs in place.
-    Move { ticket: ulid::Ulid, col: usize, idx: usize, grab: char, home: (usize, usize) },
-    Input { purpose: InputPurpose, buffer: EditBuffer },
+    Move {
+        ticket: ulid::Ulid,
+        col: usize,
+        idx: usize,
+        grab: char,
+        home: (usize, usize),
+    },
+    Input {
+        purpose: InputPurpose,
+        buffer: EditBuffer,
+    },
     /// External drawer: discovered foreign sessions (19 §4 tier 1).
-    External { idx: usize },
-    /// Archived-tickets dialog (V): restore or open from here.
-    Archived { idx: usize },
+    External {
+        idx: usize,
+    },
+    /// Archived-tickets dialog: restore or open from here.
+    Archived {
+        idx: usize,
+    },
+    /// The Esc menu (07 §16): everything that acts on the board as a whole,
+    /// plus the two lists that are not the board.
+    Menu {
+        idx: usize,
+    },
 }
 
 /// The m key's staged progression (author 2026-08-30): each press shows what
@@ -87,6 +111,15 @@ enum MergeStage {
     Rebase,
     /// merged — next m tells the agent.
     Notify,
+}
+
+/// The most recent undoable action, for `u`. A delete carries its own
+/// daemon-side grace band (the countdown in the advisory row); an archive is
+/// remembered here until it is undone, superseded, or undone by someone else.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum LastUndo {
+    Delete,
+    Archive(ulid::Ulid),
 }
 
 /// Where a focus handover started — unfocus returns exactly there (author
@@ -102,8 +135,12 @@ enum FocusOrigin {
 pub enum InputPurpose {
     /// New-ticket composer. `workspace` is the Shift+Tab selector below the
     /// name (M4 layering): None = the board default (shared checkout).
-    Create { workspace: Option<WorkspaceStrategy> },
-    Rename { id: ulid::Ulid },
+    Create {
+        workspace: Option<WorkspaceStrategy>,
+    },
+    Rename {
+        id: ulid::Ulid,
+    },
 }
 
 /// `{`/`}` (and PgUp/PgDn) hunk-pane page step. The key handler cannot see
@@ -181,6 +218,33 @@ pub struct App {
     update_watch: crate::update::UpdateWatch,
     /// U on a ready update: the main loop execs the new binary in place.
     pub pending_reexec: bool,
+    /// The `d` chord is armed on this ticket: the next `d` deletes it, `D`
+    /// deletes and discards the branch, anything else cancels.
+    delete_armed: Option<ulid::Ulid>,
+    /// The `a` chord, same shape: the next `a` archives, anything else
+    /// cancels. Only ever armed when `a` would archive — restoring is one
+    /// press, because undoing a mistake must not be harder than making it.
+    archive_armed: Option<ulid::Ulid>,
+    /// What `u` would undo. Archiving is fully reversible and leaves the
+    /// ticket in the snapshot, so it needs no daemon-side grace band — it
+    /// just needs to be reachable, which is what this is.
+    last_undo: Option<LastUndo>,
+    /// The `?` overlay is up. The next key — any key — puts it away.
+    pub help: bool,
+    /// `^L`: the main loop clears and redraws from scratch.
+    pub force_redraw: bool,
+    /// `^Z`: the main loop restores the terminal and raises SIGTSTP.
+    pub pending_suspend: bool,
+    /// Whether the diff viewer last drew above its two-pane breakpoint. Draw
+    /// owns it (Cell), and the keymap reads it so `z s` hides itself when
+    /// there is nothing to swap.
+    pub diff_two_pane: Cell<bool>,
+    /// The terminal answered the kitty-protocol probe (`lib.rs::init_terminal`
+    /// sets it), so Shift+Enter arrives as its own atom. False by default —
+    /// on the legacy floor every ShiftEnter binding stays unavailable, which
+    /// is what keeps the composer from hinting a key that would land as a
+    /// plain Enter.
+    pub rich_keys: bool,
     /// Daemon connection lost: keep the last board, re-dial on a slow cadence.
     daemon_down: bool,
     last_reconnect: Option<Instant>,
@@ -222,8 +286,16 @@ impl App {
             pending_spawn_focus: None,
             focused_session_hint: None,
             just_created: None,
+            rich_keys: false,
             update_watch: crate::update::UpdateWatch::new(),
             pending_reexec: false,
+            delete_armed: None,
+            archive_armed: None,
+            last_undo: None,
+            help: false,
+            force_redraw: false,
+            pending_suspend: false,
+            diff_two_pane: Cell::new(true),
             daemon_down: false,
             last_reconnect: None,
         })
@@ -272,7 +344,9 @@ impl App {
     /// silently after the binding attached) surfaces in the status line
     /// instead of leaving "session starts when ready" quietly unfulfilled.
     fn settle_pending_spawn_focus(&mut self) -> Result<()> {
-        let Some((ticket, kind)) = self.pending_spawn_focus else { return Ok(()) };
+        let Some((ticket, kind)) = self.pending_spawn_focus else {
+            return Ok(());
+        };
         if self.board.ticket(ticket).is_none() {
             self.pending_spawn_focus = None;
             return Ok(());
@@ -329,6 +403,12 @@ impl App {
         self.update_watch.ready()
     }
 
+    /// Render tests need the update offer without a real rebuild on disk.
+    #[cfg(test)]
+    pub(crate) fn force_update_ready(&mut self) {
+        self.update_watch.force_ready();
+    }
+
     /// Take whatever board a command replied with (RescanExternal does this).
     fn absorb_board(&mut self, resp: Response) {
         if let Response::Board { board, grace, external, resources, worktrees, notices } = resp {
@@ -378,9 +458,18 @@ impl App {
     fn clamp_screen(&mut self) {
         // Same for the archived dialog: a restore (here or from another
         // client) can empty the list under it.
-        if matches!(self.mode, Mode::Archived { .. }) && self.board.archived_tickets().is_empty()
-        {
+        if matches!(self.mode, Mode::Archived { .. }) && self.board.archived_tickets().is_empty() {
             self.mode = Mode::Normal;
+        }
+        // A refresh can retire the menu row the cursor was on (the last thing
+        // in done got slept elsewhere); clamp rather than point past the end.
+        if let Mode::Menu { idx } = self.mode {
+            let n = keymap::menu_items(&self.ctx()).len();
+            if n == 0 {
+                self.mode = Mode::Normal;
+            } else if idx >= n {
+                self.mode = Mode::Menu { idx: n - 1 };
+            }
         }
         match &self.screen {
             Screen::Ticket { ticket, rail_idx } => {
@@ -441,7 +530,9 @@ impl App {
             return Ok(dirty);
         }
         let ev = event::read()?;
-        let TermEvent::Key(key) = ev else { return Ok(dirty) };
+        let TermEvent::Key(key) = ev else {
+            return Ok(dirty);
+        };
         if key.kind != KeyEventKind::Press {
             return Ok(dirty);
         }
@@ -455,248 +546,331 @@ impl App {
         Ok(true)
     }
 
-    /// The full key dispatch, seam for the TestBackend harness.
-    pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
-        // Text input first — it is inline (in the card / ticket title) and
-        // owns every key on both screens, including Tab.
-        if let Mode::Input { mut purpose, mut buffer } = self.mode.clone() {
-            // Ctrl or Alt both mean "by word" — terminals disagree on which
-            // one ctrl+backspace / option+arrow actually report.
-            let word = mods.intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
-            match code {
-                KeyCode::Esc => {
-                    self.mode = Mode::Normal;
-                    return Ok(());
-                }
-                // Shift+Tab cycles the composer's workspace selector (M4):
-                // shared checkout (default) ↔ own worktree.
-                KeyCode::BackTab => {
-                    if let InputPurpose::Create { workspace } = &mut purpose {
-                        *workspace = match workspace {
-                            None => Some(WorkspaceStrategy::Worktree),
-                            Some(_) => None,
-                        };
-                    }
-                }
-                KeyCode::Enter => {
-                    self.mode = Mode::Normal;
-                    self.commit_input(purpose, buffer.into_text())?;
-                    return Ok(());
-                }
-                KeyCode::Backspace if word => buffer.delete_word_back(),
-                KeyCode::Backspace => buffer.backspace(),
-                KeyCode::Delete => buffer.delete(),
-                KeyCode::Left if word => buffer.word_left(),
-                KeyCode::Left => buffer.left(),
-                KeyCode::Right if word => buffer.word_right(),
-                KeyCode::Right => buffer.right(),
-                KeyCode::Home => buffer.home(),
-                KeyCode::End => buffer.end(),
-                // Readline chords; ctrl+h is what legacy terminals send for
-                // ctrl+backspace (0x08), so it deletes a word here, not a char.
-                KeyCode::Char('h') if mods.contains(KeyModifiers::CONTROL) => {
-                    buffer.delete_word_back()
-                }
-                KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
-                    buffer.delete_word_back()
-                }
-                KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => {
-                    buffer.kill_to_start()
-                }
-                KeyCode::Char('a') if mods.contains(KeyModifiers::CONTROL) => buffer.home(),
-                KeyCode::Char('e') if mods.contains(KeyModifiers::CONTROL) => buffer.end(),
-                KeyCode::Char('b') if mods.contains(KeyModifiers::ALT) => buffer.word_left(),
-                KeyCode::Char('f') if mods.contains(KeyModifiers::ALT) => buffer.word_right(),
-                // Unhandled chords must never type their letter.
-                KeyCode::Char(_) if word => {}
-                KeyCode::Char(c) => buffer.insert(c),
-                _ => {}
-            }
-            self.mode = Mode::Input { purpose, buffer };
-            return Ok(());
+    /// Which keymap owns this keypress. Derived, never stored — the chord
+    /// tails (`d`, `z`) are scopes too, which is what makes a stray key inside
+    /// a chord resolve to nothing and cancel instead of acting.
+    pub fn scope(&self) -> Scope {
+        if matches!(self.mode, Mode::Input { .. }) {
+            return Scope::Input;
         }
-        // A first `m` arms the merge confirm; any other key disarms it.
-        if !matches!(code, KeyCode::Char('m')) {
-            self.merge_armed = None;
+        if self.delete_armed.is_some() {
+            return Scope::DeleteChord;
         }
-        // The fresh-ticket fast path lives exactly one Enter long: any other
-        // key means the user is browsing, and Enter goes back to meaning
-        // "open" (Shift+Enter consumes it too — they chose the page).
-        if !matches!(code, KeyCode::Enter) {
-            self.just_created = None;
+        if self.archive_armed.is_some() {
+            return Scope::ArchiveChord;
         }
-        // U on a ready update: reload in place — ask the daemon to shut down
-        // clean (it comes back as the new binary via connect-spawn), then let
-        // the main loop exec ourselves. Opt-in only, never automatic.
-        if code == KeyCode::Char('U') && self.update_watch.ready() {
-            let _ = self.client.request(Command::Shutdown);
-            self.pending_reexec = true;
-            return Ok(());
+        if self.diff.as_ref().is_some_and(|d| d.z_armed)
+            && matches!(self.screen, Screen::Diff { .. })
+        {
+            return Scope::DiffView;
         }
-        // Tab / Shift+Tab: next/previous needs-you card. Global, BEFORE the
-        // mode dispatch (04/07 §21: the only exception is a text field).
-        match code {
-            KeyCode::Tab => {
-                self.cycle_attention(false);
-                return Ok(());
-            }
-            KeyCode::BackTab => {
-                self.cycle_attention(true);
-                return Ok(());
-            }
-            _ => {}
+        match &self.mode {
+            Mode::Move { .. } => Scope::Move,
+            Mode::Menu { .. } => Scope::Menu,
+            Mode::External { .. } => Scope::Drawer,
+            Mode::Archived { .. } => Scope::Archived,
+            _ => match self.screen {
+                Screen::Diff { .. } => Scope::Diff,
+                Screen::Ticket { .. } => Scope::Ticket,
+                Screen::Board => Scope::Board,
+            },
         }
-        if let Screen::Diff { ticket } = self.screen.clone() {
-            return self.key_diff(code, ticket);
-        }
-        if let Screen::Ticket { ticket, rail_idx } = self.screen.clone() {
-            return self.key_ticket(code, mods, ticket, rail_idx);
-        }
-        match self.mode.clone() {
-            Mode::Normal => self.key_normal(code, mods)?,
-            Mode::Move { ticket, col, idx, grab, home } => {
-                self.key_move(code, ticket, col, idx, grab, home)?
-            }
-            Mode::External { idx } => self.key_external(code, idx)?,
-            Mode::Archived { idx } => self.key_archived(code, idx)?,
-            Mode::Input { .. } => {} // handled above
-        }
-        Ok(())
     }
 
-    fn key_normal(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
-        match code {
-            KeyCode::Char('q') => self.quit = true,
-            KeyCode::Char('c') if mods.contains(KeyModifiers::CONTROL) => self.quit = true,
-            KeyCode::Char('h') | KeyCode::Left => {
-                self.cursor_col = self.cursor_col.saturating_sub(1);
-                self.clamp_cursor();
+    /// What this screen can do right now. The single input to every
+    /// availability predicate and every state-dependent hint word, so the
+    /// footer, the `?` overlay and the key dispatch cannot disagree.
+    pub fn ctx(&self) -> Ctx {
+        let sel = self.selected_ticket().map(|t| t.id);
+        // On the ticket screen the "selected ticket" is the one being shown,
+        // not whatever the board cursor happens to sit on.
+        let subject = match &self.screen {
+            Screen::Ticket { ticket, .. } | Screen::Diff { ticket } => Some(*ticket),
+            Screen::Board => sel,
+        };
+        let sessions: Vec<&mesimon_core::board::SessionRecord> =
+            subject.map(|t| self.rail_sessions(t)).unwrap_or_default();
+        let rail_idx = match &self.screen {
+            Screen::Ticket { rail_idx, .. } => *rail_idx,
+            _ => usize::MAX,
+        };
+        let selected = sessions.get(rail_idx.min(sessions.len().saturating_sub(1)));
+        let wt = subject.and_then(|t| self.wt_item(t));
+        let merge = subject.map(|t| self.merge_stage_word(t)).unwrap_or(None);
+        Ctx {
+            has_ticket: subject.is_some(),
+            multi_column: self.columns().len() > 1,
+            ticket_has_sessions: !sessions.is_empty(),
+            ticket_has_claude: sessions
+                .iter()
+                .any(|s| s.kind == SessionKind::Claude && s.state.is_live()),
+            ticket_awake: subject.map(|t| self.board.ticket_awake_sessions(t) > 0).unwrap_or(false),
+            ticket_archived: subject
+                .and_then(|t| self.board.ticket(t))
+                .is_some_and(|t| t.is_archived()),
+            ticket_hot: sessions.iter().any(|s| {
+                s.kind == SessionKind::Claude
+                    && matches!(
+                        s.state,
+                        SessionState::Running | SessionState::RequiresAction { .. }
+                    )
+            }),
+            can_undo: self.undo_target().is_some(),
+            undo_word: match self.undo_target() {
+                Some(LastUndo::Archive(_)) => "undo archive",
+                _ => "undo delete",
+            },
+            bulk_sleep: self.resources.reclaim_sessions,
+            bulk_sleep_bytes: self.resources.reclaim_bytes,
+            bulk_archive: self.resources.archive_tickets,
+            has_archived: !self.board.archived_tickets().is_empty(),
+            peek_on: self.peek,
+            update_ready: self.update_ready(),
+            any_attention: !mesimon_core::attention::attention_queue(&self.board).is_empty(),
+            sel_session: !sessions.is_empty() && rail_idx != usize::MAX,
+            sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
+            sel_dead: selected.is_some_and(|s| !s.state.is_live()),
+            sel_pinned: selected.is_some_and(|s| s.pinned_awake),
+            has_worktree: wt.is_some_and(|w| !w.branch.is_empty()),
+            merge_actionable: merge.is_some(),
+            merge_word: merge.unwrap_or("merge"),
+            two_pane: self.diff_two_pane.get(),
+            worktree_present: self.diff.as_ref().is_some_and(|d| d.worktree_present),
+            density_word: self
+                .diff
+                .as_ref()
+                .map(|d| crate::ui::diff::density_word(d.density))
+                .unwrap_or("context lines"),
+            composing: matches!(
+                self.mode,
+                Mode::Input { purpose: InputPurpose::Create { .. }, .. }
+            ),
+            rich_keys: self.rich_keys,
+        }
+    }
+
+    /// What the next `m` would do, or `None` when `m` is inert — the
+    /// availability predicate and the hint word behind the `m` binding. It
+    /// mirrors `merge_key`'s stage derivation; `merge_stage_matches_key` holds
+    /// the two together.
+    fn merge_stage_word(&self, ticket: ulid::Ulid) -> Option<&'static str> {
+        let w = self.wt_item(ticket)?;
+        if w.branch.is_empty() || w.status != "attached" {
+            return None;
+        }
+        if w.merged {
+            Some("tell the agent it merged")
+        } else if w.needs_rebase {
+            Some("ask the agent to rebase")
+        } else if w.ahead > 0 && !self.ticket_busy(ticket) {
+            Some("merge")
+        } else {
+            None
+        }
+    }
+
+    /// The full key dispatch, seam for the TestBackend harness. Every path
+    /// from a keypress to an action runs through `keymap::resolve`, and the
+    /// verb it returns is matched exhaustively below — so a binding with no
+    /// handler is a compile error, not a dead key.
+    pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // Text input is a scope barrier: it owns every key, including Tab, and
+        // an atom it does not bind is a character to type.
+        if let Mode::Input { .. } = self.mode {
+            return self.key_input(code, mods);
+        }
+        let Some(key) = crate::keys::to_key(code, mods) else {
+            return Ok(());
+        };
+        // The help overlay swallows the next key, whatever it is: it is a
+        // reference card, and any key is "I'm done reading".
+        if self.help {
+            self.help = false;
+            if key == Key::Char('?') || key == Key::Esc || key == Key::Char('q') {
+                return Ok(());
             }
-            KeyCode::Char('l') | KeyCode::Right => {
-                self.cursor_col += 1;
-                self.clamp_cursor();
+        }
+        let scope = self.scope();
+        let ctx = self.ctx();
+        // Disarm the two things a keypress can be standing in the middle of.
+        // A chord tail keeps its own arming (the scope carries it) until the
+        // dispatch below either consumes it or cancels it.
+        let was = (self.delete_armed.take(), self.archive_armed.take());
+        if scope != Scope::DeleteChord {
+            self.delete_armed = None;
+        }
+        if scope != Scope::ArchiveChord {
+            self.archive_armed = None;
+        }
+        if !matches!(key, Key::Char('m')) {
+            self.merge_armed = None;
+        }
+        // The fresh-ticket window lives exactly one Enter long.
+        if !matches!(key, Key::Enter) {
+            self.just_created = None;
+        }
+        let Some(verb) = keymap::resolve(scope, key, &ctx) else {
+            // Unbound here, or bound but unavailable. Inside a chord tail that
+            // means "never mind" — and the status says so, because a chord
+            // that silently evaporates is worse than one that reports.
+            if scope == Scope::DeleteChord {
+                self.status = "delete cancelled".into();
+            } else if scope == Scope::ArchiveChord {
+                self.status = "archive cancelled".into();
+            } else if scope == Scope::DiffView {
+                if let Some(d) = self.diff.as_mut() {
+                    d.z_armed = false;
+                }
+                return self.handle_key(code, mods);
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.cursor_row += 1;
-                self.clamp_cursor();
+            return Ok(());
+        };
+        self.delete_armed = was.0;
+        self.archive_armed = was.1;
+        self.dispatch(verb, key, scope, &ctx)
+    }
+
+    /// One exhaustive match on [`Verb`]. Adding a binding to the table without
+    /// handling it here does not compile.
+    fn dispatch(&mut self, verb: Verb, key: Key, scope: Scope, ctx: &Ctx) -> Result<()> {
+        match verb {
+            // ---- global ----------------------------------------------------
+            Verb::Help => self.help = true,
+            Verb::NextAttention => self.cycle_attention(false),
+            Verb::PrevAttention => self.cycle_attention(true),
+            Verb::Reload => {
+                let _ = self.client.request(Command::Shutdown);
+                self.pending_reexec = true;
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.cursor_row = self.cursor_row.saturating_sub(1);
+            Verb::Redraw => self.force_redraw = true,
+            Verb::Suspend => self.pending_suspend = true,
+            Verb::Undo => match self.undo_target() {
+                Some(LastUndo::Archive(id)) => {
+                    self.last_undo = None;
+                    self.unarchive(id)?;
+                }
+                Some(LastUndo::Delete) => {
+                    if let Some(g) = self.grace.last() {
+                        let id = g.id;
+                        self.last_undo = None;
+                        self.send(Command::RestoreTicket { id })?;
+                    }
+                }
+                None => {}
+            },
+            // ---- navigation ------------------------------------------------
+            Verb::CursorLeft | Verb::CursorRight | Verb::CursorUp | Verb::CursorDown => {
+                self.nav(verb, scope)
             }
-            KeyCode::Char('g') => {
+            Verb::First => {
                 self.cursor_row = 0;
             }
-            KeyCode::Char('G') => {
+            Verb::Last => {
                 self.cursor_row = usize::MAX;
                 self.clamp_cursor();
             }
-            KeyCode::Char('o') | KeyCode::Char('a') => {
+            Verb::Act => self.act(scope)?,
+            Verb::Back => self.back(scope),
+            Verb::Quit => self.quit = true,
+            Verb::Menu => self.mode = Mode::Menu { idx: 0 },
+            // ---- tickets ---------------------------------------------------
+            Verb::OpenTicket => {
                 self.mode = Mode::Input {
                     purpose: InputPurpose::Create { workspace: None },
                     buffer: EditBuffer::new(),
                 };
             }
-            KeyCode::Char('r') => {
+            Verb::TicketScreen => {
                 if let Some(t) = self.selected_ticket() {
+                    self.screen = Screen::Ticket { ticket: t.id, rail_idx: 0 };
+                }
+            }
+            Verb::Rename => {
+                if let Some(t) = self.subject().and_then(|id| self.board.ticket(id)) {
                     self.mode = Mode::Input {
                         purpose: InputPurpose::Rename { id: t.id },
                         buffer: EditBuffer::from_text(t.title.clone()),
                     };
                 }
             }
-            KeyCode::Char('d') => {
-                if let Some(t) = self.selected_ticket() {
-                    let id = t.id;
-                    self.delete_gated(id, false)?;
+            // `d` only arms. The second press is what deletes.
+            Verb::DeletePrefix => {
+                if let Some(id) = self.subject() {
+                    self.delete_armed = Some(id);
+                    // Only what the next press does. That anything else
+                    // cancels is learned once, on the first stray key.
+                    self.status = if ctx.has_worktree {
+                        "d again deletes ∙ D also discards the branch".into()
+                    } else {
+                        "d again deletes".into()
+                    };
                 }
             }
-            KeyCode::Char('D') => {
-                if let Some(t) = self.selected_ticket() {
-                    let id = t.id;
-                    self.delete_gated(id, true)?;
+            Verb::Delete | Verb::DeleteDiscard => {
+                if let Some(id) = self.delete_armed.take() {
+                    self.delete_gated(id, verb == Verb::DeleteDiscard)?;
                 }
             }
-            KeyCode::Char('u') => {
-                if let Some(g) = self.grace.last() {
-                    let id = g.id;
-                    self.send(Command::RestoreTicket { id })?;
-                }
-            }
-            // `>` / `<` grab the card and shift its ghost one column that way
-            // immediately (doc 04's `m`, remapped — STALE-MAP): the move is
-            // pending and blinking; the same key again (or Enter) drops it,
-            // the opposite key cancels, hjkl fine-place meanwhile.
-            // `m` grabs the card in place — same column, same row — for
-            // reordering (or hjkl travel) before the drop.
-            KeyCode::Char(c @ ('>' | '<' | 'm')) => {
-                if let Some(t) = self.selected_ticket() {
-                    let id = t.id;
-                    let cols = self.columns();
-                    if !cols.is_empty() {
-                        let col = match c {
-                            '>' => (self.cursor_col + 1) % cols.len(),
-                            '<' => (self.cursor_col + cols.len() - 1) % cols.len(),
-                            _ => self.cursor_col,
-                        };
-                        let home = (self.cursor_col, self.cursor_row);
-                        let idx = self.ghost_entry_idx(&cols, col, home, id);
-                        self.mode = Mode::Move { ticket: id, col, idx, grab: c, home };
+            Verb::Grab => self.grab(key, scope, ctx)?,
+            // `a` on a ticket that is already archived restores it right
+            // away; otherwise it arms, and the second `a` archives.
+            Verb::ArchivePrefix => {
+                if let Some(id) = self.subject() {
+                    if ctx.ticket_archived {
+                        self.unarchive(id)?;
+                    } else if self.board.ticket_awake_sessions(id) > 0 {
+                        // Say why before asking for a second press we would
+                        // only refuse.
+                        self.archive_gated(id)?;
+                    } else {
+                        self.archive_armed = Some(id);
+                        self.status = "a again archives".into();
                     }
                 }
             }
-            KeyCode::Char('s') => {
-                if let Some(t) = self.selected_ticket() {
-                    let ticket = t.id;
-                    self.spawn_and_focus(ticket, SessionKind::Claude)?;
-                }
-            }
-            KeyCode::Char('S') => {
-                if let Some(t) = self.selected_ticket() {
-                    let ticket = t.id;
-                    self.spawn_and_focus(ticket, SessionKind::Bash)?;
-                }
-            }
-            KeyCode::Char('e') => self.open_drawer()?,
-            KeyCode::Char('A') => {
-                if let Some(t) = self.selected_ticket() {
-                    let id = t.id;
+            Verb::Archive => {
+                if let Mode::Archived { idx } = self.mode {
+                    let list: Vec<ulid::Ulid> =
+                        self.board.archived_tickets().iter().map(|t| t.id).collect();
+                    if let Some(id) = list.get(idx.min(list.len().saturating_sub(1))).copied() {
+                        self.unarchive(id)?;
+                    }
+                } else if let Some(id) = self.archive_armed.take() {
                     self.archive_gated(id)?;
                 }
             }
-            KeyCode::Char('V') => {
-                if self.board.archived_tickets().is_empty() {
-                    self.status = "no archived tickets".into();
-                } else {
-                    self.mode = Mode::Archived { idx: 0 };
-                }
-            }
-            // X takes the header's archive offer (the Z of archiving).
-            KeyCode::Char('X') => {
+            Verb::ArchiveAllDone => {
                 match self.req(Command::ArchiveAll) {
                     Response::Archived { archived, skipped } => {
                         self.status = match (archived, skipped) {
-                            (0, 0) => "nothing to archive".into(),
-                            (n, 0) => format!("archived {n} ∙ V lists"),
+                            (0, 0) => "nothing was ready to archive".into(),
+                            (n, 0) => format!("archived {n} ∙ esc menu lists them"),
                             (n, k) => format!("archived {n} ∙ {k} not ready"),
                         };
                     }
                     Response::Err { message } => self.status = message,
                     _ => {}
                 }
+                self.mode = Mode::Normal;
                 self.refresh()?;
             }
-            // Transcript peek toggle. Doc 04's BOARD `p` (duplicate-yanked) is
-            // unimplemented; peek borrows the INBOX mnemonic until the M6
-            // keymap pass (STALE-MAP, M3.5 deviations).
-            KeyCode::Char('p') => {
-                self.peek = !self.peek;
-                self.status = if self.peek {
-                    "peek on — latest reply shows under the cursor card".into()
-                } else {
-                    "peek off".into()
-                };
+            // ---- sessions --------------------------------------------------
+            Verb::Claude | Verb::Shell => {
+                let kind =
+                    if verb == Verb::Claude { SessionKind::Claude } else { SessionKind::Bash };
+                if let Some(id) = self.subject() {
+                    self.focus_kind_or_spawn(id, kind)?;
+                }
             }
-            KeyCode::Char('Z') => {
+            Verb::ClaudeNew | Verb::ShellNew => {
+                let kind =
+                    if verb == Verb::ClaudeNew { SessionKind::Claude } else { SessionKind::Bash };
+                if let Some(id) = self.subject() {
+                    self.spawn_and_focus(id, kind)?;
+                }
+            }
+            Verb::Sleep => self.sleep_verb(scope, ctx)?,
+            Verb::SleepAllDone => {
                 match self.req(Command::ReclaimAll) {
                     Response::Reclaimed { slept, skipped } => {
                         self.status = match (slept, skipped) {
@@ -708,38 +882,333 @@ impl App {
                     Response::Err { message } => self.status = message,
                     _ => {}
                 }
+                self.mode = Mode::Normal;
                 self.refresh()?;
             }
-            // Space always opens the ticket screen — the fallback spelling of
-            // Shift+Enter for terminals without the kitty keyboard protocol
-            // (plain Enter and Shift+Enter are the same byte there).
-            KeyCode::Char(' ') => {
-                if let Some(t) = self.selected_ticket() {
-                    self.screen = Screen::Ticket { ticket: t.id, rail_idx: 0 };
+            Verb::Pin => {
+                if let Some(sid) = self.selected_session() {
+                    let pinned = !ctx.sel_pinned;
+                    self.send(Command::PinAwake { id: sid, pinned })?;
+                    self.status = if pinned { "kept awake".into() } else { "free to sleep".into() };
                 }
             }
-            KeyCode::Enter => self.board_enter(mods)?,
-            _ => {}
+            // ---- worktree --------------------------------------------------
+            Verb::Merge => {
+                if let Some(id) = self.subject() {
+                    self.merge_key(id)?;
+                }
+            }
+            Verb::OpenDiff => {
+                if let Screen::Ticket { ticket, rail_idx } = self.screen {
+                    self.open_diff(ticket, rail_idx)?;
+                }
+            }
+            Verb::WorktreeShell => self.worktree_shell(),
+            // ---- diff ------------------------------------------------------
+            Verb::ScrollDown => self.diff_scroll(1),
+            Verb::ScrollUp => self.diff_scroll(-1),
+            Verb::PageDown => self.diff_scroll(DIFF_PAGE as isize),
+            Verb::PageUp => self.diff_scroll(-(DIFF_PAGE as isize)),
+            Verb::NextFile => self.diff_nav(1),
+            Verb::PrevFile => self.diff_nav(-1),
+            Verb::Refresh => {
+                if let Screen::Diff { ticket } = self.screen {
+                    self.diff_refresh(ticket);
+                }
+            }
+            Verb::ViewPrefix => {
+                if let Some(d) = self.diff.as_mut() {
+                    d.z_armed = true;
+                }
+            }
+            Verb::Density => {
+                let idx = {
+                    let Some(d) = self.diff.as_mut() else {
+                        return Ok(());
+                    };
+                    d.z_armed = false;
+                    d.density = match d.density {
+                        1 => 3,
+                        3 => 8,
+                        _ => 1,
+                    };
+                    d.cache.clear();
+                    d.scroll.set(0);
+                    let noun = if d.density == 1 { "line" } else { "lines" };
+                    self.status = format!(
+                        "{} ∙ {} context {noun} around each change",
+                        crate::ui::diff::density_word(d.density),
+                        d.density
+                    );
+                    d.file_idx
+                };
+                self.diff_fetch(idx);
+            }
+            Verb::SwapPanes => {
+                if let Some(d) = self.diff.as_mut() {
+                    d.z_armed = false;
+                    d.swap = !d.swap;
+                }
+            }
+            // ---- move ------------------------------------------------------
+            Verb::Drop => {
+                if let Mode::Move { ticket, col, idx, .. } = self.mode {
+                    let cols = self.columns();
+                    self.drop_ghost(&cols, ticket, col, idx)?;
+                }
+            }
+            Verb::DropColumn => {
+                if let (Mode::Move { ticket, col, idx, grab, home }, Key::Char(c)) =
+                    (self.mode.clone(), key)
+                {
+                    let cols = self.columns();
+                    let want = c.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
+                    if want < cols.len() {
+                        let idx = if want == col {
+                            idx
+                        } else {
+                            self.ghost_entry_idx(&cols, want, home, ticket)
+                        };
+                        self.mode = Mode::Move { ticket, col: want, idx, grab, home };
+                    }
+                }
+            }
+            Verb::Cancel => self.mode = Mode::Normal,
+            // ---- view / lists ----------------------------------------------
+            Verb::Peek => {
+                self.peek = !self.peek;
+                self.status = if self.peek {
+                    "showing the latest reply under the selected card".into()
+                } else {
+                    "replies hidden".into()
+                };
+                self.mode = Mode::Normal;
+            }
+            Verb::ExternalDrawer => self.open_drawer()?,
+            Verb::ArchivedList => {
+                if self.board.archived_tickets().is_empty() {
+                    self.status = "nothing archived".into();
+                    self.mode = Mode::Normal;
+                } else {
+                    self.mode = Mode::Archived { idx: 0 };
+                }
+            }
+            Verb::AdoptObserve => self.adopt_external(false)?,
+            // ---- input (handled in key_input; unreachable here) -------------
+            Verb::Save
+            | Verb::SaveStart
+            | Verb::CycleWorkspace
+            | Verb::EditLeft
+            | Verb::EditRight
+            | Verb::EditWordLeft
+            | Verb::EditWordRight
+            | Verb::EditHome
+            | Verb::EditEnd
+            | Verb::EditBackspace
+            | Verb::EditDelete
+            | Verb::EditDeleteWord
+            | Verb::EditKillToStart => {}
         }
         Ok(())
     }
 
-    /// Board Enter is "get me working" (author 2026-08-30): a running claude
-    /// focuses directly, a just-composed ticket spawns one, and only then does
-    /// Enter mean the ticket screen. Shift+Enter forces the screen (kitty-
-    /// protocol terminals only; Space is the everywhere fallback).
-    fn board_enter(&mut self, mods: KeyModifiers) -> Result<()> {
-        let Some(t) = self.selected_ticket() else { return Ok(()) };
+    /// What `u` would undo, or `None`. Re-derived from the board rather than
+    /// trusted: a grace band expires on its own, and the ticket we remember
+    /// archiving may have been restored from another client.
+    fn undo_target(&self) -> Option<LastUndo> {
+        match self.last_undo {
+            Some(LastUndo::Archive(id)) => self
+                .board
+                .ticket(id)
+                .is_some_and(|t| t.is_archived())
+                .then_some(LastUndo::Archive(id)),
+            // The grace band is the daemon's, and it is the thing that
+            // actually holds the deleted ticket — an empty band means the
+            // window closed, whatever we last remembered.
+            _ => (!self.grace.is_empty()).then_some(LastUndo::Delete),
+        }
+    }
+
+    /// The ticket a verb acts on: the shown ticket on the ticket and diff
+    /// screens, the cursor card on the board.
+    fn subject(&self) -> Option<ulid::Ulid> {
+        match &self.screen {
+            Screen::Ticket { ticket, .. } | Screen::Diff { ticket } => Some(*ticket),
+            Screen::Board => self.selected_ticket().map(|t| t.id),
+        }
+    }
+
+    fn selected_session(&self) -> Option<uuid::Uuid> {
+        let Screen::Ticket { ticket, rail_idx } = &self.screen else {
+            return None;
+        };
+        let rail = self.rail_sessions(*ticket);
+        rail.get((*rail_idx).min(rail.len().saturating_sub(1))).map(|s| s.id)
+    }
+
+    /// One motion verb, four surfaces. The target is resolved here; the verb
+    /// stayed the same in every scope, which is the whole point.
+    fn nav(&mut self, verb: Verb, scope: Scope) {
+        let down = verb == Verb::CursorDown;
+        let up = verb == Verb::CursorUp;
+        match scope {
+            Scope::Board => match verb {
+                Verb::CursorLeft => {
+                    self.cursor_col = self.cursor_col.saturating_sub(1);
+                    self.clamp_cursor();
+                }
+                Verb::CursorRight => {
+                    self.cursor_col += 1;
+                    self.clamp_cursor();
+                }
+                Verb::CursorUp => self.cursor_row = self.cursor_row.saturating_sub(1),
+                _ => {
+                    self.cursor_row += 1;
+                    self.clamp_cursor();
+                }
+            },
+            Scope::Ticket => {
+                let Screen::Ticket { ticket, rail_idx } = self.screen else {
+                    return;
+                };
+                let n = self.rail_sessions(ticket).len();
+                let idx = if down {
+                    (rail_idx + 1).min(n.saturating_sub(1))
+                } else if up {
+                    rail_idx.saturating_sub(1)
+                } else {
+                    rail_idx
+                };
+                self.screen = Screen::Ticket { ticket, rail_idx: idx };
+            }
+            Scope::Move => {
+                let Mode::Move { ticket, col, idx, grab, home } = self.mode.clone() else {
+                    return;
+                };
+                let cols = self.columns();
+                match verb {
+                    Verb::CursorLeft | Verb::CursorRight => {
+                        let to = if verb == Verb::CursorRight {
+                            (col + 1).min(cols.len().saturating_sub(1))
+                        } else {
+                            col.saturating_sub(1)
+                        };
+                        // A saturated edge press stays put — no entry, no reset.
+                        let idx = if to == col {
+                            idx
+                        } else {
+                            self.ghost_entry_idx(&cols, to, home, ticket)
+                        };
+                        self.mode = Mode::Move { ticket, col: to, idx, grab, home };
+                    }
+                    Verb::CursorUp => {
+                        self.mode =
+                            Mode::Move { ticket, col, idx: idx.saturating_sub(1), grab, home };
+                    }
+                    _ => {
+                        let n = self.ghost_len(&cols, col, ticket);
+                        self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n), grab, home };
+                    }
+                }
+            }
+            Scope::Menu => {
+                let Mode::Menu { idx } = self.mode else {
+                    return;
+                };
+                let n = keymap::menu_items(&self.ctx()).len();
+                let idx =
+                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                self.mode = Mode::Menu { idx };
+            }
+            Scope::Drawer => {
+                let Mode::External { idx } = self.mode else {
+                    return;
+                };
+                let n = self.external.len();
+                let idx =
+                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                self.mode = Mode::External { idx };
+            }
+            Scope::Archived => {
+                let Mode::Archived { idx } = self.mode else {
+                    return;
+                };
+                let n = self.board.archived_tickets().len();
+                let idx =
+                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                self.mode = Mode::Archived { idx };
+            }
+            _ => {}
+        }
+    }
+
+    /// Enter: act on the selection, whatever the selection is here.
+    fn act(&mut self, scope: Scope) -> Result<()> {
+        match scope {
+            Scope::Board => self.board_enter(),
+            Scope::Ticket => {
+                if let Some(sid) = self.selected_session() {
+                    self.focus_session(sid)?;
+                }
+                Ok(())
+            }
+            Scope::Menu => {
+                let Mode::Menu { idx } = self.mode else {
+                    return Ok(());
+                };
+                let ctx = self.ctx();
+                let items = keymap::menu_items(&ctx);
+                let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
+                    return Ok(());
+                };
+                let verb = item.verb;
+                self.mode = Mode::Normal;
+                let ctx = self.ctx();
+                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+            }
+            Scope::Drawer => self.adopt_external(true),
+            Scope::Archived => {
+                let Mode::Archived { idx } = self.mode else {
+                    return Ok(());
+                };
+                let list: Vec<ulid::Ulid> =
+                    self.board.archived_tickets().iter().map(|t| t.id).collect();
+                if let Some(id) = list.get(idx.min(list.len().saturating_sub(1))).copied() {
+                    self.mode = Mode::Normal;
+                    self.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
+
+    /// `q` / `esc`: pop exactly one level.
+    fn back(&mut self, scope: Scope) {
+        match scope {
+            Scope::Ticket => self.to_board(),
+            Scope::Diff => {
+                let rail_idx = self.diff.as_ref().map(|d| d.rail_idx).unwrap_or(0);
+                let ticket = match self.screen {
+                    Screen::Diff { ticket } => ticket,
+                    _ => return,
+                };
+                self.diff = None;
+                self.screen = Screen::Ticket { ticket, rail_idx };
+            }
+            _ => self.mode = Mode::Normal,
+        }
+    }
+
+    /// Board Enter is "get me working": a live agent focuses directly, a
+    /// just-composed ticket starts one, and only then does Enter mean the
+    /// ticket page. The hint says which BEFORE the press (`ticket_hot`).
+    fn board_enter(&mut self) -> Result<()> {
+        let Some(t) = self.selected_ticket() else {
+            return Ok(());
+        };
         let ticket = t.id;
         let fresh = self.just_created.take() == Some(ticket);
-        if mods.contains(KeyModifiers::SHIFT) {
-            self.screen = Screen::Ticket { ticket, rail_idx: 0 };
-            return Ok(());
-        }
-        // Running or needs-you claude (author 2026-08-30): both mean the pane
-        // is where the action is. Anything else — idle, sleeping, unknown —
-        // opens the ticket page, where the state is visible before you commit
-        // to entering the pane.
         let hot = self.rail_sessions(ticket).iter().position(|s| {
             s.kind == SessionKind::Claude
                 && matches!(s.state, SessionState::Running | SessionState::RequiresAction { .. })
@@ -748,13 +1217,11 @@ impl App {
             let sid = self.rail_sessions(ticket)[rail_idx].id;
             self.focus_session(sid)?;
             if self.pending_attach.is_none() {
-                // Focus refused (daemon said no / unreachable): fall open to
-                // the ticket screen, where the status explains itself.
+                // Focus refused: fall open to the ticket page, where the
+                // status explains itself.
                 self.screen = Screen::Ticket { ticket, rail_idx };
             }
         } else if fresh {
-            // The composer's Enter-Enter: name the ticket, start the work.
-            // Provisioning worktrees park the focus half as usual.
             self.spawn_and_focus(ticket, SessionKind::Claude)?;
         } else {
             self.screen = Screen::Ticket { ticket, rail_idx: 0 };
@@ -762,118 +1229,218 @@ impl App {
         Ok(())
     }
 
-    /// TICKET keymap (04 §2.6 subset; the M3 picker keys re-homed here).
-    /// Note: inside TICKET, `s` is the shell session per 04 — this differs
-    /// from BOARD's `s` (claude) until the M6 keymap pass reconciles them.
-    fn key_ticket(
-        &mut self,
-        code: KeyCode,
-        mods: KeyModifiers,
-        ticket: ulid::Ulid,
-        rail_idx: usize,
-    ) -> Result<()> {
-        let rail: Vec<uuid::Uuid> = self.rail_sessions(ticket).iter().map(|s| s.id).collect();
-        let idx = rail_idx.min(rail.len().saturating_sub(1));
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') => self.to_board(),
-            // Ctrl+] pops to the board too: it is the tmux detach key, so the
-            // hand is already on it right after an unfocus lands here. Legacy
-            // terminals send 0x1D, which crossterm reports as Ctrl+5 (the
-            // kitty protocol reports a true Ctrl+]).
-            KeyCode::Char(']' | '5') if mods.contains(KeyModifiers::CONTROL) => self.to_board(),
-            KeyCode::Char('j') | KeyCode::Down => {
-                let idx = (idx + 1).min(rail.len().saturating_sub(1));
-                self.screen = Screen::Ticket { ticket, rail_idx: idx };
+    /// `x`: sleep or wake. On the board the target is every session of the
+    /// ticket; on the ticket page it is the selected one. One verb, one key,
+    /// the target resolved by where you are.
+    fn sleep_verb(&mut self, scope: Scope, ctx: &Ctx) -> Result<()> {
+        if scope == Scope::Ticket {
+            let Some(sid) = self.selected_session() else {
+                return Ok(());
+            };
+            let cmd = if ctx.sel_sleeping {
+                Command::WakeSession { id: sid }
+            } else {
+                Command::SleepSession { id: sid }
+            };
+            return self.send(cmd);
+        }
+        let Some(id) = self.subject() else {
+            return Ok(());
+        };
+        let wake = !ctx.ticket_awake;
+        let ids: Vec<uuid::Uuid> = self
+            .rail_sessions(id)
+            .iter()
+            .filter(|s| matches!(s.state, SessionState::Sleeping) == wake)
+            .map(|s| s.id)
+            .collect();
+        if ids.is_empty() {
+            self.status = if wake { "nothing to wake".into() } else { "already asleep".into() };
+            return Ok(());
+        }
+        let n = ids.len();
+        for sid in ids {
+            let cmd = if wake {
+                Command::WakeSession { id: sid }
+            } else {
+                Command::SleepSession { id: sid }
+            };
+            if let Response::Err { message } = self.req(cmd) {
+                self.status = message;
+                return self.refresh();
             }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.screen = Screen::Ticket { ticket, rail_idx: idx.saturating_sub(1) };
+        }
+        self.status = if wake { format!("woke {n}") } else { format!("slept {n}") };
+        self.refresh()
+    }
+
+    /// `>` / `<`: grab the card and shift its ghost one column that way, or —
+    /// already holding one — shift it again. The same key commits where the
+    /// ghost stands; the opposite key cancels the whole move.
+    fn grab(&mut self, key: Key, scope: Scope, _ctx: &Ctx) -> Result<()> {
+        let Key::Char(c) = key else { return Ok(()) };
+        let cols = self.columns();
+        if cols.is_empty() {
+            return Ok(());
+        }
+        if scope != Scope::Move {
+            let Some(t) = self.selected_ticket() else {
+                return Ok(());
+            };
+            let id = t.id;
+            let col = if c == '>' {
+                (self.cursor_col + 1) % cols.len()
+            } else {
+                (self.cursor_col + cols.len() - 1) % cols.len()
+            };
+            let home = (self.cursor_col, self.cursor_row);
+            let idx = self.ghost_entry_idx(&cols, col, home, id);
+            self.mode = Mode::Move { ticket: id, col, idx, grab: c, home };
+            return Ok(());
+        }
+        let Mode::Move { ticket, col, idx, grab, .. } = self.mode.clone() else {
+            return Ok(());
+        };
+        if c == grab {
+            // The grab key again: commit where the ghost stands, so `>>` is
+            // one column in one gesture.
+            return self.drop_ghost(&cols, ticket, col, idx);
+        }
+        // The opposite key cancels the whole move.
+        self.mode = Mode::Normal;
+        Ok(())
+    }
+
+    /// `!` in the diff viewer: a shell in the worktree, at its root.
+    fn worktree_shell(&mut self) {
+        let Screen::Diff { ticket } = self.screen else {
+            return;
+        };
+        let present = self.diff.as_ref().is_some_and(|d| d.worktree_present);
+        let path = self.wt_item(ticket).and_then(|w| w.path.clone());
+        match (present, path) {
+            (true, Some(p)) => {
+                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
+                // Plain argv, no sh -c. Gate/focus hints stay None so
+                // after_handover leaves the diff screen alone.
+                self.pending_attach = Some(vec![shell]);
+                self.pending_attach_cwd = Some(PathBuf::from(p));
             }
-            // 04 §2.6's h/l = adjacent ticket is deliberately NOT bound:
-            // a ticket screen holds one ticket (author, dogfood 2026-08-30).
-            KeyCode::Char('r') => {
-                if let Some(t) = self.board.ticket(ticket) {
-                    self.mode = Mode::Input {
-                        purpose: InputPurpose::Rename { id: t.id },
-                        buffer: EditBuffer::from_text(t.title.clone()),
-                    };
-                }
-            }
-            KeyCode::Enter => {
-                if let Some(&sid) = rail.get(idx) {
-                    self.focus_session(sid)?;
-                }
-            }
-            // c / s: focus the existing session of that kind, spawn if none
-            // (04 §2.6); C / S always spawn fresh.
-            KeyCode::Char('c') => self.focus_kind_or_spawn(ticket, SessionKind::Claude)?,
-            KeyCode::Char('s') => self.focus_kind_or_spawn(ticket, SessionKind::Bash)?,
-            KeyCode::Char('C') => self.spawn_and_focus(ticket, SessionKind::Claude)?,
-            KeyCode::Char('S') => self.spawn_and_focus(ticket, SessionKind::Bash)?,
-            KeyCode::Char('x') => {
-                if let Some(&sid) = rail.get(idx) {
-                    self.send(Command::KillSession { id: sid })?;
-                }
-            }
-            KeyCode::Char('z') => {
-                if let Some(&sid) = rail.get(idx) {
-                    let asleep = self
+            _ => self.status = "the worktree is gone — no directory to open".into(),
+        }
+    }
+
+    fn diff_scroll(&mut self, delta: isize) {
+        let Some(d) = self.diff.as_ref() else { return };
+        let now = d.scroll.get() as isize;
+        d.scroll.set(now.saturating_add(delta).max(0) as usize);
+    }
+
+    /// The external drawer's two verbs. `resume` adopts and takes the
+    /// conversation over here; otherwise it is imported observe-only.
+    fn adopt_external(&mut self, resume: bool) -> Result<()> {
+        let Mode::External { idx } = self.mode else {
+            return Ok(());
+        };
+        if self.external.is_empty() {
+            self.mode = Mode::Normal;
+            return Ok(());
+        }
+        let idx = idx.min(self.external.len() - 1);
+        let claude_session_id = self.external[idx].claude_session_id;
+        if !resume {
+            match self.req(Command::AttachExternal { claude_session_id, ticket: None }) {
+                Response::Spawned { id } => {
+                    self.refresh()?;
+                    self.status = self
                         .board
                         .sessions
                         .iter()
-                        .any(|s| s.id == sid && matches!(s.state, SessionState::Sleeping));
-                    let cmd = if asleep {
-                        Command::WakeSession { id: sid }
-                    } else {
-                        Command::SleepSession { id: sid }
-                    };
-                    self.send(cmd)?;
+                        .find(|s| s.id == id)
+                        .and_then(|s| self.board.ticket(s.ticket))
+                        .map(|t| format!("imported \"{}\" — watching only", t.title))
+                        .unwrap_or_else(|| "imported — watching only".into());
+                    self.mode = Mode::Normal;
+                    return Ok(());
                 }
+                Response::Err { message } => self.status = message,
+                _ => {}
             }
-            KeyCode::Char('p') => {
-                if let Some(&sid) = rail.get(idx) {
-                    let pinned = self
-                        .board
-                        .sessions
-                        .iter()
-                        .find(|s| s.id == sid)
-                        .map(|s| !s.pinned_awake)
-                        .unwrap_or(true);
-                    self.send(Command::PinAwake { id: sid, pinned })?;
-                    self.status = if pinned { "pinned awake".into() } else { "unpinned".into() };
-                }
+            return self.refresh();
+        }
+        let confirm = self.resume_refused == Some(claude_session_id);
+        match self.req(Command::ResumeExternal { claude_session_id, ticket: None, confirm }) {
+            Response::Spawned { .. } => {
+                self.resume_refused = None;
+                self.status = "resumed here".into();
+                self.mode = Mode::Normal;
             }
-            KeyCode::Char('d') => self.delete_gated(ticket, false)?,
-            KeyCode::Char('D') => self.delete_gated(ticket, true)?,
-            // M4 workspace cycle: shared checkout ↔ own worktree. The daemon
-            // refuses once sessions or a worktree exist (the choice is locked).
-            KeyCode::Char('w') => {
-                let next = match self.board.ticket(ticket).map(|t| t.workspace_strategy()) {
-                    Some(WorkspaceStrategy::Worktree) => None,
-                    _ => Some(WorkspaceStrategy::Worktree),
-                };
-                let word = match next {
-                    Some(WorkspaceStrategy::Worktree) => "worktree",
-                    _ => "shared",
-                };
-                self.send(Command::SetWorkspace { id: ticket, workspace: next })?;
-                if self.status.is_empty() {
-                    self.status = format!("workspace: {word}");
+            Response::Err { message } => {
+                if message.contains("running elsewhere") {
+                    self.resume_refused = Some(claude_session_id);
                 }
-            }
-            KeyCode::Char('m') => self.merge_key(ticket)?,
-            // M4b: read-only diff viewer on any ticket with a binding.
-            KeyCode::Char('v') => self.open_diff(ticket, rail_idx)?,
-            // A toggles archive here: the page keeps showing the ticket either
-            // way (archived tickets stay in the snapshot), only the badge moves.
-            KeyCode::Char('A') => {
-                if self.board.ticket(ticket).is_some_and(|t| t.is_archived()) {
-                    self.unarchive(ticket)?;
-                } else {
-                    self.archive_gated(ticket)?;
-                }
+                self.status = message;
+                self.mode = Mode::Normal;
             }
             _ => {}
         }
+        self.refresh()
+    }
+
+    /// The INPUT scope: a barrier that owns every key. The keymap resolves the
+    /// editing verbs; anything it does not bind is a character to type.
+    fn key_input(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        let Mode::Input { mut purpose, mut buffer } = self.mode.clone() else {
+            return Ok(());
+        };
+        let word = crate::keys::word_wise(mods);
+        let key = crate::keys::to_key(code, mods);
+        let ctx = self.ctx();
+        let verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        match verb {
+            Some(Verb::Cancel) => {
+                self.mode = Mode::Normal;
+                return Ok(());
+            }
+            Some(Verb::Save) => {
+                self.mode = Mode::Normal;
+                self.commit_input(purpose, buffer.into_text(), false)?;
+                return Ok(());
+            }
+            Some(Verb::SaveStart) => {
+                self.mode = Mode::Normal;
+                self.commit_input(purpose, buffer.into_text(), true)?;
+                return Ok(());
+            }
+            Some(Verb::CycleWorkspace) => {
+                if let InputPurpose::Create { workspace } = &mut purpose {
+                    *workspace = match workspace {
+                        None => Some(WorkspaceStrategy::Worktree),
+                        Some(_) => None,
+                    };
+                }
+            }
+            // Backspace and the arrows widen to a word under ctrl/alt; which
+            // modifier that is depends on the terminal, so both count.
+            Some(Verb::EditBackspace) if word => buffer.delete_word_back(),
+            Some(Verb::EditBackspace) => buffer.backspace(),
+            Some(Verb::EditDeleteWord) => buffer.delete_word_back(),
+            Some(Verb::EditKillToStart) => buffer.kill_to_start(),
+            Some(Verb::EditDelete) => buffer.delete(),
+            Some(Verb::EditLeft) if word => buffer.word_left(),
+            Some(Verb::EditLeft) => buffer.left(),
+            Some(Verb::EditRight) if word => buffer.word_right(),
+            Some(Verb::EditRight) => buffer.right(),
+            Some(Verb::EditHome) => buffer.home(),
+            Some(Verb::EditEnd) => buffer.end(),
+            _ => match code {
+                // An unhandled chord must never type its letter.
+                KeyCode::Char(_) if word => {}
+                KeyCode::Char(c) => buffer.insert(c),
+                _ => {}
+            },
+        }
+        self.mode = Mode::Input { purpose, buffer };
         Ok(())
     }
 
@@ -944,9 +1511,7 @@ impl App {
         match self.req(Command::DiffList { ticket }) {
             Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
                 let Some(d) = self.diff.as_mut() else { return };
-                d.file_idx = keep
-                    .and_then(|p| files.iter().position(|f| f.path == p))
-                    .unwrap_or(0);
+                d.file_idx = keep.and_then(|p| files.iter().position(|f| f.path == p)).unwrap_or(0);
                 d.branch = branch;
                 d.base_oid = base_oid;
                 d.branch_oid = branch_oid;
@@ -966,13 +1531,16 @@ impl App {
     /// skipping cached entries and untracked-only rows (nothing to fetch —
     /// git diff cannot see them).
     fn diff_fetch(&mut self, idx: usize) {
-        for (i, cursor) in [(idx as isize, true), (idx as isize + 1, false), (idx as isize - 1, false)]
+        for (i, cursor) in
+            [(idx as isize, true), (idx as isize + 1, false), (idx as isize - 1, false)]
         {
             let Some(d) = self.diff.as_ref() else { return };
             if i < 0 {
                 continue;
             }
-            let Some(f) = d.files.get(i as usize) else { continue };
+            let Some(f) = d.files.get(i as usize) else {
+                continue;
+            };
             if f.status.is_empty() || d.cache.contains_key(&f.path) {
                 continue;
             }
@@ -1005,110 +1573,17 @@ impl App {
         self.diff_fetch(idx);
     }
 
-    /// The diff screen's keys: j/k scroll, h/l (or J/K) file, R refresh,
-    /// z z density, z p pane swap, ! shell in the worktree, q back.
-    fn key_diff(&mut self, code: KeyCode, ticket: ulid::Ulid) -> Result<()> {
-        // The z view-chord: a first z arms, z z cycles density, z p swaps
-        // panes below the breakpoint; any other key disarms and acts.
-        let armed = self.diff.as_ref().map(|d| d.z_armed).unwrap_or(false);
-        if let Some(d) = self.diff.as_mut() {
-            d.z_armed = false;
-        }
-        if armed {
-            match code {
-                KeyCode::Char('z') => {
-                    let idx = {
-                        let Some(d) = self.diff.as_mut() else { return Ok(()) };
-                        d.density = match d.density {
-                            1 => 3,
-                            3 => 8,
-                            _ => 1,
-                        };
-                        d.cache.clear();
-                        d.scroll.set(0);
-                        let noun = if d.density == 1 { "line" } else { "lines" };
-                        self.status = format!(
-                            "{} ∙ {} context {noun} around each change",
-                            crate::ui::diff::density_word(d.density),
-                            d.density
-                        );
-                        d.file_idx
-                    };
-                    self.diff_fetch(idx);
-                    return Ok(());
-                }
-                KeyCode::Char('p') => {
-                    if let Some(d) = self.diff.as_mut() {
-                        d.swap = !d.swap;
-                    }
-                    return Ok(());
-                }
-                _ => {} // disarmed; fall through to act on the key
-            }
-        }
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') => {
-                let rail_idx = self.diff.as_ref().map(|d| d.rail_idx).unwrap_or(0);
-                self.diff = None;
-                self.screen = Screen::Ticket { ticket, rail_idx };
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                if let Some(d) = self.diff.as_ref() {
-                    d.scroll.set(d.scroll.get() + 1);
-                }
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                if let Some(d) = self.diff.as_ref() {
-                    d.scroll.set(d.scroll.get().saturating_sub(1));
-                }
-            }
-            // Vim-adjacent paging; draw clamps against the built content.
-            KeyCode::Char('}') | KeyCode::PageDown => {
-                if let Some(d) = self.diff.as_ref() {
-                    d.scroll.set(d.scroll.get() + DIFF_PAGE);
-                }
-            }
-            KeyCode::Char('{') | KeyCode::PageUp => {
-                if let Some(d) = self.diff.as_ref() {
-                    d.scroll.set(d.scroll.get().saturating_sub(DIFF_PAGE));
-                }
-            }
-            KeyCode::Char('l') | KeyCode::Char('J') | KeyCode::Right => self.diff_nav(1),
-            KeyCode::Char('h') | KeyCode::Char('K') | KeyCode::Left => self.diff_nav(-1),
-            KeyCode::Char('R') => self.diff_refresh(ticket),
-            KeyCode::Char('z') => {
-                if let Some(d) = self.diff.as_mut() {
-                    d.z_armed = true;
-                }
-            }
-            KeyCode::Char('!') => {
-                let present = self.diff.as_ref().map(|d| d.worktree_present).unwrap_or(false);
-                let path = self.wt_item(ticket).and_then(|w| w.path.clone());
-                match (present, path) {
-                    (true, Some(p)) => {
-                        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-                        // Plain argv, no sh -c; the main loop's handover runs
-                        // it with this cwd. Gate/focus hints stay None so
-                        // after_handover leaves the diff screen alone.
-                        self.pending_attach = Some(vec![shell]);
-                        self.pending_attach_cwd = Some(PathBuf::from(p));
-                    }
-                    _ => self.status = "worktree evicted — no directory to open".into(),
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     /// Delete with the M4 worktree gate (author rule 2): an unmerged worktree
     /// must be dealt with first — `m` merges, `D` discards worktree + branch.
     fn delete_gated(&mut self, id: ulid::Ulid, discard: bool) -> Result<()> {
         if !discard {
             if let Some(w) = self.wt_item(id) {
                 if !w.branch.is_empty() && !w.merged {
-                    self.status =
-                        "worktree unmerged ∙ m merge ∙ D delete + discard branch".into();
+                    // Name the two ways out in the keymap's own words, so this
+                    // refusal cannot outlive the keys it teaches.
+                    self.status = "the branch is not merged ∙ m merges it ∙ d D deletes \
+                                   the ticket and discards the branch"
+                        .into();
                     return Ok(());
                 }
             }
@@ -1116,6 +1591,7 @@ impl App {
         if matches!(self.screen, Screen::Ticket { .. }) {
             self.to_board();
         }
+        self.last_undo = Some(LastUndo::Delete);
         self.send(Command::DeleteTicket { id, discard_worktree: discard })
     }
 
@@ -1241,71 +1717,6 @@ impl App {
         Ok(())
     }
 
-    fn key_external(&mut self, code: KeyCode, idx: usize) -> Result<()> {
-        if self.external.is_empty() {
-            self.mode = Mode::Normal;
-            return Ok(());
-        }
-        let idx = idx.min(self.external.len() - 1);
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('e') => self.mode = Mode::Normal,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.mode = Mode::External { idx: (idx + 1).min(self.external.len() - 1) };
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::External { idx: idx.saturating_sub(1) };
-            }
-            KeyCode::Char('a') => {
-                // Import: the daemon mints a ticket named after the session.
-                let claude_session_id = self.external[idx].claude_session_id;
-                match self.req(Command::AttachExternal { claude_session_id, ticket: None }) {
-                    Response::Spawned { id } => {
-                        self.refresh()?;
-                        self.status = self
-                            .board
-                            .sessions
-                            .iter()
-                            .find(|s| s.id == id)
-                            .and_then(|s| self.board.ticket(s.ticket))
-                            .map(|t| format!("imported \"{}\" — observe-only, R resumes", t.title))
-                            .unwrap_or_else(|| "imported — observe-only".into());
-                        self.mode = Mode::Normal;
-                        return Ok(());
-                    }
-                    Response::Err { message } => self.status = message,
-                    _ => {}
-                }
-                self.refresh()?;
-            }
-            KeyCode::Char('R') | KeyCode::Enter => {
-                let claude_session_id = self.external[idx].claude_session_id;
-                let confirm = self.resume_refused == Some(claude_session_id);
-                match self.req(Command::ResumeExternal {
-                    claude_session_id,
-                    ticket: None,
-                    confirm,
-                }) {
-                    Response::Spawned { .. } => {
-                        self.resume_refused = None;
-                        self.status = "resumed here".into();
-                        self.mode = Mode::Normal;
-                    }
-                    Response::Err { message } => {
-                        if message.contains("running elsewhere") {
-                            self.resume_refused = Some(claude_session_id);
-                        }
-                        self.status = message;
-                        self.mode = Mode::Normal;
-                    }
-                    _ => {}
-                }
-                self.refresh()?;
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
     /// Where the ghost lands when it enters `col`: the top of any foreign
     /// column (height is adjusted by hand afterwards), its own original
     /// position when coming back home while still moving.
@@ -1328,18 +1739,27 @@ impl App {
     /// suggestion prices.
     fn archive_gated(&mut self, id: ulid::Ulid) -> Result<()> {
         if self.board.ticket_awake_sessions(id) > 0 {
-            self.status = "sessions awake — sleep them first (z)".into();
+            let how = keymap::hint_for(Scope::Board, Verb::Sleep, &self.ctx())
+                .map(|(show, _)| format!(" ({show})"))
+                .unwrap_or_default();
+            self.status = format!("its sessions are awake — sleep them first{how}");
             return Ok(());
         }
         let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
         match self.req(Command::ArchiveTicket { id }) {
             Response::Err { message } => self.status = message,
-            _ => self.status = format!("archived {key} ∙ V lists ∙ A restores"),
+            _ => {
+                self.last_undo = Some(LastUndo::Archive(id));
+                self.status = format!("archived {key} ∙ u undoes it");
+            }
         }
         self.refresh()
     }
 
     fn unarchive(&mut self, id: ulid::Ulid) -> Result<()> {
+        if self.last_undo == Some(LastUndo::Archive(id)) {
+            self.last_undo = None;
+        }
         let col = self.board.ticket(id).map(|t| t.column.clone()).unwrap_or_default();
         match self.req(Command::UnarchiveTicket { id }) {
             Response::Err { message } => self.status = message,
@@ -1348,97 +1768,15 @@ impl App {
         self.refresh()
     }
 
-    fn key_archived(&mut self, code: KeyCode, idx: usize) -> Result<()> {
-        let list: Vec<ulid::Ulid> = self.board.archived_tickets().iter().map(|t| t.id).collect();
-        if list.is_empty() {
-            self.mode = Mode::Normal;
-            return Ok(());
-        }
-        let idx = idx.min(list.len() - 1);
-        match code {
-            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('V') => self.mode = Mode::Normal,
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.mode = Mode::Archived { idx: (idx + 1).min(list.len() - 1) };
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::Archived { idx: idx.saturating_sub(1) };
-            }
-            KeyCode::Char('A') => {
-                // Stay in the dialog; the empty-guard above closes it when the
-                // last ticket leaves.
-                self.mode = Mode::Archived { idx };
-                self.unarchive(list[idx])?;
-            }
-            KeyCode::Enter => {
-                self.mode = Mode::Normal;
-                self.screen = Screen::Ticket { ticket: list[idx], rail_idx: 0 };
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    fn key_move(
+    /// Commit the MOVE ghost: reinsert `ticket` at (`col`, `idx`) and land the
+    /// cursor on it.
+    fn drop_ghost(
         &mut self,
-        code: KeyCode,
+        cols: &[String],
         ticket: ulid::Ulid,
         col: usize,
         idx: usize,
-        grab: char,
-        home: (usize, usize),
     ) -> Result<()> {
-        let cols = self.columns();
-        match code {
-            KeyCode::Esc => self.mode = Mode::Normal, // total cancel (M2 rule)
-            KeyCode::Char('h') | KeyCode::Left => {
-                let to = col.saturating_sub(1);
-                // A saturated edge press stays put — no entry, no reset.
-                let idx = if to == col { idx } else { self.ghost_entry_idx(&cols, to, home, ticket) };
-                self.mode = Mode::Move { ticket, col: to, idx, grab, home };
-            }
-            KeyCode::Char('l') | KeyCode::Right => {
-                let to = (col + 1).min(cols.len().saturating_sub(1));
-                let idx = if to == col { idx } else { self.ghost_entry_idx(&cols, to, home, ticket) };
-                self.mode = Mode::Move { ticket, col: to, idx, grab, home };
-            }
-            KeyCode::Char('j') | KeyCode::Down => {
-                let n = self.ghost_len(&cols, col, ticket);
-                self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n), grab, home };
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.mode = Mode::Move { ticket, col, idx: idx.saturating_sub(1), grab, home };
-            }
-            KeyCode::Char(c @ ('>' | '<')) => {
-                if c == grab {
-                    // The grab key again: commit the pending move where the
-                    // ghost stands (`>>` / `<<` — one column in one gesture).
-                    self.drop_ghost(&cols, ticket, col, idx)?;
-                } else if grab == 'm' {
-                    // An `m` grab has no opposite key: `>` / `<` shift the
-                    // ghost a column, same as `l` / `h`.
-                    let to = if c == '>' {
-                        (col + 1).min(cols.len().saturating_sub(1))
-                    } else {
-                        col.saturating_sub(1)
-                    };
-                    let idx =
-                        if to == col { idx } else { self.ghost_entry_idx(&cols, to, home, ticket) };
-                    self.mode = Mode::Move { ticket, col: to, idx, grab, home };
-                } else {
-                    // The opposite key cancels the whole move.
-                    self.mode = Mode::Normal;
-                }
-            }
-            KeyCode::Char('m') if grab == 'm' => self.drop_ghost(&cols, ticket, col, idx)?,
-            KeyCode::Enter => self.drop_ghost(&cols, ticket, col, idx)?,
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// Commit the MOVE ghost: reinsert `ticket` at (`col`, `idx`) and land the
-    /// cursor on it.
-    fn drop_ghost(&mut self, cols: &[String], ticket: ulid::Ulid, col: usize, idx: usize) -> Result<()> {
         let target_col = cols[col.min(cols.len() - 1)].clone();
         let others: Vec<ulid::Ulid> = self
             .board
@@ -1462,7 +1800,11 @@ impl App {
             .unwrap_or(0)
     }
 
-    fn commit_input(&mut self, purpose: InputPurpose, buffer: String) -> Result<()> {
+    /// `start` is the composer's Shift+Enter: mint the ticket AND put claude
+    /// on it with the title as a prompt it has already been asked — without
+    /// handing the terminal over. The board stays up, so the next ticket is
+    /// the next keystroke.
+    fn commit_input(&mut self, purpose: InputPurpose, buffer: String, start: bool) -> Result<()> {
         let title = buffer.trim().to_string();
         if title.is_empty() {
             return Ok(());
@@ -1478,6 +1820,10 @@ impl App {
                         }
                         self.refresh()?;
                         self.select_ticket(id);
+                        if start {
+                            self.start_composed(id);
+                            return Ok(());
+                        }
                         // Enter-Enter: the next plain Enter starts claude on
                         // the fresh ticket (board_enter's fast path).
                         self.just_created = Some(id);
@@ -1496,6 +1842,25 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Shift+Enter's second half: start claude on the ticket the composer just
+    /// minted, with its title submitted as the first prompt, and STAY on the
+    /// board. No `focus_session` — the whole point of the key is to queue work
+    /// without leaving; the card's own state is how the user watches it land.
+    /// The fresh-ticket Enter window is not armed either: the agent is already
+    /// running, so the next Enter should mean what it always means.
+    fn start_composed(&mut self, ticket: ulid::Ulid) {
+        let cmd = Command::SpawnSession { ticket, kind: SessionKind::Claude, submit_prompt: true };
+        self.status = match self.req(cmd) {
+            Response::Spawned { .. } => "claude started on the title".into(),
+            // M4: the worktree is still being cut. The daemon replays the
+            // parked spawn — submit flag and all — when it lands.
+            Response::Provisioning => "provisioning worktree ∙ claude starts when ready".into(),
+            Response::Err { message } => message,
+            _ => String::new(),
+        };
+        let _ = self.refresh();
     }
 
     /// Live sessions of a ticket, in spawn order. `Sleeping` is live-but-parked.
@@ -1526,7 +1891,7 @@ impl App {
     }
 
     fn spawn_and_focus(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
-        match self.req(Command::SpawnSession { ticket, kind }) {
+        match self.req(Command::SpawnSession { ticket, kind, submit_prompt: false }) {
             Response::Spawned { id } => {
                 self.refresh()?;
                 self.focus_session(id)?;
@@ -1558,8 +1923,8 @@ impl App {
         if let Some(rec) = self.board.sessions.iter().find(|s| s.id == sid) {
             let observe_only = rec.provenance == Provenance::Adopted && rec.argv.is_empty();
             let sleeping = matches!(rec.state, SessionState::Sleeping);
-            let exited_claude = rec.kind == SessionKind::Claude
-                && matches!(rec.state, SessionState::Exited { .. });
+            let exited_claude =
+                rec.kind == SessionKind::Claude && matches!(rec.state, SessionState::Exited { .. });
             if observe_only || sleeping || exited_claude {
                 let cmd = if sleeping && rec.kind == SessionKind::Bash {
                     Command::WakeSession { id: sid }
@@ -1634,8 +1999,11 @@ impl App {
                 match origin {
                     FocusOrigin::Board => self.to_board(),
                     FocusOrigin::Ticket => {
-                        let idx =
-                            self.rail_sessions(ticket).iter().position(|s| s.id == sid).unwrap_or(0);
+                        let idx = self
+                            .rail_sessions(ticket)
+                            .iter()
+                            .position(|s| s.id == sid)
+                            .unwrap_or(0);
                         self.screen = Screen::Ticket { ticket, rail_idx: idx };
                     }
                 }
@@ -1761,8 +2129,8 @@ pub(crate) mod test_support {
                         detail: "merged 2 commit(s)".into(),
                     });
                 }
-                Command::SpawnSession { ticket, kind } => {
-                    let rec = mesimon_core::board::SessionRecord::new(
+                Command::SpawnSession { ticket, kind, submit_prompt } => {
+                    let mut rec = mesimon_core::board::SessionRecord::new(
                         uuid::Uuid::from_u128(4242),
                         kind,
                         ticket,
@@ -1770,6 +2138,7 @@ pub(crate) mod test_support {
                         "/repo".into(),
                         SessionState::Running,
                     );
+                    rec.pending_submit = submit_prompt;
                     let id = rec.id;
                     self.board.sessions.push(rec);
                     return Ok(Response::Spawned { id });
@@ -1811,12 +2180,7 @@ pub(crate) mod test_support {
                 }
                 // Mirror the daemon's gate so the refusal path is testable.
                 Command::ArchiveTicket { id } => {
-                    if self
-                        .board
-                        .sessions
-                        .iter()
-                        .any(|s| s.ticket == id && s.state.has_pane())
-                    {
+                    if self.board.sessions.iter().any(|s| s.ticket == id && s.state.has_pane()) {
                         return Ok(Response::Err {
                             message: "sessions still awake — sleep them first".into(),
                         });
@@ -1943,6 +2307,28 @@ mod tests {
         sent.borrow().iter().any(|c| c.contains(needle))
     }
 
+    /// Archiving is `a` then `a` — the chord the author asked for.
+    fn archive(app: &mut App) {
+        press(app, 'a');
+        press(app, 'a');
+    }
+
+    /// The archived list has no key of its own any more — it is a menu row.
+    /// Every test that used to press `V` walks the menu instead, which is
+    /// also a small proof that the menu reaches what the keys gave up.
+    fn open_archived(app: &mut App) {
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        let items = keymap::menu_items(&app.ctx());
+        let idx = items
+            .iter()
+            .position(|m| m.verb == Verb::ArchivedList)
+            .expect("the archived row is offered when something is archived");
+        for _ in 0..idx {
+            press(app, 'j');
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    }
+
     #[test]
     fn enter_on_plain_ticket_opens_the_ticket_screen() {
         let mut app = app_three_columns();
@@ -1964,6 +2350,58 @@ mod tests {
         assert_eq!(app.screen, Screen::Board, "focus starts from the board");
         // Consumed: a third Enter (post-unfocus) must not spawn again — the
         // awake-claude fast path owns it now.
+    }
+
+    /// Shift+Enter is the whole gesture in one press: the ticket exists, an
+    /// agent is on it, the title has been ASKED (not just typed), and the
+    /// board never went away.
+    #[test]
+    fn shift_enter_composes_and_starts_without_leaving_the_board() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.rich_keys = true;
+        press(&mut app, 'o');
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(sent_contains(&sent, "CreateTicket"));
+        assert!(
+            sent_contains(&sent, "submit_prompt: true"),
+            "the title is submitted, not merely prefilled: {:?}",
+            sent.borrow()
+        );
+        assert_eq!(app.screen, Screen::Board, "the board never leaves");
+        assert!(app.pending_attach.is_none(), "no handover — that is the point");
+        assert_eq!(app.mode, Mode::Normal, "the composer closed");
+        // The agent is already running, so the fresh-ticket Enter window must
+        // NOT be armed — the next Enter means what it always means.
+        assert_eq!(app.just_created, None);
+    }
+
+    /// Same gesture on a terminal that cannot spell the key: crossterm reports
+    /// a plain Enter, and a plain Enter is exactly what the user gets — the
+    /// ticket, the armed fast path, no surprise agent.
+    #[test]
+    fn shift_enter_degrades_to_plain_save_without_rich_keys() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        assert!(!app.rich_keys);
+        press(&mut app, 'o');
+        press(&mut app, 'n');
+        // The atom still arrives (this test presses it); the keymap refuses it.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!sent_contains(&sent, "CreateTicket"), "the key is inert, not half-bound");
+        assert!(matches!(app.mode, Mode::Input { .. }), "still composing");
+    }
+
+    /// A rename has nothing to start, so the key stays out of its way.
+    #[test]
+    fn shift_enter_does_nothing_when_renaming() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.rich_keys = true;
+        press(&mut app, 'r');
+        press(&mut app, 'x');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!sent_contains(&sent, "RenameTicket"));
+        assert!(!sent_contains(&sent, "SpawnSession"));
+        assert!(matches!(app.mode, Mode::Input { .. }));
     }
 
     #[test]
@@ -2014,10 +2452,13 @@ mod tests {
         }
     }
 
+    /// Space always opens the ticket page, even when Enter would have gone
+    /// straight to a live agent. It is the only spelling — 04 §2.0 bans
+    /// shift+Enter as an atom, and Enter already means "get me working".
     #[test]
-    fn shift_enter_forces_the_ticket_screen() {
+    fn space_opens_the_ticket_page_past_a_live_agent() {
         let (mut app, sent, _sid) = app_with_claude(SessionState::Running, false);
-        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
         assert!(!sent_contains(&sent, "FocusStart"));
         assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
     }
@@ -2255,32 +2696,27 @@ mod tests {
         assert_eq!((app.cursor_col, app.cursor_row), (2, 1));
     }
 
+    /// `m` is the merge key now, everywhere. It never grabs a card, and it
+    /// never means two things depending on which screen you are on.
     #[test]
-    fn m_grabs_in_place_and_reorders_within_the_column() {
+    fn m_is_not_a_board_key() {
         let mut app = app_three_columns();
         press(&mut app, 'm');
-        // Grabbed where it stands: same column, same row, nothing sent yet.
-        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 0, grab: 'm', .. }));
-        press(&mut app, 'j');
-        press(&mut app, 'm'); // the grab key again drops
-        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
-        assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+        assert!(matches!(app.mode, Mode::Normal), "m must not grab on the board");
+        assert!(app.board.column_tickets("todo").len() == 2);
     }
 
+    /// Digits address columns while a card is held (04 §2.5) — MOVE is the one
+    /// scope where bare digits mean anything.
     #[test]
-    fn m_grab_travels_columns_on_gt_lt_instead_of_cancelling() {
+    fn digits_address_columns_while_holding_a_card() {
         let mut app = app_three_columns();
-        press(&mut app, 'm');
-        press(&mut app, '>'); // no opposite for m: shifts, like l
-        assert!(matches!(app.mode, Mode::Move { col: 1, idx: 0, grab: 'm', .. }));
-        press(&mut app, '<'); // back home at the remembered row
-        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 0, grab: 'm', .. }));
-        press(&mut app, '>');
+        press(&mut app, '>'); // grab ticket 1, ghost into doing
+        press(&mut app, '3'); // straight to the third column
+        assert!(matches!(app.mode, Mode::Move { col: 2, .. }));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
-        assert_eq!(doing, vec![ulid::Ulid(1)]);
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(done, vec![ulid::Ulid(1), ulid::Ulid(3)]);
     }
 
     #[test]
@@ -2297,7 +2733,7 @@ mod tests {
     #[test]
     fn archive_key_removes_ticket_from_board() {
         let mut app = app_three_columns();
-        press(&mut app, 'A'); // ticket 1 selected, no sessions — gate passes
+        archive(&mut app); // ticket 1 selected, no sessions — gate passes
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(2)]);
         assert_eq!(app.board.archived_tickets().len(), 1);
@@ -2317,8 +2753,9 @@ mod tests {
             "/repo".into(),
             SessionState::Running,
         ));
-        press(&mut app, 'A');
-        assert_eq!(app.status, "sessions awake — sleep them first (z)");
+        press(&mut app, 'a');
+        assert_eq!(app.status, "its sessions are awake — sleep them first (x)");
+        assert!(app.archive_armed.is_none(), "never arm a confirm we would only refuse");
         // Advisory fired client-side; nothing was sent, nothing archived.
         assert_eq!(app.board.column_tickets("todo").len(), 2);
         assert!(app.board.archived_tickets().is_empty());
@@ -2328,31 +2765,121 @@ mod tests {
     fn archived_dialog_restores_to_same_column() {
         let mut app = app_three_columns();
         app.cursor_col = 2; // "done", ticket 3
-        press(&mut app, 'A');
+        archive(&mut app);
         assert!(app.board.column_tickets("done").is_empty());
-        press(&mut app, 'V');
+        open_archived(&mut app);
         assert!(matches!(app.mode, Mode::Archived { idx: 0 }));
-        press(&mut app, 'A'); // restore
-        // Restoring the last archived ticket closes the dialog on refresh.
+        press(&mut app, 'a'); // restore
+                              // Restoring the last archived ticket closes the dialog on refresh.
         assert!(matches!(app.mode, Mode::Normal));
         let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
         assert_eq!(done, vec![ulid::Ulid(3)]);
         assert!(app.status.starts_with("restored to done"));
     }
 
+    /// The menu only ever offers rows that apply: with nothing archived there
+    /// is no "archived tickets" row to land on.
     #[test]
-    fn v_on_empty_archive_is_status_only() {
+    fn menu_hides_the_archived_row_when_nothing_is_archived() {
         let mut app = app_three_columns();
-        press(&mut app, 'V');
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.status, "no archived tickets");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Menu { idx: 0 }));
+        let verbs: Vec<Verb> = keymap::menu_items(&app.ctx()).iter().map(|m| m.verb).collect();
+        assert!(!verbs.contains(&Verb::ArchivedList));
+        assert!(verbs.contains(&Verb::ExternalDrawer), "{verbs:?}");
+    }
+
+    /// Arrows move the menu selection — the letter motions and their aliases
+    /// go through the same dispatch, so this drives the real key path rather
+    /// than the resolver.
+    #[test]
+    fn arrows_move_the_menu_selection() {
+        let mut app = app_three_columns();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Menu { idx: 0 }));
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Menu { idx: 1 }), "↓ must move the menu");
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Menu { idx: 0 }), "↑ must move the menu");
+    }
+
+    /// And in every other list, for the same reason.
+    #[test]
+    fn arrows_move_every_list() {
+        let mut app = app_three_columns();
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.cursor_row, 1, "board ↓");
+        app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.cursor_col, 1, "board →");
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.cursor_col, 0, "board ←");
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.cursor_row, 0, "board ↑");
+        // …and while holding a card.
+        press(&mut app, '>');
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Move { col: 0, .. }), "move ←");
+    }
+
+    /// Esc opens the menu, and picking a row runs its verb.
+    #[test]
+    fn menu_opens_on_esc_and_runs_the_chosen_row() {
+        let mut app = app_three_columns();
+        archive(&mut app); // archive ticket 1 so the row exists
+        open_archived(&mut app);
+        assert!(matches!(app.mode, Mode::Archived { idx: 0 }));
+    }
+
+    /// `a` alone never archives, and a stray key after it cancels cleanly.
+    #[test]
+    fn archive_needs_the_second_press() {
+        let mut app = app_three_columns();
+        press(&mut app, 'a');
+        assert!(app.archive_armed.is_some(), "the first a arms");
+        assert!(app.board.archived_tickets().is_empty(), "the first a must not archive");
+        press(&mut app, 'j'); // anything else
+        assert!(app.archive_armed.is_none());
+        assert_eq!(app.status, "archive cancelled");
+        assert!(app.board.archived_tickets().is_empty());
+        // And the full chord does archive.
+        app.cursor_row = 0;
+        archive(&mut app);
+        assert_eq!(app.board.archived_tickets().len(), 1);
+    }
+
+    /// `u` undoes an archive, and says so before you press it.
+    #[test]
+    fn u_undoes_an_archive() {
+        let mut app = app_three_columns();
+        archive(&mut app);
+        assert_eq!(app.board.archived_tickets().len(), 1);
+        assert!(app.ctx().can_undo);
+        assert_eq!(app.ctx().undo_word, "undo archive");
+        press(&mut app, 'u');
+        assert!(app.board.archived_tickets().is_empty(), "u put it back");
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+        // Nothing left to undo, so the key goes quiet again.
+        assert!(!app.ctx().can_undo);
+        assert_eq!(keymap::hint_for(Scope::Board, Verb::Undo, &app.ctx()), None);
+    }
+
+    /// The archive undo is re-derived from the board, never trusted: a ticket
+    /// restored from another client stops being `u`'s target.
+    #[test]
+    fn archive_undo_expires_when_the_ticket_comes_back() {
+        let mut app = app_three_columns();
+        archive(&mut app);
+        assert!(app.ctx().can_undo);
+        app.unarchive(ulid::Ulid(1)).unwrap();
+        assert!(!app.ctx().can_undo, "nothing archived any more");
     }
 
     #[test]
     fn archived_dialog_enter_opens_ticket_screen() {
         let mut app = app_three_columns();
-        press(&mut app, 'A');
-        press(&mut app, 'V');
+        archive(&mut app);
+        open_archived(&mut app);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid::Ulid(1)));
@@ -2362,11 +2889,11 @@ mod tests {
     fn ticket_page_a_toggles_archive() {
         let mut app = app_three_columns();
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-        press(&mut app, 'A');
+        archive(&mut app);
         // The page keeps showing the archived ticket (still in the snapshot).
         assert!(matches!(app.screen, Screen::Ticket { .. }));
         assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
-        press(&mut app, 'A');
+        press(&mut app, 'a'); // one press to restore — not a chord
         assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);

@@ -1,4 +1,4 @@
- mesimon > kanban-tui   6 tickets                                                              ◦ archive 1 ticket (esc)
+ mesimon > kanban-tui   6 tickets                                                              ◦ update ready (U ∙ esc)
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 

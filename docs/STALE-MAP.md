@@ -769,3 +769,234 @@ chip off a 100-column terminal. `Notice.kind` is a String, not an enum, because
 an unknown variant from a newer daemon would fail the whole `Response::Board`
 deserialize and the client drops lines it cannot parse — one new notice kind
 would blank the board on an older client.
+
+## The keymap became data, and the collisions are gone (2026-08-31, M6 keymap pass)
+
+`04` Part II's tables are superseded wholesale by `core/src/keymap.rs`, which is now the
+only keymap: the doc describes an intent the code no longer needs to be read against.
+What the pass actually changed, and why each one:
+
+**The mechanism (04 §2.16 built, finally).** A keypress becomes a `Verb` only through
+`keymap::resolve(scope, key, &ctx)`; `App::dispatch` matches `Verb` exhaustively, so a
+binding with no handler does not compile. Every binding carries an availability predicate
+over `Ctx`, and that same predicate gates the key AND its hint — which is what retires the
+nine drifting hint literals the audit found (`chrome.rs`, `ticket.rs`, `diff.rs`,
+`board.rs` now contain none). Ten validators in the module enforce 04 §2.0's rules
+mechanically. `mutates` is present on every binding, unused until the D22 observer client.
+
+**Context-aware hints (author 2026-08-31).** The footer and `?` show only what applies right
+now: an empty column offers no `rename`/`move`/`delete`, a ticket with no sessions offers no
+`sleep`, `enter` reads "go to the agent" or "ticket page" depending on what it will do, `x`
+reads sleep or wake. Unavailable means INERT, not merely unhinted — pressing it does nothing.
+The single exception is ticket `m`, which stays bound while unhinted so it can answer "the
+agent is still working"; the invariant that survives is one-directional: **a key that is
+hinted works.**
+
+**Collisions retired.** `s` was claude on BOARD and shell on TICKET — now `c` = claude and
+`s` = shell on both, and BOARD has no `C`/`S` (author: want a *new* one, go to the ticket
+page). `m` was grab on BOARD and merge on TICKET — now merge only, everywhere; the board
+grab is `>`/`<` alone, which already did the whole gesture (this finishes the 2026-08-30
+grab-key entry above, which said board `m` should be unbound and was not). `p` was
+peek/pin/pane-swap — now peek only; pin is `P`, pane swap is `z s`. `z` was sleep on TICKET
+and the view prefix in DIFF — now the view prefix everywhere; sleep is `x`, per 04 §2.3.
+`R` was refresh in DIFF and resume in the drawer — the drawer's folded into `enter`.
+
+**Kill is gone.** Ticket `x` used to kill a session: irreversible, no confirm, named in no
+hint. Sleep already reclaims the memory and is reversible, and a session you want gone goes
+with its ticket. 04 §2.9's refusal to bind a kill is upheld rather than worked around.
+
+**`d` and `a` are chords.** `d`+`d` deletes, `d`+`D` deletes and discards the branch, `a`+`a`
+archives (author 2026-08-31). A stray `d` or `a` on a card now costs nothing, and the
+top-level `D` — one shift from `d`, discarding a branch — no longer exists. **Restoring is
+NOT a chord**: `a` on an archived ticket acts at once, because undoing a mistake must never
+be harder than making it. A chord prefix advertises only itself (`d`, `a`) — pressing it
+swaps the footer to the tail's scope, which names the key still to press, so nothing ever
+renders `d d` (author 2026-08-31); `chord_prefixes_advertise_a_single_key` holds that.
+
+**Undo covers archive, and says which.** Undo moved to the GLOBAL scope so a delete made from
+the ticket page is undoable wherever the user lands, and `u` now also undoes an archive
+(author 2026-08-31). Archive needs no daemon-side grace band — it destroys nothing and the
+ticket stays in the snapshot — so the TUI remembers the last archived id (`App::last_undo`)
+and `undo_target()` re-derives it from the board every time rather than trusting it: an
+expired grace band or a ticket restored from another client stops being `u`'s target. A
+delete supersedes a remembered archive, so `u` always means the last thing. The hint word
+follows (`u undo archive` / `u undo delete`), and goes silent when there is nothing to undo.
+
+**Board-wide actions have no keys.** `e` (external), `V` (archived), `X` (archive-all) and
+`Z` (sleep-all) are retired as bindings and live in the **Esc menu** (author 2026-08-31:
+"some things should move to menu"). Rationale: they are rare, they are not about the
+selection, and a menu row has room to say what it will do in words before you commit. This
+also gives Esc a meaning on the board, where it did nothing. The header's offers now point
+at the menu instead of naming retired keys. Shift is therefore free to mean one thing:
+harden or force the same verb on the same target (`d`→`d D`, `c`→`C`).
+
+**Escape ladder (04 §2.14, simplified to one rule).** `q` pops one level; at the board that
+is quit. `Esc` pops one level; at the board it opens the menu. MOVE takes `q` now. `Ctrl+]`
+/ `Ctrl+5` still pop the ticket screen (the hand is on them after an unfocus) but are
+overlay-only. `Ctrl+C` still quits from the board — a deliberate deviation from 04 §2.2,
+which forbids it: a TUI that cannot be Ctrl+C'd is user-hostile, and quitting the client
+costs nothing (daemon and sessions survive).
+
+**Diff navigation (the one place consistency lost).** `j`/`k` scroll the hunk pane rather
+than moving the selection, because this screen is read, not picked; file navigation moved to
+`n`/`N` (04 §2.3's next/previous-match keys, previously unbound). `h`/`l` and the `J`/`K`
+aliases are unbound there. The `?` overlay states the exception.
+
+**Workspace has one spelling.** The composer's Shift+Tab, and nothing else — ticket `w` is
+retired (author 2026-08-31). The choice locks the moment a session or binding exists, so
+creation time is the only moment it is genuinely open.
+
+**New in 04's terms, and previously missing entirely:** `?` (per-screen which-key overlay,
+`ui/help.rs`), `^L` redraw, `^Z` suspend-this-client, and MOVE's `1`–`9` column addressing
+(04 §2.5). `04` §2.12's leader and command palette remain unbuilt; the Esc menu covers what
+the leader was going to be needed for in v0.1.
+
+**Not done:** doc `04`'s own tables are not rewritten — `keymap.rs` is the source and the
+doc is now historical. `07` §6's footer mock-ups are stale for the same reason.
+
+## An armed artifact monitor is not in-flight work (2026-08-31, dogfood)
+
+**Supersedes 11 §11.7.4's `background_tasks` row** (the `Running | Stop with `background_tasks`
+non-empty | Running` transition) and narrows 11 §11.2.3's `Stop` row.
+
+The doc gates `Idle{EndTurn}` on the array being *empty*. That is too coarse, and it fails
+closed **permanently**. Publishing an Artifact arms an `artifact-comment-monitor` for the rest
+of the session, so from the first publish onward every `Stop` carried a non-empty
+`background_tasks` and was swallowed: the rule targets `Running`, the state the machine is
+already in, so `apply` returns `None` and no transition is even recorded. The pane-quiet probe
+then demoted the finished turn to `Idle{Interrupted}` 8 s later at Medium, and `automove`
+refuses to promote an interrupt — so the ticket sat in IN PROGRESS with the card reading
+"running" and then, falsely, "interrupted".
+
+Observed on T-72 "shortcuts UX": activity seq 114 `Stop`, no transition, seq 115
+`running → idle{interrupted}` +9934 ms. Across the same log 76 of 87 `Stop` frames settled to
+`idle{end_turn}` at High in ~1.5 s; the one session holding an armed monitor at Stop time is
+the one that failed.
+
+**The rule is now a classification, not a count** (`attention::task_blocks_end_turn`, applied
+in `ingest::signal_of`; the `Signal::Stop` field is `blocking_tasks`, not `background_tasks`).
+A `monitor` is a dormant watch on an EXTERNAL human, not work that will produce more output,
+so it does not hold the turn open; `shell`, `subagent` and friends still do.
+
+**The `.type` spellings remain unverified** — 11 §11.2.3 lists
+`shell|subagent|monitor|workflow|teammate|cloud session|MCP task`, but spike S-A never captured
+a live `Stop` payload (only 5/31 events fired in its unauthenticated run), so doc rule 4
+applies. Hence two guards: matching is on a normalised token (`"MCP task"`, `"mcp_task"`,
+`"mcpTask"` agree, and anything containing "monitor" reads as a watch), and an **unrecognised
+type blocks** — keeping the old conservative behaviour for anything new rather than ending a
+turn that is still running. An entry with no readable `.type` blocks for the same reason.
+
+**Not done:** 11 §11.7.4 also asks for a card badge naming `background_tasks[0].type`. Deliberately
+skipped (author 2026-08-31) — the card has no room for it, and `running` already says the
+useful thing.
+
+## Suggestions are one right-hand chip and a marked menu (2026-08-31, author direction)
+
+Supersedes the "Header sleep suggestion (2026-08-30)" entry's placement, not its rule. The
+offer tier stays exactly what D23/D35.1 allows — an offer, never an action — but it stopped
+being a growing list of `∙` clauses on the left of the header.
+
+- **One suggestion at a time, right-aligned**, in a fixed priority order: `update ready`,
+  `sleep N agents`, `archive N tickets`. The chip names its route — `(esc)`, or `(U ∙ esc)`
+  where a key also takes it — and says nothing about what is queued behind it (a `+N` was
+  tried and cut, author 2026-08-31: it sat awkwardly between the offer and its key, and a
+  header that reports queue depth is a dashboard). A chip with no room says nothing rather
+  than shearing the line; scarcity (the PTY warning) outranks it for the space.
+- **A suggestion is not an independent surface. It is a pointer at an Esc-menu row**
+  (`keymap::SUGGESTIONS`), and its availability IS that row's `avail` — so the header can
+  never offer something the menu will not do, and `menu_items` floats the suggested rows to
+  the top in the same priority order. `every_suggestion_is_a_menu_row` enforces all of it.
+  Esc then Enter takes the offer the header named.
+- **The visual language is `◦`**, on the chip and on the menu rows it stands in front of, and
+  nowhere else. Two candidates were cut by the author on 2026-08-31: `›` (reads as "you are
+  here" — every terminal prompt has trained that, and a suggestion is the opposite of where
+  you are) and `◊` (a full-height diamond outline, "a bit big" — louder than the offer it
+  introduces). `◦` U+25E6 is a small mid-height ring, directionless, EAW=N, 6/7 present per
+  §4.1. **It is §4.2's `idle`/`spawning` mark reused**, deliberately: that glyph lives on
+  cards, this one lives in the chrome, and no row ever shows both. ASCII tier falls back to
+  `*`, not §4.1's `.`, which is too faint to read as a mark.
+- **The 0.1 GiB floor moved off the suggestion and onto the payoff.** The chip appears whenever
+  there is anything to sleep; the menu row's detail spends the GiB when it rounds to something
+  and says "frees their memory" when it does not. The header and the menu can no longer
+  disagree about whether sleeping is worth offering — **they did, and it shipped**: the header
+  gated on `reclaim_bytes >= 0.1GiB` while the menu row gated on `reclaim_sessions > 0`, so a
+  small sleep offer was a menu row with no chip, and archive took the header alone (author
+  2026-08-31, dogfood: "the suggestion hint showed archive even though sleep was in the menu
+  as well"). Regression: `test_a_sub_floor_sleep_offer_still_outranks_archive`.
+- Menu labels and details became `fn(&Ctx) -> String` so a row can carry its own count
+  (`Sleep 3 agents in done`), matching the chip's words. `Ctx` gained `bulk_sleep_bytes`.
+- Goldens: `board_suggestions_120x30`, `menu_suggestions_120x30`.
+
+## rustfmt is pinned (2026-08-31)
+
+`rustfmt.toml` (`max_width = 100`, `use_small_heuristics = "Max"`) now records the style the
+workspace was always written in. Without it `cargo fmt` ran on rustfmt defaults and rewrote
+every file it touched, which four separate sessions then tried to un-do by hand.
+
+## Shift+Enter composes and asks (2026-08-31, T-5 re-run)
+
+The composer's Enter mints a ticket and arms the fresh-ticket fast path (a second Enter starts
+claude and takes the terminal). **Shift+Enter does the whole thing in one press and gives the
+terminal back**: ticket created, claude spawned, the ticket title delivered as a prompt that has
+already been *submitted*, board still on screen. `Command::SpawnSession` grew a `submit_prompt`
+flag (serde-additive, `false` = the prefill-only behaviour that remains the default) and
+`SessionRecord` grew `pending_submit`.
+
+Three measurements decided the delivery mechanism (private tmux 3.6a, claude 2.1.251):
+
+- **The Enter cannot ride with the text.** Prefill via `send-keys -l` followed immediately by
+  `send-keys Enter` leaves the title sitting in the box forever — Claude's paste detection
+  absorbs a CR that arrives in the same byte burst. This is T-5's original negative test,
+  reconfirmed against a *fresh* pane rather than a warm one.
+- **`SessionStart` is a START signal, not a readiness signal.** An Enter sent from inside the
+  `SessionStart` hook (t+1.10 s from spawn) submits cleanly — but that was measured with a
+  one-hook settings file. In the real 31-hook build the frame reaches the daemon *during* Claude's
+  startup, and the first dogfood press landed **5 ms** after it and was lost (feed: `SessionStart`
+  at 648165, press at 648170, no `UserPromptSubmit` ever). A single press on that edge is a race.
+  So the frame only *starts* the delivery — `Startup` only, since a Resume/Clear/Compact
+  SessionStart lands in a conversation that already has its prompt.
+- **`UserPromptSubmit` is the ack, and the delivery presses until it arrives.** T-5 already named
+  it the "prompt accepted" signal (~94 ms); the first cut simply did not wait for it.
+  `retry_pending_submits` re-presses every 500 ms, up to 10 attempts, and stops on the ack.
+  Verified: an Enter fired 100 ms after spawn is eaten exactly as before, and a later press
+  submits — once, with the surplus presses landing in an empty box as no-ops. Retries are skipped
+  while the session is not `Spawning`/`Idle`/`Running`, because a startup modal's Enter is an
+  ANSWER and mesimon does not answer dialogs for the user. Giving up leaves the title typed,
+  which is the ordinary spawn's behaviour.
+- **The prompt must NOT ride argv.** `claude "<title>"` works, but commander dispatches a title
+  that happens to name a subcommand to that subcommand instead — `claude -- doctor` runs
+  `doctor` and exits, so `--` does not shield it. A ticket called "doctor" or "update" is not
+  hypothetical in this repo. Keystrokes have no such vocabulary, and keeping the prompt out of
+  argv also keeps `resume_argv`'s replay from re-asking the question.
+
+`Key::ShiftEnter` is the ONE atom off 04 §2.0's legacy floor. It is admissible only because
+every binding on it is gated on the new `Ctx::rich_keys` (the cached kitty-protocol probe
+`init_terminal` already runs), so on a terminal that reports Shift+Enter as a bare Enter the key
+is unbound AND unhinted — the user gets exactly the plain-Enter behaviour, never a half-working
+one. `keymap::shift_enter_is_inert_without_rich_keys` is what makes the exception load-bearing
+rather than a hole.
+
+This does not soften the README's zero-token-injection promise: the same title is typed either
+way, and Shift+Enter only decides whether mesimon also presses Enter on the user's behalf —
+per session, on an explicit keystroke, the way the `m` flow's paste already works.
+
+## Uncertain waits, it does not ask (2026-08-31, author direction)
+
+`06` §4.2's row for `unknown` reads `?` / `?` / `dim3`. Refuted in use: a question mark is a
+prompt — it reads as *mesimon asking the user something*, on a card whose whole point is that
+nobody has to do anything yet. The state is "we have lost the thread and are waiting to pick it
+back up" (typically `Unknown{DaemonRestarted}` for the seconds before the transcript tail or a
+hook re-asserts), which is a LOADING state, so it now animates: `glyphs::waiting`, a two-dot
+braille pair walking the ring (`⠉ ⠘ ⠰ ⠤ ⠆ ⠃`; `" : ,` falling on ascii, none of which is `.`,
+the idle mark), off the same redraw clock as the spinner but divided by `WAIT_STEP_TICKS` = 4 —
+400 ms a frame. Grey register, unchanged; the word is still `unavailable`.
+
+Two rules hold it in place, both tested (`unknown_waits_instead_of_asking`,
+`waiting_is_four_times_slower_than_working`): the waiting frames and the spinner frames are
+DISJOINT, so no still frame of one can be mistaken for the other, and waiting is four times
+slower — D19's motion ban already bent once for the working spinner and must not bend twice at
+the same cadence (the peek's `pulse` is the third and slowest beat, 1 s).
+
+First cut used a SINGLE braille dot. Reverted the same hour: at `dim2` on a real board it
+disappeared — "2/3 running agents show no glyph at all" (author, mid-restart, when every card
+was `Unknown`). Subtle is a ceiling on ink, not a licence to render nothing.

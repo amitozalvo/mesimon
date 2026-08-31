@@ -21,4 +21,4 @@
 
 
 
- DIFF  jk scroll ∙ {} page ∙ hl file ∙ R refresh ∙ zz density ∙ ! shell ∙ q back
+ DIFF  jk scroll ∙ n N next / previous file ∙ { } page ∙ z context, layout… ∙ R refresh ∙ ? keys

@@ -2,7 +2,7 @@
 //! post-D33k arithmetic), expanded columns, 1-cell spines, the minted
 //! cursor-column treatment, and vertical scroll with the D33k chevron badges.
 
-use mesimon_core::board::{SessionRecord, Ticket};
+use mesimon_core::board::{SessionRecord, SessionState, Ticket};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -10,9 +10,11 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
+use mesimon_core::keymap;
+
 use crate::app::{App, InputPurpose, Mode};
-use crate::text::EditBuffer;
 use crate::layout::{self, Slot};
+use crate::text::EditBuffer;
 
 use super::card::{self, CardCtx};
 
@@ -113,7 +115,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let waiting = card::is_waiting(&sessions);
         if let Some(buf) = rename_of(t) {
             let (line, x_off) = card::render_edit(&ctx, buf);
-            groups.push(Group { lines: vec![line], cursor: true, waiting, edit_cursor: Some(x_off) });
+            groups.push(Group {
+                lines: vec![line],
+                cursor: true,
+                waiting,
+                edit_cursor: Some(x_off),
+            });
             return;
         }
         let trail = !held && moving == Some(t.id);
@@ -123,15 +130,20 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let peek = if selected && app.peek {
             let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
             ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
-            ranked
-                .iter()
-                .find_map(|s| s.transcript_path.as_deref())
-                .and_then(|p| app.peek_cache.text(p))
+            ranked.iter().find(|s| s.transcript_path.is_some()).and_then(|s| {
+                let mut pk = app.peek_cache.peek(s.transcript_path.as_deref()?)?;
+                // The activity row is a claim about NOW: a parked, finished
+                // or waiting session's last tool call is history.
+                if s.state != SessionState::Running {
+                    pk.activity = None;
+                }
+                Some(pk)
+            })
         } else {
             None
         };
         let wt = app.wt_item(t.id);
-        let lines = card::render(&ctx, t, &sessions, wt, selected, held, trail, mq, peek.as_deref());
+        let lines = card::render(&ctx, t, &sessions, wt, selected, held, trail, mq, peek.as_ref());
         groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor: None });
     };
     match ghost {
@@ -153,7 +165,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         }
         None => {
             for (i, t) in rows.iter().enumerate() {
-                let selected = is_cursor_col && app.cursor_row == i && matches!(app.mode, Mode::Normal);
+                let selected =
+                    is_cursor_col && app.cursor_row == i && matches!(app.mode, Mode::Normal);
                 push_card(t, selected, false);
             }
         }
@@ -202,7 +215,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // against a peek.
     let body_h = area.height.saturating_sub(2) as usize;
     let total = lines.len();
-    let mut scroll = if is_cursor_col { app.scroll_row.get().min(total.saturating_sub(1)) } else { 0 };
+    let mut scroll =
+        if is_cursor_col { app.scroll_row.get().min(total.saturating_sub(1)) } else { 0 };
     if is_cursor_col {
         if let Some((cs, ce)) = cursor_range {
             let lo = cs.saturating_sub(2);
@@ -228,8 +242,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // card is never the peek (scrolloff keeps it inside the content slice);
     // if it somehow is (a card taller than the window), the peek yields.
     let end_vis = (scroll + body_h).min(total);
-    let not_cursor =
-        |r: &&(usize, usize, bool)| Some((r.0, r.1)) != cursor_range;
+    let not_cursor = |r: &&(usize, usize, bool)| Some((r.0, r.1)) != cursor_range;
     // Each peek costs TWO rows — the ghost line plus a blank keeping the
     // card rhythm — so a peek never sits flush against a full-value card.
     // Bottom: the first card that no longer fits once those rows are
@@ -322,10 +335,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
         ));
     } else {
-        head.push(Span::styled(
-            name.to_uppercase(),
-            theme.dim1().add_modifier(Modifier::BOLD),
-        ));
+        head.push(Span::styled(name.to_uppercase(), theme.dim1().add_modifier(Modifier::BOLD)));
     }
     let mut right: Vec<Span<'static>> = Vec::new();
     if attn_out > 0 {
@@ -343,11 +353,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     head.push(Span::raw(" ".repeat(fill)));
     head.extend(right);
     head.push(Span::raw(" "));
-    let head_line = if is_cursor_col {
-        Line::from(head).style(theme.selected_row())
-    } else {
-        Line::from(head)
-    };
+    let head_line =
+        if is_cursor_col { Line::from(head).style(theme.selected_row()) } else { Line::from(head) };
 
     let mut out: Vec<Line<'static>> = vec![head_line, Line::default()];
 
@@ -356,7 +363,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // Empty column: a legal cursor position (07 §16.2) — the hint shows
         // only under the cursor (author 2026-08-30).
         if is_cursor_col {
-            out.push(Line::from(Span::styled("  a  add here", theme.dim3())));
+            let nudge =
+                keymap::hint_for(keymap::Scope::Board, keymap::Verb::OpenTicket, &app.ctx())
+                    .map(|(show, hint)| format!("  {show}  {hint}"))
+                    .unwrap_or_default();
+            out.push(Line::from(Span::styled(nudge, theme.dim3())));
         }
     } else {
         if let Some((_, end, _)) = top {
@@ -411,12 +422,8 @@ fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
     let body = h.saturating_sub(2);
     let digits: Vec<char> = count.chars().collect();
     let name_rows = body.saturating_sub(digits.len() + 1);
-    let letters: Vec<char> = name
-        .to_uppercase()
-        .chars()
-        .filter(|c| c.is_ascii_alphanumeric())
-        .take(name_rows)
-        .collect();
+    let letters: Vec<char> =
+        name.to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).take(name_rows).collect();
     for c in &letters {
         lines.push(Line::from(Span::styled(c.to_string(), theme.dim1())));
     }

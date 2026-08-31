@@ -21,4 +21,4 @@
 
 
 
- TICKET  jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ esc board
+ TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ ? keys

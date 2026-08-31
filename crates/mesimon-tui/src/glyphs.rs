@@ -16,11 +16,60 @@ const SPIN_ASCII: &[char] = &['|', '/', '-', '\\'];
 /// One spinner step per redraw-clock interval (see `App::spin_frame`).
 pub(crate) const SPIN_STEP_MS: u64 = 100;
 
+/// Waiting frames: a TWO-dot braille pair walking the ring, against the
+/// working spinner's three-dot arc — two thirds of the ink at a quarter of
+/// the speed. An uncertain session is not working and must not read as if it
+/// were; it must still read as something (a single dot vanishes at dim2 —
+/// author 2026-08-31, "no glyph at all"). Ascii tier drops a pair down the
+/// cell instead, avoiding `.` (the idle mark) so no frame ever impersonates
+/// a settled state.
+const WAIT_UNICODE: &[char] = &['⠉', '⠘', '⠰', '⠤', '⠆', '⠃'];
+const WAIT_ASCII: &[char] = &['"', ':', ','];
+
+/// Redraw ticks per waiting step: 4 × `SPIN_STEP_MS` = 400 ms a frame, four
+/// times slower than the spinner. Waiting is not progress; it should barely
+/// move (D19's motion ban bends for the spinner — it must not bend twice at
+/// the same speed).
+const WAIT_STEP_TICKS: usize = 4;
+
+/// The peek's activity mark: a bullet that BLINKS rather than spins. The row
+/// beside it already names the step, so a second spinner would be two things
+/// moving at one speed — D19's motion ban bends for the working spinner, and
+/// it must not bend twice at the same cadence. So this holds its shape and
+/// only changes weight, on a beat ten times slower than the spinner.
+pub(crate) fn pulse(tier: Tier) -> char {
+    // U+25CF, outside the 0x2500–0x259F structure range the L1 law bans, and
+    // full-size on purpose: the small bullet reads as punctuation.
+    if tier == Tier::Ascii {
+        '*'
+    } else {
+        '●'
+    }
+}
+
+/// Redraw ticks per half-blink: 10 × `SPIN_STEP_MS` = a one-second on/off
+/// beat, slow enough that a whole test render lands inside the lit half.
+const PULSE_STEP_TICKS: usize = 10;
+
+/// Is the pulse in its lit half on `frame`? The unlit half drops one dim
+/// tier — never the terminal's blink attribute, which is unreliable and
+/// which nothing else on the board uses.
+pub(crate) fn pulse_lit(frame: usize) -> bool {
+    (frame / PULSE_STEP_TICKS) % 2 == 0
+}
+
 /// The animated working glyph for `frame` (any monotonically increasing
 /// counter; wraps internally).
 pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE };
     frames[frame % frames.len()]
+}
+
+/// The waiting glyph for `frame` (same redraw-clock counter the spinner
+/// rides; the divisor is what makes it slower).
+pub(crate) fn waiting(tier: Tier, frame: usize) -> char {
+    let frames = if tier == Tier::Ascii { WAIT_ASCII } else { WAIT_UNICODE };
+    frames[(frame / WAIT_STEP_TICKS) % frames.len()]
 }
 
 /// The plan-review mark: stacked lines read as a list of steps (U+2261
@@ -32,7 +81,33 @@ pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
 /// Rides the same attention register as `!` — the reason differs, the
 /// urgency does not.
 fn plan_mark(tier: Tier) -> char {
-    if tier == Tier::Ascii { '=' } else { '≡' }
+    if tier == Tier::Ascii {
+        '='
+    } else {
+        '≡'
+    }
+}
+
+/// The suggestion mark. NOT a chevron: `›` reads as "you are here" — every
+/// terminal prompt has trained that — and a suggestion is the opposite, an
+/// offer you have not taken. NOT `◊` either: a full-height diamond outline is
+/// louder than the offer it introduces (author 2026-08-31, "a bit big"). `◦`
+/// U+25E6 is a small mid-height ring, directionless, EAW=N, and 06 §4.1 scores
+/// it 6/7 present.
+///
+/// It is 06 §4.2's `idle`/`spawning` mark reused, deliberately: that glyph
+/// lives on cards, this one lives in the chrome, and the two never share a
+/// region — no row ever shows both. The ASCII tier falls back to `*` rather
+/// than §4.1's `.`, which is too faint to read as a mark of its own.
+///
+/// It appears in exactly two places, and that is the point: on the header's
+/// suggestion chip and on the Esc-menu rows that chip stands in front of.
+pub(crate) fn suggest_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '*'
+    } else {
+        '◦'
+    }
 }
 
 /// Which colour family a glyph rides (06 §2.1: exactly three chromatic tokens;
@@ -64,7 +139,7 @@ pub(crate) enum Tier {
 /// sleeping (all sessions) > unknown. Running is a deviation from 07 §4.1's
 /// "normal card has no glyph": the ticking age alone read as ambiguous, so a
 /// working card carries the grey spinner (author 2026-08-30). `spin` is the
-/// redraw-clock frame; it only matters when the result is the working glyph.
+/// redraw-clock frame; it matters for the working and waiting glyphs.
 pub(crate) fn card_glyph(
     sessions: &[&SessionRecord],
     tier: Tier,
@@ -73,9 +148,8 @@ pub(crate) fn card_glyph(
     if sessions.is_empty() {
         return None;
     }
-    let usable = |s: &&&SessionRecord| {
-        matches!(s.confidence, Confidence::High | Confidence::Medium)
-    };
+    let usable =
+        |s: &&&SessionRecord| matches!(s.confidence, Confidence::High | Confidence::Medium);
     // Plan approval gets its own mark, but only when it is the whole story —
     // any other pending reason (permission ranks above plan) keeps the bang.
     let mut has_attn = false;
@@ -92,8 +166,7 @@ pub(crate) fn card_glyph(
     if sessions.iter().any(|s| {
         matches!(
             s.state,
-            SessionState::Failed { .. }
-                | SessionState::Exited { reason: ExitReason::Crashed }
+            SessionState::Failed { .. } | SessionState::Exited { reason: ExitReason::Crashed }
         )
     }) {
         return Some(('x', Register::Err));
@@ -111,22 +184,20 @@ pub(crate) fn card_glyph(
         return Some(('z', Register::Grey));
     }
     if sessions.iter().any(|s| matches!(s.state, SessionState::Unknown { .. })) {
-        return Some(('?', Register::Grey));
+        return Some((waiting(tier, spin), Register::Grey));
     }
     None
 }
 
 /// Per-session liveness glyph (06 §3.2) — the meta-strip dots, the accordion
 /// rows, and the ticket-screen rail. Never blended with the card glyph (D28).
-/// `spin` animates the working glyph, exactly as on the card.
+/// `spin` animates the working and waiting glyphs, exactly as on the card.
 pub(crate) fn session_glyph(state: &SessionState, tier: Tier, spin: usize) -> (char, Register) {
     let ascii = tier == Tier::Ascii;
     match state {
         SessionState::Spawning => (if ascii { '.' } else { '◦' }, Register::Grey),
         SessionState::Running => (spinner(tier, spin), Register::Grey),
-        SessionState::RequiresAction { reason: Reason::Plan } => {
-            (plan_mark(tier), Register::Attn)
-        }
+        SessionState::RequiresAction { reason: Reason::Plan } => (plan_mark(tier), Register::Attn),
         SessionState::RequiresAction { .. } => ('!', Register::Attn),
         SessionState::Idle { stop_reason: StopReason::EndTurn } => {
             (if ascii { '+' } else { '✓' }, Register::Calm)
@@ -137,7 +208,7 @@ pub(crate) fn session_glyph(state: &SessionState, tier: Tier, spin: usize) -> (c
         SessionState::Exited { .. } => (if ascii { '+' } else { '✓' }, Register::Grey),
         SessionState::Failed { .. } => ('x', Register::Err),
         SessionState::Throttled => ('~', Register::Grey),
-        SessionState::Unknown { .. } => ('?', Register::Grey),
+        SessionState::Unknown { .. } => (waiting(tier, spin), Register::Grey),
     }
 }
 
@@ -175,7 +246,7 @@ pub(crate) fn state_word(state: &SessionState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesimon_core::board::{FailReason, Reason, SessionKind, SessionRecord};
+    use mesimon_core::board::{FailReason, Reason, SessionKind, SessionRecord, UnknownReason};
 
     fn rec(state: SessionState) -> SessionRecord {
         SessionRecord::new(
@@ -213,6 +284,54 @@ mod tests {
         }
     }
 
+    /// Uncertain is a WAITING state, not a `?`: one braille dot orbiting on a
+    /// quarter of the spinner's cadence, so it never reads as work in
+    /// progress. Deviates from 06 §4.2's `?` (STALE-MAP "Uncertain waits").
+    #[test]
+    fn unknown_waits_instead_of_asking() {
+        use unicode_width::UnicodeWidthChar;
+        let unk = rec(SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            let (g, reg) = session_glyph(&unk.state, tier, 0);
+            assert_ne!(g, '?', "the question mark is retired");
+            assert_eq!(reg, Register::Grey, "waiting never leaves the grey ramp");
+            assert_eq!(card_glyph(&[&unk], tier, 0), Some((g, Register::Grey)));
+            // A frame of waiting is never a frame of working: the two glyph
+            // sets are disjoint, so no still frame is ambiguous.
+            for f in 0..40 {
+                assert_eq!(
+                    waiting(tier, f).width(),
+                    Some(1),
+                    "{:?} not one cell",
+                    waiting(tier, f)
+                );
+                for w in 0..40 {
+                    assert_ne!(
+                        waiting(tier, f),
+                        spinner(tier, w),
+                        "waiting frame collides with the spinner"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Slower is the whole point: the waiting glyph holds for four redraw
+    /// ticks (400 ms) where the spinner moves every one, and it still cycles.
+    #[test]
+    fn waiting_is_four_times_slower_than_working() {
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            for f in 0..3 {
+                assert_eq!(waiting(tier, f), waiting(tier, f + 1), "held for four ticks");
+                assert_ne!(spinner(tier, f), spinner(tier, f + 1), "the spinner still steps");
+            }
+            assert_ne!(waiting(tier, 3), waiting(tier, 4), "and then it steps");
+            let frames = if tier == Tier::Ascii { WAIT_ASCII } else { WAIT_UNICODE };
+            let cycle = frames.len() * WAIT_STEP_TICKS;
+            assert_eq!(waiting(tier, 0), waiting(tier, cycle), "wraps cleanly");
+        }
+    }
+
     #[test]
     fn attention_wins_over_everything() {
         let attn = rec(SessionState::RequiresAction { reason: Reason::Permission });
@@ -229,10 +348,7 @@ mod tests {
         assert_eq!(card_glyph(&[&plan], Tier::Ascii, 0), Some(('=', Register::Attn)));
         // A co-pending non-plan reason keeps the generic bang on the card.
         assert_eq!(card_glyph(&[&plan, &perm], Tier::Unicode, 0), Some(('!', Register::Attn)));
-        assert_eq!(
-            session_glyph(&plan.state, Tier::Unicode, 0),
-            ('≡', Register::Attn)
-        );
+        assert_eq!(session_glyph(&plan.state, Tier::Unicode, 0), ('≡', Register::Attn));
         assert_eq!(session_glyph(&perm.state, Tier::Unicode, 0).0, '!');
         assert_eq!('≡'.width(), Some(1));
     }
@@ -250,14 +366,8 @@ mod tests {
         let fail = rec(SessionState::Failed { reason: FailReason::Server });
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
         let sleep = rec(SessionState::Sleeping);
-        assert_eq!(
-            card_glyph(&[&done, &fail], Tier::Unicode, 0),
-            Some(('x', Register::Err))
-        );
-        assert_eq!(
-            card_glyph(&[&sleep, &done], Tier::Unicode, 0),
-            Some(('✓', Register::Calm))
-        );
+        assert_eq!(card_glyph(&[&done, &fail], Tier::Unicode, 0), Some(('x', Register::Err)));
+        assert_eq!(card_glyph(&[&sleep, &done], Tier::Unicode, 0), Some(('✓', Register::Calm)));
     }
 
     #[test]
@@ -284,18 +394,22 @@ mod tests {
         assert_eq!(session_glyph(&SessionState::Running, Tier::Unicode, 0).0, '⠋');
     }
 
+    /// The suggestion mark is its own thing at both tiers, and one cell wide
+    /// wherever it lands — the chrome it rides is width-critical (06 §4.1).
+    #[test]
+    fn suggest_mark_is_one_cell_at_both_tiers() {
+        use unicode_width::UnicodeWidthChar;
+        assert_eq!(suggest_mark(Tier::Unicode), '◦');
+        assert_eq!(suggest_mark(Tier::Ascii), '*');
+        assert_eq!('◦'.width(), Some(1));
+    }
+
     #[test]
     fn uppercase_iff_human_required() {
         // 06 §3.3's case rule, spot-checked.
         assert_eq!(state_word(&SessionState::Running), "working");
-        assert_eq!(
-            state_word(&SessionState::RequiresAction { reason: Reason::Plan }),
-            "NEEDS YOU"
-        );
-        assert_eq!(
-            state_word(&SessionState::Failed { reason: FailReason::Server }),
-            "FAILED"
-        );
+        assert_eq!(state_word(&SessionState::RequiresAction { reason: Reason::Plan }), "NEEDS YOU");
+        assert_eq!(state_word(&SessionState::Failed { reason: FailReason::Server }), "FAILED");
         assert_eq!(state_word(&SessionState::Sleeping), "sleeping");
     }
 }

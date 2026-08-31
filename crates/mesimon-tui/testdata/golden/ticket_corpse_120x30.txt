@@ -10,7 +10,7 @@
                                                                                               enter resumes
   TRANSCRIPT
 
-    ⠋ working
+    ● working
 
 
 
@@ -27,4 +27,4 @@
 
 
 
- TICKET  jk select ∙ enter focus ∙ c claude ∙ s shell ∙ r rename ∙ esc board
+ TICKET  jk select session ∙ enter focus ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ q board ∙ ? keys

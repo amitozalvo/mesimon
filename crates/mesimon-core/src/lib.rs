@@ -7,12 +7,13 @@
 
 pub mod adopt;
 pub mod attention;
-pub mod automove;
 pub mod authorize;
+pub mod automove;
 pub mod board;
 pub mod command;
 pub mod diff;
 pub mod fracindex;
+pub mod keymap;
 pub mod principal;
 pub mod reconcile;
 pub mod workspace;

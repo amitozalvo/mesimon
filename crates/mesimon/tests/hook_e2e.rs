@@ -59,10 +59,7 @@ impl TestClient {
     fn next_event(&mut self, timeout: Duration) -> Option<Event> {
         let deadline = Instant::now() + timeout;
         self.write.set_nonblocking(false).unwrap();
-        self.read
-            .get_ref()
-            .set_read_timeout(Some(timeout))
-            .unwrap();
+        self.read.get_ref().set_read_timeout(Some(timeout)).unwrap();
         while Instant::now() < deadline {
             let mut buf = String::new();
             match self.read.read_line(&mut buf) {
@@ -89,13 +86,7 @@ fn board_of(resp: Response) -> (Board, Vec<GraceItem>) {
 fn hook_send(sock: &std::path::Path, session: &str, event: &str, reason: Option<&str>, body: &str) {
     let bin = env!("CARGO_BIN_EXE_mesimon");
     let mut cmd = Proc::new(bin);
-    cmd.arg("hook")
-        .arg("--sock")
-        .arg(sock)
-        .arg("--session")
-        .arg(session)
-        .arg("--event")
-        .arg(event);
+    cmd.arg("hook").arg("--sock").arg(sock).arg("--session").arg(session).arg("--event").arg(event);
     if let Some(r) = reason {
         cmd.arg("--reason").arg(r);
     }
@@ -163,7 +154,11 @@ fn m2_attention_headless() {
     let ticket = board.tickets.iter().find(|t| t.title == "attn").expect("ticket").id;
 
     // A bash session stands in for the agent pane; hook frames come from us.
-    let sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Bash }) {
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Bash,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("spawn failed: {other:?}"),
     };
@@ -262,7 +257,10 @@ fn m2_attention_headless() {
         if board.ticket(ticket).unwrap().column == "IN PROGRESS" {
             break;
         }
-        assert!(Instant::now() < deadline, "running never automoved the ticket back to IN PROGRESS");
+        assert!(
+            Instant::now() < deadline,
+            "running never automoved the ticket back to IN PROGRESS"
+        );
         std::thread::sleep(Duration::from_millis(100));
     }
 
@@ -281,7 +279,11 @@ fn m2_attention_headless() {
     std::fs::write(&stub, "#!/bin/sh\nsleep 60\n").unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
     std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
-    let claude_sid = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Claude }) {
+    let claude_sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("claude spawn failed: {other:?}"),
     };
@@ -304,7 +306,14 @@ fn m2_attention_headless() {
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let cap = Proc::new("tmux")
-            .args(["-S", &tmux_sock.display().to_string(), "capture-pane", "-p", "-t", &claude_sid16])
+            .args([
+                "-S",
+                &tmux_sock.display().to_string(),
+                "capture-pane",
+                "-p",
+                "-t",
+                &claude_sid16,
+            ])
             .output()
             .expect("tmux capture-pane");
         // capture-pane trims trailing spaces, so match without the one we send.
@@ -314,18 +323,125 @@ fn m2_attention_headless() {
         assert!(Instant::now() < deadline, "ticket-title prefill never appeared in the pane");
         std::thread::sleep(Duration::from_millis(100));
     }
+    // ...and the pane's cursor is still on that first line: mesimon typed the
+    // title and stopped there. This is the README's zero-injection default,
+    // asserted rather than assumed.
+    let cursor_y = |sid16: &str| -> String {
+        let out = Proc::new("tmux")
+            .args([
+                "-S",
+                &tmux_sock.display().to_string(),
+                "display-message",
+                "-p",
+                "-t",
+                sid16,
+                "#{cursor_y}",
+            ])
+            .output()
+            .expect("tmux display-message");
+        String::from_utf8_lossy(&out.stdout).trim().to_string()
+    };
+    assert_eq!(cursor_y(&claude_sid16), "0", "a plain spawn must never press Enter");
     let _ = c.request(Command::KillSession { id: claude_sid });
+
+    // The composer's Shift+Enter (submit_prompt): the SAME prefill, plus an
+    // Enter that mesimon owes the session. It is not paid at spawn — T-5 arm C
+    // (2026-08-31): an Enter sent with the text is eaten by Claude's paste
+    // detection. `SessionStart` STARTS the payment, and `UserPromptSubmit`
+    // ends it; in between mesimon keeps pressing, because that frame can beat
+    // Claude's input loop by milliseconds (dogfood 2026-08-31).
+    let submit_sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+    }) {
+        Response::Spawned { id } => id,
+        other => panic!("claude spawn failed: {other:?}"),
+    };
+    let (board, _) = board_of(c.request(Command::Snapshot));
+    let submit_rec = board.sessions.iter().find(|s| s.id == submit_sid).unwrap();
+    assert!(submit_rec.pending_submit, "the Enter is owed, not yet paid");
+    let submit_sid16 = submit_rec.sid16();
+    let deadline = Instant::now() + Duration::from_secs(3);
+    while cursor_y(&submit_sid16) == "0" && Instant::now() < deadline {
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    assert_eq!(cursor_y(&submit_sid16), "0", "the Enter must NOT land at spawn time");
+
+    hook_send(
+        &hook_sock,
+        &submit_sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t2.jsonl","cwd":"/tmp"}"#,
+    );
+    // The first press lands on the SessionStart edge...
+    hook_send(
+        &hook_sock,
+        &submit_sid.to_string(),
+        "SessionStart",
+        Some("startup"),
+        r#"{"session_id":"x","transcript_path":"/tmp/t2.jsonl","cwd":"/tmp"}"#,
+    );
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while cursor_y(&submit_sid16) == "0" {
+        assert!(Instant::now() < deadline, "SessionStart never started the delivery");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    // ...and because this stub never acks, mesimon must press AGAIN. That
+    // retry is the whole fix: one press on the SessionStart edge is a race
+    // Claude's startup can win.
+    let deadline = Instant::now() + Duration::from_secs(4);
+    while cursor_y(&submit_sid16) == "1" {
+        assert!(
+            Instant::now() < deadline,
+            "an unacknowledged Enter was never retried — the delivery is one-shot again"
+        );
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let (board, _) = board_of(c.request(Command::Snapshot));
+    let rec = board.sessions.iter().find(|s| s.id == submit_sid).unwrap();
+    assert!(rec.pending_submit, "still owed until Claude acknowledges it");
+
+    // UserPromptSubmit IS the ack (T-5): the pressing stops, and stays stopped.
+    hook_send(&hook_sock, &submit_sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
+    let deadline = Instant::now() + Duration::from_secs(3);
+    loop {
+        let (board, _) = board_of(c.request(Command::Snapshot));
+        let rec = board.sessions.iter().find(|s| s.id == submit_sid).unwrap();
+        if !rec.pending_submit {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the ack never closed the offer");
+        std::thread::sleep(Duration::from_millis(50));
+    }
+    let settled = cursor_y(&submit_sid16);
+    std::thread::sleep(Duration::from_millis(1200));
+    assert_eq!(cursor_y(&submit_sid16), settled, "an acknowledged prompt must stop the pressing");
+    let _ = c.request(Command::KillSession { id: submit_sid });
 
     // pane-died: SIGKILL the process behind a fresh bash pane; the tmux hook
     // must push exited{crashed} with no polling anywhere.
-    let sid2 = match c.request(Command::SpawnSession { ticket, kind: SessionKind::Bash }) {
+    let sid2 = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Bash,
+        submit_prompt: false,
+    }) {
         Response::Spawned { id } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     let (board, _) = board_of(c.request(Command::Snapshot));
     let sid16 = board.sessions.iter().find(|s| s.id == sid2).unwrap().sid16();
     let pid_out = Proc::new("tmux")
-        .args(["-S", &tmux_sock.display().to_string(), "display-message", "-p", "-t", &sid16, "#{pane_pid}"])
+        .args([
+            "-S",
+            &tmux_sock.display().to_string(),
+            "display-message",
+            "-p",
+            "-t",
+            &sid16,
+            "#{pane_pid}",
+        ])
         .output()
         .expect("tmux display-message");
     let pid = String::from_utf8_lossy(&pid_out.stdout).trim().to_string();

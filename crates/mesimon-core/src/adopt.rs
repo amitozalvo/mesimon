@@ -29,8 +29,7 @@ pub fn parse_transcript_head(head: &str) -> Option<TranscriptHead> {
     for line in head.lines() {
         let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
         if session_id.is_none() {
-            session_id =
-                v.get("sessionId").and_then(Value::as_str).and_then(|s| s.parse().ok());
+            session_id = v.get("sessionId").and_then(Value::as_str).and_then(|s| s.parse().ok());
         }
         if cwd.is_none() {
             cwd = v.get("cwd").and_then(Value::as_str).map(str::to_string);
@@ -140,13 +139,81 @@ pub fn classify_tail_record(v: &Value) -> TailEvent {
                 None => TailEvent::Other,
             }
         }
-        Some("system")
-            if v.get("subtype").and_then(Value::as_str) == Some("turn_duration") =>
-        {
+        Some("system") if v.get("subtype").and_then(Value::as_str) == Some("turn_duration") => {
             TailEvent::TurnComplete
         }
         _ => TailEvent::Other,
     }
+}
+
+/// The label a peek row shows for a tool call: the caller's own title where
+/// the tool carries one (`description` — Bash, Agent, Artifact), else the
+/// tool's name plus its target (a path's last component, a pattern, a query,
+/// a url, the command's first line). `None` for a record with no `tool_use`
+/// block. Parallel calls in one record share one row — the first is as good
+/// a summary as any, and the row is a hint, not a ledger.
+pub fn tool_activity(v: &Value) -> Option<String> {
+    let blocks = v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)?;
+    let b = blocks.iter().find(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"))?;
+    let input = b.get("input");
+    let field = |key: &str| {
+        input
+            .and_then(|i| i.get(key))
+            .and_then(Value::as_str)
+            .and_then(|t| t.lines().find(|l| !l.trim().is_empty()))
+            .map(str::trim)
+            .filter(|t| !t.is_empty())
+    };
+    if let Some(d) = field("description") {
+        return Some(d.to_string());
+    }
+    let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
+    // A path shows its last component only: the card has ~40 cells and the
+    // directory is the least distinguishing part of a repo-relative path.
+    if let Some(p) = field("file_path").or_else(|| field("notebook_path")) {
+        return Some(format!("{name} {}", p.rsplit('/').next().unwrap_or(p)));
+    }
+    match ["pattern", "query", "url", "skill", "command"].iter().find_map(|k| field(k)) {
+        Some(t) => Some(format!("{name} {t}")),
+        None => Some(name.to_string()),
+    }
+}
+
+/// The user's own words, when this record is one of THEIR messages. Measured
+/// over 25 local corpora (2026-08-31): 862 of every 940 `user` records are
+/// tool results, and the rest divide into plain-string prompts (the real
+/// thing), `isMeta` injections (`<local-command-caveat>`, a skill's preamble)
+/// and the Esc interrupt's `[Request interrupted by user]`. Only the first is
+/// a prompt. The array form is accepted too — an attachment rides alongside
+/// the text — as long as no `tool_result` block is in it.
+///
+/// Why the record and not the `last-prompt` latch: the latch is written a
+/// turn late (verified in a live transcript — the latch for the message being
+/// worked on lands mid-tool-run, after the agent has already answered), so
+/// only the record's position says when the user actually spoke.
+pub fn user_prompt(v: &Value) -> Option<String> {
+    if v.get("type").and_then(Value::as_str) != Some("user")
+        || v.get("uuid").is_none()
+        || v.get("toolUseResult").is_some()
+        || v.get("isMeta").and_then(Value::as_bool) == Some(true)
+        || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
+        || v.get("interruptedMessageId").is_some_and(|x| !x.is_null())
+    {
+        return None;
+    }
+    let content = v.get("message")?.get("content")?;
+    if let Some(s) = content.as_str() {
+        return Some(s.trim().to_string()).filter(|s| !s.is_empty());
+    }
+    let blocks = content.as_array()?;
+    if blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+        return None;
+    }
+    let text = blocks
+        .iter()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .find_map(|b| b.get("text").and_then(Value::as_str))?;
+    Some(text.trim().to_string()).filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]
@@ -194,6 +261,77 @@ mod tests {
     }
 
     #[test]
+    fn tool_activity_prefers_the_caller_title_then_the_target() {
+        // The description IS the title the agent wrote for the step.
+        let v = val(r#"{"uuid":"u1","type":"assistant","message":{"content":[
+                {"type":"text","text":"now the counts"},
+                {"type":"tool_use","name":"Bash","input":{"command":"wc -l x","description":"Count lines"}}]}}"#);
+        assert_eq!(tool_activity(&v).as_deref(), Some("Count lines"));
+
+        // No description: the tool and what it is pointed at, path by leaf.
+        let v = val(r#"{"uuid":"u2","type":"assistant","message":{"content":[
+                {"type":"tool_use","name":"Read","input":{"file_path":"/a/b/peek.rs","offset":9}}]}}"#);
+        assert_eq!(tool_activity(&v).as_deref(), Some("Read peek.rs"));
+
+        let v = val(r#"{"uuid":"u3","type":"assistant","message":{"content":[
+                {"type":"tool_use","name":"Grep","input":{"pattern":"transcript","path":"crates"}}]}}"#);
+        assert_eq!(tool_activity(&v).as_deref(), Some("Grep transcript"));
+
+        // A heredoc command contributes its first line, never the body.
+        let v = val(r#"{"uuid":"u4","type":"assistant","message":{"content":[
+                {"type":"tool_use","name":"Bash","input":{"command":"python3 - <<PY\nimport os\nPY"}}]}}"#);
+        assert_eq!(tool_activity(&v).as_deref(), Some("Bash python3 - <<PY"));
+
+        // Nothing recognizable still names the tool; a textless turn is None.
+        let v = val(r#"{"uuid":"u5","type":"assistant","message":{"content":[
+                {"type":"tool_use","name":"StructuredOutput","input":{"findings":[]}}]}}"#);
+        assert_eq!(tool_activity(&v).as_deref(), Some("StructuredOutput"));
+        let v = val(r#"{"uuid":"u6","type":"assistant","message":{"content":[
+                {"type":"text","text":"done"}]}}"#);
+        assert_eq!(tool_activity(&v), None);
+        assert_eq!(tool_activity(&val(r#"{"uuid":"u7","type":"user","message":{}}"#)), None);
+    }
+
+    #[test]
+    fn user_prompt_is_only_the_users_own_message() {
+        let v = val(
+            r#"{"uuid":"u1","type":"user","message":{"role":"user","content":"enter didn't register"}}"#,
+        );
+        assert_eq!(user_prompt(&v).as_deref(), Some("enter didn't register"));
+
+        // A prompt that carried an attachment keeps its text.
+        let v = val(r#"{"uuid":"u2","type":"user","message":{"content":[
+                {"type":"text","text":"look at this"},{"type":"image"}]}}"#);
+        assert_eq!(user_prompt(&v).as_deref(), Some("look at this"));
+
+        // The three impostors: a tool result, an injection, the Esc record.
+        let v = val(r#"{"uuid":"u3","type":"user","toolUseResult":{"ok":1},"message":{"content":[
+                {"type":"tool_result","content":"out"}]}}"#);
+        assert_eq!(user_prompt(&v), None);
+        let v = val(
+            r#"{"uuid":"u4","type":"user","isMeta":true,"message":{"content":"<local-command-caveat>x"}}"#,
+        );
+        assert_eq!(user_prompt(&v), None);
+        let v = val(
+            r#"{"uuid":"u5","type":"user","interruptedMessageId":"msg_1","message":{"content":[
+                {"type":"text","text":"[Request interrupted by user]"}]}}"#,
+        );
+        assert_eq!(user_prompt(&v), None);
+
+        // A subagent's prompt is not the user speaking, and neither is a
+        // latch or an empty message.
+        let v = val(
+            r#"{"uuid":"u6","type":"user","isSidechain":true,"message":{"content":"do the thing"}}"#,
+        );
+        assert_eq!(user_prompt(&v), None);
+        assert_eq!(user_prompt(&val(r#"{"type":"user","message":{"content":"x"}}"#)), None);
+        assert_eq!(
+            user_prompt(&val(r#"{"uuid":"u7","type":"user","message":{"content":"  "}}"#)),
+            None
+        );
+    }
+
+    #[test]
     fn uuidless_records_are_latches() {
         // A naive last-N-lines tail surfaces one of these 1 time in 4 (09 §4.2).
         let v = val(r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#);
@@ -204,26 +342,20 @@ mod tests {
 
     #[test]
     fn classifier_maps_the_detection_table() {
-        let v = val(
-            r#"{"uuid":"u1","type":"assistant","message":{"content":[
-                {"type":"text","text":"first"},{"type":"text","text":"last"}]}}"#,
-        );
+        let v = val(r#"{"uuid":"u1","type":"assistant","message":{"content":[
+                {"type":"text","text":"first"},{"type":"text","text":"last"}]}}"#);
         assert_eq!(classify_tail_record(&v), TailEvent::AssistantText { text: "last".into() });
 
-        let v = val(
-            r#"{"uuid":"u2","type":"assistant","message":{"content":[
-                {"type":"tool_use","name":"AskUserQuestion","input":{}}]}}"#,
-        );
+        let v = val(r#"{"uuid":"u2","type":"assistant","message":{"content":[
+                {"type":"tool_use","name":"AskUserQuestion","input":{}}]}}"#);
         assert_eq!(
             classify_tail_record(&v),
             TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion }
         );
 
-        let v = val(
-            r#"{"uuid":"u3","type":"assistant","message":{"content":[
+        let v = val(r#"{"uuid":"u3","type":"assistant","message":{"content":[
                 {"type":"tool_use","name":"ExitPlanMode","input":{"plan":"p"}},
-                {"type":"text","text":"t"}]}}"#,
-        );
+                {"type":"text","text":"t"}]}}"#);
         assert_eq!(
             classify_tail_record(&v),
             TailEvent::NeedsHuman { tool: TailTool::ExitPlanMode }
