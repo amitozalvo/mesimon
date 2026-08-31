@@ -634,6 +634,9 @@ fn golden_card_branch_line_120() {
 fn fixture_tagged() -> Board {
     let mut b = fixture(false);
     let tag = |b: &mut Board, id: u128, pairs: &[(u8, &str)]| {
+        for (g, name) in pairs {
+            b.register_tag(*g, name);
+        }
         if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(id)) {
             for (g, name) in pairs {
                 t.set_tag(*g, Some((*name).to_string()));
@@ -685,9 +688,29 @@ fn golden_tag_chord_120() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
     app.cursor_row = 0;
-    app.tag_armed =
-        Some(crate::app::TagArm { ticket: Some(ulid_n(3)), group: Some(1), naming: None });
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        group: Some(1),
+        naming: None,
+        forget_armed: false,
+    });
     golden("board_tag_chord_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_tag_forget_armed_120() {
+    // Retiring reaches every ticket wearing the tag, so it takes two presses
+    // and the first one names the blast radius before asking for the second.
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        group: Some(1),
+        naming: None,
+        forget_armed: true,
+    });
+    golden("board_tag_forget_armed_120x30", &render(&app, 120, 30));
 }
 
 #[test]
@@ -700,8 +723,12 @@ fn golden_tag_naming_120() {
     for c in "HOTFIX".chars() {
         buffer.insert(c);
     }
-    app.tag_armed =
-        Some(crate::app::TagArm { ticket: Some(ulid_n(3)), group: Some(5), naming: Some(buffer) });
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        group: Some(5),
+        naming: Some(buffer),
+        forget_armed: false,
+    });
     golden("board_tag_naming_120x30", &render(&app, 120, 30));
 }
 
@@ -722,7 +749,12 @@ fn golden_compose_tags_120() {
         },
         buffer,
     };
-    app.tag_armed = Some(crate::app::TagArm { ticket: None, group: Some(1), naming: None });
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: None,
+        group: Some(1),
+        naming: None,
+        forget_armed: false,
+    });
     golden("board_compose_tags_120x30", &render(&app, 120, 30));
 }
 

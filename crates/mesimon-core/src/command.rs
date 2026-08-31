@@ -112,6 +112,13 @@ pub enum Command {
         group: u8,
         name: Option<String>,
     },
+    /// Retire a tag: remove it from the registry and from every ticket
+    /// wearing it. The counterpart to create-on-the-fly — a vocabulary that
+    /// only ever grows collects every typo forever.
+    ForgetTag {
+        group: u8,
+        name: String,
+    },
     /// Merge the ticket's branch into the default branch — fast-forward ONLY.
     /// A branch the default moved past answers `NeedsRebase`: the agent
     /// rebases + tests in its worktree first (`MergeToAgent`), so mesimon

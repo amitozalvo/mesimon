@@ -27,4 +27,4 @@
 
 
  TAG  1 b BUG  2 –  3 –  4 –
- TAG  1-9 cycle this group ∙ n new tag here ∙ x clear this group ∙ esc done ∙ ? keys
+ TAG  1-9 cycle this group ∙ n new tag here ∙ x clear this group ∙ d retire this tag ∙ esc done ∙ ? keys

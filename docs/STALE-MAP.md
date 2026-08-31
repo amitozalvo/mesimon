@@ -1030,17 +1030,24 @@ D18's tag pips and D31b are built. Six things the corpus did not settle, or sett
   legacy-floor atom a text field cannot swallow (`keys.rs:16` matches Ctrl before the printable
   arm). Hence `^t` + a digit, and hence a fourth chord tail (`Scope::TagChord`), bound on BOARD,
   TICKET **and** INPUT. 04 §1.1's ban stands; only the author's preferred spelling is refuted.
-- **There is no tag registry file.** `Ticket.tags: Vec<Tag>` (`{name, group}`) is the whole model;
-  the vocabulary is derived by scanning the board (`Board::group_tags`). 16 §config's `board.toml`
-  and 13's `tags: [String]` both assumed a configured list. Consequence, made explicit in
-  `tags_e2e`: a tag exists exactly as long as some ticket wears it, so there is no rename and no
-  delete to build — and D33g's open residue about "a memory mechanism for a *removed* tag" is
-  answered by not having one.
-- **The vocabulary sorts alphabetically, not by first appearance.** First-appearance order is a
-  trap and the cycle test caught it: the ticket being cycled is part of the derivation, so taking
-  a tag moves that tag to the front and the next press walks back to where it started — the cycle
-  oscillates between two values and `none` is unreachable. D31b's "stable order, never by
-  recency" means *subject-independent*.
+- **The registry is board-level and persisted, in `columns.toml` at schema 2.** `Board.tags` is
+  the vocabulary; `Ticket.tags` is what each ticket wears. Nothing is seeded, and "create on the
+  fly" means only that: no setup step before the board is usable. Typing a name once registers it
+  (`Board::register_tag`, from the daemon's `set_tag`) and it stays in the cycle after the last
+  ticket drops it — 16 §config's `board.toml` guessed the right shape, wrong file. The schema
+  bump is deliberate: left at 1, an older build would parse the file, ignore `tags`, and drop the
+  whole registry on its next write; at 2 it refuses the file and bars its writes instead
+  (16 §6.2). `ForgetTag` is the only removal, and it strips the name from every wearer in the
+  same pass — a ticket left wearing a retired tag shows a pip the cycle can neither reach nor
+  clear. D33g's open residue about "a memory mechanism for a *removed* tag" is answered: the
+  registry is that memory, and retiring is explicit.
+- **A first cut derived the vocabulary from the tickets, and it was wrong twice.** Recorded
+  because the second failure is not obvious: a tag vanished when its last wearer dropped it
+  (which is what the author's correction was actually about), and — subtler — the ticket being
+  cycled was itself part of the derivation, so taking a tag moved it in the list and the next
+  press walked back to where it started. The cycle oscillated between two values and `none` was
+  unreachable. Any future "just compute it from the board" idea has to answer both. D31b's
+  "stable order, config order, never by recency" is satisfied by registry insertion order.
 - **`06` §2.4's chalk pip ramp is refuted on contrast.** Its `L*` 62 hexes measure **2.81:1** on
   the chalk page and **2.33:1** on the selected surface — below even the `dim3` de-emphasis floor
   the code already enforces. Re-derived at `L*` 54, same six hues, `C*` still under the 8.2

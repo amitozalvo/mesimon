@@ -223,6 +223,9 @@ pub enum Verb {
     TagNew,
     /// Clear the axis last picked.
     TagClear,
+    /// Retire the picked axis's current tag from the registry and from every
+    /// ticket wearing it. Two presses, like every other board-wide removal.
+    TagForget,
     /// Leave the tag tail.
     TagDone,
     Merge,
@@ -364,6 +367,10 @@ pub struct Ctx {
     /// The picked axis already has a vocabulary, so a digit press cycles it
     /// rather than falling straight into naming.
     pub tag_group_has_tags: bool,
+    /// The ticket wears a tag on the picked axis — the one `d` would retire.
+    pub tag_worn: bool,
+    /// `d` is armed: the next `d` retires that tag board-wide.
+    pub tag_forget_armed: bool,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -407,6 +414,8 @@ impl Default for Ctx {
             tag_group: None,
             tag_naming: false,
             tag_group_has_tags: false,
+            tag_worn: false,
+            tag_forget_armed: false,
             rich_keys: false,
         }
     }
@@ -1176,6 +1185,28 @@ static TAG: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 30,
+    },
+    Binding {
+        // Retiring a tag reaches every ticket that wears it, so it takes two
+        // deliberate presses — the same grace the `d` and `a` chords give a
+        // single card, for a change with a wider blast radius.
+        keys: &[Key::Char('d')],
+        verb: Verb::TagForget,
+        show: "d",
+        hint: |c| {
+            // The `show` already prints the key, so the hint must not
+            // repeat it — the footer composes them as "d <hint>".
+            if c.tag_forget_armed {
+                "again to retire it everywhere"
+            } else {
+                "retire this tag"
+            }
+        },
+        avail: |c| !c.tag_naming && c.tag_worn,
+        class: Class::Grace,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 40,
     },
     Binding {
         keys: &[Key::Esc, Key::Enter],

@@ -194,14 +194,19 @@ subcommand, and `--` does not shield it. Retries stop outside `Spawning`/`Idle`/
 startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026-08-31 addendum
 + correction and STALE-MAP "Shift+Enter composes and asks".
 
-**Tags are ticket metadata on an axis, and the registry is derived.** `Ticket.tags` is a
-`Vec<Tag>` of `{name, group}`; a group (1-9) is an axis and a ticket wears at most one tag per
-group, so a digit press cycles `none -> first -> ... -> last -> none`. There is NO registry
-file and nothing is seeded — `Board::group_tags(g)` derives the vocabulary by scanning the
-board, so a tag exists exactly as long as some ticket wears it (hence no rename, no delete).
-That derivation sorts **alphabetically**, and must stay subject-independent: order by first
-appearance and the ticket being cycled reorders its own vocabulary, so the cycle oscillates
-and `none` becomes unreachable. The key is `^t` (a fourth chord tail) and NOT `ctrl+<digit>`,
+**Tags are ticket metadata on an axis, and the registry is board-level and persisted.**
+`Ticket.tags` is a `Vec<Tag>` of `{name, group}`; a group (1-9) is an axis and a ticket wears at
+most one tag per group, so a digit press cycles `none -> first -> ... -> last -> none`. The
+vocabulary lives in `Board.tags`, persisted in `columns.toml` (schema **2**; the bump exists so
+an older build bars its writes instead of silently dropping the registry). Nothing is seeded —
+"create on the fly" means no setup step, NOT a derived list: typing a name once registers it
+(`register_tag`, called from the daemon's `set_tag`), and it stays in the cycle after the last
+ticket drops it. Only `ForgetTag` removes one, and it strips the name from every wearer in the
+same pass — a ticket left wearing a retired tag would show a pip the cycle can neither reach nor
+clear. `group_tags(g)` reads the registry in creation order; do NOT re-derive it from the
+tickets, which breaks twice (a tag vanishes with its last wearer, and the ticket being cycled
+reorders its own vocabulary so `none` becomes unreachable). The key is `^t` (a fourth chord
+tail) and NOT `ctrl+<digit>`,
 which `no_banned_atoms` rejects — see STALE-MAP "Ticket tags" for why, and note the binding
 must exist in `INPUT` too or the composer types the letter instead. At rest a tag renders as
 one lowercase letter tinted `Theme::pip(stable_hash(name) % 6)` on card line 1 (zero-width

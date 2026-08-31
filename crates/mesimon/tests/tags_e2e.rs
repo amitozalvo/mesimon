@@ -126,24 +126,22 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     assert_eq!(t.tags.len(), 2, "replaced, not appended");
     assert_eq!(t.tag_in(1).unwrap().name, "REGR");
 
-    // The registry is DERIVED, and this is the consequence to be explicit
-    // about: nothing wears BUG any more, so BUG is gone from the vocabulary.
-    // A tag exists exactly as long as some ticket carries it — which is what
-    // "create on the fly, nothing seeded" costs, and why there is no rename
-    // or delete to build.
-    assert_eq!(board.group_tags(1), vec!["REGR"]);
+    // The registry is board-level and PERSISTED: nothing wears BUG any more,
+    // and BUG is still in the vocabulary. Using a name once is what puts it
+    // there — that is all "create on the fly" means — and only an explicit
+    // retire takes it out. Registry order is creation order.
+    assert_eq!(board.group_tags(1), vec!["BUG", "REGR"]);
 
-    // Give BUG a home on a second ticket and it is back in the cycle, for
-    // both tickets, sorted — the order never depends on who wears what.
+    // It is offered on a ticket that never wore it, which is the point of a
+    // registry rather than a per-ticket accident.
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "other".into() });
     let board = board_of(c.request(Command::Snapshot));
     let other = board.tickets.iter().find(|t| t.title == "other").unwrap().id;
+    assert_eq!(board.group_tags(1), vec!["BUG", "REGR"]);
     assert!(matches!(
         c.request(Command::SetTag { id: other, group: 1, name: Some("BUG".into()) }),
         Response::Ok
     ));
-    let board = board_of(c.request(Command::Snapshot));
-    assert_eq!(board.group_tags(1), vec!["BUG", "REGR"]);
 
     // ---- the boundary sanitizes and refuses --------------------------------
     err_containing(set(&mut c, 0, Some("x")), "1-9");
@@ -168,6 +166,16 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     for scalar in ["id =", "short_key =", "title =", "column =", "created_at ="] {
         let at = raw.find(scalar).unwrap_or_else(|| panic!("{scalar} missing from\n{raw}"));
         assert!(at < tags_at, "{scalar} must serialize before [[tags]]");
+    }
+
+    // ---- the registry on disk ----------------------------------------------
+    let cols = std::fs::read_to_string(repo.join(".mesimon/board/columns.toml")).unwrap();
+    assert!(cols.contains("schema_version = 2"), "registry bumped the stamp:\n{cols}");
+    assert!(cols.contains("[[tags]]"), "registry reached the disk:\n{cols}");
+    assert!(cols.contains("REGR") && cols.contains("BUG"));
+    let tags_at = cols.find("[[tags]]").unwrap();
+    for scalar in ["schema_version =", "next_key ="] {
+        assert!(cols.find(scalar).unwrap() < tags_at, "{scalar} must precede [[tags]]");
     }
 
     // ---- clearing ----------------------------------------------------------
@@ -199,6 +207,25 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     assert_eq!(t.tag_in(2).unwrap().name, "STAGING", "tags reloaded from disk");
     assert_eq!(t.tag_in(3).unwrap().name, "abc");
     assert!(t.tag_in(1).is_none());
+    // The REGISTRY reloaded too — the vocabulary is not rebuilt from tickets.
+    assert_eq!(board.group_tags(1), vec!["BUG", "REGR"], "registry survived the restart");
+    assert_eq!(board.group_tags(2), vec!["STAGING"]);
+
+    // ---- retiring takes the pips with it -----------------------------------
+    // `other` wears BUG; `id` does not. Retiring must clear the one and leave
+    // the other alone, and drop the name from the cycle for good.
+    err_containing(c.request(Command::ForgetTag { group: 1, name: "NOPE".into() }), "no tag");
+    assert!(matches!(c.request(Command::ForgetTag { group: 1, name: "BUG".into() }), Response::Ok));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.group_tags(1), vec!["REGR"], "retired from the vocabulary");
+    assert!(
+        board.ticket(other).unwrap().tag_in(1).is_none(),
+        "a retired tag leaves no orphan pip on the card"
+    );
+    assert_eq!(board.ticket(id).unwrap().tag_in(2).unwrap().name, "STAGING", "other axes intact");
+    // And it stays retired across a reload.
+    let raw = std::fs::read_to_string(&ticket_toml).unwrap();
+    assert!(!raw.contains("\"BUG\""), "the wearer's file was rewritten:\n{raw}");
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();

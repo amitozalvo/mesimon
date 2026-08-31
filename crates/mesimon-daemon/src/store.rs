@@ -18,7 +18,12 @@ use crate::paths::Paths;
 /// On-disk schema stamps (16 §6.2). Four state files, four independent
 /// counters — a ticket change must not force a sessions migration. Absent is
 /// read as 1; newer than ours refuses THAT file and bars writes to it.
-pub const COLUMNS_SCHEMA: u32 = 1;
+/// v2 added the tag registry. Bumped rather than defaulted on purpose: at v1
+/// an older build would read the file, ignore `tags`, and DROP the whole
+/// registry on its next write. The stamp makes it refuse the file and bar its
+/// writes instead — 16 §6.2's rule that a newer file is left untouched rather
+/// than silently downgraded.
+pub const COLUMNS_SCHEMA: u32 = 2;
 pub const TICKET_SCHEMA: u32 = 1;
 pub const SESSIONS_SCHEMA: u32 = 1;
 
@@ -34,6 +39,10 @@ struct ColumnsFile {
     schema_version: u32,
     next_key: u64,
     columns: Vec<Column>,
+    /// The tag registry (v2). Another array of tables, so it may follow
+    /// `columns` but must stay after every scalar.
+    #[serde(default)]
+    tags: Vec<mesimon_core::board::Tag>,
 }
 
 /// `ticket.toml` with its schema stamp. The stamp lives here rather than on
@@ -279,6 +288,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                             let b = Board {
                                 columns: cf.columns,
                                 next_key: cf.next_key,
+                                tags: cf.tags,
                                 ..Default::default()
                             };
                             return (b, false, false);
@@ -424,6 +434,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
         columns: board.columns.clone(),
+        tags: board.tags.clone(),
     };
     write_atomic(&paths.board_dir.join("board/columns.toml"), &toml::to_string_pretty(&cf)?)
 }
@@ -842,6 +853,52 @@ by = "local"
         assert_eq!(back.schema_version, TICKET_SCHEMA);
         assert_eq!(back.ticket.archived, tf.ticket.archived);
         assert_eq!(back.ticket.short_key, "T-11");
+    }
+
+    /// A v1 columns.toml (no registry) still loads, and the tag list defaults
+    /// to empty. The board comes up; nothing is seeded.
+    #[test]
+    fn v1_columns_file_loads_without_a_registry() {
+        let v1 = r#"
+schema_version = 1
+next_key = 7
+
+[[columns]]
+name = "TODO"
+order = "a0"
+"#;
+        let cf: ColumnsFile = toml::from_str(v1).unwrap();
+        assert_eq!(cf.schema_version, 1);
+        assert_eq!(cf.next_key, 7);
+        assert!(cf.tags.is_empty());
+    }
+
+    /// The registry round-trips through the serializer that writes the file.
+    /// `[[columns]]` and `[[tags]]` are both arrays of tables, so they may
+    /// follow each other — but a scalar after either is a TOML error, which
+    /// is why `schema_version` and `next_key` are declared first.
+    #[test]
+    fn registry_roundtrips_after_the_columns_table() {
+        let cf = ColumnsFile {
+            schema_version: COLUMNS_SCHEMA,
+            next_key: 3,
+            columns: vec![Column { name: "TODO".into(), order: "a0".into() }],
+            tags: vec![
+                mesimon_core::board::Tag { name: "BUG".into(), group: 1 },
+                mesimon_core::board::Tag { name: "STAGING".into(), group: 2 },
+            ],
+        };
+        let text = toml::to_string_pretty(&cf).unwrap();
+        let back: ColumnsFile = toml::from_str(&text).unwrap();
+        assert_eq!(back.tags.len(), 2);
+        assert_eq!(back.tags[0].name, "BUG");
+        assert_eq!(back.next_key, 3);
+        // The stamp is what stops an older build silently dropping the
+        // registry on its next write: at v1 it would parse, ignore `tags`,
+        // and overwrite the file without them.
+        assert_eq!(COLUMNS_SCHEMA, 2);
+        assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
+        assert!(matches!(verdict(COLUMNS_SCHEMA, 1), Verdict::Newer(2)));
     }
 
     /// Today's ticket.toml carries no stamp; it must read as schema 1 (16 §6.2

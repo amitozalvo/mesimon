@@ -165,6 +165,8 @@ pub struct TagArm {
     pub group: Option<u8>,
     /// Typing a new tag name.
     pub naming: Option<EditBuffer>,
+    /// `d` has been pressed once: the next one retires the tag board-wide.
+    pub forget_armed: bool,
 }
 
 /// `{`/`}` (and PgUp/PgDn) hunk-pane page step. The key handler cannot see
@@ -688,7 +690,11 @@ impl App {
                 .tag_armed
                 .as_ref()
                 .and_then(|a| a.group)
-                .is_some_and(|g| !self.board.group_tags(g).is_empty()),
+                .is_some_and(|g| !self.tag_vocab(g).is_empty()),
+            tag_worn: self.tag_armed.as_ref().and_then(|a| a.group).is_some_and(|g| {
+                self.tag_subject().is_some_and(|t| t.iter().any(|t| t.group == g))
+            }),
+            tag_forget_armed: self.tag_armed.as_ref().is_some_and(|a| a.forget_armed),
             rich_keys: self.rich_keys,
         }
     }
@@ -870,7 +876,8 @@ impl App {
                 if ticket.is_none() && !ctx.composing {
                     return Ok(());
                 }
-                self.tag_armed = Some(TagArm { ticket, group: None, naming: None });
+                self.tag_armed =
+                    Some(TagArm { ticket, group: None, naming: None, forget_armed: false });
                 self.status = "1-9 pick a group ∙ esc done".into();
             }
             Verb::TagGroup => {
@@ -881,8 +888,7 @@ impl App {
                 if let Some(arm) = self.tag_armed.as_mut() {
                     arm.group = Some(group);
                 }
-                let vocab: Vec<String> =
-                    self.board.group_tags(group).iter().map(|s| s.to_string()).collect();
+                let vocab = self.tag_vocab(group);
                 if vocab.is_empty() {
                     // Nothing to cycle: an empty axis falls straight into
                     // naming, which is what "create on the fly" means.
@@ -926,6 +932,43 @@ impl App {
                     self.status = format!("group {g} cleared");
                     self.apply_tag(g, None)?;
                 }
+            }
+            Verb::TagForget => {
+                let Some(group) = ctx.tag_group else { return Ok(()) };
+                let Some(name) = self
+                    .tag_subject()
+                    .and_then(|t| t.iter().find(|t| t.group == group))
+                    .map(|t| t.name.clone())
+                else {
+                    return Ok(());
+                };
+                let armed = self.tag_armed.as_ref().is_some_and(|a| a.forget_armed);
+                if !armed {
+                    let wearers = self
+                        .board
+                        .tickets
+                        .iter()
+                        .filter(|t| t.tag_in(group).is_some_and(|t| t.name == name))
+                        .count();
+                    if let Some(arm) = self.tag_armed.as_mut() {
+                        arm.forget_armed = true;
+                    }
+                    // Name the blast radius before asking for the second
+                    // press, not after it.
+                    let noun = if wearers == 1 { "ticket" } else { "tickets" };
+                    self.status = format!(
+                        "d again retires {name} from the board ∙ {wearers} {noun} wearing it"
+                    );
+                    return Ok(());
+                }
+                if let Some(arm) = self.tag_armed.as_mut() {
+                    arm.forget_armed = false;
+                }
+                match self.req(Command::ForgetTag { group, name: name.clone() }) {
+                    Response::Err { message } => self.status = message,
+                    _ => self.status = format!("{name} retired"),
+                }
+                self.refresh()?;
             }
             Verb::TagDone => {
                 self.tag_armed = None;
@@ -1534,7 +1577,8 @@ impl App {
                 // stays `Input`, so the half-typed title is untouched
                 // underneath and Esc comes back to it.
                 self.mode = Mode::Input { purpose, buffer };
-                self.tag_armed = Some(TagArm { ticket: None, group: None, naming: None });
+                self.tag_armed =
+                    Some(TagArm { ticket: None, group: None, naming: None, forget_armed: false });
                 self.status = "1-9 pick a group ∙ esc done".into();
                 return Ok(());
             }
@@ -1615,6 +1659,11 @@ impl App {
             return Ok(());
         }
 
+        // Any key but `d` cancels a half-pressed retire — the grace band is
+        // one keypress wide, exactly like the delete and archive chords.
+        if !matches!(key, Key::Char('d')) {
+            arm.forget_armed = false;
+        }
         self.tag_armed = Some(arm);
         let ctx = self.ctx();
         let Some(verb) = keymap::resolve(Scope::TagChord, key, &ctx) else {
@@ -1640,6 +1689,24 @@ impl App {
                 _ => None,
             },
         }
+    }
+
+    /// The vocabulary a digit press cycles: the registry, plus the tag the
+    /// subject already wears if it is not in there yet.
+    ///
+    /// That second half is only ever non-empty in the composer: a name typed
+    /// before the ticket exists cannot reach the registry (there is no id to
+    /// send `SetTag` for), so it rides the composer's buffer until save. On a
+    /// real ticket the registry already holds everything.
+    pub(crate) fn tag_vocab(&self, group: u8) -> Vec<String> {
+        let mut v: Vec<String> =
+            self.board.group_tags(group).iter().map(|s| (*s).to_string()).collect();
+        if let Some(worn) = self.tag_subject().and_then(|t| t.iter().find(|t| t.group == group)) {
+            if !v.contains(&worn.name) {
+                v.push(worn.name.clone());
+            }
+        }
+        v
     }
 
     /// Apply one axis change, wherever the subject lives.
@@ -2675,9 +2742,10 @@ mod tests {
     fn a_digit_cycles_its_group_and_wraps_through_none() {
         let mut board = board_three_columns();
         let id = board.tickets[0].id;
-        // Two tags in group 1, worn by other tickets — the derived registry.
-        board.tickets[1].set_tag(1, Some("BUG".into()));
-        board.tickets[2].set_tag(1, Some("REGR".into()));
+        // Two names in the registry for group 1. They are the vocabulary
+        // whether or not any ticket currently wears them.
+        board.register_tag(1, "BUG");
+        board.register_tag(1, "REGR");
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
         app.cursor_row = 0;
@@ -2700,6 +2768,75 @@ mod tests {
         let log = sent.borrow().join(" ");
         assert!(log.contains("SetTag"), "last -> none still sends");
         assert!(log.contains("name: None"), "clearing sends no name, got {log}");
+    }
+
+    /// The cycle walks the REGISTRY, not the tickets: a name stays offered
+    /// after the last ticket drops it, and it is offered on a ticket that
+    /// never wore it. This is what a registry buys over deriving the list.
+    #[test]
+    fn the_cycle_offers_registered_tags_nothing_wears() {
+        let mut board = board_three_columns();
+        board.register_tag(1, "BUG");
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        // No ticket wears BUG, yet the first press offers it rather than
+        // falling into naming.
+        ctrl(&mut app, 't');
+        press(&mut app, '1');
+        assert!(
+            app.tag_armed.as_ref().expect("armed").naming.is_none(),
+            "a registered group has something to cycle"
+        );
+        assert!(sent_contains(&sent, "BUG"));
+    }
+
+    /// Retiring is two presses and names its blast radius first, because it
+    /// reaches every ticket wearing the tag — not just the selected one.
+    #[test]
+    fn retiring_a_tag_takes_two_presses() {
+        let mut board = board_three_columns();
+        board.register_tag(1, "BUG");
+        let id = board.tickets[0].id;
+        board.tickets[0].set_tag(1, Some("BUG".into()));
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        assert_eq!(app.subject(), Some(id));
+
+        ctrl(&mut app, 't');
+        press(&mut app, '1');
+        sent.borrow_mut().clear();
+        // First press arms and explains; it must not send.
+        press(&mut app, 'd');
+        assert!(!sent_contains(&sent, "ForgetTag"), "one press only arms");
+        assert!(app.status.contains("BUG"), "the status names the tag: {}", app.status);
+        assert!(app.status.contains('1'), "and how many wear it: {}", app.status);
+        // Second press commits.
+        press(&mut app, 'd');
+        assert!(sent_contains(&sent, "ForgetTag"));
+        assert!(sent_contains(&sent, "BUG"));
+    }
+
+    /// The grace band is one keypress wide, like every other chord here.
+    #[test]
+    fn any_other_key_disarms_the_retire() {
+        let mut board = board_three_columns();
+        board.register_tag(1, "BUG");
+        board.tickets[0].set_tag(1, Some("BUG".into()));
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        ctrl(&mut app, 't');
+        press(&mut app, '1');
+        press(&mut app, 'd');
+        assert!(app.tag_armed.as_ref().expect("armed").forget_armed);
+        // `x` is bound in the tail, so the tail survives — but the retire
+        // must not.
+        sent.borrow_mut().clear();
+        press(&mut app, 'x');
+        assert!(!app.tag_armed.as_ref().expect("armed").forget_armed, "x disarmed the retire");
+        assert!(!sent_contains(&sent, "ForgetTag"));
     }
 
     /// The tail stays open between digits — two axes, one `^t`.

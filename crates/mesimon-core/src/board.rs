@@ -390,6 +390,16 @@ pub struct Board {
     pub sessions: Vec<SessionRecord>,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
+    /// The tag registry: the vocabulary each axis offers, in the order it was
+    /// created. Board-level and PERSISTED — a tag outlives the tickets that
+    /// wear it, so untagging the last ticket does not silently retire the tag
+    /// and a cycle keeps its shape.
+    ///
+    /// Nothing is seeded: the registry starts empty and grows the first time
+    /// a name is typed. "Create on the fly" is about not having to set the
+    /// board up before using it, NOT about deriving the list from the tickets.
+    #[serde(default)]
+    pub tags: Vec<Tag>,
 }
 
 /// D33i: the shipped default template.
@@ -415,33 +425,51 @@ impl Board {
         self.tickets.iter_mut().find(|t| t.id == id)
     }
 
-    /// The vocabulary of axis `group`: every distinct tag name some ticket
-    /// wears there, sorted.
+    /// The vocabulary of axis `group`, in registry order — which is creation
+    /// order, i.e. D31b's "stable order, config order, never by recency".
     ///
-    /// This IS the tag registry — there is no config file and nothing seeded.
-    ///
-    /// **The order must not depend on which ticket wears what.** Sorting by
-    /// first appearance looks friendlier and is a trap: the ticket being
-    /// cycled is itself part of the derivation, so taking a tag moves that
-    /// tag to the front, and the next press walks back to where it started.
-    /// The cycle oscillates between two values and can never reach the end of
-    /// the list or `none`. Alphabetical is subject-independent, identical on
-    /// every card, and predictable a week later — which is what D31b's
-    /// "stable order, never by recency" is actually asking for.
-    ///
-    /// Archived tickets still count: archiving must not silently renumber a
-    /// cycle.
+    /// Reading this off the registry rather than off the tickets is what
+    /// makes the cycle well-behaved. An earlier cut derived it from whatever
+    /// the tickets happened to wear, and that is a trap twice over: a tag
+    /// vanished the moment its last wearer dropped it, and — worse — the
+    /// ticket being cycled was itself part of the derivation, so taking a tag
+    /// moved it in the list and the next press walked back to where it
+    /// started. The cycle oscillated between two values and `none` was
+    /// unreachable. A registry is independent of every ticket, so neither can
+    /// happen.
     pub fn group_tags(&self, group: u8) -> Vec<&str> {
-        let mut out: Vec<&str> = Vec::new();
-        for t in &self.tickets {
-            if let Some(tag) = t.tag_in(group) {
-                if !out.contains(&tag.name.as_str()) {
-                    out.push(&tag.name);
-                }
-            }
+        self.tags.iter().filter(|t| t.group == group).map(|t| t.name.as_str()).collect()
+    }
+
+    /// Add a name to axis `group` if it is not already there. Returns whether
+    /// the registry changed, so the caller knows to persist.
+    ///
+    /// This is the ONLY way tags enter the vocabulary, and it happens as a
+    /// side effect of using one — type a name once and it is in the cycle
+    /// from then on, on every ticket, with no setup step.
+    pub fn register_tag(&mut self, group: u8, name: &str) -> bool {
+        if self.tags.iter().any(|t| t.group == group && t.name == name) {
+            return false;
         }
-        out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
-        out
+        self.tags.push(Tag { name: name.to_string(), group });
+        true
+    }
+
+    /// Remove a name from the registry AND from every ticket wearing it.
+    /// Returns whether anything changed.
+    ///
+    /// Leaving a ticket wearing a retired tag would put a pip on the board
+    /// that the cycle can never reach or clear, so the two must move together.
+    pub fn forget_tag(&mut self, group: u8, name: &str) -> bool {
+        let before = self.tags.len();
+        self.tags.retain(|t| !(t.group == group && t.name == name));
+        let mut changed = self.tags.len() != before;
+        for t in &mut self.tickets {
+            let n = t.tags.len();
+            t.tags.retain(|tag| !(tag.group == group && tag.name == name));
+            changed |= t.tags.len() != n;
+        }
+        changed
     }
 
     /// Tickets of one column, sorted by fractional order (ties by id for stability).
@@ -549,12 +577,12 @@ mod tests {
         }
     }
 
-    /// The registry is derived, not configured: a group's vocabulary is
-    /// whatever tickets wear there, in first-appearance order by ticket id.
-    /// Stable, never by recency — the same digit press must do the same
-    /// thing tomorrow.
+    /// The registry is board-level and persisted: a group's vocabulary is
+    /// what has been registered there, in creation order, independent of what
+    /// any ticket currently wears. Nothing is seeded — a name enters by being
+    /// used once — and nothing leaves except by an explicit retire.
     #[test]
-    fn group_tags_are_derived_in_stable_order() {
+    fn the_registry_outlives_its_wearers_and_holds_its_order() {
         let mut b = Board::with_default_columns();
         let mut id = 0u128;
         let mut mk = |tags: &[(u8, &str)]| {
@@ -562,6 +590,7 @@ mod tests {
             let mut t = ticket(id, "TODO", "a");
             for (g, name) in tags {
                 t.set_tag(*g, Some((*name).to_string()));
+                b.register_tag(*g, name);
             }
             b.tickets.push(t);
         };
@@ -569,15 +598,16 @@ mod tests {
         mk(&[(1, "REGR")]);
         mk(&[(1, "BUG"), (2, "PRODUCTION")]);
 
-        // Sorted and deduped.
+        // Registry order is creation order (D31b's "config order").
         assert_eq!(b.group_tags(1), vec!["BUG", "REGR"]);
         assert_eq!(b.group_tags(2), vec!["DEV", "PRODUCTION"]);
         assert_eq!(b.group_tags(3), Vec::<&str>::new());
+        assert!(!b.register_tag(1, "BUG"), "registering twice is a no-op");
 
-        // The order does not depend on who wears what. This is the property
-        // the cycle rests on: derive it from first appearance instead and
-        // tagging a ticket reorders its own vocabulary, so pressing the digit
-        // again walks backwards and `none` becomes unreachable.
+        // The vocabulary is independent of what the tickets wear. Derive it
+        // from them instead and it breaks twice: a tag vanishes when its last
+        // wearer drops it, and the ticket being cycled reorders its own list,
+        // so the digit walks backwards and `none` becomes unreachable.
         let owned = |b: &Board| -> Vec<String> {
             b.group_tags(1).iter().map(|s| (*s).to_string()).collect()
         };
@@ -587,9 +617,23 @@ mod tests {
         b.tickets[0].set_tag(1, Some("BUG".into()));
         assert_eq!(owned(&b), before);
 
-        // Archiving must not renumber a cycle.
+        // A tag OUTLIVES its wearers. This is the point of a registry: strip
+        // it off every ticket and it is still in the cycle tomorrow.
+        for t in b.tickets.iter_mut() {
+            t.set_tag(1, None);
+        }
+        assert_eq!(owned(&b), before, "an unworn tag stays in the vocabulary");
+
+        // Retiring is explicit, and takes the pips with it.
+        b.tickets[0].set_tag(1, Some("BUG".into()));
+        assert!(b.forget_tag(1, "BUG"));
+        assert_eq!(b.group_tags(1), vec!["REGR"]);
+        assert!(b.tickets[0].tag_in(1).is_none(), "a retired tag leaves no orphan pip");
+        assert!(!b.forget_tag(1, "BUG"), "forgetting twice is a no-op");
+
+        // Archiving must not renumber a cycle either.
         b.tickets[0].archived = Some(Archived { at: "@1".into(), by: "local".into() });
-        assert_eq!(b.group_tags(1), vec!["BUG", "REGR"]);
+        assert_eq!(b.group_tags(1), vec!["REGR"]);
     }
 
     /// One tag per group: setting replaces, `None` clears, and the set stays

@@ -595,6 +595,7 @@ impl Daemon {
             Command::DeleteTicket { id, .. } => Some(("delete_ticket", Some(*id))),
             Command::SetWorkspace { id, .. } => Some(("set_workspace", Some(*id))),
             Command::SetTag { id, .. } => Some(("set_tag", Some(*id))),
+            Command::ForgetTag { .. } => Some(("forget_tag", None)),
             Command::MergeTicket { id } => Some(("merge_ticket", Some(*id))),
             Command::MergeToAgent { id, .. } => Some(("merge_to_agent", Some(*id))),
             Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
@@ -669,6 +670,7 @@ impl Daemon {
             }
             Command::SetWorkspace { id, workspace } => self.set_workspace(id, workspace),
             Command::SetTag { id, group, name } => self.set_tag(id, group, name),
+            Command::ForgetTag { group, name } => self.forget_tag(group, name),
             Command::MergeTicket { id } => self.merge_ticket(id),
             Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
             Command::RestoreTicket { id } => self.restore_ticket(id),
@@ -1830,10 +1832,49 @@ impl Daemon {
                 None => return Response::Err { message: "empty tag name".into() },
             },
         };
+        // Using a name is what puts it in the vocabulary — that is the whole
+        // of "create on the fly". The registry is board-level and persisted,
+        // so it outlives the tickets: clearing this ticket's tag below never
+        // retires the name, and the cycle keeps its shape.
+        if let Some(name) = clean.as_deref() {
+            if self.board.register_tag(group, name) {
+                self.persist_columns();
+            }
+        }
         match self.with_ticket(id, |t| t.set_tag(group, clean)) {
             Some(r) => r,
             None => Response::Err { message: "no such ticket".into() },
         }
+    }
+
+    /// Retire a name from the registry and strip it from every ticket wearing
+    /// it. The two must move together: a ticket left wearing a retired tag
+    /// shows a pip the cycle can neither reach nor clear.
+    fn forget_tag(&mut self, group: u8, name: String) -> Response {
+        if !(1..=9).contains(&group) {
+            return Response::Err { message: "tag group must be 1-9".into() };
+        }
+        // Note who wears it BEFORE the removal: only those files changed, and
+        // rewriting every ticket on the board to retire one tag would be a
+        // write amplification the board does not need.
+        let wearers: Vec<ulid::Ulid> = self
+            .board
+            .tickets
+            .iter()
+            .filter(|t| t.tag_in(group).is_some_and(|tag| tag.name == name))
+            .map(|t| t.id)
+            .collect();
+        if !self.board.forget_tag(group, &name) {
+            return Response::Err { message: format!("no tag {name:?} in group {group}") };
+        }
+        let touched: Vec<Ticket> =
+            wearers.iter().filter_map(|id| self.board.ticket(*id).cloned()).collect();
+        for t in &touched {
+            let _ = store::save_ticket(&self.paths, t);
+        }
+        self.persist_columns();
+        self.broadcast();
+        Response::Ok
     }
 
     /// The merge key (M4): preflight in memory; merge only when clean; never
