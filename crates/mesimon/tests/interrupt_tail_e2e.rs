@@ -145,7 +145,17 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
             .expect("session")
             .clone()
     };
-    assert_eq!(rec(&mut c).state, SessionState::Running);
+    // A hook frame is fire-and-forget on its own one-shot socket, so its
+    // ingestion races this Snapshot on the client connection. Locally the frame
+    // always won; a loaded CI runner snapshotted between SessionStart and
+    // UserPromptSubmit and read idle{unknown}. Wait for the promotion instead of
+    // assuming it has landed — holding Running is what this test is about, and
+    // that is asserted below.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while rec(&mut c).state != SessionState::Running {
+        assert!(Instant::now() < deadline, "UserPromptSubmit never promoted to Running");
+        std::thread::sleep(Duration::from_millis(50));
+    }
 
     // Let the tail cursor mint (2 s poll cadence) — a cursor starts at the
     // file's end, so the abort record must land after it exists.

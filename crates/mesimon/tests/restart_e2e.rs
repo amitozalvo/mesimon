@@ -279,6 +279,26 @@ fn restart_recovers_done_from_a_resting_transcript() {
         &format!(r#"{{"session_id":"x","transcript_path":"{}"}}"#, transcript.display()),
     );
     hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"session_id":"x"}"#);
+    // "die while Running" is the whole premise, and a hook frame's ingestion
+    // races this connection's next request: shutting down between SessionStart
+    // and UserPromptSubmit persists idle{unknown}, which is a STICKY claim that
+    // survives the restart, so generation 2 would read it instead of waiting
+    // for the backfill. Wait for the promotion before killing the daemon.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        let st = board_of(c.request(Command::Snapshot))
+            .sessions
+            .iter()
+            .find(|s| s.id == sid)
+            .expect("session")
+            .state
+            .clone();
+        if st == SessionState::Running {
+            break;
+        }
+        assert!(Instant::now() < deadline, "gen-1 never reached Running (still {st:?})");
+        std::thread::sleep(Duration::from_millis(50));
+    }
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon1.join().unwrap();
 
