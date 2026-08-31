@@ -1,0 +1,30 @@
+ mesimon > kanban-tui > Fix OSC-11 detection
+
+ IN PROGRESS ∙ created by you >1y ago
+
+  DOCUMENTS                                                                         (0)    SESSIONS                  2
+
+    drop files into this ticket's directory                                               ⠋ ✻ claude               >1y
+    ticket directories land with the adoption IA (M4)                                     ◦ $ bash                 >1y
+
+
+  TRANSCRIPT
+
+    What changed
+
+    The OSC-11 query now runs once, before raw mode, and the answer is cached for the
+    session.
+
+    • detect.rs asks the terminal, then hands the flavor to Theme::new
+    • the goldens moved with it
+
+      cargo test -p mesimon-tui
+
+    Still open: the --color=never path is untested covered now.
+
+    ● working
+
+
+
+
+ TICKET  jk select session ∙ enter focus ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ ^t tags ∙ q board ∙ ? keys

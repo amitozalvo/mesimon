@@ -11,6 +11,7 @@ mod glyphs;
 mod handover;
 mod layout;
 mod peek;
+mod rich;
 mod tags;
 mod text;
 mod theme;

@@ -175,7 +175,8 @@ impl PeekCache {
         let peek = Peek {
             text: raw.text.as_deref().map(sanitize),
             activity: raw.activity.map(|d| match d {
-                Doing::Tool(t) => Doing::Tool(sanitize(&t)),
+                // A step title is a row, never a block: flatten it here.
+                Doing::Tool(t) => Doing::Tool(crate::text::one_line(&sanitize(&t))),
                 Doing::Thinking => Doing::Thinking,
             }),
         };
@@ -185,8 +186,8 @@ impl PeekCache {
     }
 }
 
-/// Strip what a card row must never carry: control chars (newlines become
-/// spaces — the wrap re-breaks) and the drawn-structure range 0x2500–0x259F,
+/// Strip what a card row must never carry: control chars and the
+/// drawn-structure range 0x2500–0x259F,
 /// which the L1 law bans anywhere on the board and which transcript text is
 /// full of the moment the agent prints a table. Also dropped: the invisible
 /// width hazards — VS15/VS16 (U+FE0F turns a narrow symbol into a two-cell
@@ -196,6 +197,13 @@ impl PeekCache {
 /// surface one column right, stranding a `selected_bg` cell past the card
 /// edge that the diff never repaints (dogfood 2026-08-30, same trap as the
 /// ☰ plan mark).
+///
+/// Newlines SURVIVE (author 2026-08-31): the ticket page renders the reply as
+/// rich text (rich.rs), and a reply's block structure — its bullets, its
+/// fences, its paragraphs — is carried entirely by them. The board card is
+/// unaffected: `wrap` splits on whitespace, so a newline was only ever a word
+/// break there. Anything that must stay on ONE row flattens at its own
+/// boundary (`text::one_line`), which is where that call belongs.
 fn sanitize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
@@ -210,7 +218,9 @@ fn sanitize(s: &str) -> String {
         {
             continue;
         }
-        if c == '\n' || c == '\t' {
+        if c == '\n' {
+            out.push('\n');
+        } else if c == '\t' {
             out.push(' ');
         } else if !c.is_control() {
             out.push(c);
@@ -493,7 +503,9 @@ mod tests {
 
     #[test]
     fn sanitize_strips_structure_and_control() {
-        assert_eq!(sanitize("a\u{2502}b\nc\td\u{7}e"), "ab c de");
+        // The newline lives (rich.rs needs the block structure); the tab,
+        // the bell and the drawn glyph do not.
+        assert_eq!(sanitize("a\u{2502}b\nc\td\u{7}e"), "ab\nc de");
     }
 
     #[test]

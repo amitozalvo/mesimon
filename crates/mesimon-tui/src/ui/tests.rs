@@ -544,31 +544,80 @@ fn golden_ticket_corpse_120() {
     golden("ticket_corpse_120x30", &render(&app, 120, 30));
 }
 
+/// A transcript file holding one assistant reply (plus whatever else the
+/// caller appends), written where a peek can read it.
+fn write_transcript(name: &str, jsonl: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("msmn-{name}-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("peek dir");
+    let path = dir.join("t.jsonl");
+    std::fs::write(&path, jsonl).expect("peek transcript");
+    path
+}
+
+/// The agent's last words as the record the peek actually parses (serialized,
+/// so a reply full of newlines and backticks escapes itself).
+fn reply_record(text: &str) -> String {
+    let v = serde_json::json!({
+        "uuid": "u1",
+        "type": "assistant",
+        "message": { "content": [{ "type": "text", "text": text }] },
+    });
+    format!("{v}\n")
+}
+
+fn attach_transcript(b: &mut Board, path: &std::path::Path) {
+    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
+        Some(path.to_string_lossy().into_owned());
+}
+
+/// The markdown an agent reply is actually made of — one of each thing the
+/// zone knows how to draw.
+const RICH_REPLY: &str = "## What changed\n\nThe OSC-11 query now runs **once**, before raw \
+     mode, and the answer is cached for the session.\n\n- `detect.rs` asks the terminal, \
+     then hands the flavor to `Theme::new`\n- the goldens moved with it\n\n```sh\ncargo test \
+     -p mesimon-tui\n```\n\nStill open: the `--color=never` path is ~~untested~~ covered now.";
+
 #[test]
 fn golden_ticket_peek_120() {
     // The left zone previews the selected rail session's latest assistant
     // reply under a TRANSCRIPT heading — always on, no toggle (the zone is
     // otherwise empty until documents land in M4). A running session's
     // indicator names the step underway, not just that one is.
-    let dir = std::env::temp_dir().join(format!("msmn-tpeek-golden-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
-    std::fs::create_dir_all(&dir).expect("peek dir");
-    let path = dir.join("t.jsonl");
-    std::fs::write(
-        &path,
-        "{\"uuid\":\"u1\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"text\",\
-         \"text\":\"Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and clippy is clean.\"}]}}\n\
-         {\"uuid\":\"u2\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\
-         \"input\":{\"command\":\"cargo test -p mesimon-tui\",\"description\":\"Run the golden tests\"}}]}}\n",
-    )
-    .expect("peek transcript");
+    let path = write_transcript(
+        "tpeek-golden",
+        &format!(
+            "{}{}",
+            reply_record(
+                "Fixed the OSC-11 race: the query now runs once before raw mode; goldens \
+                 updated and clippy is clean."
+            ),
+            "{\"uuid\":\"u2\",\"type\":\"assistant\",\"message\":{\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\
+             \"input\":{\"command\":\"cargo test -p mesimon-tui\",\"description\":\"Run the golden tests\"}}]}}\n"
+        ),
+    );
     let mut b = fixture(false);
-    b.sessions.iter_mut().find(|s| s.id == uuid_n(31)).expect("session 31").transcript_path =
-        Some(path.to_string_lossy().into_owned());
+    attach_transcript(&mut b, &path);
     let mut app = app_graphite(b);
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     golden("ticket_peek_120x30", &render(&app, 120, 30));
-    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+#[test]
+fn golden_ticket_richtext_120() {
+    // An agent reply IS markdown, so the zone draws it as such (rich.rs):
+    // the heading takes weight and a breathing row, the list gets bullets and
+    // a hanging indent, the fence becomes a painted slab with no border, and
+    // the asterisks and backticks stop reaching the screen. Nothing here is
+    // colour: value, weight, paint and space carry all of it.
+    let path = write_transcript("trich-golden", &reply_record(RICH_REPLY));
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    golden("ticket_richtext_120x30", &render(&app, 120, 30));
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 #[test]
@@ -944,7 +993,9 @@ fn thinking_replaces_the_state_word_when_the_prompt_is_newer() {
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let lines = render(&app, 120, 30);
     assert!(
-        lines.iter().any(|l| l.contains("> now do the other thing")),
+        // The peek marks the user's own words with `>`; the zone reads that
+        // as the quote it is and draws 06 §5.1's mark instead (rich.rs).
+        lines.iter().any(|l| l.contains("\u{203A} now do the other thing")),
         "the zone shows the question the agent is on, not the stale answer"
     );
     assert!(
@@ -1095,12 +1146,16 @@ fn test_attn_provenance_waiting() {
 /// 06 §5.1: banned SGR never reaches a cell; REVERSED only in Mono/Ansi8.
 #[test]
 fn test_no_banned_sgr() {
+    let path = write_transcript("sgr-law", &reply_record(RICH_REPLY));
     for (flavor, profile) in [
         (Flavor::Graphite, Profile::TrueColor),
         (Flavor::Chalk, Profile::TrueColor),
         (Flavor::Graphite, Profile::Ansi256),
     ] {
         let mut app = App::for_test(fixture(true), Theme::new(flavor, profile));
+        // Rich transcript text is the one surface that renders arbitrary
+        // markdown, so it is where a banned attribute would sneak in.
+        attach_transcript(&mut app.board, &path);
         app.cursor_col = 1;
         let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, profile));
         arch.mode = Mode::Archived { idx: 0 };
@@ -1109,6 +1164,10 @@ fn test_no_banned_sgr() {
             cells(&arch, 120, 30),
             {
                 app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+                assert!(
+                    render(&app, 120, 30).iter().any(|l| l.contains("What changed")),
+                    "the rich transcript must be ON SCREEN, or this law does not bite"
+                );
                 cells(&app, 120, 30)
             },
             {
@@ -1128,13 +1187,17 @@ fn test_no_banned_sgr() {
             }
         }
     }
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 /// L1: zero drawn structure — no box-drawing or block-element codepoints
 /// anywhere (the accent bar is a painted space).
 #[test]
 fn test_no_drawn_structure() {
+    let path = write_transcript("drawn-law", &reply_record(RICH_REPLY));
     let mut app = app_graphite(fixture(true));
+    // Markdown is full of rules and boxes; none of them may reach a cell.
+    attach_transcript(&mut app.board, &path);
     app.cursor_col = 1;
     let mut arch = app_graphite(fixture_archived());
     arch.mode = Mode::Archived { idx: 0 };
@@ -1143,7 +1206,12 @@ fn test_no_drawn_structure() {
         render(&arch, 120, 30),
         {
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-            render(&app, 120, 30)
+            let lines = render(&app, 120, 30);
+            assert!(
+                lines.iter().any(|l| l.contains("What changed")),
+                "the rich transcript must be ON SCREEN, or this law does not bite"
+            );
+            lines
         },
         {
             install_diff(&mut app);
@@ -1161,6 +1229,7 @@ fn test_no_drawn_structure() {
             }
         }
     }
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 /// An alarm card never demotes: with the cursor elsewhere, the failed card

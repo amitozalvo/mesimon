@@ -1118,3 +1118,46 @@ replaced it, and what each change refutes:
 The composer shows what it is about to tag: the phantom card carries the same bands, and the
 picker marks the picks worn. The first cut showed neither, which is why the author could not tell
 whether tagging while composing had worked at all.
+
+## The transcript zone reads markdown (2026-08-31)
+
+The ticket page's TRANSCRIPT zone showed the agent's last reply as source: asterisks and
+backticks on screen, and — because `peek::sanitize` flattened `\n` to a space for the card row —
+every bullet, fence and paragraph run together into one grey block. An agent reply IS markdown,
+and the ticket page is the surface with room to read it, so `mesimon-tui/src/rich.rs` now parses
+it and draws it. What that cost, and what it refutes:
+
+- **`peek::sanitize` keeps newlines now.** The flattening was written for a 4-row card and taken
+  as universal; block structure lives entirely in those newlines. The card is unaffected —
+  `peek::wrap` splits on whitespace, so a newline was only ever a word break there — and anything
+  that must stay on one row (the `Doing::Tool` step title) flattens with `text::one_line` at its
+  own boundary. That is where the call belonged.
+- **06 §5.1 decides the whole treatment, and it is the interesting part.** SGR 2, 3, 5 and 9 are
+  banned and SGR 4 is reserved for the scope chip, so italic is not slant, strike is not a line
+  and a link is not underlined. What is left is value, weight, paint and space — which turns out
+  to be enough: body sits at `dim1`, emphasis steps up to `base`, strong adds bold, struck text
+  drops to `dim3` (the de-emphasis token, which is what struck text means), a quote takes §5.1's
+  own `›` prefix plus a value step, and a heading buys a breathing row above it because it cannot
+  have a rule. No markdown role reaches for a chromatic token, so the accent stays needs-you's.
+- **A code span is the elevated surface, painted.** `Theme::code_bg()` returns `selected_bg`: the
+  design collapses to ONE elevated surface (theme.rs's header) and the cursor card was only its
+  first tenant. A fenced block is that surface shrink-wrapped to its widest row — no border, since
+  every box glyph is inside the `0x2500-0x259F` range L1 bans, and no reflow, because code that
+  rewraps is code that lies. Below the paint (chalk-256, mono) the backticks survive instead of
+  the treatment being faked — the same call `pip()` makes for tag tints.
+- **A thematic break (`---`) is a BLANK ROW.** There is no legal rule glyph, and a blank row is
+  what the ticket header already uses as its zone divider.
+- **A pipe table is kept verbatim and its delimiter row is dropped.** Reflowing a table destroys
+  the only thing it encodes; the header the delimiter marked is said with value instead.
+- **The parse is deliberately markdown-LITE and dependency-free.** This is one message in a ~15
+  row zone, not a document viewer. The flanking rules are what earn their keep: `foo_bar_baz`,
+  `5 * 3` and `*.rs` are what agent replies are actually full of, and an opener with no valid
+  closer is literal text.
+- **The law tests now render this zone.** `test_no_banned_sgr` and `test_no_drawn_structure`
+  attach a markdown transcript to the ticket screen and assert the reply is on screen before they
+  sweep — a law test over a surface that is not drawn proves nothing. `rich.rs`'s own
+  `markdown_never_spends_a_banned_attribute_or_the_accent` sweeps a kitchen-sink document across
+  all five profiles, both flavors and three widths.
+
+`ticket_peek_120x30` is unchanged byte for byte: prose with no markdown in it renders exactly as
+it did. `ticket_richtext_120x30` is the new golden.

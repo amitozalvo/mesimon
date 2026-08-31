@@ -297,6 +297,17 @@ impl Theme {
         }
     }
 
+    /// The surface a transcript's code sits on. There is exactly ONE
+    /// elevated surface in this design (the module header's two-painted-
+    /// surfaces collapse), and the cursor card is only its first tenant —
+    /// a code slab is the second, on a screen that has no cursor card to
+    /// confuse it with. `None` where the profile paints no elevation
+    /// (chalk-256, mono): there the code span keeps its backticks instead,
+    /// the same call `pip()` makes for tag tints.
+    pub fn code_bg(&self) -> Option<Color> {
+        self.selected_bg
+    }
+
     pub fn glyph_tier(&self) -> Tier {
         if self.profile == Profile::Mono {
             Tier::Ascii

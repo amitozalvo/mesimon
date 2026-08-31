@@ -285,8 +285,14 @@ fn draw_documents(
             // Reserve the indicator's rows so a long reply never pushes it off.
             let reserve = if working { 2 } else { 0 };
             let budget = (area.height as usize).saturating_sub(lines.len() + reserve);
-            for row in crate::peek::wrap(text, (area.width as usize).saturating_sub(4), budget) {
-                lines.push(Line::from(Span::styled(format!("   {row}"), theme.dim1())));
+            // Rich text, not the source: an agent reply is markdown, and the
+            // ticket page is the surface with room to read it as such
+            // (rich.rs — value, weight, paint and space only).
+            let width = (area.width as usize).saturating_sub(4);
+            for row in crate::rich::render(text, width, budget, theme) {
+                let mut spans = vec![Span::raw("   ")];
+                spans.extend(row.spans);
+                lines.push(Line::from(spans));
             }
             if working {
                 lines.push(Line::default());

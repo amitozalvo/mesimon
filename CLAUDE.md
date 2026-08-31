@@ -220,6 +220,20 @@ one grey, so the band carries `#name` as text instead (`Theme::paints_bands`). U
 cost zero rows, which is what keeps the resting board identical to the pre-tags one.
 `board::sanitize_tag` runs at the daemon boundary: a tag name is user text on a card row.
 
+**The ticket page's transcript zone reads markdown (`tui/src/rich.rs`).** An agent reply is
+markdown, so the zone draws it instead of showing its source — but 06 §5.1 bans SGR 2/3/5/9 and
+reserves SGR 4, so the whole vocabulary is value, weight, paint and space: body `dim1`, emphasis
+one step up to `base`, strong adds bold, struck text falls to `dim3`, a quote takes the `›`
+prefix, a heading buys a breathing row (it cannot have a rule), `---` IS a blank row, and a code
+span/fence is `Theme::code_bg()` — the one elevated surface, `selected_bg`, whose second tenant
+this is — painted, shrink-wrapped, never bordered and never reflowed. No markdown role touches a
+chromatic token. Below the paint (chalk-256, mono) code keeps its backticks rather than faking the
+treatment. `peek::sanitize` therefore KEEPS newlines (block structure is nothing else); the card
+is unaffected because `peek::wrap` splits on whitespace, and single-row consumers flatten with
+`text::one_line`. `test_no_banned_sgr` / `test_no_drawn_structure` now attach a markdown
+transcript to the ticket screen and assert it is on screen before sweeping. (STALE-MAP "The
+transcript zone reads markdown".)
+
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
 NO key — they live in the Esc menu (`ui/menu.rs`, rows from `keymap::menu_items`), because
 they are rare, are not about the selection, and a menu row has room to say what it will do.
