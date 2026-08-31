@@ -709,6 +709,62 @@ created_at = "@1788046350"
         assert_eq!(t.workspace_strategy(), mesimon_core::board::WorkspaceStrategy::SharedCheckout);
     }
 
+    /// A pre-tags `ticket.toml` still parses: the `#[serde(default)]` IS the
+    /// migration. The stakes are no longer a dead daemon — a missing default
+    /// now quarantines the user's file — which is why this fixture exists for
+    /// every field added to `Ticket`.
+    #[test]
+    fn pre_tags_ticket_toml_parses() {
+        let m4 = r#"
+id = "01J8ZQ7VJ00000000000000000"
+short_key = "T-4"
+title = "untagged"
+column = "TODO"
+order = "a0"
+created_at = "@1788046350"
+workspace = "worktree"
+"#;
+        let t: Ticket = toml::from_str(m4).unwrap();
+        assert!(t.tags.is_empty());
+        assert!(t.archived.is_none());
+    }
+
+    /// Tags AND archived together, round-tripped through the serializer that
+    /// actually writes the file. `[[tags]]` is an array of tables and
+    /// `[archived]` is a table: tables may follow tables, but a scalar after
+    /// either errors — so this is the test that catches `tags` being declared
+    /// in the wrong place in the struct.
+    #[test]
+    fn tags_serialize_before_the_archived_table() {
+        let mut t = Ticket {
+            id: ulid::Ulid(9),
+            short_key: "T-9".into(),
+            title: "tagged".into(),
+            column: "DONE".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+            tags: Vec::new(),
+            archived: Some(mesimon_core::board::Archived {
+                at: "@1788046350".into(),
+                by: "local".into(),
+            }),
+        };
+        t.set_tag(1, Some("BUG".into()));
+        t.set_tag(2, Some("STAGING".into()));
+
+        let s = toml::to_string_pretty(&t).unwrap();
+        let back: Ticket = toml::from_str(&s).unwrap();
+        assert_eq!(back.tags, t.tags);
+        assert_eq!(back.archived, t.archived);
+        // And the stamped wrapper the daemon actually writes.
+        let f = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
+        let s = toml::to_string_pretty(&f).unwrap();
+        let back: TicketFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.ticket.tags, t.tags);
+        assert_eq!(back.ticket.archived, t.archived);
+    }
+
     /// A ticket with BOTH optional fields round-trips — `[archived]` is a
     /// table, so it must serialize last or to_string_pretty errors. This is
     /// the test that catches wrong struct field order.
@@ -722,6 +778,7 @@ created_at = "@1788046350"
             order: "a0".into(),
             created_at: "@0".into(),
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+            tags: Vec::new(),
             archived: Some(mesimon_core::board::Archived {
                 at: "@1788046350".into(),
                 by: "local".into(),
@@ -769,6 +826,7 @@ by = "local"
                 order: "a0".into(),
                 created_at: "@0".into(),
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+                tags: Vec::new(),
                 archived: Some(mesimon_core::board::Archived {
                     at: "@1788050000".into(),
                     by: "local".into(),
@@ -820,6 +878,7 @@ by = "local"
             order: "a0".into(),
             created_at: "@0".into(),
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+            tags: Vec::new(),
             archived: None,
         };
         let s = toml::to_string_pretty(&t).unwrap();

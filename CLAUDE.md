@@ -163,9 +163,11 @@ every screen. `Ctx` is built once per keypress and per frame by `App::ctx()`.
 
 To add a binding: add the `Binding` (with its `avail` and `hint`), add the `Verb`, handle it
 in `dispatch` — the compiler finds the third step for you. `prio: 0` means overlay-only.
-Chord tails (`d`, `a`, `z`) are scopes with no parent, so a stray key inside one resolves to
+Chord tails (`d`, `a`, `z`, `^t`) are scopes with no parent, so a stray key inside one resolves to
 `None` and cancels rather than acting. A prefix's `show` is the single key (`d`, `a`) — never
-`d d`: pressing it swaps the footer to the tail's scope, which names the key still to press. Twelve validator tests in `keymap.rs` enforce 04 §2.0:
+`d d`: pressing it swaps the footer to the tail's scope, which names the key still to press.
+Adding a `Scope` also means adding it to the test module's length-annotated `ALL_SCOPES`, or it
+is validated by nothing. Twenty-four tests in `keymap.rs` enforce 04 §2.0:
 no key bound twice in a scope chain, legacy-floor atoms only, no banned atoms, and the
 product rules (one verb per key across screens, Shift stays on one axis, `q` pops, `?`
 everywhere). The `mutates` field is what the D22 `--observer` client will be generated from.
@@ -191,6 +193,22 @@ argv — commander dispatches a title that names a subcommand ("doctor", "update
 subcommand, and `--` does not shield it. Retries stop outside `Spawning`/`Idle`/`Running` so a
 startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026-08-31 addendum
 + correction and STALE-MAP "Shift+Enter composes and asks".
+
+**Tags are ticket metadata on an axis, and the registry is derived.** `Ticket.tags` is a
+`Vec<Tag>` of `{name, group}`; a group (1-9) is an axis and a ticket wears at most one tag per
+group, so a digit press cycles `none -> first -> ... -> last -> none`. There is NO registry
+file and nothing is seeded — `Board::group_tags(g)` derives the vocabulary by scanning the
+board, so a tag exists exactly as long as some ticket wears it (hence no rename, no delete).
+That derivation sorts **alphabetically**, and must stay subject-independent: order by first
+appearance and the ticket being cycled reorders its own vocabulary, so the cycle oscillates
+and `none` becomes unreachable. The key is `^t` (a fourth chord tail) and NOT `ctrl+<digit>`,
+which `no_banned_atoms` rejects — see STALE-MAP "Ticket tags" for why, and note the binding
+must exist in `INPUT` too or the composer types the letter instead. At rest a tag renders as
+one lowercase letter tinted `Theme::pip(stable_hash(name) % 6)` on card line 1 (zero-width
+when untagged, cap 3 then `+N`); `p` spells the names out, which is not optional — D31b grants
+tags the system's one colour-only encoding only while the names are one keystroke away. Below
+TrueColor the tint is dropped and the letter carries. `board::sanitize_tag` runs at the daemon
+boundary: a tag name is user text on a card row.
 
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
 NO key — they live in the Esc menu (`ui/menu.rs`, rows from `keymap::menu_items`), because

@@ -256,11 +256,76 @@ pub struct Ticket {
     /// default. Must stay after the scalar fields (TOML serialize order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceStrategy>,
+    /// Tags, at most one per group (a group is an axis: kind, environment…).
+    /// Must stay after every scalar — this serializes as `[[tags]]`, an array
+    /// of tables, and a scalar after a table errors. Tables may follow tables,
+    /// so it sits between `workspace` (a scalar) and `[archived]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub tags: Vec<Tag>,
     /// Archival is a field, not a directory move (13 §data-model) — the ticket
     /// keeps its column and order, so restore is exact. Must stay last: a TOML
     /// table; any scalar serialized after it errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<Archived>,
+}
+
+/// One tag on a ticket, and the axis it belongs to.
+///
+/// `group` is a plain `u8`, deliberately never an enum: an unknown enum
+/// variant from a newer daemon fails the WHOLE `Response::Board` deserialize
+/// and the client drops the line (the same reasoning that makes
+/// `Notice.kind` and `WorktreeItem.status` `String`s).
+///
+/// There is no tag registry file. The vocabulary is derived from the tickets
+/// that wear the tags (`Board::group_tags`), which is what "create on the
+/// fly, nothing seeded" means: a tag exists exactly as long as some ticket
+/// carries it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Tag {
+    pub name: String,
+    /// The axis this tag belongs to — the digit that cycles it. 1–9.
+    pub group: u8,
+}
+
+/// The longest a tag name may be, in bytes (13 §data-model). Enforced at the
+/// daemon boundary by `sanitize_tag`, not here.
+pub const TAG_MAX_BYTES: usize = 24;
+
+/// Strip what a card row must never carry, then bound the length.
+///
+/// A tag name is user text rendered on a card row, so it runs the same
+/// gauntlet as transcript peek text (`tui/src/peek.rs::sanitize`): control
+/// chars, the drawn-structure range 0x2500–0x259F that the L1 law bans board-
+/// wide, and the invisible width hazards — VS15/VS16 (U+FE0F turns a narrow
+/// symbol into a two-cell emoji that `unicode-width` still counts as one),
+/// ZWJ and the other zero-width format chars, and the combining keycap. A
+/// terminal-vs-unicode-width disagreement on a card row shifts every later
+/// cell one column right and strands a `selected_bg` cell past the card edge
+/// that the diff never repaints.
+///
+/// Returns `None` for a name that is empty once sanitized — there is no such
+/// thing as a blank tag.
+pub fn sanitize_tag(raw: &str) -> Option<String> {
+    let mut out = String::new();
+    for ch in raw.chars() {
+        let cp = ch as u32;
+        let drop = ch.is_control()
+            || (0x2500..=0x259F).contains(&cp)
+            || matches!(cp, 0xFE0E | 0xFE0F | 0x200B..=0x200F | 0x2060..=0x206F | 0x20E3);
+        if drop {
+            continue;
+        }
+        if out.len() + ch.len_utf8() > TAG_MAX_BYTES {
+            break;
+        }
+        out.push(ch);
+    }
+    let trimmed = out.trim();
+    if trimmed.is_empty() {
+        None
+    } else {
+        Some(trimmed.to_string())
+    }
 }
 
 /// The `[archived]` table on a ticket. Presence = off the board.
@@ -299,6 +364,23 @@ impl Ticket {
     pub fn is_archived(&self) -> bool {
         self.archived.is_some()
     }
+
+    /// This ticket's tag on axis `group`, if it wears one. At most one per
+    /// group by construction — `set_tag` replaces rather than appends.
+    pub fn tag_in(&self, group: u8) -> Option<&Tag> {
+        self.tags.iter().find(|t| t.group == group)
+    }
+
+    /// Set (or with `None`, clear) this ticket's tag on axis `group`.
+    pub fn set_tag(&mut self, group: u8, name: Option<String>) {
+        self.tags.retain(|t| t.group != group);
+        if let Some(name) = name {
+            self.tags.push(Tag { name, group });
+        }
+        // Stable on disk and on the wire: a card's pips must not reorder
+        // because an unrelated group changed.
+        self.tags.sort_by_key(|t| t.group);
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -331,6 +413,35 @@ impl Board {
 
     pub fn ticket_mut(&mut self, id: ulid::Ulid) -> Option<&mut Ticket> {
         self.tickets.iter_mut().find(|t| t.id == id)
+    }
+
+    /// The vocabulary of axis `group`: every distinct tag name some ticket
+    /// wears there, sorted.
+    ///
+    /// This IS the tag registry — there is no config file and nothing seeded.
+    ///
+    /// **The order must not depend on which ticket wears what.** Sorting by
+    /// first appearance looks friendlier and is a trap: the ticket being
+    /// cycled is itself part of the derivation, so taking a tag moves that
+    /// tag to the front, and the next press walks back to where it started.
+    /// The cycle oscillates between two values and can never reach the end of
+    /// the list or `none`. Alphabetical is subject-independent, identical on
+    /// every card, and predictable a week later — which is what D31b's
+    /// "stable order, never by recency" is actually asking for.
+    ///
+    /// Archived tickets still count: archiving must not silently renumber a
+    /// cycle.
+    pub fn group_tags(&self, group: u8) -> Vec<&str> {
+        let mut out: Vec<&str> = Vec::new();
+        for t in &self.tickets {
+            if let Some(tag) = t.tag_in(group) {
+                if !out.contains(&tag.name.as_str()) {
+                    out.push(&tag.name);
+                }
+            }
+        }
+        out.sort_by(|a, b| a.to_lowercase().cmp(&b.to_lowercase()).then(a.cmp(b)));
+        out
     }
 
     /// Tickets of one column, sorted by fractional order (ties by id for stability).
@@ -433,8 +544,96 @@ mod tests {
             order: order.into(),
             created_at: "@0".into(),
             workspace: None,
+            tags: Vec::new(),
             archived: None,
         }
+    }
+
+    /// The registry is derived, not configured: a group's vocabulary is
+    /// whatever tickets wear there, in first-appearance order by ticket id.
+    /// Stable, never by recency — the same digit press must do the same
+    /// thing tomorrow.
+    #[test]
+    fn group_tags_are_derived_in_stable_order() {
+        let mut b = Board::with_default_columns();
+        let mut id = 0u128;
+        let mut mk = |tags: &[(u8, &str)]| {
+            id += 1;
+            let mut t = ticket(id, "TODO", "a");
+            for (g, name) in tags {
+                t.set_tag(*g, Some((*name).to_string()));
+            }
+            b.tickets.push(t);
+        };
+        mk(&[(1, "BUG"), (2, "DEV")]);
+        mk(&[(1, "REGR")]);
+        mk(&[(1, "BUG"), (2, "PRODUCTION")]);
+
+        // Sorted and deduped.
+        assert_eq!(b.group_tags(1), vec!["BUG", "REGR"]);
+        assert_eq!(b.group_tags(2), vec!["DEV", "PRODUCTION"]);
+        assert_eq!(b.group_tags(3), Vec::<&str>::new());
+
+        // The order does not depend on who wears what. This is the property
+        // the cycle rests on: derive it from first appearance instead and
+        // tagging a ticket reorders its own vocabulary, so pressing the digit
+        // again walks backwards and `none` becomes unreachable.
+        let owned = |b: &Board| -> Vec<String> {
+            b.group_tags(1).iter().map(|s| (*s).to_string()).collect()
+        };
+        let before = owned(&b);
+        b.tickets[0].set_tag(1, Some("REGR".into()));
+        assert_eq!(owned(&b), before, "wearing a tag must not reorder the cycle");
+        b.tickets[0].set_tag(1, Some("BUG".into()));
+        assert_eq!(owned(&b), before);
+
+        // Archiving must not renumber a cycle.
+        b.tickets[0].archived = Some(Archived { at: "@1".into(), by: "local".into() });
+        assert_eq!(b.group_tags(1), vec!["BUG", "REGR"]);
+    }
+
+    /// One tag per group: setting replaces, `None` clears, and the set stays
+    /// sorted so a card's pips never reorder because another axis changed.
+    #[test]
+    fn set_tag_replaces_within_a_group() {
+        let mut t = ticket(1, "TODO", "a");
+        t.set_tag(2, Some("DEV".into()));
+        t.set_tag(1, Some("BUG".into()));
+        assert_eq!(t.tags.iter().map(|t| t.group).collect::<Vec<_>>(), vec![1, 2]);
+
+        t.set_tag(1, Some("REGR".into()));
+        assert_eq!(t.tags.len(), 2);
+        assert_eq!(t.tag_in(1).map(|t| t.name.as_str()), Some("REGR"));
+
+        t.set_tag(1, None);
+        assert_eq!(t.tag_in(1), None);
+        assert_eq!(t.tag_in(2).map(|t| t.name.as_str()), Some("DEV"));
+    }
+
+    /// A tag name is user text on a card row, so it runs the same width
+    /// gauntlet as peek text: a terminal-vs-unicode-width disagreement there
+    /// strands a `selected_bg` cell past the card edge that the diff never
+    /// repaints.
+    #[test]
+    fn sanitize_tag_strips_the_width_hazards() {
+        assert_eq!(sanitize_tag("BUG"), Some("BUG".into()));
+        assert_eq!(sanitize_tag("  spaced  "), Some("spaced".into()));
+        // Nothing blank is a tag.
+        assert_eq!(sanitize_tag(""), None);
+        assert_eq!(sanitize_tag("   "), None);
+        assert_eq!(sanitize_tag("\u{200b}"), None);
+        // Control chars and the drawn-structure range the L1 law bans.
+        assert_eq!(sanitize_tag("a\nb"), Some("ab".into()));
+        assert_eq!(sanitize_tag("a\u{2500}b"), Some("ab".into()));
+        assert_eq!(sanitize_tag("a\u{2588}b"), Some("ab".into()));
+        // VS16 turns a narrow symbol into a two-cell emoji that
+        // `unicode-width` still counts as one.
+        assert_eq!(sanitize_tag("x\u{fe0f}"), Some("x".into()));
+        assert_eq!(sanitize_tag("a\u{200d}b"), Some("ab".into()));
+        // Bounded, and never split a char.
+        let long = sanitize_tag(&"é".repeat(40)).expect("non-empty");
+        assert!(long.len() <= TAG_MAX_BYTES, "{} bytes", long.len());
+        assert!(long.chars().all(|c| c == 'é'));
     }
 
     /// Archived tickets stay in `tickets` but never surface on the board.

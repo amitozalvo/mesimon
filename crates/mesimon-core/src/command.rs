@@ -99,6 +99,19 @@ pub enum Command {
         id: ulid::Ulid,
         workspace: Option<WorkspaceStrategy>,
     },
+    /// Set (or with `name: None`, clear) the ticket's tag on one axis.
+    /// One tag per group, so this REPLACES rather than appends — the digit
+    /// that names the group is the same digit that cycles it.
+    ///
+    /// `group` is a `u8` and `name` a `String` on purpose: neither may be an
+    /// enum, or an unknown value from a newer daemon would fail the whole
+    /// `Response::Board` deserialize and the client would drop the line.
+    /// The daemon sanitizes and length-caps the name (`board::sanitize_tag`).
+    SetTag {
+        id: ulid::Ulid,
+        group: u8,
+        name: Option<String>,
+    },
     /// Merge the ticket's branch into the default branch — fast-forward ONLY.
     /// A branch the default moved past answers `NeedsRebase`: the agent
     /// rebases + tests in its worktree first (`MergeToAgent`), so mesimon

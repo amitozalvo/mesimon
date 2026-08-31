@@ -25,6 +25,10 @@ pub(super) struct CardCtx<'a> {
     pub now_ms: u64,
     /// Redraw-clock frame for the working spinner (`App::spin_frame`).
     pub spin: usize,
+    /// The peek toggle is on. Distinct from the `peek` argument, which is
+    /// `Some` only when a session actually has a transcript to show: a tagged
+    /// ticket with no sessions still spells its tags out under `p`.
+    pub peek_on: bool,
 }
 
 /// Render the in-place title editor as a card line (create + rename share it).
@@ -165,7 +169,10 @@ pub(super) fn render(
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
-    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells);
+    // The tag zone (D18): zero-width on an untagged ticket, so a board with no
+    // tags renders exactly as it did before tags existed.
+    let tag_cells = crate::tags::pip_cells(&ticket.tags);
+    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells + tag_cells);
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
     let scroll = match (marquee_ms, overflow) {
@@ -227,6 +234,11 @@ pub(super) fn render(
     }
     spans.push(Span::styled(title, title_style));
     spans.push(Span::raw(" ".repeat(fill)));
+    // Tag pips: after the title, before the worktree mark and the age. A
+    // demoted row (trail ghost, inverted needs-you row) drops the tint — the
+    // colour-only encoding is only defensible while tags stay ambient.
+    let pip_quiet = if attn_card || trail { Some(quiet_style) } else { None };
+    spans.extend(crate::tags::pip_spans(theme, &ticket.tags, pip_quiet));
     if let Some((m, tone)) = &wt_mark {
         // Trail/attn contexts demote the mark to the quiet tone with the row.
         let style = match tone {
@@ -249,7 +261,13 @@ pub(super) fn render(
 
     // ---- accordion (07 §4.3; session rows only — short keys are hidden
     // from the UI for now, author 2026-08-30) -------------------------------
-    if selected && !sessions.is_empty() {
+    //
+    // Peek spells the tags out. This is not decoration: D31b grants tags the
+    // ONE colour-only encoding in the system, and the grant holds only while
+    // "the full names appear one keystroke away" stays true. So a tagged
+    // ticket expands under `p` even with no sessions to list.
+    let tag_names = ctx.peek_on && !ticket.tags.is_empty();
+    if selected && (!sessions.is_empty() || tag_names) {
         let acc_style = theme.selected_row();
         let dim = Style::default().fg(theme.sel.dim1);
         let quiet = Style::default().fg(theme.sel.dim2);
@@ -265,6 +283,11 @@ pub(super) fn render(
             all.push(Span::raw(" ".repeat(pad)));
             lines.push(Line::from(all).style(acc_style));
         };
+        if tag_names {
+            let mut row = vec![Span::raw("  ".to_string())];
+            row.extend(crate::tags::name_spans(theme, &ticket.tags, theme.sel.dim2));
+            push(row);
+        }
         let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
         ranked.sort_by_key(|s| (rank(&s.state), s.id));
         // A single session duplicates line 1 (aggregate glyph + age ARE that

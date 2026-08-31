@@ -47,6 +47,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         // Epoch-adjacent so the identity line's age renders a stable `>1y`.
         created_at: "1970-01-01T00:00:00Z".into(),
         workspace: None,
+        tags: Vec::new(),
         archived: None,
     }
 }
@@ -627,6 +628,113 @@ fn golden_card_branch_line_120() {
     golden("board_worktree_120x30", &render(&app, 120, 30));
 }
 
+/// The tags fixture keeps its own tickets so the thirteen board goldens above
+/// stay byte-identical: an untagged card must render exactly as it did before
+/// tags existed, which is what the zero-width tag zone buys.
+fn fixture_tagged() -> Board {
+    let mut b = fixture(false);
+    let tag = |b: &mut Board, id: u128, pairs: &[(u8, &str)]| {
+        if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(id)) {
+            for (g, name) in pairs {
+                t.set_tag(*g, Some((*name).to_string()));
+            }
+        }
+    };
+    tag(&mut b, 3, &[(1, "BUG"), (2, "STAGING")]);
+    tag(&mut b, 1, &[(1, "FTR")]);
+    // Four tags on one card: the run caps at three and collapses to `+1`.
+    tag(&mut b, 5, &[(1, "REGR"), (2, "PRODUCTION"), (3, "auth"), (4, "p1")]);
+    b
+}
+
+#[test]
+fn golden_board_tags_120() {
+    // At rest a tag is one lowercase letter in its own tint — the minimal
+    // indication (D18/D31b). T-5 wears four, so its run caps at `+1`.
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 0;
+    golden("board_tags_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_board_tags_peek_120() {
+    // Peek spells them out under the cursor card. D31b's colour-only grant to
+    // tags holds only while this is one keystroke away.
+    let mut app = app_graphite(fixture_tagged());
+    app.peek = true;
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    golden("board_tags_peek_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_board_tags_peek_sessionless_120() {
+    // A tagged ticket with NO sessions still expands under peek — the
+    // accordion used to early-return here, and the reveal is load-bearing.
+    let mut app = app_graphite(fixture_tagged());
+    app.peek = true;
+    app.cursor_col = 0;
+    app.cursor_row = 0;
+    golden("board_tags_peek_sessionless_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_tag_chord_120() {
+    // The `^t` tail: the advisory row names every axis that holds something,
+    // because mesimon seeds no vocabulary and a bare digit would mean nothing.
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    app.tag_armed =
+        Some(crate::app::TagArm { ticket: Some(ulid_n(3)), group: Some(1), naming: None });
+    golden("board_tag_chord_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_tag_naming_120() {
+    // Naming a new tag: the tail falls silent and the row becomes a field.
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    let mut buffer = crate::text::EditBuffer::new();
+    for c in "HOTFIX".chars() {
+        buffer.insert(c);
+    }
+    app.tag_armed =
+        Some(crate::app::TagArm { ticket: Some(ulid_n(3)), group: Some(5), naming: Some(buffer) });
+    golden("board_tag_naming_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_compose_tags_120() {
+    // `^t` reaches the composer, and the picks ride on the half-typed ticket
+    // until it has an id. This is the case a bare `t` could never serve.
+    let mut app = app_graphite(fixture_tagged());
+    app.rich_keys = true;
+    let mut buffer = crate::text::EditBuffer::new();
+    for c in "Fix the merge race".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Create {
+            workspace: None,
+            tags: vec![mesimon_core::board::Tag { name: "BUG".into(), group: 1 }],
+        },
+        buffer,
+    };
+    app.tag_armed = Some(crate::app::TagArm { ticket: None, group: Some(1), naming: None });
+    golden("board_compose_tags_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_ticket_tags_120() {
+    // The ticket page spells tags out on the identity line — you came here to
+    // read, so there is nothing to decode.
+    let mut app = app_graphite(fixture_tagged());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    golden("ticket_tags_120x30", &render(&app, 120, 30));
+}
+
 #[test]
 fn golden_composer_selector_120() {
     // The quick-add composer's Shift+Tab workspace selector (M4a surface) and
@@ -642,6 +750,7 @@ fn golden_composer_selector_120() {
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Create {
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+            tags: Vec::new(),
         },
         buffer,
     };

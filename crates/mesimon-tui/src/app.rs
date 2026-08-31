@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mesimon_core::board::{
-    Board, ExitReason, Provenance, SessionKind, SessionState, Ticket, WorkspaceStrategy,
+    sanitize_tag, Board, ExitReason, Provenance, SessionKind, SessionState, Tag, Ticket,
+    WorkspaceStrategy,
 };
 use mesimon_core::command::{
     Command, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
@@ -137,10 +138,33 @@ pub enum InputPurpose {
     /// name (M4 layering): None = the board default (shared checkout).
     Create {
         workspace: Option<WorkspaceStrategy>,
+        /// Tags picked with `^t` before the ticket exists. Sent as
+        /// `SetTag` commands once `Response::Created` gives us an id — the
+        /// same shape the workspace selector uses.
+        tags: Vec<Tag>,
     },
     Rename {
         id: ulid::Ulid,
     },
+}
+
+/// The `^t` tail's state. Unlike the delete and archive chords this is a
+/// place you stay: an axis stays picked so the next digit can pick another
+/// without a second `^t`.
+///
+/// The name field lives HERE rather than in a second `Mode::Input`, because
+/// `Mode` is a single slot and the composer may already be holding it. Keeping
+/// the buffer on the arm makes the gesture identical from the board, the
+/// ticket screen and the composer.
+#[derive(Debug, Clone, PartialEq)]
+pub struct TagArm {
+    /// The ticket being tagged. `None` while composing — the ticket does not
+    /// exist yet and the picks buffer on `InputPurpose::Create`.
+    pub ticket: Option<ulid::Ulid>,
+    /// The axis the digits last pointed at.
+    pub group: Option<u8>,
+    /// Typing a new tag name.
+    pub naming: Option<EditBuffer>,
 }
 
 /// `{`/`}` (and PgUp/PgDn) hunk-pane page step. The key handler cannot see
@@ -225,6 +249,10 @@ pub struct App {
     /// cancels. Only ever armed when `a` would archive — restoring is one
     /// press, because undoing a mistake must not be harder than making it.
     archive_armed: Option<ulid::Ulid>,
+    /// The `^t` tail is open. Checked BEFORE `Mode::Input` in `scope()` and
+    /// in `handle_key`, so arming from the composer leaves the half-typed
+    /// title untouched underneath and Esc returns to it.
+    pub(crate) tag_armed: Option<TagArm>,
     /// What `u` would undo. Archiving is fully reversible and leaves the
     /// ticket in the snapshot, so it needs no daemon-side grace band — it
     /// just needs to be reachable, which is what this is.
@@ -290,6 +318,7 @@ impl App {
             update_watch: crate::update::UpdateWatch::new(),
             pending_reexec: false,
             delete_armed: None,
+            tag_armed: None,
             archive_armed: None,
             last_undo: None,
             help: false,
@@ -550,6 +579,14 @@ impl App {
     /// tails (`d`, `z`) are scopes too, which is what makes a stray key inside
     /// a chord resolve to nothing and cancel instead of acting.
     pub fn scope(&self) -> Scope {
+        // Before the input barrier on purpose: `^t` works while a title is
+        // being typed, and the tail must own the digits until it closes.
+        if let Some(arm) = self.tag_armed.as_ref() {
+            // Naming a tag IS a text field, and saying so is what puts
+            // enter/esc back in the footer: every tag binding stands down
+            // while `tag_naming`, so `TagChord` would hint nothing at all.
+            return if arm.naming.is_some() { Scope::Input } else { Scope::TagChord };
+        }
         if matches!(self.mode, Mode::Input { .. }) {
             return Scope::Input;
         }
@@ -645,6 +682,13 @@ impl App {
                 self.mode,
                 Mode::Input { purpose: InputPurpose::Create { .. }, .. }
             ),
+            tag_group: self.tag_armed.as_ref().and_then(|a| a.group),
+            tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
+            tag_group_has_tags: self
+                .tag_armed
+                .as_ref()
+                .and_then(|a| a.group)
+                .is_some_and(|g| !self.board.group_tags(g).is_empty()),
             rich_keys: self.rich_keys,
         }
     }
@@ -674,6 +718,11 @@ impl App {
     /// verb it returns is matched exhaustively below — so a binding with no
     /// handler is a compile error, not a dead key.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // The tag tail outranks the input barrier: `^t` is reachable from the
+        // composer, so the keys that follow it must not land in the title.
+        if self.tag_armed.is_some() {
+            return self.key_tag(code, mods);
+        }
         // Text input is a scope barrier: it owns every key, including Tab, and
         // an atom it does not bind is a character to type.
         if let Mode::Input { .. } = self.mode {
@@ -776,7 +825,7 @@ impl App {
             // ---- tickets ---------------------------------------------------
             Verb::OpenTicket => {
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::Create { workspace: None },
+                    purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
                     buffer: EditBuffer::new(),
                 };
             }
@@ -814,6 +863,74 @@ impl App {
             Verb::Grab => self.grab(key, scope, ctx)?,
             // `a` on a ticket that is already archived restores it right
             // away; otherwise it arms, and the second `a` archives.
+            Verb::TagPrefix => {
+                // While composing the ticket does not exist yet; the picks
+                // buffer on the composer and travel with it on save.
+                let ticket = if ctx.composing { None } else { self.subject() };
+                if ticket.is_none() && !ctx.composing {
+                    return Ok(());
+                }
+                self.tag_armed = Some(TagArm { ticket, group: None, naming: None });
+                self.status = "1-9 pick a group ∙ esc done".into();
+            }
+            Verb::TagGroup => {
+                let Key::Char(c) = key else { return Ok(()) };
+                let Some(group) = c.to_digit(10).filter(|d| *d > 0).map(|d| d as u8) else {
+                    return Ok(());
+                };
+                if let Some(arm) = self.tag_armed.as_mut() {
+                    arm.group = Some(group);
+                }
+                let vocab: Vec<String> =
+                    self.board.group_tags(group).iter().map(|s| s.to_string()).collect();
+                if vocab.is_empty() {
+                    // Nothing to cycle: an empty axis falls straight into
+                    // naming, which is what "create on the fly" means.
+                    if let Some(arm) = self.tag_armed.as_mut() {
+                        arm.naming = Some(EditBuffer::new());
+                    }
+                    self.status = format!("name a tag for group {group}");
+                    return Ok(());
+                }
+                // none -> first -> … -> last -> none.
+                let current =
+                    self.tag_subject().and_then(|t| t.iter().find(|t| t.group == group)).cloned();
+                let next = match current {
+                    None => Some(vocab[0].clone()),
+                    Some(cur) => match vocab.iter().position(|v| *v == cur.name) {
+                        Some(i) if i + 1 < vocab.len() => Some(vocab[i + 1].clone()),
+                        // Past the end, or wearing a tag no longer in the
+                        // vocabulary: land on "none" so every value is
+                        // reachable by pressing again.
+                        _ => None,
+                    },
+                };
+                self.status = match &next {
+                    Some(n) => format!("{n} — group {group}"),
+                    None => format!("group {group} cleared"),
+                };
+                self.apply_tag(group, next)?;
+            }
+            Verb::TagNew => {
+                if let Some(arm) = self.tag_armed.as_mut() {
+                    if arm.group.is_some() {
+                        arm.naming = Some(EditBuffer::new());
+                    }
+                }
+                if let Some(g) = ctx.tag_group {
+                    self.status = format!("name a tag for group {g}");
+                }
+            }
+            Verb::TagClear => {
+                if let Some(g) = ctx.tag_group {
+                    self.status = format!("group {g} cleared");
+                    self.apply_tag(g, None)?;
+                }
+            }
+            Verb::TagDone => {
+                self.tag_armed = None;
+                self.status.clear();
+            }
             Verb::ArchivePrefix => {
                 if let Some(id) = self.subject() {
                     if ctx.ticket_archived {
@@ -1412,8 +1529,17 @@ impl App {
                 self.commit_input(purpose, buffer.into_text(), true)?;
                 return Ok(());
             }
+            Some(Verb::TagPrefix) => {
+                // Arm the tail and hand the following keys to it. The mode
+                // stays `Input`, so the half-typed title is untouched
+                // underneath and Esc comes back to it.
+                self.mode = Mode::Input { purpose, buffer };
+                self.tag_armed = Some(TagArm { ticket: None, group: None, naming: None });
+                self.status = "1-9 pick a group ∙ esc done".into();
+                return Ok(());
+            }
             Some(Verb::CycleWorkspace) => {
-                if let InputPurpose::Create { workspace } = &mut purpose {
+                if let InputPurpose::Create { workspace, .. } = &mut purpose {
                     *workspace = match workspace {
                         None => Some(WorkspaceStrategy::Worktree),
                         Some(_) => None,
@@ -1442,6 +1568,118 @@ impl App {
         }
         self.mode = Mode::Input { purpose, buffer };
         Ok(())
+    }
+
+    /// The `^t` tail. Owns every key while it is open, exactly as the input
+    /// barrier does — including the digits, which is why the tail's bindings
+    /// all stand down while a name is being typed.
+    fn key_tag(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        let Some(mut arm) = self.tag_armed.take() else { return Ok(()) };
+        let Some(key) = crate::keys::to_key(code, mods) else {
+            self.tag_armed = Some(arm);
+            return Ok(());
+        };
+        let word = crate::keys::word_wise(mods);
+
+        // Naming: the tail is silent, the field owns the keys.
+        if let Some(buf) = arm.naming.as_mut() {
+            match keymap::resolve(Scope::Input, key, &self.ctx()) {
+                Some(Verb::Save) | Some(Verb::SaveStart) => {
+                    let name = buf.as_str().to_string();
+                    arm.naming = None;
+                    self.tag_armed = Some(arm);
+                    return self.commit_tag_name(name);
+                }
+                Some(Verb::Cancel) | Some(Verb::Back) | Some(Verb::Quit) => {
+                    arm.naming = None;
+                    self.status = "tag cancelled".into();
+                }
+                Some(Verb::EditBackspace) if word => buf.delete_word_back(),
+                Some(Verb::EditBackspace) => buf.backspace(),
+                Some(Verb::EditDeleteWord) => buf.delete_word_back(),
+                Some(Verb::EditKillToStart) => buf.kill_to_start(),
+                Some(Verb::EditDelete) => buf.delete(),
+                Some(Verb::EditLeft) if word => buf.word_left(),
+                Some(Verb::EditLeft) => buf.left(),
+                Some(Verb::EditRight) if word => buf.word_right(),
+                Some(Verb::EditRight) => buf.right(),
+                Some(Verb::EditHome) => buf.home(),
+                Some(Verb::EditEnd) => buf.end(),
+                _ => match code {
+                    KeyCode::Char(_) if word => {}
+                    KeyCode::Char(c) => buf.insert(c),
+                    _ => {}
+                },
+            }
+            self.tag_armed = Some(arm);
+            return Ok(());
+        }
+
+        self.tag_armed = Some(arm);
+        let ctx = self.ctx();
+        let Some(verb) = keymap::resolve(Scope::TagChord, key, &ctx) else {
+            // A stray key inside a tail cancels rather than acting — and says
+            // so, because a chord that silently evaporates is worse than one
+            // that reports.
+            self.tag_armed = None;
+            self.status = "tags closed".into();
+            return Ok(());
+        };
+        self.dispatch(verb, key, Scope::TagChord, &ctx)
+    }
+
+    /// Which ticket the tag tail is acting on, and the tags it already wears.
+    /// While composing the ticket does not exist yet, so the picks live on
+    /// `InputPurpose::Create` until `Response::Created` hands us an id.
+    pub(crate) fn tag_subject(&self) -> Option<&[Tag]> {
+        let arm = self.tag_armed.as_ref()?;
+        match arm.ticket {
+            Some(id) => self.board.ticket(id).map(|t| t.tags.as_slice()),
+            None => match &self.mode {
+                Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } => Some(tags),
+                _ => None,
+            },
+        }
+    }
+
+    /// Apply one axis change, wherever the subject lives.
+    fn apply_tag(&mut self, group: u8, name: Option<String>) -> Result<()> {
+        let ticket = self.tag_armed.as_ref().and_then(|a| a.ticket);
+        match ticket {
+            Some(id) => {
+                if let Response::Err { message } = self.req(Command::SetTag { id, group, name }) {
+                    self.status = message;
+                }
+            }
+            None => {
+                if let Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } =
+                    &mut self.mode
+                {
+                    tags.retain(|t| t.group != group);
+                    if let Some(name) = name {
+                        tags.push(Tag { name, group });
+                    }
+                    tags.sort_by_key(|t| t.group);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Finish naming: sanitize here too so the status line and the composer
+    /// buffer agree with what the daemon will actually store.
+    fn commit_tag_name(&mut self, raw: String) -> Result<()> {
+        let Some(group) = self.tag_armed.as_ref().and_then(|a| a.group) else { return Ok(()) };
+        match sanitize_tag(&raw) {
+            Some(name) => {
+                self.status = format!("{name} — group {group}");
+                self.apply_tag(group, Some(name))
+            }
+            None => {
+                self.status = "a tag needs a name".into();
+                Ok(())
+            }
+        }
     }
 
     /// The ticket's worktree binding, as the last snapshot reported it.
@@ -1810,13 +2048,22 @@ impl App {
             return Ok(());
         }
         match purpose {
-            InputPurpose::Create { workspace } => {
+            InputPurpose::Create { workspace, tags } => {
                 let cols = self.columns();
                 let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
                 match self.req(Command::CreateTicket { column, title }) {
                     Response::Created { id } => {
                         if workspace.is_some() {
                             let _ = self.req(Command::SetWorkspace { id, workspace });
+                        }
+                        // Tags picked with `^t` while the ticket was still
+                        // being named, replayed now that it has an id.
+                        for tag in tags {
+                            let _ = self.req(Command::SetTag {
+                                id,
+                                group: tag.group,
+                                name: Some(tag.name),
+                            });
                         }
                         self.refresh()?;
                         self.select_ticket(id);
@@ -2109,6 +2356,7 @@ pub(crate) mod test_support {
                         order: "zzzz".into(),
                         created_at: "1970-01-01T00:00:00Z".into(),
                         workspace: None,
+                        tags: Vec::new(),
                         archived: None,
                     });
                     return Ok(Response::Created { id });
@@ -2257,6 +2505,7 @@ mod tests {
             order: order.into(),
             created_at: "1970-01-01T00:00:00Z".into(),
             workspace: None,
+            tags: Vec::new(),
             archived: None,
         }
     }
@@ -2389,6 +2638,120 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(!sent_contains(&sent, "CreateTicket"), "the key is inert, not half-bound");
         assert!(matches!(app.mode, Mode::Input { .. }), "still composing");
+    }
+
+    fn ctrl(app: &mut App, c: char) {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::CONTROL).unwrap();
+    }
+
+    /// An empty axis has nothing to cycle, so the first press on it goes
+    /// straight to naming — that IS "create on the fly, nothing seeded".
+    #[test]
+    fn a_fresh_group_asks_for_a_name() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        ctrl(&mut app, 't');
+        assert_eq!(app.scope(), Scope::TagChord);
+        press(&mut app, '1');
+        let arm = app.tag_armed.as_ref().expect("still armed");
+        assert_eq!(arm.group, Some(1));
+        assert!(arm.naming.is_some(), "an empty group falls into naming");
+        // While naming, the field owns the keys — including the digits.
+        for c in "BUG2".chars() {
+            press(&mut app, c);
+        }
+        assert_eq!(
+            app.tag_armed.as_ref().and_then(|a| a.naming.as_ref()).map(|b| b.as_str()),
+            Some("BUG2"),
+            "digits are text while naming, not group picks"
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "SetTag"), "the name commits");
+        assert!(sent_contains(&sent, "BUG2"));
+    }
+
+    /// A group with a vocabulary cycles: none -> first -> … -> last -> none,
+    /// so every value including "no tag" is reachable by pressing again.
+    #[test]
+    fn a_digit_cycles_its_group_and_wraps_through_none() {
+        let mut board = board_three_columns();
+        let id = board.tickets[0].id;
+        // Two tags in group 1, worn by other tickets — the derived registry.
+        board.tickets[1].set_tag(1, Some("BUG".into()));
+        board.tickets[2].set_tag(1, Some("REGR".into()));
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        assert_eq!(app.subject(), Some(id));
+
+        ctrl(&mut app, 't');
+        press(&mut app, '1');
+        assert!(sent_contains(&sent, "BUG"), "none -> first");
+        // The fake transport does not echo state back, so drive the cycle
+        // through the board directly: what is under test is the step, and
+        // the step reads the ticket's current tag.
+        app.board.ticket_mut(id).expect("ticket").set_tag(1, Some("BUG".into()));
+        sent.borrow_mut().clear();
+        press(&mut app, '1');
+        assert!(sent_contains(&sent, "REGR"), "first -> second");
+
+        app.board.ticket_mut(id).expect("ticket").set_tag(1, Some("REGR".into()));
+        sent.borrow_mut().clear();
+        press(&mut app, '1');
+        let log = sent.borrow().join(" ");
+        assert!(log.contains("SetTag"), "last -> none still sends");
+        assert!(log.contains("name: None"), "clearing sends no name, got {log}");
+    }
+
+    /// The tail stays open between digits — two axes, one `^t`.
+    #[test]
+    fn the_tail_holds_across_groups_and_a_stray_key_closes_it() {
+        let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        ctrl(&mut app, 't');
+        press(&mut app, '1');
+        // Cancel the name prompt, not the tail.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(app.tag_armed.is_some(), "esc leaves naming, not the tail");
+        assert!(app.tag_armed.as_ref().expect("armed").naming.is_none());
+        // A key the tail does not bind cancels it, like every other chord.
+        press(&mut app, 'j');
+        assert!(app.tag_armed.is_none(), "a stray key closes the tail");
+        assert_eq!(app.scope(), Scope::Board);
+    }
+
+    /// `^t` from the composer: the picks ride on the half-typed ticket and
+    /// are replayed once it has an id. A bare `t` could never do this — it
+    /// would be typed into the title.
+    #[test]
+    fn tags_survive_the_composer() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'o');
+        for c in "fix it".chars() {
+            press(&mut app, c);
+        }
+        ctrl(&mut app, 't');
+        assert_eq!(app.scope(), Scope::TagChord, "the tail outranks the input barrier");
+        press(&mut app, '2');
+        for c in "DEV".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // Nothing has been sent yet — the ticket does not exist.
+        assert!(!sent_contains(&sent, "SetTag"), "no ticket to tag yet");
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Create { tags, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "fix it", "the title survived the round trip");
+                assert_eq!(tags.len(), 1);
+                assert_eq!(tags[0].name, "DEV");
+                assert_eq!(tags[0].group, 2);
+            }
+            other => panic!("still composing, got {other:?}"),
+        }
+        // Leave the tail, then save: now the tag travels.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "CreateTicket"));
+        assert!(sent_contains(&sent, "SetTag"), "the buffered tag is replayed");
+        assert!(sent_contains(&sent, "DEV"));
     }
 
     /// A rename has nothing to start, so the key stays out of its way.

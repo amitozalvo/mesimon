@@ -11,7 +11,7 @@ use ratatui::Frame;
 
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap;
+use mesimon_core::keymap::{self, Scope};
 
 use crate::app::{App, InputPurpose, Mode};
 use crate::text::truncate;
@@ -129,6 +129,13 @@ fn suggestion_chip(app: &App, budget: usize) -> Vec<Span<'static>> {
 /// off a 100-column terminal. The row early-returns when there is nothing to
 /// say, which is why adding this drifted no existing golden.
 pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
+    // The tag tail owns this row while it is open: the vocabulary is the
+    // user's own and mesimon seeds none, so the only way a digit can mean
+    // anything is for the row to say what each one currently holds.
+    if let Some(line) = tag_line(app, area.width) {
+        f.render_widget(Paragraph::new(line), area);
+        return;
+    }
     let Some(g) = app.grace.last() else {
         if let Some(n) = app.notices.first() {
             let more = app.notices.len();
@@ -187,6 +194,9 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     let scope = app.scope();
     // A text field says which field it is; "INPUT" would be true and useless.
     let word = match &app.mode {
+        // The tag tail outranks the composer: while it is open it owns the
+        // keys, so the word must name the scope the hints came from.
+        _ if app.tag_armed.is_some() => Scope::TagChord.word(),
         Mode::Input { purpose: InputPurpose::Create { .. }, .. } => "NEW",
         Mode::Input { purpose: InputPurpose::Rename { .. }, .. } => "RENAME",
         _ => scope.word(),
@@ -311,4 +321,58 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
         theme.dim2(),
     )));
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The `^t` tail's row: every axis that holds something, plus the one being
+/// typed. Groups with no vocabulary are omitted rather than shown empty — a
+/// board that has never used group 7 should not advertise it.
+fn tag_line(app: &App, width: u16) -> Option<Line<'static>> {
+    let arm = app.tag_armed.as_ref()?;
+    let theme = &app.theme;
+    let worn = app.tag_subject().unwrap_or(&[]);
+    let mut spans =
+        vec![Span::styled(" TAG".to_string(), theme.dim1().add_modifier(Modifier::BOLD))];
+
+    if let Some(buf) = arm.naming.as_ref() {
+        let g = arm.group.unwrap_or(0);
+        spans.push(Span::styled(format!("  {g} #"), theme.dim2()));
+        spans.push(Span::styled(buf.as_str().to_string(), theme.base()));
+        // A block, not the hardware cursor: the real cursor may be parked in
+        // the composer's title field one row away.
+        spans.push(Span::styled("\u{2588}".to_string(), theme.dim2()));
+        return Some(Line::from(spans));
+    }
+
+    let mut shown = 0usize;
+    for g in 1..=9u8 {
+        let vocab = app.board.group_tags(g);
+        let wearing = worn.iter().find(|t| t.group == g);
+        if vocab.is_empty() && wearing.is_none() {
+            continue;
+        }
+        let picked = arm.group == Some(g);
+        let key = if picked { theme.base().add_modifier(Modifier::BOLD) } else { theme.dim2() };
+        spans.push(Span::styled(format!("  {g} "), key));
+        match wearing {
+            Some(t) => {
+                spans.push(Span::styled(
+                    crate::tags::pip_char(&t.name).to_string(),
+                    Style::default().fg(theme.pip(crate::tags::tint_index(&t.name))),
+                ));
+                spans.push(Span::styled(format!(" {}", t.name), theme.dim1()));
+            }
+            None => spans.push(Span::styled("\u{2013}".to_string(), theme.dim3())),
+        }
+        shown += 1;
+    }
+    if shown == 0 {
+        spans.push(Span::styled("  no tags yet \u{2014} press a digit".to_string(), theme.dim2()));
+    }
+    // Never overflow the row: drop whole entries from the right.
+    let mut used: usize = spans.iter().map(|s| s.content.width()).sum();
+    while used > width as usize && spans.len() > 1 {
+        let s = spans.pop().expect("non-empty");
+        used -= s.content.width();
+    }
+    Some(Line::from(spans))
 }

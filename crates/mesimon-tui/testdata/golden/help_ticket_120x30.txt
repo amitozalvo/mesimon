@@ -9,8 +9,9 @@
 
                                   TICKETS
   TRANSCRIPT                        r         rename
-                                    a         archive
-    ● working                       d         delete
+                                    ^t        tags
+    ● working                       a         archive
+                                    d         delete
 
                                   SESSIONS
                                     enter     focus
@@ -26,5 +27,4 @@
                                     ^L        redraw
                                     ^Z        suspend mesimon
 
-
- TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ q board ∙ ? keys
+ TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ ^t tags ∙ ? keys

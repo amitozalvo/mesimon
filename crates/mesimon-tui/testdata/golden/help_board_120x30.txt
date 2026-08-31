@@ -14,6 +14,7 @@
                                     o         open ticket
                                     > <       move card
                                     r         rename
+                                    ^t        tags
                                     a         archive
                                     d         delete
 
@@ -23,8 +24,7 @@
                                     x         sleep sessions
 
                                   VIEW
-                                    p         show replies
+                                    p         show replies + tags
 
                                   APP
-                                    esc       menu
- BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ c claude ∙ s shell ∙ > < move card ∙ q quit ∙ ? keys
+ BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ c claude ∙ s shell ∙ > < move card ∙ ^t tags ∙ ? keys

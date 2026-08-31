@@ -147,6 +147,17 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     } else if ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree {
         ident_spans.push(Span::styled(" ∙ ⎇ worktree", theme.dim2()));
     }
+    // Tags, spelled out: the ticket page is where you came to read, so there
+    // is no reason to make you decode a pip here. Budgeted against the width
+    // so a long vocabulary truncates the clause instead of wrapping the row.
+    if !ticket.tags.is_empty() {
+        let used: usize = ident_spans.iter().map(|s| s.content.width()).sum();
+        let budget = (area.width as usize).saturating_sub(used + 4);
+        if crate::tags::names_width(&ticket.tags) <= budget {
+            ident_spans.push(Span::styled(" ∙ ", theme.dim2()));
+            ident_spans.extend(crate::tags::name_spans(theme, &ticket.tags, theme.rest.dim2));
+        }
+    }
     let ident = Line::from(ident_spans);
 
     // Breathing row between the breadcrumb and the identity line too — the

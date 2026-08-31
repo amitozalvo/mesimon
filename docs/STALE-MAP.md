@@ -1015,3 +1015,57 @@ since been settled by shipped code. What this file records has inverted accordin
 as a map of which sections an amendment invalidated, and the tables above are now archaeology;
 what earns a block from here on is what was built and why, and what the corpus got wrong when
 someone went and measured. CLAUDE.md carries the rule.
+
+## Ticket tags (2026-08-31, T-83)
+
+D18's tag pips and D31b are built. Six things the corpus did not settle, or settled wrongly:
+
+- **The key is `^t`, not `ctrl+<digit>`.** The author asked for `Ctrl+1..9`; it cannot ship.
+  `no_banned_atoms` exists specifically to reject `ctrl+<digit>` (04 §1.1's table: `Ctrl+3` IS
+  Esc, `Ctrl+4` IS VQUIT, `Ctrl+2/8` collide with Ctrl+Space/Backspace), and the one whitelisted
+  spelling `Ctrl+5` is already `Back` — the layout-safe unfocus the Hebrew-bracket entry above
+  bought. A `rich_keys` gate like `ShiftEnter`'s would work on kitty terminals only, and the
+  requirement was that tags reach the **composer**, where the real constraint bites: `INPUT` is a
+  barrier that types any atom it does not bind, so a bare `t` is text. `Ctrl+<letter>` is the only
+  legacy-floor atom a text field cannot swallow (`keys.rs:16` matches Ctrl before the printable
+  arm). Hence `^t` + a digit, and hence a fourth chord tail (`Scope::TagChord`), bound on BOARD,
+  TICKET **and** INPUT. 04 §1.1's ban stands; only the author's preferred spelling is refuted.
+- **There is no tag registry file.** `Ticket.tags: Vec<Tag>` (`{name, group}`) is the whole model;
+  the vocabulary is derived by scanning the board (`Board::group_tags`). 16 §config's `board.toml`
+  and 13's `tags: [String]` both assumed a configured list. Consequence, made explicit in
+  `tags_e2e`: a tag exists exactly as long as some ticket wears it, so there is no rename and no
+  delete to build — and D33g's open residue about "a memory mechanism for a *removed* tag" is
+  answered by not having one.
+- **The vocabulary sorts alphabetically, not by first appearance.** First-appearance order is a
+  trap and the cycle test caught it: the ticket being cycled is part of the derivation, so taking
+  a tag moves that tag to the front and the next press walks back to where it started — the cycle
+  oscillates between two values and `none` is unreachable. D31b's "stable order, never by
+  recency" means *subject-independent*.
+- **`06` §2.4's chalk pip ramp is refuted on contrast.** Its `L*` 62 hexes measure **2.81:1** on
+  the chalk page and **2.33:1** on the selected surface — below even the `dim3` de-emphasis floor
+  the code already enforces. Re-derived at `L*` 54, same six hues, `C*` still under the 8.2
+  ceiling `test_chroma_law` was pre-sized for. Graphite's hexes measured fine (4.40 / 3.40) and
+  are kept verbatim. Pips are now held to **>= 3.0 on both surfaces** — above `dim3`, below the
+  `dim2` body floor, because a pip is read but ambient (`test_pip_ramp_is_low_chroma_and_legible`).
+- **Pips ride card line 1, not a reinstated meta strip.** D18 puts them on the meta row; that row
+  was cut in dogfood for being noise, and a second line on every tagged card is a heavy price on a
+  kanban. The zone is a fourth subtrahend in the title budget and collapses to **zero width** when
+  untagged — which is why thirteen board goldens are byte-identical after this change; only
+  footers moved. The run caps at 3 then `+N` (D31b) and the tint is dropped entirely on a trail
+  ghost or an inverted needs-you row.
+- **Peek is where the colour-only exception is paid for.** D31b grants tags the system's ONE
+  colour-only encoding, and the grant is explicitly conditional on the full names being one
+  keystroke away. `p` now reveals `#BUG #STAGING` in the accordion — which forced the accordion's
+  `selected && !sessions.is_empty()` gate open, since a tagged ticket with no sessions used to
+  early-return one line. The `p` hint says "replies + tags" for the same reason.
+
+Below TrueColor the tint is abandoned wholesale (`Theme::pip` returns `dim2`), per `06` §2.4: the
+indexed cube has no low-chroma hue wheel, and a *visible* tag colour is precisely the
+accent-spending failure D19 forbids. Nothing is lost because the pip is the tag's first letter,
+lowercase — uppercase stays reserved for "a human is required" — and the letter was always the
+identity. Sanitization is at the daemon boundary (`board::sanitize_tag`, 24 bytes, control chars,
+`0x2500-0x259F`, VS15/16, ZWJ), because a tag name is user text on a card row and a width
+disagreement there strands a `selected_bg` cell the diff never repaints.
+
+`15`'s "`set_tags`: NO TIER, NO TOOL, EVER" stands — tagging is human curation and there is no MCP
+surface yet.

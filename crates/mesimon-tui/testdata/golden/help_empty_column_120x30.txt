@@ -12,7 +12,7 @@
                                     o         open ticket
 
                                   VIEW
-                                    p         show replies
+                                    p         show replies + tags
 
                                   APP
                                     esc       menu
@@ -27,4 +27,4 @@
 
 
 
- BOARD  o open ticket ∙ p show replies ∙ esc menu ∙ q quit ∙ ? keys
+ BOARD  o open ticket ∙ p show replies + tags ∙ esc menu ∙ q quit ∙ ? keys

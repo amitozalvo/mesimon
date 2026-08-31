@@ -27,4 +27,4 @@
 
 
 
- TICKET  jk select session ∙ enter wake ∙ c start claude ∙ s shell ∙ x wake ∙ r rename ∙ q board ∙ ? keys
+ TICKET  jk select session ∙ enter wake ∙ c start claude ∙ s shell ∙ x wake ∙ r rename ∙ ^t tags ∙ q board ∙ ? keys

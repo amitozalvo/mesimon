@@ -71,6 +71,11 @@ pub(crate) struct Theme {
     bar_cursor: Color,
 }
 
+/// How many tag tints exist. A tag's index is `stable_hash(name) % PIPS`, so
+/// the same tag is the same colour on every machine and in every screenshot —
+/// never its position in a list, or two people see different boards.
+pub const PIPS: usize = 6;
+
 const fn hex(rgb: u32) -> Color {
     Color::Rgb((rgb >> 16) as u8, (rgb >> 8) as u8, rgb as u8)
 }
@@ -330,6 +335,40 @@ impl Theme {
             Style::default().add_modifier(Modifier::BOLD)
         }
     }
+    /// A tag pip's tint, `n = stable_hash(name) % PIPS`.
+    ///
+    /// Six muted hues at one lightness (D31b): tag pips draw from a
+    /// restricted low-chroma ramp and may NEVER spend the one saturated
+    /// colour reserved for "needs you" — the failure D19 names is that the
+    /// alert stops being the only bright thing and users learn to distrust it
+    /// within a week. Every hue here sits at C* ~8, an order of magnitude
+    /// below `attn`.
+    ///
+    /// Below TrueColor the tint is abandoned DELIBERATELY rather than
+    /// approximated: the indexed cube has no low-chroma hue wheel, so any
+    /// hand-assignment either collapses several hues onto one index or
+    /// reaches for cells with visible chroma — and a *visible* tag colour is
+    /// precisely the accent-spending failure. Six indistinguishable tints are
+    /// worse than none. Nothing is lost, because the pip is the tag's first
+    /// letter: the letter was always the identity, the tint was the redundant
+    /// half.
+    pub fn pip(&self, n: usize) -> Color {
+        if self.profile != Profile::TrueColor {
+            return self.rest.dim2;
+        }
+        let ramp = match self.flavor {
+            // L* 52, C* 7. Measured: >= 4.39 on bg, >= 3.39 on the selected
+            // surface.
+            Flavor::Graphite => [0x897877, 0x827B70, 0x757F75, 0x6D7F81, 0x757D88, 0x837983],
+            // L* 54, C* 8 — re-derived, NOT the corpus's L* 62 ramp, which
+            // measured 2.3:1 on the selected surface (below even the dim3
+            // de-emphasis floor). Same six hues, dropped until both surfaces
+            // clear 3.0 with C* still under the 8.2 ceiling.
+            Flavor::Chalk => [0x907D7C, 0x888073, 0x798479, 0x708587, 0x79828F, 0x897E89],
+        };
+        hex(ramp[n % PIPS])
+    }
+
     pub fn err_text(&self) -> Style {
         Style::default().fg(self.err)
     }
@@ -497,6 +536,60 @@ mod tests {
             let (_, cc) = lch(calm);
             assert!(ca >= ce + 12.0, "C*(attn) {ca:.1} < C*(err) {ce:.1} + 12");
             assert!(ca >= cc + 20.0, "C*(attn) {ca:.1} < C*(calm) {cc:.1} + 20");
+        }
+    }
+
+    /// The tag ramp obeys the same chroma law as the greys and never comes
+    /// near the accent (D31b: a tag pip may not spend the one saturated
+    /// colour). Held to >= 3.0 on BOTH surfaces — above the `dim3`
+    /// de-emphasis floor, below the `dim2` body floor: a pip is read, but it
+    /// is ambient. The corpus's chalk ramp measured 2.3 here and was
+    /// re-derived; this test is why.
+    #[test]
+    fn test_pip_ramp_is_low_chroma_and_legible() {
+        for (flavor, bg, selbg, attn) in [
+            (Flavor::Graphite, GRAPHITE.5, GRAPHITE.6, GRAPHITE.2),
+            (Flavor::Chalk, CHALK.5, CHALK.6, CHALK.2),
+        ] {
+            let t = Theme::new(flavor, Profile::TrueColor);
+            let (_, c_attn) = lch(attn);
+            for n in 0..PIPS {
+                let Color::Rgb(r, g, b) = t.pip(n) else {
+                    panic!("{flavor:?} pip {n} is not truecolor");
+                };
+                let rgb = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+                let (_, c) = lch(rgb);
+                assert!(c <= 8.2, "{flavor:?} pip {n} {rgb:06X} has C* {c:.1} > 8.2");
+                // An order of magnitude below the accent, not a near miss.
+                assert!(
+                    c_attn >= c * 4.0,
+                    "{flavor:?} pip {n} C* {c:.1} is not far below attn C* {c_attn:.1}"
+                );
+                for surface in [bg, selbg] {
+                    let k = contrast(rgb, surface);
+                    assert!(k >= 3.0, "{flavor:?} pip {n} {rgb:06X} on {surface:06X} is {k:.2}");
+                }
+            }
+            // Six DISTINCT hues, or the ramp encodes nothing.
+            let mut seen = Vec::new();
+            for n in 0..PIPS {
+                assert!(!seen.contains(&t.pip(n)), "{flavor:?} pip {n} repeats");
+                seen.push(t.pip(n));
+            }
+        }
+    }
+
+    /// Below TrueColor the tint is abandoned, not approximated: every pip is
+    /// the same grey, and the letter carries the tag.
+    #[test]
+    fn test_pips_lose_the_tint_below_truecolor() {
+        for flavor in [Flavor::Graphite, Flavor::Chalk] {
+            for p in [Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono] {
+                let t = Theme::new(flavor, p);
+                for n in 0..PIPS {
+                    assert_eq!(t.pip(n), t.rest.dim2, "{flavor:?}/{p:?} pip {n} kept a tint");
+                }
+            }
         }
     }
 

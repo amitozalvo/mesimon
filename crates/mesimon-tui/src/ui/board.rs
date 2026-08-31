@@ -74,7 +74,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
     let count = rows.len() + ghost.map(|_| 1).unwrap_or(0);
 
-    let ctx = CardCtx { theme, width: area.width, now_ms: now_ms(), spin: app.spin_frame() };
+    let ctx = CardCtx {
+        theme,
+        width: area.width,
+        now_ms: now_ms(),
+        spin: app.spin_frame(),
+        peek_on: app.peek,
+    };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
     let marquee_ms = |t: &Ticket| -> u64 {
@@ -174,7 +180,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // New-ticket entry: a phantom card at the column tail, edited in place.
     // The second line is the M4 workspace selector (Shift+Tab cycles it).
     if is_cursor_col {
-        if let Some((InputPurpose::Create { workspace }, buf)) = editing {
+        if let Some((InputPurpose::Create { workspace, .. }, buf)) = editing {
             let (line, x_off) = card::render_edit(&ctx, buf);
             let selector = card::render_workspace_selector(&ctx, *workspace);
             groups.push(Group {

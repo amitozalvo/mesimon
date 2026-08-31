@@ -99,6 +99,14 @@ pub enum Scope {
     /// does NOT come through here — undoing a mistake must never be harder
     /// than making it.
     ArchiveChord,
+    /// After `^t` on the board, the ticket screen, or inside the composer —
+    /// a chord tail, not a screen. `^t` rather than `t` because this must
+    /// work while a title is being typed, and a Ctrl-letter is the only
+    /// legacy-floor atom that a text field cannot swallow (`keys.rs` matches
+    /// Ctrl before the printable arm). `Ctrl+<digit>` is a banned atom
+    /// (`no_banned_atoms`) and its one whitelisted spelling `Ctrl+5` is
+    /// already `Back`, so the digits live one press inside this tail.
+    TagChord,
     Move,
     /// The Esc menu: everything that acts on the board as a whole, plus the
     /// two lists that are not the board. Board-wide actions deliberately have
@@ -126,6 +134,7 @@ impl Scope {
             | Scope::DiffView
             | Scope::DeleteChord
             | Scope::ArchiveChord
+            | Scope::TagChord
             | Scope::Input => None,
         }
     }
@@ -139,6 +148,7 @@ impl Scope {
             Scope::Diff | Scope::DiffView => "DIFF",
             Scope::DeleteChord => "DELETE",
             Scope::ArchiveChord => "ARCHIVE",
+            Scope::TagChord => "TAG",
             Scope::Move => "MOVE",
             Scope::Menu => "MENU",
             Scope::Drawer => "EXTERNAL",
@@ -202,6 +212,19 @@ pub enum Verb {
     ArchivePrefix,
     Archive,
     ArchiveAllDone,
+    /// `^t` — open the tag tail. Works on the board, the ticket screen, and
+    /// inside the composer.
+    TagPrefix,
+    /// A digit inside the tag tail: pick the axis and advance its tag one
+    /// step (`none -> first -> … -> last -> none`). The digit is read off the
+    /// key in `dispatch`, the way `DropColumn` does.
+    TagGroup,
+    /// Name a new tag on the axis last picked.
+    TagNew,
+    /// Clear the axis last picked.
+    TagClear,
+    /// Leave the tag tail.
+    TagDone,
     Merge,
     OpenDiff,
     // ---- diff ----
@@ -332,6 +355,15 @@ pub struct Ctx {
     /// The field is naming a NEW ticket, not renaming one. Only then is the
     /// workspace still open to change (it locks the moment work starts).
     pub composing: bool,
+    // ---- tags ----
+    /// The axis the tag tail is pointed at, if one has been picked.
+    pub tag_group: Option<u8>,
+    /// A tag name is being typed. While true every binding in the tag tail
+    /// stands down, so the digits are text and not axis picks.
+    pub tag_naming: bool,
+    /// The picked axis already has a vocabulary, so a digit press cycles it
+    /// rather than falling straight into naming.
+    pub tag_group_has_tags: bool,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -372,6 +404,9 @@ impl Default for Ctx {
             worktree_present: false,
             density_word: "context lines",
             composing: false,
+            tag_group: None,
+            tag_naming: false,
+            tag_group_has_tags: false,
             rich_keys: false,
         }
     }
@@ -648,6 +683,17 @@ static BOARD: &[Binding] = &[
         prio: 80,
     },
     Binding {
+        keys: &[Key::Ctrl('t')],
+        verb: Verb::TagPrefix,
+        show: "^t",
+        hint: |_| "tags",
+        avail: |c| c.has_ticket,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 110,
+    },
+    Binding {
         keys: &[Key::Char('a')],
         verb: Verb::ArchivePrefix,
         show: "a",
@@ -679,11 +725,15 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('p')],
         verb: Verb::Peek,
         show: "p",
+        // Peek is the toggle that spells out what the resting board only
+        // encodes — the reply under the card, and the tag names behind the
+        // pips. D31b's colour-only grant to tags depends on that second half
+        // being one keystroke away, so the hint names it.
         hint: |c| {
             if c.peek_on {
-                "hide replies"
+                "hide replies + tags"
             } else {
-                "show replies"
+                "show replies + tags"
             }
         },
         avail: always,
@@ -867,6 +917,17 @@ static TICKET: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 70,
+    },
+    Binding {
+        keys: &[Key::Ctrl('t')],
+        verb: Verb::TagPrefix,
+        show: "^t",
+        hint: |_| "tags",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 85,
     },
     Binding {
         keys: &[Key::Char('a')],
@@ -1059,6 +1120,76 @@ static ARCHIVE: &[Binding] = &[Binding {
     prio: 10,
 }];
 
+/// The `^t` chord tail. Like the delete and archive chords this inherits
+/// nothing, so a stray key cancels rather than acting — but unlike them it is
+/// a place you stay: a digit picks an axis and advances it, and the tail
+/// holds so the next digit can pick another axis without a second `^t`.
+///
+/// Every binding stands down while `tag_naming`, which is what lets the same
+/// digits be text inside the name field one keystroke later.
+static TAG: &[Binding] = &[
+    Binding {
+        keys: &[
+            Key::Char('1'),
+            Key::Char('2'),
+            Key::Char('3'),
+            Key::Char('4'),
+            Key::Char('5'),
+            Key::Char('6'),
+            Key::Char('7'),
+            Key::Char('8'),
+            Key::Char('9'),
+        ],
+        verb: Verb::TagGroup,
+        show: "1-9",
+        hint: |c| {
+            if c.tag_group_has_tags {
+                "cycle this group"
+            } else {
+                "pick a group"
+            }
+        },
+        avail: |c| !c.tag_naming,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('n')],
+        verb: Verb::TagNew,
+        show: "n",
+        hint: |_| "new tag here",
+        avail: |c| !c.tag_naming && c.tag_group.is_some(),
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('x')],
+        verb: Verb::TagClear,
+        show: "x",
+        hint: |_| "clear this group",
+        avail: |c| !c.tag_naming && c.tag_group.is_some(),
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Esc, Key::Enter],
+        verb: Verb::TagDone,
+        show: "esc",
+        hint: |_| "done",
+        avail: |c| !c.tag_naming,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 static MOVE: &[Binding] = &[
     Binding {
         // Bare arrows are aliases of hjkl (04 §2.0's atom list, §2.4's table).
@@ -1233,12 +1364,12 @@ static MENU_ITEMS: &[MenuItem] = &[
         verb: Verb::Peek,
         label: |c| {
             if c.peek_on {
-                "Hide agent replies".into()
+                "Hide agent replies and tag names".into()
             } else {
-                "Show agent replies".into()
+                "Show agent replies and tag names".into()
             }
         },
-        detail: |_| "the latest reply under the selected card".into(),
+        detail: |_| "the latest reply and the full tags under the selected card".into(),
         avail: always,
         key: "p",
     },
@@ -1462,6 +1593,20 @@ static INPUT: &[Binding] = &[
         prio: 15,
     },
     Binding {
+        // Tags while the title is still being typed. A Ctrl-letter is the
+        // only legacy-floor atom a text field cannot swallow, which is the
+        // whole reason the tag key is `^t` and not `t`.
+        keys: &[Key::Ctrl('t')],
+        verb: Verb::TagPrefix,
+        show: "^t",
+        hint: |_| "tags",
+        avail: |c| c.composing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 35,
+    },
+    Binding {
         keys: &[Key::Esc],
         verb: Verb::Cancel,
         show: "esc",
@@ -1585,6 +1730,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::DiffView => DIFF_VIEW,
         Scope::DeleteChord => DELETE,
         Scope::ArchiveChord => ARCHIVE,
+        Scope::TagChord => TAG,
         Scope::Move => MOVE,
         Scope::Menu => MENU,
         Scope::Drawer => DRAWER,
@@ -1724,7 +1870,7 @@ pub fn overlay(scope: Scope, ctx: &Ctx) -> Vec<(Group, Vec<(&'static str, &'stat
 mod tests {
     use super::*;
 
-    const ALL_SCOPES: [Scope; 12] = [
+    const ALL_SCOPES: [Scope; 13] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -1732,6 +1878,7 @@ mod tests {
         Scope::DiffView,
         Scope::DeleteChord,
         Scope::ArchiveChord,
+        Scope::TagChord,
         Scope::Move,
         Scope::Menu,
         Scope::Drawer,
@@ -1844,6 +1991,58 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The tag tail behaves like the delete and archive tails: it inherits
+    /// nothing, so a key it does not bind resolves to `None` and the handler
+    /// reads that as "cancel" rather than falling through to the board.
+    #[test]
+    fn tag_chord_is_a_barrier() {
+        let ctx = Ctx { has_ticket: true, tag_group: Some(1), ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Ctrl('t'), &ctx), Some(Verb::TagPrefix));
+        assert_eq!(resolve(Scope::Ticket, Key::Ctrl('t'), &ctx), Some(Verb::TagPrefix));
+        for d in '1'..='9' {
+            assert_eq!(resolve(Scope::TagChord, Key::Char(d), &ctx), Some(Verb::TagGroup), "{d}");
+        }
+        assert_eq!(resolve(Scope::TagChord, Key::Char('n'), &ctx), Some(Verb::TagNew));
+        assert_eq!(resolve(Scope::TagChord, Key::Char('x'), &ctx), Some(Verb::TagClear));
+        assert_eq!(resolve(Scope::TagChord, Key::Esc, &ctx), Some(Verb::TagDone));
+        // Nothing else binds — a stray key cancels instead of acting.
+        for k in [Key::Char('d'), Key::Char('c'), Key::Char('?'), Key::Char('q'), Key::Tab] {
+            assert_eq!(resolve(Scope::TagChord, k, &ctx), None, "{k:?}");
+        }
+        // Without a picked group there is nothing to name or clear yet.
+        let fresh = Ctx { has_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::TagChord, Key::Char('n'), &fresh), None);
+        assert_eq!(resolve(Scope::TagChord, Key::Char('x'), &fresh), None);
+    }
+
+    /// While a tag name is being typed the whole tail stands down, so the
+    /// digits are text and not axis picks. This is what lets the name field
+    /// live on the arm instead of needing a second `Mode::Input`.
+    #[test]
+    fn naming_a_tag_silences_the_tail() {
+        let naming =
+            Ctx { has_ticket: true, tag_group: Some(1), tag_naming: true, ..Default::default() };
+        for k in [Key::Char('1'), Key::Char('9'), Key::Char('n'), Key::Char('x'), Key::Esc] {
+            assert_eq!(resolve(Scope::TagChord, k, &naming), None, "{k:?}");
+        }
+    }
+
+    /// `^t` reaches the composer. A bare letter could not: `INPUT` is a
+    /// barrier that types anything it does not bind, and a Ctrl-letter is the
+    /// only legacy-floor atom a text field cannot swallow. This is the whole
+    /// reason the key is `^t`.
+    #[test]
+    fn tags_reach_the_composer() {
+        let composing = Ctx { composing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('t'), &composing), Some(Verb::TagPrefix));
+        // A rename is not a composition, but tags still make no sense there:
+        // the gesture is for the ticket being made.
+        let renaming = Ctx { composing: false, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('t'), &renaming), None);
+        // And the bare letter stays free for the field to type.
+        assert_eq!(resolve(Scope::Input, Key::Char('t'), &composing), None);
     }
 
     /// Every binding is spelled and (unless deliberately silent) described.
@@ -1976,7 +2175,11 @@ mod tests {
         for scope in ALL_SCOPES {
             for b in bindings(scope) {
                 assert!(
-                    !b.show.contains("d d") && !b.show.contains("a a") && !b.show.contains("z z"),
+                    !b.show.contains("d d")
+                        && !b.show.contains("a a")
+                        && !b.show.contains("z z")
+                        && !b.show.contains("^t ^t")
+                        && !b.show.contains("^t 1"),
                     "{:?} in {scope:?} spells a whole chord ({:?}) instead of one key",
                     b.verb,
                     b.show
@@ -2211,9 +2414,13 @@ mod tests {
         for s in ALL_SCOPES {
             if matches!(
                 s,
-                Scope::Input | Scope::DiffView | Scope::DeleteChord | Scope::ArchiveChord
+                Scope::Input
+                    | Scope::DiffView
+                    | Scope::DeleteChord
+                    | Scope::ArchiveChord
+                    | Scope::TagChord
             ) {
-                continue; // barrier scopes: three chord tails and a text field
+                continue; // barrier scopes: four chord tails and a text field
             }
             assert_eq!(resolve(s, Key::Char('?'), &ctx), Some(Verb::Help), "{s:?}");
         }

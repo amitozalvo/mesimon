@@ -14,8 +14,8 @@ use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool};
 use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
 use mesimon_core::board::{
-    Archived, Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord, SessionState,
-    Ticket, UnknownReason, WorkspaceStrategy,
+    sanitize_tag, Archived, Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord,
+    SessionState, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     Command, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Resources, Response,
@@ -594,6 +594,7 @@ impl Daemon {
             Command::RenameTicket { id, .. } => Some(("rename_ticket", Some(*id))),
             Command::DeleteTicket { id, .. } => Some(("delete_ticket", Some(*id))),
             Command::SetWorkspace { id, .. } => Some(("set_workspace", Some(*id))),
+            Command::SetTag { id, .. } => Some(("set_tag", Some(*id))),
             Command::MergeTicket { id } => Some(("merge_ticket", Some(*id))),
             Command::MergeToAgent { id, .. } => Some(("merge_to_agent", Some(*id))),
             Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
@@ -667,6 +668,7 @@ impl Daemon {
                 Response::Err { message: self.barred_message("worktrees") }
             }
             Command::SetWorkspace { id, workspace } => self.set_workspace(id, workspace),
+            Command::SetTag { id, group, name } => self.set_tag(id, group, name),
             Command::MergeTicket { id } => self.merge_ticket(id),
             Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
             Command::RestoreTicket { id } => self.restore_ticket(id),
@@ -1738,6 +1740,7 @@ impl Daemon {
             order: fracindex::between(&last, ""),
             created_at: now_iso(),
             workspace: None,
+            tags: Vec::new(),
             archived: None,
         };
         let id = t.id;
@@ -1802,6 +1805,32 @@ impl Daemon {
             return Response::Err { message: "workspace locked — worktree exists".into() };
         }
         match self.with_ticket(id, |t| t.workspace = workspace) {
+            Some(r) => r,
+            None => Response::Err { message: "no such ticket".into() },
+        }
+    }
+
+    /// Set or clear the ticket's tag on one axis. Sanitization happens HERE,
+    /// at the boundary, not in the TUI: a tag name is user text that lands on
+    /// a card row, and a width hazard there strands cells the diff never
+    /// repaints. Not gated on any write bar — `save_ticket` is the deliberate
+    /// exception (a ticket file we could not read is absent from
+    /// `board.tickets` and so self-bars).
+    fn set_tag(&mut self, id: ulid::Ulid, group: u8, name: Option<String>) -> Response {
+        if self.board.ticket(id).is_none() {
+            return Response::Err { message: "no such ticket".into() };
+        }
+        if !(1..=9).contains(&group) {
+            return Response::Err { message: "tag group must be 1-9".into() };
+        }
+        let clean = match name {
+            None => None,
+            Some(raw) => match sanitize_tag(&raw) {
+                Some(c) => Some(c),
+                None => return Response::Err { message: "empty tag name".into() },
+            },
+        };
+        match self.with_ticket(id, |t| t.set_tag(group, clean)) {
             Some(r) => r,
             None => Response::Err { message: "no such ticket".into() },
         }
