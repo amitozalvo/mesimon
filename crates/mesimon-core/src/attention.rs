@@ -170,34 +170,59 @@ pub enum NotificationKind {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
-    SessionStart { source: StartSource },
-    SessionEnd { kind: EndKind },
+    SessionStart {
+        source: StartSource,
+    },
+    SessionEnd {
+        kind: EndKind,
+    },
     UserPromptSubmit,
-    Stop { stop_hook_active: bool, has_agent_id: bool, background_tasks: bool },
+    /// `blocking_tasks`: the Stop payload's `background_tasks[]` held an entry
+    /// whose `.type` means the turn is PAUSED, not DONE (`task_blocks_end_turn`
+    /// — emptiness alone is NOT the test).
+    Stop {
+        stop_hook_active: bool,
+        has_agent_id: bool,
+        blocking_tasks: bool,
+    },
     SubagentStop,
     TeammateIdle,
-    StopFailure { class: StopFailureClass },
+    StopFailure {
+        class: StopFailureClass,
+    },
     PermissionRequest,
     PermissionDenied,
-    PreToolUse { tool: AttentionTool },
+    PreToolUse {
+        tool: AttentionTool,
+    },
     /// The narrow post-tool pair only: fires when the user has ANSWERED the
     /// question / resolved the plan dialog, which is the only mid-turn moment
     /// the `RequiresAction` can truthfully drop back to `Running`.
-    PostToolUse { tool: AttentionTool },
+    PostToolUse {
+        tool: AttentionTool,
+    },
     /// Broad PostToolUse (any other tool). A tool only completes after its
     /// dialog was allowed, so this is the accept path for a held generic
     /// permission — there is no "permission answered" event (11 §11.7.3).
     /// Inert from every other state.
     ToolCompleted,
-    Notification { kind: NotificationKind },
+    Notification {
+        kind: NotificationKind,
+    },
     Elicitation,
     ElicitationResult,
     /// tmux pane-died — authoritative for exit (spike T-7).
-    PaneDied { status: Option<i32> },
+    PaneDied {
+        status: Option<i32>,
+    },
     /// Daemon-side probe while `Spawning` (11 §11.5.3 approximation).
     /// `resume` marks a `--resume` spawn: a modal there is the resume-from-
     /// summary dialog (09 §9), not first-run setup.
-    SpawnProbe { bytes: bool, osc0: bool, resume: bool },
+    SpawnProbe {
+        bytes: bool,
+        osc0: bool,
+        resume: bool,
+    },
     /// Daemon-side probe while `Running`: the pane stopped painting past the
     /// quiet threshold. A turn in flight repaints continuously (spinner), so
     /// sustained silence means the turn is over. An Esc interrupt still fires
@@ -209,7 +234,40 @@ pub enum Signal {
     /// remains the fallback for a record that never lands.
     PaneQuiet,
     /// Observe tier: derived from an adopted session's transcript tail.
-    TranscriptHint { kind: TailHint },
+    TranscriptHint {
+        kind: TailHint,
+    },
+}
+
+/// Does one `background_tasks[]` entry mean the turn is PAUSED rather than
+/// DONE? 11 §11.7.4 gates `Idle{EndTurn}` on the array being *empty*; dogfood
+/// 2026-08-31 showed that is too coarse, and that it fails closed forever.
+///
+/// A `monitor` — the artifact-comment subscription an `Artifact` publish arms —
+/// is not work the agent is doing. It is a dormant watch on an EXTERNAL human,
+/// and it stays armed for the rest of the session. Under the emptiness test the
+/// first publish therefore suppressed every later `Stop` in that session: the
+/// arm targets `Running`, the state it is already in, so `apply` returns `None`
+/// and nothing is recorded; the pane-quiet probe then demoted the finished turn
+/// to `Idle{Interrupted}` 8 s later; and `automove` refuses to promote an
+/// interrupt. The ticket never reached REVIEW (T-72 "shortcuts UX": activity
+/// seq 114 `Stop`, no transition, seq 115 interrupted at Medium).
+///
+/// So classify, and let only genuinely in-flight work hold the turn open.
+///
+/// **The `.type` spellings are corpus claims, not spike-verified** — 11 §11.2.3
+/// lists `shell|subagent|monitor|workflow|teammate|cloud session|MCP task`, but
+/// S-A never captured a live `Stop` payload, and doc rule 4 says re-verify every
+/// API claim at implementation time. Two guards against that: matching is on a
+/// normalised token, so `"MCP task"`, `"mcp_task"` and `"mcpTask"` agree; and an
+/// UNRECOGNISED type blocks, which keeps today's conservative behaviour for
+/// anything new rather than ending a turn that is still running.
+pub fn task_blocks_end_turn(kind: &str) -> bool {
+    let norm: String =
+        kind.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect();
+    // Anything bearing "monitor" is a watch by construction, whatever it ends
+    // up being called (`monitor`, `artifact-comment-monitor`, …).
+    !norm.contains("monitor")
 }
 
 /// One debounced, publishable transition.
@@ -302,7 +360,8 @@ impl Machine {
 
         // Flap pin: only terminal transitions get through while pinned.
         if let Some(until) = self.pinned_until {
-            if now < until && !matches!(to, SessionState::Exited { .. } | SessionState::Failed { .. })
+            if now < until
+                && !matches!(to, SessionState::Exited { .. } | SessionState::Failed { .. })
             {
                 return None;
             }
@@ -379,13 +438,15 @@ impl Machine {
             _ => false,
         };
         let newly = match (&from, &to) {
-            (SessionState::RequiresAction { reason: a }, SessionState::RequiresAction { reason: b }) => a != b,
+            (
+                SessionState::RequiresAction { reason: a },
+                SessionState::RequiresAction { reason: b },
+            ) => a != b,
             (_, SessionState::RequiresAction { .. }) => true,
             _ => false,
         };
-        let attention_added = newly
-            && !suppressed
-            && matches!(confidence, Confidence::High | Confidence::Medium);
+        let attention_added =
+            newly && !suppressed && matches!(confidence, Confidence::High | Confidence::Medium);
 
         Change { from, to, attention_added, confidence }
     }
@@ -413,7 +474,9 @@ impl Machine {
             Signal::UserPromptSubmit => t(S::Running),
             Signal::Stop { stop_hook_active: true, .. } => None, // re-entrancy guard
             Signal::Stop { has_agent_id: true, .. } => None,     // nested, never top-level
-            Signal::Stop { background_tasks: true, .. } => t(S::Running),
+            // In-flight work (shell, subagent, …) holds the turn open; a
+            // dormant watch does not — see `task_blocks_end_turn`.
+            Signal::Stop { blocking_tasks: true, .. } => t(S::Running),
             Signal::Stop { .. } => t(S::Idle { stop_reason: StopReason::EndTurn }),
             // A subagent finishing proves the parent is still orchestrating.
             // The restart-window tail re-derive reads "waiting on background
@@ -423,9 +486,7 @@ impl Machine {
             // stated event). A High-confidence Idle came from a real Stop
             // (which reports in-flight work via background_tasks) and stands.
             Signal::SubagentStop => match &self.state {
-                S::Idle { .. } | S::Unknown { .. }
-                    if self.confidence != Confidence::High =>
-                {
+                S::Idle { .. } | S::Unknown { .. } if self.confidence != Confidence::High => {
                     Some((S::Running, Confidence::Medium))
                 }
                 _ => None,
@@ -504,10 +565,7 @@ impl Machine {
                     ) {
                         None
                     } else {
-                        Some((
-                            S::RequiresAction { reason: Reason::Permission },
-                            Confidence::Medium,
-                        ))
+                        Some((S::RequiresAction { reason: Reason::Permission }, Confidence::Medium))
                     }
                 }
                 NotificationKind::Other => None,
@@ -526,8 +584,7 @@ impl Machine {
                     return None;
                 }
                 if *bytes && !*osc0 {
-                    let reason =
-                        if *resume { Reason::ResumeDialog } else { Reason::StartupModal };
+                    let reason = if *resume { Reason::ResumeDialog } else { Reason::StartupModal };
                     Some((S::RequiresAction { reason }, Confidence::Medium))
                 } else if !*bytes {
                     Some((S::unknown(), Confidence::Low))
@@ -540,10 +597,7 @@ impl Machine {
             // silence is inference, not a stated event.
             Signal::PaneQuiet => {
                 if self.state == S::Running {
-                    Some((
-                        S::Idle { stop_reason: StopReason::Interrupted },
-                        Confidence::Medium,
-                    ))
+                    Some((S::Idle { stop_reason: StopReason::Interrupted }, Confidence::Medium))
                 } else {
                     None
                 }
@@ -554,9 +608,7 @@ impl Machine {
                     TailHint::AskUserQuestion => S::RequiresAction { reason: Reason::Question },
                     TailHint::ExitPlanMode => S::RequiresAction { reason: Reason::Plan },
                     TailHint::TurnComplete => S::Idle { stop_reason: StopReason::EndTurn },
-                    TailHint::AbortedMidStream => {
-                        S::Idle { stop_reason: StopReason::Interrupted }
-                    }
+                    TailHint::AbortedMidStream => S::Idle { stop_reason: StopReason::Interrupted },
                     TailHint::StaleQuiet => S::Idle { stop_reason: StopReason::Unknown },
                 };
                 Some((s, Confidence::Low))
@@ -621,7 +673,7 @@ mod tests {
         // Human answered; the next prompt clears it — but only after settle.
         assert!(m.apply(&Signal::UserPromptSubmit, 1000).is_none());
         assert!(m.tick(2000).is_none()); // not yet
-        // A re-trigger inside the settle window cancels the leave.
+                                         // A re-trigger inside the settle window cancels the leave.
         assert!(m.apply(&Signal::PermissionRequest, 2100).is_none());
         assert!(m.tick(3000).is_none());
         assert_eq!(m.state(), &RA_PERM);
@@ -634,7 +686,8 @@ mod tests {
     #[test]
     fn stop_needs_quiet_before_idle() {
         let mut m = m(SessionState::Running);
-        let stop = Signal::Stop { stop_hook_active: false, has_agent_id: false, background_tasks: false };
+        let stop =
+            Signal::Stop { stop_hook_active: false, has_agent_id: false, blocking_tasks: false };
         assert!(m.apply(&stop, 1000).is_none());
         // A prompt inside the window keeps it running.
         assert!(m.apply(&Signal::UserPromptSubmit, 1200).is_none());
@@ -650,22 +703,81 @@ mod tests {
     fn stop_hook_active_and_agent_id_are_ignored() {
         let mut m = m(SessionState::Running);
         assert!(m
-            .apply(&Signal::Stop { stop_hook_active: true, has_agent_id: false, background_tasks: false }, 1000)
+            .apply(
+                &Signal::Stop {
+                    stop_hook_active: true,
+                    has_agent_id: false,
+                    blocking_tasks: false
+                },
+                1000
+            )
             .is_none());
         assert!(m
-            .apply(&Signal::Stop { stop_hook_active: false, has_agent_id: true, background_tasks: false }, 1000)
+            .apply(
+                &Signal::Stop {
+                    stop_hook_active: false,
+                    has_agent_id: true,
+                    blocking_tasks: false
+                },
+                1000
+            )
             .is_none());
         assert!(m.pending.is_none());
     }
 
     #[test]
-    fn stop_with_background_tasks_stays_running() {
+    fn stop_with_blocking_tasks_stays_running() {
         let mut m = m(SessionState::Running);
         assert!(m
-            .apply(&Signal::Stop { stop_hook_active: false, has_agent_id: false, background_tasks: true }, 1000)
+            .apply(
+                &Signal::Stop {
+                    stop_hook_active: false,
+                    has_agent_id: false,
+                    blocking_tasks: true
+                },
+                1000
+            )
             .is_none());
         assert!(m.tick(9000).is_none());
         assert_eq!(m.state(), &SessionState::Running);
+    }
+
+    /// In-flight work holds the turn open; a dormant watch must not. The
+    /// spellings are unverified, so an unknown type keeps the safe behaviour.
+    #[test]
+    fn only_in_flight_task_types_block_end_turn() {
+        for k in ["shell", "subagent", "workflow", "MCP task", "teammate", "cloud session"] {
+            assert!(task_blocks_end_turn(k), "{k} is work in flight");
+        }
+        for k in ["monitor", "artifact-comment-monitor", "Monitor", "artifact_monitor"] {
+            assert!(!task_blocks_end_turn(k), "{k} is a dormant watch");
+        }
+        // Forward-safe: an unseen type holds the turn open rather than ending
+        // one that may still be running.
+        assert!(task_blocks_end_turn("some_future_task"));
+        assert!(task_blocks_end_turn(""));
+    }
+
+    /// The T-72 regression. An `Artifact` publish arms a comment monitor that
+    /// stays live for the rest of the session, so under the old emptiness test
+    /// EVERY later Stop was swallowed (`to == state`, no transition) and the
+    /// pane-quiet probe mislabelled the finished turn `Interrupted` — which
+    /// `automove` refuses to promote, stranding the ticket in IN PROGRESS.
+    #[test]
+    fn armed_monitor_does_not_suppress_end_turn() {
+        let stop =
+            Signal::Stop { stop_hook_active: false, has_agent_id: false, blocking_tasks: false };
+        let mut m = m(SessionState::Running);
+        // Two turns: the bug was that the monitor stayed armed and so ate the
+        // SECOND one too.
+        for turn in 0..2 {
+            let base = turn * 100_000;
+            assert!(m.apply(&stop, base + 1000).is_none(), "leave settles");
+            let c = m.tick(base + 1000 + SETTLE_MS).expect("settles to end_turn");
+            assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+            assert_eq!(c.confidence, Confidence::High);
+            assert!(m.apply(&Signal::UserPromptSubmit, base + 50_000).is_some());
+        }
     }
 
     #[test]
@@ -713,7 +825,9 @@ mod tests {
     #[test]
     fn stopfailure_classes_route() {
         let mut m1 = m(SessionState::Running);
-        let c = m1.apply(&Signal::StopFailure { class: StopFailureClass::AuthenticationFailed }, 1).unwrap();
+        let c = m1
+            .apply(&Signal::StopFailure { class: StopFailureClass::AuthenticationFailed }, 1)
+            .unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::Auth });
         assert!(c.attention_added);
 
@@ -730,7 +844,9 @@ mod tests {
     #[test]
     fn throttled_leave_settles_5s() {
         let mut m = m(SessionState::Throttled);
-        assert!(m.apply(&Signal::Notification { kind: NotificationKind::QuotaFired }, 1000).is_none());
+        assert!(m
+            .apply(&Signal::Notification { kind: NotificationKind::QuotaFired }, 1000)
+            .is_none());
         assert!(m.tick(4000).is_none());
         let c = m.tick(6100).expect("left throttled");
         assert_eq!(c.to, SessionState::Running);
@@ -739,7 +855,8 @@ mod tests {
     #[test]
     fn quota_stale_needs_human() {
         let mut m = m(SessionState::Throttled);
-        let c = m.apply(&Signal::Notification { kind: NotificationKind::QuotaStale }, 1000).unwrap();
+        let c =
+            m.apply(&Signal::Notification { kind: NotificationKind::QuotaStale }, 1000).unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::QuotaResume });
         assert!(c.attention_added);
     }
@@ -747,11 +864,15 @@ mod tests {
     #[test]
     fn sandboxed_permission_prompt_is_medium_and_confirmation_is_silent() {
         let mut m = m(SessionState::Running);
-        let c = m.apply(&Signal::Notification { kind: NotificationKind::PermissionPrompt }, 1000).unwrap();
+        let c = m
+            .apply(&Signal::Notification { kind: NotificationKind::PermissionPrompt }, 1000)
+            .unwrap();
         assert_eq!(c.to, RA_PERM);
         assert_eq!(c.confidence, Confidence::Medium);
         // The 6 s-late confirmation raises nothing and never re-transitions.
-        assert!(m.apply(&Signal::Notification { kind: NotificationKind::PermissionPrompt }, 2000).is_none());
+        assert!(m
+            .apply(&Signal::Notification { kind: NotificationKind::PermissionPrompt }, 2000)
+            .is_none());
     }
 
     #[test]
@@ -858,7 +979,8 @@ mod tests {
         // A hook-stated end_turn (High) stays inert — a background task's
         // completion must not flip a real turn end.
         let mut done = m(SessionState::Running);
-        let stop = Signal::Stop { stop_hook_active: false, has_agent_id: false, background_tasks: false };
+        let stop =
+            Signal::Stop { stop_hook_active: false, has_agent_id: false, blocking_tasks: false };
         assert!(done.apply(&stop, 1_000).is_none()); // leave settles
         done.tick(1_000 + SETTLE_MS).expect("settle to end_turn");
         assert_eq!(done.confidence(), Confidence::High);
@@ -911,7 +1033,8 @@ mod tests {
     fn in_app_resume_is_not_an_exit() {
         // SessionEnd{resume} = conversation handoff inside a live pane:
         // no transition from any live state, and no relabeling of a death.
-        for state in [SessionState::Running, SessionState::Idle { stop_reason: StopReason::EndTurn }]
+        for state in
+            [SessionState::Running, SessionState::Idle { stop_reason: StopReason::EndTurn }]
         {
             let mut ma = m(state.clone());
             assert!(
@@ -929,16 +1052,14 @@ mod tests {
     fn spawn_probe_paths() {
         // Bytes but no Claude title → startup modal, medium confidence.
         let mut m1 = m(SessionState::Spawning);
-        let c = m1
-            .apply(&Signal::SpawnProbe { bytes: true, osc0: false, resume: false }, 1)
-            .unwrap();
+        let c =
+            m1.apply(&Signal::SpawnProbe { bytes: true, osc0: false, resume: false }, 1).unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::StartupModal });
         assert_eq!(c.confidence, Confidence::Medium);
         // No bytes at all → unknown, never failed, low (out of the queue).
         let mut m2 = m(SessionState::Spawning);
-        let c = m2
-            .apply(&Signal::SpawnProbe { bytes: false, osc0: false, resume: false }, 1)
-            .unwrap();
+        let c =
+            m2.apply(&Signal::SpawnProbe { bytes: false, osc0: false, resume: false }, 1).unwrap();
         assert_eq!(c.to, SessionState::unknown());
         assert_eq!(c.confidence, Confidence::Low);
         assert!(!c.attention_added);
@@ -959,9 +1080,8 @@ mod tests {
         assert_eq!(rank(&SessionState::RequiresAction { reason: Reason::ResumeDialog }), 8);
         assert_eq!(reason_word(Reason::ResumeDialog), "RESUME");
         let mut m1 = m(SessionState::Spawning);
-        let c = m1
-            .apply(&Signal::SpawnProbe { bytes: true, osc0: false, resume: true }, 1)
-            .unwrap();
+        let c =
+            m1.apply(&Signal::SpawnProbe { bytes: true, osc0: false, resume: true }, 1).unwrap();
         assert_eq!(c.to, SessionState::RequiresAction { reason: Reason::ResumeDialog });
         assert_eq!(c.confidence, Confidence::Medium);
         assert!(c.attention_added);
@@ -1064,7 +1184,11 @@ mod tests {
         assert!(ma.apply(&Signal::PaneDied { status: Some(1) }, 1000).is_none());
         assert!(ma
             .apply(
-                &Signal::Stop { stop_hook_active: false, has_agent_id: false, background_tasks: false },
+                &Signal::Stop {
+                    stop_hook_active: false,
+                    has_agent_id: false,
+                    blocking_tasks: false
+                },
                 1000
             )
             .is_none());
@@ -1145,15 +1269,11 @@ mod tests {
         };
         let perm_late = mk(RA_PERM, Some(2000), Confidence::High);
         let perm_early = mk(RA_PERM, Some(1000), Confidence::High);
-        let plan = mk(
-            SessionState::RequiresAction { reason: Reason::Plan },
-            Some(10),
-            Confidence::High,
-        );
+        let plan =
+            mk(SessionState::RequiresAction { reason: Reason::Plan }, Some(10), Confidence::High);
         let low = mk(RA_PERM, Some(1), Confidence::Low);
         let running = mk(SessionState::Running, None, Confidence::High);
-        board.sessions =
-            vec![running, plan.clone(), low, perm_late.clone(), perm_early.clone()];
+        board.sessions = vec![running, plan.clone(), low, perm_late.clone(), perm_early.clone()];
         let q = attention_queue(&board);
         let ids: Vec<_> = q.iter().map(|s| s.id).collect();
         assert_eq!(ids, vec![perm_early.id, perm_late.id, plan.id]);

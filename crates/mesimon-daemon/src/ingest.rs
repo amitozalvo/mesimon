@@ -6,7 +6,8 @@
 //! Claude silently ignores unknown registrations, and so do we).
 
 use mesimon_core::attention::{
-    AttentionTool, EndKind, NotificationKind, Signal, StartSource, StopFailureClass,
+    task_blocks_end_turn, AttentionTool, EndKind, NotificationKind, Signal, StartSource,
+    StopFailureClass,
 };
 use serde_json::Value;
 
@@ -68,11 +69,18 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             has_agent_id: frame.payload.get("agent_id").is_some_and(|v| !v.is_null()),
-            background_tasks: frame
+            // Classified, not counted: a dormant `monitor` would otherwise
+            // suppress every Stop for the rest of the session (T-72). An entry
+            // with no readable `.type` counts as blocking — the safe read.
+            blocking_tasks: frame
                 .payload
                 .get("background_tasks")
                 .and_then(Value::as_array)
-                .is_some_and(|a| !a.is_empty()),
+                .is_some_and(|a| {
+                    a.iter().any(|t| {
+                        t.get("type").and_then(Value::as_str).is_none_or(task_blocks_end_turn)
+                    })
+                }),
         }),
         "SubagentStop" => Some(Signal::SubagentStop),
         "TeammateIdle" => Some(Signal::TeammateIdle),
@@ -136,9 +144,7 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
         }),
         "Elicitation" => Some(Signal::Elicitation),
         "ElicitationResult" => Some(Signal::ElicitationResult),
-        "PaneDied" => {
-            Some(Signal::PaneDied { status: reason.and_then(|r| r.parse().ok()) })
-        }
+        "PaneDied" => Some(Signal::PaneDied { status: reason.and_then(|r| r.parse().ok()) }),
         _ => None,
     }
 }
@@ -236,9 +242,27 @@ mod tests {
             Some(Signal::Stop {
                 stop_hook_active: false,
                 has_agent_id: false,
-                background_tasks: false
+                blocking_tasks: false
             })
         );
+    }
+
+    /// `background_tasks` is classified, not counted: a live artifact-comment
+    /// monitor is dormant and must not hold the turn open (T-72); a background
+    /// shell must. A typeless entry reads as blocking.
+    #[test]
+    fn background_tasks_block_end_turn_by_type_not_emptiness() {
+        let blocking = |body: &str| match signal_of(&frame("Stop", None, body)) {
+            Some(Signal::Stop { blocking_tasks, .. }) => blocking_tasks,
+            other => panic!("expected Stop, got {other:?}"),
+        };
+        assert!(!blocking(r#"{"background_tasks":[{"type":"monitor"}]}"#));
+        assert!(blocking(r#"{"background_tasks":[{"type":"shell"}]}"#));
+        // Mixed: the shell still holds it open.
+        assert!(blocking(r#"{"background_tasks":[{"type":"monitor"},{"type":"shell"}]}"#));
+        assert!(blocking(r#"{"background_tasks":[{"description":"?"}]}"#));
+        assert!(!blocking(r#"{"background_tasks":[]}"#));
+        assert!(!blocking("{}"));
     }
 
     #[test]
@@ -288,14 +312,25 @@ mod tests {
         let f = frame("Stop", None, r#"{"agent_id":"a1","stop_hook_active":false}"#);
         assert_eq!(
             signal_of(&f),
-            Some(Signal::Stop { stop_hook_active: false, has_agent_id: true, background_tasks: false })
+            Some(Signal::Stop {
+                stop_hook_active: false,
+                has_agent_id: true,
+                blocking_tasks: false
+            })
         );
     }
 
     #[test]
     fn notification_discriminates_on_type() {
-        let f = frame("Notification", None, r#"{"notification_type":"quota_auto_resume_stale","message":"press Enter"}"#);
-        assert_eq!(signal_of(&f), Some(Signal::Notification { kind: NotificationKind::QuotaStale }));
+        let f = frame(
+            "Notification",
+            None,
+            r#"{"notification_type":"quota_auto_resume_stale","message":"press Enter"}"#,
+        );
+        assert_eq!(
+            signal_of(&f),
+            Some(Signal::Notification { kind: NotificationKind::QuotaStale })
+        );
         let f = frame("Notification", None, r#"{"notification_type":"idle_prompt"}"#);
         assert_eq!(signal_of(&f), Some(Signal::Notification { kind: NotificationKind::Other }));
     }
@@ -327,13 +362,23 @@ mod tests {
 
     #[test]
     fn pretooluse_only_maps_the_two_tools() {
-        let f = frame("PreToolUse", None, r#"{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Keep the 301?"}]}}"#);
-        assert_eq!(signal_of(&f), Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion }));
+        let f = frame(
+            "PreToolUse",
+            None,
+            r#"{"tool_name":"AskUserQuestion","tool_input":{"questions":[{"question":"Keep the 301?"}]}}"#,
+        );
+        assert_eq!(
+            signal_of(&f),
+            Some(Signal::PreToolUse { tool: AttentionTool::AskUserQuestion })
+        );
         assert_eq!(detail_of(&f), Some("Keep the 301?".into()));
         let f = frame("PreToolUse", None, r#"{"tool_name":"Bash"}"#);
         assert_eq!(signal_of(&f), None);
         let f = frame("PostToolUse", None, r#"{"tool_name":"AskUserQuestion","tool_response":{}}"#);
-        assert_eq!(signal_of(&f), Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion }));
+        assert_eq!(
+            signal_of(&f),
+            Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion })
+        );
         // Any other completion is the generic permission-accept path.
         let f = frame("PostToolUse", None, r#"{"tool_name":"Bash"}"#);
         assert_eq!(signal_of(&f), Some(Signal::ToolCompleted));
