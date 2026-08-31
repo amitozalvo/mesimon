@@ -16,9 +16,13 @@ report.
    Never your shell rc, your git config, your `~/.claude/`, or your tmux config.
 2. **No config mutation.** `mesimon doctor` diagnoses and prints copy-pasteable fixes. It has no
    `--fix`.
-3. **Zero token injection.** mesimon adds, removes, and reorders exactly zero tokens of what any
-   model receives, by default. Anything that would change model input is per-column, opt-in, and
-   authored by you.
+3. **Zero prompt injection.** mesimon adds, removes and reorders exactly zero tokens of your
+   conversation. It never prepends a system prompt, never appends a reminder, never rewrites what
+   you typed.
+
+   It does give the sessions it spawns three read/move board tools, so an agent can see which
+   ticket it is on. `mesimon doctor --mcp` prints them verbatim, and they are the only thing
+   mesimon adds to model input.
 
 ## Requirements
 
@@ -77,6 +81,24 @@ exists, and it means *this session is waiting on you*.
 does not stop your agents** — that is the point of the daemon.
 
 The footer always names the keys for whatever you are looking at.
+
+## What your agents can see
+
+A Claude session mesimon starts gets three tools — `get_ticket`, `list_board`, `move_ticket` —
+so it knows which ticket it is on and can move its own card. They arrive on the command line and
+are installed nowhere: no `.mcp.json`, no `~/.claude.json`, no `settings.local.json`, no plugin.
+A session you start yourself never sees them, and your own MCP servers still load alongside.
+
+There is no tool, at any tier, to spawn or kill a session, delete or archive or rename a ticket,
+merge a branch, or read a session, a transcript or a cost. Those commands are refused by the
+daemon, not merely absent from the tool list.
+
+An agent's `Edit` and `Write` into `.mesimon/` and mesimon's state directory are refused too.
+Its shell is not: `sed -i` into those paths still works, because matching on command strings is
+security theatre and hooking every `Bash` call would tax the one thing agents do constantly.
+
+`mesimon doctor --mcp` prints all of it — the exact flag, every tool description, the token cost,
+and what mesimon deliberately does not send.
 
 ## Stopping everything
 

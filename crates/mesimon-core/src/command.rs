@@ -247,6 +247,34 @@ pub enum Command {
         #[serde(default = "default_diff_context")]
         context: u32,
     },
+
+    // ------------------------------------------------------------------
+    // The agent tier (T-84). Three commands, reachable only by
+    // `Principal::Agent`, and gated by `mcp::agent_allows` — which is an
+    // exhaustive match, so a command added below this line will not compile
+    // until someone decides whether an agent may send it.
+    //
+    // No agent command takes a ticket id. The ticket comes from the session
+    // the connection is bound to, so an agent cannot address another ticket
+    // even by guessing an id, and there is no ownership check to get wrong.
+    // ------------------------------------------------------------------
+    /// The caller's own ticket, as `get_ticket` renders it.
+    AgentGetTicket,
+    /// Board metadata only. Deliberately NOT `Snapshot`: no session, argv,
+    /// transcript path, cwd or cost ever reaches an agent, at any tier.
+    AgentListBoard,
+    /// Move the caller's own ticket. `to_column` is validated server-side
+    /// against the board's real columns and the tier's permitted set.
+    AgentMoveTicket {
+        to_column: String,
+        /// The client's `_meta["claudecode/toolUseId"]` when it has one.
+        /// A mid-call transport drop hands the model the literal string
+        /// `Connection closed` AFTER the move has already been persisted —
+        /// the mutation happened and the agent believes it failed. Replaying
+        /// the stored result is what stops the retry moving the card twice.
+        #[serde(default)]
+        idempotency_key: Option<String>,
+    },
 }
 
 fn default_diff_context() -> u32 {
@@ -349,6 +377,73 @@ pub enum Response {
     DiffFile {
         file: crate::diff::FileDiff,
     },
+    /// AgentGetTicket's answer.
+    AgentTicket {
+        ticket: AgentTicketView,
+    },
+    /// AgentListBoard's answer.
+    AgentBoard {
+        board: AgentBoardView,
+    },
+    /// AgentMoveTicket's receipt: where the ticket actually ended up.
+    AgentMoved {
+        column: String,
+        #[serde(default)]
+        board_version: u64,
+        /// True when the key had already been used and the stored result was
+        /// replayed instead of moving again.
+        #[serde(default)]
+        replayed: bool,
+    },
+}
+
+/// The caller's own ticket, as an agent sees it.
+///
+/// A hand-written projection, not `Ticket` with fields skipped: a projection
+/// that is a separate type cannot silently grow a field when the board model
+/// does. Everything here is board data the agent could read off disk anyway.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTicketView {
+    pub key: String,
+    pub title: String,
+    pub column: String,
+    /// `worktree` | `shared_checkout` | `adopt_existing`.
+    pub workspace: String,
+    /// The ticket's branch, when it has a worktree.
+    #[serde(default)]
+    pub branch: Option<String>,
+    /// Merge state as a word: `merged` | `ahead` | `needs_rebase` | `clean`,
+    /// or absent when the ticket has no worktree. A word, not an enum, for
+    /// the same reason `WorktreeItem.status` is one.
+    #[serde(default)]
+    pub merge_state: Option<String>,
+    /// Where `move_ticket` will accept a move to, right now. This is why
+    /// `to_column` needs no schema enum: the valid set travels as transient
+    /// result data instead of permanent context.
+    #[serde(default)]
+    pub allowed_columns: Vec<String>,
+    #[serde(default)]
+    pub board_version: u64,
+}
+
+/// One row of `list_board`. Three fields, and no fourth is coming: a ticket's
+/// session is not an agent's business.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTicketRow {
+    pub key: String,
+    pub title: String,
+    pub column: String,
+}
+
+/// The board as an agent sees it: columns in board order, tickets, nothing
+/// else. `agent_board_view_leaks_no_session_data` in the daemon asserts the
+/// serialized form carries no session key.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentBoardView {
+    pub columns: Vec<String>,
+    pub tickets: Vec<AgentTicketRow>,
+    #[serde(default)]
+    pub board_version: u64,
 }
 
 /// A ticket's worktree binding, as the board renders it (M4). Oids stay

@@ -6,6 +6,7 @@ pub mod diff;
 pub mod feed;
 pub mod hook_settings;
 pub mod ingest;
+pub mod movegate;
 pub mod paths;
 pub mod resources;
 pub mod server;

@@ -107,8 +107,8 @@ needs-you (`Theme::attn`; `test_attn_provenance*` enforces it), nothing else eve
 ## Architecture
 
 Five crates: `mesimon` (the single binary; subcommand dispatch is a hand-rolled match in
-`main.rs` — `hook` first because it runs inside an agent's turn), `mesimon-core` (pure logic, no
-I/O), `mesimon-daemon`, `mesimon-backend-tmux`, `mesimon-tui`.
+`main.rs` — `hook`, `gate` and `mcp` first because they run inside an agent's turn),
+`mesimon-core` (pure logic, no I/O), `mesimon-daemon`, `mesimon-backend-tmux`, `mesimon-tui`.
 
 **Single-writer daemon (D22).** One mpsc channel; the main thread is the only mutator of board
 state. Everything — client requests, hook frames, the 250 ms tick — arrives as a `Msg` variant in
@@ -135,9 +135,9 @@ servers, so live-server changes must also be issued as commands (see `install_pa
 Child env is allowlisted (`env_clear`), never inherited.
 
 **Attention flow (M2).** Claude sessions spawn with `--settings <state>/hooks/<uuid>.json` — a
-31-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's
-silent-failure traps: no `if` off tool events, matchers only where supported). Each hook execs
-`mesimon hook`, a pure observer (`mesimon/src/hook.rs` — reads stdin to EOF first, never writes
+32-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's
+silent-failure traps: no `if` off tool events, matchers only where supported). Thirty-one of the
+entries exec `mesimon hook`, a pure observer (`mesimon/src/hook.rs` — reads stdin to EOF first, never writes
 stdout because stdout is injected into the agent's context, exits 0 always, 500 ms self-abort)
 which forwards one frame to `hook.sock`. `daemon/src/ingest.rs` distills frames into `Signal`s;
 `core/src/attention.rs` holds the pure, time-injected state machine (fixed precedence ranks 0–16;
@@ -267,6 +267,59 @@ sessions_write_barred }`, and every save goes through `persist_columns`/`persist
 `state.is_live()` for working-set membership and `state.has_pane()` for pane existence —
 `Sleeping` is live-but-parked (no pane, no process; the attention machine latches until wake).
 
+**The agent tier (T-84): three board tools, and three named movers.** Every Claude session
+mesimon spawns also carries `--mcp-config '<inline JSON>'` naming `mesimon mcp` — a stdio shim
+that forwards each `tools/call` to `orch.sock` as `Envelope { principal: Agent { session } }`.
+The config is written to NO file (no `.mcp.json`, no `~/.claude.json`, no `settings.local.json`,
+no plugin), so a session mesimon did not spawn can never reach the tools and revoking is "stop
+passing the flag". There is no bearer token, deliberately: `orch.sock` already accepts
+`Principal::Local` from any same-uid process and a token in the tmux session env is readable
+from every other pane, so the boundary is the 0700 runtime dir — the same one `hook.sock`
+already relies on. The shim is untrusted (it runs in the agent's process tree) and holds no
+policy.
+
+Tools: `get_ticket`, `list_board`, `move_ticket`. **No tool takes a ticket id** — the ticket
+comes from the session binding, so there is no ownership check to get wrong. `to_column` is a
+plain string validated server-side, never an `enum`, because column names are the user's words
+and an enum would inject them into every request forever. `core/src/mcp.rs` holds the tool
+definitions, the description lint (no second person, no imperatives) and the ≤820-byte cap.
+
+`mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
+command will not compile until someone decides whether an agent may send it. That is the
+enforcement for D10's never-tier — no spawn, no kill, no delete/archive/rename, no workspace, no
+merge, no diff, no tags (all five tag commands mutate board-wide registry state), no session
+read at any tier. `authorize()` is now real for `Agent`: `Session` is denied outright and so is
+`Mutate` on `Resource::Board`.
+
+**`Principal` has three inhabitants, and keeping them apart is load-bearing.** `automove` and
+hook ingestion used to run as `Principal::Agent` because it was the only value meaning "not the
+human"; once an agent could ask for a move itself that became unworkable. `Automation { rule }`
+is now the daemon's own rules, `Agent { session }` means an agent asked, `Local` is a person.
+**`Daemon::place_ticket` is the only function that moves a ticket** (it absorbed `auto_move` and
+`move_ticket`; the M4 DONE gate lives in it, so every mover obeys it). `daemon/src/movegate.rs`
+restrains everything that is not a person, and never a person: *no undo* (an automatic mover may
+not reverse a different principal's move inside 60 s), *depth zero* (no automation inside an
+automation's move — nothing recurses today, which is why it was cheap before M5's column
+on-enter actions), and a *fuse* (6 automatic moves of one ticket in 120 s suspends automation for
+it, notice in the advisory row, cleared by any move by hand). State is in memory on purpose: a
+debounce, not a security control, so no schema field to get wrong. **M5's column automations
+become another `Principal::Automation { rule }` calling `place_ticket` and inherit all of it.**
+
+**The one deciding hook is `mesimon gate`**, a separate subcommand precisely so `mesimon hook`'s
+never-writes-stdout invariant stays literally true. It is the 32nd entry — `PreToolUse` matcher
+`"Edit,Write,NotebookEdit"`, synchronous, disjoint from the narrow observer entry — and it
+refuses structured writes under `<repo>/.mesimon` and the state dir. `core/src/verdict.rs`'s
+`Verdict` has `Deny` and `NoOpinion` and **no `Allow`, ever**; a repo-wide test asserts no source
+line puts `"allow"` or `"ask"` in a `permissionDecision` position (`ask` collapses to a deny in
+headless). The decision is local and static from argv, so a dead daemon cannot make it fail
+open; the denial is reported to `hook.sock` afterwards for the feed. **Bash is NOT hooked** and
+the README says so: command-shape matching is an evasion hole and hooking every shell call taxes
+the thing agents do constantly. `mesimon doctor --mcp` prints the whole surface. E2e:
+`crates/mesimon/tests/mcp_e2e.rs`. **Trap for the next e2e: `automove` is edge-triggered AND the
+attention machine pins at `Confidence::Low` after >4 committed changes in 20 s (`FLAP_MAX`),
+where `automove` refuses to move — a second `UserPromptSubmit` to an already-`Running` session
+produces no edge, so an assertion resting on it passes for the wrong reason.**
+
 **Adoption (M3).** Foreign sessions are discovered lazily (drawer open → `RescanExternal`; never
 at startup, never polled) by cwd-field census of `~/.claude/projects/` (`daemon/src/census.rs`;
 pure parsers in `core/src/adopt.rs`). Attached records have `provenance: Adopted` + empty argv =
@@ -293,8 +346,9 @@ dir; pid-bearing locks + crash-safe sweep. Workspace is chosen ONCE, in the comp
 inject the notice. Delete gates on unmerged bindings (`d` then `D` discards, branch `-D`); DONE move
 blocked while unmerged; teardown waits for the reaper (never remove a live cwd), single
 `--force` only. Card mark `⎇ ⎇… ⎇↑ ⎇↓ ⎇✓ ⎇! ⎇x ⎇-`; sessions in worktrees carry
-`MESIMON_TICKET`/`MESIMON_WORKTREE_BRANCH`, and spawns pass the user's own
-`permissions.defaultMode` as `--permission-mode` (fresh worktree paths lost it otherwise).
+`MESIMON_WORKTREE_BRANCH` (every spawn carries `MESIMON_TICKET`, worktree or not — T-84), and
+spawns pass the user's own `permissions.defaultMode` as `--permission-mode` (fresh worktree
+paths lost it otherwise).
 E2e: `crates/mesimon/tests/worktree_e2e.rs` (the one e2e with a real git repo).
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
@@ -319,4 +373,7 @@ available in `crates/mesimon/tests/`).
   that boundary (CONTRIBUTING.md records the CLA rule).
 - `mt/` is leftover research scratch, not project content.
 - Product promises (README): strict write allowlist, no config mutation (`doctor` prints fixes,
-  never applies), zero token injection by default. Don't write code that violates them.
+  never applies), zero PROMPT injection — mesimon adds, removes and reorders no token of the
+  conversation, and the three MCP tool definitions are the one named exception (T-84 narrowed
+  promise 3 from "token" to "prompt"; `mesimon doctor --mcp` prints the whole surface). Don't
+  write code that violates them.

@@ -1192,3 +1192,107 @@ edit mode to name a tag. Both landed, but the first one could not land as asked:
 `06` §2.4's pip letter and the painted bands that replaced it are both superseded; the tint ramp
 and its contrast floors are unchanged, and `test_tag_underlines_never_spend_the_accent` moves
 D19's check onto the underline channel.
+
+## MCP for mesimon-spawned sessions, and the collision design (2026-08-31, T-84)
+
+Three board tools, a deny-only write gate, and — the half that will outlive both — a single
+move path with three named principals. `docs/15-mcp-security.md` is a 1370-line design for
+this feature written before any code existed; most of its measurements held, and five of its
+decisions did not survive contact with the codebase. Recorded here in the form "what it said,
+what shipped, why".
+
+**The transport is stdio over `orch.sock`, not a loopback HTTP listener.** 15 §1.3 chose one
+TCP listener on the daemon with a path routing-id and an env-expanded bearer, `Origin`
+validation and a 405 on the GET stream. That is a lot of surface for a problem mesimon had
+already solved twice: `orch.sock` and `hook.sock` live in a 0700 runtime directory and are how
+everything else talks to the daemon. A TCP port is reachable by every process on the machine
+and by any browser page; it needs DNS-rebinding defence, a port file, and it carries a 60 s
+per-request timer that stdio does not have. `mesimon mcp --sock <orch.sock> --session <uuid>`
+is spawned by Claude, speaks JSON-RPC on stdin/stdout, and forwards one `Envelope` per call.
+No new socket, no new protocol, no entry in the `sun_path` budget test.
+
+**There is no bearer token, and that is the honest choice rather than the lazy one.** 15 §1.3's
+credential table is right that env survives `cd` and argv does not survive `ps`. It is wrong
+about what the credential would buy here. `orch.sock` already accepts `Principal::Local` with
+the full command set from any process running as this user, so authenticating only the agent
+path is theatre; and a token placed in the tmux session environment is readable from every other
+pane on the private server (`tmux show-environment -t <sid16>`), so it would not even separate
+agent A from agent B. The boundary mesimon actually has is the 0700 directory — the same one
+`server.rs`'s hook listener already named in a comment ("the 0600 socket is the authentication —
+no token in any agent env"). The thing the user asked for is nonetheless delivered, by a
+different mechanism: the config rides on argv and is written to no file, so a session mesimon
+did not spawn cannot reach the tools at all. If the threat model ever widens to distrusting one
+of the user's own agents, the hardening path is `LOCAL_PEERPID` plus tmux pane ancestry, which
+needs no protocol change.
+
+**`Principal` grew a third variant, and this is the load-bearing change.** Before T-84,
+`automove` (server.rs) and hook ingestion (`on_hook`) both ran as `Principal::Agent`, because
+`Agent` was the only inhabitant that meant "not the human". The moment an agent could ask for a
+move itself, that conflation became unworkable: `authorize()` could not restrict the asking
+without breaking the automating, the feed could not say who moved a card, and nothing could
+notice that two movers were undoing each other. `Principal::Automation { rule }` now covers the
+daemon's own rules; `Agent { session }` means an agent asked. D32c invariant 1 said "two
+inhabitants"; it is three, and the third was always implicit.
+
+**One move function.** `Daemon::place_ticket` replaces three separate implementations
+(`auto_move`, `move_ticket`, and what the agent path would have been). The M4 DONE gate lived
+inside the human's path only, which means an automation could have routed around the one rule
+that stops the board claiming something shipped when git says it did not. Everything a move
+must obey is now in one place, so M5's column on-enter actions obey it by construction.
+
+**Three guards, in `daemon/src/movegate.rs`.** A human is never refused by any of them.
+*No undo*: an automatic mover may not perform the exact reverse of a move a different principal
+made in the last 60 s — this is the flap the user watches, a card dragged back to TODO and
+snapped forward again on the next `Running`. *Depth zero*: an automation may not fire inside
+another automation's move; nothing recurses today, which is exactly why it was cheap to add
+before M5. *A fuse*: six automatic moves of one ticket in 120 s suspends automation for it, says
+so in the advisory row, and is cleared by any move by hand. The state is in memory deliberately
+— a debounce, not a security control, so losing it on restart is correct and it needs no
+schema field.
+
+**A trap for whoever writes the next e2e: `automove` is edge-triggered, and the attention
+machine has a flap guard of its own.** More than `FLAP_MAX` (4) committed state changes inside
+20 s pins the machine at `Confidence::Low` for 20 s, and `automove` refuses to move on Low. A
+test that sends a second `UserPromptSubmit` to an already-`Running` session produces no edge and
+no move, and an assertion resting on that passes for the wrong reason. `mcp_e2e` gets both
+directions of the collision out of three transitions for this reason.
+
+**The deciding hook is a separate binary, `mesimon gate`.** 15 §2.3 wanted `type: "http"` to the
+daemon, on the grounds that a command hook forks an interpreter per tool call. That argument
+does not apply here — mesimon already registers a broad `PostToolUse` command hook, so the fork
+cost is measured and paid — and it has a worse property: the decision would depend on the daemon
+being alive. `gate` decides locally from argv (`--deny-board`, `--deny-state`), which makes it
+sub-millisecond and means a dead daemon cannot make it fail open; the denial is reported to
+`hook.sock` afterwards, best-effort, so it still reaches the activity feed. It is a separate
+subcommand from `mesimon hook` so that the observer's "never writes stdout" invariant stays
+literally true and stays testable. Hook count 31 → 32; the two `PreToolUse` entries have
+disjoint comma matchers, and a test asserts they cannot overlap.
+
+**Scope of the gate, stated rather than fudged.** `Edit`/`Write`/`NotebookEdit` carry
+`file_path` as a real argument, so the check is exact; both sides are resolved (macOS `/tmp` is
+a symlink, and a file about to be created has no canonical path of its own). `Bash` is not
+hooked. 15 §4.8 already catalogued why a command-shape pre-filter is an evasion hole, and
+hooking it unconditionally would put a blocking round trip on the one tool agents use
+constantly. The README now says so in the user's own terms.
+
+**Deviations from 15 that were the author's call, 2026-08-31:** the tools are ON for every
+mesimon-spawned session rather than behind D27's consent ledger (the ledger is not built, and
+`mesimon doctor --mcp` is the printable half of the promise instead); README promise 3 is
+narrowed from "zero token injection" to "zero prompt injection" with the tool definitions named
+as the exception; `ask_user` is NOT an MCP tool, because Claude's own `AskUserQuestion` is
+already special-cased in the `PreToolUse` matcher and mesimon already routes it to the attention
+rail; `add_note` (T1) is deferred until notes have any storage or surface at all;
+`--strict-mcp-config` is not passed, so the user's own MCP servers still load (D7: dropping them
+is subtractive magic).
+
+**Two things 15 got exactly right and the code kept.** `initialize.result.instructions` is never
+set, and `skills/list` returns `-32601` — the two injection surfaces that are invisible in
+`tools/list`. And `move_ticket.to_column` is a plain string validated server-side, never an
+`enum`: the valid set travels as data in `get_ticket`, because a board with a column called
+`DO_NOT_SELF_APPROVE` would otherwise inject that string into every request of every session.
+
+**Verified live on Claude Code 2.1.251**, not assumed: `--mcp-config` accepts inline JSON
+strings and not only files (so nothing is written to disk); `--strict-mcp-config` exists;
+`hookSpecificOutput` / `hookEventName` / `permissionDecision` / `permissionDecisionReason` are
+all present in the binary; `CLAUDE_CODE_MCP_ALLOWLIST_ENV` gates MCP child-env scrubbing and
+defaults to `CLAUDE_CODE_ENTRYPOINT === "local-agent"`, which mesimon never sets.

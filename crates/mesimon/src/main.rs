@@ -1,7 +1,9 @@
 //! mesimon — me-si-MON. The task instrument.
 
 mod doctor;
+mod gate;
 mod hook;
+mod mcp;
 
 use std::path::PathBuf;
 
@@ -13,6 +15,11 @@ fn main() -> Result<()> {
         // First: the hot path. Runs inside the user's agent turn (≤5 ms p99,
         // docs/14 §1.7) and must touch nothing else in the binary.
         Some("hook") => hook::run(&args[1..]),
+        // Also inside the turn, and also before anything else is touched:
+        // `gate` decides a PreToolUse, `mcp` is the board's tool server. Both
+        // are spawned by Claude Code, never by a person.
+        Some("gate") => gate::run(&args[1..]),
+        Some("mcp") => mcp::run(&args[1..]),
         Some("daemon") => {
             let repo =
                 arg_value(&args, "--repo").map(PathBuf::from).unwrap_or(std::env::current_dir()?);
@@ -59,7 +66,12 @@ fn print_help() {
         "mesimon (me-si-MON) — a terminal kanban that orchestrates coding-agent sessions\n\n\
          usage:\n  mesimon              open the board for the current directory\n  \
          mesimon doctor [section]       diagnose the environment; prints fixes, applies none\n  \
+         mesimon doctor --mcp           print everything mesimon adds to a session's model input\n  \
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
-         mesimon --version\n"
+         mesimon --version\n\n\
+         spawned by Claude Code inside a mesimon session, never run by hand:\n  \
+         mesimon hook   observer; reports one event, writes no stdout, exits 0\n  \
+         mesimon gate   PreToolUse decider; refuses writes into paths mesimon owns\n  \
+         mesimon mcp    the board's MCP server (get_ticket, list_board, move_ticket)\n"
     );
 }

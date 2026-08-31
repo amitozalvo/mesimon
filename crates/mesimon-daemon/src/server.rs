@@ -18,14 +18,17 @@ use mesimon_core::board::{
     SessionState, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    Command, Envelope, Event, ExternalItem, GraceItem, MergeOutcome, Resources, Response,
-    WorktreeItem, PROTOCOL_VERSION,
+    AgentBoardView, AgentTicketRow, AgentTicketView, Command, Envelope, Event, ExternalItem,
+    GraceItem, MergeOutcome, Notice, Resources, Response, WorktreeItem, PROTOCOL_VERSION,
 };
+use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 
 use crate::feed::FeedWriter;
+use crate::hook_settings::mesimon_bin;
 use crate::ingest::{self, HookFrame};
+use crate::movegate::{MoveGate, Position};
 use crate::paths::Paths;
 use crate::store;
 use crate::tail::TailCursor;
@@ -174,6 +177,18 @@ pub struct Daemon {
     pending_teardown: Vec<(ulid::Ulid, bool, Vec<String>)>,
     /// Writer-thread sender, cloned into provisioning threads.
     tx: Sender<Msg>,
+    /// What restrains every mover that is not a person (T-84). See
+    /// `crate::movegate` for why authority alone cannot do this job.
+    moves: MoveGate,
+    /// Bumped on every broadcast. An opaque "something changed" token handed
+    /// to agents so a future `if_version` has something to compare, and so a
+    /// tool result can be told apart from a stale one.
+    board_version: u64,
+    /// `(session, idempotency_key) -> resulting column`, for replaying a
+    /// mutating tool call the agent believes failed. A mid-call transport drop
+    /// hands the model the literal string `Connection closed` AFTER the move
+    /// has been persisted; without this the retry moves the card twice.
+    agent_replay: HashMap<(uuid::Uuid, String), String>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -366,6 +381,9 @@ pub fn run(paths: Paths) -> Result<()> {
         base_branch: None,
         pending_teardown: Vec::new(),
         tx: tx.clone(),
+        moves: MoveGate::new(),
+        board_version: 0,
+        agent_replay: HashMap::new(),
     };
     d.refresh_worktree_flags();
 
@@ -391,16 +409,29 @@ pub fn run(paths: Paths) -> Result<()> {
 }
 
 impl Daemon {
-    /// Per-session env for a worktree-bound ticket (M4 layer 1: silent,
-    /// zero-token indication that the session lives in a ticket worktree —
-    /// hooks and scripts key off it; the agent sees it when it looks).
-    fn worktree_env(&self, ticket: ulid::Ulid, cwd: &std::path::Path) -> Vec<(String, String)> {
-        let Some(b) = self.worktrees.get(&ticket) else { return Vec::new() };
-        if b.status != BindingStatus::Attached || b.path != cwd {
+    /// Per-session env (layer 1 of "the session knows where it is": silent,
+    /// zero-token, keyed off by hooks and shell scripts; the agent sees it
+    /// when it looks).
+    ///
+    /// `MESIMON_TICKET` goes to EVERY session mesimon spawns. It used to be
+    /// worktree-only, which meant a shared-checkout session — the board
+    /// default — had no way to name its own ticket from the shell at all
+    /// (T-84). `MESIMON_WORKTREE_BRANCH` stays conditional, because a session
+    /// in the main checkout genuinely has no branch of its own.
+    ///
+    /// Layer 2 is the MCP tool surface: this tells the *shell* which ticket it
+    /// is on, `get_ticket` tells the *model*.
+    fn session_env(&self, ticket: ulid::Ulid, cwd: &std::path::Path) -> Vec<(String, String)> {
+        let Some(key) = self.board.ticket(ticket).map(|t| t.short_key.clone()) else {
             return Vec::new();
+        };
+        let mut env = vec![("MESIMON_TICKET".to_string(), key)];
+        if let Some(b) = self.worktrees.get(&ticket) {
+            if b.status == BindingStatus::Attached && b.path == cwd {
+                env.push(("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone()));
+            }
         }
-        let key = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
-        vec![("MESIMON_TICKET".into(), key), ("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone())]
+        env
     }
 }
 
@@ -573,6 +604,23 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
 
 impl Daemon {
     fn handle(&mut self, env: Envelope, stream: &Arc<Mutex<UnixStream>>) -> Response {
+        // The agent tier is a separate path, deliberately (T-84). Sharing the
+        // local dispatch would mean every arm below carries an implicit "and
+        // is this an agent?" that somebody eventually forgets. Here the answer
+        // is settled once, before any board state is touched.
+        if let Principal::Agent { session } = env.principal {
+            return self.handle_agent(session, env.command);
+        }
+        // `Automation` is the daemon's own rules acting on their own; it is
+        // constructed internally and never arrives over a socket. A client
+        // claiming to be one is confused, and answering it would hand a
+        // caller the full local command set under a name that reads as
+        // "mesimon did this" in the activity feed.
+        if let Principal::Automation { .. } = env.principal {
+            return Response::Err {
+                message: "automation is not a principal a client may claim".into(),
+            };
+        }
         // D32c invariant 2: the chokepoint is on every path, even though v0.1 allows.
         let action = match &env.command {
             Command::Hello { .. }
@@ -605,7 +653,6 @@ impl Daemon {
             Command::ArchiveTicket { id } => Some(("archive_ticket", Some(*id))),
             Command::UnarchiveTicket { id } => Some(("unarchive_ticket", Some(*id))),
             Command::ArchiveAll => Some(("archive_all", None)),
-            Command::MoveTicket { id, .. } => Some(("move_ticket", Some(*id))),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
             Command::KillSession { .. } => Some(("kill_session", None)),
             Command::AttachExternal { ticket, .. } => Some(("attach_external", *ticket)),
@@ -778,6 +825,12 @@ impl Daemon {
                     }
                     None => Response::Err { message: "no such session".into() },
                 }
+            }
+            // The agent tier, reached only via `handle_agent`. A local client
+            // sending one of these is either confused or probing; either way
+            // the answer is no, not "acts as the agent whose id you guessed".
+            Command::AgentGetTicket | Command::AgentListBoard | Command::AgentMoveTicket { .. } => {
+                Response::Err { message: "agent commands require an agent principal".into() }
             }
         };
         if let Some((cmd, ticket)) = feed_cmd {
@@ -1138,9 +1191,16 @@ impl Daemon {
         // payload (D11: prompt text is read, never stored).
         self.feed.hook_event(&frame.session, &frame.event, frame.reason.as_deref());
         let Some(id) = self.resolve_session(&frame.session) else { return };
-        // D32c invariant 2: the agent-originated path passes the chokepoint too.
+        // D32c invariant 2: the hook-driven path passes the chokepoint too.
+        //
+        // The principal is `Automation`, not `Agent`. A hook frame is the
+        // daemon observing a session, not an agent asking for anything — and
+        // since T-84 that difference is load-bearing: `Agent` may never read
+        // or change a session at any tier, so ingesting under it would refuse
+        // every frame mesimon exists to receive.
+        let ingest_by = Principal::Automation { rule: "hook".into() };
         if let Decision::Deny { .. } =
-            authorize(&Principal::Agent { session: id }, &Action::Mutate, &Resource::Session { id })
+            authorize(&ingest_by, &Action::Mutate, &Resource::Session { id })
         {
             return;
         }
@@ -1357,52 +1417,323 @@ impl Daemon {
         }
         let snapshot = rec.clone();
         self.feed.session_state(&snapshot, &change.from, hook);
-        self.auto_move(id, snapshot.ticket, &change.to, change.confidence);
+        self.auto_move(snapshot.ticket, &change.to, change.confidence);
         true
     }
 
     /// Automove (rules in `core::automove`): a session transition drags its
-    /// ticket along the default template. The ticket file is saved here; the
-    /// caller already persists/broadcasts for the state change itself.
-    fn auto_move(
-        &mut self,
-        session: uuid::Uuid,
-        ticket: ulid::Ulid,
-        to: &SessionState,
-        confidence: Confidence,
-    ) {
+    /// ticket along the default template.
+    ///
+    /// The principal is `Automation`, NOT `Agent` — that distinction is the
+    /// whole of T-84's collision design. Before MCP existed, `Agent` was the
+    /// only principal that meant "not the human", so automove borrowed it.
+    /// Now that an agent can ask for a move itself, the board has to be able
+    /// to tell the two apart: to restrict one without breaking the other, to
+    /// say in the feed who moved a card, and to refuse a move that would undo
+    /// one the other just made.
+    fn auto_move(&mut self, ticket: ulid::Ulid, to: &SessionState, confidence: Confidence) {
         let Some(t) = self.board.ticket(ticket) else { return };
-        // Archived tickets never move (defensive — an Unknown-tier re-derive
-        // after a daemon restart could still emit a transition).
-        if t.is_archived() {
-            return;
-        }
         let Some(dest) = mesimon_core::automove::automove(&t.column, to, confidence) else {
             return;
         };
+        let by = Principal::Automation { rule: "automove".into() };
+        // Every refusal path (archived, missing column, ping-pong, fuse) lives
+        // in place_ticket, and a refused automove is silent by design: the
+        // board simply does not move, and the feed carries the reason.
+        let _ = self.place_ticket(ticket, dest, Position::Top, &by, "automove");
+    }
+
+    /// Everything an agent session may ask the daemon for (T-84).
+    ///
+    /// The layers run in this order, and the order matters: the command
+    /// allowlist is checked before the session is even looked up, so probing
+    /// for a valid session id tells a caller nothing it did not already know.
+    ///
+    /// * **L2 — the command allowlist.** `mcp::agent_allows` is an exhaustive
+    ///   match with no wildcard arm, so a command added to the wire protocol
+    ///   will not compile until someone decides whether an agent may send it.
+    /// * **L1 — the binding.** The ticket comes from the session record, never
+    ///   from the request. No agent command carries a ticket id, so there is
+    ///   no ownership check to get wrong and no id to guess.
+    /// * **L3 — the tier.** `authorize()`, with the precise resource.
+    ///
+    /// The shim that speaks MCP runs inside the agent's own process tree and
+    /// is therefore untrusted. It holds none of this.
+    fn handle_agent(&mut self, session: uuid::Uuid, cmd: Command) -> Response {
+        if !mcp::agent_allows(&cmd) {
+            return Response::Err { message: "not available to an agent session".into() };
+        }
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+            return Response::Err { message: "unknown session".into() };
+        };
+        // Observe-only adopted records have no argv of ours and were never
+        // launched with the tool config; a request claiming to be one is not
+        // something mesimon started.
+        if rec.provenance != Provenance::Spawned {
+            return Response::Err { message: "not a session mesimon spawned".into() };
+        }
+        if !rec.state.is_live() {
+            return Response::Err { message: "session has exited".into() };
+        }
+        let ticket = rec.ticket;
+
+        match cmd {
+            Command::AgentGetTicket => {
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Read, &Resource::Ticket { id: ticket })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                match self.agent_ticket_view(ticket) {
+                    Some(view) => Response::AgentTicket { ticket: view },
+                    None => Response::Err { message: "no such ticket".into() },
+                }
+            }
+            Command::AgentListBoard => {
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } = authorize(&by, &Action::Read, &Resource::Board) {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                Response::AgentBoard { board: self.agent_board_view() }
+            }
+            Command::AgentMoveTicket { to_column, idempotency_key } => {
+                // Replay before acting. A mid-call transport drop hands the
+                // model the literal string `Connection closed` AFTER the move
+                // has been persisted, so the honest answer to a repeat is the
+                // first answer — not a second move.
+                if let Some(key) = &idempotency_key {
+                    if let Some(column) = self.agent_replay.get(&(session, key.clone())) {
+                        return Response::AgentMoved {
+                            column: column.clone(),
+                            board_version: self.board_version,
+                            replayed: true,
+                        };
+                    }
+                }
+                let by = Principal::Agent { session };
+                match self.place_ticket(ticket, &to_column, Position::Top, &by, "agent_move") {
+                    Ok(column) => {
+                        if let Some(key) = idempotency_key {
+                            self.remember_agent_result(session, key, &column);
+                        }
+                        // `place_ticket` already saved the ticket file and
+                        // broadcast. A move touches no session and no column,
+                        // so there is nothing else to persist.
+                        Response::AgentMoved {
+                            column,
+                            board_version: self.board_version,
+                            replayed: false,
+                        }
+                    }
+                    Err(message) => Response::Err { message },
+                }
+            }
+            // Unreachable: `agent_allows` above admits exactly three commands.
+            _ => Response::Err { message: "not available to an agent session".into() },
+        }
+    }
+
+    /// Remember a mutating tool call's result so a retry replays it.
+    ///
+    /// Bounded rather than pruned per session: the map is a safety net for a
+    /// dropped connection, not a log, and an unbounded one on a daemon that
+    /// runs for weeks is a slow leak nobody would ever look for.
+    fn remember_agent_result(&mut self, session: uuid::Uuid, key: String, column: &str) {
+        const MAX_REPLAY_ENTRIES: usize = 512;
+        if self.agent_replay.len() >= MAX_REPLAY_ENTRIES {
+            self.agent_replay.clear();
+        }
+        self.agent_replay.insert((session, key), column.to_string());
+    }
+
+    /// Where `move_ticket` would actually accept a move to, right now.
+    ///
+    /// This is why `to_column` needs no schema `enum`: the valid set travels
+    /// as transient result data instead of becoming permanent model context.
+    /// It excludes the current column (a move to where it already is is not a
+    /// move) and any column whose gate would refuse — so a ticket with an
+    /// unmerged worktree does not advertise DONE and then refuse it.
+    fn agent_allowed_columns(&self, id: ulid::Ulid) -> Vec<String> {
+        let Some(t) = self.board.ticket(id) else { return Vec::new() };
+        let unmerged = self
+            .worktrees
+            .get(&id)
+            .is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id, &b.branch));
+        self.board
+            .sorted_columns()
+            .into_iter()
+            .map(|c| c.name.clone())
+            .filter(|name| name != &t.column)
+            .filter(|name| !(unmerged && name == "DONE"))
+            .collect()
+    }
+
+    /// The ticket's merge state as a word — the same four the `m` flow derives
+    /// from git, and a word rather than an enum for the same reason
+    /// `WorktreeItem.status` is one.
+    fn merge_state_word(&self, id: ulid::Ulid) -> Option<&'static str> {
+        let b = self.worktrees.get(&id)?;
+        if b.branch.is_empty() {
+            return None;
+        }
+        if self.wt_merged.get(&id).copied().unwrap_or(false) {
+            return Some("merged");
+        }
+        if self.wt_needs_rebase.get(&id).copied().unwrap_or(false) {
+            return Some("needs_rebase");
+        }
+        if self.wt_ahead.get(&id).copied().unwrap_or(0) > 0 {
+            return Some("ahead");
+        }
+        Some("clean")
+    }
+
+    fn agent_ticket_view(&self, id: ulid::Ulid) -> Option<AgentTicketView> {
+        let t = self.board.ticket(id)?;
+        let workspace = match t.workspace_strategy() {
+            WorkspaceStrategy::Worktree => "worktree",
+            WorkspaceStrategy::SharedCheckout => "shared_checkout",
+            WorkspaceStrategy::AdoptExisting => "adopt_existing",
+        };
+        Some(AgentTicketView {
+            key: t.short_key.clone(),
+            title: t.title.clone(),
+            column: t.column.clone(),
+            workspace: workspace.to_string(),
+            branch: self.worktrees.get(&id).map(|b| b.branch.clone()).filter(|b| !b.is_empty()),
+            merge_state: self.merge_state_word(id).map(str::to_string),
+            allowed_columns: self.agent_allowed_columns(id),
+            board_version: self.board_version,
+        })
+    }
+
+    /// The board as an agent sees it: columns, and tickets' key/title/column.
+    ///
+    /// A hand-written projection rather than `Snapshot` with fields removed —
+    /// the difference is that this one cannot grow a session field by accident
+    /// when the board model does. Archived tickets are excluded because
+    /// `column_tickets` is the archived-exclusion chokepoint and an archived
+    /// ticket is off the board.
+    fn agent_board_view(&self) -> AgentBoardView {
+        let columns: Vec<String> =
+            self.board.sorted_columns().into_iter().map(|c| c.name.clone()).collect();
+        let tickets = columns
+            .iter()
+            .flat_map(|name| {
+                self.board.column_tickets(name).into_iter().map(|t| AgentTicketRow {
+                    key: t.short_key.clone(),
+                    title: t.title.clone(),
+                    column: t.column.clone(),
+                })
+            })
+            .collect();
+        AgentBoardView { columns, tickets, board_version: self.board_version }
+    }
+
+    /// The one function that moves a ticket between columns.
+    ///
+    /// Three callers today — the human's `MoveTicket`, `automove`, and the
+    /// agent's `move_ticket` — and a fourth when M5 grows column on-enter
+    /// actions. They were three separate implementations before T-84, which
+    /// meant the DONE gate bound only one of them and nothing could see that
+    /// two movers were undoing each other. Everything a move must obey now
+    /// lives here, so a new mover obeys it by construction rather than by
+    /// somebody remembering.
+    fn place_ticket(
+        &mut self,
+        id: ulid::Ulid,
+        dest: &str,
+        pos: Position,
+        by: &Principal,
+        rule: &str,
+    ) -> std::result::Result<String, String> {
+        let Some(t) = self.board.ticket(id) else { return Err("no such ticket".into()) };
+        if t.is_archived() {
+            return Err("ticket archived — restore it first".into());
+        }
+        let from = t.column.clone();
         if !self.board.columns.iter().any(|c| c.name == dest) {
-            return;
+            return Err(format!("no such column: {dest}"));
         }
-        if let Decision::Deny { .. } = authorize(
-            &Principal::Agent { session },
-            &Action::Mutate,
-            &Resource::Ticket { id: ticket },
-        ) {
-            return;
+        // A move to where it already is is a no-op, not an event: it must not
+        // reach the feed, the ping-pong guard or the flap fuse.
+        if from == dest {
+            return Ok(from);
         }
-        // Automoved tickets land at the TOP of the destination column: the move
-        // is fresh news (just finished, just started), so it outranks whatever
-        // was already sitting there.
-        let order = fracindex::between(
-            "",
-            &self.board.column_tickets(dest).first().map(|t| t.order.clone()).unwrap_or_default(),
-        );
-        let Some(t) = self.board.ticket_mut(ticket) else { return };
-        t.column = dest.to_string();
-        t.order = order;
-        let t = t.clone();
-        let _ = store::save_ticket(&self.paths, &t);
-        self.feed.board("agent", "automove", Some(ticket));
+        // M4 DONE gate (author rule 3): DONE means the work landed — an
+        // unmerged worktree blocks the move. It lived inside the human's
+        // move path until T-84, which would have let an automation route
+        // around the one rule that keeps the board from claiming something
+        // shipped when git says it did not.
+        if dest == "DONE" {
+            if let Some(b) = self.worktrees.get(&id) {
+                if !b.branch.is_empty() && !self.ticket_merged(id, &b.branch) {
+                    return Err("worktree unmerged — merge before DONE".into());
+                }
+            }
+        }
+        if let Decision::Deny { reason } = authorize(by, &Action::Mutate, &Resource::Ticket { id })
+        {
+            return Err(format!("denied: {reason}"));
+        }
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::Mutate, &Resource::Column { name: dest.to_string() })
+        {
+            return Err(format!("denied: {reason}"));
+        }
+        if let Err(refusal) = self.moves.check(id, &from, dest, by, Instant::now()) {
+            self.feed.board(by.actor(), &format!("move_refused:{}", refusal.tag()), Some(id));
+            return Err(refusal.message());
+        }
+
+        let order = self.order_within(dest, id, &pos);
+        let automatic = !by.is_human();
+        // Bracket the mutation so an automation firing from inside it (M5's
+        // on-enter actions) sees depth > 0 and is refused. Nothing recurses
+        // today; that is exactly why this is cheap to put in now.
+        if automatic {
+            self.moves.enter();
+        }
+        if let Some(t) = self.board.ticket_mut(id) {
+            t.column = dest.to_string();
+            t.order = order;
+            let t = t.clone();
+            let _ = store::save_ticket(&self.paths, &t);
+        }
+        self.moves.record(id, &from, dest, by, Instant::now());
+        self.feed.board(by.actor(), rule, Some(id));
+        self.broadcast();
+        if automatic {
+            self.moves.leave();
+        }
+        Ok(dest.to_string())
+    }
+
+    /// The fractional index a ticket takes in its destination column.
+    fn order_within(&self, dest: &str, id: ulid::Ulid, pos: &Position) -> String {
+        let siblings = self.board.column_tickets(dest);
+        let siblings: Vec<&Ticket> = siblings.into_iter().filter(|t| t.id != id).collect();
+        let append = || {
+            fracindex::between(&siblings.last().map(|t| t.order.clone()).unwrap_or_default(), "")
+        };
+        match pos {
+            // Automatic moves land at the TOP: the move is fresh news (just
+            // started, just finished), so it outranks what was already there.
+            Position::Top => fracindex::between(
+                "",
+                &siblings.first().map(|t| t.order.clone()).unwrap_or_default(),
+            ),
+            Position::Before(None) => append(),
+            Position::Before(Some(b)) => match siblings.iter().position(|t| t.id == *b) {
+                Some(i) => {
+                    let hi = siblings[i].order.clone();
+                    let lo = if i == 0 { String::new() } else { siblings[i - 1].order.clone() };
+                    fracindex::between(&lo, &hi)
+                }
+                None => append(),
+            },
+        }
     }
 
     fn snapshot(&self) -> Response {
@@ -1442,13 +1773,35 @@ impl Daemon {
                 path: (b.status == BindingStatus::Attached).then(|| b.path.display().to_string()),
             })
             .collect();
+        // Standing notices, plus any ticket whose flap fuse is currently
+        // blown. The fuse is a real change in how the board behaves — cards
+        // stop moving themselves — so it is said out loud rather than left
+        // for the user to notice as an absence.
+        let mut notices = self.notices.clone();
+        let mut fused: Vec<String> = self
+            .moves
+            .fused_tickets()
+            .filter_map(|id| self.board.ticket(*id))
+            .map(|t| t.short_key.clone())
+            .collect();
+        if !fused.is_empty() {
+            fused.sort();
+            notices.push(Notice::new(
+                "automation_suspended",
+                format!(
+                    "automatic moves suspended for {} — moved too often, too fast. \
+                     Moving one by hand clears it.",
+                    fused.join(", ")
+                ),
+            ));
+        }
         Response::Board {
             board: self.board.clone(),
             grace,
             external: self.external.clone(),
             resources: self.resources(),
             worktrees,
-            notices: self.notices.clone(),
+            notices,
         }
     }
 
@@ -1698,6 +2051,7 @@ impl Daemon {
     }
 
     fn broadcast(&mut self) {
+        self.board_version = self.board_version.wrapping_add(1);
         // Keep the focused status line's `!N` live while a session holds focus
         // (attention transitions land here via persist_and_notify).
         self.refresh_status_line();
@@ -1774,6 +2128,7 @@ impl Daemon {
             }
         }
         let ticket = self.board.tickets.remove(pos);
+        self.moves.forget(id);
         // Sessions detach and keep running through the grace band (D21).
         let sessions: Vec<SessionRecord> =
             self.board.sessions.iter().filter(|s| s.ticket == id).cloned().collect();
@@ -2116,6 +2471,11 @@ impl Daemon {
                 })
             }
         };
+        // A ticket coming back from the archive starts clean: whatever the
+        // move gate remembered about it — a reversal to refuse, a blown fuse —
+        // describes a board state from before it left, and applying it to the
+        // ticket's first move back would be a refusal nobody could explain.
+        self.moves.forget(id);
         self.with_ticket(id, |t| {
             t.archived = None;
             if let Some((col, order)) = fallback {
@@ -2208,54 +2568,15 @@ impl Daemon {
         column: String,
         before: Option<ulid::Ulid>,
     ) -> Response {
-        if !self.board.columns.iter().any(|c| c.name == column) {
-            return Response::Err { message: format!("no such column: {column}") };
-        }
-        if self.board.ticket(id).is_some_and(|t| t.is_archived()) {
-            return Response::Err { message: "ticket archived — restore it first".into() };
-        }
-        // M4 DONE gate (author rule 3): DONE means the work landed — an
-        // unmerged worktree blocks the move. (Configurable later; magic now.)
-        if column == "DONE" {
-            if let Some(b) = self.worktrees.get(&id) {
-                if !b.branch.is_empty() && !self.ticket_merged(id, &b.branch) {
-                    return Response::Err {
-                        message: "worktree unmerged — merge before DONE".into(),
-                    };
-                }
-            }
-        }
-        let order = {
-            let siblings = self.board.column_tickets(&column);
-            let siblings: Vec<&Ticket> = siblings.into_iter().filter(|t| t.id != id).collect();
-            match before {
-                Some(b) => {
-                    let idx = siblings.iter().position(|t| t.id == b);
-                    match idx {
-                        Some(i) => {
-                            let hi = siblings[i].order.clone();
-                            let lo =
-                                if i == 0 { String::new() } else { siblings[i - 1].order.clone() };
-                            fracindex::between(&lo, &hi)
-                        }
-                        None => fracindex::between(
-                            &siblings.last().map(|t| t.order.clone()).unwrap_or_default(),
-                            "",
-                        ),
-                    }
-                }
-                None => fracindex::between(
-                    &siblings.last().map(|t| t.order.clone()).unwrap_or_default(),
-                    "",
-                ),
-            }
-        };
-        match self.with_ticket(id, |t| {
-            t.column = column;
-            t.order = order;
-        }) {
-            Some(r) => r,
-            None => Response::Err { message: "no such ticket".into() },
+        match self.place_ticket(
+            id,
+            &column,
+            Position::Before(before),
+            &Principal::Local,
+            "move_ticket",
+        ) {
+            Ok(_) => Response::Ok,
+            Err(message) => Response::Err { message },
         }
     }
 
@@ -2291,42 +2612,10 @@ impl Daemon {
         };
         let id = uuid::Uuid::new_v4();
         let argv: Vec<String> = match kind {
-            SessionKind::Claude => {
-                // Per-session observer hooks via --settings (11 §11.2.1).
-                // Never --bare / --safe-mode — both silently clear them (S-D).
-                let hook_bin = std::env::var("MESIMON_HOOK_BIN")
-                    .map(std::path::PathBuf::from)
-                    .or_else(|_| std::env::current_exe())
-                    .unwrap_or_else(|_| std::path::PathBuf::from("mesimon"));
-                let claude =
-                    std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-                match crate::hook_settings::write_settings(&self.paths, id, &hook_bin) {
-                    Ok(settings) => {
-                        let mut argv = vec![
-                            claude,
-                            "--settings".into(),
-                            settings.display().to_string(),
-                            "--session-id".into(),
-                            id.to_string(),
-                        ];
-                        // Replicate the user's own configured permission mode
-                        // as an explicit flag (dogfood 2026-08-30: a session in
-                        // a fresh worktree lost the global defaultMode; the
-                        // flag is the only mode source Claude Code checks
-                        // deterministically, and --settings merge semantics
-                        // are a documented gap). Pass-through only — mesimon
-                        // never picks a mode the user didn't configure.
-                        if let Some(mode) = user_default_mode() {
-                            argv.push("--permission-mode".into());
-                            argv.push(mode);
-                        }
-                        argv
-                    }
-                    Err(e) => {
-                        return Response::Err { message: format!("hook settings: {e}") };
-                    }
-                }
-            }
+            SessionKind::Claude => match self.claude_argv(id, "--session-id", &id.to_string()) {
+                Ok(argv) => argv,
+                Err(message) => return Response::Err { message },
+            },
             SessionKind::Bash => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())],
         };
         // Claude enters Spawning; the SessionStart hook flips it to Running.
@@ -2338,7 +2627,7 @@ impl Daemon {
         let mut rec =
             SessionRecord::new(id, kind, ticket, argv.clone(), cwd.display().to_string(), state);
         rec.state_changed_at = Some(now_ms());
-        let env = self.worktree_env(ticket, &cwd);
+        let env = self.session_env(ticket, &cwd);
         if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &env) {
             return Response::Err { message: format!("spawn failed: {e}") };
         }
@@ -2668,6 +2957,51 @@ impl Daemon {
         Ok(id)
     }
 
+    /// The MCP config this session is launched with. See
+    /// `hook_settings::mcp_config_json` for why it looks the way it does.
+    fn mcp_config_json(&self, session: uuid::Uuid) -> String {
+        crate::hook_settings::mcp_config_json(&self.paths, &mesimon_bin(), session)
+    }
+
+    /// The one argv builder for a Claude session. Fresh spawns pass
+    /// `--session-id`; the adopted-resume fallback passes `--resume`.
+    ///
+    /// This existed twice before T-84 — once in `spawn_session`, once in
+    /// `resume_argv` — which meant a flag added to one was silently missing
+    /// for adopted and taken-over sessions.
+    fn claude_argv(
+        &self,
+        id: uuid::Uuid,
+        identity_flag: &str,
+        identity_value: &str,
+    ) -> std::result::Result<Vec<String>, String> {
+        // Per-session observer hooks via --settings (11 §11.2.1).
+        // Never --bare / --safe-mode — both silently clear them (S-D).
+        let settings = crate::hook_settings::write_settings(&self.paths, id, &mesimon_bin())
+            .map_err(|e| format!("hook settings: {e}"))?;
+        let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
+        let mut argv = vec![
+            claude,
+            "--settings".into(),
+            settings.display().to_string(),
+            "--mcp-config".into(),
+            self.mcp_config_json(id),
+            identity_flag.to_string(),
+            identity_value.to_string(),
+        ];
+        // Replicate the user's own configured permission mode as an explicit
+        // flag (dogfood 2026-08-30: a session in a fresh worktree lost the
+        // global defaultMode; the flag is the only mode source Claude Code
+        // checks deterministically, and --settings merge semantics are a
+        // documented gap). Pass-through only — mesimon never picks a mode the
+        // user didn't configure.
+        if let Some(mode) = user_default_mode() {
+            argv.push("--permission-mode".into());
+            argv.push(mode);
+        }
+        Ok(argv)
+    }
+
     /// The one resume builder (wake and takeover share it). D24: the argv
     /// array is the mechanism — resume restores neither `--settings` nor
     /// `--mcp-config` (09 §9), so we replay ours, swapping the identity flag.
@@ -2687,6 +3021,14 @@ impl Daemon {
                     let _ = it.next();
                     argv.push("--resume".into());
                     argv.push(target.to_string());
+                } else if a == "--mcp-config" {
+                    // Regenerate rather than replay. The blob names the
+                    // mesimon binary by absolute path, and a persisted argv
+                    // outlives an install — `U` reloads onto a new binary and
+                    // a replayed blob would point the shim at the old one.
+                    let _ = it.next();
+                    argv.push("--mcp-config".into());
+                    argv.push(self.mcp_config_json(rec.id));
                 } else {
                     argv.push(a.clone());
                 }
@@ -2695,25 +3037,7 @@ impl Daemon {
         }
         // Adopted with no argv of ours: build the full spawn argv fresh —
         // hooks via --settings keyed on OUR record uuid (never --bare, S-D).
-        let hook_bin = std::env::var("MESIMON_HOOK_BIN")
-            .map(std::path::PathBuf::from)
-            .or_else(|_| std::env::current_exe())
-            .unwrap_or_else(|_| std::path::PathBuf::from("mesimon"));
-        let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-        let settings = crate::hook_settings::write_settings(&self.paths, rec.id, &hook_bin)
-            .map_err(|e| format!("hook settings: {e}"))?;
-        let mut argv = vec![
-            claude,
-            "--settings".into(),
-            settings.display().to_string(),
-            "--resume".into(),
-            target.to_string(),
-        ];
-        if let Some(mode) = user_default_mode() {
-            argv.push("--permission-mode".into());
-            argv.push(mode);
-        }
-        Ok(argv)
+        self.claude_argv(rec.id, "--resume", &target.to_string())
     }
 
     /// Double-resume guard (09 §9: two resumes interleave one transcript).
@@ -2819,7 +3143,7 @@ impl Daemon {
         }
         self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
-        let env = self.worktree_env(ticket, &cwd);
+        let env = self.session_env(ticket, &cwd);
         if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
             return Response::Err { message: format!("resume spawn failed: {e}") };
         }
@@ -2963,7 +3287,7 @@ impl Daemon {
                 }
                 self.reaping.remove(&sid);
                 let _ = self.backend.kill_session(&sid);
-                let env = self.worktree_env(ticket, &cwd);
+                let env = self.session_env(ticket, &cwd);
                 if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
                     return Response::Err { message: format!("wake spawn failed: {e}") };
                 }
