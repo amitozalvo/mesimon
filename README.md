@@ -105,8 +105,8 @@ above all others.
 
 ## Layout
 
-- `docs/` — the research corpus and decision record. Start at `docs/00-DECISIONS.md`
-  (binding, amended three times — read the amendment blocks first) and `docs/STALE-MAP.md`.
+- `docs/` — a pre-code research corpus, kept for its measurements and reasoning. It is not the
+  spec; the code is. `docs/STALE-MAP.md` is the design record: what was built, and why.
 - `crates/` — the Rust workspace.
 - `team/` — reserved for the future source-available team tier (see `docs/00-DECISIONS.md` D3a).
 

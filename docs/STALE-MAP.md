@@ -1000,3 +1000,18 @@ the same cadence (the peek's `pulse` is the third and slowest beat, 1 s).
 First cut used a SINGLE braille dot. Reverted the same hour: at `dim2` on a real board it
 disappeared — "2/3 running agents show no glyph at all" (author, mid-restart, when every card
 was `Unknown`). Subtle is a ceiling on ink, not a licence to render nothing.
+
+## The corpus is demoted to research (2026-08-31, author)
+
+`docs/` stops being authority. The code and its tests are the spec, this file is the design
+record, the README's three promises bind, `docs/spikes/` stays empirical, and everything else
+— `00-DECISIONS.md` included — is idea stock: read for measurements and reasoning, never cited
+as the reason something must be a certain way, every version and API claim re-verified at
+implementation time.
+
+The old ladder (00 binding → this map → topic-owner doc → verify) is retired, and with it the
+propagation pass the 2026-08-29 review asked for: every unpropagated amendment it named has
+since been settled by shipped code. What this file records has inverted accordingly — it began
+as a map of which sections an amendment invalidated, and the tables above are now archaeology;
+what earns a block from here on is what was built and why, and what the corpus got wrong when
+someone went and measured. CLAUDE.md carries the rule.

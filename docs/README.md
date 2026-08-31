@@ -4,6 +4,12 @@ A terminal UI that orchestrates many coding-agent sessions behind a kanban board
 daemon. **19 documents, ~282,000 words.** This file is the front door: what each document decides,
 where to start, what to distrust, and what only the author can answer.
 
+> **Demoted 2026-08-31 — this corpus is research, not authority.** It was written before any
+> code existed, and the code has since overtaken it. The code and its tests are the spec;
+> `STALE-MAP.md` is the design record. Read everything below for its measurements and reasoning,
+> never for its conclusions — starting with the next paragraph, which describes an authority
+> ladder that no longer applies.
+
 **`00-DECISIONS.md` is binding, and it has been amended TWICE since the 18 section documents were
 written.** Read its two amendment blocks first — ***Corrections to earlier decisions from the
 synthesis pass*** and ***Second-pass corrections*** — because **both override anything above them,

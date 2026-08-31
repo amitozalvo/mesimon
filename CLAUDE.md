@@ -67,21 +67,29 @@ builds). Everything still applies, plus:
 - In a git worktree you get a different `proj16` (own daemon, own sockets) and the repo-root
   auto-memory does not follow you — this file is your only standing context there.
 
-## Doc authority (read this before trusting any doc)
+## Docs are research, not authority (demoted 2026-08-31)
 
-`docs/` is a ~282k-word research corpus written BEFORE any code existed. The rules:
+`docs/` is a ~346k-word corpus written BEFORE any code existed, and the code has overtaken it —
+every milestone since M1 ended by appending a block to `docs/STALE-MAP.md` recording where the
+corpus was wrong. The old ladder (00-DECISIONS binding → STALE-MAP → topic-owner doc → verify) is
+retired. What holds now:
 
-1. `docs/00-DECISIONS.md` is binding; its amendment blocks (D33, D34) override everything above
-   them AND all 18 section docs, which do not know about the amendments.
-2. `docs/STALE-MAP.md` maps every amendment to the section text it supersedes — check it first.
-   It also records **implementation-verified refutations**: e.g. hook exec form is
-   `"command": <exe>` + `"args": [...]` (docs/11's bare-`args` example fails the live validator),
-   and the hook transport is SOCK_STREAM one-shot (macOS caps unix datagrams at 2 KB).
-3. Where 00 is silent, the topic-owner doc wins (table in `docs/README.md`): 02 daemon/wire,
-   04 keybindings, 06 design, 07 board UX, 11 attention/state enum, 13 data model, 15 security.
-4. Every version number and API claim in the corpus needs re-verification at implementation time —
-   the docs have been wrong twice already. Spike verdicts in `docs/spikes/` are empirical and
-   trustworthy.
+1. **The code and its tests are the spec** — the keymap validators, the colour-law tests in
+   `theme.rs`, the goldens, the back-compat fixtures. Executable truth is the only kind that
+   cannot drift.
+2. **`docs/STALE-MAP.md` is the design record**: what was built, what was refuted, and why (e.g.
+   the hook exec form is `"command": <exe>` + `"args": [...]` — docs/11's bare-`args` example
+   fails the live validator; the hook transport is SOCK_STREAM one-shot because macOS caps unix
+   datagrams at 2 KB). Read it before changing something you did not build, and append a block
+   when you ship something — that is how a decision survives.
+3. **The README's three promises bind** — write allowlist, no config mutation, zero token
+   injection. Those are commitments to users, not research.
+4. **`docs/spikes/` is trustworthy** — it measured a live system rather than reasoning about one.
+5. **Everything else, `00-DECISIONS` included, is idea stock.** Read it for its measurements, its
+   reasoning and its failure catalogue; never cite it as the reason something must be a certain
+   way; re-verify every version number and API claim at implementation time. Where it disagrees
+   with the code, the code is right and the doc is history — the 261 `07 §4.2`-style citations in
+   the source are provenance, not obligation.
 
 **M3.5 (built 2026-08-29) is the design foundation**: OSC-11 light/dark detection
 (`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, queried exactly once before raw mode),
