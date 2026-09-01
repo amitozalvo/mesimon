@@ -257,6 +257,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::ArchiveTicket { .. }
         | Command::UnarchiveTicket { .. }
         | Command::ArchiveAll
+        // The environment every future pane gets, board-wide and shared by
+        // every session. An agent asking to re-read the user's rc files would
+        // be running the user's shell on its own say-so.
+        | Command::ReloadShellEnv
         | Command::MoveTicket { .. }
         | Command::SpawnSession { .. }
         | Command::KillSession { .. }

@@ -1531,3 +1531,90 @@ Decisions worth keeping:
 
 E2e: `crates/mesimon/tests/pane_tail_e2e.rs` — real tmux, `SHELL=/bin/sh` pinned for a predictable
 prompt, `send-keys` types a command, and a killed session must refuse rather than answer empty.
+
+## A pane gets the user's own shell environment (2026-09-01)
+
+Reported from dogfooding: an `export` added to `~/.zshrc` never reached an agent's MCP servers,
+"no matter how many times I tried opening mesimon again or sleep / wake the session". Both of the
+user's instincts were sound and both were defeated by the same design.
+
+**Two separate bugs, and measuring them changed the fix.**
+
+1. *The environment was frozen.* `TmuxBackend::tmux()` built the tmux client's env from D29's
+   nine-name allowlist taken from the daemon's own environment; the tmux SERVER captures its
+   global environment at first launch, `set -g update-environment ""` stops it refreshing, and
+   nothing in mesimon ever calls `kill_server` (it existed only in tests). The author's live
+   server was handing fresh panes a PATH from two days earlier — missing `~/.cargo/bin`, which is
+   exactly the "may still need `source ~/.cargo/env`" note in CLAUDE.md, now explained.
+2. *The environment was too narrow.* A **Claude pane is exec'd directly by tmux** — argv has more
+   than one element, so no shell runs and no rc file is read, ever. A **shell pane** is `[$SHELL]`,
+   a single element, which tmux execs into an interactive zsh that sources `~/.zshrc` normally
+   (verified: the pane's PPID is tmux itself and `$-` contains `i`). So the two pane kinds
+   disagreed about the same machine, and nine names was the agent's entire world.
+
+Sleep/wake could not help either kind: both tear the pane down and respawn on the SAME server.
+
+**The measurement that shaped the fix: tmux takes a pane's `PATH` from the spawning CLIENT and
+ignores `new-session -e PATH=…`.** Measured against tmux 3.6a — a pane spawned with
+`-e PATH=/EPATH/bin` from a client holding `PATH=/CLIENTPATH/bin` came up with the client's, while
+`show-environment` on that same session reported `/EPATH/bin`; a bare command present only on the
+`-e` PATH exited 127. tmux does this deliberately so a command given by name can be found. Every
+other variable does travel through `-e`. Pinned by
+`a_panes_path_is_the_clients_and_e_path_is_ignored`, because a tmux bump could change it silently.
+
+That is why **no server restart is needed and none was added**. `TmuxBackend::set_path` puts the
+captured PATH in the client env of every tmux invocation; `publish_path` also writes it into the
+live server's global env, which is cosmetic for panes but stops `show-environment -g` telling the
+next person debugging this a two-day-old story.
+
+**The allowlist became a denylist**, and that is the load-bearing reversal. The set mesimon must
+WITHHOLD is small, closed and knowable — tmux plumbing (`TMUX`, `TMUX_PANE`), a description of
+someone else's terminal (`TERM*`, `LINES`, `COLUMNS`), a shell's process-local bookkeeping (`PWD`,
+`OLDPWD`, `SHLVL`, `_`), `MESIMON_*` (minted per spawn; a capture taken inside a pane inherits the
+previous ticket), and `PATH` (different road). The set a user may legitimately export is not
+enumerable in advance — which is precisely why the allowlist failed. `core/src/shellenv.rs` holds
+that filter and its tests; names are syntax-checked because bash exports functions as
+`BASH_FUNC_foo%%` and tmux's `-e` parses `NAME=value` positionally.
+
+**How the capture is run** (`daemon/src/shellenv.rs`), each choice measured or reasoned:
+
+- `$SHELL -l -i -c 'env -0 > <dump>'`. Login AND interactive, because that is what a terminal
+  starts on macOS; capturing with one would produce an environment no terminal here ever has.
+- **To a file, not stdout.** An interactive rc PRINTS — prompt frameworks, version managers,
+  greetings — so stdout is not a channel the answer can come back on.
+- **`env -0`.** A value may contain newlines; a newline-separated dump cannot be parsed correctly.
+- **A clean base env** (launchd's `PATH=/usr/bin:/bin:/usr/sbin:/sbin`), NOT the daemon's. A user's
+  rc almost always prepends (`export PATH=…:$PATH`), so inheriting would quietly preserve the exact
+  staleness this exists to fix. `LANG`/`LC_*` ARE carried in, because a locale comes from the
+  terminal emulator rather than any rc file and a clean base would hand every pane a C locale.
+- **Refused if it returns < 4 variables**, and the previous environment then stands: a broken rc
+  must not be able to REPLACE a working pane environment with an empty one.
+- 15 s timeout, off the writer thread, one at a time, dump deleted either way (it is a copy of the
+  user's whole environment, secrets included).
+
+**`tmux_bin()` now resolves a bare `tmux` to an absolute path.** Fallout of the above, caught by
+the new backend test: once the client's PATH is the user's, a bare name is looked up there, and a
+PATH change having nothing to do with tmux could lose the backend entirely.
+
+**The offer is a suggestion, not an automatic reload.** The daemon stamps the newest mtime across
+the usual rc files at capture time and compares on the tick; `Ctx::shell_env_stale` gates a new
+`Verb::ReloadShellEnv` menu row, and `Suggestion` #2 (after "update ready") shows
+`◦ shell env changed (esc)`. Automatic would mean forking the user's shell on every editor save.
+`reloading` takes the offer down the moment the press lands, so a slow rc does not leave the chip
+standing as though the press had missed. The row's detail is the honest half — **"new sessions and
+wakes get it ∙ live panes keep theirs"** — because a running process's environment cannot be
+changed, and a user who expects otherwise concludes the feature did nothing.
+
+A capture that FAILS is offered on the same row, with different words — `◦ shell env unreadable
+(esc)` / "your shell did not answer ∙ panes are on a fallback". Without that, one timed-out capture
+left the user on the fallback environment with a notice explaining the problem and no way to ask
+again, since the row is otherwise gated on an rc file moving. Same act, different news, and the
+chip is the only place the difference gets said.
+
+Known blind spot: the watch list is the common rc files, not an rc's `source`d dependencies.
+`touch ~/.zshrc` is the manual trigger, and the row cannot be made always-available without
+breaking the law that a suggestion's availability IS its menu row's.
+
+E2e: `crates/mesimon/tests/shell_env_e2e.rs` — a fake `$SHELL` exports a variable and a hostile
+`MESIMON_TICKET`, and the test reads the environment of the process tmux really exec'd: the
+variable arrives, the captured PATH arrives, the real ticket survives, and the dump is gone.

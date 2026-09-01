@@ -88,6 +88,9 @@ enum Msg {
     Tick,
     /// A provisioning thread finished (M4): the binding, or the failing stage.
     Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>),
+    /// A shell-environment capture finished. Off-thread because it forks the
+    /// user's login shell and runs their rc files (`crate::shellenv`).
+    ShellEnvCaptured(std::result::Result<crate::shellenv::ShellEnv, String>),
 }
 
 pub struct Daemon {
@@ -189,6 +192,16 @@ pub struct Daemon {
     /// hands the model the literal string `Connection closed` AFTER the move
     /// has been persisted; without this the retry moves the card twice.
     agent_replay: HashMap<(uuid::Uuid, String), String>,
+    /// The user's own shell environment, as their login shell last reported
+    /// it. Every spawn hands this to the pane, because a Claude pane is exec'd
+    /// directly by tmux and so reads no rc file of its own.
+    shell_env: crate::shellenv::ShellEnv,
+    /// A capture is in flight. One at a time: it forks a shell, and a second
+    /// one racing the first would only decide which stale answer wins.
+    shell_env_capturing: bool,
+    /// Why the last capture failed, if it did. The previous environment stays
+    /// in force — a broken rc file must not empty a working pane env.
+    shell_env_error: Option<String>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -395,6 +408,9 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
+        shell_env: crate::shellenv::ShellEnv::default(),
+        shell_env_capturing: false,
+        shell_env_error: None,
                 let _ = reply.send(resp);
                 if shutdown {
                     break;
@@ -406,12 +422,18 @@ pub fn run(paths: Paths) -> Result<()> {
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());
     Ok(())
+    // Ask the user's shell what the environment is, immediately. Until the
+    // answer lands, spawns fall back to the daemon's own inherited env — which
+    // is what every spawn used before this existed, so the window is a
+    // regression to the old behaviour rather than to no behaviour at all.
+    d.queue_shell_env_capture();
 }
 
 impl Daemon {
     /// Per-session env (layer 1 of "the session knows where it is": silent,
     /// zero-token, keyed off by hooks and shell scripts; the agent sees it
     /// when it looks).
+            Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
     ///
     /// `MESIMON_TICKET` goes to EVERY session mesimon spawns. It used to be
     /// worktree-only, which meant a shared-checkout session — the board
@@ -425,7 +447,12 @@ impl Daemon {
         let Some(key) = self.board.ticket(ticket).map(|t| t.short_key.clone()) else {
             return Vec::new();
         };
-        let mut env = vec![("MESIMON_TICKET".to_string(), key)];
+        // The user's own shell environment first, mesimon's own last, so a
+        // ticket variable can never be shadowed by something the rc file
+        // exported. (`shellenv::admissible` already refuses MESIMON_*, so this
+        // is belt to that braces.)
+        let mut env = self.shell_env.vars.clone();
+        env.push(("MESIMON_TICKET".to_string(), key));
         if let Some(b) = self.worktrees.get(&ticket) {
             if b.status == BindingStatus::Attached && b.path == cwd {
                 env.push(("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone()));
@@ -453,6 +480,70 @@ fn user_default_mode() -> Option<String> {
         .or_else(|| v.get("defaultMode"))
         .and_then(|m| m.as_str())
         .map(str::to_string)
+
+    /// Ask the user's login shell for its environment, off the writer thread.
+    ///
+    /// One at a time (`shell_env_capturing`): the capture forks a shell and
+    /// runs the user's rc files, and two racing captures would differ only in
+    /// which stale answer happened to land second.
+    fn queue_shell_env_capture(&mut self) {
+        if self.shell_env_capturing {
+            return;
+        }
+        self.shell_env_capturing = true;
+        let dump = self.paths.shell_env_dump();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let _ = tx.send(Msg::ShellEnvCaptured(crate::shellenv::capture(&dump)));
+        });
+    }
+
+    /// A capture landed. `PATH` goes to the backend (it rides the tmux CLIENT
+    /// environment — `TmuxBackend::set_path` says why), the rest is held for
+    /// the next spawn's `-e`.
+    ///
+    /// Nothing restarts and nothing is retro-fitted: a live pane keeps the
+    /// environment it was born with, because changing a running process's
+    /// environment is not a thing anyone can do. Sleep/wake is how an existing
+    /// session picks the new one up, and the ticket page says so.
+    fn on_shell_env(&mut self, result: std::result::Result<crate::shellenv::ShellEnv, String>) {
+        self.shell_env_capturing = false;
+        match result {
+            Ok(env) => {
+                self.shell_env_error = None;
+                self.backend.set_path(env.path.clone());
+                // Best-effort, and only cosmetic for panes: it keeps
+                // `show-environment -g` from telling the next person debugging
+                // this a two-day-old story.
+                let _ = self.backend.publish_path();
+                self.shell_env = env;
+            }
+            // The previous environment stands. A broken rc file must not be
+            // able to empty the environment every future pane gets.
+            Err(e) => self.shell_env_error = Some(e),
+        }
+        self.notices.retain(|n| n.kind != SHELL_ENV_NOTICE);
+        if let Some(e) = &self.shell_env_error {
+            self.notices.push(
+                mesimon_core::command::Notice::new(
+                    SHELL_ENV_NOTICE,
+                    "could not read your shell environment — sessions keep the last one",
+                )
+                .with_detail(e.clone()),
+            );
+        }
+        self.persist_and_notify();
+    }
+
+    /// Has an rc file moved since the capture the panes are being given?
+    ///
+    /// False while a capture is in flight, so taking the offer makes the
+    /// suggestion go away immediately rather than after the shell returns.
+    fn shell_env_stale(&self) -> bool {
+        !self.shell_env_capturing
+            && self.shell_env.rc_stamp > 0
+            && crate::shellenv::rc_stamp() > self.shell_env.rc_stamp
+    }
 }
 
 fn now_ms() -> u64 {
@@ -482,6 +573,10 @@ struct DiffCtx {
     /// has no worktree — a lie. It never quarantines: only the writer thread
     /// renames, so the two can never race.
     worktrees_barred: Arc<std::sync::atomic::AtomicBool>,
+/// The notice kind a failed shell-env capture stands under. One kind, replaced
+/// rather than appended, so a shell that fails on every reload leaves one row.
+const SHELL_ENV_NOTICE: &str = "shell_env";
+
 }
 
 /// RAII permit from the bounded diff pool.
@@ -690,6 +785,7 @@ impl Daemon {
                             "protocol {version} unsupported; daemon speaks {PROTOCOL_VERSION}"
                         ),
                     };
+            Command::ReloadShellEnv => Some(("reload_shell_env", None)),
                 }
                 Response::Hello {
                     version: PROTOCOL_VERSION,
@@ -773,6 +869,15 @@ impl Daemon {
             Command::GateStatus => self.gate_status(),
             Command::GatePassed => {
                 let _ = std::fs::write(self.paths.gate_file(), "1");
+            Command::ReloadShellEnv => {
+                self.queue_shell_env_capture();
+                // Broadcast now, not on the capture's return: `reloading`
+                // becoming true is what takes the offer off the header, and a
+                // slow rc file must not leave the chip standing for 15 s as
+                // though the press had missed.
+                self.persist_and_notify();
+                Response::Ok
+            }
                 let _ = self.backend.kill_session(GATE_SESSION);
                 Response::Ok
             }
@@ -1924,6 +2029,12 @@ impl Daemon {
         }
     }
 
+            shell_env: mesimon_core::command::ShellEnvStatus {
+                stale: self.shell_env_stale(),
+                reloading: self.shell_env_capturing,
+                failed: self.shell_env_error.is_some(),
+                vars: self.shell_env.vars.len(),
+            },
     /// One `ps` fork on the 10 s bucket, over the pane process groups we own.
     /// The same bucket recomputes the sleep suggestion (nothing here forks
     /// more than the `ps` and the one snapshot).

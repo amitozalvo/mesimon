@@ -54,6 +54,14 @@ impl Paths {
     pub fn lock_file(&self) -> PathBuf {
         self.rt_dir.join("daemon.lock")
     }
+    /// Where the shell-environment capture writes its `env -0` dump. In the
+    /// 0700 runtime dir rather than the state dir on purpose: it is a copy of
+    /// the user's whole environment, so it belongs somewhere unreadable by
+    /// others and cleared by a reboot. `crate::shellenv::capture` deletes it
+    /// either way — this is the path, not a file that persists.
+    pub fn shell_env_dump(&self) -> PathBuf {
+        self.rt_dir.join("shellenv.dump")
+    }
     pub fn sessions_file(&self) -> PathBuf {
         self.state_dir.join("sessions.json")
     }

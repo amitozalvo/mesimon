@@ -218,6 +218,9 @@ pub struct App {
     /// a newer mesimon wrote. Refreshed with every snapshot. NOT `status`:
     /// that is cleared by the next keypress, and these stay true until fixed.
     pub notices: Vec<mesimon_core::command::Notice>,
+    /// What the environment new panes get is doing — whether a shell startup
+    /// file has moved since it was captured, and whether a reload is running.
+    pub shell_env: mesimon_core::command::ShellEnvStatus,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -339,6 +342,7 @@ impl App {
             resources,
             worktrees,
             notices,
+            shell_env: Default::default(),
             theme,
             resume_refused: None,
             merge_armed: None,
@@ -492,13 +496,23 @@ impl App {
 
     /// Take whatever board a command replied with (RescanExternal does this).
     fn absorb_board(&mut self, resp: Response) {
-        if let Response::Board { board, grace, external, resources, worktrees, notices } = resp {
+        if let Response::Board {
+            board,
+            grace,
+            external,
+            resources,
+            worktrees,
+            notices,
+            shell_env,
+        } = resp
+        {
             self.board = board;
             self.grace = grace;
             self.external = external;
             self.resources = resources;
             self.worktrees = worktrees;
             self.notices = notices;
+            self.shell_env = shell_env;
             self.clamp_cursor();
             self.clamp_screen();
         }
@@ -807,6 +821,10 @@ impl App {
             has_archived: !self.board.archived_tickets().is_empty(),
             peek_on: self.peek,
             update_ready: self.update_ready(),
+            // `reloading` takes the offer down the instant the press lands, so
+            // a slow rc file does not leave the chip standing as if it missed.
+            shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
+            shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
             any_attention: !mesimon_core::attention::attention_queue(&self.board).is_empty(),
             sel_session: !sessions.is_empty() && rail_idx != usize::MAX,
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
@@ -1154,6 +1172,15 @@ impl App {
                 match self.req(Command::ArchiveAll) {
                     Response::Archived { archived, skipped } => {
                         self.status = match (archived, skipped) {
+            Verb::ReloadShellEnv => {
+                self.send(Command::ReloadShellEnv)?;
+                // Names the boundary in the same breath as the confirmation: a
+                // running process's environment cannot be changed, so a live
+                // pane keeps what it was born with and sleep/wake is the way
+                // an existing session picks the new one up.
+                self.status = "re-reading your shell environment ∙                                new and woken sessions get it"
+                    .into();
+            }
                             (0, 0) => "nothing was ready to archive".into(),
                             (n, 0) => format!("archived {n} ∙ esc menu lists them"),
                             (n, k) => format!("archived {n} ∙ {k} not ready"),
@@ -2595,7 +2622,10 @@ type Snapshot6 = (
 
 fn fetch(client: &mut dyn Transport) -> Result<Snapshot6> {
     match client.request(Command::Snapshot)? {
-        Response::Board { board, grace, external, resources, worktrees, notices } => {
+        // `shell_env` is deliberately not carried through here: `App::apply`
+        // owns that field and runs on the first tick, so the startup snapshot
+        // would only be setting it a quarter-second early.
+        Response::Board { board, grace, external, resources, worktrees, notices, .. } => {
             Ok((board, grace, external, resources, worktrees, notices))
         }
         other => anyhow::bail!("unexpected snapshot response: {other:?}"),
@@ -2650,6 +2680,7 @@ pub(crate) mod test_support {
                 Command::MergeTicket { .. } => {
                     return Ok(Response::Merge {
                         outcome: MergeOutcome::Merged,
+        pub shell_env: mesimon_core::command::ShellEnvStatus,
                         detail: "merged 2 commit(s)".into(),
                     });
                 }
@@ -2715,6 +2746,7 @@ pub(crate) mod test_support {
                                 at: "@1000".into(),
                                 by: "local".into(),
                             });
+                    shell_env: self.shell_env.clone(),
                             Ok(Response::Ok)
                         }
                         None => Ok(Response::Err { message: "no such ticket".into() }),
@@ -2794,6 +2826,7 @@ mod tests {
         b.tickets.push(ticket(1, "todo", "a"));
         b.tickets.push(ticket(2, "todo", "b"));
         b.tickets.push(ticket(3, "done", "a"));
+                shell_env: Default::default(),
         b
     }
 

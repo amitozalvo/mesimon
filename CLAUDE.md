@@ -156,7 +156,27 @@ allowlist, which is a product promise: mesimon writes nowhere else).
 session name = `sid16` (first 16 hex of the mesimon-minted session UUID; identity is never
 discovered, D24). A running server never re-reads the conf: conf changes only affect fresh
 servers, so live-server changes must also be issued as commands (see `install_pane_died_hook`).
-Child env is allowlisted (`env_clear`), never inherited.
+
+**A pane gets the user's own shell environment, and PATH travels differently from everything
+else.** A Claude pane is exec'd DIRECTLY by tmux (multi-element argv), so no shell runs and no rc
+file is ever read on that path; a shell pane is `[$SHELL]`, one element, which tmux execs into an
+interactive zsh that sources `~/.zshrc` normally. D29's nine-name allowlist therefore meant an
+`export` the user added could not reach an agent at all — and it was frozen besides, since the
+tmux server captures its global env at first launch and nothing ever restarts it. So the daemon
+asks the user's login shell instead: `daemon/src/shellenv.rs` runs `$SHELL -l -i -c 'env -0 >
+<dump>'` from a CLEAN base env (a prepending rc would otherwise preserve the staleness forever),
+off the writer thread, back as `Msg::ShellEnvCaptured`; `core/src/shellenv.rs` filters it with a
+DENYlist (tmux plumbing, `TERM*`/`LINES`/`COLUMNS`, `PWD`/`SHLVL`/`_`, `MESIMON_*`, `PATH`) because
+what a user may export is not enumerable but what mesimon must withhold is. **`PATH` is the
+exception and it is measured: tmux takes a pane's PATH from the spawning CLIENT and ignores
+`new-session -e PATH=…`** (a bare command on the `-e` PATH exits 127) — so it rides
+`TmuxBackend::set_path`, which is also why none of this needs the server restarted. That is what
+makes `tmux_bin()` resolve a bare `tmux` to an absolute path. A live pane keeps the env it was
+born with (nothing can change a running process's environment); sleep/wake is how a session picks
+up a new one, and the Esc-menu row says so. An rc file moving raises `Ctx::shell_env_stale` →
+`◦ shell env changed (esc)`; reloading is offered, never automatic (an editor save must not fork
+the user's shell). E2e: `crates/mesimon/tests/shell_env_e2e.rs`; STALE-MAP "A pane gets the user's
+own shell environment".
 
 **Attention flow (M2).** Claude sessions spawn with `--settings <state>/hooks/<uuid>.json` — a
 32-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's

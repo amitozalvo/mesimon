@@ -17,6 +17,7 @@ pub mod keymap;
 pub mod mcp;
 pub mod principal;
 pub mod reconcile;
+pub mod shellenv;
 pub mod verdict;
 pub mod workspace;
 

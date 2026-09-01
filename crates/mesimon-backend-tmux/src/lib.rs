@@ -43,12 +43,30 @@ pub fn tmux_bin() -> PathBuf {
             }
         }
     }
-    PathBuf::from("tmux")
+    // Resolve against OUR OWN PATH, and return the absolute result. The two
+    // rungs above are already absolute; this one has to become absolute for the
+    // same reason, because `TmuxBackend::set_path` runs tmux with the USER's
+    // captured PATH and a bare name would then be looked up there. A user whose
+    // PATH does not happen to include tmux's directory would lose the backend
+    // entirely — a spawn failing with ENOENT on the one binary mesimon cannot
+    // do without, caused by a PATH change that has nothing to do with tmux.
+    which_on_path("tmux").unwrap_or_else(|| PathBuf::from("tmux"))
+}
+
+/// First executable named `name` on the current process's `PATH`.
+fn which_on_path(name: &str) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    std::env::split_paths(&path)
+        .map(|dir| dir.join(name))
+        .find(|cand| std::fs::metadata(cand).is_ok_and(|m| m.is_file()))
 }
 
 pub struct TmuxBackend {
     sock: PathBuf,
     conf: PathBuf,
+    /// The `PATH` every tmux invocation runs with, when the daemon has
+    /// captured a fresher one than its own — see [`TmuxBackend::set_path`].
+    path: Option<String>,
 }
 
 impl TmuxBackend {
@@ -64,7 +82,45 @@ impl TmuxBackend {
         std::fs::create_dir_all(conf_dir)?;
         let conf = conf_dir.join("tmux.conf");
         std::fs::write(&conf, conf::render(pane_died_cmd))?;
-        Ok(Self { sock, conf })
+        Ok(Self { sock, conf, path: None })
+    }
+
+    /// Point every subsequent tmux invocation at a different `PATH`.
+    ///
+    /// This is the ONLY way to change what a pane's `PATH` will be, and the
+    /// reason is a tmux behaviour that is easy to get backwards. tmux takes a
+    /// pane's `PATH` from the environment of the *client process issuing the
+    /// spawn* — so that a command given by bare name can be resolved — and it
+    /// does so in preference to `new-session -e PATH=…`, which lands in the
+    /// session's environment table where the child never reads it. Measured
+    /// 2026-09-01 against tmux 3.6a: a pane spawned with `-e PATH=/EPATH/bin`
+    /// from a client holding `PATH=/CLIENTPATH/bin` came up with the client's,
+    /// while `show-environment` on that session reported `/EPATH/bin`; a bare
+    /// command present only on the `-e` PATH exited 127.
+    ///
+    /// That is also why this needs no server restart. The server's own global
+    /// environment is frozen at its first launch and `update-environment ""`
+    /// keeps it that way, but it is not where a pane's `PATH` comes from.
+    ///
+    /// `None` restores the daemon's own `PATH`.
+    pub fn set_path(&mut self, path: Option<String>) {
+        self.path = path.filter(|p| !p.trim().is_empty());
+    }
+
+    /// Write `PATH` into the LIVE server's global environment as well.
+    ///
+    /// Cosmetic for panes — [`TmuxBackend::set_path`] is what they actually
+    /// follow — but not cosmetic for a person debugging: `show-environment -g`
+    /// is the first thing anyone reads when asking why a pane has the wrong
+    /// `PATH`, and a server answering with a two-day-old one sends them down
+    /// the wrong road. It is also what the server's own `run-shell` hooks see.
+    /// Best-effort: a dead server is not an error here.
+    pub fn publish_path(&self) -> Result<()> {
+        let Some(path) = self.path.clone() else { return Ok(()) };
+        if self.server_alive() {
+            self.run(&["set-environment", "-g", "PATH", &path])?;
+        }
+        Ok(())
     }
 
     /// (Re-)install the pane-died hook on a live server — idempotent, and how
@@ -96,11 +152,18 @@ impl TmuxBackend {
         let mut c = Command::new(tmux_bin());
         c.arg("-S").arg(&self.sock).arg("-f").arg(&self.conf);
         // The server inherits this env on first launch — scrub it (D29, spike T-2).
+        // The allowlist is now a floor rather than the whole story: the daemon
+        // passes the user's captured shell environment per session through
+        // `-e`, and only PATH has to be here, because only PATH is read off the
+        // client (see `set_path`).
         c.env_clear();
         for k in ENV_ALLOWLIST {
             if let Ok(v) = std::env::var(k) {
                 c.env(k, v);
             }
+        }
+        if let Some(path) = &self.path {
+            c.env("PATH", path);
         }
         c.env("TERM", "xterm-256color");
         c
@@ -386,6 +449,60 @@ mod tests {
         assert!(d.pane_dead);
         assert_eq!(d.dead_status, Some(7));
         be.kill_server().unwrap();
+        std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The measured tmux behaviour the whole shell-env refresh rests on, pinned
+    /// so a future tmux bump cannot change it silently: a pane's `PATH` comes
+    /// from the CLIENT that spawned it, and `-e PATH=…` does not reach the
+    /// child at all. Everything else does travel through `-e`.
+    #[test]
+    fn a_panes_path_is_the_clients_and_e_path_is_ignored() {
+        if Command::new("tmux").arg("-V").output().is_err() {
+            eprintln!("tmux not installed; skipping");
+            return;
+        }
+        let dir = PathBuf::from(format!("/tmp/msmn-path-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut be = TmuxBackend::new(dir.join("t.sock"), &dir, None).unwrap();
+        be.set_path(Some("/CLIENT-SENTINEL/bin:/usr/bin:/bin".into()));
+        be.spawn(
+            "envpr1",
+            &PathBuf::from("/tmp"),
+            &["/usr/bin/env".into()],
+            // A decoy on the road tmux ignores, and a control on the road it honours.
+            &[
+                ("PATH".into(), "/E-SENTINEL/bin:/usr/bin:/bin".into()),
+                ("MSMN_CONTROL".into(), "carried".into()),
+            ],
+        )
+        .unwrap();
+        std::thread::sleep(std::time::Duration::from_millis(400));
+        let pane = be.capture_tail("envpr1", 200).unwrap().join("\n");
+        be.kill_server().unwrap();
+        std::fs::remove_dir_all(&dir).ok();
+
+        assert!(pane.contains("MSMN_CONTROL=carried"), "`-e` should carry a plain var:\n{pane}");
+        assert!(
+            pane.contains("/CLIENT-SENTINEL/bin"),
+            "the pane must take PATH from the client env:\n{pane}"
+        );
+        assert!(
+            !pane.contains("/E-SENTINEL/bin"),
+            "`-e PATH` reaching the child would mean set_path is the wrong road:\n{pane}"
+        );
+    }
+
+    #[test]
+    fn an_empty_path_override_is_refused_rather_than_breaking_every_lookup() {
+        let dir = shortdir();
+        let mut be = TmuxBackend::new(dir.join("t2.sock"), &dir, None).unwrap();
+        be.set_path(Some("   ".into()));
+        assert!(be.path.is_none());
+        be.set_path(Some("/a/bin".into()));
+        assert_eq!(be.path.as_deref(), Some("/a/bin"));
+        be.set_path(None);
+        assert!(be.path.is_none());
         std::fs::remove_dir_all(dir).ok();
     }
 }

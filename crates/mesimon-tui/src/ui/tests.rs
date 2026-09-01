@@ -399,6 +399,50 @@ fn test_header_offers_one_suggestion_at_a_time() {
     assert!(!quiet.contains('◦'), "a quiet board offers nothing: {quiet:?}");
 }
 
+/// A shell startup file that moved is an offer like any other: one chip, the
+/// esc route, and a menu row that says what taking it will and will not touch.
+#[test]
+fn test_shell_env_change_is_offered_and_says_what_it_reaches() {
+    let mut app = app_graphite(fixture(false));
+    app.shell_env = mesimon_core::command::ShellEnvStatus { stale: true, ..Default::default() };
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.ends_with("◦ shell env changed (esc)"), "{head:?}");
+
+    // The row a person lands on must name the boundary: a running process's
+    // environment cannot be changed, so a live pane keeps the one it has.
+    app.mode = Mode::Menu { idx: 0 };
+    let menu = render(&app, 120, 30).join("\n");
+    assert!(menu.contains("Reload the shell environment"), "{menu}");
+    assert!(
+        menu.contains("live panes keep theirs"),
+        "the row must name what it cannot reach:\n{menu}"
+    );
+
+    // A reload already running is not still an offer — the press must visibly
+    // land even while the user's rc files are being read.
+    app.shell_env.reloading = true;
+    let head = &render(&app, 120, 30)[0];
+    assert!(!head.contains("shell env"), "a reload in flight is not an offer: {head:?}");
+
+    // A capture that FAILED is the same act but not the same news: panes are
+    // running on a fallback, and the chip is the only place that gets said.
+    app.shell_env.reloading = false;
+    app.shell_env = mesimon_core::command::ShellEnvStatus { failed: true, ..Default::default() };
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.ends_with("◦ shell env unreadable (esc)"), "{head:?}");
+    app.mode = Mode::Menu { idx: 0 };
+    let menu = render(&app, 120, 30).join("\n");
+    assert!(menu.contains("Try the shell environment again"), "{menu}");
+    assert!(menu.contains("panes are on a fallback"), "{menu}");
+
+    // And an update outranks it: one chip, highest priority, as ever.
+    app.mode = Mode::Normal;
+    app.shell_env.stale = true;
+    app.force_update_ready();
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.ends_with("◦ update ready (U ∙ esc)"), "{head:?}");
+}
+
 /// Priority decides which one is spoken, not which one is loudest: with no
 /// update on disk the sleep offer takes the chip, and archive waits in the menu.
 #[test]

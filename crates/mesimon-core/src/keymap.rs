@@ -212,6 +212,9 @@ pub enum Verb {
     ArchivePrefix,
     Archive,
     ArchiveAllDone,
+    /// Re-read the user's shell startup files, so the environment new panes
+    /// get is the one their terminal would give them.
+    ReloadShellEnv,
     /// `^t` — open the tag tail. Works on the board, the ticket screen, and
     /// inside the composer.
     TagPrefix,
@@ -346,6 +349,12 @@ pub struct Ctx {
     pub has_archived: bool,
     pub peek_on: bool,
     pub update_ready: bool,
+    /// A shell startup file has changed since the environment mesimon is
+    /// handing to new panes was captured.
+    pub shell_env_stale: bool,
+    /// Reading the shell environment failed, so panes are getting the fallback.
+    /// Offered on the same row, because "ask again" is the same act.
+    pub shell_env_failed: bool,
     pub any_attention: bool,
     // ---- ticket screen ----
     /// The rail has a selected session.
@@ -409,6 +418,8 @@ impl Default for Ctx {
             has_archived: false,
             peek_on: false,
             update_ready: false,
+            shell_env_stale: false,
+            shell_env_failed: false,
             any_attention: false,
             sel_session: false,
             sel_sleeping: false,
@@ -1436,6 +1447,29 @@ static MENU_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ArchiveAllDone,
+    MenuItem {
+        verb: Verb::ReloadShellEnv,
+        label: |c| {
+            if c.shell_env_failed {
+                "Try the shell environment again".into()
+            } else {
+                "Reload the shell environment".into()
+            }
+        },
+        // The chip already said what changed; the row says what taking it
+        // reaches. A pane's environment is fixed at exec, so "live panes keep
+        // theirs" is not a caveat to bury — it is the difference between this
+        // working and the user concluding it did nothing.
+        detail: |c| {
+            if c.shell_env_failed {
+                "your shell did not answer ∙ panes are on a fallback".into()
+            } else {
+                "new sessions and wakes get it ∙ live panes keep theirs".into()
+            }
+        },
+        avail: |c| c.shell_env_stale || c.shell_env_failed,
+        key: "",
+    },
         label: |c| format!("Archive {} in done", plural(c.bulk_archive, "ticket")),
         detail: |_| "clears the column ∙ restore any of them later".into(),
         avail: |c| c.bulk_archive > 0,
@@ -1533,6 +1567,19 @@ static SUGGESTIONS: &[Suggestion] = &[
     },
 ];
 
+    Suggestion {
+        verb: Verb::ReloadShellEnv,
+        // A failure and a change lead to the same act but are not the same
+        // news, and the chip is the only place the difference gets said.
+        headline: |c| {
+            if c.shell_env_failed {
+                "shell env unreadable".into()
+            } else {
+                "shell env changed".into()
+            }
+        },
+        key: "",
+    },
 /// The menu row a verb belongs to, if any.
 fn menu_row(verb: Verb) -> Option<&'static MenuItem> {
     MENU_ITEMS.iter().find(|m| m.verb == verb)
@@ -2425,21 +2472,31 @@ mod tests {
             has_archived: true,
             update_ready: true,
             ..Default::default()
+        assert!(!quiet_verbs.contains(&Verb::ReloadShellEnv));
         };
         // Declared priority, in the header and at the top of the menu alike.
         let heads: Vec<String> = suggestions(&all).iter().map(|s| (s.headline)(&all)).collect();
-        assert_eq!(heads, ["update ready", "sleep 3 agents", "archive 2 tickets"]);
+        assert_eq!(
+            heads,
+            ["update ready", "shell env changed", "sleep 3 agents", "archive 2 tickets"]
+        );
         let one = Ctx { bulk_sleep: 1, bulk_archive: 1, ..Default::default() };
         let heads: Vec<String> = suggestions(&one).iter().map(|s| (s.headline)(&one)).collect();
         assert_eq!(heads, ["sleep 1 agent", "archive 1 ticket"], "counts of one read as one");
         let rows: Vec<Verb> = menu_items(&all).iter().map(|m| m.verb).collect();
         assert_eq!(
-            &rows[..3],
-            &[Verb::Reload, Verb::SleepAllDone, Verb::ArchiveAllDone],
+            &rows[..4],
+            &[Verb::Reload, Verb::ReloadShellEnv, Verb::SleepAllDone, Verb::ArchiveAllDone],
             "suggested rows must lead the menu, in suggestion order: {rows:?}"
         );
         // And each suggested row is offered exactly when its suggestion is.
-        for ctx in [Ctx::default(), all.clone(), Ctx { update_ready: true, ..Default::default() }] {
+        for ctx in [
+            Ctx::default(),
+            all.clone(),
+            Ctx { update_ready: true, ..Default::default() },
+            Ctx { shell_env_stale: true, ..Default::default() },
+            Ctx { shell_env_failed: true, ..Default::default() },
+        ] {
             for m in MENU_ITEMS {
                 let suggested = is_suggested(m.verb, &ctx);
                 if suggested {
@@ -2458,6 +2515,7 @@ mod tests {
                     );
                 }
             }
+            shell_env_stale: true,
         }
         // Nothing to offer is the resting state: no chips, no marked rows.
         assert!(suggestions(&Ctx::default()).is_empty());
@@ -2506,6 +2564,7 @@ mod tests {
         }
         let ctx = Ctx {
             has_ticket: true,
+            shell_env_stale: true,
             multi_column: true,
             ticket_has_sessions: true,
             ..Default::default()

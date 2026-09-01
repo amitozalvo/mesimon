@@ -10,6 +10,7 @@ pub mod movegate;
 pub mod paths;
 pub mod resources;
 pub mod server;
+pub mod shellenv;
 pub mod store;
 pub mod tail;
 pub mod worktree;

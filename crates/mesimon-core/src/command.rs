@@ -30,7 +30,8 @@ pub struct Notice {
     /// `Response::Board` deserialize, and the client DROPS a line it cannot
     /// parse (tui/src/client.rs) — one new notice kind would blank the board
     /// on an older client. One of:
-    /// `quarantined` | `future_version` | `worktrees_barred` | `build_skew`.
+    /// `quarantined` | `future_version` | `worktrees_barred` | `build_skew` |
+    /// `shell_env`.
     pub kind: String,
     /// The headline, in mesimon's voice, ready to render. Never raw serde text.
     pub text: String,
@@ -165,6 +166,13 @@ pub enum Command {
     UnarchiveTicket {
         id: ulid::Ulid,
     },
+    /// Re-read the user's shell environment (the Esc menu's shell-env row).
+    ///
+    /// Deliberately explicit rather than automatic on an rc-file change: the
+    /// capture runs the user's rc files, and doing that unbidden every time an
+    /// editor writes `~/.zshrc` would fork a shell on every keystroke-save.
+    /// The daemon notices the change and OFFERS; the person decides.
+    ReloadShellEnv,
     /// Take the header's archive offer: archive exactly the tickets the
     /// suggestion prices (the offer's own candidate set, nothing broader).
     ArchiveAll,
@@ -357,6 +365,11 @@ pub enum Response {
     Provisioning,
     /// MergeTicket's receipt.
     Merge {
+        /// What the user's shell environment is doing (see [`ShellEnvStatus`]).
+        /// Serde-additive: absent from an older daemon parses as "fresh and
+        /// empty", which shows no offer — the right way to fail.
+        #[serde(default)]
+        shell_env: ShellEnvStatus,
         outcome: MergeOutcome,
         detail: String,
     },
@@ -574,6 +587,32 @@ pub struct Resources {
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum Event {
     BoardChanged,
+}
+
+/// The state of the environment mesimon hands to new panes.
+///
+/// A Claude pane is exec'd directly by tmux, so it reads no shell startup file
+/// of its own and gets exactly what the daemon passes it. This is how the board
+/// says whether that is still current.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ShellEnvStatus {
+    /// A shell startup file has changed since the environment new panes are
+    /// getting was captured. What the header offers to act on.
+    #[serde(default)]
+    pub stale: bool,
+    /// A capture is running right now.
+    #[serde(default)]
+    pub reloading: bool,
+    /// The last capture failed and the previous environment is still in force.
+    /// Offered the same way staleness is — a capture that failed once (a slow
+    /// rc file, a shell that was mid-edit) otherwise leaves the user with the
+    /// fallback environment and no way to ask again.
+    #[serde(default)]
+    pub failed: bool,
+    /// How many variables the current environment carries — the menu row spends
+    /// it as the concrete thing the reload would change.
+    #[serde(default)]
+    pub vars: usize,
 }
 
 #[cfg(test)]
