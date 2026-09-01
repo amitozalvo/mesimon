@@ -89,6 +89,31 @@ pub(crate) fn launching(tier: Tier, frame: usize) -> char {
     spinner(tier, frame / SLOW_STEP_TICKS)
 }
 
+/// Background-parked frames: a TWO-dot braille bar turning through the
+/// CENTRE of the cell — `—`, `/`, `\` — against `waiting`'s two-dot pair
+/// hugging the rim and the spinner's three-dot arc. Same ink as `waiting` by
+/// necessity: one dot was measured invisible at dim2 (author 2026-08-31, "no
+/// glyph at all"), which is why that glyph carries two, and this one may not
+/// carry three without claiming the spinner's "work in flight here".
+///
+/// Ascii cannot borrow the same idea: `| / - \` are the spinner's frames and
+/// a turning bar spelled in them IS the spinner. `~` is throttled, `. : , "`
+/// are idle and waiting. So the ascii tier breathes instead of turning — a
+/// ring swelling and shrinking, on the same clock.
+const BG_UNICODE: &[char] = &['⠒', '⠌', '⠡'];
+const BG_ASCII: &[char] = &['o', 'O'];
+
+/// The background-parked glyph: the turn ended, but a task the agent
+/// backgrounded is still running, so the work is not finished and the pane
+/// has stopped painting. It rides the SLOW cadence — `waiting`'s and
+/// `launching`'s — because something genuinely is in flight, just not in this
+/// pane; a still mark would say the board had gone quiet when it had not.
+/// No third speed is added: the board keeps one fast register and one slow.
+pub(crate) fn background(tier: Tier, frame: usize) -> char {
+    let frames = if tier == Tier::Ascii { BG_ASCII } else { BG_UNICODE };
+    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+}
+
 /// The plan-review mark: stacked lines read as a list of steps (U+2261
 /// IDENTICAL TO — same Ambiguous-width class as the ✓ we already ship).
 /// NOT U+2630 TRIGRAM FOR HEAVEN: Unicode 16 reclassified the trigrams
@@ -254,6 +279,18 @@ pub(crate) fn card_glyph(
     if sessions.iter().any(|s| is_launching(s)) {
         return Some((launching(tier, spin), Register::Grey));
     }
+    // Parked on a backgrounded task: not working, not done, and not waiting on
+    // the user. Before this the card fell through every arm and carried NO
+    // glyph — identical to a ticket nobody had ever opened — for as long as
+    // the task ran (dogfood 2026-09-01, T-128: two minutes on a build-poll).
+    // Under the spinner deliberately: if any session on the ticket is really
+    // working, that is the louder and truer thing to say.
+    if sessions
+        .iter()
+        .any(|s| matches!(s.state, SessionState::Idle { stop_reason: StopReason::Background }))
+    {
+        return Some((background(tier, spin), Register::Grey));
+    }
     if sessions.iter().all(|s| matches!(s.state, SessionState::Sleeping)) {
         return Some(('z', Register::Grey));
     }
@@ -287,6 +324,9 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
         SessionState::Idle { stop_reason: StopReason::EndTurn } => {
             (if ascii { '+' } else { '✓' }, Register::Calm)
         }
+        SessionState::Idle { stop_reason: StopReason::Background } => {
+            (background(tier, spin), Register::Grey)
+        }
         SessionState::Idle { .. } => (if ascii { '.' } else { '◦' }, Register::Grey),
         SessionState::Sleeping => ('z', Register::Grey),
         SessionState::Exited { reason: ExitReason::Crashed } => ('x', Register::Err),
@@ -316,6 +356,9 @@ pub(crate) fn state_word(state: &SessionState) -> &'static str {
         SessionState::Running => "working",
         SessionState::RequiresAction { .. } => "NEEDS YOU",
         SessionState::Idle { stop_reason: StopReason::EndTurn } => "done",
+        // Lowercase: nothing is required of the user. The turn is paused on
+        // work the agent started, and it will resume itself.
+        SessionState::Idle { stop_reason: StopReason::Background } => "background",
         SessionState::Idle { .. } => "idle",
         SessionState::Sleeping => "sleeping",
         // A deliberate kill is not a failure — the corpse stays resumable.
@@ -565,6 +608,52 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// A turn parked on a backgrounded task gets its own mark, and it must
+    /// not be mistakable for any other: not the spinner (work in flight in
+    /// THIS pane), not `waiting` (we have lost track), not the idle mark, and
+    /// never the calm `✓` (which would say the ticket is ready to review).
+    /// It rides the slow cadence — no third speed on the board.
+    #[test]
+    fn a_parked_turn_has_its_own_slow_mark() {
+        use unicode_width::UnicodeWidthChar;
+        let parked = rec(SessionState::Idle { stop_reason: StopReason::Background });
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            let (g, reg) = session_glyph(&parked, tier, 0);
+            assert_eq!(reg, Register::Grey, "a parked turn asks nothing of the user");
+            assert_eq!(card_glyph(&[&parked], tier, 0), Some((g, Register::Grey)));
+            assert_ne!(g, if tier == Tier::Ascii { '+' } else { '✓' }, "not done");
+            assert_ne!(g, if tier == Tier::Ascii { '.' } else { '◦' }, "not plain idle");
+            for f in 0..40 {
+                let b = background(tier, f);
+                assert_eq!(b.width(), Some(1), "{b:?} not one cell");
+                for w in 0..40 {
+                    assert_ne!(b, spinner(tier, w), "collides with the spinner");
+                    assert_ne!(b, waiting(tier, w), "collides with waiting");
+                }
+            }
+            // Slow cadence, and it wraps.
+            for f in 0..3 {
+                assert_eq!(background(tier, f), background(tier, f + 1), "held four ticks");
+            }
+            assert_ne!(background(tier, 3), background(tier, 4), "and then it steps");
+            let frames = if tier == Tier::Ascii { BG_ASCII } else { BG_UNICODE };
+            let cycle = frames.len() * SLOW_STEP_TICKS;
+            assert_eq!(background(tier, 0), background(tier, cycle), "wraps cleanly");
+        }
+    }
+
+    /// A really-working session on the same ticket outranks a parked one: the
+    /// spinner is the louder and truer thing to say about that card.
+    #[test]
+    fn working_outranks_a_parked_turn_on_one_card() {
+        let parked = rec(SessionState::Idle { stop_reason: StopReason::Background });
+        let busy = rec(SessionState::Running);
+        assert_eq!(
+            card_glyph(&[&parked, &busy], Tier::Unicode, 0),
+            Some((spinner(Tier::Unicode, 0), Register::Grey))
+        );
     }
 
     /// Slower is the whole point: the waiting glyph holds for four redraw

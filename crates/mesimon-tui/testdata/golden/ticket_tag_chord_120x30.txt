@@ -27,4 +27,4 @@
   3      auth   + new
   4      p1   + new
   5   + new
- TAG  hjkl move ∙ 1-0 group ∙ enter add ∙ tab colour ∙ r rename ∙ d delete ∙ w 2nd tag beside ∙ esc done ∙ ? keys
+ TAG  hjkl move ∙ HJKL move tag ∙ 1-0 group ∙ enter add ∙ tab colour ∙ r rename ∙ d delete ∙ esc done ∙ ? keys

@@ -74,6 +74,18 @@ mod tests {
         assert_eq!(automove(IN_PROGRESS, &unknown_stop, Confidence::High), None);
     }
 
+    /// A turn parked on background work is neither done nor working: the
+    /// ticket stays in IN PROGRESS until the task lands and the agent really
+    /// finishes. Promoting here would put a card in REVIEW that is still
+    /// going to change (dogfood 2026-09-01, T-128).
+    #[test]
+    fn a_parked_turn_is_not_done() {
+        let parked = SessionState::Idle { stop_reason: StopReason::Background };
+        assert_eq!(automove(IN_PROGRESS, &parked, Confidence::High), None);
+        assert_eq!(automove(TODO, &parked, Confidence::High), None);
+        assert_eq!(automove(REVIEW, &parked, Confidence::High), None);
+    }
+
     #[test]
     fn requires_action_is_not_working() {
         let modal = SessionState::RequiresAction { reason: Reason::StartupModal };

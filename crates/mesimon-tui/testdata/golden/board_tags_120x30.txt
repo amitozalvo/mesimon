@@ -2,11 +2,9 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-   Decay treatments            ▀ ⠋ Fix OSC-11 detection >1y  ▀ ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+   Decay treatments       >1y  ▀ ⠋ Fix OSC-11 detection >1y  ▀ ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
 
-   Keymap validator              ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
-
-
+   Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
 
 
@@ -27,4 +25,6 @@
 
 
 
- BOARD  enter ticket page ∙ o open ticket ∙ c start claude ∙ s shell ∙ > < move card ∙ r rename ∙ a archive ∙ ? keys
+
+
+ BOARD  enter ticket page ∙ o open ticket ∙ option+hjkl move card ∙ r rename ∙ ? keys

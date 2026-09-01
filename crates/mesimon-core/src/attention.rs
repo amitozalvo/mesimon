@@ -4,6 +4,8 @@
 //! owns one `Machine` per session and applies `Signal`s from the hook stream;
 //! debounce rules are 11 §11.7.4.
 
+use std::collections::BTreeSet;
+
 use crate::board::{
     Board, Confidence, ExitReason, FailReason, Reason, SessionRecord, SessionState, StopReason,
     UnknownReason,
@@ -183,14 +185,30 @@ pub enum Signal {
     UserPromptSubmit,
     /// `blocking_tasks`: the Stop payload's `background_tasks[]` held an entry
     /// whose `.type` means the turn is PAUSED, not DONE (`task_blocks_end_turn`
-    /// — emptiness alone is NOT the test).
+    /// — emptiness alone is NOT the test). `teammates` is the number of
+    /// `teammate` entries, which are neither: an in-process teammate reads
+    /// `running` for as long as it exists, idle or not, so whether one holds
+    /// the turn open is decided against the `TeammateIdle` frames the machine
+    /// has seen (dogfood 2026-09-01, T-135: four idle reviewers parked a
+    /// finished session for good).
     Stop {
         stop_hook_active: bool,
         has_agent_id: bool,
         blocking_tasks: bool,
+        teammates: usize,
     },
     SubagentStop,
-    TeammateIdle,
+    /// A named in-process teammate is about to go idle. It stays alive (and
+    /// listed as `running` in every later Stop payload), so this frame is the
+    /// only thing that says its work is done.
+    TeammateIdle {
+        name: Option<String>,
+    },
+    /// The lead (or another teammate) sent a teammate a message, which wakes
+    /// it: whatever it reported before, it is working again.
+    TeammateMessaged {
+        name: String,
+    },
     StopFailure {
         class: StopFailureClass,
     },
@@ -208,8 +226,13 @@ pub enum Signal {
     /// Broad PostToolUse (any other tool). A tool only completes after its
     /// dialog was allowed, so this is the accept path for a held generic
     /// permission — there is no "permission answered" event (11 §11.7.3).
-    /// Inert from every other state.
-    ToolCompleted,
+    /// `nested` marks a frame carrying an `agent_id`: a subagent's or
+    /// teammate's tool ran, not the session's own (measured 2026-09-01 — the
+    /// parent's frames carry no `agent_id`, a subagent's do). Only the
+    /// session's OWN completion proves ITS turn resumed.
+    ToolCompleted {
+        nested: bool,
+    },
     Notification {
         kind: NotificationKind,
     },
@@ -266,12 +289,32 @@ pub enum Signal {
 /// normalised token, so `"MCP task"`, `"mcp_task"` and `"mcpTask"` agree; and an
 /// UNRECOGNISED type blocks, which keeps today's conservative behaviour for
 /// anything new rather than ending a turn that is still running.
+///
+/// **A `teammate` is neither, and is answered elsewhere** (dogfood 2026-09-01,
+/// T-135): an in-process teammate stays alive after it reports and is listed
+/// as `running` in every later Stop payload for the rest of the session —
+/// captured on the wire, idle teammate still `{type: "teammate", status:
+/// "running"}` after the lead's final turn. Classing it blocking parked a
+/// finished session for good; classing it dormant would end a turn whose
+/// reviewers are still working. So it is `false` here and COUNTED by the
+/// caller (`Signal::Stop::teammates`), and the machine weighs the count
+/// against the `TeammateIdle` frames it has seen (`is_teammate_task`).
 pub fn task_blocks_end_turn(kind: &str) -> bool {
-    let norm: String =
-        kind.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect();
+    let norm = norm_task_kind(kind);
     // Anything bearing "monitor" is a watch by construction, whatever it ends
     // up being called (`monitor`, `artifact-comment-monitor`, …).
-    !norm.contains("monitor")
+    !norm.contains("monitor") && !is_teammate_task(kind)
+}
+
+/// A `background_tasks[]` entry that is an in-process teammate (Claude Code
+/// labels the `in_process_teammate` task `"teammate"`; the raw discriminant
+/// is accepted too, the same way `task_blocks_end_turn` normalises).
+pub fn is_teammate_task(kind: &str) -> bool {
+    norm_task_kind(kind).contains("teammate")
+}
+
+fn norm_task_kind(kind: &str) -> String {
+    kind.chars().filter(char::is_ascii_alphanumeric).map(|c| c.to_ascii_lowercase()).collect()
 }
 
 /// One debounced, publishable transition.
@@ -306,11 +349,34 @@ pub struct Machine {
     pinned_until: Option<u64>,
     /// Last attention reason left, for the 30 s re-emit suppression.
     recent_left: Option<(Reason, u64)>,
+    /// Named teammates that have reported idle and not been messaged since.
+    /// A Stop payload lists a teammate as `running` for its whole life, so
+    /// this set is the only way to tell "reviewers still working" from
+    /// "reviewers done, lead done" — the daemon persists it on the record so
+    /// a restart does not re-park a finished session.
+    idle_teammates: BTreeSet<String>,
 }
 
 impl Machine {
     pub fn new(state: SessionState, now: u64) -> Self {
         Self::restore(state, Confidence::High, now)
+    }
+
+    /// Re-mint with the persisted idle-teammate set (see `idle_teammates`).
+    pub fn restore_with_teammates(
+        state: SessionState,
+        confidence: Confidence,
+        idle_teammates: impl IntoIterator<Item = String>,
+        now: u64,
+    ) -> Self {
+        let mut m = Self::restore(state, confidence, now);
+        m.idle_teammates = idle_teammates.into_iter().collect();
+        m
+    }
+
+    /// The teammates currently known idle, sorted — for persistence.
+    pub fn idle_teammates(&self) -> impl Iterator<Item = &str> {
+        self.idle_teammates.iter().map(String::as_str)
     }
 
     /// Re-mint from a persisted record, carrying its confidence — a restart
@@ -326,6 +392,7 @@ impl Machine {
             committed: Vec::new(),
             pinned_until: None,
             recent_left: None,
+            idle_teammates: BTreeSet::new(),
         }
     }
 
@@ -338,6 +405,18 @@ impl Machine {
     }
 
     pub fn apply(&mut self, sig: &Signal, now: u64) -> Option<Change> {
+        // Teammate bookkeeping happens in every state, including the latched
+        // ones: a teammate going idle while the lead sleeps is still a fact
+        // the next Stop has to weigh.
+        match sig {
+            Signal::TeammateIdle { name: Some(name) } => {
+                self.idle_teammates.insert(name.clone());
+            }
+            Signal::TeammateMessaged { name } => {
+                self.idle_teammates.remove(name);
+            }
+            _ => {}
+        }
         // Sleeping latches: the daemon's own SIGTERM produces SessionEnd and
         // pane-died, and neither those nor any straggler frame may flip a
         // parked session to Exited. Only wake leaves — by re-minting the
@@ -400,12 +479,8 @@ impl Machine {
     }
 
     pub fn tick(&mut self, now: u64) -> Option<Change> {
-        if let Some(p) = &self.pending {
-            if now >= p.deadline {
-                let (to, conf) = (p.to.clone(), p.confidence);
-                self.pending = None;
-                return Some(self.commit(to, conf, now));
-            }
+        if self.pending.as_ref().is_some_and(|p| now >= p.deadline) {
+            return self.flush(now);
         }
         // Stale demotion: never latch red (11 §11.7.4).
         if is_attention(&self.state) && now.saturating_sub(self.entered_at) >= STALE_DEMOTE_MS {
@@ -413,6 +488,19 @@ impl Machine {
             return Some(self.commit(to, Confidence::Stale, now));
         }
         None
+    }
+
+    /// Commit the pending transition NOW, settle or no settle. The daemon's
+    /// shutdown road: a leave still inside its 1500 ms window is a frame the
+    /// session already sent, and a restart re-derives it from the transcript
+    /// at Low confidence, which automove refuses — so a `Stop` one second
+    /// before a `U` reload left its ticket in IN PROGRESS (dogfood 2026-09-01,
+    /// T-140). The settle exists to absorb a re-trigger; at exit there is
+    /// nothing left to absorb. Stale demotion is not flushed: it is a clock,
+    /// not a signal.
+    pub fn flush(&mut self, now: u64) -> Option<Change> {
+        let p = self.pending.take()?;
+        Some(self.commit(p.to, p.confidence, now))
     }
 
     fn commit(&mut self, to: SessionState, confidence: Confidence, now: u64) -> Change {
@@ -484,8 +572,28 @@ impl Machine {
             Signal::Stop { stop_hook_active: true, .. } => None, // re-entrancy guard
             Signal::Stop { has_agent_id: true, .. } => None,     // nested, never top-level
             // In-flight work (shell, subagent, …) holds the turn open; a
-            // dormant watch does not — see `task_blocks_end_turn`.
-            Signal::Stop { blocking_tasks: true, .. } => t(S::Running),
+            // dormant watch does not — see `task_blocks_end_turn`. The turn is
+            // PAUSED, so this is `Idle{Background}` and NOT a re-assertion of
+            // `Running`: the pane stops painting the moment the agent parks, so
+            // `Running` here is a claim the quiet probe refutes ~8 s later by
+            // demoting to `Idle{Interrupted}` — a second, worse lie, and one
+            // no signal corrects (compare `SubagentStop`, which at least has a
+            // corrective). `Idle` is invisible to `probe_activity`, which only
+            // scans `Running`, so the misread stops being possible rather than
+            // being cleaned up afterwards.
+            Signal::Stop { blocking_tasks: true, .. } => {
+                t(S::Idle { stop_reason: StopReason::Background })
+            }
+            // Teammates are listed `running` idle or busy (they live until
+            // the session ends), so the payload cannot say whether they hold
+            // the turn open — the `TeammateIdle` frames can. More teammates
+            // than idle notices means at least one is still working: parked.
+            // Every one accounted for means the lead's turn ending IS the
+            // end (dogfood 2026-09-01, T-135: four finished reviewers held a
+            // finished session at `Idle{Background}` through three Stops).
+            Signal::Stop { teammates, .. } if *teammates > self.idle_teammates.len() => {
+                t(S::Idle { stop_reason: StopReason::Background })
+            }
             Signal::Stop { .. } => t(S::Idle { stop_reason: StopReason::EndTurn }),
             // A subagent finishing proves the parent is still orchestrating.
             // The restart-window tail re-derive reads "waiting on background
@@ -500,7 +608,7 @@ impl Machine {
                 }
                 _ => None,
             },
-            Signal::TeammateIdle => None,
+            Signal::TeammateIdle { .. } | Signal::TeammateMessaged { .. } => None,
             Signal::StopFailure { class } => match class {
                 StopFailureClass::RateLimit | StopFailureClass::Overloaded => t(S::Throttled),
                 StopFailureClass::AuthenticationFailed
@@ -536,8 +644,18 @@ impl Machine {
             // early (no key to join on — PermissionRequest carries no
             // tool_use_id); the idle permission Notification re-asserts at
             // Medium, so the miss self-heals.
-            Signal::ToolCompleted => match &self.state {
+            Signal::ToolCompleted { nested } => match &self.state {
                 S::RequiresAction { reason: Reason::Permission } => t(S::Running),
+                // A parked turn resumes when its OWN tool runs. The wake is a
+                // prompt only when a task notification delivers it; a
+                // teammate's report arrives as a teammate message and fires
+                // no `UserPromptSubmit` at all (measured 2026-09-01, T-135:
+                // twenty minutes of the lead's tool frames streamed past a
+                // High `Idle{Background}` that only a prompt could leave).
+                // The frame is a stated event, so High. A NESTED completion
+                // is the teammate's work, not the lead's — the lead may well
+                // still be parked — and says nothing here.
+                S::Idle { stop_reason: StopReason::Background } if !nested => t(S::Running),
                 // A tool completing is stated proof the turn is alive — it
                 // outranks any INFERRED resting state (quiet-probe Medium,
                 // tail-hint Low) and the post-restart Unknown, and is the
@@ -692,11 +810,36 @@ mod tests {
         assert_eq!(c.to, SessionState::Running);
     }
 
+    /// A pending leave commits on `flush` at once, keeps the confidence the
+    /// signal carried, and leaves nothing behind for the next tick. With
+    /// nothing pending, flush is a no-op — an idle machine is not disturbed
+    /// by a shutdown.
+    #[test]
+    fn flush_commits_a_pending_leave_immediately() {
+        let mut m = m(SessionState::Running);
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            teammates: 0,
+        };
+        assert!(m.apply(&stop, 1000).is_none(), "leaving Running settles");
+        let c = m.flush(1100).expect("flush commits inside the settle window");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(c.confidence, Confidence::High);
+        assert!(m.tick(1100 + SETTLE_MS).is_none(), "nothing left to settle");
+        assert!(m.flush(5000).is_none(), "nothing pending, nothing flushed");
+    }
+
     #[test]
     fn stop_needs_quiet_before_idle() {
         let mut m = m(SessionState::Running);
-        let stop =
-            Signal::Stop { stop_hook_active: false, has_agent_id: false, blocking_tasks: false };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            teammates: 0,
+        };
         assert!(m.apply(&stop, 1000).is_none());
         // A prompt inside the window keeps it running.
         assert!(m.apply(&Signal::UserPromptSubmit, 1200).is_none());
@@ -716,7 +859,8 @@ mod tests {
                 &Signal::Stop {
                     stop_hook_active: true,
                     has_agent_id: false,
-                    blocking_tasks: false
+                    blocking_tasks: false,
+                    teammates: 0
                 },
                 1000
             )
@@ -726,7 +870,8 @@ mod tests {
                 &Signal::Stop {
                     stop_hook_active: false,
                     has_agent_id: true,
-                    blocking_tasks: false
+                    blocking_tasks: false,
+                    teammates: 0
                 },
                 1000
             )
@@ -734,33 +879,180 @@ mod tests {
         assert!(m.pending.is_none());
     }
 
+    /// In-flight background work parks the turn — it does not hold it
+    /// `Running`, and it does not end it. The distinction is the whole point:
+    /// `EndTurn` would move the ticket to REVIEW, `Running` would be caught
+    /// and mangled by the quiet probe (see the test below).
     #[test]
-    fn stop_with_blocking_tasks_stays_running() {
+    fn stop_with_blocking_tasks_parks_the_turn() {
         let mut m = m(SessionState::Running);
+        // Leaving `Running` settles for 1500 ms, so the park commits on tick.
         assert!(m
             .apply(
                 &Signal::Stop {
                     stop_hook_active: false,
                     has_agent_id: false,
-                    blocking_tasks: true
+                    blocking_tasks: true,
+                    teammates: 0,
                 },
-                1000
+                1000,
             )
             .is_none());
-        assert!(m.tick(9000).is_none());
-        assert_eq!(m.state(), &SessionState::Running);
+        let c = m.tick(3000).expect("parks");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+        assert_eq!(c.confidence, Confidence::High);
+        assert!(!c.attention_added, "a parked turn asks nothing of the user");
+    }
+
+    /// The regression this state exists for (dogfood 2026-09-01, T-128): a
+    /// backgrounded build-poll parked the turn, the pane went quiet, and the
+    /// interrupt probe demoted a session nobody had interrupted. `Idle` is
+    /// not `Running`, so the probe never reaches it.
+    #[test]
+    fn a_parked_turn_is_not_demoted_to_interrupted() {
+        let mut m = m(SessionState::Running);
+        m.apply(
+            &Signal::Stop {
+                stop_hook_active: false,
+                has_agent_id: false,
+                blocking_tasks: true,
+                teammates: 0,
+            },
+            1000,
+        );
+        m.tick(3000).expect("parks");
+        assert!(m.apply(&Signal::PaneQuiet, 20_000).is_none(), "PaneQuiet only demotes Running");
+        assert!(m.tick(40_000).is_none());
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
+    }
+
+    /// The wake path, as observed on the wire: the task's completion arrives
+    /// as a `UserPromptSubmit` and the turn simply resumes.
+    #[test]
+    fn a_parked_turn_resumes_on_the_task_notification() {
+        let mut m = m(SessionState::Idle { stop_reason: StopReason::Background });
+        let c = m.apply(&Signal::UserPromptSubmit, 1000).expect("resumes");
+        assert_eq!(c.to, SessionState::Running);
+    }
+
+    fn stop_with_teammates(teammates: usize) -> Signal {
+        Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            teammates,
+        }
+    }
+
+    fn idle(name: &str) -> Signal {
+        Signal::TeammateIdle { name: Some(name.to_string()) }
+    }
+
+    /// The T-135 regression, first half. Four named reviewers were spawned
+    /// and the lead stopped to wait: that Stop listed four `teammate` entries
+    /// and no idle notice had arrived, so the turn is parked, not done.
+    #[test]
+    fn busy_teammates_park_the_turn() {
+        let mut m = m(SessionState::Running);
+        assert!(m.apply(&stop_with_teammates(4), 1000).is_none(), "leave settles");
+        let c = m.tick(1000 + SETTLE_MS).expect("parks");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+        // Two of four have reported: still parked.
+        m.apply(&idle("reuse"), 2000);
+        m.apply(&idle("altitude"), 2100);
+        assert!(m.apply(&stop_with_teammates(4), 3000).is_none());
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
+    }
+
+    /// The T-135 regression, second half. An idle teammate stays alive and
+    /// is listed `running` in every later Stop payload, so the lead's final
+    /// turn re-parked itself three times over. Once every listed teammate has
+    /// reported idle, the lead's Stop is the end of the turn.
+    #[test]
+    fn idle_teammates_do_not_hold_the_turn() {
+        let mut m = m(SessionState::Idle { stop_reason: StopReason::Background });
+        for name in ["reuse", "simplify", "efficiency", "altitude"] {
+            assert!(m.apply(&idle(name), 1000).is_none(), "an idle notice moves nothing by itself");
+        }
+        // A repeat notice is not a fifth teammate.
+        m.apply(&idle("reuse"), 1500);
+        let c = m.apply(&stop_with_teammates(4), 2000).expect("ends the turn");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(c.confidence, Confidence::High);
+        // A teammate that was shut down drops out of the list; fewer listed
+        // than idle is still "all accounted for".
+        let mut m2 = Machine::new(SessionState::Idle { stop_reason: StopReason::Background }, 0);
+        m2.apply(&idle("a"), 1000);
+        m2.apply(&idle("b"), 1000);
+        assert!(m2.apply(&stop_with_teammates(1), 2000).is_some());
+    }
+
+    /// Messaging an idle teammate wakes it: it is working again, whatever it
+    /// last reported, and the count must say so.
+    #[test]
+    fn a_messaged_teammate_is_working_again() {
+        let mut m = m(SessionState::Running);
+        m.apply(&idle("reuse"), 1000);
+        assert!(m.apply(&Signal::TeammateMessaged { name: "reuse".into() }, 2000).is_none());
+        assert!(m.apply(&stop_with_teammates(1), 3000).is_none(), "leave settles");
+        let c = m.tick(3000 + SETTLE_MS).expect("parks");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+        // A name that never reported idle is a no-op to forget.
+        m.apply(&Signal::TeammateMessaged { name: "nobody".into() }, 4000);
+        assert_eq!(m.idle_teammates().count(), 0);
+    }
+
+    /// A teammate's report arrives as a teammate message and fires no
+    /// `UserPromptSubmit` (measured 2026-09-01), so the lead's OWN tool frames
+    /// are what say the parked turn resumed — twenty minutes of them streamed
+    /// past a High `Idle{Background}` on T-135. A nested frame (a subagent's
+    /// tool, `agent_id` set) is the teammate's work and moves nothing.
+    #[test]
+    fn a_parked_turn_resumes_on_its_own_tool_completion() {
+        let mut m = m(SessionState::Idle { stop_reason: StopReason::Background });
+        assert!(m.apply(&Signal::ToolCompleted { nested: true }, 1000).is_none());
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
+        let c = m.apply(&Signal::ToolCompleted { nested: false }, 2000).expect("resumes");
+        assert_eq!(c.to, SessionState::Running);
+        assert_eq!(c.confidence, Confidence::High);
+        // The other hook-stated Idle stays inert to a completion, as before:
+        // nothing is owed after a real end_turn.
+        let mut done = Machine::new(SessionState::Idle { stop_reason: StopReason::EndTurn }, 0);
+        assert!(done.apply(&Signal::ToolCompleted { nested: false }, 1000).is_none());
+    }
+
+    /// The set survives a daemon restart through the record, or the next
+    /// finished turn would park for good again.
+    #[test]
+    fn restore_carries_idle_teammates() {
+        let m = Machine::restore_with_teammates(
+            SessionState::Idle { stop_reason: StopReason::Background },
+            Confidence::High,
+            ["b".to_string(), "a".to_string(), "a".to_string()],
+            0,
+        );
+        assert_eq!(m.idle_teammates().collect::<Vec<_>>(), vec!["a", "b"]);
+        let mut m = m;
+        assert!(m.apply(&stop_with_teammates(2), 1000).is_some(), "all accounted for");
     }
 
     /// In-flight work holds the turn open; a dormant watch must not. The
     /// spellings are unverified, so an unknown type keeps the safe behaviour.
     #[test]
     fn only_in_flight_task_types_block_end_turn() {
-        for k in ["shell", "subagent", "workflow", "MCP task", "teammate", "cloud session"] {
+        for k in ["shell", "subagent", "workflow", "MCP task", "cloud session"] {
             assert!(task_blocks_end_turn(k), "{k} is work in flight");
         }
         for k in ["monitor", "artifact-comment-monitor", "Monitor", "artifact_monitor"] {
             assert!(!task_blocks_end_turn(k), "{k} is a dormant watch");
         }
+        // A teammate is neither: counted by the caller, weighed by the machine
+        // against the idle notices it has seen (T-135).
+        for k in ["teammate", "in_process_teammate", "Teammate"] {
+            assert!(!task_blocks_end_turn(k), "{k} is counted, not classed");
+            assert!(is_teammate_task(k));
+        }
+        assert!(!is_teammate_task("shell"));
         // Forward-safe: an unseen type holds the turn open rather than ending
         // one that may still be running.
         assert!(task_blocks_end_turn("some_future_task"));
@@ -774,8 +1066,12 @@ mod tests {
     /// `automove` refuses to promote, stranding the ticket in IN PROGRESS.
     #[test]
     fn armed_monitor_does_not_suppress_end_turn() {
-        let stop =
-            Signal::Stop { stop_hook_active: false, has_agent_id: false, blocking_tasks: false };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            teammates: 0,
+        };
         let mut m = m(SessionState::Running);
         // Two turns: the bug was that the monitor stayed armed and so ate the
         // SECOND one too.
@@ -928,7 +1224,7 @@ mod tests {
         // accepted tool stayed needs-you until end of turn).
         let mut m = m(SessionState::Running);
         m.apply(&Signal::PermissionRequest, 1_000).unwrap();
-        assert!(m.apply(&Signal::ToolCompleted, 5_000).is_none()); // leave settles
+        assert!(m.apply(&Signal::ToolCompleted { nested: false }, 5_000).is_none()); // leave settles
         assert!(m.tick(5_000 + SETTLE_MS - 1).is_none());
         let c = m.tick(5_000 + SETTLE_MS).unwrap();
         assert_eq!(c.to, SessionState::Running);
@@ -946,7 +1242,7 @@ mod tests {
             SessionState::RequiresAction { reason: Reason::Plan },
         ] {
             let mut m1 = m(state.clone());
-            assert_eq!(m1.apply(&Signal::ToolCompleted, 1_000), None);
+            assert_eq!(m1.apply(&Signal::ToolCompleted { nested: false }, 1_000), None);
             assert!(m1.pending.is_none(), "no pending leave from {state:?}");
         }
     }
@@ -961,7 +1257,7 @@ mod tests {
         assert!(m.apply(&Signal::PaneQuiet, 10_000).is_none()); // leave settles
         let c = m.tick(10_000 + SETTLE_MS).expect("demote");
         assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Interrupted });
-        let c = m.apply(&Signal::ToolCompleted, 15_000).expect("recover");
+        let c = m.apply(&Signal::ToolCompleted { nested: false }, 15_000).expect("recover");
         assert_eq!(c.to, SessionState::Running);
         assert_eq!(c.confidence, Confidence::High);
         assert!(!c.attention_added);
@@ -976,24 +1272,32 @@ mod tests {
         // a long quiet tool run as StaleQuiet → Idle{Unknown} at Low. Either
         // rung recovers on the next completion frame.
         let mut lost = m(SessionState::unknown());
-        let c = lost.apply(&Signal::ToolCompleted, 1_000).expect("recover from unknown");
+        let c = lost
+            .apply(&Signal::ToolCompleted { nested: false }, 1_000)
+            .expect("recover from unknown");
         assert_eq!(c.to, SessionState::Running);
 
         let mut tailed = m(SessionState::unknown());
         tailed.apply(&Signal::TranscriptHint { kind: TailHint::StaleQuiet }, 1_000).unwrap();
         assert_eq!(tailed.confidence(), Confidence::Low);
-        let c = tailed.apply(&Signal::ToolCompleted, 2_000).expect("recover from tail idle");
+        let c = tailed
+            .apply(&Signal::ToolCompleted { nested: false }, 2_000)
+            .expect("recover from tail idle");
         assert_eq!(c.to, SessionState::Running);
 
         // A hook-stated end_turn (High) stays inert — a background task's
         // completion must not flip a real turn end.
         let mut done = m(SessionState::Running);
-        let stop =
-            Signal::Stop { stop_hook_active: false, has_agent_id: false, blocking_tasks: false };
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            teammates: 0,
+        };
         assert!(done.apply(&stop, 1_000).is_none()); // leave settles
         done.tick(1_000 + SETTLE_MS).expect("settle to end_turn");
         assert_eq!(done.confidence(), Confidence::High);
-        assert!(done.apply(&Signal::ToolCompleted, 10_000).is_none());
+        assert!(done.apply(&Signal::ToolCompleted { nested: false }, 10_000).is_none());
     }
 
     #[test]
@@ -1008,7 +1312,9 @@ mod tests {
             0,
         );
         assert_eq!(restored.confidence(), Confidence::Low);
-        let c = restored.apply(&Signal::ToolCompleted, 1_000).expect("recover after restore");
+        let c = restored
+            .apply(&Signal::ToolCompleted { nested: false }, 1_000)
+            .expect("recover after restore");
         assert_eq!(c.to, SessionState::Running);
     }
 
@@ -1226,7 +1532,8 @@ mod tests {
                 &Signal::Stop {
                     stop_hook_active: false,
                     has_agent_id: false,
-                    blocking_tasks: false
+                    blocking_tasks: false,
+                    teammates: 0
                 },
                 1000
             )

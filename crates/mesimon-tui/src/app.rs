@@ -171,6 +171,14 @@ pub enum InputPurpose {
     Rename {
         id: ulid::Ulid,
     },
+    /// The board's Shift+Enter: a one-line field on the selected card whose
+    /// text goes to that ticket's live claude, submitted, with the board
+    /// still up. Nothing here is saved and no ticket is minted — which is why
+    /// `Ctx::composing` stays false and the input scope's `save` word
+    /// becomes `send`.
+    Prompt {
+        ticket: ulid::Ulid,
+    },
 }
 
 /// The `^t` tail's state. Unlike the delete and archive chords this is a
@@ -214,6 +222,12 @@ const SHELL_TAIL_EVERY: Duration = Duration::from_millis(1000);
 /// How many lines to ask for — more than the zone can hold at any sane
 /// height, so the draw does the trimming and a resize needs no refetch.
 const SHELL_TAIL_LINES: u16 = 60;
+
+/// How long a quick-tag digit holds the cursor card open. Long enough to
+/// read a word off the chip row, short enough that it is a confirmation and
+/// not a mode — and every repeat of the digit re-arms it, so cycling an axis
+/// keeps the card open for the whole walk instead of blinking once per press.
+const TAG_FLASH: Duration = Duration::from_millis(1500);
 
 pub struct App {
     pub client: Box<dyn Transport>,
@@ -262,6 +276,13 @@ pub struct App {
     /// reply, read from the transcript at draw time (peek.rs).
     pub peek: bool,
     pub peek_cache: crate::peek::PeekCache,
+    /// A quick-tag digit holds the card it tagged open for a moment (the
+    /// ticket it landed on, and when). The stripe is one cell at rest and
+    /// carries no words — it can say "two tags, these hues" and nothing
+    /// more — so the press that changes it opens the card that names it,
+    /// then lets go. Keyed to the TICKET: moving the cursor ends the reveal,
+    /// because a flash is about the card you just tagged and no other.
+    pub tag_flash: Option<(ulid::Ulid, Instant)>,
     /// The ticket page's preview zone: the selected shell's pane tail, and
     /// when it was fetched. Per-view and in memory only — a shell has no
     /// transcript file to read the way `peek_cache` reads an agent's, so
@@ -292,6 +313,9 @@ pub struct App {
     just_created: Option<ulid::Ulid>,
     /// New-binary watch (dev rebuild or prod upgrade — same signal).
     update_watch: crate::update::UpdateWatch,
+    /// Is a newer RELEASE published? Inert in every build `ci/release.sh`
+    /// did not cut, so a dev board never asks and never downloads.
+    release: crate::release::ReleaseWatch,
     /// U on a ready update: the main loop execs the new binary in place.
     pub pending_reexec: bool,
     /// The `d` chord is armed on this ticket: the next `d` deletes it, `D`
@@ -309,7 +333,6 @@ pub struct App {
     /// the session: it changes nothing the daemon owns, and there is no place
     /// to persist a preference that would not be board data belonging to
     /// everyone on the repo.
-    pub(crate) tag_second: crate::tags::Second,
     /// What `u` would undo. Archiving is fully reversible and leaves the
     /// ticket in the snapshot, so it needs no daemon-side grace band — it
     /// just needs to be reachable, which is what this is.
@@ -347,6 +370,9 @@ pub struct App {
 impl App {
     pub fn new(mut client: Box<dyn Transport>, repo_root: PathBuf, theme: Theme) -> Result<Self> {
         let (board, grace, external, resources, worktrees, notices) = fetch(client.as_mut())?;
+        // Before the move: the checker resolves the state root and the
+        // staging dir off the same repo path everything else keys on.
+        let release = crate::release::ReleaseWatch::new(&repo_root);
         Ok(Self {
             client,
             repo_root,
@@ -373,6 +399,7 @@ impl App {
             scroll_row: Cell::new(0),
             peek: false,
             peek_cache: crate::peek::PeekCache::default(),
+            tag_flash: None,
             shell_tail: None,
             spin_epoch: Cell::new(None),
             diff: None,
@@ -385,10 +412,10 @@ impl App {
             rich_keys: false,
             flavor_watch: None,
             update_watch: crate::update::UpdateWatch::new(),
+            release,
             pending_reexec: false,
             delete_armed: None,
             tag_armed: None,
-            tag_second: crate::tags::Second::from_env(),
             archive_armed: None,
             last_undo: None,
             last_action: None,
@@ -509,6 +536,13 @@ impl App {
         self.update_watch.force_ready();
     }
 
+    /// And the release offer without a network or a release build to make it
+    /// in — a test binary is stamped `dev`, so the checker is inert there.
+    #[cfg(test)]
+    pub(crate) fn force_release_available(&mut self, tag: &str) {
+        self.release.force_available(tag);
+    }
+
     /// Take whatever board a command replied with (RescanExternal does this).
     fn absorb_board(&mut self, resp: Response) {
         if let Response::Board {
@@ -616,6 +650,16 @@ impl App {
         // the footer would only say it twice, so this just asks for the
         // redraw that paints the chip.
         if self.update_watch.tick() {
+            dirty = true;
+        }
+        // The release checker, on its own long clock: at most one question
+        // every six hours, and none at all from a build that was not cut by
+        // `ci/release.sh`. What it has to say is a chip, plus one status line
+        // for the moments a download starts, lands or falls over.
+        if self.release.tick() {
+            if let Some(note) = self.release.take_note() {
+                self.status = note;
+            }
             dirty = true;
         }
         self.watch_flavor()?;
@@ -814,6 +858,10 @@ impl App {
             ticket_has_claude: sessions
                 .iter()
                 .any(|s| s.kind == SessionKind::Claude && s.state.is_live()),
+            // A pane, not merely a session: `is_live()` counts a parked one,
+            // and a prompt needs somewhere to be typed. Mirrors the daemon's
+            // `prompt_target`, which is what actually picks the session.
+            ticket_promptable: subject.is_some_and(|t| self.board.pane_target(t).is_some()),
             ticket_awake: subject.map(|t| self.board.ticket_awake_sessions(t) > 0).unwrap_or(false),
             ticket_archived: subject
                 .and_then(|t| self.board.ticket(t))
@@ -842,6 +890,12 @@ impl App {
             has_archived: !self.board.archived_tickets().is_empty(),
             peek_on: self.peek,
             update_ready: self.update_ready(),
+            // A binary already waiting on disk outranks a download: reload
+            // what you have before fetching it again. This is also what keeps
+            // the two rows from standing in the menu together after an
+            // `install.sh` run in another terminal.
+            release_available: self.release.available() && !self.update_ready(),
+            release_tag: self.release.tag(),
             // `reloading` takes the offer down the instant the press lands, so
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
@@ -865,13 +919,20 @@ impl App {
                 self.mode,
                 Mode::Input { purpose: InputPurpose::Create { .. }, .. }
             ),
+            prompting: matches!(
+                self.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }
+            ),
             tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
             tag_on_entry: self.tag_cell().is_some(),
             tag_worn: self.tag_cell().is_some_and(|(g, n, _)| {
                 self.tag_subject().is_some_and(|t| t.iter().any(|t| t.group == g && t.name == n))
             }),
             tag_forget_armed: self.tag_armed.as_ref().is_some_and(|a| a.forget_armed),
-            tag_second_next: self.tag_second.next_word(),
+            // Board-wide, because the ten digits share one binding and `avail`
+            // never sees which one was pressed. A digit whose own group is
+            // empty says so in the status line instead.
+            tags_exist: !self.board.tags.is_empty(),
             rich_keys: self.rich_keys,
         }
     }
@@ -974,6 +1035,15 @@ impl App {
                 let _ = self.client.request(Command::Shutdown);
                 self.pending_reexec = true;
             }
+            Verb::InstallUpdate => {
+                if let Some(tag) = self.release.begin_install() {
+                    // The offer comes down with the press (the shell-env
+                    // reload's discipline), so while the fetch runs this line
+                    // is the only place it is said — and it says where this
+                    // stops, because nothing here restarts anything.
+                    self.status = format!("downloading {tag} ∙ nothing restarts until you say so");
+                }
+            }
             Verb::Redraw => self.force_redraw = true,
             Verb::Suspend => self.pending_suspend = true,
             Verb::Undo => match self.undo_target() {
@@ -1062,6 +1132,9 @@ impl App {
             Verb::TagLeft | Verb::TagRight | Verb::TagUp | Verb::TagDown => {
                 self.tag_move(verb);
             }
+            Verb::TagCarryLeft | Verb::TagCarryRight | Verb::TagCarryUp | Verb::TagCarryDown => {
+                self.tag_carry(verb)?;
+            }
             Verb::TagGroup => {
                 let Key::Char(c) = key else { return Ok(()) };
                 let Some(d) = c.to_digit(10) else { return Ok(()) };
@@ -1095,10 +1168,6 @@ impl App {
                     self.status = message;
                 }
                 self.refresh()?;
-            }
-            Verb::TagWeight => {
-                self.tag_second = self.tag_second.next();
-                self.status = format!("second tag {}", self.tag_second.word());
             }
             Verb::TagRename => {
                 let Some((_, name, _)) = self.tag_cell() else { return Ok(()) };
@@ -1155,6 +1224,14 @@ impl App {
                 }
                 self.refresh()?;
                 self.tag_clamp();
+            }
+            Verb::TagCycle => {
+                let Key::Char(c) = key else { return Ok(()) };
+                let Some(d) = c.to_digit(10) else { return Ok(()) };
+                // `0` is group 10 — the row it addresses, not the number it
+                // spells, exactly as inside the picker.
+                let group = if d == 0 { 10u8 } else { d as u8 };
+                self.cycle_tag(group)?;
             }
             Verb::TagDone => {
                 // Esc backs out of the name field first, and only closes the
@@ -1232,6 +1309,17 @@ impl App {
                     if verb == Verb::ClaudeNew { SessionKind::Claude } else { SessionKind::Bash };
                 if let Some(id) = self.subject() {
                     self.spawn_and_focus(id, kind)?;
+                }
+            }
+            // Open the field on the card and get out of the way. Nothing is
+            // sent here — the press that opens a prompt must not also be the
+            // press that delivers one.
+            Verb::Prompt => {
+                if let Some(id) = self.subject() {
+                    self.mode = Mode::Input {
+                        purpose: InputPurpose::Prompt { ticket: id },
+                        buffer: EditBuffer::new(),
+                    };
                 }
             }
             Verb::Sleep => self.sleep_verb(scope, ctx)?,
@@ -1907,12 +1995,21 @@ impl App {
     /// table stands down while a name is being typed.
     fn key_tag(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
         let Some(mut arm) = self.tag_armed.take() else { return Ok(()) };
-        let Some(key) = crate::keys::to_key_text(code, mods) else {
+        let naming = arm.naming.is_some();
+        // Alt is the "by word" modifier inside the name field and an atom of
+        // its own everywhere else — the grid nudges with `alt+hjkl`, and a
+        // text field never sees an Alt atom. The picker IS a text field only
+        // while `naming`, so that is exactly where the reading switches.
+        let key = if naming {
+            crate::keys::to_key_text(code, mods)
+        } else {
+            crate::keys::to_key(code, mods)
+        };
+        let Some(key) = key else {
             self.tag_armed = Some(arm);
             return Ok(());
         };
         let word = crate::keys::word_wise(mods);
-        let naming = arm.naming.is_some();
 
         // Editing keys inside the name field. Resolved against the TAG scope,
         // NOT `Scope::Input`: borrowing that scope is what used to put the
@@ -1950,9 +2047,16 @@ impl App {
         // field already consumed above.
         let ctx = self.ctx();
         let Some(verb) = keymap::resolve(Scope::TagChord, key, &ctx) else {
-            if !naming {
-                // A stray key inside the picker closes it rather than acting
-                // on the board behind it.
+            // A stray key inside the picker closes it rather than acting on
+            // the board behind it. A nudge is never a stray key, though —
+            // neither one that had nowhere to go, nor the composed character
+            // a terminal that ate the modifier sends instead (macOS Terminal
+            // turns `alt+h` into `˙`). Either way the accelerator has to be
+            // inert, not a panel that vanishes on one terminal and not the
+            // other.
+            let nudge = matches!(key, Key::AltLeft | Key::AltRight | Key::AltUp | Key::AltDown)
+                || matches!(key, Key::Char(c) if !c.is_ascii());
+            if !naming && !nudge {
                 self.tag_armed = None;
                 self.status.clear();
             }
@@ -2021,7 +2125,86 @@ impl App {
         self.tag_clamp();
     }
 
-    /// Apply one axis change, wherever the subject lives.    /// Apply one axis change, wherever the subject lives.
+    /// Take the tag under the cursor with you — the picker's grid nudged the
+    /// way the board's is. Along the row it is order, which is what the row
+    /// draws and what a repeated digit walks. Across rows it is the axis
+    /// itself, and the wearers travel too; `board::move_tag` refuses rather
+    /// than resolving when the move would leave a ticket wearing two tags on
+    /// one axis, so the status line says what is in the way and nothing
+    /// changes.
+    fn tag_carry(&mut self, verb: Verb) -> Result<()> {
+        let Some((group, name, _)) = self.tag_cell() else { return Ok(()) };
+        let rows = crate::ui::tag_rows(self);
+        let Some((row, col)) = self.tag_armed.as_ref().map(|a| (a.row, a.col)) else {
+            return Ok(());
+        };
+        let (to_group, to_index) = match verb {
+            Verb::TagCarryLeft if col > 0 => (group, col - 1),
+            Verb::TagCarryRight if col + 1 < self.board.group_entries(group).len() => {
+                (group, col + 1)
+            }
+            Verb::TagCarryUp | Verb::TagCarryDown => {
+                let to = if verb == Verb::TagCarryUp { row.checked_sub(1) } else { Some(row + 1) };
+                let Some(g) = to.and_then(|r| rows.get(r).copied()) else { return Ok(()) };
+                // A tag arriving on an axis JOINS it, at the end: pushing
+                // into the middle would reorder a row the eye already knows
+                // to make room for one nobody aimed at a slot.
+                (g, self.board.group_entries(g).len())
+            }
+            // The ends of the grid. Nowhere to go, and nothing to say.
+            _ => return Ok(()),
+        };
+        // The composer's picks are on no ticket yet, so the daemon's refusal
+        // cannot see them. Mirror it here, and carry them on the way back.
+        let composing_wearer = matches!(
+            &self.mode,
+            Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. }
+                if tags.iter().any(|t| t.group == group && t.name == name)
+        );
+        if to_group != group && composing_wearer {
+            if let Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } = &self.mode {
+                if tags.iter().any(|t| t.group == to_group) {
+                    self.status = format!("this ticket already wears a tag on axis {to_group}");
+                    return Ok(());
+                }
+            }
+        }
+        if let Response::Err { message } =
+            self.req(Command::MoveTag { group, name: name.clone(), to_group, to_index })
+        {
+            self.status = message;
+            return Ok(());
+        }
+        if to_group != group && composing_wearer {
+            if let Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } = &mut self.mode {
+                for t in tags.iter_mut() {
+                    if t.group == group && t.name == name {
+                        t.group = to_group;
+                    }
+                }
+                tags.sort_by_key(|t| t.group);
+            }
+        }
+        self.status.clear();
+        self.refresh()?;
+        // Ride with the tag: where it landed, not where the cursor was.
+        let rows = crate::ui::tag_rows(self);
+        let landed = (
+            rows.iter().position(|g| *g == to_group),
+            self.board.group_entries(to_group).iter().position(|d| d.name == name),
+        );
+        if let Some(arm) = self.tag_armed.as_mut() {
+            if let (Some(r), Some(c)) = landed {
+                arm.row = r;
+                arm.col = c;
+            }
+            arm.forget_armed = false;
+        }
+        self.tag_clamp();
+        Ok(())
+    }
+
+    /// Apply one axis change, wherever the subject lives.
     fn apply_tag(&mut self, group: u8, name: Option<String>) -> Result<()> {
         let ticket = self.tag_armed.as_ref().and_then(|a| a.ticket);
         match ticket {
@@ -2043,6 +2226,47 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// `1`-`0` without the picker: step the selected ticket one place along
+    /// that group's vocabulary, and off the end back to untagged.
+    ///
+    /// This goes straight to `SetTag` rather than through `apply_tag`, which
+    /// reads its subject out of the open picker's arm — there is no arm here,
+    /// and the composer (whose tags buffer `apply_tag` also feeds) never
+    /// reaches this verb: a text field owns its digits.
+    fn cycle_tag(&mut self, group: u8) -> Result<()> {
+        let Some(id) = self.subject() else { return Ok(()) };
+        let current = self.board.ticket(id).and_then(|t| t.tag_in(group)).map(|t| t.name.clone());
+        let (empty, next) = {
+            let names = self.board.group_tags(group);
+            (names.is_empty(), mesimon_core::board::cycle_tag(&names, current.as_deref()))
+        };
+        // An axis with no vocabulary is not a broken key, it is an axis
+        // nobody has named yet — so say where names come from.
+        if empty {
+            self.status = format!("no tags in group {group} ∙ ^t makes one");
+            return Ok(());
+        }
+        let word = next.clone().unwrap_or_else(|| "none".into());
+        if let Response::Err { message } = self.req(Command::SetTag { id, group, name: next }) {
+            self.status = message;
+        } else {
+            self.status = format!("group {group} ∙ {word}");
+            // Show the change where it will be read from now on. The status
+            // line says WHICH tag in words; the card is where the stripe and
+            // the chip live, and a refusal has nothing to show.
+            self.tag_flash = Some((id, Instant::now()));
+        }
+        self.refresh()
+    }
+
+    /// Is the cursor card open for `ticket` — the `p` preference, or a
+    /// quick-tag digit still inside its reveal? Only the board asks, and only
+    /// of the card under the cursor: the flash is keyed to the ticket, so the
+    /// first `j` closes it and no second card ever opens behind it.
+    pub(crate) fn peek_showing(&self, ticket: ulid::Ulid) -> bool {
+        self.peek || self.tag_flash.is_some_and(|(id, at)| id == ticket && at.elapsed() < TAG_FLASH)
     }
 
     /// Finish naming: create a new tag, or rename the one under the cursor.
@@ -2549,6 +2773,23 @@ impl App {
             InputPurpose::Rename { id } => {
                 self.send(Command::RenameTicket { id, title })?;
             }
+            // The board's Shift+Enter, second half. `start` is not consulted:
+            // sending IS the whole act here, so both Enters do it — see the
+            // input scope's ShiftEnter binding for why the harder one stays
+            // bound rather than dying under the finger that opened the field.
+            InputPurpose::Prompt { ticket } => {
+                self.status = match self.req(Command::PromptSession { ticket, text: title }) {
+                    // Deliberately not "sent to claude": what is provably
+                    // true is that it went into the box and Enter was
+                    // pressed. Whether the agent took it is the card's to
+                    // say, seconds from now, in the only vocabulary that has
+                    // ever been trusted for it — the hooks.
+                    Response::Ok => "asked".into(),
+                    Response::Err { message } => message,
+                    _ => String::new(),
+                };
+                self.refresh()?;
+            }
         }
         Ok(())
     }
@@ -2835,6 +3076,7 @@ pub(crate) mod test_support {
                         column,
                         order: "zzzz".into(),
                         created_at: "1970-01-01T00:00:00Z".into(),
+                        entered_at: None,
                         workspace: None,
                         tags: Vec::new(),
                         archived: None,
@@ -2999,6 +3241,7 @@ mod tests {
             column: column.into(),
             order: order.into(),
             created_at: "1970-01-01T00:00:00Z".into(),
+            entered_at: None,
             workspace: None,
             tags: Vec::new(),
             archived: None,
@@ -3094,6 +3337,108 @@ mod tests {
         assert_eq!(app.screen, Screen::Board, "focus starts from the board");
         // Consumed: a third Enter (post-unfocus) must not spawn again — the
         // awake-claude fast path owns it now.
+    }
+
+    /// The same key one stage later. The ticket exists and an agent is on
+    /// it, so Shift+Enter has nothing to mint — it opens a field on the card
+    /// instead, and Enter puts what was typed in front of that agent. Two
+    /// presses and a sentence, and the board never went away.
+    #[test]
+    fn shift_enter_prompts_a_live_agent_from_the_board() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(
+            matches!(app.mode, Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }),
+            "the press opens a field, it does not send anything: {:?}",
+            app.mode
+        );
+        assert!(
+            !sent_contains(&sent, "PromptSession"),
+            "the press that OPENS a prompt must never also deliver one"
+        );
+        // …and it is the ticket under the cursor that gets asked.
+        assert!(matches!(
+            app.mode,
+            Mode::Input { purpose: InputPurpose::Prompt { ticket }, .. } if ticket == ulid::Ulid(1)
+        ));
+        for c in "run the tests".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            sent_contains(&sent, "run the tests"),
+            "the typed prompt travels verbatim: {:?}",
+            sent.borrow()
+        );
+        assert!(sent_contains(&sent, "PromptSession"));
+        assert_eq!(app.screen, Screen::Board, "the board never leaves");
+        assert!(app.pending_attach.is_none(), "no handover — that is the point");
+        assert_eq!(app.mode, Mode::Normal, "the field closed");
+    }
+
+    /// The finger is still holding shift from the press that opened the
+    /// field, so the second Shift+Enter has to land somewhere — and sending
+    /// is the only thing it could sanely mean.
+    #[test]
+    fn a_second_shift_enter_sends_the_prompt_too() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        for c in "ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(sent_contains(&sent, "ship it"), "{:?}", sent.borrow());
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    /// Esc leaves without asking anything, the way every other field here
+    /// does — a prompt is a turn of somebody's conversation and must never
+    /// be delivered by a key that means "never mind".
+    #[test]
+    fn esc_abandons_a_prompt_without_sending_it() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        for c in "oops".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+    }
+
+    /// A parked agent has no box to type into. `Sleeping` is LIVE — that is
+    /// the trap this holds shut: gating on "has a claude session" would offer
+    /// the key here and send the press at a pane that does not exist.
+    #[test]
+    fn a_sleeping_agent_is_not_promptable() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.rich_keys = true;
+        assert!(app.ctx().ticket_has_claude, "the session is live — parked, but live");
+        assert!(!app.ctx().ticket_promptable, "…and has no pane to type into");
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, Mode::Normal, "no field opens");
+        assert!(!sent_contains(&sent, "PromptSession"));
+    }
+
+    /// The legacy floor. A terminal that cannot spell Shift+Enter sends a
+    /// plain Enter, which on the board means "go to the agent" — so the key
+    /// must resolve to nothing here rather than half-working.
+    #[test]
+    fn without_rich_keys_the_prompt_key_is_the_plain_enter_it_arrives_as() {
+        let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = false;
+        assert!(app.ctx().ticket_promptable);
+        assert_eq!(
+            mesimon_core::keymap::resolve(
+                mesimon_core::keymap::Scope::Board,
+                mesimon_core::keymap::Key::ShiftEnter,
+                &app.ctx()
+            ),
+            None
+        );
     }
 
     /// Shift+Enter is the whole gesture in one press: the ticket exists, an
@@ -3245,6 +3590,124 @@ mod tests {
         press(&mut app, '3');
         let arm = app.tag_armed.as_ref().expect("armed");
         assert_eq!((arm.row, arm.col), (2, 0));
+    }
+
+    /// A quick-tag digit opens the card it tagged, and then lets go. The
+    /// stripe is one cell and carries no words, so the press that changes it
+    /// opens the row that names it — for a moment, and only on that card.
+    #[test]
+    fn a_quick_tag_flashes_its_card_open() {
+        let mut board = board_three_columns();
+        board.register_tag(1, "BUG").expect("registered");
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        let id = app.subject().expect("a ticket under the cursor");
+        assert!(!app.peek_showing(id), "nothing is open before the press");
+
+        press(&mut app, '1');
+        assert!(sent_contains(&sent, "SetTag"), "the digit tagged it");
+        assert!(app.peek_showing(id), "and opened the card it tagged");
+        assert!(!app.peek_showing(ulid::Ulid(2)), "the reveal is one card's, never the board's");
+
+        // A moment, not a mode: the reveal expires on its own clock, and the
+        // `p` preference — which is what the footer describes — is untouched.
+        app.tag_flash = Some((id, Instant::now() - TAG_FLASH));
+        assert!(!app.peek_showing(id));
+        assert!(!app.peek, "the flash never sets the preference");
+        assert!(!app.ctx().peek_on, "so `p` still offers to show replies");
+
+        // An axis with no vocabulary changed nothing, so it reveals nothing.
+        press(&mut app, '4');
+        assert!(!app.peek_showing(id));
+        assert_eq!(app.status, "no tags in group 4 ∙ ^t makes one");
+    }
+
+    /// The board's nudge, in the picker's grid. Along the row it is order —
+    /// which is what the row draws and what a repeated digit walks. Across
+    /// rows it is the axis itself, the one repair a tag created on the wrong
+    /// one has ever had (`d` is the other way off an axis, and it takes the
+    /// tag off every ticket on the way).
+    #[test]
+    fn a_tag_is_carried_along_its_axis_and_onto_another() {
+        let mut board = board_three_columns();
+        for n in ["A", "B", "C"] {
+            board.register_tag(1, n).expect("registered");
+        }
+        board.register_tag(2, "DEV").expect("registered");
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        ctrl(&mut app, 't');
+        assert_eq!(app.tag_cell().map(|(_, n, _)| n).as_deref(), Some("A"));
+        let moves = |sent: &std::cell::RefCell<Vec<String>>| -> Vec<String> {
+            sent.borrow().iter().filter(|c| c.contains("MoveTag")).cloned().collect()
+        };
+
+        // The left edge of the row: nowhere to go, and nothing said about it.
+        sent.borrow_mut().clear();
+        press(&mut app, 'H');
+        alt(&mut app, KeyCode::Left);
+        assert!(moves(&sent).is_empty(), "{:?}", sent.borrow());
+        assert!(app.tag_armed.is_some(), "a nudge with nowhere to go is inert, not a dismissal");
+
+        // Along the axis, both spellings, one command.
+        press(&mut app, 'L');
+        alt(&mut app, KeyCode::Char('l'));
+        let log = moves(&sent);
+        assert_eq!(log.len(), 2, "{log:?}");
+        for line in &log {
+            assert!(line.contains("to_group: 1") && line.contains("to_index: 1"), "{line}");
+        }
+
+        // Down onto the next axis: the tag JOINS that row, at its end.
+        sent.borrow_mut().clear();
+        press(&mut app, 'J');
+        let log = moves(&sent).join(" ");
+        assert!(log.contains("to_group: 2") && log.contains("to_index: 1"), "{log}");
+        // And up from the top row is the same nowhere as the left edge.
+        sent.borrow_mut().clear();
+        press(&mut app, 'K');
+        assert!(moves(&sent).is_empty(), "{:?}", sent.borrow());
+    }
+
+    /// The accelerator is inert where the move is unavailable, on BOTH kinds
+    /// of terminal: the one that sends the Alt atom, and the one that eats
+    /// the modifier and composes a character instead. Neither may dismiss the
+    /// panel, or `alt+h` would cost the user their place on one machine and
+    /// nothing on the next.
+    #[test]
+    fn an_eaten_option_key_leaves_the_picker_standing() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        ctrl(&mut app, 't');
+        assert!(app.tag_cell().is_none(), "the only cell is `+ new` — nothing to carry");
+        for code in [KeyCode::Char('h'), KeyCode::Char('j'), KeyCode::Left] {
+            alt(&mut app, code);
+            assert!(app.tag_armed.is_some(), "{code:?} closed the picker");
+        }
+        // What macOS Terminal sends for `⌥h` instead of a modifier at all.
+        press(&mut app, '\u{2d9}');
+        assert!(app.tag_armed.is_some(), "a composed character is not a stray key");
+        assert!(!sent_contains(&sent, "MoveTag"), "{:?}", sent.borrow());
+    }
+
+    /// A name field types its letters, shifted ones included — the whole
+    /// table stands down while `tag_naming`, and Alt goes back to meaning
+    /// "by word" there.
+    #[test]
+    fn a_shifted_letter_is_text_inside_a_name_field() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        ctrl(&mut app, 't');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "HJKL".chars() {
+            press(&mut app, c);
+        }
+        assert_eq!(
+            app.tag_armed
+                .as_ref()
+                .and_then(|a| a.naming.as_ref())
+                .map(|(_, b)| b.as_str().to_string()),
+            Some("HJKL".to_string()),
+        );
+        assert!(!sent_contains(&sent, "MoveTag"), "{:?}", sent.borrow());
     }
 
     /// Tab cycles the tint, and it is a registry property — so it repaints

@@ -11,6 +11,7 @@
 //! (SOCK_STREAM one-shot; EOF is the frame delimiter — macOS caps unix
 //! datagrams at 2 KB, which real payloads exceed).
 
+use mesimon_daemon::ingest::HOOK_FRAME_MAX_BYTES;
 use std::io::{Read, Write};
 use std::os::unix::net::UnixStream;
 use std::time::Duration;
@@ -31,9 +32,12 @@ pub fn run(args: &[String]) -> ! {
 
 fn forward(args: &[String]) {
     // Rule 2: read stdin to EOF before ANY early return — a short read EPIPEs
-    // the agent on a large payload.
+    // the agent on a large payload. Keep only what the daemon will look at;
+    // drain the rest.
     let mut body = Vec::new();
-    let _ = std::io::stdin().read_to_end(&mut body);
+    let mut stdin = std::io::stdin().lock();
+    let _ = (&mut stdin).take(HOOK_FRAME_MAX_BYTES).read_to_end(&mut body);
+    let _ = std::io::copy(&mut stdin, &mut std::io::sink());
 
     let Some(sock) = val(args, "--sock") else { return };
     let Some(session) = val(args, "--session") else { return };

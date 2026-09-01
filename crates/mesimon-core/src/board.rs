@@ -78,6 +78,20 @@ pub enum Reason {
 pub enum StopReason {
     EndTurn,
     Interrupted,
+    /// The turn ended but the agent is PARKED, not done: the Stop payload
+    /// carried a `background_tasks[]` entry that means work is still in
+    /// flight (`attention::task_blocks_end_turn`). Nothing is painting the
+    /// pane and nobody is waiting on the user — the task's completion
+    /// notification arrives as a `UserPromptSubmit` and the turn resumes.
+    ///
+    /// It exists because the two states either side of it are both lies.
+    /// Re-asserting `Running` (what shipped first) is contradicted within
+    /// seconds by the quiet probe, which then demotes to `Interrupted` — and
+    /// nothing interrupted it (dogfood 2026-09-01: a backgrounded build-poll
+    /// left T-128 with no card glyph at all for two minutes). Only `EndTurn`
+    /// promotes a ticket, so parking here also keeps the card in IN PROGRESS,
+    /// which is the truthful place for it.
+    Background,
     Unknown,
 }
 
@@ -196,9 +210,30 @@ pub struct SessionRecord {
     /// prefill, which is the ordinary spawn's behaviour anyway.
     #[serde(default)]
     pub pending_submit: bool,
+    /// Named in-process teammates that reported idle and have not been
+    /// messaged since (T-135). A Stop payload lists a teammate as `running`
+    /// for its whole life, so this is what lets the attention machine tell a
+    /// lead whose reviewers are still working from one whose reviewers are
+    /// done; persisted because a daemon restart that forgot it would park the
+    /// next finished turn for good. Sorted, deduplicated.
+    #[serde(default)]
+    pub idle_teammates: Vec<String>,
 }
 
 impl SessionRecord {
+    /// Still owed the deferred Enter of a Shift+Enter spawn, in a state where
+    /// pressing it is safe. A pane that died, or one showing a startup
+    /// modal, is not a pane to keep pressing Enter into — the modal's Enter
+    /// is an ANSWER, and mesimon does not answer dialogs on the user's behalf.
+    pub fn pressable(&self) -> bool {
+        self.pending_submit
+            && self.state.has_pane()
+            && matches!(
+                self.state,
+                SessionState::Spawning | SessionState::Idle { .. } | SessionState::Running
+            )
+    }
+
     pub fn new(
         id: uuid::Uuid,
         kind: SessionKind,
@@ -224,6 +259,7 @@ impl SessionRecord {
             claude_session_id: None,
             pinned_awake: false,
             pending_submit: false,
+            idle_teammates: Vec::new(),
         }
     }
 
@@ -251,6 +287,13 @@ pub struct Ticket {
     /// Fractional index within the column.
     pub order: String,
     pub created_at: String,
+    /// When the ticket entered its CURRENT column, same clock as `created_at`.
+    /// Stamped at mint and by every column move — never by a reorder inside
+    /// the column, a rename, a tag or a session — so the card's age is "time
+    /// in column". `None` on a ticket from before the field; `column_since`
+    /// falls back to `created_at` there, the only honest value left.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub entered_at: Option<String>,
     /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
     /// a column policy only defaults NEW tickets, M5). `None` = inherit the board
     /// default. Must stay after the scalar fields (TOML serialize order).
@@ -301,8 +344,14 @@ pub struct Tag {
 
 /// How many tints the tag ramp offers. Mirrors `mesimon-tui`'s `theme::PIPS`;
 /// core cannot see the theme, and the colour index is stored here, so the
-/// modulus has to live on both sides. `tag_tints_agree` pins them together.
-pub const TAG_TINTS: u8 = 6;
+/// modulus has to live on both sides. `tag_tints_agree` (in `theme.rs`, the
+/// side that CAN see both) pins them together.
+///
+/// Ten to match `MAX_TAGS_PER_GROUP`, so one axis can be entirely
+/// colour-distinct. Raising it remaps every tag that never had a colour
+/// picked — `default_tint` is a hash modulo this — which is the deliberate
+/// cost of the change, paid once.
+pub const TAG_TINTS: u8 = 10;
 
 /// Most tags one axis may hold. A group is still meant to be a readable set
 /// rather than a list, but five was too tight for a real vocabulary (author
@@ -345,29 +394,36 @@ pub const TAG_MAX_BYTES: usize = 24;
 /// cell one column right and strands a `selected_bg` cell past the card edge
 /// that the diff never repaints.
 ///
+/// One step along an axis: what a ticket wearing `current` should wear after
+/// the next press of that group's digit. `names` is the registry's vocabulary
+/// for the axis, in registry order ([`Board::group_tags`]).
+///
+/// The ladder is `none → first → … → last → none`, NOT a pure wrap. Off the
+/// end is untagged on purpose: one finger has to be able to reach every value
+/// the axis can hold, and "no tag" is one of them — a wrapping cycle can put
+/// a tag on a card but never take the last one off, which would leave `^t`
+/// the only way to undo a keystroke.
+///
+/// A `current` the registry does not know (a rename that raced the press, a
+/// state file restored by hand) restarts the cycle rather than sticking on a
+/// name nothing can reach. An empty `names` clears, which is the right answer
+/// for a ticket wearing a tag from a vocabulary that no longer exists.
+pub fn cycle_tag(names: &[&str], current: Option<&str>) -> Option<String> {
+    let Some(cur) = current else {
+        return names.first().map(|n| (*n).to_string());
+    };
+    match names.iter().position(|n| *n == cur) {
+        Some(i) if i + 1 < names.len() => Some(names[i + 1].to_string()),
+        Some(_) => None,
+        None => names.first().map(|n| (*n).to_string()),
+    }
+}
+
 /// Returns `None` for a name that is empty once sanitized — there is no such
 /// thing as a blank tag.
 pub fn sanitize_tag(raw: &str) -> Option<String> {
-    let mut out = String::new();
-    for ch in raw.chars() {
-        let cp = ch as u32;
-        let drop = ch.is_control()
-            || (0x2500..=0x259F).contains(&cp)
-            || matches!(cp, 0xFE0E | 0xFE0F | 0x200B..=0x200F | 0x2060..=0x206F | 0x20E3);
-        if drop {
-            continue;
-        }
-        if out.len() + ch.len_utf8() > TAG_MAX_BYTES {
-            break;
-        }
-        out.push(ch);
-    }
-    let trimmed = out.trim();
-    if trimmed.is_empty() {
-        None
-    } else {
-        Some(trimmed.to_string())
-    }
+    use crate::text::{cap_bytes, nonblank, scrub_cells};
+    nonblank(cap_bytes(&scrub_cells(raw, false), TAG_MAX_BYTES))
 }
 
 /// The `[archived]` table on a ticket. Presence = off the board.
@@ -398,6 +454,12 @@ pub enum WorkspaceStrategy {
 pub const DEFAULT_WORKSPACE: WorkspaceStrategy = WorkspaceStrategy::SharedCheckout;
 
 impl Ticket {
+    /// The stamp the board's age slot counts from: when the ticket entered
+    /// its current column, or its creation where no move has stamped it yet.
+    pub fn column_since(&self) -> &str {
+        self.entered_at.as_deref().unwrap_or(&self.created_at)
+    }
+
     /// Layered resolution: ticket field, else the board default (column default is M5).
     pub fn workspace_strategy(&self) -> WorkspaceStrategy {
         self.workspace.unwrap_or(DEFAULT_WORKSPACE)
@@ -552,6 +614,93 @@ impl Board {
         Ok(touched)
     }
 
+    /// Reposition a tag in the registry: along its own axis, or onto another
+    /// one. Returns the ticket ids that changed, the way `rename_tag` does,
+    /// so the caller writes only those files.
+    ///
+    /// Order is not decoration here. It is the order the picker's row draws
+    /// in and the order a repeated digit cycles through, so which name an
+    /// axis reaches first is worth being able to choose. The axis itself is
+    /// the tag's meaning, and getting it wrong had no repair at all before
+    /// this: `forget_tag` was the only other way off an axis, and it strips
+    /// the tag from every ticket on the way out.
+    ///
+    /// A move onto ANOTHER axis is refused, never resolved, when a ticket
+    /// wearing this tag already wears one there. One tag per group is what
+    /// lets a digit address an axis, so the alternative is dropping somebody
+    /// else's tag off a card nobody is looking at — not something one
+    /// keypress may do quietly. The other two refusals are the ones
+    /// `register_tag` already makes, for the same reasons: a full axis and a
+    /// name that axis already holds.
+    pub fn move_tag(
+        &mut self,
+        group: u8,
+        name: &str,
+        to_group: u8,
+        to_index: usize,
+    ) -> Result<Vec<ulid::Ulid>, String> {
+        if !(1..=10).contains(&to_group) {
+            return Err("tag group must be 1-10".into());
+        }
+        let Some(at) = self.tags.iter().position(|t| t.group == group && t.name == name) else {
+            return Err(format!("no tag {name:?} in group {group}"));
+        };
+        if to_group != group {
+            if self.group_entries(to_group).len() >= MAX_TAGS_PER_GROUP {
+                return Err(format!("group {to_group} is full ({MAX_TAGS_PER_GROUP} tags)"));
+            }
+            if self.tag_def(to_group, name).is_some() {
+                return Err(format!("{name} is already in group {to_group}"));
+            }
+            let blocked = self
+                .tickets
+                .iter()
+                .filter(|t| t.wears(group, name) && t.tag_in(to_group).is_some());
+            let blocked = blocked.count();
+            if blocked > 0 {
+                let noun = if blocked == 1 { "ticket" } else { "tickets" };
+                return Err(format!("{blocked} {noun} already wear a tag on axis {to_group}"));
+            }
+        }
+        let mut entry = self.tags.remove(at);
+        entry.group = to_group;
+        // A row is its group's entries in the order the flat registry holds
+        // them, so the destination slot is a flat position — taken AFTER the
+        // removal, or every index past the old one is off by one. Past the
+        // end of the row means the end of the row: a tag arriving on a new
+        // axis joins it, it does not push into the middle of it.
+        let slots: Vec<usize> = self
+            .tags
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.group == to_group)
+            .map(|(i, _)| i)
+            .collect();
+        let at = match slots.get(to_index) {
+            Some(i) => *i,
+            None => slots.last().map(|i| i + 1).unwrap_or(self.tags.len()),
+        };
+        self.tags.insert(at, entry);
+
+        let mut touched = Vec::new();
+        if to_group != group {
+            for t in self.tickets.iter_mut() {
+                let mut hit = false;
+                for r in t.tags.iter_mut() {
+                    if r.group == group && r.name == name {
+                        r.group = to_group;
+                        hit = true;
+                    }
+                }
+                if hit {
+                    t.tags.sort_by_key(|r| r.group);
+                    touched.push(t.id);
+                }
+            }
+        }
+        Ok(touched)
+    }
+
     /// Set a tag's tint. `None` on the entry means "unchosen"; this always
     /// writes an explicit choice.
     pub fn set_tag_color(&mut self, group: u8, name: &str, color: u8) -> Result<(), String> {
@@ -605,6 +754,17 @@ impl Board {
     /// Sessions of the ticket that hold (or should hold) a pane. The archive
     /// gate, its TUI advisory, and the header suggestion all share this — the
     /// suggestion never offers what the keystroke would refuse.
+    /// The one live claude a prompt from the board reaches: first in spawn
+    /// order, the same session `board_enter` focuses, so the key that asks
+    /// and the key that goes there land on one pane. `has_pane` and not
+    /// `is_live` — a parked session is live and has no process to type at.
+    /// The daemon picks by this and the TUI hints by it; one predicate.
+    pub fn pane_target(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.sessions
+            .iter()
+            .find(|s| s.ticket == ticket && s.kind == SessionKind::Claude && s.state.has_pane())
+    }
+
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
         self.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).count()
     }
@@ -680,6 +840,7 @@ mod tests {
             column: column.into(),
             order: order.into(),
             created_at: "@0".into(),
+            entered_at: None,
             workspace: None,
             tags: Vec::new(),
             archived: None,
@@ -763,6 +924,98 @@ mod tests {
         assert!(b.register_tag(1, "one-too-many").is_ok());
     }
 
+    /// Along its own axis a move is pure order, and order is what the row
+    /// draws and what a repeated digit walks. Nothing about any ticket
+    /// changes, so nothing is reported as touched.
+    #[test]
+    fn moving_a_tag_along_its_axis_reorders_the_cycle() {
+        let mut b = Board::with_default_columns();
+        for n in ["A", "B", "C"] {
+            b.register_tag(1, n).expect("registered");
+        }
+        b.register_tag(2, "OTHER").expect("registered");
+        let mut t = ticket(1, "TODO", "a");
+        t.set_tag(1, Some("B".into()));
+        b.tickets.push(t);
+
+        assert_eq!(b.move_tag(1, "B", 1, 0), Ok(Vec::new()), "a reorder touches no ticket");
+        assert_eq!(b.group_tags(1), vec!["B", "A", "C"]);
+        assert_eq!(b.move_tag(1, "B", 1, 2), Ok(Vec::new()));
+        assert_eq!(b.group_tags(1), vec!["A", "C", "B"]);
+        // Past the end of the row is the end of the row, not a panic.
+        assert_eq!(b.move_tag(1, "A", 1, 99), Ok(Vec::new()));
+        assert_eq!(b.group_tags(1), vec!["C", "B", "A"]);
+        // The interleaved axis is untouched, and so is the wearer.
+        assert_eq!(b.group_tags(2), vec!["OTHER"]);
+        assert_eq!(b.tickets[0].tag_in(1).map(|r| r.name.as_str()), Some("B"));
+    }
+
+    /// Onto another axis, the registry entry and every wearer move together
+    /// — the same bargain `rename_tag` makes. A tag that changed axis without
+    /// its wearers would leave pips on a row that no longer reaches them.
+    #[test]
+    fn moving_a_tag_to_another_axis_carries_its_wearers() {
+        let mut b = Board::with_default_columns();
+        b.register_tag(1, "STAGING").expect("registered");
+        b.register_tag(2, "BUG").expect("registered");
+        let mut wearing = ticket(1, "TODO", "a");
+        wearing.set_tag(1, Some("STAGING".into()));
+        let mut elsewhere = ticket(2, "TODO", "b");
+        elsewhere.set_tag(2, Some("BUG".into()));
+        b.tickets.push(wearing);
+        b.tickets.push(elsewhere);
+
+        assert_eq!(b.move_tag(1, "STAGING", 3, 0), Ok(vec![ulid::Ulid(1)]));
+        assert_eq!(b.group_tags(1), Vec::<&str>::new());
+        assert_eq!(b.group_tags(3), vec!["STAGING"]);
+        assert!(b.tickets[0].tag_in(1).is_none(), "no pip left on the old axis");
+        assert_eq!(b.tickets[0].tag_in(3).map(|r| r.name.as_str()), Some("STAGING"));
+        // The ticket's own list stays sorted by group, which is what the card
+        // reads first and second off.
+        let groups: Vec<u8> = b.tickets[0].tags.iter().map(|r| r.group).collect();
+        let mut sorted = groups.clone();
+        sorted.sort_unstable();
+        assert_eq!(groups, sorted);
+        // A ticket that never wore it is not touched.
+        assert_eq!(b.tickets[1].tag_in(2).map(|r| r.name.as_str()), Some("BUG"));
+    }
+
+    /// The three refusals, and the one that is this function's own: one tag
+    /// per axis is what lets a digit address an axis, so a move that would
+    /// make a ticket wear two there is refused rather than resolved. Each
+    /// refusal leaves the registry exactly as it found it — a half-applied
+    /// move is worse than none.
+    #[test]
+    fn a_tag_never_moves_onto_an_axis_a_wearer_already_uses() {
+        let mut b = Board::with_default_columns();
+        b.register_tag(1, "STAGING").expect("registered");
+        b.register_tag(2, "PROD").expect("registered");
+        let mut t = ticket(1, "TODO", "a");
+        t.set_tag(1, Some("STAGING".into()));
+        t.set_tag(2, Some("PROD".into()));
+        b.tickets.push(t);
+
+        let before = b.tags.clone();
+        let err = b.move_tag(1, "STAGING", 2, 0).expect_err("the wearer blocks it");
+        assert!(err.contains("1 ticket") && err.contains("axis 2"), "{err}");
+        assert_eq!(b.tags, before, "a refusal changes nothing");
+        assert_eq!(b.tickets[0].tag_in(1).map(|r| r.name.as_str()), Some("STAGING"));
+
+        // A name the destination already holds, and a full destination: the
+        // same two refusals `register_tag` makes.
+        b.register_tag(3, "STAGING").expect("a name may repeat across axes");
+        let err = b.move_tag(1, "STAGING", 3, 0).expect_err("duplicate name");
+        assert!(err.contains("already in group 3"), "{err}");
+        for i in 0..MAX_TAGS_PER_GROUP {
+            let _ = b.register_tag(4, &format!("f{i}"));
+        }
+        let err = b.move_tag(1, "STAGING", 4, 0).expect_err("full axis");
+        assert!(err.contains("full"), "{err}");
+        // And a tag that is not there at all.
+        assert!(b.move_tag(9, "NOPE", 1, 0).is_err());
+        assert!(b.move_tag(1, "STAGING", 0, 0).is_err(), "group 0 is not an axis");
+    }
+
     /// Colour is a registry property, so recolouring repaints every card at
     /// once. Unchosen falls back to a hash of the name — stable across
     /// machines, so a tag has a colour from the moment it exists.
@@ -806,6 +1059,26 @@ mod tests {
 
     /// One tag per group: setting replaces, `None` clears, and the set stays
     /// sorted so a card's pips never reorder because another axis changed.
+    /// The ladder the digit walks: none → first → … → last → none. The turn
+    /// off the end is the whole point — a wrapping cycle can put a tag on a
+    /// card but never take the last one off, which would leave `^t` the only
+    /// way to undo a keystroke.
+    #[test]
+    fn the_cycle_runs_off_the_end_into_untagged() {
+        let names = ["BUG", "REGR", "FLAKE"];
+        assert_eq!(cycle_tag(&names, None).as_deref(), Some("BUG"));
+        assert_eq!(cycle_tag(&names, Some("BUG")).as_deref(), Some("REGR"));
+        assert_eq!(cycle_tag(&names, Some("REGR")).as_deref(), Some("FLAKE"));
+        assert_eq!(cycle_tag(&names, Some("FLAKE")), None, "off the end is untagged");
+        assert_eq!(cycle_tag(&names, None).as_deref(), Some("BUG"), "and round again");
+        // A name the registry no longer holds restarts the cycle rather than
+        // sticking on a value no press can leave.
+        assert_eq!(cycle_tag(&names, Some("GONE")).as_deref(), Some("BUG"));
+        // An axis with no vocabulary clears whatever is stranded on it.
+        assert_eq!(cycle_tag(&[], Some("GONE")), None);
+        assert_eq!(cycle_tag(&[], None), None);
+    }
+
     #[test]
     fn set_tag_replaces_within_a_group() {
         let mut t = ticket(1, "TODO", "a");

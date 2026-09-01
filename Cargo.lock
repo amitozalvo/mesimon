@@ -434,6 +434,7 @@ dependencies = [
  "ratatui",
  "semver",
  "serde_json",
+ "sha2",
  "terminal-colorsaurus",
  "ulid",
  "unicode-segmentation",

@@ -92,7 +92,13 @@ MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 cargo test --wor
 # --- build ------------------------------------------------------------------
 
 step "build --release --target $TARGET"
-cargo build --release --locked --target "$TARGET"
+# MESIMON_RELEASE is what stamps this build as a RELEASE, and it is set here
+# and nowhere else. The stamp is what arms the update checker (it asks the
+# dist repo for a newer tag, and can replace the binary at its own path), so
+# every other build — a `cargo run`, a plain `cargo build --release`, every
+# test binary — comes out `dev` and never checks. That gate cannot be a
+# heuristic: a wrong answer would point a download at somebody's build tree.
+MESIMON_RELEASE=1 cargo build --release --locked --target "$TARGET"
 bin="target/$TARGET/release/mesimon"
 
 # NOT stripped: the linker gives every arm64 binary an ad-hoc signature, strip
@@ -139,6 +145,19 @@ case "$picked" in
   *"$tmp/$name/mesimon-tmux"*) echo "mesimon picks its bundled tmux: $("$tmp/$name/mesimon-tmux" -V)" ;;
   *) die "the packaged mesimon did not resolve its bundled tmux:
 $picked" ;;
+esac
+# And that the release stamp survived into the artifact. An unstamped build
+# is a silent failure of exactly the wrong shape: it installs, runs, and then
+# never tells anyone a newer version exists. Checked here rather than on
+# `$bin`, because `$bin` is inside target/ and the checker refuses a build
+# tree whatever its stamp says — the unpacked artifact is the real answer.
+checks=$("$tmp/$name/mesimon" doctor install --verbose | grep 'update checks' || true)
+case "$checks" in
+  *"off ∙"*) die "the packaged mesimon will not check for updates:
+$checks" "MESIMON_RELEASE=1 must be set on the cargo build above" ;;
+  *"update checks"*) echo "release stamp present:${checks#*update checks}" ;;
+  *) die "the packaged mesimon printed no 'update checks' line at all" \
+      "mesimon doctor install must report it — see crates/mesimon-tui/src/release.rs" ;;
 esac
 
 # --- notes ------------------------------------------------------------------

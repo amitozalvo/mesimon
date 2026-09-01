@@ -1,15 +1,17 @@
 //! One card (07 §4 owns the anatomy; 06 supplies glyphs and tokens).
 //!
 //! Frame per line: `[bar 1][pad 1][content T][pad 1]`, `T = width - 3`. The
-//! bar is both the state ladder and the tag mark: `tags::tint_bar` repaints
-//! it in the ticket's colours, and tags cost the card no cell at all.
+//! bar is both the state ladder and the tag mark: `tags::bar_cell` repaints
+//! it in the ticket's colours and `tags::stack_full` runs them down an open
+//! card's stripe, and tags cost the card no cell at all.
 //! Line 1: `[glyph+sp when stateful][title][fill][age 3]` — a card with no
 //! aggregate glyph (quiet-idle only) starts its title at T[0]; spawning left
 //! that set when Shift+Enter made the launch window something a user watches. The meta strip (line 2) carries only the session
 //! dots in M3.5: the tag and stage zones collapse to zero width (no tags
-//! field yet; stages are tags per D33g), and a session-less card is a single
-//! line with no age (07 §4.4). The cursor card expands in place — accordion,
-//! never an overlay (07 §4.3).
+//! field yet; stages are tags per D33g). The age is the ticket's time in its
+//! column (`Ticket::column_since`), so every card carries one, session or
+//! not — 07 §4.4's session-less "no age" is superseded. The cursor card
+//! expands in place — accordion, never an overlay (07 §4.3).
 
 use mesimon_core::attention::rank;
 use mesimon_core::board::{SessionKind, SessionRecord, SessionState, Ticket};
@@ -18,13 +20,14 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::glyphs::{self, Register};
-use crate::text::{age_slot, edit_window, marquee_offset, marquee_window, truncate, EditBuffer};
+use crate::text::{
+    age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
+    EditBuffer,
+};
 use crate::theme::{BarWeight, Theme};
 
 pub(super) struct CardCtx<'a> {
     pub theme: &'a Theme,
-    /// Where the second tag goes (`w` cycles it).
-    pub second: crate::tags::Second,
     /// Column width including the accent bar and both pads.
     pub width: u16,
     pub now_ms: u64,
@@ -45,14 +48,8 @@ pub(super) fn render_edit(
     // The tags picked with `^t` colour the phantom card's bar exactly as they
     // will colour the real one.
     // The composer's phantom card is the cursor card by construction.
-    let (bar_ch, bar_style) = crate::tags::bar_cell(
-        theme,
-        bar_ch,
-        bar_style,
-        tags,
-        ctx.second,
-        crate::theme::TagLevel::Selected,
-    );
+    let (bar_ch, bar_style) =
+        crate::tags::bar_cell(theme, bar_ch, bar_style, tags, crate::theme::TagLevel::Selected);
     // Scroll only as far as keeps the hardware cursor visible.
     let budget = t_cells.saturating_sub(1);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
@@ -63,6 +60,47 @@ pub(super) fn render_edit(
         Span::styled(shown, Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)),
     ];
     (Line::from(spans).style(theme.selected_row()), x_off)
+}
+
+/// The board's prompt row (Shift+Enter): a line hanging under the selected
+/// card whose text is bound for that ticket's live agent, not for the board.
+///
+/// It hangs off the CARD rather than sitting in a command line at the foot of
+/// the screen, and that is the whole reason it is legible: a prompt has a
+/// destination, and the only thing on this screen that can name the
+/// destination is the card. The card is also where the agent's answer comes
+/// back — the peek row is two lines up — so the question and the reply share
+/// a place. The cost is width: ~26 cells of a sentence are visible and the
+/// rest scrolls, which is the trade a board makes for never leaving the board.
+///
+/// No bar on span 0. `render_workspace_selector` set that shape first: a row
+/// hanging under a card belongs to it and must not read as a second card.
+/// It also keeps the row clear of `tags::stack_full`, which paints the stripe
+/// of the lines above and knows nothing about this one.
+pub(super) fn render_prompt(ctx: &CardCtx, buffer: &EditBuffer) -> (Line<'static>, u16) {
+    let theme = ctx.theme;
+    // `  › ` — indent, caret, space. The caret is what an empty field has to
+    // show; without it the state is an empty row.
+    const LEAD: u16 = 4;
+    let t_cells = (ctx.width as usize).saturating_sub(3);
+    let budget = t_cells.saturating_sub(LEAD as usize - 1);
+    let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
+    let mut spans = vec![Span::raw("  "), Span::styled("› ", Style::default().fg(theme.sel.dim2))];
+    if buffer.as_str().is_empty() {
+        // An empty field says what it is for, in the same words the key was
+        // hinted with. The hardware cursor sits on the first letter of it,
+        // which is how every placeholder has ever worked.
+        spans.push(Span::styled(
+            truncate("ask claude", budget),
+            Style::default().fg(theme.sel.dim3),
+        ));
+    } else {
+        spans.push(Span::styled(
+            shown,
+            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
+        ));
+    }
+    (Line::from(spans).style(theme.selected_row()), LEAD + cx)
 }
 
 /// The composer's workspace row (M4): git glyph + one word, Shift+Tab cycles.
@@ -141,6 +179,7 @@ pub(super) fn render(
     held: bool,
     trail: bool,
     marquee_ms: Option<u64>,
+    open: bool,
     peek: Option<&crate::peek::Peek>,
     tags: &[crate::tags::Painted],
 ) -> Vec<Line<'static>> {
@@ -162,16 +201,16 @@ pub(super) fn render(
     let attn_card = !trail && matches!(glyph, Some((_, Register::Attn)));
     let cursorish = selected || held;
 
-    // Age: newest state change across the ticket's sessions; suppressed on a
-    // session-less card (07 §4.4 — created_at staleness handling is deferred).
-    // Seconds tick only while that session is working — a shell's `Running`
-    // is not work (`glyphs::is_working`), so its age counts in minutes like
-    // any other settled row.
-    let age = sessions
-        .iter()
-        .filter_map(|s| s.state_changed_at.map(|ms| (ms, glyphs::is_working(s))))
-        .max_by_key(|(ms, _)| *ms)
-        .map(|(ms, running)| age_slot(ctx.now_ms, ms, running));
+    // Age: time in COLUMN (author 2026-09-01) — it counts from the ticket's
+    // `entered_at`, so only a column move restarts it; a session changing
+    // state does not, and neither does a reorder. It was the newest session
+    // state change, which reset on every hook and said nothing about how
+    // long the work had sat where it is. The ticket's own stamp means a
+    // session-less card carries it too. Seconds tick only while an agent is
+    // working — a shell's `Running` is not work (`glyphs::is_working`), so a
+    // settled card counts in minutes.
+    let age = created_at_epoch_ms(ticket.column_since())
+        .map(|ms| age_slot(ctx.now_ms, ms, sessions.iter().any(|s| glyphs::is_working(s))));
 
     // Accent bar weight (06 §2.4a). An alarm card never demotes to
     // dormant/ghost — it holds its state hue in every de-emphasis context
@@ -214,21 +253,12 @@ pub(super) fn render(
     } else {
         crate::theme::TagLevel::Rest
     };
+    let bar_base = theme.bar(BarWeight::Dormant).1;
     let (bar_ch, bar_style) = if trail {
         (ladder_ch.to_string(), state_style)
     } else {
-        crate::tags::bar_cell(
-            theme,
-            ladder_ch,
-            theme.bar(BarWeight::Dormant).1,
-            tags,
-            ctx.second,
-            level,
-        )
+        crate::tags::bar_cell(theme, ladder_ch, bar_base, tags, level)
     };
-    // `Second::Edge` puts the second tag on the card's last cell, which was
-    // trailing pad — so it costs no width and never touches the bar.
-    let edge = if trail { None } else { crate::tags::edge_cell(theme, tags, ctx.second, level) };
 
     // ---- line 1: [glyph sp?][title][fill][wt][age] ------------------------
     let wt_mark = worktree_mark(wt, tier == crate::glyphs::Tier::Ascii);
@@ -312,7 +342,7 @@ pub(super) fn render(
     if let Some(a) = &age {
         spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
     }
-    spans.push(Span::styled(" ".to_string(), edge.unwrap_or_default()));
+    spans.push(Span::raw(" ".to_string()));
     let mut lines = vec![Line::from(spans).style(row_style)];
 
     if held {
@@ -322,7 +352,13 @@ pub(super) fn render(
     // ---- accordion (07 §4.3; session rows only — short keys are hidden
     // from the UI for now, author 2026-08-30) -------------------------------
     //
-    if selected && !sessions.is_empty() {
+    // The tag row is the TICKET's own metadata, so an open card earns it
+    // whether or not there is a transcript to peek — a backlog ticket has no
+    // session at all, and that is exactly the card a quick-tag digit lands
+    // on. Before this the row was gated on `peek.is_some()`, which is a claim
+    // about the AGENT, and the commonest tagged card could never show it.
+    let tag_row = open && !tags.is_empty();
+    if selected && (!sessions.is_empty() || tag_row) {
         let acc_style = theme.selected_row();
         let dim = Style::default().fg(theme.sel.dim1);
         let quiet = Style::default().fg(theme.sel.dim2);
@@ -332,17 +368,9 @@ pub(super) fn render(
                 Span::styled(" ".to_string(), Style::default()),
             ];
             all.extend(spans);
-            // Pad the interior so the surface paints the full card width,
-            // keeping the last cell for the edge tag when it wants one.
+            // Pad the interior so the surface paints the full card width.
             let used: usize = all.iter().map(|s| s.content.width()).sum();
-            let pad = (ctx.width as usize).saturating_sub(used);
-            match edge {
-                Some(style) if pad > 0 => {
-                    all.push(Span::raw(" ".repeat(pad - 1)));
-                    all.push(Span::styled(" ".to_string(), style));
-                }
-                _ => all.push(Span::raw(" ".repeat(pad))),
-            }
+            all.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used))));
             lines.push(Line::from(all).style(acc_style));
         };
 
@@ -350,17 +378,21 @@ pub(super) fn render(
         // in which colours; only words say WHICH, and a card open far enough
         // to show a sentence can afford the row. It sits directly under the
         // title, above the reply — the ticket's own metadata before the
-        // agent's.
-        if peek.is_some() && !tags.is_empty() {
-            let mut row = vec![Span::raw("  ".to_string())];
-            row.extend(crate::tags::chips(theme, tags, t_cells.saturating_sub(2)));
+        // agent's. It sits under the title's FIRST CHARACTER: two cells in
+        // where a glyph precedes the title, flush where none does — a
+        // session-less card has no glyph column, and indenting its chips
+        // past a title that starts at the bar hung them in the air.
+        if tag_row {
+            let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
+            row.extend(crate::tags::chips(theme, tags, t_cells.saturating_sub(glyph_cells)));
             push(row);
         }
 
         let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
         ranked.sort_by_key(|s| (rank(&s.state), s.id));
-        // A single session duplicates line 1 (aggregate glyph + age ARE that
-        // session) — its row adds nothing, so only multi-session cards list.
+        // A single session duplicates line 1 (the aggregate glyph IS that
+        // session, and its own age is the ticket page's) — its row adds
+        // nothing, so only multi-session cards list.
         let listed: &[&&SessionRecord] = if ranked.len() > 1 { &ranked } else { &[] };
         for s in listed.iter().take(2) {
             let mark = glyphs::kind_mark(s.kind, tier);
@@ -432,6 +464,13 @@ pub(super) fn render(
                     Span::styled(row, quiet),
                 ]);
             }
+        }
+        // An open card's stripe is five or six cells tall, so the two tags
+        // run down it as full blocks — ~70% the first, ~30% the second —
+        // instead of sharing one cell across a half-block. It repaints span 0
+        // and nothing else, so no text moves (`tags::stack_full`).
+        if !trail {
+            crate::tags::stack_full(theme, &mut lines, ladder_ch, bar_base, tags, level);
         }
         return lines;
     }

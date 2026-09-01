@@ -2,7 +2,7 @@ use crate::Principal;
 
 /// What is being attempted. Grows with the command set; every daemon mutation
 /// path constructs one of these before acting (D32c invariant 2).
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Action {
     Read,
     Mutate,

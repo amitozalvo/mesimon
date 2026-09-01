@@ -46,6 +46,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         order: order.into(),
         // Epoch-adjacent so the identity line's age renders a stable `>1y`.
         created_at: "1970-01-01T00:00:00Z".into(),
+        entered_at: None,
         workspace: None,
         tags: Vec::new(),
         archived: None,
@@ -372,6 +373,41 @@ fn suggesting_app() -> App {
     app
 }
 
+/// The release offer: a newer tag than this build is published, and the
+/// version is in both places the offer lives — the header chip and the menu
+/// row it points at. `update_ready` is deliberately NOT forced here; this is
+/// the half of the pair where nothing is on disk yet.
+#[test]
+fn golden_release_offer_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.force_release_available("v0.1.0-alpha.5");
+    let head = &render(&app, 120, 30)[0];
+    assert!(
+        head.ends_with("◦ v0.1.0-alpha.5 available (esc)"),
+        "the offer names the version and routes through the menu: {head:?}"
+    );
+    app.mode = Mode::Menu { idx: 0 };
+    golden("menu_release_offer_120x30", &render(&app, 120, 30));
+}
+
+/// A binary already waiting on disk outranks a download. Both halves can be
+/// true at once — `install.sh` run in another terminal is exactly that — and
+/// when they are, the board offers the restart and stops offering the fetch:
+/// one update, one row, no second copy of the same bytes.
+#[test]
+fn test_a_landed_binary_outranks_a_download() {
+    let mut app = app_graphite(fixture(false));
+    app.force_release_available("v0.1.0-alpha.5");
+    app.force_update_ready();
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.ends_with("◦ update ready (U ∙ esc)"), "{head:?}");
+    assert!(!head.contains("available"), "one offer, not both: {head:?}");
+    app.mode = Mode::Menu { idx: 0 };
+    let menu = render(&app, 120, 30).join("\n");
+    assert!(menu.contains("Restart on the new build"), "{menu}");
+    assert!(!menu.contains("Install v0.1.0-alpha.5"), "the download row stands down too: {menu}");
+}
+
 /// One offer at a time, right-aligned: the highest priority, in words, with the
 /// key that takes it. No count of what is queued behind it — the menu is where
 /// the rest are read.
@@ -452,7 +488,7 @@ fn test_suggestion_priority_picks_the_chip() {
     app.resources.reclaim_bytes = 3 << 30;
     app.resources.archive_tickets = 2;
     let head = &render(&app, 120, 30)[0];
-    assert!(head.ends_with("◦ sleep 3 agents (esc)"), "{head:?}");
+    assert!(head.ends_with("◦ sleep 3 agents (Z ∙ esc)"), "{head:?}");
     // A chip that cannot fit says nothing rather than shearing the line — the
     // menu is still one Esc away. Scarcity outranks an offer for the room.
     app.resources.pty_total = 511;
@@ -478,7 +514,7 @@ fn test_a_sub_floor_sleep_offer_still_outranks_archive() {
     app.resources.archive_tickets = 3;
     let head = &render(&app, 120, 30)[0];
     assert!(
-        head.ends_with("◦ sleep 2 agents (esc)"),
+        head.ends_with("◦ sleep 2 agents (Z ∙ esc)"),
         "sleep outranks archive at any size: {head:?}"
     );
     // And the row it points at says so in words rather than claiming ~0.0GiB.
@@ -832,9 +868,10 @@ fn test_the_bar_carries_the_tags_in_their_own_tints() {
     assert!(!plain.modifier.contains(Modifier::UNDERLINED));
 }
 
-/// Two tags, one cell, three ways: stacked across the bar cell, beside each
-/// other in it, or the second on the card's right edge — which was trailing
-/// pad, so no home costs the card a cell.
+/// Two tags, one cell: `▀` stacked across it, the first over the second. It
+/// costs the card no width, which is the whole reason the bar carries them.
+/// Two rivals were built and cut — a `▌` split down the cell, and the card's
+/// right-edge pad — so there is one home and this test is its whole story.
 #[test]
 fn test_two_tags_ride_one_cell() {
     let mut app = app_graphite(fixture_tagged());
@@ -851,27 +888,62 @@ fn test_two_tags_ride_one_cell() {
     let y =
         render(&app, 120, 30).iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
 
-    // Stacked (the default): `▀` is the first tag over the second.
     let buf = cells(&app, 120, 30);
     let x = (0..120u16).find(|x| buf[(*x, y)].symbol() == "▀").expect("no stacked mark");
     assert_eq!(buf[(x, y)].fg, first, "the first tag must be the top half");
     assert_eq!(buf[(x, y)].bg, second);
+    // One cell, and nothing else on the row wears either tint — no second
+    // block beside the bar, nothing on the trailing pad.
+    let painted: Vec<u16> =
+        (0..120u16).filter(|c| buf[(*c, y)].bg == first || buf[(*c, y)].bg == second).collect();
+    assert_eq!(painted, vec![x], "the second tag took a cell of its own: {painted:?}");
+}
 
-    // Beside: `▌` in the second tag's colour over the first tag's paint.
-    app.tag_second = crate::tags::Second::Half;
+/// An OPEN card has a stripe five or six cells tall, and there the two tags
+/// are full painted blocks — ~70% the first from the top, ~30% the second
+/// under it — rather than two halves of one cell. The half-block is not
+/// reached for at all, which is the L1 exception going unspent.
+#[test]
+fn test_an_open_card_runs_the_tags_down_its_stripe() {
+    let path = write_transcript("tags-split", &reply_record("Rebased and green."));
+    let mut b = fixture_tagged();
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.cursor_col = 1; // T-3 "Fix OSC-11 detection": BUG + STAGING
+    app.cursor_row = 0;
+    app.peek = true;
+    let at = |group: u8, name: &str| {
+        app.theme.pip_at(
+            app.board.tag_def(group, name).expect("registered").tint() as usize,
+            crate::theme::TagLevel::Selected,
+        )
+    };
+    let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
+    let lines = render(&app, 120, 30);
+    let top = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
     let buf = cells(&app, 120, 30);
-    assert_eq!(buf[(x, y)].symbol(), "▌");
-    assert_eq!(buf[(x, y)].bg, first);
-    assert_eq!(buf[(x, y)].fg, second);
+    let bar_x = (0..120u16).find(|x| buf[(*x, top)].bg == first).expect("no stripe");
 
-    // Edge: a plain painted bar, and exactly one cell at the card's other end.
-    app.tag_second = crate::tags::Second::Edge;
-    let buf = cells(&app, 120, 30);
-    assert_eq!(buf[(x, y)].symbol(), " ", "Edge kept a half-block");
-    assert_eq!(buf[(x, y)].bg, first);
-    let edge: Vec<u16> = (0..120u16).filter(|c| buf[(*c, y)].bg == second).collect();
-    assert_eq!(edge.len(), 1, "the edge tag should be exactly one cell: {edge:?}");
-    assert!(edge[0] > x, "the edge tag must sit at the card's other end");
+    // Walk the stripe down while it stays one of the two tints.
+    let mut run: Vec<ratatui::style::Color> = Vec::new();
+    for y in top..30 {
+        let c = &buf[(bar_x, y)];
+        if c.bg != first && c.bg != second {
+            break;
+        }
+        assert_eq!(c.symbol(), " ", "the open stripe drew a glyph at row {y}");
+        run.push(c.bg);
+    }
+    assert!(run.len() >= 3, "the open card was too short to split: {} rows", run.len());
+    let low = run.iter().filter(|c| **c == second).count();
+    assert_eq!(low, crate::tags::second_rows(run.len()).expect("tall enough"));
+    assert!(low >= 1 && low < run.len() - low, "the second tag is not the smaller run");
+    assert_eq!(run[0], first, "the first tag is the top of the stripe");
+    assert_eq!(*run.last().expect("rows"), second, "the second tag is the bottom");
+    // The runs are contiguous: one changeover, not stripes.
+    let flips = run.windows(2).filter(|w| w[0] != w[1]).count();
+    assert_eq!(flips, 1, "the stripe changed tint {flips} times");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 /// Three loudnesses on one board: the cursor card at full strength, a
@@ -1009,53 +1081,34 @@ fn test_tag_underlines_never_spend_the_accent() {
     }
 }
 
-/// `w` cycles where the second tag goes, and the footer offers the other
-/// home — a hint that named the current state would be a key you press to
-/// find out what it does.
-#[test]
-fn test_w_cycles_the_second_tag_home() {
-    let mut app = app_graphite(fixture_tagged());
-    app.cursor_col = 1;
-    app.tag_armed = Some(crate::app::TagArm {
-        ticket: Some(ulid_n(3)),
-        row: 0,
-        col: 0,
-        naming: None,
-        forget_armed: false,
-    });
-    assert_eq!(app.tag_second, crate::tags::Second::Stack, "stacked is the default");
-    assert!(render(&app, 120, 30).iter().any(|l| l.contains("2nd tag beside")), "no offer");
-    app.handle_key(
-        ratatui::crossterm::event::KeyCode::Char('w'),
-        ratatui::crossterm::event::KeyModifiers::NONE,
-    )
-    .expect("w");
-    assert_eq!(app.tag_second, crate::tags::Second::Half);
-    assert!(app.status.contains("beside"), "the switch says nothing: {:?}", app.status);
-    app.status.clear(); // the status row borrows the footer while it stands
-    assert!(
-        render(&app, 120, 30).iter().any(|l| l.contains("2nd tag on edge")),
-        "the offer did not move on"
-    );
-}
-
-/// Either home, the card is the same size and the same text: the second tag
-/// takes a cell that was already there.
+/// The second tag costs the card nothing: the same board, the same text, the
+/// same widths whether a ticket wears one tag or two. It rides a cell that
+/// was already there — at rest the lower half of the bar, open the lower
+/// third of the stripe — and that is the whole reason it is paint.
 #[test]
 fn test_the_second_tag_costs_no_width() {
     let plain = |lines: Vec<String>| -> Vec<String> {
-        lines.iter().map(|l| l.replace(['▌', '▀'], " ")).collect()
+        lines.iter().map(|l| l.replace('▀', " ")).collect()
     };
-    let mut base: Option<Vec<String>> = None;
-    for mode in [crate::tags::Second::Stack, crate::tags::Second::Half, crate::tags::Second::Edge] {
-        let mut app = app_graphite(fixture_tagged());
-        app.cursor_col = 0;
-        app.tag_second = mode;
-        let shown = plain(render(&app, 120, 30));
-        match &base {
-            None => base = Some(shown),
-            // Only the bar cell differs, and only by an admitted half-block.
-            Some(want) => assert_eq!(&shown, want, "{mode:?} moved the board"),
+    for peek in [false, true] {
+        let mut two = app_graphite(fixture_tagged());
+        two.cursor_col = 1;
+        two.cursor_row = 0;
+        two.peek = peek;
+        let mut one = app_graphite(fixture_tagged());
+        one.cursor_col = 1;
+        one.cursor_row = 0;
+        one.peek = peek;
+        one.board.ticket_mut(ulid_n(3)).expect("ticket").set_tag(2, None);
+        // The peek row names the tags, so it legitimately differs; every
+        // other row must be identical.
+        let (a, b) = (plain(render(&two, 120, 30)), plain(render(&one, 120, 30)));
+        assert_eq!(a.len(), b.len(), "peek {peek}: the board changed height");
+        for (x, y) in a.iter().zip(&b) {
+            if x.contains("STAGING") {
+                continue;
+            }
+            assert_eq!(x, y, "peek {peek}: the second tag moved something");
         }
     }
 }
@@ -1083,6 +1136,39 @@ fn test_the_peek_names_the_tags() {
     let y = (title + 1) as u16;
     assert!((30..58u16).any(|x| buf[(x, y)].bg == tint), "the chips are not wearing the tag tint");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The card a quick-tag digit actually lands on usually has no session at
+/// all — a backlog ticket — and the row that names its tags used to be gated
+/// on the AGENT having a transcript to peek, so the commonest tagged card on
+/// the board could never show it. The digit opens the card, the card names
+/// the tag, and the reveal expires on its own.
+#[test]
+fn test_a_quick_tag_names_the_tag_on_a_session_less_card() {
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 0;
+    app.cursor_row = 0; // T-1 "Decay treatments": wears FTR, has no session.
+    let card = |a: &App| {
+        let lines = render(a, 120, 30);
+        let title = lines.iter().position(|l| l.contains("Decay treatments")).expect("card");
+        lines[title + 1].clone()
+    };
+    // At rest the card is one line: the stripe says "tagged", never which.
+    assert!(!card(&app).contains("FTR"), "no tag row before the press");
+
+    app.tag_flash = Some((ulid_n(1), std::time::Instant::now()));
+    assert!(card(&app).contains("FTR"), "the flash names the tag: {:?}", card(&app));
+    // In the tag's own tint — the same one the stripe under it is wearing.
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card") as u16 + 1;
+    let buf = cells(&app, 120, 30);
+    let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("registered").tint() as usize);
+    assert!((1..40u16).any(|x| buf[(x, y)].bg == tint), "the chip is not wearing the tint");
+
+    // A moment, not a mode — and it belongs to the card it tagged, so the
+    // neighbour the cursor is not on stays shut.
+    app.tag_flash = Some((ulid_n(2), std::time::Instant::now()));
+    assert!(!card(&app).contains("FTR"), "another ticket's flash must not open this card");
 }
 
 /// A peeked card with a long vocabulary still names every tag: the names
@@ -1137,6 +1223,24 @@ fn golden_board_tags_peek_120() {
     app.peek = true;
     golden("board_tags_peek_120x30", &render(&app, 120, 30));
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// A session-less card's chips sit FLUSH under its title: there is no glyph
+/// column on that card, so the title starts at the bar and the row follows it
+/// (author 2026-09-01: "non session tickets tags line shouldn't be indent").
+#[test]
+fn golden_board_tags_peek_sessionless_120() {
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 0;
+    app.cursor_row = 0;
+    app.peek = true;
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card");
+    let title_x = lines[y].find("Decay").expect("title");
+    // A chip is " name " — its paint edge is one cell left of the name.
+    let chip_x = lines[y + 1].find("FTR").expect("chip row") - 1;
+    assert_eq!(chip_x, title_x, "chips start under the title's first character");
+    golden("board_tags_peek_sessionless_120x30", &lines);
 }
 
 #[test]
@@ -1228,6 +1332,90 @@ fn golden_compose_tags_120() {
     );
     app.peek = false;
     golden("board_compose_tags_120x30", &render(&app, 120, 30));
+}
+
+/// The board's prompt field: the card stays WHOLE — glyph, title, sessions —
+/// and the field hangs under it. That is the whole design argument in one
+/// picture: a prompt has a destination, and the card is the only thing on
+/// this screen that names it.
+#[test]
+fn golden_prompt_field_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    // T-3, in progress, with a live claude on it.
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    let mut buffer = crate::text::EditBuffer::new();
+    for c in "rebase onto main".chars() {
+        buffer.insert(c);
+    }
+    app.mode =
+        Mode::Input { purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) }, buffer };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("Fix OSC-11 detection")),
+        "the card must survive the field — you are typing AT it:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("rebase onto main")),
+        "the prompt is on screen:\n{}",
+        lines.join("\n")
+    );
+    // The mode word names what the text will do, and every other field here
+    // saves to the board.
+    assert!(lines.last().is_some_and(|l| l.contains("ASK")), "{:?}", lines.last());
+    golden("board_prompt_120x30", &render(&app, 120, 30));
+}
+
+/// An empty field says what it is for, in the same words the key was hinted
+/// with — otherwise the state is a blank row under a card.
+#[test]
+fn test_an_empty_prompt_field_names_itself() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+        buffer: crate::text::EditBuffer::new(),
+    };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("› ask claude")),
+        "an empty prompt field must show its caret and its purpose:\n{}",
+        lines.join("\n")
+    );
+    // …and the footer says how to send it, in the word that is true here.
+    assert!(
+        lines.last().is_some_and(|l| l.contains("enter send")),
+        "the field must not offer `save`: {:?}",
+        lines.last()
+    );
+}
+
+/// The prompt row costs the card no width. It hangs under the frame rather
+/// than inside it, so nothing above it moves by a cell.
+#[test]
+fn test_the_prompt_field_moves_no_text() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    let before = render(&app, 120, 30);
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+        buffer: crate::text::EditBuffer::new(),
+    };
+    let after = render(&app, 120, 30);
+    let card = before
+        .iter()
+        .position(|l| l.contains("Fix OSC-11 detection"))
+        .expect("the card renders without the field");
+    assert_eq!(
+        before[card], after[card],
+        "the card's own rows must be identical with the field open"
+    );
 }
 
 #[test]
@@ -1686,6 +1874,18 @@ fn test_no_banned_sgr() {
                 install_diff(&mut app);
                 cells(&app, 120, 30)
             },
+            {
+                // The board's prompt field, on its card. New vocabulary is
+                // exactly what these sweeps exist to catch.
+                let mut p = App::for_test(fixture(false), Theme::new(flavor, profile));
+                p.rich_keys = true;
+                p.cursor_col = 1;
+                p.mode = Mode::Input {
+                    purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+                    buffer: crate::text::EditBuffer::new(),
+                };
+                cells(&p, 120, 30)
+            },
         ] {
             for y in 0..30 {
                 for x in 0..120 {
@@ -1769,19 +1969,41 @@ fn test_no_drawn_structure() {
             });
             render(&t, 120, 30)
         },
+        {
+            // The prompt field: a caret glyph the board did not have before,
+            // and a row that has to survive the same law as every other.
+            let mut p = app_graphite(fixture(false));
+            p.rich_keys = true;
+            p.cursor_col = 1;
+            let mut buf = crate::text::EditBuffer::new();
+            for c in "rebase onto main".chars() {
+                buf.insert(c);
+            }
+            p.mode = Mode::Input {
+                purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+                buffer: buf,
+            };
+            let lines = render(&p, 120, 30);
+            assert!(
+                lines.iter().any(|l| l.contains("rebase onto main")),
+                "the field must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
     ];
     for lines in screens {
         for l in &lines {
             for ch in l.chars() {
                 let cp = ch as u32;
-                // `▀` U+2580 and `▌` U+258C are the ONLY admitted codepoints
-                // in the range, on an explicit exception from the author
-                // (2026-09-01): they carry the second tag inside the bar
+                // `▀` U+2580 is the ONE admitted codepoint in the range, on
+                // an explicit exception from the author (2026-09-01): it
+                // carries the second tag inside a resting card's single bar
                 // cell, which no attribute can do — an underline is a pixel
-                // at the bottom of a painted cell and cannot be seen.
-                // `▔` and `█` stay banned, and so does the rest of the range.
+                // at the bottom of a painted cell and cannot be seen. `▌`
+                // U+258C went back to being banned with the home that spent
+                // it; `▔` and `█` were never admitted, nor was the rest.
                 assert!(
-                    !(0x2500..=0x259F).contains(&cp) || ch == '▌' || ch == '▀',
+                    !(0x2500..=0x259F).contains(&cp) || ch == '▀',
                     "drawn-structure codepoint {ch:?} in {l:?}"
                 );
             }

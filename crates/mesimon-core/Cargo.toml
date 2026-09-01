@@ -16,3 +16,7 @@ uuid.workspace = true
 
 [lints]
 workspace = true
+
+[lib]
+# No doctests exist; rustdoc otherwise costs ~4 s of every `cargo test`.
+doctest = false

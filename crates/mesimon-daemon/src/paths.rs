@@ -7,6 +7,10 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
+/// The one spelling of the worktrees directory name, shared by the path it
+/// is created at and the gate exemption that names it.
+pub const WORKTREES_DIR: &str = "worktrees";
+
 #[derive(Clone)]
 pub struct Paths {
     pub repo_root: PathBuf,
@@ -62,6 +66,12 @@ impl Paths {
     pub fn shell_env_dump(&self) -> PathBuf {
         self.rt_dir.join("shellenv.dump")
     }
+    /// The captured shell environment a pane is launched with (`mesimon exec
+    /// --env`): `K=V\0` entries, 0600, in the runtime dir for the same reason
+    /// as the dump — it holds whatever secrets the user's rc files export.
+    pub fn shell_env_file(&self) -> PathBuf {
+        self.rt_dir.join("shellenv.env")
+    }
     pub fn sessions_file(&self) -> PathBuf {
         self.state_dir.join("sessions.json")
     }
@@ -75,16 +85,27 @@ impl Paths {
     pub fn daemon_log(&self) -> PathBuf {
         self.state_dir.join("daemon.log")
     }
+    /// Ticket worktrees, `<state>/worktrees/<KEY>-<slug>/`. Inside the state
+    /// dir but the agent's OWN to write: the gate is told so (`--allow`).
+    pub fn worktrees_root(&self) -> PathBuf {
+        self.state_dir.join(WORKTREES_DIR)
+    }
 
+    /// The 0700 directories ARE the trust boundary: `orch.sock` answers any
+    /// same-uid caller and `hook.sock` admits any same-uid frame, so what
+    /// keeps another user out is that they cannot reach either socket. Both
+    /// trees are created here and verified here, every start — sticky `/tmp`
+    /// lets anyone pre-plant `/tmp/mesimon-<uid>`, and a symlink or a
+    /// directory someone else owns must be refused, not used.
     pub fn ensure_dirs(&self) -> Result<()> {
-        // /tmp/mesimon-<uid> must not be usable by others (02 §2).
         if let Some(parent) = self.rt_dir.parent() {
-            std::fs::create_dir_all(parent)?;
-            let perm = std::os::unix::fs::PermissionsExt::from_mode(0o700);
-            std::fs::set_permissions(parent, perm)?;
+            own_private_dir(parent)?;
         }
-        std::fs::create_dir_all(&self.rt_dir)?;
-        std::fs::create_dir_all(&self.state_dir)?;
+        own_private_dir(&self.rt_dir)?;
+        if let Some(parent) = self.state_dir.parent() {
+            own_private_dir(parent)?;
+        }
+        own_private_dir(&self.state_dir)?;
         std::fs::create_dir_all(self.board_dir.join("board/tickets"))?;
         self.ensure_excluded()?;
         Ok(())
@@ -113,6 +134,36 @@ impl Paths {
     }
 }
 
+/// Create `dir` if missing, then insist it is a real directory that this uid
+/// owns, and close it to everyone else. Errors name the path.
+pub fn own_private_dir(dir: &Path) -> Result<()> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
+    if let Some(parent) = dir.parent() {
+        std::fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+    }
+    match std::fs::DirBuilder::new().mode(0o700).create(dir) {
+        Ok(()) => {}
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => return Err(e).with_context(|| format!("create {}", dir.display())),
+    }
+    let meta = std::fs::symlink_metadata(dir).with_context(|| format!("stat {}", dir.display()))?;
+    if meta.file_type().is_symlink() {
+        anyhow::bail!("{} is a symlink; refusing to use it", dir.display());
+    }
+    if !meta.is_dir() {
+        anyhow::bail!("{} is not a directory", dir.display());
+    }
+    let uid = unsafe { libc::getuid() };
+    if meta.uid() != uid {
+        anyhow::bail!("{} is owned by uid {}, not {uid}", dir.display(), meta.uid());
+    }
+    if meta.mode() & 0o077 != 0 {
+        std::fs::set_permissions(dir, PermissionsExt::from_mode(0o700))
+            .with_context(|| format!("chmod 0700 {}", dir.display()))?;
+    }
+    Ok(())
+}
+
 fn hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
@@ -131,6 +182,35 @@ mod tests {
         assert!(p.hook_sock().as_os_str().len() <= 100, "{:?}", p.hook_sock());
         assert_eq!(p.proj16.len(), 16);
         std::fs::remove_dir_all(dir).ok();
+    }
+
+    /// The boundary is checked, not assumed: a pre-planted symlink where a
+    /// private dir should be is refused, and a lax mode is tightened.
+    #[test]
+    fn a_private_dir_is_ours_alone() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let base = std::env::temp_dir().join(format!("msmn-priv-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+
+        let fresh = base.join("fresh/deeper");
+        own_private_dir(&fresh).unwrap();
+        assert_eq!(std::fs::metadata(&fresh).unwrap().mode() & 0o777, 0o700);
+
+        let lax = base.join("lax");
+        std::fs::create_dir(&lax).unwrap();
+        std::fs::set_permissions(&lax, PermissionsExt::from_mode(0o755)).unwrap();
+        own_private_dir(&lax).unwrap();
+        assert_eq!(std::fs::metadata(&lax).unwrap().mode() & 0o777, 0o700);
+
+        let target = base.join("elsewhere");
+        std::fs::create_dir(&target).unwrap();
+        let link = base.join("planted");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        let err = own_private_dir(&link).unwrap_err().to_string();
+        assert!(err.contains("symlink"), "{err}");
+
+        std::fs::remove_dir_all(base).ok();
     }
 
     #[test]

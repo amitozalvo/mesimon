@@ -27,4 +27,4 @@
 
 
 
- TICKET  jk select session ∙ enter resume ∙ c claude ∙ s shell ∙ x dismiss ∙ r rename ∙ ^t tags ∙ q board ∙ ? keys
+ TICKET  jk select session ∙ enter resume ∙ c claude ∙ s shell ∙ x dismiss ∙ r rename ∙ d delete ∙ q board ∙ ? keys

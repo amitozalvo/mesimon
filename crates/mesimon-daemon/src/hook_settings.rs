@@ -128,6 +128,9 @@ fn gate_entry(
         board_dir.display().to_string(),
         "--deny-state".into(),
         state_dir.display().to_string(),
+        // Ticket worktrees sit under the state dir and are the agent's own.
+        "--allow".into(),
+        state_dir.join(crate::paths::WORKTREES_DIR).display().to_string(),
     ];
     json!({
         "matcher": "Edit,Write,NotebookEdit",
@@ -347,8 +350,9 @@ mod tests {
         let val = |k: &str| args[args.iter().position(|a| *a == k).expect(k) + 1];
         assert_eq!(val("--deny-board"), "/repo/.mesimon");
         assert_eq!(val("--deny-state"), "/state/abcd");
+        assert_eq!(val("--allow"), "/state/abcd/worktrees", "worktrees are the agent's own");
         assert!(val("--sock").starts_with('/'), "sock abs");
-        for k in ["--deny-board", "--deny-state"] {
+        for k in ["--deny-board", "--deny-state", "--allow"] {
             assert!(val(k).starts_with('/'), "guarded root must be absolute: {k}");
         }
     }

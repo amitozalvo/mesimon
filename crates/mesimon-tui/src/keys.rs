@@ -14,7 +14,7 @@ pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
         // Option/Alt on a direction, either spelling, is one atom. Whether it
         // arrives at all is the terminal's call and nothing detects it in
         // advance, which is why the keymap spends no capability on it
-        // (`keymap::alt_is_admitted_only_for_the_nudge`): macOS Terminal
+        // (`keymap::alt_is_admitted_only_for_a_nudge`): macOS Terminal
         // composes `⌥h` into `˙`, iTerm2 sends the modifier only with
         // `Option Key Sends: Esc+`, and a profile that maps `⌥←` to a word
         // jump sends `esc b` — an alt+`b` this map has no atom for, so it

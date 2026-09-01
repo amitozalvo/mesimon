@@ -10,69 +10,13 @@
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, MAX_TAGS_PER_GROUP};
-use mesimon_core::command::{Command, Envelope, Response};
-use mesimon_core::Principal;
+use mesimon_core::board::MAX_TAGS_PER_GROUP;
+use mesimon_core::command::{Command, Response};
 
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    /// Retries, like `restart_e2e`'s: this test restarts the daemon mid-run,
-    /// and the socket file exists from `bind` a moment before `listen` is
-    /// accepting on it. Waiting for the path alone would connect into that
-    /// window on a slower runner.
-    fn connect(sock: &std::path::Path) -> Self {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let stream = loop {
-            match UnixStream::connect(sock) {
-                Ok(s) => break s,
-                Err(e) => {
-                    assert!(Instant::now() < deadline, "daemon never accepted: {e}");
-                    std::thread::sleep(Duration::from_millis(50));
-                }
-            }
-        };
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        let line = serde_json::to_string(&env).unwrap();
-        writeln!(self.write, "{line}").unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-}
-
-fn board_of(resp: Response) -> Board {
-    match resp {
-        Response::Board { board, .. } => board,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
-
-fn err_containing(resp: Response, needle: &str) {
-    match resp {
-        Response::Err { message } => {
-            assert!(message.contains(needle), "expected {needle:?} in {message:?}")
-        }
-        other => panic!("expected refusal containing {needle:?}, got {other:?}"),
-    }
-}
+mod common;
+use common::*;
 
 #[test]
 fn tags_round_trip_through_the_daemon_and_the_disk() {
@@ -272,25 +216,58 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     let raw = std::fs::read_to_string(&ticket_toml).unwrap();
     assert!(!raw.contains("\"BUG\""), "the wearer's file was rewritten:\n{raw}");
 
+    // ---- moving a tag: along its axis, and onto another -------------------
+    // Along the row it is pure order — what the picker draws and what a
+    // repeated digit walks — so no ticket file is touched.
+    assert!(matches!(
+        c.request(Command::RegisterTag { group: 1, name: "FTR".into() }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.group_tags(1), vec!["REGR", "FTR"]);
+    assert!(matches!(
+        c.request(Command::MoveTag { group: 1, name: "FTR".into(), to_group: 1, to_index: 0 }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.group_tags(1), vec!["FTR", "REGR"], "the axis reordered");
+
+    // Onto another axis it is refused, never resolved, when a wearer already
+    // has something there: one tag per group is what lets a digit address an
+    // axis, and the alternative is dropping a tag off a card silently.
+    assert!(matches!(
+        c.request(Command::SetTag { id, group: 1, name: Some("REGR".into()) }),
+        Response::Ok
+    ));
+    err_containing(
+        c.request(Command::MoveTag { group: 1, name: "REGR".into(), to_group: 2, to_index: 0 }),
+        "already wear a tag on axis 2",
+    );
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.group_tags(1), vec!["FTR", "REGR"], "a refusal changes nothing");
+    assert_eq!(board.ticket(id).unwrap().tag_in(1).unwrap().name, "REGR");
+
+    // A free axis takes it, and the wearers travel with it.
+    assert!(matches!(
+        c.request(Command::MoveTag { group: 1, name: "REGR".into(), to_group: 7, to_index: 0 }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.group_tags(1), vec!["FTR"]);
+    assert_eq!(board.group_tags(7), vec!["REGR"]);
+    let t = board.ticket(id).unwrap();
+    assert!(t.tag_in(1).is_none(), "no pip left on the axis it came from");
+    assert_eq!(t.tag_in(7).unwrap().name, "REGR", "the wearer followed");
+    assert_eq!(t.tag_in(2).unwrap().name, "STAGING", "and its other axes are untouched");
+    // Both files were rewritten: the registry, and the ticket that wore it.
+    let cols = std::fs::read_to_string(repo.join(".mesimon/board/columns.toml")).unwrap();
+    assert!(cols.contains("group = 7"), "the registry recorded the new axis:\n{cols}");
+    let raw = std::fs::read_to_string(&ticket_toml).unwrap();
+    assert!(raw.contains("group = 7"), "the wearer's file followed:\n{raw}");
+
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
     for d in [&dir, &state_dir, &rt_dir] {
         sweep(d);
-    }
-}
-
-/// Remove a test tree, retrying briefly.
-///
-/// A single `remove_dir_all` leaked the tree intermittently under a full
-/// `cargo test --workspace` — the test itself had passed and the board was
-/// complete, so something was still touching the directory as it went. Rather
-/// than guess at which thread, retry: the cost of being wrong about the cause
-/// is one more `/tmp` tree nobody cleans up.
-fn sweep(dir: &std::path::Path) {
-    for _ in 0..20 {
-        if std::fs::remove_dir_all(dir).is_ok() || !dir.exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
     }
 }

@@ -70,10 +70,13 @@ const DENY: &[&str] = &[
 /// on that same session reported the `-e` one. A bare command name that exists
 /// only on the `-e` PATH dies with status 127.
 ///
-/// So `PATH` travels a different road: `TmuxBackend::set_env` puts it in the
-/// client environment of every tmux invocation. Passing it through `-e` as well
-/// would be inert at best and, since the two roads can disagree, a false
-/// explanation for the next person debugging this.
+/// So `PATH` is kept out of `select` and handled by name (`path_of`): the
+/// daemon writes it into the launcher's file like every other variable, where
+/// `mesimon exec` sets it inside the pane, AND puts it in the client
+/// environment of every tmux invocation (`TmuxBackend::set_path`), so tmux's
+/// own lookups agree with the pane's. Nothing travels through `-e` any more —
+/// a value on a `new-session` command line is readable by every user on the
+/// machine — but the measurement above is why the client road still exists.
 pub const PATH_IS_THE_CLIENTS: &str =
     "tmux takes a pane's PATH from the spawning client, not from `-e`";
 
@@ -84,7 +87,7 @@ pub const PATH_IS_THE_CLIENTS: &str =
 const MESIMON_PREFIX: &str = "MESIMON_";
 
 /// A single value's ceiling. Nothing legitimate is this big; a runaway one
-/// would ride the tmux argv on every spawn forever.
+/// would be written into every pane's environment forever.
 pub const MAX_VALUE: usize = 32 * 1024;
 /// And a ceiling on the whole set, for the same reason.
 pub const MAX_TOTAL: usize = 128 * 1024;
@@ -120,12 +123,11 @@ pub fn parse_env0(bytes: &[u8]) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The `-e` set a pane should carry: admissible names, sorted, first
-/// occurrence wins, truncated at [`MAX_TOTAL`].
+/// The set a pane should carry: admissible names, sorted, first occurrence
+/// wins, truncated at [`MAX_TOTAL`].
 ///
-/// Sorting is not cosmetic — it makes the argv a spawn produces a function of
-/// the environment alone, so two spawns from one capture are byte-identical and
-/// a diff between captures is readable.
+/// Sorting is not cosmetic — it makes the environment file a function of the
+/// captured environment alone, so a diff between captures is readable.
 pub fn select(captured: &[(String, String)]) -> Vec<(String, String)> {
     let mut out: Vec<(String, String)> = Vec::new();
     let mut total = 0usize;

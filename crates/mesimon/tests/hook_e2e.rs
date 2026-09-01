@@ -7,6 +7,7 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
 /// Wall-clock budgets are honest on a quiet laptop and flaky on a shared
 /// runner. Only the timing bounds relax — nothing about behaviour does.
@@ -14,92 +15,17 @@ fn is_ci() -> bool {
     std::env::var_os("MESIMON_CI").is_some()
 }
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::process::{Command as Proc, Stdio};
+use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{Board, Reason, SessionKind, SessionState};
-use mesimon_core::command::{Command, Envelope, Event, GraceItem, Response};
-use mesimon_core::Principal;
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let stream = UnixStream::connect(sock).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        let line = serde_json::to_string(&env).unwrap();
-        writeln!(self.write, "{line}").unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-            // Events interleave on a subscribed connection; skip them here.
-        }
-    }
-
-    /// Swallow any already-queued pushes so the next wait sees only new ones.
-    fn drain_events(&mut self) {
-        while self.next_event(Duration::from_millis(300)).is_some() {}
-    }
-
-    /// Wait for one pushed event (no request outstanding).
-    fn next_event(&mut self, timeout: Duration) -> Option<Event> {
-        let deadline = Instant::now() + timeout;
-        self.write.set_nonblocking(false).unwrap();
-        self.read.get_ref().set_read_timeout(Some(timeout)).unwrap();
-        while Instant::now() < deadline {
-            let mut buf = String::new();
-            match self.read.read_line(&mut buf) {
-                Ok(0) => return None,
-                Ok(_) => {
-                    if let Ok(ev) = serde_json::from_str::<Event>(&buf) {
-                        return Some(ev);
-                    }
-                }
-                Err(_) => return None,
-            }
-        }
-        None
-    }
-}
+use mesimon_core::command::{Command, GraceItem, Response};
 
 fn board_of(resp: Response) -> (Board, Vec<GraceItem>) {
     match resp {
         Response::Board { board, grace, .. } => (board, grace),
         other => panic!("expected board, got {other:?}"),
     }
-}
-
-fn hook_send(sock: &std::path::Path, session: &str, event: &str, reason: Option<&str>, body: &str) {
-    let bin = env!("CARGO_BIN_EXE_mesimon");
-    let mut cmd = Proc::new(bin);
-    cmd.arg("hook").arg("--sock").arg(sock).arg("--session").arg(session).arg("--event").arg(event);
-    if let Some(r) = reason {
-        cmd.arg("--reason").arg(r);
-    }
-    let mut child = cmd
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn hook");
-    child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
-    let out = child.wait_with_output().expect("hook exit");
-    assert!(out.status.success(), "hook must exit 0");
-    assert!(out.stdout.is_empty(), "hook must never write stdout");
 }
 
 #[test]
@@ -167,14 +93,14 @@ fn m2_attention_headless() {
 
     // SessionStart → running (bash spawns Running already; frame is harmless),
     // then PermissionRequest → requires_action{permission}, pushed unprompted.
-    hook_send(
+    hook_send_with(
         &hook_sock,
         &sid.to_string(),
         "SessionStart",
         Some("startup"),
         r#"{"session_id":"x","transcript_path":"/tmp/t.jsonl","cwd":"/tmp"}"#,
     );
-    hook_send(
+    hook_send_with(
         &hook_sock,
         &sid.to_string(),
         "PermissionRequest",
@@ -197,7 +123,7 @@ fn m2_attention_headless() {
 
     // The human-deny path: nothing fires but the next prompt; settle clears.
     watcher.drain_events();
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{"session_id":"x"}"#);
+    hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{"session_id":"x"}"#);
     assert!(
         watcher.next_event(Duration::from_secs(3)).is_some(),
         "settled leave must push from the tick wheel"
@@ -227,7 +153,7 @@ fn m2_attention_headless() {
     let mut worst = Duration::ZERO;
     for _ in 0..10 {
         let t0 = Instant::now();
-        hook_send(&hook_sock, &sid.to_string(), "Stop", None, r#"{"stop_hook_active":true}"#);
+        hook_send_with(&hook_sock, &sid.to_string(), "Stop", None, r#"{"stop_hook_active":true}"#);
         worst = worst.max(t0.elapsed());
     }
     // The real budget is 5 ms p99 (14 §1.7); 150 ms is the debug-build slack.
@@ -239,7 +165,7 @@ fn m2_attention_headless() {
     // Automove: a real Stop (the cost-loop frames set stop_hook_active, which
     // the machine's re-entrancy guard drops) → idle{end_turn} after the
     // 1500 ms leave settle drags the IN PROGRESS ticket to REVIEW.
-    hook_send(&hook_sock, &sid.to_string(), "Stop", None, r#"{"stop_hook_active":false}"#);
+    hook_send_with(&hook_sock, &sid.to_string(), "Stop", None, r#"{"stop_hook_active":false}"#);
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         let (board, _) = board_of(c.request(Command::Snapshot));
@@ -262,7 +188,7 @@ fn m2_attention_headless() {
 
     // Automove: review feedback reopens the work — running again drags the
     // REVIEW ticket back to IN PROGRESS.
-    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{"session_id":"x"}"#);
+    hook_send_with(&hook_sock, &sid.to_string(), "UserPromptSubmit", None, r#"{"session_id":"x"}"#);
     let deadline = Instant::now() + Duration::from_secs(4);
     loop {
         let (board, _) = board_of(c.request(Command::Snapshot));
@@ -277,7 +203,7 @@ fn m2_attention_headless() {
     }
 
     // Absent socket must be silently fine (rule 7) — daemon-down is invisible.
-    hook_send(
+    hook_send_with(
         &std::path::PathBuf::from("/tmp/msmn-no-such.sock"),
         &sid.to_string(),
         "Stop",
@@ -393,7 +319,7 @@ fn m2_attention_headless() {
     }
     assert_eq!(cursor_y(&submit_sid16), "0", "the Enter must NOT land at spawn time");
 
-    hook_send(
+    hook_send_with(
         &hook_sock,
         &submit_sid.to_string(),
         "SessionStart",
@@ -401,7 +327,7 @@ fn m2_attention_headless() {
         r#"{"session_id":"x","transcript_path":"/tmp/t2.jsonl","cwd":"/tmp"}"#,
     );
     // The first press lands on the SessionStart edge...
-    hook_send(
+    hook_send_with(
         &hook_sock,
         &submit_sid.to_string(),
         "SessionStart",
@@ -429,7 +355,7 @@ fn m2_attention_headless() {
     assert!(rec.pending_submit, "still owed until Claude acknowledges it");
 
     // UserPromptSubmit IS the ack (T-5): the pressing stops, and stays stopped.
-    hook_send(&hook_sock, &submit_sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
+    hook_send_with(&hook_sock, &submit_sid.to_string(), "UserPromptSubmit", None, r#"{}"#);
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let (board, _) = board_of(c.request(Command::Snapshot));
@@ -509,7 +435,7 @@ fn m2_attention_headless() {
         "feed must carry automoves"
     );
 
-    let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    kill_tmux(&tmux_sock);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::remove_dir_all(&rt_dir);

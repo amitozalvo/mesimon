@@ -2,9 +2,9 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
-   Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    o  open ticket
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    o  open ticket
                                   board — everything you can press here
-   Keymap validator                                                                    1y
+   Keymap validator       >1y                                                          1y
                                   MOVE AROUND
                                     hjkl      move around
 
@@ -27,4 +27,4 @@
 
 
 
- BOARD  o open ticket ∙ p show replies ∙ esc menu ∙ q quit ∙ ? keys
+ BOARD  o open ticket ∙ ? keys

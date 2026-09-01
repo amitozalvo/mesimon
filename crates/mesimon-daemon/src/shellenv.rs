@@ -41,7 +41,8 @@ const BASE_PATH: &str = "/usr/bin:/bin:/usr/sbin:/sbin";
 /// A captured shell environment, and what it was captured from.
 #[derive(Debug, Clone, Default)]
 pub struct ShellEnv {
-    /// The `-e` set for a spawn: admissible names, sorted. Excludes `PATH`.
+    /// The pane's set, written to the launcher's file: admissible names,
+    /// sorted. Excludes `PATH`, which is carried by name.
     pub vars: Vec<(String, String)>,
     /// The captured `PATH`, which travels as the tmux *client* environment
     /// rather than through `-e` — see `mesimon_core::shellenv::PATH_IS_THE_CLIENTS`.

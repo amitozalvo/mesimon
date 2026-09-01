@@ -10,42 +10,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{Board, SessionKind, WorkspaceStrategy};
-use mesimon_core::command::{Command, Envelope, MergeOutcome, Response, WorktreeItem};
-use mesimon_core::Principal;
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let stream = UnixStream::connect(sock).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        let line = serde_json::to_string(&env).unwrap();
-        writeln!(self.write, "{line}").unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-}
+use mesimon_core::command::{Command, MergeOutcome, Response, WorktreeItem};
 
 fn board_of(resp: Response) -> (Board, Vec<WorktreeItem>) {
     match resp {

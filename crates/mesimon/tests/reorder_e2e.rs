@@ -7,47 +7,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::Board;
-use mesimon_core::command::{Command, Envelope, Response};
-use mesimon_core::Principal;
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let stream = UnixStream::connect(sock).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        writeln!(self.write, "{}", serde_json::to_string(&env).unwrap()).unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-
-    fn board(&mut self) -> Board {
-        match self.request(Command::Snapshot) {
-            Response::Board { board, .. } => board,
-            other => panic!("expected board, got {other:?}"),
-        }
-    }
-}
+use mesimon_core::command::{Command, Response};
 
 fn titles(board: &Board, column: &str) -> Vec<String> {
     board.column_tickets(column).iter().map(|t| t.title.clone()).collect()
@@ -108,10 +73,25 @@ fn a_card_reorders_inside_its_own_column() {
 
     // It survives the disk round-trip: order is a ticket file field.
     let key = c.board().ticket(c_id).unwrap().short_key.clone();
-    let toml =
-        std::fs::read_to_string(repo.join(".mesimon/board/tickets").join(&key).join("ticket.toml"))
-            .unwrap();
+    let ticket_toml = repo.join(".mesimon/board/tickets").join(&key).join("ticket.toml");
+    let toml = std::fs::read_to_string(&ticket_toml).unwrap();
     assert!(toml.contains("order ="), "ticket.toml carries the order: {toml}");
+
+    // The card's age is time in COLUMN: `entered_at` is stamped at mint, a
+    // reorder leaves it alone, and only a column change restarts it.
+    let stamp = |b: &Board| b.ticket(c_id).unwrap().entered_at.clone();
+    let minted = stamp(&board).expect("minted with an entered_at stamp");
+    assert_eq!(stamp(&c.board()).as_deref(), Some(minted.as_str()), "reorders do not restamp");
+    let secs = |s: &str| s.strip_prefix('@').unwrap().parse::<u64>().unwrap();
+    std::thread::sleep(Duration::from_millis(1100)); // the stamp is whole seconds
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: c_id, column: "IN PROGRESS".into(), before: None }),
+        Response::Ok
+    ));
+    let moved = stamp(&c.board()).unwrap();
+    assert!(secs(&moved) > secs(&minted), "a column move restamps: {minted} -> {moved}");
+    let toml = std::fs::read_to_string(&ticket_toml).unwrap();
+    assert!(toml.contains("entered_at ="), "ticket.toml carries the stamp: {toml}");
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();

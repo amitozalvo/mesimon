@@ -10,75 +10,24 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
 use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::process::{Child, Command as Proc, Stdio};
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, SessionKind};
-use mesimon_core::command::{Command, Envelope, Response};
+use mesimon_core::board::SessionKind;
+use mesimon_core::command::{Command, Response};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
 
 // ------------------------------------------------------------ the wire
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let stream = UnixStream::connect(sock).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn send(&mut self, principal: Principal, command: Command) -> Response {
-        let env = Envelope { principal, command };
-        writeln!(self.write, "{}", serde_json::to_string(&env).unwrap()).unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        self.send(Principal::Local, command)
-    }
-}
-
-fn board_of(resp: Response) -> Board {
-    match resp {
-        Response::Board { board, .. } => board,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
 
 fn notices_of(resp: &Response) -> Vec<String> {
     match resp {
         Response::Board { notices, .. } => notices.iter().map(|n| n.kind.clone()).collect(),
         other => panic!("expected board, got {other:?}"),
     }
-}
-
-fn hook_send(sock: &std::path::Path, session: &str, event: &str, body: &str) {
-    let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
-        .args(["hook", "--sock"])
-        .arg(sock)
-        .args(["--session", session, "--event", event])
-        .stdin(Stdio::piped())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .spawn()
-        .expect("spawn hook");
-    child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
-    assert!(child.wait().unwrap().success());
 }
 
 // ------------------------------------------- the shim, driven as Claude does
@@ -276,14 +225,17 @@ fn agent_board_tools_tier_and_collisions() {
     // ---- the session knows which ticket it is on, from the shell ---------
     // MESIMON_TICKET now reaches a shared-checkout session too; before T-84 it
     // was worktree-only, which is the board default's blind spot.
-    let env_out = Proc::new("tmux")
-        .args(["-S", &tmux_sock.display().to_string(), "show-environment", "-t", &rec.sid16()])
+    // It rides the launcher's `--set`, on the pane's command line on purpose:
+    // a ticket key is not a secret, and `ps` naming a pane's ticket is useful.
+    // (The user's captured environment is NOT there — shell_env_e2e holds that.)
+    let start = tmux(&tmux_sock)
+        .args(["list-panes", "-t", &rec.sid16(), "-F", "#{pane_start_command}"])
         .output()
-        .expect("tmux show-environment");
-    let env_out = String::from_utf8_lossy(&env_out.stdout);
+        .expect("tmux list-panes");
+    let start = String::from_utf8_lossy(&start.stdout);
     assert!(
-        env_out.contains(&format!("MESIMON_TICKET={key}")),
-        "shared-checkout session must carry MESIMON_TICKET: {env_out}"
+        start.contains(&format!("MESIMON_TICKET={key}")),
+        "shared-checkout session must carry MESIMON_TICKET: {start}"
     );
 
     // ---- … and from the model, through the tools ------------------------

@@ -2,6 +2,7 @@
 //! travels as one of these, carries its principal, and passes `authorize()`.
 //! Wire: newline-delimited JSON over the daemon's unix socket.
 
+use crate::authorize::Action;
 use serde::{Deserialize, Serialize};
 
 use crate::board::{Board, SessionKind, WorkspaceStrategy};
@@ -132,6 +133,18 @@ pub enum Command {
         from: String,
         to: String,
     },
+    /// Reposition a tag in the registry — along its own axis, or onto
+    /// another one, carrying every wearer with it (`board::move_tag`).
+    ///
+    /// `to_index` is a slot in the DESTINATION row and is clamped there, so a
+    /// client that has just watched a row change under it lands the tag at
+    /// the end rather than being refused.
+    MoveTag {
+        group: u8,
+        name: String,
+        to_group: u8,
+        to_index: usize,
+    },
     /// Pick a tag's tint (Tab in the picker). `color` indexes the tag ramp
     /// and is taken modulo its size, so an out-of-range value from a newer
     /// client wraps rather than being refused.
@@ -152,6 +165,20 @@ pub enum Command {
     MergeToAgent {
         id: ulid::Ulid,
         request: MergeRequest,
+    },
+    /// Put a prompt the USER typed in front of the ticket's live claude and
+    /// submit it, without the user going to the pane (the board's
+    /// Shift+Enter). `MergeToAgent` is the same delivery with mesimon's own
+    /// words; this one carries only the user's, which is why it may be
+    /// reached from an ordinary key while that one is a staged confirmation.
+    ///
+    /// README promise 3 survives literally: `sanitize_prompt` only ever
+    /// REMOVES characters, and nothing — no prefix, no marker, no trailing
+    /// note — is appended on the way to the pane. The text Claude reads is a
+    /// subsequence of the text the user typed.
+    PromptSession {
+        ticket: ulid::Ulid,
+        text: String,
     },
     /// Undo within the grace band.
     RestoreTicket {
@@ -297,6 +324,135 @@ pub enum Command {
 
 fn default_diff_context() -> u32 {
     3
+}
+
+/// The ceiling on one `PromptSession`. A prompt is a sentence or a paragraph
+/// typed into a card-width field, not a document: what the board's Shift+Enter
+/// is for is "ask the agent a thing while looking at the board", and anything
+/// longer belongs in the pane where it can be edited. The bound is here rather
+/// than on the field so a client cannot lift it.
+pub const PROMPT_MAX_BYTES: usize = 4096;
+
+/// The daemon-side boundary for a user-typed prompt, and the twin of
+/// [`crate::board::sanitize_tag`]: user text about to leave mesimon for
+/// somebody else's process.
+///
+/// It only ever REMOVES — that is what keeps the README's third promise
+/// literally true for a command whose whole job is to put words in an agent's
+/// box. Control characters go because a prompt rides a bracketed paste into a
+/// live tty: a bare CR would submit the text early (splitting one prompt into
+/// two turns), and an ESC would be read as a key, not as content. `\t` is not
+/// spared — inside Claude's input box Tab is a completion, not whitespace.
+/// The text is bounded, never split mid-character, and blank input is `None`
+/// so an empty paste can never press Enter on a turn the user did not write.
+pub fn sanitize_prompt(raw: &str) -> Option<String> {
+    use crate::text::{cap_bytes, nonblank, scrub_text};
+    nonblank(cap_bytes(&scrub_text(raw), PROMPT_MAX_BYTES))
+}
+
+/// What the daemon must know about a command before running it: the D32c
+/// action the chokepoint authorizes, whether the activity feed records it,
+/// and the ticket it is about.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Meta {
+    pub action: Action,
+    pub logged: bool,
+    pub subject: Option<ulid::Ulid>,
+}
+
+impl Command {
+    /// The name serde puts on the wire (`create_ticket`), which is also the
+    /// name the activity feed records — one spelling, derived, never typed.
+    pub fn wire_name(&self) -> String {
+        serde_json::to_value(self)
+            .ok()
+            .and_then(|v| v.get("cmd")?.as_str().map(str::to_owned))
+            .unwrap_or_default()
+    }
+
+    /// Exhaustive on purpose, like [`crate::mcp::agent_allows`]: a command
+    /// added to the wire does not compile until it is classified here, in
+    /// one place, instead of in parallel tables that drift apart.
+    pub fn meta(&self) -> Meta {
+        use Action::{Mutate, Read};
+        use Command::*;
+        let m = |action, logged, subject| Meta { action, logged, subject };
+        match self {
+            Hello { .. }
+            | Snapshot
+            | Subscribe
+            | GateStatus
+            // Mutates only the daemon's discovery cache, never board state.
+            | RescanExternal
+            | DiffList { .. }
+            | DiffFile { .. }
+            | PaneTail { .. }
+            | AgentGetTicket
+            | AgentListBoard => m(Read, false, None),
+            CreateTicket { .. } => m(Mutate, true, None),
+            RenameTicket { id, .. }
+            | DeleteTicket { id, .. }
+            | SetWorkspace { id, .. }
+            | SetTag { id, .. }
+            | MergeTicket { id }
+            | MergeToAgent { id, .. }
+            | RestoreTicket { id }
+            | ArchiveTicket { id }
+            | UnarchiveTicket { id } => m(Mutate, true, Some(*id)),
+            // The ticket, never the text: the feed records that the user
+            // asked, not what they asked.
+            PromptSession { ticket, .. } | SpawnSession { ticket, .. } => {
+                m(Mutate, true, Some(*ticket))
+            }
+            AttachExternal { ticket, .. } | ResumeExternal { ticket, .. } => {
+                m(Mutate, true, *ticket)
+            }
+            ForgetTag { .. }
+            | RegisterTag { .. }
+            | RenameTag { .. }
+            | SetTagColor { .. }
+            | MoveTag { .. }
+            | ArchiveAll
+            | ReloadShellEnv
+            | KillSession { .. }
+            | ResumeSession { .. }
+            | SleepSession { .. }
+            | WakeSession { .. }
+            | ReclaimAll
+            | PinAwake { .. } => m(Mutate, true, None),
+            // Moves are recorded by `place_ticket` itself, with the mover;
+            // the rest are session plumbing the feed does not narrate.
+            MoveTicket { .. }
+            | FocusStart { .. }
+            | FocusEnd { .. }
+            | GatePassed
+            | Shutdown
+            | AgentMoveTicket { .. } => m(Mutate, false, None),
+        }
+    }
+}
+
+#[cfg(test)]
+mod meta_tests {
+    use super::*;
+
+    #[test]
+    fn the_feed_name_is_the_wire_name() {
+        let c = Command::CreateTicket { column: "a".into(), title: "b".into() };
+        assert_eq!(c.wire_name(), "create_ticket");
+        assert_eq!(Command::ReloadShellEnv.wire_name(), "reload_shell_env");
+    }
+
+    #[test]
+    fn reads_are_never_logged_and_subjects_ride_along() {
+        assert_eq!(
+            Command::Snapshot.meta(),
+            Meta { action: Action::Read, logged: false, subject: None }
+        );
+        let id = ulid::Ulid::new();
+        let m = Command::PromptSession { ticket: id, text: "x".into() }.meta();
+        assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -695,5 +851,47 @@ mod tests {
             }
             other => panic!("expected hello, got {other:?}"),
         }
+    }
+
+    /// The sanitizer subtracts and never adds — the mechanical half of the
+    /// README's zero-prompt-injection promise for a command that types into
+    /// an agent's box.
+    #[test]
+    fn sanitize_prompt_only_ever_removes() {
+        for raw in [
+            "rebase onto main",
+            "  padded  ",
+            "run \u{1b}[31mthe\u{1b} tests\r\nnow",
+            "tabs\there",
+            &"é".repeat(9000),
+        ] {
+            let Some(out) = sanitize_prompt(raw) else { continue };
+            let mut src = raw.chars();
+            for c in out.chars() {
+                assert!(
+                    src.any(|s| s == c),
+                    "sanitize_prompt introduced {c:?} that {raw:?} did not have"
+                );
+            }
+            assert!(out.len() <= PROMPT_MAX_BYTES, "{} bytes", out.len());
+        }
+    }
+
+    /// The three characters that would turn one prompt into a different
+    /// event: CR submits early, ESC is read as a key, Tab completes.
+    #[test]
+    fn sanitize_prompt_drops_what_a_tty_would_act_on() {
+        assert_eq!(sanitize_prompt("a\rb"), Some("ab".into()));
+        assert_eq!(sanitize_prompt("a\nb"), Some("ab".into()));
+        assert_eq!(sanitize_prompt("a\u{1b}b"), Some("ab".into()));
+        assert_eq!(sanitize_prompt("a\tb"), Some("ab".into()));
+        // Nothing blank ever presses Enter.
+        assert_eq!(sanitize_prompt(""), None);
+        assert_eq!(sanitize_prompt("   "), None);
+        assert_eq!(sanitize_prompt("\r\n\t"), None);
+        // Bounded, and never split a char.
+        let long = sanitize_prompt(&"é".repeat(9000)).expect("non-empty");
+        assert!(long.len() <= PROMPT_MAX_BYTES, "{} bytes", long.len());
+        assert!(long.chars().all(|c| c == 'é'));
     }
 }

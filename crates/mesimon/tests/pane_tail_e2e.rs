@@ -8,49 +8,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, SessionKind};
-use mesimon_core::command::{Command, Envelope, Response};
-use mesimon_core::Principal;
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let stream = UnixStream::connect(sock).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        let line = serde_json::to_string(&env).unwrap();
-        writeln!(self.write, "{line}").unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-}
-
-fn board_of(resp: Response) -> Board {
-    match resp {
-        Response::Board { board, .. } => board,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
+use mesimon_core::board::SessionKind;
+use mesimon_core::command::{Command, Response};
 
 #[test]
 fn the_terminal_zone_reads_the_shell_pane() {
@@ -105,9 +68,7 @@ fn the_terminal_zone_reads_the_shell_pane() {
     // what the zone is for.
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        let sent = Proc::new("tmux")
-            .arg("-S")
-            .arg(&tmux_sock)
+        let sent = tmux(&tmux_sock)
             .args(["send-keys", "-t", &sid16, "echo mesimon-probe-42", "Enter"])
             .output();
         if sent.map(|o| o.status.success()).unwrap_or(false) {
@@ -165,7 +126,7 @@ fn the_terminal_zone_reads_the_shell_pane() {
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
-    let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    kill_tmux(&tmux_sock);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::remove_dir_all(&rt_dir);

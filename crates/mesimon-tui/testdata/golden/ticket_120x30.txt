@@ -27,4 +27,4 @@
 
 
 
- TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ ^t tags ∙ ? keys
+ TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ q board ∙ ? keys

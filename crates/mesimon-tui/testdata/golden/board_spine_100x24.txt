@@ -2,9 +2,9 @@
 
    TODO                        2    IN PROGRESS                2    REVIEW                     2
 
-   Decay treatments                 ⠋ Fix OSC-11 detection   >1y    ✓ Grapheme truncation    >1y  D
+   Decay treatments          >1y    ⠋ Fix OSC-11 detection   >1y    ✓ Grapheme truncation    >1y  D
                                                                                                   O
-   Keymap validator                 ! Adopt drawer import    >1y    x Flaky e2e on runner    >1y  N
+   Keymap validator          >1y    ! Adopt drawer import    >1y    x Flaky e2e on runner    >1y  N
                                                                                                   E
 
 
@@ -21,4 +21,4 @@
 
                                                                                                   1
 
- BOARD  enter ticket page ∙ tab needs you ∙ o open ticket ∙ c start claude ∙ s shell ∙ ? keys
+ BOARD  enter ticket page ∙ tab needs you ∙ o open ticket ∙ option+hjkl move card ∙ ? keys

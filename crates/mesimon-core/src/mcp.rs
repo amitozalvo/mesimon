@@ -228,7 +228,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // merge a branch, read a diff, take the focus token, or stop the
         // daemon — and there is no tool that would let it try.
         //
-        // Tags (T-83) join it, all five. Four of them mutate the REGISTRY,
+        // Tags (T-83) join it, all six. Five of them mutate the REGISTRY,
         // which is board-wide state: `ForgetTag` strips a tag from every
         // ticket wearing it, `RenameTag` rewrites it everywhere, and both
         // are precisely the "an agent cannot change the board itself" rule
@@ -244,6 +244,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::RegisterTag { .. }
         | Command::RenameTag { .. }
         | Command::SetTagColor { .. }
+        | Command::MoveTag { .. }
         | Command::Hello { .. }
         | Command::Snapshot
         | Command::Subscribe
@@ -253,6 +254,12 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::SetWorkspace { .. }
         | Command::MergeTicket { .. }
         | Command::MergeToAgent { .. }
+        // Typing into another agent's input box is the purest form of the
+        // thing D10's never-tier exists to stop: one session steering
+        // another's turn, with no human in between. The command carries a
+        // ticket id, so an agent could not even address its own without
+        // guessing one — and it must not address its own either.
+        | Command::PromptSession { .. }
         | Command::RestoreTicket { .. }
         | Command::ArchiveTicket { .. }
         | Command::UnarchiveTicket { .. }
@@ -460,6 +467,9 @@ mod tests {
             Command::DiffList { ticket: t },
             Command::DiffFile { ticket: t, path: "a".into(), context: 3 },
             Command::PaneTail { session: s, lines: 20 },
+            // One agent steering another agent's turn is the sharpest thing
+            // the never-tier exists to stop.
+            Command::PromptSession { ticket: t, text: "do the thing".into() },
         ];
         for c in &denied {
             assert!(!agent_allows(c), "{c:?} must stay out of the tier");

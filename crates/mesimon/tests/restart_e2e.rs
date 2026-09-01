@@ -9,72 +9,13 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
-use std::process::Command as Proc;
+use std::io::Write;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, Confidence, SessionKind, SessionState, UnknownReason};
-use mesimon_core::command::{Command, Envelope, Response};
-use mesimon_core::Principal;
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let stream = loop {
-            match UnixStream::connect(sock) {
-                Ok(s) => break s,
-                Err(e) => {
-                    assert!(Instant::now() < deadline, "daemon never accepted: {e}");
-                    std::thread::sleep(Duration::from_millis(100));
-                }
-            }
-        };
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        let line = serde_json::to_string(&env).unwrap();
-        writeln!(self.write, "{line}").unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-}
-
-fn board_of(resp: Response) -> Board {
-    match resp {
-        Response::Board { board, .. } => board,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
-
-fn hook_send(sock: &std::path::Path, session: &str, event: &str, body: &str) {
-    let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
-        .args(["hook", "--sock"])
-        .arg(sock)
-        .args(["--session", session, "--event", event])
-        .stdin(std::process::Stdio::piped())
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .spawn()
-        .expect("spawn hook");
-    child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
-    assert!(child.wait().unwrap().success());
-}
+use mesimon_core::board::{Confidence, SessionKind, SessionState, UnknownReason};
+use mesimon_core::command::{Command, Response};
 
 /// Both tests set the same process-global env vars — serialize them.
 static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
@@ -202,7 +143,7 @@ fn restart_recovers_state_from_the_transcript() {
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon2.join().unwrap();
-    let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    kill_tmux(&tmux_sock);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::remove_dir_all(&rt_dir);
@@ -346,7 +287,7 @@ fn restart_recovers_done_from_a_resting_transcript() {
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon2.join().unwrap();
-    let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    kill_tmux(&tmux_sock);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::remove_dir_all(&rt_dir);

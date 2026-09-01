@@ -50,7 +50,21 @@ mesimon` (Rust 1.85+, and `CARGO_NET_GIT_FETCH_WITH_CLI=true` for the private fe
 
 ## Updating
 
-**Re-run the install line.** That is the whole procedure.
+**A board tells you.** Every few hours it asks the releases repo whether a newer version is out,
+and when there is one the header says so: `◦ v0.1.0-alpha.5 available (esc)`. Esc opens the menu,
+`Install v0.1.0-alpha.5` downloads it and checks it against the published checksum, and then the
+offer becomes the one below — nothing restarts until you press `U`.
+
+Nothing about that is automatic except the question. mesimon never installs a version you did not
+ask for, and never restarts a board you did not tell it to.
+
+- `MESIMON_NO_UPDATE_CHECK=1` turns the check off. `mesimon doctor` prints whether it is on, when
+  it last answered and what it heard.
+- Development builds never check. Only the binary `ci/release.sh` cuts is stamped to, so a
+  `cargo build` board makes no request and can never have its binary replaced by a download.
+
+**Or re-run the install line**, which is still the whole procedure and the only one on a machine
+where the check is off.
 
 - If a board is open, it notices the new binary and offers `update ready (U reloads)`. `U`
   restarts it in place.
@@ -120,6 +134,7 @@ Inside the board, `Z` parks every idle session, which is the gentler version.
 | `<repo>/.mesimon/` | Your board: columns and tickets. Excluded via `$GIT_DIR/info/exclude`, never `.gitignore`. |
 | `$GIT_DIR/info/exclude` | One line, so `.mesimon/` does not show up in `git status`. |
 | `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, logs, the private tmux socket and conf. |
+| `~/.local/state/mesimon/update-check.json` | When the release check last answered, and what it heard. One per machine, not per repo. |
 | Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. |
 
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting

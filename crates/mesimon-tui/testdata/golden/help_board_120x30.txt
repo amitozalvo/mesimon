@@ -2,29 +2,29 @@
                                   board — everything you can press here
    TODO                     2                                                           2    DONE                    1
                                   MOVE AROUND
-   Decay treatments                 hjkl      move around                              1y    z Painted accent bar  >1y
-                                    g         top of column
-   Keymap validator                 G         bottom of column                         1y
-                                    enter     go to the agent
-                                    space     ticket page, even past a live agent
-                                    tab       needs you
-                                    shift+tab previous needs you
+   Decay treatments       >1y       hjkl        move around                            1y    z Painted accent bar  >1y
+                                    g           top of column
+   Keymap validator       >1y       G           bottom of column                       1y
+                                    enter       go to the agent
+                                    space       ticket page, even past a live agent
+                                    tab         needs you
+                                    shift+tab   previous needs you
 
                                   TICKETS
-                                    o         open ticket
-                                    > <       move card
-                                    alt+hjkl  move card now
-                                    r         rename
-                                    ^t        tags
-                                    a         archive
-                                    d         delete
+                                    o           open ticket
+                                    > <         move card, aiming
+                                    option+hjkl move card
+                                    r           rename
+                                    ^t          tags
+                                    a           archive
+                                    d           delete
 
                                   SESSIONS
-                                    c         claude
-                                    s         shell
-                                    x         sleep sessions
+                                    c           claude
+                                    s           shell
+                                    x           sleep sessions
 
                                   VIEW
-                                    p         show replies
+                                    p           show replies
 
- BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ c claude ∙ s shell ∙ > < move card ∙ ^t tags ∙ ? keys
+ BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ option+hjkl move card ∙ r rename ∙ ? keys

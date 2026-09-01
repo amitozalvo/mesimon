@@ -228,6 +228,9 @@ fn install(verbose: bool) -> Section {
         Err(e) => records.push(rec(Level::Warn, "binary", format!("unknown ({e})"))),
     }
     records.push(rec(Level::Note, "version", crate::version_line()));
+    // A checker that quietly does nothing looks exactly like one that broke,
+    // so the reason it is off is printed even when the reason is the point.
+    records.push(rec(Level::Note, "update checks", mesimon_tui::update_check_status()));
     Section { name: "install", records }
 }
 

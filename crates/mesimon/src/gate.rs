@@ -72,8 +72,9 @@ fn decide(args: &[String]) {
     if let Some(p) = val(args, "--deny-state") {
         roots.push((RuleId::StateDir, PathBuf::from(p)));
     }
+    let allow: Vec<PathBuf> = vals(args, "--allow").map(PathBuf::from).collect();
 
-    let verdict = match guarded_by(file_path, cwd, &roots) {
+    let verdict = match guarded_by(file_path, cwd, &roots, &allow) {
         Some(rule) => Verdict::deny(rule),
         None => Verdict::NoOpinion,
     };
@@ -96,12 +97,24 @@ fn decide(args: &[String]) {
 /// that reached the guarded tree by a different name. `..` is folded
 /// lexically first, so `<repo>/src/../.mesimon/x` is caught even though no
 /// component of it exists yet.
-pub fn guarded_by(file_path: &str, cwd: &str, roots: &[(RuleId, PathBuf)]) -> Option<RuleId> {
+///
+/// `allow` is checked first: a subtree inside a guarded root that is the
+/// agent's own to write. Ticket worktrees live under the state dir, so
+/// without it every edit in a worktree session was refused.
+pub fn guarded_by(
+    file_path: &str,
+    cwd: &str,
+    roots: &[(RuleId, PathBuf)],
+    allow: &[PathBuf],
+) -> Option<RuleId> {
     let mut p = PathBuf::from(file_path);
     if p.is_relative() && !cwd.is_empty() {
         p = PathBuf::from(cwd).join(p);
     }
     let target = resolve(&p);
+    if allow.iter().any(|a| target.starts_with(resolve(a))) {
+        return None;
+    }
     roots.iter().find(|(_, root)| target.starts_with(resolve(root))).map(|(rule, _)| *rule)
 }
 
@@ -161,8 +174,13 @@ fn report(args: &[String], rule: RuleId, file_path: &str) {
     let _ = stream.write_all(&buf);
 }
 
-fn val<'a>(args: &'a [String], key: &str) -> Option<&'a str> {
-    args.iter().position(|a| a == key).and_then(|i| args.get(i + 1)).map(String::as_str)
+fn val<'a>(args: &'a [String], key: &'a str) -> Option<&'a str> {
+    vals(args, key).next()
+}
+
+/// Every value of a repeatable flag, in argv order.
+fn vals<'a>(args: &'a [String], key: &'a str) -> impl Iterator<Item = &'a str> + 'a {
+    args.windows(2).filter(move |w| w[0] == key).map(|w| w[1].as_str())
 }
 
 #[cfg(test)]
@@ -185,14 +203,20 @@ mod tests {
     fn a_board_write_is_denied() {
         let d = tmp();
         let p = d.join("repo/.mesimon/board/tickets/T-1/ticket.toml");
-        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d)), Some(RuleId::BoardDir));
+        assert_eq!(
+            guarded_by(&p.display().to_string(), "", &roots(&d), &[]),
+            Some(RuleId::BoardDir)
+        );
     }
 
     #[test]
     fn a_state_write_is_denied() {
         let d = tmp();
         let p = d.join("state/sessions.json");
-        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d)), Some(RuleId::StateDir));
+        assert_eq!(
+            guarded_by(&p.display().to_string(), "", &roots(&d), &[]),
+            Some(RuleId::StateDir)
+        );
     }
 
     /// The common case, and the one that must stay fast and quiet: ordinary
@@ -201,7 +225,7 @@ mod tests {
     fn ordinary_source_is_untouched() {
         let d = tmp();
         let p = d.join("repo/src/main.rs");
-        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d)), None);
+        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d), &[]), None);
     }
 
     /// `<repo>/src/../.mesimon/x` names a guarded file by a path in which no
@@ -210,7 +234,10 @@ mod tests {
     fn dot_dot_cannot_walk_in_sideways() {
         let d = tmp();
         let p = d.join("repo/src/../.mesimon/board/columns.toml");
-        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d)), Some(RuleId::BoardDir));
+        assert_eq!(
+            guarded_by(&p.display().to_string(), "", &roots(&d), &[]),
+            Some(RuleId::BoardDir)
+        );
     }
 
     /// A relative `file_path` is resolved against the payload's `cwd`, which
@@ -220,10 +247,10 @@ mod tests {
         let d = tmp();
         let cwd = d.join("repo");
         assert_eq!(
-            guarded_by(".mesimon/board/columns.toml", &cwd.display().to_string(), &roots(&d)),
+            guarded_by(".mesimon/board/columns.toml", &cwd.display().to_string(), &roots(&d), &[]),
             Some(RuleId::BoardDir)
         );
-        assert_eq!(guarded_by("src/main.rs", &cwd.display().to_string(), &roots(&d)), None);
+        assert_eq!(guarded_by("src/main.rs", &cwd.display().to_string(), &roots(&d), &[]), None);
     }
 
     /// A file that does not exist yet still resolves: Write creates files, and
@@ -234,7 +261,10 @@ mod tests {
         let d = tmp();
         let p = d.join("repo/.mesimon/board/tickets/T-9/ticket.toml");
         assert!(!p.exists());
-        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d)), Some(RuleId::BoardDir));
+        assert_eq!(
+            guarded_by(&p.display().to_string(), "", &roots(&d), &[]),
+            Some(RuleId::BoardDir)
+        );
     }
 
     /// A directory whose name merely starts with a guarded root's name is not
@@ -245,11 +275,29 @@ mod tests {
         let d = tmp();
         std::fs::create_dir_all(d.join("repo/.mesimon-notes")).unwrap();
         let p = d.join("repo/.mesimon-notes/x.md");
-        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d)), None);
+        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d), &[]), None);
     }
 
     #[test]
     fn no_roots_means_no_opinion() {
-        assert_eq!(guarded_by("/anything/at/all", "", &[]), None);
+        assert_eq!(guarded_by("/anything/at/all", "", &[], &[]), None);
+    }
+
+    /// Ticket worktrees are provisioned UNDER the state dir. The gate must
+    /// let the agent edit its own checkout, or a worktree session cannot
+    /// write a single file.
+    #[test]
+    fn a_worktree_under_the_state_dir_is_the_agents_own() {
+        let d = tmp();
+        std::fs::create_dir_all(d.join("state/worktrees/T-1-x/src")).unwrap();
+        let allow = vec![d.join("state/worktrees")];
+        let p = d.join("state/worktrees/T-1-x/src/main.rs");
+        assert_eq!(guarded_by(&p.display().to_string(), "", &roots(&d), &allow), None);
+        // The exemption is the worktrees subtree and nothing beside it.
+        let s = d.join("state/sessions.json");
+        assert_eq!(
+            guarded_by(&s.display().to_string(), "", &roots(&d), &allow),
+            Some(RuleId::StateDir)
+        );
     }
 }

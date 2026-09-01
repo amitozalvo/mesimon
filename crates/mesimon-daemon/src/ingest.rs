@@ -6,8 +6,8 @@
 //! Claude silently ignores unknown registrations, and so do we).
 
 use mesimon_core::attention::{
-    task_blocks_end_turn, AttentionTool, EndKind, NotificationKind, Signal, StartSource,
-    StopFailureClass,
+    is_teammate_task, task_blocks_end_turn, AttentionTool, EndKind, NotificationKind, Signal,
+    StartSource, StopFailureClass,
 };
 use serde_json::Value;
 
@@ -68,22 +68,23 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
                 .get("stop_hook_active")
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
-            has_agent_id: frame.payload.get("agent_id").is_some_and(|v| !v.is_null()),
+            has_agent_id: has_agent_id(frame),
             // Classified, not counted: a dormant `monitor` would otherwise
             // suppress every Stop for the rest of the session (T-72). An entry
             // with no readable `.type` counts as blocking — the safe read.
-            blocking_tasks: frame
-                .payload
-                .get("background_tasks")
-                .and_then(Value::as_array)
-                .is_some_and(|a| {
-                    a.iter().any(|t| {
-                        t.get("type").and_then(Value::as_str).is_none_or(task_blocks_end_turn)
-                    })
-                }),
+            blocking_tasks: background_tasks(frame)
+                .any(|t| t.get("type").and_then(Value::as_str).is_none_or(task_blocks_end_turn)),
+            // ...except a teammate, which is counted (T-135): it reads
+            // `running` idle or busy, so the machine weighs the count against
+            // the `TeammateIdle` frames instead.
+            teammates: background_tasks(frame)
+                .filter(|t| t.get("type").and_then(Value::as_str).is_some_and(is_teammate_task))
+                .count(),
         }),
         "SubagentStop" => Some(Signal::SubagentStop),
-        "TeammateIdle" => Some(Signal::TeammateIdle),
+        "TeammateIdle" => Some(Signal::TeammateIdle {
+            name: frame.payload.get("teammate_name").and_then(Value::as_str).map(str::to_string),
+        }),
         "StopFailure" => Some(Signal::StopFailure {
             // The matcher IS the error class (spike S-A); `error` is the
             // payload cross-check when the argv reason is missing.
@@ -129,7 +130,20 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
                 Some(Signal::PostToolUse { tool: AttentionTool::AskUserQuestion })
             }
             Some("ExitPlanMode") => Some(Signal::PostToolUse { tool: AttentionTool::ExitPlanMode }),
-            _ => Some(Signal::ToolCompleted),
+            // A message to a teammate wakes it, so it is working again
+            // whatever it last reported (T-135). `to` is the addressee.
+            Some("SendMessage") => match frame
+                .payload
+                .get("tool_input")
+                .and_then(|i| i.get("to"))
+                .and_then(Value::as_str)
+            {
+                Some(name) => Some(Signal::TeammateMessaged { name: name.to_string() }),
+                None => Some(Signal::ToolCompleted { nested: has_agent_id(frame) }),
+            },
+            // `agent_id` marks a subagent's or teammate's tool, not the
+            // session's own (measured 2026-09-01).
+            _ => Some(Signal::ToolCompleted { nested: has_agent_id(frame) }),
         },
         // One registration, no matcher — discriminate here (11 §11.2.3: the
         // documented matcher list is shorter than the shipping enum).
@@ -147,6 +161,19 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
         "PaneDied" => Some(Signal::PaneDied { status: reason.and_then(|r| r.parse().ok()) }),
         _ => None,
     }
+}
+
+fn background_tasks(frame: &HookFrame) -> impl Iterator<Item = &Value> {
+    frame
+        .payload
+        .get("background_tasks")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flat_map(|a| a.iter())
+}
+
+fn has_agent_id(frame: &HookFrame) -> bool {
+    frame.payload.get("agent_id").is_some_and(|v| !v.is_null())
 }
 
 /// `SessionStart` is the only authoritative source of `transcript_path` (D24).
@@ -208,10 +235,16 @@ pub fn detail_of(frame: &HookFrame) -> Option<String> {
     Some(text)
 }
 
+/// The most of a hook frame either side keeps. A frame is a one-line header
+/// and a few JSON keys the daemon reads; a `Write` payload carries the whole
+/// file after them and is not needed. Any same-uid process can open
+/// `hook.sock`, so what arrives is bounded on both sides of it.
+pub const HOOK_FRAME_MAX_BYTES: u64 = 1 << 20;
+
 /// Control bytes stripped, hard length cap — every string here originates in
 /// a pane an agent controls (07 §18 rule 5).
 fn sanitize(s: &str) -> String {
-    let cleaned: String = s.chars().filter(|c| !c.is_control()).collect();
+    let cleaned = mesimon_core::text::scrub_cells(s, false);
     let cleaned = cleaned.trim();
     if cleaned.chars().count() <= DETAIL_MAX {
         return cleaned.to_string();
@@ -242,7 +275,8 @@ mod tests {
             Some(Signal::Stop {
                 stop_hook_active: false,
                 has_agent_id: false,
-                blocking_tasks: false
+                blocking_tasks: false,
+                teammates: 0
             })
         );
     }
@@ -263,6 +297,60 @@ mod tests {
         assert!(blocking(r#"{"background_tasks":[{"description":"?"}]}"#));
         assert!(!blocking(r#"{"background_tasks":[]}"#));
         assert!(!blocking("{}"));
+    }
+
+    /// A teammate is counted, not classed (T-135): the payload lists one as
+    /// `running` for its whole life, so the machine weighs the count against
+    /// the idle notices. The shape is the one captured on the wire.
+    #[test]
+    fn teammates_are_counted_not_blocking() {
+        let body = r#"{"background_tasks":[
+            {"id":"t1","type":"teammate","status":"running","description":"Reuse review"},
+            {"id":"t2","type":"teammate","status":"running","description":"Altitude review"},
+            {"id":"m1","type":"monitor","status":"running","description":"comments"}]}"#;
+        match signal_of(&frame("Stop", None, body)) {
+            Some(Signal::Stop { blocking_tasks, teammates, .. }) => {
+                assert!(!blocking_tasks);
+                assert_eq!(teammates, 2);
+            }
+            other => panic!("expected Stop, got {other:?}"),
+        }
+        // A shell beside them still holds the turn open on its own.
+        let body = r#"{"background_tasks":[{"type":"teammate"},{"type":"shell"}]}"#;
+        match signal_of(&frame("Stop", None, body)) {
+            Some(Signal::Stop { blocking_tasks, teammates, .. }) => {
+                assert!(blocking_tasks);
+                assert_eq!(teammates, 1);
+            }
+            other => panic!("expected Stop, got {other:?}"),
+        }
+    }
+
+    /// The teammate bookkeeping frames: an idle notice carries the name, a
+    /// `SendMessage` names its addressee, and a subagent's tool completion is
+    /// marked nested by its `agent_id` (all three captured 2026-09-01).
+    #[test]
+    fn teammate_frames_carry_names_and_nesting() {
+        let f = frame("TeammateIdle", None, r#"{"teammate_name":"reuse"}"#);
+        assert_eq!(signal_of(&f), Some(Signal::TeammateIdle { name: Some("reuse".into()) }));
+        let f = frame("TeammateIdle", None, "{}");
+        assert_eq!(signal_of(&f), Some(Signal::TeammateIdle { name: None }));
+        let f = frame(
+            "PostToolUse",
+            None,
+            r#"{"tool_name":"SendMessage","tool_input":{"to":"reuse","message":"go on"}}"#,
+        );
+        assert_eq!(signal_of(&f), Some(Signal::TeammateMessaged { name: "reuse".into() }));
+        let f = frame("PostToolUse", None, r#"{"tool_name":"SendMessage","tool_input":{}}"#);
+        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted { nested: false }));
+        let f = frame(
+            "PostToolUse",
+            None,
+            r#"{"tool_name":"Bash","agent_id":"a47da72ea574bf9f0","agent_type":"general-purpose"}"#,
+        );
+        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted { nested: true }));
+        let f = frame("PostToolUse", None, r#"{"tool_name":"Bash","agent_id":null}"#);
+        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted { nested: false }));
     }
 
     #[test]
@@ -315,7 +403,8 @@ mod tests {
             Some(Signal::Stop {
                 stop_hook_active: false,
                 has_agent_id: true,
-                blocking_tasks: false
+                blocking_tasks: false,
+                teammates: 0
             })
         );
     }
@@ -381,10 +470,10 @@ mod tests {
         );
         // Any other completion is the generic permission-accept path.
         let f = frame("PostToolUse", None, r#"{"tool_name":"Bash"}"#);
-        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted));
+        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted { nested: false }));
         // Missing/truncated tool_name still counts as a completion.
         let f = frame("PostToolUse", None, "{truncated");
-        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted));
+        assert_eq!(signal_of(&f), Some(Signal::ToolCompleted { nested: false }));
     }
 
     #[test]

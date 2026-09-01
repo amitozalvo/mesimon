@@ -24,6 +24,8 @@ use mesimon_core::command::{Command as Cmd, Envelope, Response, PROTOCOL_VERSION
 use mesimon_core::Principal;
 use mesimon_daemon::Paths;
 
+mod common;
+
 /// One Hello over the socket, without the TUI client — so the assertions never
 /// depend on the machinery under test.
 fn hello(sock: &Path) -> Option<(u32, String)> {

@@ -1,6 +1,7 @@
 //! mesimon — me-si-MON. The task instrument.
 
 mod doctor;
+mod exec;
 mod gate;
 mod hook;
 mod mcp;
@@ -20,9 +21,12 @@ fn main() -> Result<()> {
         // are spawned by Claude Code, never by a person.
         Some("gate") => gate::run(&args[1..]),
         Some("mcp") => mcp::run(&args[1..]),
+        // The pane launcher: applies the captured environment and execs.
+        Some("exec") => exec::run(&args[1..]),
         Some("daemon") => {
             let repo =
                 arg_value(&args, "--repo").map(PathBuf::from).unwrap_or(std::env::current_dir()?);
+            mesimon_daemon::install_sigterm_handler();
             mesimon_daemon::run_foreground(&repo)
         }
         Some("doctor") => doctor::run(&args[1..]),
@@ -72,6 +76,7 @@ fn print_help() {
          spawned by Claude Code inside a mesimon session, never run by hand:\n  \
          mesimon hook   observer; reports one event, writes no stdout, exits 0\n  \
          mesimon gate   PreToolUse decider; refuses writes into paths mesimon owns\n  \
-         mesimon mcp    the board's MCP server (get_ticket, list_board, move_ticket)\n"
+         mesimon mcp    the board's MCP server (get_ticket, list_board, move_ticket)\n  \
+         mesimon exec   pane launcher; applies the captured shell environment, then execs\n"
     );
 }

@@ -36,3 +36,8 @@ unicode-segmentation = "1"
 [workspace.lints.clippy]
 # D26: silent degradation is banned; unwraps in non-test code are review flags
 unwrap_used = "warn"
+
+[profile.dev]
+# Backtraces keep file:line; the full DWARF was what made every core edit
+# relink 23 test binaries slowly.
+debug = "line-tables-only"

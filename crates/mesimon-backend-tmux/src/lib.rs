@@ -186,14 +186,12 @@ impl TmuxBackend {
     }
 
     /// Spawn a session: tmux session name = sid16, running `argv` in `cwd`.
-    /// Extra env vars go through `-e` (per-session, spike T-2).
-    pub fn spawn(
-        &self,
-        sid16: &str,
-        cwd: &Path,
-        argv: &[String],
-        env: &[(String, String)],
-    ) -> Result<()> {
+    ///
+    /// No `-e`, deliberately. A pane's environment is the launcher's job
+    /// (`mesimon exec --env`): values on a `new-session` command line are
+    /// readable by every user on the machine for as long as the spawn runs,
+    /// and this argv is exactly where the user's exported secrets used to be.
+    pub fn spawn(&self, sid16: &str, cwd: &Path, argv: &[String]) -> Result<()> {
         let mut args: Vec<String> = vec![
             "new-session".into(),
             "-d".into(),
@@ -202,10 +200,6 @@ impl TmuxBackend {
             "-c".into(),
             cwd.display().to_string(),
         ];
-        for (k, v) in env {
-            args.push("-e".into());
-            args.push(format!("{k}={v}"));
-        }
         args.extend(argv.iter().cloned());
         let argrefs: Vec<&str> = args.iter().map(String::as_str).collect();
         self.run(&argrefs)?;
@@ -432,17 +426,12 @@ mod tests {
         }
         let dir = shortdir();
         let be = TmuxBackend::new(dir.join("t.sock"), &dir, None).unwrap();
-        be.spawn("abc123", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()], &[]).unwrap();
+        be.spawn("abc123", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()]).unwrap();
         let snap = be.snapshot().unwrap();
         assert!(snap.iter().any(|p| p.session_name == "abc123" && !p.pane_dead));
         // Dead pane preserved by remain-on-exit:
-        be.spawn(
-            "dead1",
-            &PathBuf::from("/tmp"),
-            &["sh".into(), "-c".into(), "exit 7".into()],
-            &[],
-        )
-        .unwrap();
+        be.spawn("dead1", &PathBuf::from("/tmp"), &["sh".into(), "-c".into(), "exit 7".into()])
+            .unwrap();
         std::thread::sleep(std::time::Duration::from_millis(300));
         let snap = be.snapshot().unwrap();
         let d = snap.iter().find(|p| p.session_name == "dead1").unwrap();
@@ -452,12 +441,13 @@ mod tests {
         std::fs::remove_dir_all(dir).ok();
     }
 
-    /// The measured tmux behaviour the whole shell-env refresh rests on, pinned
-    /// so a future tmux bump cannot change it silently: a pane's `PATH` comes
-    /// from the CLIENT that spawned it, and `-e PATH=…` does not reach the
-    /// child at all. Everything else does travel through `-e`.
+    /// The measured tmux behaviour `set_path` rests on, pinned so a future
+    /// tmux bump cannot change it silently: a pane's `PATH` comes from the
+    /// CLIENT that spawned it. (The other half of the old measurement — that
+    /// `-e PATH=…` never reaches the child — no longer matters: nothing
+    /// travels through `-e` any more.)
     #[test]
-    fn a_panes_path_is_the_clients_and_e_path_is_ignored() {
+    fn a_panes_path_is_the_clients() {
         if Command::new("tmux").arg("-V").output().is_err() {
             eprintln!("tmux not installed; skipping");
             return;
@@ -466,30 +456,15 @@ mod tests {
         std::fs::create_dir_all(&dir).unwrap();
         let mut be = TmuxBackend::new(dir.join("t.sock"), &dir, None).unwrap();
         be.set_path(Some("/CLIENT-SENTINEL/bin:/usr/bin:/bin".into()));
-        be.spawn(
-            "envpr1",
-            &PathBuf::from("/tmp"),
-            &["/usr/bin/env".into()],
-            // A decoy on the road tmux ignores, and a control on the road it honours.
-            &[
-                ("PATH".into(), "/E-SENTINEL/bin:/usr/bin:/bin".into()),
-                ("MSMN_CONTROL".into(), "carried".into()),
-            ],
-        )
-        .unwrap();
+        be.spawn("envpr1", &PathBuf::from("/tmp"), &["/usr/bin/env".into()]).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(400));
         let pane = be.capture_tail("envpr1", 200).unwrap().join("\n");
         be.kill_server().unwrap();
         std::fs::remove_dir_all(&dir).ok();
 
-        assert!(pane.contains("MSMN_CONTROL=carried"), "`-e` should carry a plain var:\n{pane}");
         assert!(
             pane.contains("/CLIENT-SENTINEL/bin"),
             "the pane must take PATH from the client env:\n{pane}"
-        );
-        assert!(
-            !pane.contains("/E-SENTINEL/bin"),
-            "`-e PATH` reaching the child would mean set_path is the wrong road:\n{pane}"
         );
     }
 

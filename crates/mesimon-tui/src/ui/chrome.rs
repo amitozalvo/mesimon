@@ -192,6 +192,10 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         _ if app.tag_armed.is_some() => Scope::TagChord.word(),
         Mode::Input { purpose: InputPurpose::Create { .. }, .. } => "NEW",
         Mode::Input { purpose: InputPurpose::Rename { .. }, .. } => "RENAME",
+        // Not "PROMPT": the mode word is what the text will DO, and every
+        // other field here saves something to the board. This one leaves
+        // mesimon entirely.
+        Mode::Input { purpose: InputPurpose::Prompt { .. }, .. } => "ASK",
         _ => scope.word(),
     };
     // The mode word plus its two-space gutter and the leading pad.

@@ -40,12 +40,7 @@ pub fn claude_home() -> PathBuf {
 /// git being absent (plain root only).
 pub fn repo_roots(repo_root: &Path) -> Vec<PathBuf> {
     let mut roots = vec![repo_root.to_path_buf()];
-    if let Ok(out) = std::process::Command::new("git")
-        .arg("-C")
-        .arg(repo_root)
-        .args(["worktree", "list", "--porcelain"])
-        .output()
-    {
+    if let Ok(out) = crate::git::git(repo_root).args(["worktree", "list", "--porcelain"]).output() {
         if out.status.success() {
             for line in String::from_utf8_lossy(&out.stdout).lines() {
                 if let Some(p) = line.strip_prefix("worktree ") {
@@ -265,16 +260,10 @@ fn scan_tail_window(path: &Path, len: u64, window: u64) -> TailInfo {
 /// D29: foreign text entering chrome is sanitized — control characters and
 /// direction overrides out, length capped.
 pub fn sanitize(text: &str) -> String {
-    let cleaned: String = text
-        .chars()
-        .map(|c| {
-            if c.is_control() || matches!(c, '\u{202a}'..='\u{202e}' | '\u{2066}'..='\u{2069}') {
-                ' '
-            } else {
-                c
-            }
-        })
-        .collect();
+    // A control is a word break here ("my\u{7}session" is two words), then
+    // the shared hazard list, then one space between words.
+    let spaced: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    let cleaned = mesimon_core::text::scrub_cells(&spaced, false);
     let cleaned = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let mut out = String::new();
     for ch in cleaned.chars() {
@@ -423,7 +412,7 @@ mod tests {
 
     #[test]
     fn sanitize_strips_controls_and_caps() {
-        assert_eq!(sanitize("a\x1b[31mb\u{202e}c"), "a [31mb c");
+        assert_eq!(sanitize("a\x1b[31mb\u{202e}c"), "a [31mbc");
         let long = "x".repeat(300);
         let s = sanitize(&long);
         assert!(s.chars().count() <= PREVIEW_MAX + 1);

@@ -74,13 +74,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
     let count = rows.len() + ghost.map(|_| 1).unwrap_or(0);
 
-    let ctx = CardCtx {
-        theme,
-        second: app.tag_second,
-        width: area.width,
-        now_ms: now_ms(),
-        spin: app.spin_frame(),
-    };
+    let ctx = CardCtx { theme, width: area.width, now_ms: now_ms(), spin: app.spin_frame() };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
     let marquee_ms = |t: &Ticket| -> u64 {
@@ -105,6 +99,16 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             _ => None,
         }
     };
+    // The prompt field (Shift+Enter) hangs UNDER its card instead of taking
+    // the title line the way a rename does: the ticket is not what is being
+    // edited here, it is who the text is going to — so it has to stay whole
+    // and stay on screen while the sentence is typed.
+    let prompt_of = |t: &Ticket| -> Option<&EditBuffer> {
+        match editing {
+            Some((InputPurpose::Prompt { ticket }, buf)) if *ticket == t.id => Some(buf),
+            _ => None,
+        }
+    };
 
     // Build card line-groups in display order.
     struct Group {
@@ -113,7 +117,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         cursor: bool,
         waiting: bool,
         /// Line offset (within the group) and x-offset of a live edit cursor.
-        edit_cursor: Option<u16>,
+        /// The offset is not always 0: a rename edits the card's first line,
+        /// a prompt edits a row appended under the whole card.
+        edit_cursor: Option<(usize, u16)>,
     }
     let mut groups: Vec<Group> = Vec::new();
     let mut push_card = |t: &Ticket, selected: bool, held: bool| {
@@ -128,15 +134,19 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 lines: vec![line],
                 cursor: true,
                 waiting,
-                edit_cursor: Some(x_off),
+                edit_cursor: Some((0, x_off)),
             });
             return;
         }
         let trail = !held && moving == Some(t.id);
         let mq = if selected { Some(marquee_ms(t)) } else { None };
+        // Is this card open? The `p` preference, or a quick-tag digit still
+        // inside its reveal. The card is open on this alone — the transcript
+        // below may or may not exist, and the tag row does not depend on it.
+        let open = selected && app.peek_showing(t.id);
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
-        let peek = if selected && app.peek {
+        let peek = if open {
             let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
             ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
             ranked.iter().find(|s| s.transcript_path.is_some()).and_then(|s| {
@@ -152,7 +162,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             None
         };
         let wt = app.wt_item(t.id);
-        let lines = card::render(
+        let mut lines = card::render(
             &ctx,
             t,
             &sessions,
@@ -161,10 +171,19 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             held,
             trail,
             mq,
+            open,
             peek.as_ref(),
             &painted,
         );
-        groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor: None });
+        // The card is drawn WHOLE first — glyph, title, sessions, peek — and
+        // the field is added under it. That order is the point: what you are
+        // about to talk to stays legible while you type at it.
+        let edit_cursor = prompt_of(t).map(|buf| {
+            let (line, x_off) = card::render_prompt(&ctx, buf);
+            lines.push(line);
+            (lines.len() - 1, x_off)
+        });
+        groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor });
     };
     match ghost {
         Some((gid, gidx)) => {
@@ -185,8 +204,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         }
         None => {
             for (i, t) in rows.iter().enumerate() {
-                let selected =
-                    is_cursor_col && app.cursor_row == i && matches!(app.mode, Mode::Normal);
+                // A prompted card stays the cursor card. Every other text
+                // field drops the selection (the composer's phantom card
+                // becomes the cursor card instead), but this one is anchored
+                // to a real ticket, and collapsing it mid-prompt would take
+                // the agent's own state off screen while you type at it.
+                let selected = is_cursor_col
+                    && app.cursor_row == i
+                    && (matches!(app.mode, Mode::Normal) || prompt_of(t).is_some());
                 push_card(t, selected, false);
             }
         }
@@ -205,7 +230,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 lines: vec![line, selector],
                 cursor: true,
                 waiting: false,
-                edit_cursor: Some(x_off),
+                edit_cursor: Some((0, x_off)),
             });
         }
     }
@@ -226,8 +251,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if g.cursor {
             cursor_range = Some((start, end));
         }
-        if let Some(x) = g.edit_cursor {
-            edit_at = Some((start, x));
+        if let Some((off, x)) = g.edit_cursor {
+            edit_at = Some((start + off, x));
         }
         card_ranges.push((start, end, g.waiting));
     }

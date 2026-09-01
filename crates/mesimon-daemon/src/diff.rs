@@ -4,7 +4,6 @@
 //! the display-only in-flight flags, one `status` call in the worktree.
 
 use std::path::Path;
-use std::process::Command;
 
 use anyhow::{bail, Context, Result};
 use mesimon_core::command::Response;
@@ -18,21 +17,10 @@ use crate::worktree::{branch_tip, Binding, BindingStatus};
 /// Above this, the pane shows `TooLarge` and `!` is the reader (docs/08 §1.3).
 pub const MAX_PATCH_BYTES: u64 = 2 * 1024 * 1024;
 
-/// Read-path git, bytes out. `--no-optional-locks` always; GIT_* targeting
-/// vars are scrubbed — the daemon may itself have been spawned from inside a
-/// worktree session (dogfooding), and an inherited GIT_DIR would silently
-/// retarget every `-C`.
+/// Read-path git, bytes out. `--no-optional-locks` always.
 fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
-        .arg("--no-optional-locks")
-        .args(args)
-        .env_remove("GIT_DIR")
-        .env_remove("GIT_WORK_TREE")
-        .env_remove("GIT_INDEX_FILE")
-        .output()
-        .context("run git")?;
+    let out =
+        crate::git::git(repo).arg("--no-optional-locks").args(args).output().context("run git")?;
     if !out.status.success() {
         bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
     }
@@ -150,6 +138,7 @@ mod tests {
     use crate::worktree::{have_git, provision};
     use mesimon_core::diff::Sign;
     use std::path::PathBuf;
+    use std::process::Command;
 
     fn scratch(name: &str) -> Option<(PathBuf, Binding)> {
         if !have_git() {

@@ -205,28 +205,7 @@ impl PeekCache {
 /// break there. Anything that must stay on ONE row flattens at its own
 /// boundary (`text::one_line`), which is where that call belongs.
 pub(crate) fn sanitize(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    for c in s.chars() {
-        let cp = c as u32;
-        if (0x2500..=0x259F).contains(&cp)
-            || (0xFE00..=0xFE0F).contains(&cp) // variation selectors
-            || (0x200B..=0x200F).contains(&cp) // zero-width space/joiners/marks
-            || cp == 0x2060 // word joiner
-            || cp == 0xFEFF // BOM / zero-width no-break space
-            || cp == 0x20E3
-        // combining enclosing keycap
-        {
-            continue;
-        }
-        if c == '\n' {
-            out.push('\n');
-        } else if c == '\t' {
-            out.push(' ');
-        } else if !c.is_control() {
-            out.push(c);
-        }
-    }
-    out
+    mesimon_core::text::scrub_cells(s, true)
 }
 
 /// Greedy display-cell word wrap to at most `max_lines`; a word wider than

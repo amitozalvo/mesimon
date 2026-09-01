@@ -16,7 +16,11 @@ use mesimon_core::keymap;
 
 use crate::app::App;
 
-/// Widest key column across the groups, so the hints line up in one rail.
+/// Floor for the key column, so the hints line up in one rail and the rail
+/// sits in the same place on every screen. It is a floor and not the width:
+/// a spelling wider than this (`option+hjkl`, `shift+enter`) pushes the rail
+/// out rather than closing the gap, which is what `> <` used to hide — every
+/// key was short enough that nothing tested the arithmetic.
 const KEY_W: usize = 10;
 
 pub(super) fn draw(f: &mut Frame, app: &App) {
@@ -46,6 +50,17 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let head = format!(" {} — everything you can press here", scope.word().to_lowercase());
     lines.push(Line::from(Span::styled(head, theme.dim1().add_modifier(Modifier::BOLD))));
 
+    // One rail for the whole overlay, wide enough for the widest spelling in
+    // it plus a space — a key that fills the column exactly must still not
+    // touch its hint.
+    let rail = KEY_W.max(
+        groups
+            .iter()
+            .flat_map(|(_, rows)| rows.iter())
+            .map(|(key, _)| key.width() + 1)
+            .max()
+            .unwrap_or(0),
+    );
     for (group, rows) in groups {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(
@@ -53,7 +68,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
             theme.dim2().add_modifier(Modifier::BOLD),
         )));
         for (key, hint) in rows {
-            let pad = KEY_W.saturating_sub(key.width());
+            let pad = rail.saturating_sub(key.width());
             lines.push(Line::from(vec![
                 Span::styled(format!("   {key}"), theme.base()),
                 Span::raw(" ".repeat(pad)),

@@ -59,9 +59,11 @@ pub enum Key {
     /// wrongly. Alt is merely *absent* — a terminal that swallows Option
     /// (macOS Terminal composes `˙` for `⌥h`; iTerm2 needs `Option Key Sends:
     /// Esc+`) delivers no atom at all, and the key is inert rather than wrong.
-    /// Inert is affordable here and only here, because every move these four
-    /// make, `> <` also makes: they buy speed, never capability
-    /// (`alt_is_admitted_only_for_the_nudge`).
+    /// Inert is affordable exactly while no capability stands behind the
+    /// atom: every move these four make, a legacy-floor spelling on the same
+    /// screen also makes — `> <` on the board, `HJKL` in the tag picker,
+    /// where the two spellings share one binding. They buy speed, never
+    /// capability (`alt_is_admitted_only_for_a_nudge`).
     AltLeft,
     AltRight,
     AltUp,
@@ -142,6 +144,25 @@ pub enum Scope {
 }
 
 impl Scope {
+    /// Every scope, for the validators. Beside the enum so a new variant is
+    /// added here in the same edit; `scope_list_is_complete` catches the one
+    /// that is not.
+    pub const ALL: [Scope; 13] = [
+        Scope::Global,
+        Scope::Board,
+        Scope::Ticket,
+        Scope::Diff,
+        Scope::DiffView,
+        Scope::DeleteChord,
+        Scope::ArchiveChord,
+        Scope::TagChord,
+        Scope::Move,
+        Scope::Menu,
+        Scope::Drawer,
+        Scope::Archived,
+        Scope::Input,
+    ];
+
     /// The scope a key falls through to when this one does not bind it.
     pub fn parent(self) -> Option<Scope> {
         match self {
@@ -189,6 +210,10 @@ pub enum Verb {
     NextAttention,
     PrevAttention,
     Reload,
+    /// A newer release is published: fetch it, verify it, and put it at our
+    /// own path. The restart afterwards is still [`Verb::Reload`] — this
+    /// verb only ever moves the file that verb's watch is already watching.
+    InstallUpdate,
     Redraw,
     Suspend,
     // ---- navigation (target resolved by scope) ----
@@ -231,6 +256,13 @@ pub enum Verb {
     // ---- sessions ----
     Claude,
     Shell,
+    /// Shift+Enter on the board: open a one-line field on the selected card
+    /// and put what is typed there in front of the ticket's live claude,
+    /// submitted, without leaving the board. The composer's
+    /// [`Verb::SaveStart`] is the same gesture one step earlier — there the
+    /// ticket and the agent do not exist yet, so the press mints both and
+    /// asks the title; here they do, so it only asks.
+    Prompt,
     ClaudeNew,
     ShellNew,
     Sleep,
@@ -254,6 +286,13 @@ pub enum Verb {
     TagRight,
     TagUp,
     TagDown,
+    /// Take the tag under the cursor with you: along its axis, which is the
+    /// order the row draws and the digit cycles, or onto the axis above or
+    /// below. The picker's grid nudged the way the board's is.
+    TagCarryLeft,
+    TagCarryRight,
+    TagCarryUp,
+    TagCarryDown,
     /// A digit: jump to that group's row, and step along it on a repeat.
     TagGroup,
     /// Put the cell's tag on the ticket (or take it off again).
@@ -264,11 +303,12 @@ pub enum Verb {
     TagRename,
     /// Delete the cell's tag from the registry and every ticket. Two presses.
     TagForget,
-    /// Switch how much ink the mark under a tagged card spends. A view
-    /// setting, and the picker is where you are looking at tags.
-    TagWeight,
     /// Leave the picker.
     TagDone,
+    /// A digit on the board or the ticket screen: step the selected ticket
+    /// along that group's tags without opening the picker. The same meaning
+    /// the digit already has inside `^t`, minus the chord.
+    TagCycle,
     Merge,
     OpenDiff,
     // ---- diff ----
@@ -293,7 +333,10 @@ pub enum Verb {
     // ---- input ----
     Save,
     /// Shift+Enter in the composer: save AND start claude on the new ticket
-    /// with the title as its first prompt, submitted.
+    /// with the title as its first prompt, submitted. On a ticket that
+    /// already has an agent the same key is [`Verb::Prompt`] instead, and
+    /// while a prompt field is open this verb sends it — one key, one
+    /// sentence: ask claude, stay on the board.
     SaveStart,
     CycleWorkspace,
     EditLeft,
@@ -348,7 +391,7 @@ impl Group {
 /// state-dependent hint word reads from this and nothing else, so the footer,
 /// the `?` overlay and the key dispatch can never disagree about whether an
 /// action applies.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct Ctx {
     // ---- board selection ----
     /// A card is under the cursor. Without it there is nothing to rename,
@@ -360,6 +403,10 @@ pub struct Ctx {
     pub ticket_has_sessions: bool,
     /// The selected ticket has a live claude session.
     pub ticket_has_claude: bool,
+    /// One of those claude sessions holds a PANE — so there is a box a
+    /// prompt can land in. Narrower than `ticket_has_claude`, which counts a
+    /// `Sleeping` session: parked is live, but it has no process to type at.
+    pub ticket_promptable: bool,
     /// At least one of the selected ticket's sessions is awake.
     pub ticket_awake: bool,
     /// The selected ticket is archived.
@@ -392,6 +439,14 @@ pub struct Ctx {
     pub has_archived: bool,
     pub peek_on: bool,
     pub update_ready: bool,
+    /// A newer release than this build is published, and taking the offer
+    /// downloads it. Never true beside `update_ready`: a binary already
+    /// waiting on disk is a restart, not a second download.
+    pub release_available: bool,
+    /// The tag it would fetch — `v0.1.0-alpha.5`. Both the chip and the row
+    /// name it, because "an update is available" with no version is a claim
+    /// you cannot look up, decline, or report a bug against.
+    pub release_tag: String,
     /// A shell startup file has changed since the environment mesimon is
     /// handing to new panes was captured.
     pub shell_env_stale: bool,
@@ -418,6 +473,10 @@ pub struct Ctx {
     /// The field is naming a NEW ticket, not renaming one. Only then is the
     /// workspace still open to change (it locks the moment work starts).
     pub composing: bool,
+    /// The field is a prompt bound for a live agent, not a ticket title. It
+    /// saves nothing and creates nothing, so every word the input scope
+    /// spends on saving is wrong here — `enter` sends.
+    pub prompting: bool,
     // ---- tags ----
     /// A tag name is being typed. While true every binding in the tag tail
     /// stands down, so the digits are text and not axis picks.
@@ -427,12 +486,13 @@ pub struct Ctx {
     pub tag_on_entry: bool,
     /// The cursor's tag is already on this ticket, so Enter takes it off.
     pub tag_worn: bool,
+    /// At least one group holds at least one tag. The quick-cycle digits
+    /// share a single binding, so `avail` cannot speak for one group — an
+    /// empty board of tags is the only state where every digit is inert, and
+    /// `^t` is still how the first tag gets made.
+    pub tags_exist: bool,
     /// `d` is armed: the next `d` deletes that tag board-wide.
     pub tag_forget_armed: bool,
-    /// What the next `w` gives the second tag ("2nd tag stacked", "…beside",
-    /// "…on edge"). A hint that named the current state instead of the next
-    /// press would be a key you press to find out what it does.
-    pub tag_second_next: &'static str,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -440,51 +500,13 @@ pub struct Ctx {
     pub rich_keys: bool,
 }
 
-impl Default for Ctx {
-    /// The two word-valued fields default to real words, not `""` — a hint
-    /// that renders empty would be a bound key with nothing to say, which
-    /// `every_binding_is_spelled` rejects.
-    fn default() -> Self {
-        Self {
-            has_ticket: false,
-            multi_column: false,
-            ticket_has_sessions: false,
-            ticket_has_claude: false,
-            ticket_awake: false,
-            ticket_archived: false,
-            ticket_hot: false,
-            can_undo: false,
-            undo_word: "undo",
-            can_repeat: false,
-            repeat_word: "again",
-            can_nudge: false,
-            bulk_sleep: 0,
-            bulk_sleep_bytes: 0,
-            bulk_archive: 0,
-            has_archived: false,
-            peek_on: false,
-            update_ready: false,
-            shell_env_stale: false,
-            shell_env_failed: false,
-            any_attention: false,
-            sel_session: false,
-            sel_sleeping: false,
-            sel_dead: false,
-            sel_pinned: false,
-            has_worktree: false,
-            merge_actionable: false,
-            merge_word: "merge",
-            two_pane: false,
-            worktree_present: false,
-            density_word: "context lines",
-            composing: false,
-            tag_naming: false,
-            tag_on_entry: false,
-            tag_worn: false,
-            tag_forget_armed: false,
-            tag_second_next: "2nd tag beside",
-            rich_keys: false,
-        }
+/// The four `_word` fields are the hint's text when the verb is live, and
+/// empty by default; the hint supplies the plain word then.
+fn or<'a>(word: &'a str, fallback: &'a str) -> &'a str {
+    if word.is_empty() {
+        fallback
+    } else {
+        word
     }
 }
 
@@ -517,6 +539,25 @@ pub struct Binding {
 const fn always(_: &Ctx) -> bool {
     true
 }
+
+/// The digit row, in the order the groups are numbered: `0` addresses group
+/// 10, the row it points at rather than the number it spells. One list, shared
+/// by the picker's axis pick and the board's quick cycle, because those two
+/// are the same gesture with and without the chord — and because
+/// `Key::Char('1')` is "whichever key types a 1 on this layout", which the
+/// shifted spellings `!@#$…` are not.
+const DIGITS: &[Key] = &[
+    Key::Char('1'),
+    Key::Char('2'),
+    Key::Char('3'),
+    Key::Char('4'),
+    Key::Char('5'),
+    Key::Char('6'),
+    Key::Char('7'),
+    Key::Char('8'),
+    Key::Char('9'),
+    Key::Char('0'),
+];
 
 // ---------------------------------------------------------------------------
 // The table
@@ -572,7 +613,7 @@ static GLOBAL: &[Binding] = &[
         keys: &[Key::Char('u')],
         verb: Verb::Undo,
         show: "u",
-        hint: |c| c.undo_word,
+        hint: |c| or(c.undo_word, "undo"),
         avail: |c| c.can_undo,
         class: Class::Plain,
         group: Group::Ticket,
@@ -668,6 +709,31 @@ static BOARD: &[Binding] = &[
         prio: 10,
     },
     Binding {
+        // Shift on the Enter axis again, and the same sentence the composer's
+        // Shift+Enter says: ask claude, and do not go anywhere. There Enter
+        // saves and Shift+Enter saves AND asks; here Enter goes to the agent
+        // and Shift+Enter asks it from where you are standing — the harder
+        // press is always the one that gets a prompt in front of an agent
+        // without spending the terminal on it.
+        //
+        // It sits next to `enter` in the footer on purpose: the two are one
+        // choice (go there / ask from here), and reading them apart is what
+        // made the gesture invisible before.
+        keys: &[Key::ShiftEnter],
+        verb: Verb::Prompt,
+        show: "shift+enter",
+        hint: |_| "ask claude",
+        // A parked agent has no box to type into, and `rich_keys` is the
+        // ShiftEnter clause: where the terminal spells this as a plain Enter
+        // the key must be inert AND unhinted, or the press would focus the
+        // pane instead of opening a field.
+        avail: |c| c.ticket_promptable && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 12,
+    },
+    Binding {
         keys: &[Key::Space],
         verb: Verb::TicketScreen,
         show: "space",
@@ -690,6 +756,10 @@ static BOARD: &[Binding] = &[
         prio: 30,
     },
     Binding {
+        // Overlay-only on the board (`prio: 0`). Starting a session is the
+        // ticket page's subject — `enter`/`space` one row up lead there and
+        // the footer teaches those — so the board's cells go to what only the
+        // board can do. The key still works from here for anyone who knows it.
         keys: &[Key::Char('c')],
         verb: Verb::Claude,
         show: "c",
@@ -704,9 +774,10 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 40,
+        prio: 0,
     },
     Binding {
+        // Overlay-only for the same reason as `c` above.
         keys: &[Key::Char('s')],
         verb: Verb::Shell,
         show: "s",
@@ -715,50 +786,69 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 50,
+        prio: 0,
     },
     Binding {
+        // Overlay-only, and the two swapped places (author direction): the
+        // footer now names the accelerator and `?` names the floor. `> <` is
+        // still bound, still the spelling every terminal can reach, and still
+        // the aiming gesture — it is the teaching of it that moved.
         keys: &[Key::Char('>'), Key::Char('<')],
         verb: Verb::Grab,
         show: "> <",
-        hint: |_| "move card",
+        // Named for what it adds, now that it shares the overlay with a key
+        // that makes the same move: this one lifts a ghost you aim and can
+        // still cancel. Two rows both reading "move card" told a reader which
+        // keys exist and nothing about which to press.
+        hint: |_| "move card, aiming",
         // The user's rule: no selection, no move — and no second column to
         // move to means the same thing.
         avail: |c| c.has_ticket && c.multi_column,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 60,
+        prio: 0,
     },
     Binding {
         // The same move `> <` makes, minus the aiming: one press takes the
         // card one column over or one row along, and the cursor rides with
-        // it. Overlay-only (`prio: 0`) — it is an accelerator for the gesture
-        // the footer already teaches two entries up, and the footer's cells
-        // are better spent on a verb that has no other spelling.
+        // it. This is the one the footer teaches now — spelled `option`,
+        // because that is what the key says on the machine this ships to, and
+        // a hint names the key the hand is looking for. "now" left with `> <`:
+        // it was drawing a contrast with the aiming gesture that the footer no
+        // longer sets up, and moving the card IS the verb.
+        //
+        // `can_nudge` is the wider predicate on purpose — `> <` needs a second
+        // column, a nudge also reorders inside one — so the footer offers it
+        // on the one-column board where `> <` had nothing to say.
         keys: &[Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown],
         verb: Verb::Nudge,
-        show: "alt+hjkl",
-        hint: |_| "move card now",
+        show: "option+hjkl",
+        hint: |_| "move card",
         avail: |c| c.can_nudge,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 0,
+        prio: 60,
     },
     Binding {
         // Vim's `.`, and the same bargain: the aiming was the expensive part
-        // of the last gesture, so the repeat spends no keys on it. It sits
-        // beside `> <` in the footer because that is what it repeats.
+        // of the last gesture, so the repeat spends no keys on it.
+        //
+        // Overlay-only. `.` is the one binding whose availability was already
+        // its own advertisement — `can_repeat` is false until you have moved
+        // something, so the footer entry could only ever appear *after* the
+        // gesture it accelerates, to a hand that had just performed it. The
+        // hint word still changes with what would repeat; `?` carries it.
         keys: &[Key::Char('.')],
         verb: Verb::Repeat,
         show: ".",
-        hint: |c| c.repeat_word,
+        hint: |c| or(c.repeat_word, "again"),
         avail: |c| c.has_ticket && c.can_repeat,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 65,
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('r')],
@@ -772,6 +862,9 @@ static BOARD: &[Binding] = &[
         prio: 70,
     },
     Binding {
+        // Overlay-only, with `c` and `s` above: the whole session group is
+        // the ticket page's subject, and a footer that offers to sleep them
+        // but not to start them was teaching half a gesture.
         keys: &[Key::Char('x')],
         verb: Verb::Sleep,
         show: "x",
@@ -786,9 +879,34 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 80,
+        prio: 0,
     },
     Binding {
+        // The bulk sleep the header is already offering, one press instead of
+        // esc + enter. Board-wide actions have no key as a rule (they are not
+        // about the selection, and a menu row has room to say what it will
+        // do) — this is the second exception, on the same terms as `U`:
+        // overlay-only (`prio: 0`), so the footer never carries it and the
+        // chip that names it is the only place it is taught. `Z` is zzz, not
+        // shift-of-`x` — the retired `X` was that, and shift may not switch
+        // verbs. Gated on the menu row's own predicate, so the key works
+        // exactly when the offer stands.
+        keys: &[Key::Char('Z')],
+        verb: Verb::SleepAllDone,
+        show: "Z",
+        hint: |_| "sleep the agents in done",
+        avail: |c| c.bulk_sleep > 0,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
+        // Overlay-only, and so is the ticket screen's. The composer's copy is
+        // the one the footer names (`prio: 35`, gated on `Ctx::composing`),
+        // because tagging is something you do once while the ticket is being
+        // made — the moment the words are already in your head. After that it
+        // is maintenance, and maintenance can be looked up.
         keys: &[Key::Ctrl('t')],
         verb: Verb::TagPrefix,
         show: "^t",
@@ -797,9 +915,34 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 110,
+        prio: 0,
     },
     Binding {
+        // The picker's digit, reached without the picker: one press steps the
+        // selected card along that group's tags and off the end back to
+        // untagged. Overlay-only (`prio: 0`) on the Nudge precedent — it is an
+        // accelerator for `^t`, which the footer teaches one entry up, and the
+        // footer's cells are better spent on verbs with no second spelling.
+        //
+        // Bare digits, not shift+digits: a terminal has no shift+digit atom
+        // (`keys::to_key` hands Shift+1 over as `!`), and the ten shifted
+        // symbols are a different physical key on every layout, where
+        // `Key::Char('1')` is whichever key types a 1.
+        keys: DIGITS,
+        verb: Verb::TagCycle,
+        show: "1-0",
+        hint: |_| "cycle tag",
+        avail: |c| c.has_ticket && c.tags_exist,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
+        // Overlay-only: archiving is rare next to the verbs it was crowding,
+        // it is two presses anyway, and the ticket page still offers it in
+        // words. `d delete` next door stays hinted — that one is destructive,
+        // and a key the footer never mentions is a key nobody expects to be.
         keys: &[Key::Char('a')],
         verb: Verb::ArchivePrefix,
         show: "a",
@@ -814,9 +957,13 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 90,
+        prio: 0,
     },
     Binding {
+        // Overlay-only, and the whole card-destroying set went with it: the
+        // board's footer is for moving and opening, and destroying a ticket
+        // is done from the page that shows you what you are destroying. Both
+        // presses of the chord still land from here.
         keys: &[Key::Char('d')],
         verb: Verb::DeletePrefix,
         show: "d",
@@ -825,9 +972,13 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
-        prio: 100,
+        prio: 0,
     },
     Binding {
+        // Overlay-only. The peek is a view preference, not a verb: it is set
+        // once and lived with, and the board it changes is the evidence it
+        // worked. A permanent cell teaching a toggle nobody presses twice is
+        // the cell the footer could least afford.
         keys: &[Key::Char('p')],
         verb: Verb::Peek,
         show: "p",
@@ -842,9 +993,13 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::View,
         mutates: false,
-        prio: 120,
+        prio: 0,
     },
     Binding {
+        // Overlay-only. The menu is not about the selection and the footer
+        // now is; the header's suggestion chip already spells `(esc)` on the
+        // occasions the menu has something to offer, and `?` names it the
+        // rest of the time.
         keys: &[Key::Esc],
         verb: Verb::Menu,
         show: "esc",
@@ -853,9 +1008,13 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::App,
         mutates: false,
-        prio: 200,
+        prio: 0,
     },
     Binding {
+        // Overlay-only, last of the pass. `q` and `^c` are the two spellings
+        // of leaving that every terminal program has taught for decades, and
+        // `?` still names them — the footer is for what this program does
+        // that another one would not.
         keys: &[Key::Char('q'), Key::Ctrl('c')],
         verb: Verb::Quit,
         show: "q",
@@ -864,7 +1023,7 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::App,
         mutates: false,
-        prio: 250,
+        prio: 0,
     },
 ];
 
@@ -1014,7 +1173,7 @@ static TICKET: &[Binding] = &[
         // this ticket" — and answering beats silence for the press that comes
         // from muscle memory. The invariant that matters is unbroken: a key
         // that is HINTED always works.
-        hint: |c| if c.merge_actionable { c.merge_word } else { "" },
+        hint: |c| if c.merge_actionable { or(c.merge_word, "merge") } else { "" },
         avail: always,
         class: Class::Arm,
         group: Group::Worktree,
@@ -1033,6 +1192,8 @@ static TICKET: &[Binding] = &[
         prio: 70,
     },
     Binding {
+        // Overlay-only; the composer is where the footer teaches this. See the
+        // board's copy.
         keys: &[Key::Ctrl('t')],
         verb: Verb::TagPrefix,
         show: "^t",
@@ -1041,7 +1202,21 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 85,
+        prio: 0,
+    },
+    Binding {
+        // The board's quick cycle, on the screen that shows the same ticket.
+        // `has_ticket` is what the board gates on; here the ticket is the
+        // screen, so only the registry can be empty.
+        keys: DIGITS,
+        verb: Verb::TagCycle,
+        show: "1-0",
+        hint: |_| "cycle tag",
+        avail: |c| c.tags_exist,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('a')],
@@ -1061,6 +1236,10 @@ static TICKET: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // Hinted here, and only here: this is the screen that shows the
+        // ticket's sessions and its worktree, so it is the screen where the
+        // word "delete" means something specific. The board's copy is
+        // overlay-only.
         keys: &[Key::Char('d')],
         verb: Verb::DeletePrefix,
         show: "d",
@@ -1069,7 +1248,7 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
-        prio: 0,
+        prio: 90,
     },
     Binding {
         keys: &[Key::Char('q'), Key::Esc, Key::Ctrl(']'), Key::Ctrl('5')],
@@ -1173,7 +1352,7 @@ static DIFF_VIEW: &[Binding] = &[
         keys: &[Key::Char('z')],
         verb: Verb::Density,
         show: "z",
-        hint: |c| c.density_word,
+        hint: |c| or(c.density_word, "context lines"),
         avail: always,
         class: Class::Plain,
         group: Group::View,
@@ -1263,18 +1442,41 @@ static TAG: &[Binding] = &[
         prio: 10,
     },
     Binding {
+        // The board's nudge, in the picker's grid: one press takes the tag
+        // under the cursor one cell along its axis or one axis over, and the
+        // cursor rides with it. Along the row it is order — what the row
+        // draws and what a repeated digit walks. Across rows it is the axis
+        // itself, and before this a tag created on the wrong one had no
+        // repair: `d` is the only other way off an axis and it strips the tag
+        // from every ticket on the way out.
+        //
+        // `HJKL` and the four Alt directions ride ONE binding on purpose.
+        // Alt is admitted only where no capability stands behind it
+        // (`alt_is_admitted_only_for_a_nudge`), and sharing the key list is
+        // the strongest form of that: the accelerator cannot reach a move the
+        // legacy floor does not already make, because it is the same entry.
+        // Shift stays on its axis too — `hjkl` steps, `HJKL` steps carrying.
         keys: &[
-            Key::Char('1'),
-            Key::Char('2'),
-            Key::Char('3'),
-            Key::Char('4'),
-            Key::Char('5'),
-            Key::Char('6'),
-            Key::Char('7'),
-            Key::Char('8'),
-            Key::Char('9'),
-            Key::Char('0'),
+            Key::Char('H'),
+            Key::Char('J'),
+            Key::Char('K'),
+            Key::Char('L'),
+            Key::AltLeft,
+            Key::AltDown,
+            Key::AltUp,
+            Key::AltRight,
         ],
+        verb: Verb::TagCarryLeft,
+        show: "HJKL",
+        hint: |_| "move tag",
+        avail: |c| !c.tag_naming && c.tag_on_entry,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 15,
+    },
+    Binding {
+        keys: DIGITS,
         verb: Verb::TagGroup,
         show: "1-0",
         hint: |_| "group",
@@ -1347,20 +1549,6 @@ static TAG: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 60,
-    },
-    Binding {
-        // The mark's weight, switched where you can see it change. It is a
-        // view setting and nothing on the board moves, so it earns a key in
-        // the picker rather than a row in the menu.
-        keys: &[Key::Char('w')],
-        verb: Verb::TagWeight,
-        show: "w",
-        hint: |c| c.tag_second_next,
-        avail: |c| !c.tag_naming,
-        class: Class::Plain,
-        group: Group::View,
-        mutates: false,
-        prio: 70,
     },
     Binding {
         // One Esc binding, two meanings, because an atom may not appear twice
@@ -1524,6 +1712,17 @@ static MENU_ITEMS: &[MenuItem] = &[
         key: "U",
     },
     MenuItem {
+        verb: Verb::InstallUpdate,
+        label: |c| format!("Install {}", c.release_tag),
+        // Says where it stops. The download is not the restart: a board that
+        // swapped its own binary out from under a running session without
+        // saying so would be the trespass `U` exists to avoid.
+        detail: |_| "downloads and verifies it ∙ nothing restarts yet".into(),
+        // The tag is half the row, so a flag without one is not an offer.
+        avail: |c| c.release_available && !c.release_tag.is_empty(),
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ReloadShellEnv,
         label: |c| {
             if c.shell_env_failed {
@@ -1554,7 +1753,7 @@ static MENU_ITEMS: &[MenuItem] = &[
             None => "frees their memory ∙ they wake where they left off".into(),
         },
         avail: |c| c.bulk_sleep > 0,
-        key: "",
+        key: "Z",
     },
     MenuItem {
         verb: Verb::ArchiveAllDone,
@@ -1644,6 +1843,14 @@ pub struct Suggestion {
 static SUGGESTIONS: &[Suggestion] = &[
     Suggestion { verb: Verb::Reload, headline: |_| "update ready".into(), key: "U" },
     Suggestion {
+        // Below `Reload` because they are two stages of one story and the
+        // later stage wins: a binary already on disk is reloaded, never
+        // downloaded again.
+        verb: Verb::InstallUpdate,
+        headline: |c| format!("{} available", c.release_tag),
+        key: "",
+    },
+    Suggestion {
         verb: Verb::ReloadShellEnv,
         // A failure and a change lead to the same act but are not the same
         // news, and the chip is the only place the difference gets said.
@@ -1659,7 +1866,7 @@ static SUGGESTIONS: &[Suggestion] = &[
     Suggestion {
         verb: Verb::SleepAllDone,
         headline: |c| format!("sleep {}", plural(c.bulk_sleep, "agent")),
-        key: "",
+        key: "Z",
     },
     Suggestion {
         verb: Verb::ArchiveAllDone,
@@ -1799,7 +2006,10 @@ static INPUT: &[Binding] = &[
         keys: &[Key::Enter],
         verb: Verb::Save,
         show: "enter",
-        hint: |_| "save",
+        // A prompt field saves nothing: there is no ticket being named and
+        // nothing lands on the board. The word has to be the one the press
+        // actually does, or the footer is teaching the wrong screen.
+        hint: |c| if c.prompting { "send" } else { "save" },
         avail: always,
         class: Class::Plain,
         group: Group::Ticket,
@@ -1812,11 +2022,20 @@ static INPUT: &[Binding] = &[
         // it with the title as the prompt it has already been asked. Only
         // when composing (a rename has nothing to start) and only when the
         // terminal can tell this key from Enter at all.
+        //
+        // A prompt field is the third state, and there the two Enters agree:
+        // the field was OPENED with Shift+Enter, so the finger is already
+        // holding shift and the second press must land somewhere. Sending is
+        // the only thing it could sanely mean — the alternative was a dead
+        // key in the middle of the gesture that opened the field.
         keys: &[Key::ShiftEnter],
         verb: Verb::SaveStart,
         show: "shift+enter",
-        hint: |_| "save + ask claude",
-        avail: |c| c.composing && c.rich_keys,
+        // Silent while prompting: `enter send` one cell to the left already
+        // says it, and two footer cells reading "send" teach nothing twice.
+        // Bound but unhinted is the shape `space` and `> <` already use.
+        hint: |c| if c.prompting { "" } else { "save + ask claude" },
+        avail: |c| (c.composing || c.prompting) && c.rich_keys,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -1826,6 +2045,13 @@ static INPUT: &[Binding] = &[
         // Tags while the title is still being typed. A Ctrl-letter is the
         // only legacy-floor atom a text field cannot swallow, which is the
         // whole reason the tag key is `^t` and not `t`.
+        //
+        // This is the ONE place the footer names `^t` — the board's copy and
+        // the ticket screen's are overlay-only — so it has to survive the
+        // truncation, and at prio 35 it did not: 120 cells ran out inside
+        // `shift+tab`'s long hint one entry earlier and the tag key was never
+        // once on screen. Ahead of the workspace toggle now, which is the
+        // trade this makes.
         keys: &[Key::Ctrl('t')],
         verb: Verb::TagPrefix,
         show: "^t",
@@ -1834,7 +2060,7 @@ static INPUT: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 35,
+        prio: 25,
     },
     Binding {
         keys: &[Key::Esc],
@@ -2010,6 +2236,17 @@ fn directional(verb: Verb, key: Key) -> Verb {
             Key::Char('k') | Key::Up => Verb::TagUp,
             _ => Verb::TagDown,
         },
+        // One binding, two spellings of every direction: the shifted letter
+        // every terminal can send, and the Alt atom the ones that can send it
+        // do (`alt_is_admitted_only_for_a_nudge`).
+        (Verb::TagCarryLeft | Verb::TagCarryRight | Verb::TagCarryUp | Verb::TagCarryDown, k) => {
+            match k {
+                Key::Char('H') | Key::AltLeft => Verb::TagCarryLeft,
+                Key::Char('L') | Key::AltRight => Verb::TagCarryRight,
+                Key::Char('K') | Key::AltUp => Verb::TagCarryUp,
+                _ => Verb::TagCarryDown,
+            }
+        }
         (Verb::ScrollDown, Key::Char('k') | Key::Up) => Verb::ScrollUp,
         (Verb::PageDown, Key::Char('{') | Key::PageUp) => Verb::PageUp,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
@@ -2106,28 +2343,42 @@ pub fn overlay(scope: Scope, ctx: &Ctx) -> Vec<(Group, Vec<(&'static str, &'stat
 mod tests {
     use super::*;
 
-    const ALL_SCOPES: [Scope; 13] = [
-        Scope::Global,
-        Scope::Board,
-        Scope::Ticket,
-        Scope::Diff,
-        Scope::DiffView,
-        Scope::DeleteChord,
-        Scope::ArchiveChord,
-        Scope::TagChord,
-        Scope::Move,
-        Scope::Menu,
-        Scope::Drawer,
-        Scope::Archived,
-        Scope::Input,
-    ];
+    /// `Scope::ALL` is what every validator below walks, so a scope missing
+    /// from it is validated by nothing. The match is exhaustive: adding a
+    /// variant fails to compile here, and the length check then fails until
+    /// `ALL` names it too.
+    #[test]
+    fn scope_list_is_complete() {
+        fn index(s: Scope) -> usize {
+            match s {
+                Scope::Global => 0,
+                Scope::Board => 1,
+                Scope::Ticket => 2,
+                Scope::Diff => 3,
+                Scope::DiffView => 4,
+                Scope::DeleteChord => 5,
+                Scope::ArchiveChord => 6,
+                Scope::TagChord => 7,
+                Scope::Move => 8,
+                Scope::Menu => 9,
+                Scope::Drawer => 10,
+                Scope::Archived => 11,
+                Scope::Input => 12,
+            }
+        }
+        for (i, s) in Scope::ALL.iter().enumerate() {
+            assert_eq!(index(*s), i, "{s:?} is out of place in Scope::ALL");
+        }
+        let highest = Scope::ALL.iter().map(|s| index(*s)).max().unwrap_or(0);
+        assert_eq!(Scope::ALL.len(), highest + 1);
+    }
 
     /// 04 §2.0 rule 3: no key bound in both a scope and any ancestor, and none
     /// bound twice inside one scope. The shipped keymap declares no overrides,
     /// so this is absolute.
     #[test]
     fn no_key_bound_twice_in_a_chain() {
-        for scope in ALL_SCOPES {
+        for scope in Scope::ALL {
             let mut seen: Vec<(Key, Scope)> = Vec::new();
             for s in chain(scope) {
                 for b in bindings(s) {
@@ -2146,10 +2397,10 @@ mod tests {
     /// two exceptions are `Key::ShiftEnter` and the four Alt directions, and
     /// each one is held down by a test of its own below
     /// (`shift_enter_is_inert_without_rich_keys`,
-    /// `alt_is_admitted_only_for_the_nudge`).
+    /// `alt_is_admitted_only_for_a_nudge`).
     #[test]
     fn every_atom_is_on_the_legacy_floor() {
-        for scope in ALL_SCOPES {
+        for scope in Scope::ALL {
             for b in bindings(scope) {
                 for k in b.keys {
                     let ok = match k {
@@ -2180,7 +2431,7 @@ mod tests {
         let legacy = Ctx { composing: true, rich_keys: false, ..Default::default() };
         let rich = Ctx { composing: true, rich_keys: true, ..Default::default() };
         let mut found = false;
-        for scope in ALL_SCOPES {
+        for scope in Scope::ALL {
             for b in bindings(scope) {
                 if b.keys.contains(&Key::ShiftEnter) {
                     found = true;
@@ -2199,6 +2450,65 @@ mod tests {
         // A rename is not a composition: nothing to start.
         let renaming = Ctx { composing: false, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &renaming), None);
+    }
+
+    /// Shift+Enter says ONE sentence — "ask claude, and stay here" — and its
+    /// three homes are that sentence at three moments: before the ticket
+    /// exists (mint it, spawn, ask the title), on a ticket whose agent is
+    /// already running (open a field), and inside that field (send). The atom
+    /// is off the legacy floor, so what it buys has to be a single idea; this
+    /// is the test that notices when a fourth home makes it two.
+    #[test]
+    fn shift_enter_asks_claude_at_every_stage() {
+        let composing = Ctx { composing: true, rich_keys: true, ..Default::default() };
+        let onboard = Ctx {
+            has_ticket: true,
+            ticket_has_claude: true,
+            ticket_promptable: true,
+            rich_keys: true,
+            ..Default::default()
+        };
+        let prompting = Ctx { prompting: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &composing), Some(Verb::SaveStart));
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &onboard), Some(Verb::Prompt));
+        assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &prompting), Some(Verb::SaveStart));
+        // The board's press is hinted where it works…
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &onboard),
+            Some(("shift+enter", "ask claude"))
+        );
+        // …and the field it opens says `send`, not `save`: nothing about a
+        // prompt is a save, and the word is the only thing telling them apart.
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &prompting), Some(("enter", "send")));
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &composing), Some(("enter", "save")));
+        // The second press is bound (the finger is still holding shift) and
+        // deliberately unhinted — `enter send` beside it already teaches it.
+        assert_eq!(hint_for(Scope::Input, Verb::SaveStart, &prompting), None);
+        // A prompt field is not a composer: no workspace to cycle, no tags to
+        // pick, because there is no ticket being made.
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &prompting), None);
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('t'), &prompting), None);
+    }
+
+    /// A prompt needs a box to land in. `ticket_has_claude` counts a parked
+    /// session — `Sleeping` is live — so gating on it would offer the key on
+    /// a ticket with no process, and the press would reach a pane that is not
+    /// there.
+    #[test]
+    fn prompting_needs_a_pane_not_merely_a_session() {
+        let rich = |promptable| Ctx {
+            has_ticket: true,
+            ticket_has_claude: true,
+            ticket_promptable: promptable,
+            rich_keys: true,
+            ..Default::default()
+        };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich(true)), Some(Verb::Prompt));
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich(false)), None);
+        assert!(hint_for(Scope::Board, Verb::Prompt, &rich(false)).is_none());
+        // And plain Enter is untouched either way: the two live side by side
+        // in the footer, and only one of them spends the terminal.
+        assert_eq!(resolve(Scope::Board, Key::Enter, &rich(true)), Some(Verb::Act));
     }
 
     /// Shift+Enter hardens Enter on the same target rather than switching
@@ -2223,48 +2533,118 @@ mod tests {
     /// had to be gated because a terminal that cannot report it does report
     /// something — a plain `Enter`, which saves without asking. Alt fails the
     /// other way: the terminal eats the modifier and NOTHING arrives, so the
-    /// only cost is a hint for a key that does not press. That is affordable
-    /// exactly while the atom is an accelerator, so this test pins it to one
-    /// verb, on one screen, and holds `> <` beside it as the spelling every
-    /// terminal can reach.
+    /// only cost is a hint for a key that does not press.
+    ///
+    /// What makes that affordable is that no CAPABILITY stands behind the
+    /// atom, and THAT is the clause, not the count. So every Alt binding must
+    /// be a nudge — it moves the thing under the cursor one step — and every
+    /// one must hold a legacy-floor spelling of the same move bound beside it
+    /// on the same screen: `> <` for the board's, and `HJKL` inside the
+    /// picker's own key list, where the accelerator cannot drift from the
+    /// floor because it IS the same entry. A third one needs the same two
+    /// sentences, argued.
+    ///
+    /// The board's two swapped billing (2026-09-01, author direction): the
+    /// FOOTER teaches `option+hjkl` and `> <` fell to the overlay. The floor
+    /// spelling is still bound and `?` still names it, so the clause holds in
+    /// its bound-beside-it form — but the "hinted" half is spent, and a
+    /// terminal that eats the modifier now reads a footer whose move key does
+    /// nothing and finds the working one only in `?`. That is the cost of
+    /// this arrangement, recorded here because this is the test that would
+    /// otherwise have quietly stopped guarding it.
     #[test]
-    fn alt_is_admitted_only_for_the_nudge() {
-        let mut found = 0;
-        for scope in ALL_SCOPES {
+    fn alt_is_admitted_only_for_a_nudge() {
+        const ALT: &[Key] = &[Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown];
+        let mut found: Vec<(Scope, Verb)> = Vec::new();
+        for scope in Scope::ALL {
             for b in bindings(scope) {
-                if b.keys
-                    .iter()
-                    .any(|k| matches!(k, Key::AltLeft | Key::AltRight | Key::AltUp | Key::AltDown))
-                {
-                    found += 1;
-                    assert_eq!(scope, Scope::Board, "alt outside the board");
-                    assert_eq!(b.verb, Verb::Nudge, "alt on a verb that is not the nudge");
+                if b.keys.iter().any(|k| ALT.contains(k)) {
+                    found.push((scope, b.verb));
+                    // All four or none: a direction left out is a key that
+                    // resolves to nothing while its three neighbours work.
+                    for k in ALT {
+                        assert!(b.keys.contains(k), "{:?} in {scope:?} is missing {k:?}", b.verb);
+                    }
                 }
             }
         }
-        assert_eq!(found, 1, "one alt binding, or the clause needs rewriting");
-        // The capability it accelerates, still on the floor and still hinted.
+        assert_eq!(
+            found,
+            vec![(Scope::Board, Verb::Nudge), (Scope::TagChord, Verb::TagCarryLeft)],
+            "an alt binding that is not one of the two nudges"
+        );
+
+        // The board's. The capability it accelerates is on the floor, bound
+        // and spelled; the footer teaches the accelerator and the overlay
+        // keeps the floor, which is the whole of what is left of the clause.
         let ctx =
             Ctx { has_ticket: true, multi_column: true, can_nudge: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Char('>'), &ctx), Some(Verb::Grab));
-        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card")));
+        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card, aiming")));
+        assert_eq!(resolve(Scope::Board, Key::AltLeft, &ctx), Some(Verb::Nudge));
+        assert_eq!(hint_for(Scope::Board, Verb::Nudge, &ctx), Some(("option+hjkl", "move card")));
+        let shown: Vec<&str> = footer_items(Scope::Board, &ctx).iter().map(|b| b.show).collect();
+        assert!(shown.contains(&"option+hjkl"), "the footer must name the move: {shown:?}");
+        assert!(!shown.contains(&"> <"), "the floor spelling is overlay-only now: {shown:?}");
+        assert!(
+            overlay(Scope::Board, &ctx).iter().any(|(_, ks)| ks.iter().any(|(k, _)| *k == "> <")),
+            "the floor spelling must survive in the complete answer"
+        );
         // And the nudge is the board's alone: no fall-through from Global.
         assert_eq!(resolve(Scope::Ticket, Key::AltLeft, &ctx), None);
-        assert_eq!(resolve(Scope::Board, Key::AltLeft, &ctx), Some(Verb::Nudge));
         // Nothing to send anywhere: inert, and unhinted with it.
         let alone = Ctx { can_nudge: false, ..ctx };
         assert_eq!(resolve(Scope::Board, Key::AltLeft, &alone), None);
         assert_eq!(hint_for(Scope::Board, Verb::Nudge, &alone), None);
+
+        // The picker's. Both spellings reach the same verb, and the shifted
+        // letter is the one the footer names.
+        let tag = Ctx { has_ticket: true, tag_on_entry: true, ..Default::default() };
+        for (k, v) in [
+            (Key::Char('H'), Verb::TagCarryLeft),
+            (Key::Char('L'), Verb::TagCarryRight),
+            (Key::Char('K'), Verb::TagCarryUp),
+            (Key::Char('J'), Verb::TagCarryDown),
+            (Key::AltLeft, Verb::TagCarryLeft),
+            (Key::AltRight, Verb::TagCarryRight),
+            (Key::AltUp, Verb::TagCarryUp),
+            (Key::AltDown, Verb::TagCarryDown),
+        ] {
+            assert_eq!(resolve(Scope::TagChord, k, &tag), Some(v), "{k:?}");
+        }
+        assert_eq!(hint_for(Scope::TagChord, Verb::TagCarryLeft, &tag), Some(("HJKL", "move tag")));
+        // On the footer, in the cell `w 2nd tag beside` used to hold: the
+        // picker's row runs the full width of a 120-column terminal, so this
+        // one is here because the second-tag experiment ended, not for free.
+        assert!(
+            footer_items(Scope::TagChord, &tag).iter().any(|b| b.verb == Verb::TagCarryLeft),
+            "the carry is the only tag mover and nothing on the footer says so"
+        );
+        let rows: Vec<&str> = overlay(Scope::TagChord, &tag)
+            .into_iter()
+            .flat_map(|(_, r)| r)
+            .map(|(k, _)| k)
+            .collect();
+        assert!(rows.contains(&"HJKL"), "the picker's nudge is not in `?`: {rows:?}");
+        // On the `+ new` cell there is no tag to carry; in a name field the
+        // letters are text. Both spellings go down together, hint and all.
+        let plus = Ctx { has_ticket: true, ..Default::default() };
+        let naming = Ctx { tag_naming: true, ..tag };
+        for c in [&plus, &naming] {
+            assert_eq!(resolve(Scope::TagChord, Key::Char('H'), c), None);
+            assert_eq!(resolve(Scope::TagChord, Key::AltLeft, c), None);
+            assert_eq!(hint_for(Scope::TagChord, Verb::TagCarryLeft, c), None);
+        }
     }
 
     /// 04 §2.0 rule 2, the part that bit us: no `ctrl+<digit>` other than the
     /// `Ctrl+5` that IS `ctrl+]` on legacy terminals. The rule used to ban
     /// Alt/Meta outright too — `Key::Alt` did not exist to be constructed —
-    /// and `alt_is_admitted_only_for_the_nudge` is what replaced that ban:
-    /// four atoms, one verb, no capability behind them.
+    /// and `alt_is_admitted_only_for_a_nudge` is what replaced that ban:
+    /// four atoms, two nudges, no capability behind either.
     #[test]
     fn no_banned_atoms() {
-        for scope in ALL_SCOPES {
+        for scope in Scope::ALL {
             for b in bindings(scope) {
                 for k in b.keys {
                     if let Key::Ctrl(c) = k {
@@ -2276,6 +2656,47 @@ mod tests {
                 }
             }
         }
+    }
+
+    /// The picker's digit, reached without the picker — and the reason it is
+    /// a bare digit rather than the shift+digit that was asked for. A
+    /// terminal has no shift+digit atom: `keys::to_key` hands Shift+1 over as
+    /// `!`, so the binding would really be the ten symbols `!@#$%^&*()`,
+    /// which are a different physical key on every layout (Hebrew swaps
+    /// `(`/`)`, AZERTY types digits WITH shift) — and `!` is the diff
+    /// screen's worktree shell already. `Key::Char('1')` is "whichever key types a 1 here",
+    /// which is right everywhere by construction.
+    #[test]
+    fn digits_cycle_tags_without_the_picker() {
+        let ctx = Ctx { has_ticket: true, tags_exist: true, ..Default::default() };
+        for k in DIGITS {
+            assert_eq!(resolve(Scope::Board, *k, &ctx), Some(Verb::TagCycle), "board {k:?}");
+            assert_eq!(resolve(Scope::Ticket, *k, &ctx), Some(Verb::TagCycle), "ticket {k:?}");
+            // The gesture it accelerates keeps the same key inside the chord.
+            assert_eq!(resolve(Scope::TagChord, *k, &ctx), Some(Verb::TagGroup), "picker {k:?}");
+        }
+        // An empty registry is the one state where every digit is inert, and
+        // it is unhinted with it — `^t` is still how the first tag gets made.
+        let no_tags = Ctx { has_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('1'), &no_tags), None);
+        assert_eq!(hint_for(Scope::Board, Verb::TagCycle, &no_tags), None);
+        // No selection, nothing to tag.
+        let no_card = Ctx { tags_exist: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('1'), &no_card), None);
+        // The diff screen chains to Global, not to Ticket: digits stay unbound
+        // there, and a text field owns its own.
+        assert_eq!(resolve(Scope::Diff, Key::Char('1'), &ctx), None);
+        let composing = Ctx { composing: true, tags_exist: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Char('1'), &composing), None);
+        // The shifted spellings reach none of it, and `!` still opens a shell.
+        for sym in "!@#$%^&*()".chars() {
+            assert_ne!(resolve(Scope::Board, Key::Char(sym), &ctx), Some(Verb::TagCycle), "{sym}");
+            assert_ne!(resolve(Scope::Ticket, Key::Char(sym), &ctx), Some(Verb::TagCycle), "{sym}");
+        }
+        // `!` is the diff screen's shell-in-worktree, and stays it: the atom
+        // Shift+1 really produces was spoken for before this feature existed.
+        let wt = Ctx { worktree_present: true, ..ctx.clone() };
+        assert_eq!(resolve(Scope::Diff, Key::Char('!'), &wt), Some(Verb::WorktreeShell));
     }
 
     /// The picker owns its scope: it inherits nothing, so a key it does not
@@ -2329,11 +2750,14 @@ mod tests {
         assert_eq!(hint_for(Scope::TagChord, Verb::TagToggle, &naming), Some(("enter", "save")));
         assert_eq!(resolve(Scope::TagChord, Key::Esc, &naming), Some(Verb::TagDone));
         assert_eq!(hint_for(Scope::TagChord, Verb::TagDone, &naming), Some(("esc", "cancel")));
-        // Every picker key is inert: the digits and letters are text now.
+        // Every picker key is inert: the digits and letters are text now,
+        // and a shifted letter is a letter.
         for k in [
             Key::Char('1'),
             Key::Char('h'),
             Key::Char('j'),
+            Key::Char('H'),
+            Key::Char('J'),
             Key::Char('r'),
             Key::Char('d'),
             Key::Tab,
@@ -2370,7 +2794,7 @@ mod tests {
     #[test]
     fn every_binding_is_spelled() {
         let ctx = Ctx::default();
-        for scope in ALL_SCOPES {
+        for scope in Scope::ALL {
             for b in bindings(scope) {
                 assert!(!b.show.is_empty(), "{:?} in {scope:?} has no spelling", b.verb);
                 assert!(!b.keys.is_empty(), "{:?} in {scope:?} binds nothing", b.verb);
@@ -2399,8 +2823,20 @@ mod tests {
             assert!(!shown.contains(&absent), "{absent} hinted with no ticket selected: {shown:?}");
         }
         assert!(shown.contains(&"o"), "open-ticket must always be offered: {shown:?}");
-        assert!(shown.contains(&"esc"), "the menu is always reachable: {shown:?}");
-        assert!(shown.contains(&"q"));
+        // The menu and the quit left the FOOTER, not the board: both still
+        // resolve and the overlay still names both, so the invariants these
+        // lines used to guard are asserted where they now live. `?` is what
+        // finds them, and `footer_always_keeps_the_help_tail` guards that.
+        let named = |k: &str| {
+            overlay(Scope::Board, &ctx).iter().any(|(_, ks)| ks.iter().any(|(s, _)| *s == k))
+        };
+        for gone in ["esc", "q"] {
+            assert!(!shown.contains(&gone), "{gone} is overlay-only now: {shown:?}");
+            assert!(named(gone), "the overlay is the complete answer and must name {gone}");
+        }
+        assert_eq!(resolve(Scope::Board, Key::Esc, &ctx), Some(Verb::Menu));
+        assert_eq!(resolve(Scope::Board, Key::Char('q'), &ctx), Some(Verb::Quit));
+        assert_eq!(resolve(Scope::Board, Key::Ctrl('c'), &ctx), Some(Verb::Quit));
     }
 
     /// And the other half: an unavailable key is inert, not merely unhinted.
@@ -2429,7 +2865,7 @@ mod tests {
         assert_eq!(resolve(Scope::Board, Key::Char('.'), &armed), Some(Verb::Repeat));
         assert_eq!(hint_for(Scope::Board, Verb::Repeat, &armed), Some((".", "move again")));
         // A repeat needs a card under the cursor like every other card verb.
-        let no_card = Ctx { has_ticket: false, ..armed };
+        let no_card = Ctx { has_ticket: false, ..armed.clone() };
         assert_eq!(resolve(Scope::Board, Key::Char('.'), &no_card), None);
         // And it is the board's key alone: the ticket screen has no move to
         // repeat, so `.` must not reach it through the global scope.
@@ -2534,7 +2970,7 @@ mod tests {
     /// footer to the tail, which names the key still to press.
     #[test]
     fn chord_prefixes_advertise_a_single_key() {
-        for scope in ALL_SCOPES {
+        for scope in Scope::ALL {
             for b in bindings(scope) {
                 assert!(
                     !b.show.contains("d d")
@@ -2566,7 +3002,9 @@ mod tests {
     }
 
     /// Shift hardens or forces the same verb on the same target. It never
-    /// switches verbs, and it is never how a board-wide action is reached.
+    /// switches verbs, and it is never how a board-wide action is reached —
+    /// `Z` is not shift-of-`x` but its own atom (zzz), which is why the
+    /// retired `X` stays retired.
     #[test]
     fn shift_stays_on_one_axis() {
         let t = Ctx { sel_session: true, ..Default::default() };
@@ -2574,6 +3012,12 @@ mod tests {
         assert_eq!(resolve(Scope::Ticket, Key::Char('C'), &t), Some(Verb::ClaudeNew));
         assert_eq!(resolve(Scope::Ticket, Key::Char('s'), &t), Some(Verb::Shell));
         assert_eq!(resolve(Scope::Ticket, Key::Char('S'), &t), Some(Verb::ShellNew));
+        // The picker's pair is the same bargain on a motion: `hjkl` steps,
+        // `HJKL` steps carrying the tag. Same axis, same cell under the
+        // cursor, harder.
+        let tag = Ctx { has_ticket: true, tag_on_entry: true, ..Default::default() };
+        assert_eq!(resolve(Scope::TagChord, Key::Char('l'), &tag), Some(Verb::TagRight));
+        assert_eq!(resolve(Scope::TagChord, Key::Char('L'), &tag), Some(Verb::TagCarryRight));
         // The old unrelated pairs are gone: no board key at all for the bulk
         // verbs, and none for the two lists.
         let full = Ctx {
@@ -2586,6 +3030,20 @@ mod tests {
         for retired in [Key::Char('X'), Key::Char('A'), Key::Char('V'), Key::Char('e')] {
             assert_eq!(resolve(Scope::Board, retired, &full), None, "{retired:?} is retired");
         }
+        // The bulk sleep is the exception, and it is one the header teaches:
+        // its own key, gated on the same predicate as the row and the chip,
+        // and kept off the footer so the board still reads as the selection's.
+        assert_eq!(resolve(Scope::Board, Key::Char('Z'), &full), Some(Verb::SleepAllDone));
+        assert_eq!(resolve(Scope::Board, Key::Char('Z'), &Ctx::default()), None);
+        assert_eq!(resolve(Scope::Ticket, Key::Char('Z'), &full), None, "board-only");
+        assert!(
+            !footer_items(Scope::Board, &full).iter().any(|b| b.show == "Z"),
+            "the header chip carries this offer; the footer stays out of it"
+        );
+        assert_eq!(
+            hint_for(Scope::Board, Verb::SleepAllDone, &full),
+            Some(("Z", "sleep the agents in done"))
+        );
     }
 
     /// Board-wide actions live in the menu, and the menu is one Esc away.
@@ -2616,7 +3074,15 @@ mod tests {
         assert!(!quiet_verbs.contains(&Verb::ArchivedList));
         assert!(!quiet_verbs.contains(&Verb::SleepAllDone));
         assert!(!quiet_verbs.contains(&Verb::Reload));
+        assert!(!quiet_verbs.contains(&Verb::InstallUpdate));
         assert!(!quiet_verbs.contains(&Verb::ReloadShellEnv));
+        // And a flag with no tag behind it is not an offer either: the row
+        // names the version, so half of it missing means there is no row.
+        let stem: Vec<Verb> = menu_items(&Ctx { release_available: true, ..Default::default() })
+            .iter()
+            .map(|m| m.verb)
+            .collect();
+        assert!(!stem.contains(&Verb::InstallUpdate), "an offer with no version: {stem:?}");
         // Every menu row that names a key must name one the keymap really has.
         for m in menu_items(&ctx) {
             if m.key.is_empty() {
@@ -2650,6 +3116,8 @@ mod tests {
             bulk_archive: 2,
             has_archived: true,
             update_ready: true,
+            release_available: true,
+            release_tag: "v0.1.0-alpha.5".into(),
             shell_env_stale: true,
             ..Default::default()
         };
@@ -2657,15 +3125,27 @@ mod tests {
         let heads: Vec<String> = suggestions(&all).iter().map(|s| (s.headline)(&all)).collect();
         assert_eq!(
             heads,
-            ["update ready", "shell env changed", "sleep 3 agents", "archive 2 tickets"]
+            [
+                "update ready",
+                "v0.1.0-alpha.5 available",
+                "shell env changed",
+                "sleep 3 agents",
+                "archive 2 tickets"
+            ]
         );
         let one = Ctx { bulk_sleep: 1, bulk_archive: 1, ..Default::default() };
         let heads: Vec<String> = suggestions(&one).iter().map(|s| (s.headline)(&one)).collect();
         assert_eq!(heads, ["sleep 1 agent", "archive 1 ticket"], "counts of one read as one");
         let rows: Vec<Verb> = menu_items(&all).iter().map(|m| m.verb).collect();
         assert_eq!(
-            &rows[..4],
-            &[Verb::Reload, Verb::ReloadShellEnv, Verb::SleepAllDone, Verb::ArchiveAllDone],
+            &rows[..5],
+            &[
+                Verb::Reload,
+                Verb::InstallUpdate,
+                Verb::ReloadShellEnv,
+                Verb::SleepAllDone,
+                Verb::ArchiveAllDone
+            ],
             "suggested rows must lead the menu, in suggestion order: {rows:?}"
         );
         // And each suggested row is offered exactly when its suggestion is.
@@ -2673,6 +3153,12 @@ mod tests {
             Ctx::default(),
             all.clone(),
             Ctx { update_ready: true, ..Default::default() },
+            Ctx {
+                release_available: true,
+                release_tag: "v0.1.0-alpha.5".into(),
+                ..Default::default()
+            },
+            Ctx { release_available: true, ..Default::default() },
             Ctx { shell_env_stale: true, ..Default::default() },
             Ctx { shell_env_failed: true, ..Default::default() },
         ] {
@@ -2708,11 +3194,18 @@ mod tests {
             bulk_archive: 1,
             has_archived: true,
             update_ready: true,
+            release_available: true,
+            release_tag: "v0.1.0-alpha.5".into(),
             shell_env_stale: true,
             ..Default::default()
         };
         for m in MENU_ITEMS {
-            assert!(!(m.label)(&ctx).is_empty(), "{:?} has no label", m.verb);
+            let label = (m.label)(&ctx);
+            assert!(!label.is_empty(), "{:?} has no label", m.verb);
+            // A label built from a Ctx value can end up a stem — "Install "
+            // with nothing after it. The row would render, and would teach
+            // the wrong thing, so the trailing space is the tell.
+            assert_eq!(label.trim_end(), label, "{:?} has a label with nothing after it", m.verb);
         }
         // The sleep payoff is spent in words when it would round to nothing,
         // and in GiB when it would not.
@@ -2748,7 +3241,7 @@ mod tests {
             ..Default::default()
         };
         let mut checked = 0;
-        for scope in ALL_SCOPES {
+        for scope in Scope::ALL {
             if scope == Scope::Input {
                 continue; // a text field's arrows move the cursor, not a list
             }
@@ -2785,7 +3278,7 @@ mod tests {
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");
         }
         assert_eq!(resolve(Scope::Move, Key::Char('q'), &ctx), Some(Verb::Cancel));
-        for s in ALL_SCOPES {
+        for s in Scope::ALL {
             if matches!(
                 s,
                 Scope::Input

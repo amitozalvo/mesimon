@@ -11,63 +11,14 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
-use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::process::{Command as Proc, Stdio};
+use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, Provenance, SessionKind, SessionState, StopReason};
-use mesimon_core::command::{Command, Envelope, Response};
-use mesimon_core::Principal;
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let stream = UnixStream::connect(sock).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        let line = serde_json::to_string(&env).unwrap();
-        writeln!(self.write, "{line}").unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-}
-
-fn board_of(resp: Response) -> Board {
-    match resp {
-        Response::Board { board, .. } => board,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
-
-fn hook_send(sock: &std::path::Path, session: &str, event: &str, reason: Option<&str>, body: &str) {
-    let bin = env!("CARGO_BIN_EXE_mesimon");
-    let mut cmd = Proc::new(bin);
-    cmd.arg("hook").arg("--sock").arg(sock).arg("--session").arg(session).arg("--event").arg(event);
-    if let Some(r) = reason {
-        cmd.arg("--reason").arg(r);
-    }
-    let mut child =
-        cmd.stdin(Stdio::piped()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn().unwrap();
-    child.stdin.take().unwrap().write_all(body.as_bytes()).unwrap();
-    let out = child.wait_with_output().unwrap();
-    assert!(out.status.success());
-}
+use mesimon_core::board::{Provenance, SessionKind, SessionState, StopReason};
+use mesimon_core::command::{Command, Response};
 
 /// Poll snapshots until the session reaches a state, or panic at deadline.
 fn wait_state(
@@ -271,14 +222,14 @@ fn m3_adoption_and_sleep() {
     ));
 
     // --- Sleep: hooks say Idle first (SessionStart carries the transcript).
-    hook_send(
+    hook_send_with(
         &hook_sock,
         &obs.to_string(),
         "SessionStart",
         Some("resume"),
         &format!("{{\"session_id\":\"{FOREIGN_SID}\",\"transcript_path\":\"{}\",\"cwd\":\"{repo_canon}\"}}", transcript.display()),
     );
-    hook_send(&hook_sock, &obs.to_string(), "Stop", None, r#"{"stop_hook_active":false}"#);
+    hook_send_with(&hook_sock, &obs.to_string(), "Stop", None, r#"{"stop_hook_active":false}"#);
     wait_state(&mut c, obs, Duration::from_secs(5), |s| {
         matches!(s, SessionState::Idle { stop_reason: StopReason::EndTurn })
     });
@@ -469,7 +420,7 @@ fn m3_adoption_and_sleep() {
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 
-    let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    kill_tmux(&tmux_sock);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::remove_dir_all(&rt_dir);

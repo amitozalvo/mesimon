@@ -4,6 +4,7 @@
 pub mod census;
 pub mod diff;
 pub mod feed;
+pub mod git;
 pub mod hook_settings;
 pub mod ingest;
 pub mod movegate;
@@ -23,6 +24,8 @@ use anyhow::Result;
 pub use paths::Paths;
 
 /// Run the daemon in the foreground (the `mesimon daemon` subcommand).
+pub use server::install_sigterm_handler;
+
 pub fn run_foreground(repo_root: &Path) -> Result<()> {
     let paths = Paths::for_repo(repo_root)?;
     server::run(paths)

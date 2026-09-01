@@ -19,48 +19,12 @@
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
 mod common;
+use common::*;
 
-use std::io::{BufRead, BufReader, Write};
-use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{Board, SessionKind};
-use mesimon_core::command::{Command, Envelope, Response};
-use mesimon_core::Principal;
-
-struct TestClient {
-    write: UnixStream,
-    read: BufReader<UnixStream>,
-}
-
-impl TestClient {
-    fn connect(sock: &std::path::Path) -> Self {
-        let stream = UnixStream::connect(sock).expect("connect");
-        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
-        let read = BufReader::new(stream.try_clone().unwrap());
-        Self { write: stream, read }
-    }
-
-    fn request(&mut self, command: Command) -> Response {
-        let env = Envelope { principal: Principal::Local, command };
-        let line = serde_json::to_string(&env).unwrap();
-        writeln!(self.write, "{line}").unwrap();
-        loop {
-            let mut buf = String::new();
-            self.read.read_line(&mut buf).expect("read");
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return resp;
-            }
-        }
-    }
-}
-
-fn board_of(resp: Response) -> Board {
-    match resp {
-        Response::Board { board, .. } => board,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
+use mesimon_core::board::SessionKind;
+use mesimon_core::command::{Command, Response};
 
 fn shell_env_of(resp: Response) -> mesimon_core::command::ShellEnvStatus {
     match resp {
@@ -207,6 +171,16 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
     // pane must still carry the real ticket. A capture taken INSIDE a mesimon
     // pane would otherwise hand the next session the previous one's ticket.
     assert!(env.contains("MESIMON_TICKET="), "the ticket variable was lost:\n{env}");
+    // The values travel INSIDE the pane. A `new-session -e K=V` command line
+    // is readable by every user on the machine (`ps`), and that is where the
+    // user's exported keys used to be.
+    let start = tmux(&tmux_sock).args(["list-panes", "-a", "-F", "#{pane_start_command}"]).output();
+    let start = String::from_utf8_lossy(&start.unwrap().stdout).to_string();
+    assert!(start.contains(" exec "), "the pane should start through the launcher:\n{start}");
+    assert!(
+        !start.contains("carried-all-the-way"),
+        "an exported value is on the pane's command line:\n{start}"
+    );
     assert!(
         !env.contains("bogus-from-rc"),
         "a MESIMON_* from the shell must never shadow the real one:\n{env}"
@@ -242,8 +216,7 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
     let _ = c.request(Command::KillSession { id: sid });
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    let _ =
-        std::process::Command::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    kill_tmux(&tmux_sock);
     let _ = std::fs::remove_dir_all(&dir);
     let _ = std::fs::remove_dir_all(&state_dir);
     let _ = std::fs::remove_dir_all(&rt_dir);

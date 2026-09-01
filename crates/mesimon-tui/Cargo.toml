@@ -22,6 +22,13 @@ libc = "0.2"
 # sidesteps the T-4 attach-query stdin race)
 terminal-colorsaurus = "1"
 semver = "1.0.28"
+# The release checker verifies the published .sha256 before it replaces the
+# binary at our own path. Same major as the daemon's, per the dup-dep gate.
+sha2 = "0.10"
 
 [lints]
 workspace = true
+
+[lib]
+# No doctests exist; rustdoc otherwise costs ~4 s of every `cargo test`.
+doctest = false

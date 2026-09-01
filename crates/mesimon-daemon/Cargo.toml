@@ -21,3 +21,7 @@ sha2 = "0.10"
 
 [lints]
 workspace = true
+
+[lib]
+# No doctests exist; rustdoc otherwise costs ~4 s of every `cargo test`.
+doctest = false

@@ -1,0 +1,4 @@
+[alias]
+# The inner loop: unit tests only (core, daemon, tui goldens, the binary's
+# own). Sub-second bodies; run `cargo nextest run --workspace` before a commit.
+ut = "test --workspace --lib --bins"

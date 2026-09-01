@@ -18,6 +18,7 @@ pub mod mcp;
 pub mod principal;
 pub mod reconcile;
 pub mod shellenv;
+pub mod text;
 pub mod verdict;
 pub mod workspace;
 

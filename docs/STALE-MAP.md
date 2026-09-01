@@ -1959,3 +1959,758 @@ for YOU — the owed Enter is what says this wait is OURS.
   pins that for `Unknown`/`Sleeping`/`Exited`/`Failed`/`Idle{EndTurn}`.
 
 No golden moved: no golden board has a spawning session or an unattached worktree.
+
+## The bulk sleep gets a key, and it is `Z` (2026-09-01, author direction)
+
+Amends "Suggestions are one right-hand chip and a marked menu", not its shape: the offer is still
+one chip pointing at one menu row. What changed is that the chip's route now has a key on it, so
+`◦ sleep 3 agents (Z ∙ esc)` reads exactly like `◦ update ready (U ∙ esc)` and takes one press
+instead of esc + enter.
+
+Board-wide actions have no key as a rule — they are not about the selection, and a menu row has
+room to say what it will do. `U` was the first exception; this is the second, on the same terms.
+
+- **`Z` is zzz, not shift-of-`x`.** The retired `X` *was* shift-of-`x`, and it stays retired:
+  shift hardens or forces the same verb on the same target, and `x` sleeps the selection's
+  sessions while this sleeps a column's. Nothing binds `z` on the board (it is the ticket
+  screen's view prefix and the diff view's density), so the atom is free and unambiguous.
+- **Bound on `Scope::Board` alone**, because the header — and therefore the chip that teaches it
+  — is drawn only there; the ticket and diff screens compose their own chrome. A key that is
+  named works, a key that is not named is inert, and this one is named in exactly one place.
+- **`prio: 0`, overlay-only.** The footer keeps saying what the card under the cursor can do; the
+  offer lives in the header and the `?` overlay, which is the same treatment `U` gets and for the
+  same reason.
+- **`avail` is the menu row's own predicate** (`bulk_sleep > 0`), so key, chip and row appear and
+  disappear together — the invariant `every_suggestion_is_a_menu_row` already guards, extended by
+  hand to the key in `shift_stays_on_one_axis`.
+- The menu row now names `Z` at its right edge; `menu_holds_the_board_wide_actions` already
+  asserts every key a row names is a key the keymap really has, so the row and the binding cannot
+  drift apart.
+- Golden: `menu_suggestions_120x30` (the Sleep row gained its key). `help_board_120x30` did not
+  move — its fixture has nothing to sleep, which is the gate working.
+
+## Quick tag is a bare digit, not shift+digit (2026-09-01, author direction)
+
+Asked for as "quick tag by pressing shift+digit (cycle)". The capability shipped as asked; the
+atom did not, because **there is no shift+digit atom to bind**. `keys::to_key` maps
+`KeyCode::Char(c)` to `Key::Char(c)`, so Shift+1 arrives as `!` — the binding would really have
+been the ten symbols `!@#$%^&*()`. That fails three ways at once:
+
+- **Layout.** The shifted digit row is US-only. Hebrew swaps `(`/`)`, so groups 9 and 10 invert —
+  the same class of defect as ctrl+] landing on Esc there. On AZERTY/German the row is shifted
+  *for digits*, so Shift+1 sends `1` and the gesture misfires entirely. `Key::Char('1')` means
+  "whichever key types a 1 on this layout", which is correct everywhere by construction; the
+  shifted spellings name a different physical key per layout with no relation to "group 1".
+- **`!` was taken** — the diff screen's `WorktreeShell` (M4b).
+- **The Shift axis.** `shift_stays_on_one_axis`: shift hardens or forces the same verb on the
+  same target, never introduces one. There is no unshifted digit verb on the board for it to
+  harden.
+
+What shipped instead is the picker's own digit, reached without the picker: `1`-`0` on the board
+and the ticket screen step the selected ticket along that group's vocabulary.
+
+- **The same key already means this.** Inside `^t` a digit picks an axis and advances along it;
+  outside, it does the axis pick's useful half. `^t 3 3` and `3 3` land in the same place, which
+  is the accelerator relationship shift was reaching for, bought with consistency instead of a
+  modifier. `DIGITS` is one shared list, so the two cannot drift.
+- **`prio: 0`, overlay-only**, on the Nudge precedent: it accelerates `^t`, which the footer
+  teaches one entry up, and the footer's cells go to verbs with no second spelling.
+- **The ladder is `none → first → … → last → none`, not a wrap** (`board::cycle_tag`, pure and
+  tested). Off the end is untagged on purpose: a wrapping cycle can put a tag on a card but never
+  take the last one off, which would leave `^t` the only way to undo a keystroke. A `current` the
+  registry no longer holds restarts the cycle rather than sticking on a value no press can leave.
+- **It reads the registry, never the tickets** — `Board::group_tags`, whose doc already recorded
+  why: a ticket-derived vocabulary loses a tag when its last wearer drops it, and the ticket being
+  cycled reorders its own list mid-cycle. That function existed for this feature and had no
+  caller until now.
+- **`Ctx::tags_exist` is board-wide, not per-group**, because ten digits share one `Binding` and
+  `avail` never sees which key arrived. An empty registry is the one state where every digit is
+  inert and unhinted; a digit whose own group is empty says so in the status line and points at
+  `^t`, which is still where names are made.
+- Bound on `Scope::Board` and `Scope::Ticket` separately. `Scope::Diff` chains to Global, not to
+  Ticket, so the diff screen keeps its digits — and `Scope::Input` owns its own, so the composer
+  types them.
+- Tests: `keymap::digits_cycle_tags_without_the_picker` (both screens, the picker's digit intact,
+  inert with no registry/no selection, absent from Diff and Input, and the ten shifted symbols
+  reaching none of it), `board::the_cycle_runs_off_the_end_into_untagged`.
+
+## Ten tints, and chalk gets its own lightness (2026-09-01)
+
+Two complaints, one paragraph of palette: *"tag colors barely visible on light theme and not
+enough colors"*.
+
+- **Six tints was not enough and the number was arbitrary.** `theme::PIPS` and
+  `board::TAG_TINTS` are now **10 == `MAX_TAGS_PER_GROUP`**, so a single axis can be entirely
+  colour-distinct — the only count at which the tint means anything *within* a group. Below that,
+  a board with two axes was collapsing four names onto one tint. The two constants finally have
+  the test their doc comments have been promising: `theme::tests::tag_tints_agree`, on the
+  `mesimon-tui` side because it is the one that can see both.
+- **The hues are now even around the wheel**, minus the 50–100° band where `attn` lives. The
+  six-hue set could be picked by hand; ten cannot, and once the chroma ceiling is fixed, even
+  spacing is exactly what maximises the worst pair (ΔE76 15.6 graphite / 13.2 chalk). **One ring,
+  not two rings of five**: a second lightness separates same-hue pairs by ΔL* alone (~ΔE 12), so
+  it loses to a single ring of ten *and* makes some tags louder than others, which a tag axis may
+  never do. The law test now asserts every PAIR ≥ ΔE76 12 — that is the number that says whether
+  ten still go, and it is what will refuse an eleventh.
+- **Chalk's tints are L\* 38, not 45, and that is the light-mode fix.** Chalk's ground is paper, so
+  a tint is INK on it and has to sit as far below the paper as graphite's sits above its ground.
+  At L\* 45 it cleared the text floor (5.04 on bg) and still read as a smudge, because a tint is
+  faded toward the ground on almost every card and toward WHITE that costs far more than toward
+  black. L\* 38 measures 6.52 on bg and 5.40 on the selected surface. Chroma stays at 26 rather
+  than graphite's 30 for the reason it always did — chalk's `attn` is C\* 53.8, which puts the 2x
+  ceiling at 26.9.
+- **`Theme::faded` is per-flavor now: 0.70/0.38 graphite, 0.76/0.46 chalk.** The blend is a ratio
+  in sRGB bytes, and one pair of numbers does not mean the same thing on both grounds. Under the
+  shared pair, chalk's `Rest` landed at C\* 16.8 / contrast 2.82 where graphite's landed at
+  21.7 / 3.61, and `Sleeping` sat on the C\* 8 floor. It now measures C\* 17.9 / 3.77 and
+  C\* 9.8 / 2.08 — at or above the graphite level it mirrors — with the boundaries still visible
+  (ΔE 14 and 20 between levels, against graphite's 17 and 19). The 12%-of-span step assertion is
+  untouched and both flavors still clear it. This also fades the untagged card's neutral block, so
+  the *card's* three loudnesses got the same repair on light.
+- **Cost, paid once and on purpose:** `default_tint` is a hash modulo `TAG_TINTS`, so every tag
+  that never had a colour picked lands on a new hue, and a stored index points at a different
+  place on a re-cut ramp. Alpha, one board, and Tab re-picks.
+- Goldens are colourless text, so none moved. `test_pip_ramp_is_low_chroma_and_legible` grew the
+  pair-distance assertion and a `delta_e` helper (CIE76 — coarse in general, honest here, where
+  one lightness and one chroma leave the hue angle as the only difference).
+
+## The board's footer is the card's, and the ticket page took the rest (2026-09-01, author direction)
+
+Ten board bindings dropped to `prio: 0` in one pass — `c` claude, `s` shell, `x` sleep sessions,
+`a` archive, `d` delete, `esc` menu, `p` show replies, `.` repeat, `^t` tags, `q` quit — and the
+ticket page's `d` came up to `prio: 90` to meet them. What is left is five entries:
+
+    BOARD  enter ticket page ∙ o open ticket ∙ option+hjkl move card ∙ r rename ∙ ? keys Nothing was unbound: every one of those keys still resolves from the board and still
+appears in `?`, which is the whole point of the two-tier footer. What changed is what the board
+spends its one row of cells on.
+
+- **The line was full, and it was full of the ticket page's subject.** A 120-cell footer held
+  eight entries; three of them (`c`, `s`, `x`) were the session group, which the ticket screen
+  already hints in the same words beside the sessions they act on. The board was teaching a verb
+  whose result it cannot show.
+- **Destroying a card is done from the page that shows the card.** `a` and `d` went the same way
+  and for the sharper version of the reason: the ticket screen names the sessions and the
+  worktree that a delete takes with it. `d` is now hinted there and nowhere else — the board's
+  copy is the accelerator, not the teacher.
+- **`esc menu` left too, and it is the one that cost something.** The Esc menu is still the only
+  route to the board-wide actions, so the invariant `empty_board_hints_nothing_that_needs_a_ticket`
+  used to assert ("the menu is always reachable") now reads against `resolve` and `overlay`
+  instead of the footer: the key works, `?` names it, and the header's suggestion chip spells
+  `(esc)` / `(U ∙ esc)` / `(Z ∙ esc)` on exactly the occasions the menu has something waiting.
+  With no suggestion pending, nothing on the board says `esc` — that is the deliberate cost.
+- **`p` went last, and it is a different argument.** The peek is a view preference, not a verb:
+  set once, lived with, and the board it changes is the evidence it worked. A permanent cell
+  teaching a toggle nobody presses twice was the cell the footer could least afford.
+- **What the freed cells bought**, on the calm board: `q quit`, which never fit before, and room.
+  The board footer now reads as one thought — go, open, move a card, rename, tag, leave.
+- **One binding, two prios, is the mechanism** — the same `Verb` appears in `BOARD` and in
+  `TICKET` with its own `prio`, so "hint it there, not here" needs no new concept and no
+  `Ctx` flag. `hint_for` and `overlay` ignore `prio` by construction, so nothing else moved.
+- Cost recorded: adding `d delete` to the ticket footer pushes `q board` (prio 250, the tail)
+  off the line at 120 columns. `q` still pops, `esc` still backs out, and `?` still lists it.
+
+Three that went last, each on its own argument:
+
+- **`.` repeat** — the one binding whose availability was already its own advertisement.
+  `can_repeat` is false until you have moved something, so the footer entry could only ever
+  appear *after* the gesture it accelerates, to the hand that had just performed it.
+- **`^t` tags, on the board AND the ticket screen, but NOT in the composer** — tagging is done
+  once, while the ticket is being made and the words are already in your head; after that it is
+  maintenance, and maintenance can be looked up. The composer's copy went the other way, `prio:
+  35` → `25`: at 35 it sat behind `shift+tab`'s 39-cell hint and 120 cells ran out inside it, so
+  the one place the footer was supposed to name `^t` had never once shown it. `shift+tab` drops
+  in its place and loses nothing — the composer draws `⎇ worktree  shift+tab` on the card being
+  composed, which is where that choice is made and where it says it locks.
+- **`q` quit** — `q` and `^c` are the two spellings of leaving that every terminal program has
+  taught for decades. The footer is for what this program does that another one would not.
+  (Falling off the board freed the slot that put `q board` back on the *ticket* footer, which
+  `d delete` had truncated away earlier in the same pass.)
+
+Tests: the golden set (every board and ticket golden moved by exactly one line, the footer),
+`empty_board_hints_nothing_that_needs_a_ticket` rewritten to assert `esc` and `q` resolve and are
+named by the overlay rather than by the footer.
+
+## A tag moves, and Alt's clause was the count, not the point (2026-09-01, user request)
+
+`^t` could make a tag, wear it, recolour it, rename it and delete it board-wide. It could not
+move one. Along the row that cost only convenience — registry order is what the picker draws and
+what a repeated digit walks, so the first name on an axis was whichever you happened to create
+first. Across rows it was a dead end: a tag created on the wrong axis had exactly one remedy,
+`d`, which strips it from every ticket wearing it on the way out. So `HJKL` / `alt+hjkl` now
+carries the tag under the cursor, one cell along its axis or one axis over, cursor riding with
+it — the board's nudge, in the picker's grid.
+
+- **`Command::MoveTag { group, name, to_group, to_index }` → `Board::move_tag`.** One command for
+  both axes, because they are the same gesture; `to_index` is a slot in the DESTINATION row and
+  is clamped there, so a client whose row moved under it lands the tag at the end rather than
+  being refused. A cross-axis move carries the wearers, `rename_tag`-style, and returns their ids
+  so only those files are rewritten.
+- **A cross-axis move is REFUSED, never resolved, when a wearer already has a tag there.** One
+  tag per group is what lets a digit address an axis; the alternative is dropping somebody else's
+  tag off a card nobody is looking at, and that is not something one keypress may do quietly. The
+  message names the count and the axis. The other two refusals are `register_tag`'s, unchanged: a
+  full axis, and a name that axis already holds. Every refusal leaves the registry byte-identical
+  — a half-applied move is worse than none.
+- **A tag arriving on an axis JOINS it, at the end.** Landing at the cursor's old column would
+  reorder a row the eye already knows, to make room for a tag nobody aimed at that slot.
+- **The composer mirrors the wearer check client-side.** Its picks live on
+  `InputPurpose::Create` and are on no ticket, so the daemon cannot see them; without the mirror
+  a composing user could move a tag onto the axis their own half-made ticket was already using.
+
+**Alt's clause was rewritten, and the rewrite is the load-bearing part.**
+`alt_is_admitted_only_for_the_nudge` asserted one verb on one screen. That was the count, not the
+reason. The reason is that an eaten modifier delivers NOTHING, so an Alt key is inert rather than
+wrong — affordable exactly while no capability stands behind it. `alt_is_admitted_only_for_a_nudge`
+now says that instead: every Alt binding is a nudge, and every one carries a legacy-floor spelling
+of the same move on the same screen, hinted.
+
+- **In the picker the two spellings share ONE binding** — `H J K L` and the four Alt atoms in one
+  key list. That is the strongest form of the clause available: the accelerator cannot reach a
+  move the floor does not make, because it is the same entry. It also keeps Shift on its axis
+  (`hjkl` steps, `HJKL` steps carrying), the same bargain `c`/`C` and `s`/`S` make.
+- **It cost a footer cell, and the cell was `w`'s.** At 120 columns the picker's footer already
+  ran the full row, so a ninth entry does not join it, it evicts the last one. That was
+  `w 2nd tag beside` — and the second-tag experiment was ended in the same session (below), which
+  is what paid for the slot. `prio: 15`, beside the motion it hardens.
+- **`key_tag` reads `to_key` while steering and `to_key_text` only while naming.** The picker is
+  a text field exactly while `tag_naming`, and CLAUDE.md's rule is that a text field never sees
+  an Alt atom. Reading `to_key_text` unconditionally, as it used to, meant `alt+h` arrived as a
+  bare `h` and moved the CURSOR — the accelerator was silently the wrong verb, which is the one
+  thing the Alt clause exists to prevent.
+- **An Alt atom never dismisses the picker.** A stray key closes the panel rather than acting on
+  the board behind it, and that swallowed the nudge twice over: `alt+←` on a cell with nothing to
+  carry closed it, and on a terminal that eats the modifier the composed `˙` closed it too. Both
+  are now inert — the accelerator must not cost a user their place on one machine and nothing on
+  the next.
+
+Tests: `board::move_tag`'s three (`moving_a_tag_along_its_axis_reorders_the_cycle`,
+`moving_a_tag_to_another_axis_carries_its_wearers`,
+`a_tag_never_moves_onto_an_axis_a_wearer_already_uses`), `alt_is_admitted_only_for_a_nudge`
+rewritten, `shift_stays_on_one_axis` grew the picker's pair, three in `app::tests`
+(`a_tag_is_carried_along_its_axis_and_onto_another`, `an_eaten_option_key_leaves_the_picker_standing`,
+`a_shifted_letter_is_text_inside_a_name_field`), and a block in `tags_e2e` through the real
+daemon and back off the disk. No golden moved: the binding is overlay-only.
+
+## The board's move hint is `option+hjkl` now (2026-09-01, author direction)
+
+`Verb::Grab` (`> <`) and `Verb::Nudge` (the four Alt directions) swapped footer billing on the
+board: Grab went to `prio: 0`, Nudge took its slot at `prio: 60`, its `show` became
+`option+hjkl` and its hint lost the word "now".
+
+- **`option`, not `alt`.** The `show` string is what a hand goes looking for on a keyboard, and
+  the key on the machine this ships to says `option`. The atom is unchanged — `Key::AltLeft` and
+  friends, one atom per direction with `alt+←` and `alt+h` the same key, exactly as before.
+- **"move card now" became "move card".** The "now" was drawing a contrast with the aiming
+  gesture two entries up; with `> <` off the line there is nothing to contrast with, and the
+  thing the key does is move the card.
+- **`can_nudge` is the wider predicate**, so the footer now offers the move on a one-column board,
+  where `> <` (which needs `multi_column`) had nothing to say and went dark.
+- **The Alt admission clause is spent down to its bound-beside-it half, and this is the cost.**
+  `alt_is_admitted_only_for_a_nudge` admitted the atom because no capability stands behind it AND
+  a legacy-floor spelling of the same move sat beside it, on the same screen, *hinted*. `> <` is
+  still bound and `?` still names it — the test now asserts exactly that, plus that the footer
+  names the accelerator — but a terminal that eats the modifier reads a footer whose move key
+  does nothing, and finds the working one only in the overlay. Recorded in the test's own doc
+  comment, because that test is what would otherwise have stopped guarding it silently.
+- `.` (repeat) sits beside the move for the same reason it always did; its comment no longer
+  claims the neighbour is `> <`.
+- **`> <` is hinted "move card, aiming" now.** Dropping "now" from the accelerator left two
+  overlay rows reading "move card", which tells a reader which keys exist and nothing about
+  which to press. The floor spelling is named for what it adds: a ghost you aim and can cancel.
+- **An eleven-wide spelling found a latent bug in `?`.** `ui/help.rs` padded to a hardcoded
+  `KEY_W = 10` and rendered `option+hjklmove card` — no gap — and would have done the same to
+  `shift+enter` (12) in the composer's overlay, which no golden covers. `KEY_W` is a floor now
+  and the rail is `max(KEY_W, widest + 1)`, so a spelling that fills the column still cannot
+  touch its hint. Every existing overlay was ≤ 9 wide, so nothing had tested the arithmetic.
+- Width cost: `option+hjkl` is eight cells wider than `> <`. At 100 columns `r rename` falls off
+  the board footer, and at 120 with `tab needs you` up, `q quit` does.
+
+## The second tag's trial ended, and an open card stopped needing the glyph (2026-09-01, author direction)
+
+`Second` had three homes and `w` cycled them on a live board: `Stack` (`▀` across the bar cell),
+`Half` (`▌` down it) and `Edge` (the card's right-edge pad). The trial is over. **Stack wins and
+the other two are deleted** — the enum, `MESIMON_TAG_SECOND`, `edge_cell`, `CardCtx::second`,
+`App::tag_second`, `Ctx::tag_second_next`, `Verb::TagWeight` and the `w` binding all went with
+them. What is left is one behaviour with no switch in front of it.
+
+- **`▌` U+258C went back to being banned.** It was admitted alongside `▀` on an explicit
+  exception to the L1 no-drawn-structure law; nothing spends it now, and an exception nothing
+  spends is a ban. `test_no_drawn_structure` names ONE codepoint again.
+- **The freed footer cell went to `HJKL move tag`** (above), which is why that binding could come
+  off `prio: 0`. The picker's row is the same length it was.
+
+**And where the stripe is tall, the half-block is not reached for at all.** `▀` puts two tags in
+one cell because a RESTING card has exactly one cell to spend. An open card's stripe is three to
+six, and there `tags::stack_full` repaints it as two runs of full painted blocks: the first tag
+the top ~70%, the second the ~30% under it, same order.
+
+- **`second_rows(rows)` is the whole arithmetic** — `((rows * 3 + 5) / 10).clamp(1, rows / 2)`,
+  and `None` below three rows. The clamp is not defensive: the floor of one keeps the second tag
+  from vanishing on a 4-row card, and the ceiling of half keeps the FIRST tag the run the eye
+  lands on, which is the entire reason the two are ordered.
+- **Three rows, not two, is the threshold.** A 2-row stripe split 1/1 is halves wearing a 70/30
+  name. Under the threshold the card keeps `▀`, which is the honest mark for one cell.
+- **It repaints span 0 and nothing else.** The bar is span 0 on every card row by construction, so
+  the split is a post-pass over the built lines rather than a second layout path — no text moves,
+  no width changes, and `test_the_second_tag_costs_no_width` renders one tag against two, peek off
+  and on, to hold that.
+- **Height is the gate, not the peek toggle.** The direction named the peek because that is when
+  the card is tall, but `p` is about replies and has nothing to say about tags; keying the stripe
+  to it would make the mark change for a reason that is not about the mark. `second_rows`
+  refusing under three rows is the same floor, stated where it belongs. A selected card with two
+  session rows therefore splits too.
+- Below TrueColor there is no tint to run and nothing changes: the underline still says "tagged"
+  without saying which.
+
+Tests: `an_open_card_runs_the_two_tags_as_full_blocks`,
+`a_stripe_with_one_tag_or_no_paint_is_left_alone`, `the_second_tag_is_the_lower_half_of_the_cell`,
+`the_mark_reaches_for_one_codepoint_only` (now also asserting the split draws no glyph),
+`test_an_open_card_runs_the_tags_down_its_stripe` (a real render: walks the stripe down the cell
+buffer and checks one changeover, not stripes), `test_two_tags_ride_one_cell` rewritten for the
+one home, and `test_the_second_tag_costs_no_width` rewritten to compare one tag against two.
+Goldens: every tagged card whose accordion is open lost its `▀` column; the resting two-tag cards
+kept theirs.
+
+## A turn parked on background work is its own state (2026-09-01, dogfood)
+
+T-128 sat in IN PROGRESS after its agent had visibly finished and said so, and the card carried
+**no glyph at all** for two minutes. Neither symptom was automove's: automove was never consulted.
+
+What happened, off `activity.jsonl` and the transcript. The agent backgrounded a Bash poll loop
+(`for i in $(seq 1 14); do cargo test --no-run && break; sleep 25; done` — waiting on a
+neighbouring session's build), then wrapped up its turn. The `Stop` hook fired with that task
+live in `background_tasks[]`, so `task_blocks_end_turn` classed it blocking and the machine
+re-asserted `Running` — the turn is paused, not done, which is right. But **the pane stops
+painting the instant the agent parks**, so 8 s later `probe_activity` fired `Signal::PaneQuiet`
+and demoted to `Idle{Interrupted}` at Medium. Nothing had interrupted it.
+
+Two inferences, both wrong, stacked:
+
+- `Running` claimed the pane was painting. It was not, and the quiet probe exists precisely to
+  catch that claim — so the first lie summoned its own refutation.
+- `Idle{Interrupted}` claimed a person had pressed Esc. `automove` refuses to promote an
+  interrupt (correctly), and `card_glyph` had no arm for it at all, so the card fell through
+  every branch to `None` — indistinguishable from a ticket nobody had ever opened.
+
+**`StopReason::Background` is the fix, and it is a stated fact rather than a third inference** —
+the blocking task came straight off the Stop payload. `Stop { blocking_tasks: true }` now lands
+at `Idle { stop_reason: Background }`:
+
+- **The misread stops being possible rather than being cleaned up.** `probe_activity` only scans
+  `state == Running`, so a parked session is invisible to it. Compare `SubagentStop`, which
+  carries a corrective for the same misread (`subagent_stop_corrects_pane_quiet_interrupt_misread`)
+  — that corrective exists because there was no better answer for subagents. A background task has
+  no such signal, which is why this one stuck for the whole life of the task.
+- **The ticket stays in IN PROGRESS, and now for the true reason.** Only `EndTurn` promotes, so
+  the refusal is automove's existing rule, not a new special case (`a_parked_turn_is_not_done`).
+- **Rank is untouched.** `SessionState::Idle { .. } => 13` already covers it, so D28's frozen
+  table does not move and no attention item is minted — a parked turn asks nothing of the user.
+- **The wake path already worked and is unchanged**: the task's completion arrives as a
+  `UserPromptSubmit` (observed on the wire at 20:57:00) and the turn resumes. `SubagentStop`
+  cannot clobber it either — the park is High confidence, and that arm only promotes below High.
+
+**The glyph rides the slow cadence** (author direction: it should move — a build genuinely IS
+running, just not in this pane; the same argument that earned `launching` its slow arc). No third
+speed appears: the board still has one fast register and one slow.
+
+- **Unicode is a two-dot bar turning through the CENTRE** — `⠒ ⠌ ⠡`, i.e. `—` `/` `\` — against
+  `waiting`'s two-dot pair hugging the rim and the spinner's three-dot arc.
+- **Two dots is forced, not chosen.** A single dot was measured invisible at dim2
+  (2026-08-31, "no glyph at all"), which is why `waiting` carries two; three would claim the
+  spinner's "work in flight *here*". So the shape had to differ at the same ink, and the
+  centre/rim split is what carries it.
+- **Ascii cannot borrow the idea**: `| / - \` ARE the spinner's frames, so a turning bar spelled
+  in them *is* the spinner. `~` is throttled, `. : , "` are idle and waiting. The ascii tier
+  breathes instead — `o O` on the same clock.
+- Under the spinner in `card_glyph`: if any session on the ticket is really working, that is the
+  louder and truer thing to say. Rail word is `background`, lowercase — nothing is required.
+
+One-way door, small: `StopReason` has no `#[serde(other)]`, so a `"background"` in `sessions.json`
+quarantines on a build older than this one (board still comes up, notice in the advisory row).
+
+Tests: `stop_with_blocking_tasks_parks_the_turn` (replaces `..._stays_running`),
+`a_parked_turn_is_not_demoted_to_interrupted` (the regression),
+`a_parked_turn_resumes_on_the_task_notification`, `a_parked_turn_is_not_done` (automove),
+`a_parked_turn_has_its_own_slow_mark`, `working_outranks_a_parked_turn_on_one_card`.
+No goldens moved — no fixture holds a parked session.
+
+## A released board asks whether a newer one exists (2026-09-01, user request)
+
+Before this, `update ready (U reloads)` could only fire for someone who had ALREADY updated:
+`update.rs` watches our own exe's mtime, and on a released machine nothing ever moves that file
+except a hand-run `install.sh`. The offer was real and the news that would justify it never
+arrived. `mesimon-tui/src/release.rs` supplies the missing half — and deliberately only that
+half.
+
+**The two halves stay separate, and the join is a file move.** The checker asks the dist repo for
+the newest tag, and on the offer being taken it downloads, verifies and lands the new binary at
+our own path. It restarts nothing. The swap changes the mtime `update.rs` is already watching, so
+the existing watch raises the existing chip and `U` is still the only thing that restarts a board.
+No new key, no second reload path, and the two states are ordered rather than concurrent:
+`Ctx::release_available` is ANDed with `!update_ready`, so a binary already on disk is reloaded
+instead of fetched again — which is exactly the state an `install.sh` run in another terminal
+leaves behind (`test_a_landed_binary_outranks_a_download`).
+
+**The dev gate is a stamp, not a heuristic, because a wrong answer overwrites a build tree.**
+`crates/mesimon-tui/build.rs` stamps `MESIMON_CHANNEL`, and it reads `release` only when
+`ci/release.sh` set `MESIMON_RELEASE` for that one build. A `cargo run`, a plain `cargo build
+--release` and every test binary come out `dev` and are inert — `a_dev_build_is_never_eligible`
+asserts the test binary itself is one, so the gate is checked by the suite that runs inside it.
+Under that stamp sits one guard nothing lifts: an exe with a `target` component in its path is
+refused whatever the channel says (`a_binary_in_a_build_tree_is_refused`). `MESIMON_UPDATE_CHECK=1`
+forces a dev build past the CHANNEL gate only, so exercising the real path means copying the
+binary out of the build tree first — which is what an install is.
+
+The stamp being invisible is its own failure mode: an unstamped release installs, runs, and then
+never tells anyone a newer version exists. So `ci/release.sh` now greps `doctor install` on the
+UNPACKED artifact (never on `$bin`, which is inside `target/` and would be refused by the guard
+above) and dies if the line says `off`.
+
+**Four decisions worth the ink:**
+
+- **`curl`, not an HTTP crate.** mesimon makes exactly two GETs in its whole life and `install.sh`
+  already makes both. The alternative is a TLS stack linked into a binary that otherwise touches
+  no network. It goes off the UI thread on a worker, one `Outcome` per worker, drained by
+  `App::tick`.
+- **The list endpoint, not `/releases/latest`** — that one skips prereleases and every alpha is
+  one, so it answers 404 until the first stable build. Same trap, same note, as `install.sh`.
+- **An absent checksum is a refusal here, where `install.sh` only warns.** A person is watching
+  the installer and can decide; nothing is watching this, and what it is about to overwrite is the
+  binary you are running.
+- **`~/.local/state/mesimon/update-check.json` is a CACHE and is treated as one** — unreadable, or
+  from a newer build, means ignored and rewritten, not quarantined. That inverts the four state
+  files' rule on purpose: an ignored stamp costs one extra HTTP request, where an ignored
+  `sessions.json` costs the board. It is at the state ROOT, not under a project key, because the
+  binary is one per machine and asking once per repo would ask the same question N times. It is
+  written only on an answer, so a week offline never reads back as a week of successful checks.
+
+**Ctx gained its first `String`.** `release_tag` is a version, not a word from a fixed set, so the
+`&'static str` treatment `undo_word` gets could not carry it — and the chip and the row both name
+the version, because "an update is available" with no version is a claim you cannot look up,
+decline, or report a bug against. The cost is that `..ctx` struct-update syntax now needs a clone
+(one test site moved). `avail` requires the tag as well as the flag, so a stem row is unreachable,
+and `every_menu_row_is_spelled` grew a trailing-whitespace assert to catch the shape.
+
+**The offer comes down while the download runs**, which is the shell-env reload's discipline
+(`shell_env_stale && !reloading`) rather than a new one: a menu row that is standing but inert is
+worse than a status line, and the status line is what says where this stops — `nothing restarts
+until you say so`.
+
+**Product-promise consequence, OPEN and deferred to the author (2026-09-01).** Taking the offer
+writes mesimon's own binary at its own path — and the `mesimon-tmux` beside it, where one exists —
+which is outside README promise 1's allowlist as that promise is worded. A narrow clause naming
+the exception was drafted and then **withdrawn at the author's direction**: promise 1 is a
+commitment to users, so its wording is the author's, not a side effect of the feature that made it
+necessary. What shipped instead is disclosure without a promise change — `update-check.json` has a
+row in the writes table (that path was already inside the state dir promise 1 names, so it needed
+no exception), and the binary write has none. Two items are therefore open on the same paragraph:
+this one, and the pre-existing gap where promise 1 never names the `/tmp/mesimon-<uid>/<proj16>/`
+runtime dir, which this feature also stages a download in. Both want one authorial pass.
+
+## A quick tag opens the card it tagged (2026-09-01)
+
+The stripe is ONE cell at rest and carries no words — it can say "two tags, these hues" and
+nothing further — so the digit that changes it left the user reading a status line to find out
+what the card now wears. `cycle_tag` therefore arms `App::tag_flash`, and the card the digit
+landed on draws itself OPEN for 1500 ms: the chip row names the tag in its own tint, and where the
+stripe is now three or more cells `tags::stack_full` runs the two tags down it as full blocks
+instead of a half-block. `App::peek_showing(ticket)` is the whole seam — the `p` preference OR a
+live flash — and `ui/board.rs` is its only caller.
+
+- **Keyed to the TICKET, not to the board.** The first `j` ends the reveal, and no second card can
+  ever be open behind the cursor. It also means the ticket screen's copy of the digit costs
+  nothing: nothing there reads the flash.
+- **A moment, not a mode, and the preference is untouched.** `Ctx::peek_on` stays `self.peek`, so
+  `p` keeps hinting `show replies` while a flash is up — the footer describes the toggle's state,
+  and a flash is not a state anyone toggled. The reveal expires against the wall clock at draw
+  time, and the loop repaints every ≤100 ms (`event::poll`), so nothing schedules anything.
+- **Every repeat re-arms it.** Walking an axis with one finger keeps the card open for the whole
+  walk instead of blinking once per press. A refusal (an axis with no vocabulary) arms nothing —
+  there is nothing to show.
+- **D19's motion ban is not bent.** The card changes shape on a keypress and again when the
+  reveal lapses; that is the cursor-card marquee's precedent (a time-driven reveal the cursor
+  landing starts), not the spinner's.
+
+**And the tag row stopped being the agent's.** It was gated on `peek.is_some()` — a claim about
+the AGENT having a transcript — so a session-less card could not show it at any setting. That is
+the commonest tagged card on the board and exactly what a quick-tag digit lands on: a backlog
+ticket. The gate is now `open && !tags.is_empty()`, the accordion opens for it with no sessions at
+all, and `card::render` takes `open` beside `peek` to say so. No golden moved
+(`test_a_quick_tag_names_the_tag_on_a_session_less_card` is the picture that was missing).
+
+## Shift+Enter asks the agent from the board (2026-09-01, user request)
+
+The composer's Shift+Enter minted a ticket, spawned claude and submitted the title without leaving
+the board. Everything after that first sentence needed the pane: the only way to say a second thing
+to an agent was `enter`, which spends the terminal on a handover and takes the board away. So the
+same key got its second stage — **on a ticket whose agent is already running, Shift+Enter opens a
+one-line field on the card; Enter sends it and the board never moves.**
+
+- **One key, one sentence, three stages.** Before the ticket exists the press mints it, spawns and
+  asks the title (`Verb::SaveStart`); on a ticket with a live agent it opens the field
+  (`Verb::Prompt`); inside the field it sends. `shift_enter_asks_claude_at_every_stage` is the
+  test that notices when a fourth home makes it two ideas. The atom is off the legacy floor, so
+  what it buys has to stay one idea — that clause is what admitted it in the first place.
+- **`ticket_promptable`, not `ticket_has_claude`.** `is_live()` counts `Sleeping`, and a parked
+  agent has no process to type at. The new `Ctx` field is `has_pane()` and mirrors the daemon's
+  `prompt_target`, which picks the same session `board_enter` focuses — the key that asks and the
+  key that goes there cannot land on different panes.
+- **`Command::PromptSession { ticket, text }` is `MergeToAgent`'s twin, and the difference is
+  whose words travel.** Both are an explicit gesture pasting into a live pane; the merge flow
+  pastes mesimon's sentences, this one pastes only the user's. That is why this one hangs off an
+  ordinary key while that one is a staged confirmation. Delivery is `paste_text` — bracketed paste
+  then a SEPARATE `send-keys Enter`, because a CR in the same byte burst is absorbed as pasted
+  content (T-5). The e2e's stub agent is a `read` loop writing to a file, so a line in that file
+  proves BOTH halves at once.
+- **README promise 3 holds in its strongest form.** `command::sanitize_prompt` only ever REMOVES —
+  control characters (a bare CR would split one prompt into two turns, ESC would be read as a key,
+  Tab is a completion inside Claude's box) and anything past 4 KB — and nothing is appended on the
+  way to the pane. What Claude reads is a subsequence of what the user typed.
+  `sanitize_prompt_only_ever_removes` checks that mechanically rather than by reading the code.
+  Blank in, nothing out: an empty paste would press Enter on a turn nobody wrote.
+- **The never-tier grew an entry.** `agent_allows` denies `PromptSession` — one agent steering
+  another's turn with no human in between is the sharpest thing D10's never-tier exists to stop —
+  and the local path names `Resource::Session` for it, so `authorize`'s "no agent reads or changes
+  a session" is reachable rather than merely true.
+- **The field hangs UNDER the card, and the card stays whole.** A rename takes the title line; a
+  prompt must not, because the ticket is not what is being edited — it is who the text is going
+  to. So the card renders complete (glyph, title, session rows, peek) and the field is appended:
+  `  › ` plus the text, no bar on span 0 (the composer's workspace selector set that shape, and it
+  keeps the row clear of `tags::stack_full`). The prompted card also stays the CURSOR card, which
+  no other text field does — collapsing it mid-prompt would take the agent's own state off screen
+  while you type at it. An empty field shows `ask claude` in dim3: without it the state is a blank
+  row under a card.
+- **The cost is width, knowingly.** ~26 cells of the sentence are visible and the rest scrolls. A
+  full-width command line at the foot of the screen would type better and could not answer the one
+  question that matters — *which agent* — so the card won. The card is also where the reply comes
+  back (the peek row is two lines up), so question and answer share a place.
+- **Words that are true here.** The mode word is `ASK`, not `PROMPT`: every other field on this
+  screen saves to the board and this one leaves mesimon entirely. `Ctx::prompting` turns the input
+  scope's `enter save` into `enter send`. The second Shift+Enter is bound (the finger is still
+  holding shift from the press that opened the field) and deliberately unhinted — `enter send` one
+  cell to the left already teaches it, and two footer cells reading "send" teach nothing twice.
+- **The status line says `asked`, not "sent to claude".** What is provably true is that the text
+  went into the box and Enter was pressed. Whether the agent took it is the card's to say, seconds
+  later, in the only vocabulary ever trusted for it — the hooks. The record stays `Idle` until
+  `UserPromptSubmit` lands, exactly as it would for a prompt typed in the pane.
+
+Deliberately board-only. The ticket page has a rail with its own selected session, so "which
+claude" has a different answer there; that is a second decision, not a free extension of this one.
+
+## The simplify pass: one table, one scrubber, one harness (2026-09-01, user request)
+
+Author's brief: the last few hours of feature work were slow, and the board is now in the hands
+of friends, so a quality pass over the whole tree with two lenses — what makes a feature cost
+more edits than it should, and where a trust boundary was written more than once. Four review
+angles (reuse, simplification, efficiency, altitude+security), ~45 findings, these applied:
+
+- **`Command::meta()` is the one classification** (`core/src/command.rs`): read or mutate,
+  logged or not, which ticket. `handle` had three parallel tables (the D32c action, the feed name
+  hand-spelled for 27 commands, and a `_ =>` default), and the feed name is now `wire_name()` —
+  read back from serde, so the wire spelling and the feed spelling cannot differ. Exhaustive like
+  `agent_allows`; a new command is a compile error until classified. `Resource` stays in the
+  daemon because `PromptSession`'s resource needs board state.
+- **`core/src/text.rs` owns the hazard lists.** Seven sanitizers carried four different lists and
+  only the census one stripped bidi overrides: a tag, a prompt, a peek reply, a pane title and a
+  ticket title could all carry an RLO. Now `scrub_cells` (before a cell; box drawing out) and
+  `scrub_text` (before another process; box drawing kept, since a pasted table is the reader's
+  business), and ticket titles are scrubbed at the daemon, which they never were. The census
+  keeps its "a control is a word break" rule at its own call site.
+- **The gate refused every edit in a ticket worktree.** `--deny-state <state_dir>` and worktrees
+  live at `<state_dir>/worktrees/` — verified by piping a worktree path through the built
+  binary. `mesimon gate --allow <root>` exempts a subtree, `Paths::WORKTREES_DIR` is the one
+  spelling, and `hook_settings` renders it. The worktree e2e uses a stub agent, which is why no
+  test caught a real agent being refused.
+- **The boundary is checked, not assumed.** `Paths::ensure_dirs` now goes through
+  `own_private_dir`: not a symlink, owned by this uid, 0700 — for `/tmp/mesimon-<uid>`, the
+  runtime dir, and both state dirs. Sticky `/tmp` lets anyone pre-plant the parent; before, a
+  foreign-owned one failed only because chmod returned EPERM, and a symlink was followed. Both
+  sockets are 0600 (orch.sock was at the umask), and `sessions.json`/`worktrees.json` are written
+  0600 (`write_atomic` takes the mode; board files stay at 0644).
+- **Both socket reads are bounded.** `hook.sock` read to EOF with no cap and `mesimon hook`
+  forwarded its whole stdin — a `Write` payload carries the file — and `orch.sock` buffered a line
+  of any length from a client that is, by design, untrusted (the MCP shim). 1 MiB each; the hook
+  drains stdin past the cap so the agent's write never EPIPEs, and an overlong request line ends
+  the connection.
+- **One git runner** (`daemon/src/git.rs`): `diff.rs` alone scrubbed `GIT_DIR`/`GIT_WORK_TREE`/
+  `GIT_INDEX_FILE`, and the unscrubbed copies were the ones running `worktree add`, `branch -D` and
+  the merge. The daemon is spawned from inside a worktree session whenever the author dogfoods.
+- **`Board::pane_target` and `SessionRecord::pressable`** are in core: the daemon picked and the
+  TUI hinted by two copies of "the ticket's claude with a pane", and `retry_pending_submits`'
+  predicate was copied into `glyphs.rs`'s doc comment.
+- **Ctx derives `Default`**; the four `_word` fields fall back at their hint. `Scope::ALL` sits
+  beside the enum, and `scope_list_is_complete` is an exhaustive match, so a new scope is a
+  compile error and then a length failure until listed.
+- **The e2e harness is shared** (`tests/common/mod.rs`): `TestClient` was pasted into 15 files
+  (byte-identical struct, drifted methods), `hook_send` had three signatures, and 14 teardowns
+  ran a bare `tmux kill-server` while `ci/release.sh` runs the suite under `MESIMON_TMUX_BIN` —
+  a client from another build refuses the server over protocol version, so the release gate
+  leaked a private server per test. Now `tmux()`/`kill_tmux()` via `tmux_bin()`, `wait_until`,
+  `sweep`, and `Harness::boot` with teardown on drop. `prompt_e2e` is migrated as the exemplar;
+  the other 14 still boot by hand (identical shape, ~45 lines each) and can move one at a time.
+- **The loop itself.** `cargo test --workspace` was 2 min 15 s at 12% CPU: 16 e2e binaries run in
+  series, each waiting on tmux and hook timers. `cargo nextest run --workspace` runs binaries in
+  parallel (each test already owns its dir and socket); `cargo ut` is the unit-only inner loop;
+  `doctest = false` on the four libs (4 s of rustdoc for zero doctests); `debug =
+  "line-tables-only"` in the dev profile for the 23-binary relink. CLAUDE.md gained the recipes
+  section — where a command, a binding, a visual, an e2e and a text channel each go — because it
+  had two "to add X" recipes in 668 lines and the reviewers counted the ceremony at six files for
+  a command.
+
+Reviewed and NOT applied, recorded so the next pass does not re-derive them:
+- `Principal` is a self-declared field on the envelope; any same-uid process (the agent's own
+  included) can claim `Local`. The never-tier is a contract with a cooperative agent, not a
+  boundary against one; the uid IS the boundary. Deriving the principal from the peer pid
+  (`LOCAL_PEERPID` → pane ancestry) would make it one. A design decision, not a cleanup.
+- Release verification is integrity (a `.sha256` beside the tarball), not authenticity. A signing
+  key is the fix and belongs with the README allowlist rewording already on record.
+- `refresh_worktree_flags` forks git four times per binding every 10 s ON THE WRITER THREAD
+  (`for-each-ref --format=%(ahead-behind:)` on the provisioning worker would make it one fork,
+  off-thread). Every tmux probe doubles its forks with a `has-session` prefix. The tick fsyncs
+  `sessions.json` on RSS drift that lives only in memory. The TUI draws every 100 ms and rebuilds
+  `Ctx` 3-4 times a frame. All real, none in the diff, none a cleanup.
+- `key_tag`'s "a non-ASCII stray key means the terminal ate Alt" heuristic changes behaviour on a
+  Hebrew layout; the total form is "an unresolved key in the picker is inert". Behaviour change.
+- The footer row is baked into every board golden, so a hinted binding regenerates 28 files.
+  Masking it and pinning the footer once per screen is a test-infrastructure decision.
+- `directional()` vs key-reading in `dispatch` (12 Verb variants exist only to spell a
+  direction); `dispatch` at 443 lines could split by `Group`; the 29 `MESIMON_*` seams could be
+  one `Tunables::from_env()`; `TagName`/`PromptText` newtypes would delete the daemon's remaining
+  sanitizer call sites; `hook_send`'s frame is still encoded in `hook.rs` and `gate.rs` and decoded
+  in `ingest.rs` separately.
+
+## Idle teammates do not hold a turn open, and a parked turn resumes on its own tool (2026-09-01, dogfood)
+
+T-135 ("simplify") wore the slow background mark for an hour after its agent had said "Done",
+with no shell on the ticket. `sessions.json` had it at `Idle{Background}`, High, unchanged since
+the first Stop at 19:32 — through twenty minutes of the agent's own tool frames, two more Stops
+and the idle Notification. Two defects, both measured against Claude Code 2.1.257 with a Stop
+hook that dumped its stdin (four throwaway sessions, headless and interactive-in-tmux):
+
+- **A named `Agent` in an interactive session is an in-process teammate, and a teammate is
+  listed `{type: "teammate", status: "running"}` in every later Stop payload for the rest of the
+  session — idle or not.** The `/simplify` skill spawns four (`reuse`, `simplify`, `efficiency`,
+  `altitude`); they reported at 19:30–19:32 and sat idle from then on. Claude Code's builder
+  only lists tasks whose status is running/pending (a finished shell or subagent DOES drop out,
+  captured), but a teammate's status never changes while it lives. `task_blocks_end_turn`
+  excused only `monitor`, so every Stop targeted `Idle{Background}` — the state it was already
+  in — and `apply` returned `None`, exactly the T-72 shape one state over.
+- **A teammate's report wakes the lead as a teammate message, which fires no
+  `UserPromptSubmit`.** The T-128 record said "the wake path already worked — the completion
+  arrives as a `UserPromptSubmit`"; that is true of a TASK NOTIFICATION (a background shell, an
+  unnamed subagent — re-captured: two prompt frames, the second `<task-notification>`), and false
+  of a teammate message (captured: one prompt frame in the whole session, the human's). The
+  activity feed for T-135 has four `UserPromptSubmit`s, all before 19:32. What arrived instead
+  were the lead's own `PostToolUse` frames, and `ToolCompleted` was inert from a High Idle by the
+  "a background task's completion must not flip a real end_turn" rule — a rule guarding against
+  a frame that does not exist: a backgrounded shell's completion emits NO `PostToolUse` (captured;
+  the single PostToolUse is at launch, carrying `backgroundTaskId`).
+
+**The fix keeps teammates blocking while they work and lets the idle notices say when they stop.**
+The payload cannot tell an idle teammate from a busy one, but `TeammateIdle` (already in the hook
+set, fires with `teammate_name`) can, and `SendMessage`'s `tool_input.to` says when one is woken
+again. So:
+
+- `task_blocks_end_turn("teammate")` is now `false`, and `Signal::Stop` carries `teammates:
+  usize` (entries whose type is a teammate, `is_teammate_task`). Every other type keeps its
+  class — a shell beside idle teammates still parks.
+- `Machine` keeps `idle_teammates: BTreeSet<String>`: `TeammateIdle{name}` inserts,
+  `TeammateMessaged{name}` removes, in every state including the latched ones. A Stop parks iff
+  `blocking_tasks || teammates > idle_teammates.len()`. Fewer listed than idle (one was shut
+  down) is still "all accounted for"; a repeat idle notice is not a fifth teammate.
+- The set is persisted as `SessionRecord.idle_teammates` (`#[serde(default)]`, synced by the
+  daemon on the two bookkeeping frames, restored via `Machine::restore_with_teammates` at
+  startup and in the supervisor-dead demotion) — a restart that forgot it would park the next
+  finished turn for good, which is the bug in a new coat.
+- `Signal::ToolCompleted { nested }`: `nested` is the payload's `agent_id`, which a subagent's or
+  teammate's tool carries and the session's own does not (captured on the same wire: the
+  parent's `Bash` has no `agent_id`, the subagent's has `agent_id` + `agent_type`). From
+  `Idle{Background}`, an un-nested completion promotes to `Running` at High — the lead's own tool
+  ran, so its turn resumed, whatever woke it. A nested one is the teammate's work and moves
+  nothing, so a lead genuinely parked on working reviewers stays parked and out of the quiet
+  probe's reach. `Idle{EndTurn}` stays inert as before: nothing is owed after a real end.
+
+**Not changed:** `SubagentStop` still promotes only below High (a teammate finishing does not
+mean the lead resumed; its own frames will say so). `Idle{Background}` keeps its glyph, rank and
+automove treatment. A session already parked before this build has an empty idle set and its
+teammates will not report idle again unprompted — T-135 itself is unstuck by sleeping or exiting
+it, not by the upgrade.
+
+Tests: `busy_teammates_park_the_turn`, `idle_teammates_do_not_hold_the_turn`,
+`a_messaged_teammate_is_working_again`, `a_parked_turn_resumes_on_its_own_tool_completion`,
+`restore_carries_idle_teammates` (core); `teammates_are_counted_not_blocking`,
+`teammate_frames_carry_names_and_nesting` (ingest, on the captured payload shapes). Corrects the
+T-128 block's wake claim above. Captures live in the session scratchpad, not the repo.
+
+## A card's age is time in column (2026-09-01)
+
+**Was:** the board card's age slot counted from the newest `state_changed_at` across the
+ticket's sessions, so it reset on every hook — a ticket three days into REVIEW read `now` the
+moment its agent said one more word — and a session-less card carried no age at all (07 §4.4,
+"created_at staleness handling is deferred").
+
+**Is:** `Ticket.entered_at` (`@<secs>`, `#[serde(default)]`, a scalar so it sits before the
+tables in `ticket.toml`) is stamped by `mint_ticket` and by `place_ticket` on a column change —
+never by `reorder_within`, a rename, a tag or a session — and by `unarchive_ticket` only when its
+fallback lands the ticket in a different column. `Ticket::column_since` is the read side and falls
+back to `created_at` for a ticket from before the field, the only honest value left; the card
+renders `age_slot` off it for every card, session or not, and the seconds band still ticks only
+while an agent is working. No schema bump: an older build ignores the field on read and drops it
+on its next write, which is a stale age, not a lost ticket. The single-session open card still
+lists no session row (the glyph still duplicates line 1; the session's own age is the ticket
+page's). Goldens: every session-less card gained a right-hand `>1y`. E2e: `reorder_e2e` asserts
+reorder keeps the stamp and a cross-column move advances it.
+
+## The environment travels inside the pane (2026-09-01, user request)
+
+Found while sampling processes during the simplify pass: two live panes' `new-session` lines
+carried the user's full shell environment as `-e KEY=VALUE`, API keys in clear. On macOS
+another user can read any process's arguments, so for the life of each spawn the environment
+was machine-readable. A terminal-started `claude` never has this problem — a shell passes its
+environment through `execve` — so the `-e` road was the one place mesimon was weaker than the
+baseline it replaced. The capture itself (clean base, login shell, denylist, explicit reload)
+was right and is unchanged.
+
+- **`mesimon exec --env <file> [--set K=V]... -- <argv>`** is the pane launcher. It reads
+  `<rt_dir>/shellenv.env` (0600, `K=V\0`, written whole-or-not by `write_atomic` on every
+  capture), applies it, applies `--set` last, and `exec`s: the pid is still the agent's, tmux's
+  `pane_pid`/`pane-died` are untouched, no shell runs. A missing file warns on the pane and
+  execs anyway — the pre-capture behaviour, never a dead pane. The record keeps the RAW argv;
+  `Daemon::launch` wraps at spawn, so a moved binary wraps with its new path.
+- **`TmuxBackend::spawn` lost its `env` parameter.** There is no `-e` road left to misuse.
+  The pinned tmux measurement keeps its half that still matters (a pane's PATH is the
+  client's); the `-e PATH` decoy is gone with the mechanism it decoyed.
+- **PATH is no longer an exception, but it still takes two roads.** It is in the file like
+  every other variable (the launcher is the authority in the pane) AND on the tmux client
+  (`set_path`), because tmux resolves its own commands against the client PATH. One road would
+  leave tmux and the pane disagreeing; that is what `core::shellenv::PATH_IS_THE_CLIENTS` now
+  says.
+- **`--set` stays on argv on purpose.** `MESIMON_TICKET`/`MESIMON_WORKTREE_BRANCH` are not
+  secrets, and `ps` naming a pane's ticket is a feature. `mcp_e2e` reads the ticket key from
+  `#{pane_start_command}` now instead of `show-environment`, which only `-e` ever filled.
+- **The regression test is the exposure:** `shell_env_e2e` asserts the exported value is NOT in
+  `#{pane_start_command}` and IS in the pane's environment; `exec_e2e` runs the real binary with
+  a bare command resolvable only on the file's PATH.
+- Deferred at the author's word: the README sentence stating the stance ("an agent pane gets
+  your login shell's environment, secrets included, as a terminal-started session would").
+
+## A pending settle survives a shutdown (2026-09-01)
+
+**Was:** `Command::Shutdown` set a flag and let the writer loop fall out; SIGTERM had no handler
+at all. A `Running → Idle{EndTurn}` still inside its 1500 ms settle died with the process, and the
+restart's transcript-tail re-derivation carries `Confidence::Low`, where `automove` refuses to
+move — so a `Stop` one second before a `U` reload left T-140 in IN PROGRESS with its turn over
+(dogfood 2026-09-01; the feed shows `Stop` 23:38:35, the new daemon at 23:38:36, `idle/end_turn`
+at low 23:38:38, no automove).
+
+**Is:** one shutdown road, `Daemon::begin_shutdown`: `Machine::flush` commits every pending
+transition at once (the settle exists to absorb a re-trigger, and at exit there is nothing left
+to absorb; stale demotion is a clock, not a signal, and is not flushed), each goes through the
+ordinary `apply_change` — feed line with hook `shutdown`, automove, `persist_sessions`,
+broadcast — and only then does the loop exit. `Command::Shutdown` calls it. SIGTERM takes the same
+road: `install_sigterm_handler` (the `daemon` subcommand only — never the in-process daemons the
+e2e suite runs in the test runner's process) raises `TERM_REQUESTED` and resets the disposition
+to `SIG_DFL`, so the next wheel tick (≤ 250 ms) runs `begin_shutdown` on the writer thread and a
+second TERM still kills. `pkill -f "mesimon daemon"` is therefore a clean exit now, not a signal
+death. E2e: `shutdown_flush_e2e` — the in-process road via `Shutdown`, and the real binary under
+`kill -TERM` (asserts exit 0, socket gone, ticket in REVIEW on disk, record `idle/end_turn`).

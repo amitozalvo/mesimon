@@ -5,6 +5,7 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -80,6 +81,25 @@ struct GraceEntry {
     /// The delete-gate's red "remove": the user confirmed losing unmerged
     /// work, so teardown may `branch -D` (M4).
     discard_worktree: bool,
+}
+
+/// Raised by the SIGTERM handler, honoured on the next wheel tick.
+static TERM_REQUESTED: AtomicBool = AtomicBool::new(false);
+
+extern "C" fn on_sigterm(_: libc::c_int) {
+    TERM_REQUESTED.store(true, Ordering::Relaxed);
+    // One TERM asks; a second one kills. A daemon wedged past the flag must
+    // still be killable the way it always was.
+    // SAFETY: `signal` is async-signal-safe, and SIG_DFL is a valid disposition.
+    unsafe { libc::signal(libc::SIGTERM, libc::SIG_DFL) };
+}
+
+/// Make SIGTERM a clean shutdown (`begin_shutdown` on the next tick) instead of
+/// an instant death. Called by the `daemon` subcommand only — never by the
+/// in-process daemons the e2e suite runs, whose process is the test runner's.
+pub fn install_sigterm_handler() {
+    // SAFETY: the handler touches one atomic and one async-signal-safe call.
+    unsafe { libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t) };
 }
 
 enum Msg {
@@ -202,6 +222,8 @@ pub struct Daemon {
     /// Why the last capture failed, if it did. The previous environment stays
     /// in force — a broken rc file must not empty a working pane env.
     shell_env_error: Option<String>,
+    /// This binary, for the pane launcher (`mesimon exec`) and the hook.
+    self_exe: std::path::PathBuf,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -227,6 +249,8 @@ pub fn run(paths: Paths) -> Result<()> {
     let sock_path = paths.orch_sock();
     let _ = std::fs::remove_file(&sock_path); // stale — we hold the lock
     let listener = UnixListener::bind(&sock_path).context("bind orch.sock")?;
+    // Same-uid only, like hook.sock: the socket's mode is the whole auth.
+    std::fs::set_permissions(&sock_path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
 
     // The pane-died notify reuses the hook binary and frame (spike T-7: the
     // hook is the ONLY timely death signal). Conf covers fresh servers; the
@@ -345,7 +369,7 @@ pub fn run(paths: Paths) -> Result<()> {
                 let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
                 let mut buf = Vec::new();
                 use std::io::Read;
-                if stream.read_to_end(&mut buf).is_ok() {
+                if (&mut stream).take(ingest::HOOK_FRAME_MAX_BYTES).read_to_end(&mut buf).is_ok() {
                     if let Some(frame) = ingest::parse_frame(&buf) {
                         let _ = tx.send(Msg::Hook(frame));
                     }
@@ -358,7 +382,15 @@ pub fn run(paths: Paths) -> Result<()> {
     let machines = board
         .sessions
         .iter()
-        .map(|s| (s.id, Machine::restore(s.state.clone(), s.confidence, now)))
+        .map(|s| {
+            let m = Machine::restore_with_teammates(
+                s.state.clone(),
+                s.confidence,
+                s.idle_teammates.iter().cloned(),
+                now,
+            );
+            (s.id, m)
+        })
         .collect();
     let feed = FeedWriter::open(&paths.activity_log())?;
 
@@ -411,6 +443,7 @@ pub fn run(paths: Paths) -> Result<()> {
         shell_env: crate::shellenv::ShellEnv::default(),
         shell_env_capturing: false,
         shell_env_error: None,
+        self_exe: hook_bin.clone(),
     };
     let mut parked = false;
     for id in just_exited {
@@ -430,6 +463,14 @@ pub fn run(paths: Paths) -> Result<()> {
 
     for msg in rx {
         match msg {
+            // SIGTERM (`pkill -f "mesimon daemon"` after a rebuild) takes the
+            // same road as `Shutdown`: the handler only raises a flag, and the
+            // wheel — ≤250 ms away — is where it is honoured, on the writer
+            // thread, with the machines in hand.
+            Msg::Tick if TERM_REQUESTED.load(Ordering::Relaxed) => {
+                d.begin_shutdown();
+                break;
+            }
             Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
             Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
@@ -463,22 +504,61 @@ impl Daemon {
     ///
     /// Layer 2 is the MCP tool surface: this tells the *shell* which ticket it
     /// is on, `get_ticket` tells the *model*.
-    fn session_env(&self, ticket: ulid::Ulid, cwd: &std::path::Path) -> Vec<(String, String)> {
+    ///
+    /// Only mesimon's own variables: the user's captured environment reaches
+    /// the pane through the launcher's file (`launch`), never through here.
+    fn session_vars(&self, ticket: ulid::Ulid, cwd: &std::path::Path) -> Vec<(String, String)> {
         let Some(key) = self.board.ticket(ticket).map(|t| t.short_key.clone()) else {
             return Vec::new();
         };
-        // The user's own shell environment first, mesimon's own last, so a
-        // ticket variable can never be shadowed by something the rc file
-        // exported. (`shellenv::admissible` already refuses MESIMON_*, so this
-        // is belt to that braces.)
-        let mut env = self.shell_env.vars.clone();
-        env.push(("MESIMON_TICKET".to_string(), key));
+        let mut env = vec![("MESIMON_TICKET".to_string(), key)];
         if let Some(b) = self.worktrees.get(&ticket) {
             if b.status == BindingStatus::Attached && b.path == cwd {
                 env.push(("MESIMON_WORKTREE_BRANCH".into(), b.branch.clone()));
             }
         }
         env
+    }
+
+    /// A pane's real command line: `mesimon exec --env <file> --set K=V -- argv`.
+    ///
+    /// The captured environment is read INSIDE the pane from a 0600 file and
+    /// applied by `exec`, so it is never spelled on a tmux command line where
+    /// every user on the machine can read it. `--set` carries mesimon's own
+    /// per-session variables, applied last so nothing captured can shadow
+    /// them; a ticket key on the command line is a feature, not a leak. The
+    /// record keeps the RAW argv (`SessionRecord::argv`) and is wrapped here
+    /// at every spawn, so a binary that moved wraps with its new path.
+    fn launch(&self, argv: &[String], vars: &[(String, String)]) -> Vec<String> {
+        let mut out = vec![
+            self.self_exe.display().to_string(),
+            "exec".into(),
+            "--env".into(),
+            self.paths.shell_env_file().display().to_string(),
+        ];
+        for (k, v) in vars {
+            out.push("--set".into());
+            out.push(format!("{k}={v}"));
+        }
+        out.push("--".into());
+        out.extend(argv.iter().cloned());
+        out
+    }
+
+    /// What the launcher reads: the admissible variables plus `PATH`, `K=V\0`
+    /// entries, written whole-or-not (temp + rename) at 0600. `PATH` is here
+    /// like everything else — the launcher sets it in the pane — AND on the
+    /// tmux client (`set_path`), so tmux's own lookups and the pane agree.
+    fn write_shell_env_file(&self) -> Result<()> {
+        let mut content = String::new();
+        let path = self.shell_env.path.iter().map(|p| ("PATH".to_string(), p.clone()));
+        for (k, v) in self.shell_env.vars.iter().cloned().chain(path) {
+            content.push_str(&k);
+            content.push('=');
+            content.push_str(&v);
+            content.push('\0');
+        }
+        store::write_atomic(&self.paths.shell_env_file(), &content, store::PRIVATE)
     }
 
     /// Ask the user's login shell for its environment, off the writer thread.
@@ -517,6 +597,12 @@ impl Daemon {
                 // this a two-day-old story.
                 let _ = self.backend.publish_path();
                 self.shell_env = env;
+                // The previous file stands if this fails, and the failure is
+                // said out loud: a pane silently getting last week's exports
+                // is the bug this whole mechanism exists to end.
+                if let Err(e) = self.write_shell_env_file() {
+                    self.shell_env_error = Some(format!("writing the environment file: {e}"));
+                }
             }
             // The previous environment stands. A broken rc file must not be
             // able to empty the environment every future pane gets.
@@ -685,14 +771,27 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
     }
 }
 
+/// The longest request line `orch.sock` will buffer. Commands are small
+/// (a prompt is capped at 4 KiB before it is even sent); this is headroom.
+const ORCH_LINE_MAX_BYTES: u64 = 1 << 20;
+
 fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
     let writer = Arc::new(Mutex::new(match stream.try_clone() {
         Ok(s) => s,
         Err(_) => return,
     }));
-    let reader = BufReader::new(stream);
-    for line in reader.lines() {
-        let Ok(line) = line else { break };
+    let mut reader = BufReader::new(stream);
+    let mut line = String::new();
+    loop {
+        line.clear();
+        // Bounded: the MCP shim in an agent's process tree is a client too,
+        // and an unterminated line must not grow the writer's heap. A line
+        // that hits the cap (or EOF) without its newline ends the connection.
+        match std::io::Read::take(&mut reader, ORCH_LINE_MAX_BYTES).read_line(&mut line) {
+            Ok(n) if n == 0 || !line.ends_with('\n') => break,
+            Ok(_) => {}
+            Err(_) => break,
+        }
         if line.trim().is_empty() {
             continue;
         }
@@ -744,59 +843,30 @@ impl Daemon {
                 message: "automation is not a principal a client may claim".into(),
             };
         }
-        // D32c invariant 2: the chokepoint is on every path, even though v0.1 allows.
-        let action = match &env.command {
-            Command::Hello { .. }
-            | Command::Snapshot
-            | Command::Subscribe
-            | Command::GateStatus
-            // Mutates only the daemon's discovery cache, never board state.
-            | Command::RescanExternal
-            | Command::DiffList { .. }
-            | Command::DiffFile { .. }
-            | Command::PaneTail { .. } => Action::Read,
-            _ => Action::Mutate,
-        };
+        // D32c invariant 2: the chokepoint is on every path, even though v0.1
+        // allows. What a command IS — read or mutate, logged or not, about
+        // which ticket — is `Command::meta`, one exhaustive table in core.
+        let meta = env.command.meta();
         // Reading a pane IS reading the session, and the chokepoint should
         // say so: `authorize` denies an agent `Resource::Session` outright,
         // and naming the resource here is what makes that rule reachable
         // rather than merely true.
         let resource = match &env.command {
             Command::PaneTail { session, .. } => Resource::Session { id: *session },
+            // Typing into a pane is changing the session, and the chokepoint
+            // should say which one. `Board` when there is no target: the
+            // command is about to refuse anyway, and inventing a session id
+            // to authorize against would be the wrong kind of tidy.
+            Command::PromptSession { ticket, .. } => match self.prompt_target(*ticket) {
+                Some(id) => Resource::Session { id },
+                None => Resource::Board,
+            },
             _ => Resource::Board,
         };
-        if let Decision::Deny { reason } = authorize(&env.principal, &action, &resource) {
+        if let Decision::Deny { reason } = authorize(&env.principal, &meta.action, &resource) {
             return Response::Err { message: format!("denied: {reason}") };
         }
-
-        let feed_cmd: Option<(&'static str, Option<ulid::Ulid>)> = match &env.command {
-            Command::CreateTicket { .. } => Some(("create_ticket", None)),
-            Command::RenameTicket { id, .. } => Some(("rename_ticket", Some(*id))),
-            Command::DeleteTicket { id, .. } => Some(("delete_ticket", Some(*id))),
-            Command::SetWorkspace { id, .. } => Some(("set_workspace", Some(*id))),
-            Command::SetTag { id, .. } => Some(("set_tag", Some(*id))),
-            Command::ForgetTag { .. } => Some(("forget_tag", None)),
-            Command::RegisterTag { .. } => Some(("register_tag", None)),
-            Command::RenameTag { .. } => Some(("rename_tag", None)),
-            Command::SetTagColor { .. } => Some(("set_tag_color", None)),
-            Command::MergeTicket { id } => Some(("merge_ticket", Some(*id))),
-            Command::MergeToAgent { id, .. } => Some(("merge_to_agent", Some(*id))),
-            Command::RestoreTicket { id } => Some(("restore_ticket", Some(*id))),
-            Command::ArchiveTicket { id } => Some(("archive_ticket", Some(*id))),
-            Command::UnarchiveTicket { id } => Some(("unarchive_ticket", Some(*id))),
-            Command::ArchiveAll => Some(("archive_all", None)),
-            Command::ReloadShellEnv => Some(("reload_shell_env", None)),
-            Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
-            Command::KillSession { .. } => Some(("kill_session", None)),
-            Command::AttachExternal { ticket, .. } => Some(("attach_external", *ticket)),
-            Command::ResumeExternal { ticket, .. } => Some(("resume_external", *ticket)),
-            Command::ResumeSession { .. } => Some(("resume_session", None)),
-            Command::SleepSession { .. } => Some(("sleep_session", None)),
-            Command::WakeSession { .. } => Some(("wake_session", None)),
-            Command::ReclaimAll => Some(("reclaim_all", None)),
-            Command::PinAwake { .. } => Some(("pin_awake", None)),
-            _ => None,
-        };
+        let feed_cmd = meta.logged.then(|| (env.command.wire_name(), meta.subject));
 
         let resp = match env.command {
             Command::Hello { version, .. } => {
@@ -836,7 +906,7 @@ impl Daemon {
             }
             Command::CreateTicket { column, title } => self.create_ticket(column, title),
             Command::RenameTicket { id, title } => self
-                .with_ticket(id, |t| t.title = title)
+                .with_ticket(id, |t| t.title = mesimon_core::text::scrub_cells(&title, false))
                 .unwrap_or(Response::Err { message: "no such ticket".into() }),
             Command::DeleteTicket { id, discard_worktree } => {
                 self.delete_ticket(id, discard_worktree)
@@ -857,8 +927,12 @@ impl Daemon {
             Command::RegisterTag { group, name } => self.register_tag(group, name),
             Command::RenameTag { group, from, to } => self.rename_tag(group, from, to),
             Command::SetTagColor { group, name, color } => self.set_tag_color(group, name, color),
+            Command::MoveTag { group, name, to_group, to_index } => {
+                self.move_tag(group, name, to_group, to_index)
+            }
             Command::MergeTicket { id } => self.merge_ticket(id),
             Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
+            Command::PromptSession { ticket, text } => self.prompt_session(ticket, text),
             Command::RestoreTicket { id } => self.restore_ticket(id),
             Command::ArchiveTicket { id } => self.archive_ticket(id),
             Command::UnarchiveTicket { id } => self.unarchive_ticket(id),
@@ -902,7 +976,7 @@ impl Daemon {
                 Response::Ok
             }
             Command::Shutdown => {
-                self.shutting_down = true;
+                self.begin_shutdown();
                 Response::Ok
             }
             // Never reaches the writer — client_loop short-circuits these to
@@ -977,6 +1051,7 @@ impl Daemon {
             }
         };
         if let Some((cmd, ticket)) = feed_cmd {
+            let cmd = cmd.as_str();
             match &resp {
                 Response::Ok | Response::Spawned { .. } | Response::Provisioning => {
                     self.feed.board("local", cmd, ticket)
@@ -1041,6 +1116,30 @@ impl Daemon {
         }
         // ≤1 write() per wheel bucket, no fsync (14 §1.7).
         let _ = self.feed.flush();
+    }
+
+    /// The one shutdown road, for `Command::Shutdown` and SIGTERM alike.
+    ///
+    /// A pending settle is a frame the session already sent — a `Stop` one
+    /// second before a `U` reload — and it dies with the process unless it is
+    /// committed here: the restart re-derives it from the transcript at Low
+    /// confidence, where automove refuses to move, so the ticket sat in IN
+    /// PROGRESS with its turn over (dogfood 2026-09-01, T-140). Committing
+    /// runs the ordinary `apply_change` path, so the automove fires and the
+    /// records are persisted before the socket goes.
+    fn begin_shutdown(&mut self) {
+        let now = now_ms();
+        let fired: Vec<(uuid::Uuid, Change)> =
+            self.machines.iter_mut().filter_map(|(id, m)| m.flush(now).map(|c| (*id, c))).collect();
+        let mut changed = false;
+        for (id, change) in fired {
+            changed |= self.apply_change(id, &change, None, Some("shutdown"));
+        }
+        if changed {
+            self.persist_sessions();
+            self.broadcast();
+        }
+        self.shutting_down = true;
     }
 
     /// 11 §11.5.3, approximated without byte streams: a Spawning Claude pane
@@ -1192,7 +1291,8 @@ impl Daemon {
             // Claude Code prefixes its own spinner glyph inside the title
             // ("✳ fix the parser") — strip leading marks so the TUI's kind
             // mark isn't doubled (dogfood 2026-08-30: "✻ ✳ name" rows).
-            let clean: String = t.chars().filter(|c| !c.is_control()).take(80).collect();
+            let clean: String =
+                mesimon_core::text::scrub_cells(t, false).chars().take(80).collect();
             let clean = clean
                 .trim_start_matches(|c: char| {
                     matches!(c, '✳' | '✻' | '✽' | '✶' | '✢' | '*' | '·') || c.is_whitespace()
@@ -1350,8 +1450,15 @@ impl Daemon {
                 rec.confidence = Confidence::Stale;
                 rec.waiting_since = None;
                 rec.state_changed_at = Some(now);
-                self.machines
-                    .insert(rec.id, Machine::restore(rec.state.clone(), Confidence::Stale, now));
+                self.machines.insert(
+                    rec.id,
+                    Machine::restore_with_teammates(
+                        rec.state.clone(),
+                        Confidence::Stale,
+                        rec.idle_teammates.iter().cloned(),
+                        now,
+                    ),
+                );
                 changed = true;
             }
         }
@@ -1413,7 +1520,20 @@ impl Daemon {
                 .machines
                 .entry(id)
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
-            if let Some(change) = machine.apply(&sig, now) {
+            let change = machine.apply(&sig, now);
+            // The machine's idle-teammate set is what decides whether the
+            // NEXT Stop parks or ends the turn (T-135); it survives a daemon
+            // restart only on the record.
+            if matches!(sig, Signal::TeammateIdle { .. } | Signal::TeammateMessaged { .. }) {
+                let idle: Vec<String> = machine.idle_teammates().map(str::to_string).collect();
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    if rec.idle_teammates != idle {
+                        rec.idle_teammates = idle;
+                        dirty = true;
+                    }
+                }
+            }
+            if let Some(change) = change {
                 dirty |=
                     self.apply_change(id, &change, ingest::detail_of(&frame), Some(&frame.event));
                 // ...unless the user simply left. A clean exit is a park.
@@ -1495,13 +1615,7 @@ impl Daemon {
             // A pane that died, or one showing a startup modal, is not a pane
             // to keep pressing Enter into — the modal's Enter is an ANSWER,
             // and mesimon does not answer dialogs on the user's behalf.
-            let pressable = rec.pending_submit
-                && rec.state.has_pane()
-                && matches!(
-                    rec.state,
-                    SessionState::Spawning | SessionState::Idle { .. } | SessionState::Running
-                );
-            if !pressable {
+            if !rec.pressable() {
                 self.submit_retry.remove(&id);
                 if rec.pending_submit {
                     let ticket = rec.ticket;
@@ -1882,6 +1996,9 @@ impl Daemon {
         if let Some(t) = self.board.ticket_mut(id) {
             t.column = dest.to_string();
             t.order = order;
+            // The card's age is time in column, so a column change is the
+            // one thing that restarts it (a reorder returned above).
+            t.entered_at = Some(now_iso());
             let t = t.clone();
             let _ = store::save_ticket(&self.paths, &t);
         }
@@ -2317,6 +2434,8 @@ impl Daemon {
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
         }
+        // A title is user text on a card row; scrubbed here, at the boundary.
+        let title = mesimon_core::text::scrub_cells(&title, false);
         let id = self.mint_ticket(column, title);
         self.persist_and_notify();
         Response::Created { id }
@@ -2334,6 +2453,7 @@ impl Daemon {
             column,
             order: fracindex::between(&last, ""),
             created_at: now_iso(),
+            entered_at: Some(now_iso()),
             workspace: None,
             tags: Vec::new(),
             archived: None,
@@ -2465,6 +2585,25 @@ impl Daemon {
             return Response::Err { message: "empty tag name".into() };
         };
         match self.board.rename_tag(group, &from, &clean) {
+            Ok(touched) => {
+                let files: Vec<Ticket> =
+                    touched.iter().filter_map(|id| self.board.ticket(*id).cloned()).collect();
+                for t in &files {
+                    let _ = store::save_ticket(&self.paths, t);
+                }
+                self.persist_columns();
+                self.broadcast();
+                Response::Ok
+            }
+            Err(message) => Response::Err { message },
+        }
+    }
+
+    /// Reposition a tag in the registry. The wearers move with it, so this
+    /// writes their files the way `rename_tag` does — a ticket left holding
+    /// the old axis would wear a pip its row can no longer reach.
+    fn move_tag(&mut self, group: u8, name: String, to_group: u8, to_index: usize) -> Response {
+        match self.board.move_tag(group, &name, to_group, to_index) {
             Ok(touched) => {
                 let files: Vec<Ticket> =
                     touched.iter().filter_map(|id| self.board.ticket(*id).cloned()).collect();
@@ -2619,12 +2758,7 @@ impl Daemon {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
         let base = self.base_branch.clone().unwrap_or_else(|| "main".into());
-        let Some(rec) = self
-            .board
-            .sessions
-            .iter()
-            .find(|s| s.ticket == id && s.kind == SessionKind::Claude && s.state.has_pane())
-        else {
+        let Some(rec) = self.board.pane_target(id) else {
             return Response::Err {
                 message: "no live claude session on this ticket — open one first".into(),
             };
@@ -2640,6 +2774,52 @@ impl Daemon {
             ),
         };
         match self.backend.paste_text(&rec.sid16(), &text) {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+        }
+    }
+
+    /// The one live claude a prompt from the board would reach: first in
+    /// spawn order, which is the same session `board_enter` focuses, so the
+    /// key that asks and the key that goes there cannot land on different
+    /// panes. `has_pane` and not `is_live` — a parked session is live and has
+    /// no process to type at.
+    fn prompt_target(&self, ticket: ulid::Ulid) -> Option<uuid::Uuid> {
+        self.board.pane_target(ticket).map(|s| s.id)
+    }
+
+    /// The board's Shift+Enter: deliver a prompt the user typed and submit
+    /// it, leaving them on the board. Same delivery as `merge_to_agent` —
+    /// bracketed paste, then a SEPARATE Enter, because a CR in the same byte
+    /// burst is absorbed as pasted content (T-5) — and same explicit-gesture
+    /// footing: a key was pressed and a sentence was typed by a person.
+    ///
+    /// What differs is whose words travel. The merge flow pastes mesimon's;
+    /// this pastes only the user's, sanitized by subtraction alone
+    /// (`sanitize_prompt`), so the README's zero-prompt-injection promise
+    /// holds for it in the strongest form the promise has: mesimon does not
+    /// add a token, and here it does not author one either.
+    fn prompt_session(&mut self, ticket: ulid::Ulid, text: String) -> Response {
+        // Blank in, nothing out: an empty paste would press Enter on a turn
+        // the user never wrote.
+        let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
+            return Response::Err { message: "nothing to send".into() };
+        };
+        let Some(id) = self.prompt_target(ticket) else {
+            return Response::Err {
+                message: "no live claude session on this ticket — start or wake one first".into(),
+            };
+        };
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return Response::Err { message: "no such session".into() };
+        };
+        match self.backend.paste_text(&rec.sid16(), &text) {
+            // The board's own picture of the session is now a turn behind:
+            // the record still says `Idle` until the agent's `UserPromptSubmit`
+            // hook lands, and that is the hook's to say, not ours. What we
+            // broadcast is the feed entry above — the card catches up when
+            // the agent does, the same way it does for a prompt typed in the
+            // pane.
             Ok(()) => Response::Ok,
             Err(e) => Response::Err { message: format!("could not deliver: {e}") },
         }
@@ -2709,9 +2889,13 @@ impl Daemon {
         // describes a board state from before it left, and applying it to the
         // ticket's first move back would be a refusal nobody could explain.
         self.moves.forget(id);
+        let now = now_iso();
         self.with_ticket(id, |t| {
             t.archived = None;
             if let Some((col, order)) = fallback {
+                if t.column != col {
+                    t.entered_at = Some(now);
+                }
                 t.column = col;
                 t.order = order;
             }
@@ -2860,8 +3044,8 @@ impl Daemon {
         let mut rec =
             SessionRecord::new(id, kind, ticket, argv.clone(), cwd.display().to_string(), state);
         rec.state_changed_at = Some(now_ms());
-        let env = self.session_env(ticket, &cwd);
-        if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &argv, &env) {
+        let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
+        if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &launch) {
             return Response::Err { message: format!("spawn failed: {e}") };
         }
         // Prefill the ticket title into the agent's input box — typed, never
@@ -3393,8 +3577,8 @@ impl Daemon {
         }
         self.reaping.remove(&sid); // a fresh pane must not meet a stale reap
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
-        let env = self.session_env(ticket, &cwd);
-        if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
+        let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
+        if let Err(e) = self.backend.spawn(&sid, &cwd, &launch) {
             return Response::Err { message: format!("resume spawn failed: {e}") };
         }
         let now = now_ms();
@@ -3626,8 +3810,8 @@ impl Daemon {
                 }
                 self.reaping.remove(&sid);
                 let _ = self.backend.kill_session(&sid);
-                let env = self.session_env(ticket, &cwd);
-                if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
+                let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
+                if let Err(e) = self.backend.spawn(&sid, &cwd, &launch) {
                     return Response::Err { message: format!("wake spawn failed: {e}") };
                 }
                 let now = now_ms();
@@ -3802,7 +3986,7 @@ impl Daemon {
             .unwrap_or(false);
         if !alive {
             let _ = self.backend.kill_session(GATE_SESSION);
-            if let Err(e) = self.backend.spawn(GATE_SESSION, &self.paths.repo_root, &argv, &[]) {
+            if let Err(e) = self.backend.spawn(GATE_SESSION, &self.paths.repo_root, &argv) {
                 return Response::Err { message: format!("gate spawn failed: {e}") };
             }
         }

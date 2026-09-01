@@ -32,10 +32,11 @@ Cargo is on PATH (`~/.cargo/bin`, via the shell profile). A session whose shell 
 before that was set up may still need `source ~/.cargo/env`.
 
 ```sh
-cargo test --workspace              # all tests; e2e tests need tmux installed (skip gracefully)
+cargo ut                             # the inner loop: every unit test (core, daemon, tui goldens, the binary's own); ~1 s of test time
+cargo nextest run --workspace        # everything, the e2e binaries in PARALLEL (~30 s). `cargo test --workspace` runs them one after another (~2.5 min)
 cargo test -p mesimon-core attention # one module's tests
-cargo test -p mesimon --test hook_e2e # the M2 attention e2e (real hook binary + in-process daemon)
-cargo clippy --workspace --all-targets # keep clean; workspace warns on unwrap_used (tests exempt by convention)
+cargo test -p mesimon --test hook_e2e # one e2e (real hook binary + in-process daemon + real tmux; skips without tmux)
+cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact clippy; tests are exempt from unwrap_used via clippy.toml
 cargo run                            # TUI for cwd; `cargo run -- daemon --repo <path>` runs the daemon foreground
 ci/release.sh --dry-run              # the full release gate, minus the upload
 ```
@@ -60,13 +61,39 @@ packaged artifact, upload. `.github/workflows/ci.yml` is manual-dispatch only.
 
 **Rebuild trap:** the daemon is a singleton (flock) started detached; a rebuild swaps the binary on
 disk but the RUNNING daemon keeps old code and old `current_exe()` paths. After changing daemon
-code, kill it (`pgrep -f "mesimon daemon"`) so the client respawns the new one. Same for spawned
+code, kill it (`pgrep -f "mesimon daemon"`) so the client respawns the new one — SIGTERM is a
+CLEAN exit since 2026-09-01: `begin_shutdown` flushes every pending attention settle through
+`apply_change` (automove included) before the socket goes, the same road `Command::Shutdown`
+takes, so a `Stop` one second before the kill still lands its ticket in REVIEW (STALE-MAP "A
+pending settle survives a shutdown"; e2e `shutdown_flush_e2e`). Same for spawned
 Claude sessions: hooks are injected at launch, so sessions spawned by an old daemon never emit
 attention — kill and respawn them too. Softener (2026-08-30): a RUNNING TUI watches its own
 binary's mtime and offers `update ready (U reloads)` in the header — `U` shuts the daemon down
 cleanly and execs the new binary in place (`tui/src/update.rs`, `lib.rs::reexec`; STALE-MAP
 "Opt-in binary update reload"), so interactive dogfooding rarely needs the manual kill. The TUI
 also survives daemon death now (reconnect cadence in `tui/src/client.rs`).
+
+**A RELEASED board also asks whether a newer one exists, and a dev board never does.**
+`update.rs` only ever fires for someone who already updated — on a released machine nothing moves
+that mtime but a hand-run `install.sh` — so `tui/src/release.rs` supplies the missing half and
+only that half: it asks the dist repo for the newest tag (at most every 6 h, `curl` on a worker,
+the LIST endpoint because `/releases/latest` skips the prereleases every alpha is), raises
+`◦ v0.1.0-alpha.5 available (esc)`, and on the menu row being taken downloads it, verifies the
+published `.sha256` (**absent means refuse** — `install.sh` only warns because a person is
+watching it), runs `--version` on it, and lands it at our own path. **It restarts nothing**: the
+swap moves the mtime `update.rs` is already watching, so the existing chip and `U` finish the
+job, and `Ctx::release_available` is ANDed with `!update_ready` so a binary already on disk is
+reloaded rather than fetched twice. **The dev gate is a stamp, never a heuristic** — a wrong
+answer would point a download at somebody's build tree: `mesimon-tui/build.rs` writes
+`MESIMON_CHANNEL`, `release` only when `ci/release.sh` set `MESIMON_RELEASE`, and under it sits a
+guard nothing lifts (an exe with a `target` component is refused whatever the channel says). The
+release script greps `doctor install` on the UNPACKED artifact and dies if the line reads `off`,
+because an unstamped release fails silently and forever. `~/.local/state/mesimon/update-check.json`
+is a CACHE at the state ROOT (one binary per machine, not per repo) and is treated as one —
+unreadable or newer-schema means ignored and rewritten, the inverse of the four state files' rule
+— and it is written only on an answer, so a week offline never reads back as a week of checks.
+`Ctx::release_tag` is Ctx's first `String` (a version is not a word from a fixed set), which is
+why `..ctx` now needs a clone. (STALE-MAP "A released board asks whether a newer one exists".)
 
 E2e tests use per-test dirs `/tmp/msmn-e2e-*`; a test that panics before its cleanup leaks a
 private tmux server (plus an idle zsh). `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server`
@@ -86,6 +113,54 @@ builds). Everything still applies, plus:
 - E2e tests are safe here: they use their own `/tmp/msmn-e2e-*` sockets, never your tmux server.
 - In a git worktree you get a different `proj16` (own daemon, own sockets) and the repo-root
   auto-memory does not follow you — this file is your only standing context there.
+
+## Adding things: the recipes
+
+Each list is the complete set of places a change touches. The compiler finds most of them
+(the exhaustive matches are the mechanism); this is the rest. If a step is missing here,
+add it here.
+
+**A wire command** (something the TUI or an agent asks the daemon to do):
+1. `core/src/command.rs`: the `Command` variant — its serde `snake_case` name IS its wire name
+   and its activity-feed name — then `Command::meta()`: read or mutate, logged or not, which
+   ticket. Exhaustive; a new variant does not compile until classified.
+2. `core/src/mcp.rs::agent_allows`: may an agent send it? Exhaustive, no `_` arm. Almost always no.
+3. `daemon/src/server.rs::handle`: the dispatch arm, calling a `Daemon` method. Only
+   `place_ticket` moves a ticket.
+4. The sender: a `Verb` in the TUI (next recipe) or a tool in `mesimon/src/mcp.rs`.
+5. An e2e if it touches a pane or the disk (below).
+
+**A key binding:**
+1. `core/src/keymap.rs`: a `Binding` in that scope's list (keys, `avail` over `Ctx`, `hint`,
+   `mutates`) and a `Verb`. A fact `Ctx` lacks is a field on it — `Ctx` derives `Default`, so
+   that is the struct plus `App::ctx()` in `tui/src/app.rs`, nothing else. A new `Scope` also
+   goes in `Scope::ALL`, beside the enum; `scope_list_is_complete` catches one that does not.
+2. `App::dispatch` in `tui/src/app.rs`: the arm. The match is exhaustive, so the compiler
+   points at it.
+3. `cargo ut`: the keymap validators run. A hint that shows on the board changes the board
+   goldens: `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui`, then review the diff by eye.
+
+**A card or ticket-page visual:** `tui/src/ui/card.rs` / `ticket.rs` / `tags.rs`; a golden in
+`tui/src/ui/tests.rs` (`MESIMON_UPDATE_GOLDEN=1` mints it). The L1 law tests
+(`test_no_banned_sgr`, `test_no_drawn_structure`) and, for a colour, the law tests in
+`theme.rs` run in `cargo ut` and say what is wrong.
+
+**An e2e test** (`crates/mesimon/tests/<name>_e2e.rs`): `mod common; use common::*;`, then
+`let Some(h) = Harness::boot("name", Some(STUB)) else { return };` — the daemon, the private
+tmux, the seams and the teardown are the harness's; `h.client("name")` speaks the wire,
+`hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam is set
+BEFORE `boot` (the daemon reads them once). Each test owns a `/tmp/msmn-e2e-*` dir and its own
+tmux socket, which is what lets nextest run them in parallel. `prompt_e2e.rs` is the exemplar.
+
+**Text from a user or an agent** crosses one of two functions in `core/src/text.rs` at the
+boundary it crosses — `scrub_cells` before it is drawn, `scrub_text` before it leaves for
+another process. The hazard lists live there and nowhere else; do not write a sanitizer.
+
+**Git, in the daemon,** is `crate::git::git(repo)`, never `Command::new("git")`: it scrubs the
+`GIT_*` targeting variables a dogfooding daemon inherits.
+
+**A daemon-side change** is not running until the daemon restarts: press `U` in the TUI, or
+kill it (the rebuild trap, below).
 
 ## Docs are research, not authority (demoted 2026-08-31)
 
@@ -157,26 +232,34 @@ session name = `sid16` (first 16 hex of the mesimon-minted session UUID; identit
 discovered, D24). A running server never re-reads the conf: conf changes only affect fresh
 servers, so live-server changes must also be issued as commands (see `install_pane_died_hook`).
 
-**A pane gets the user's own shell environment, and PATH travels differently from everything
-else.** A Claude pane is exec'd DIRECTLY by tmux (multi-element argv), so no shell runs and no rc
-file is ever read on that path; a shell pane is `[$SHELL]`, one element, which tmux execs into an
+**A pane gets the user's own shell environment, delivered by a launcher, never by argv.** A
+Claude pane is exec'd DIRECTLY by tmux (multi-element argv), so no shell runs and no rc file is
+ever read on that path; a shell pane is `[$SHELL]`, one element, which tmux execs into an
 interactive zsh that sources `~/.zshrc` normally. D29's nine-name allowlist therefore meant an
 `export` the user added could not reach an agent at all — and it was frozen besides, since the
 tmux server captures its global env at first launch and nothing ever restarts it. So the daemon
 asks the user's login shell instead: `daemon/src/shellenv.rs` runs `$SHELL -l -i -c 'env -0 >
 <dump>'` from a CLEAN base env (a prepending rc would otherwise preserve the staleness forever),
 off the writer thread, back as `Msg::ShellEnvCaptured`; `core/src/shellenv.rs` filters it with a
-DENYlist (tmux plumbing, `TERM*`/`LINES`/`COLUMNS`, `PWD`/`SHLVL`/`_`, `MESIMON_*`, `PATH`) because
-what a user may export is not enumerable but what mesimon must withhold is. **`PATH` is the
-exception and it is measured: tmux takes a pane's PATH from the spawning CLIENT and ignores
-`new-session -e PATH=…`** (a bare command on the `-e` PATH exits 127) — so it rides
-`TmuxBackend::set_path`, which is also why none of this needs the server restarted. That is what
-makes `tmux_bin()` resolve a bare `tmux` to an absolute path. A live pane keeps the env it was
-born with (nothing can change a running process's environment); sleep/wake is how a session picks
-up a new one, and the Esc-menu row says so. An rc file moving raises `Ctx::shell_env_stale` →
-`◦ shell env changed (esc)`; reloading is offered, never automatic (an editor save must not fork
-the user's shell). E2e: `crates/mesimon/tests/shell_env_e2e.rs`; STALE-MAP "A pane gets the user's
-own shell environment".
+DENYlist (tmux plumbing, `TERM*`/`LINES`/`COLUMNS`, `PWD`/`SHLVL`/`_`, `MESIMON_*`) because what a
+user may export is not enumerable but what mesimon must withhold is. **The delivery is
+`mesimon exec`** (`mesimon/src/exec.rs`): the daemon writes the filtered set plus `PATH` to
+`<rt_dir>/shellenv.env` (0600, `K=V\0`, temp+rename) and every pane's real command line is
+`mesimon exec --env <file> --set MESIMON_TICKET=… -- <argv>`, which applies the file, then
+mesimon's own variables last, and `exec`s — the pid stays the agent's, no shell runs. It
+replaced `new-session -e K=V` per variable (2026-09-01), which spelled the user's whole
+environment, API keys included, on a command line every user on the machine can read with
+`ps`; a `--set` ticket key stays on argv on purpose. `SessionRecord::argv` holds the RAW argv
+and `Daemon::launch` wraps it at every spawn. **`PATH` also rides `TmuxBackend::set_path`**,
+because tmux takes a pane's PATH from the spawning CLIENT and resolves its own lookups against
+it; the launcher is the authority inside the pane, the client road keeps tmux agreeing with it,
+and that is why `tmux_bin()` resolves a bare `tmux` to an absolute path. A live pane keeps the
+env it was born with (nothing can change a running process's environment); sleep/wake is how a
+session picks up a new one, and the Esc-menu row says so. An rc file moving raises
+`Ctx::shell_env_stale` → `◦ shell env changed (esc)`; reloading is offered, never automatic (an
+editor save must not fork the user's shell). E2e: `crates/mesimon/tests/shell_env_e2e.rs`
+(asserts the value is NOT on the pane's command line) and `exec_e2e.rs`; STALE-MAP "A pane
+gets the user's own shell environment" + "The environment travels inside the pane".
 
 **Attention flow (M2).** Claude sessions spawn with `--settings <state>/hooks/<uuid>.json` — a
 32-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's
@@ -224,12 +307,18 @@ and the key is unbound AND unhinted where the terminal cannot spell it
 (`shift_enter_is_inert_without_rich_keys`). The four Alt directions (`AltLeft`/`Right`/`Up`/`Down`
 — `alt+h` and `alt+←` are one atom, the way the two spellings of `ctrl+]` are) fail the other
 way: the modifier is eaten and NOTHING arrives, so the key is inert rather than wrong. That is
-affordable only while the atom is an accelerator, so `alt_is_admitted_only_for_the_nudge` pins it
-to ONE verb on ONE screen (`Verb::Nudge`, the board) with `> <` beside it as the spelling every
-terminal can reach. A text field never sees an Alt atom at all: `keys::to_key_text` strips the
-modifier, because there Alt is `word_wise`'s "by word" and nothing else. A third off-floor atom
-needs one of these two clauses, argued — not a third one. (STALE-MAP "Alt is admitted, for one
-verb".)
+affordable exactly while no CAPABILITY stands behind the atom, and that — not the count — is what
+`alt_is_admitted_only_for_a_nudge` holds. Every Alt binding must be a NUDGE (it moves the thing
+under the cursor one step) and must carry a legacy-floor spelling of the same move on the same
+screen, hinted. Two qualify: `Verb::Nudge` on the board, with `> <` beside it, and
+`Verb::TagCarryLeft` in the tag picker, where `HJKL` and the four Alt atoms share ONE binding —
+the strongest form of the clause, since the accelerator cannot reach a move the floor does not.
+A text field never sees an Alt atom at all: `keys::to_key_text`
+strips the modifier, because there Alt is `word_wise`'s "by word" and nothing else — which is
+why `key_tag` reads `to_key` while steering and `to_key_text` only while naming, and why an
+Alt atom (or the `˙` a terminal composes instead) never dismisses the picker as a stray key
+would. A third off-floor atom needs one of these two clauses, argued — not a third one.
+(STALE-MAP "Alt is admitted, for one verb" + "A tag moves".)
 
 **Composing a ticket: Enter saves, Shift+Enter saves and asks.** A fresh Claude spawn always
 types the ticket title into the agent's box and stops (zero token injection, a README promise).
@@ -247,6 +336,29 @@ subcommand, and `--` does not shield it. Retries stop outside `Spawning`/`Idle`/
 startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026-08-31 addendum
 + correction and STALE-MAP "Shift+Enter composes and asks".
 
+**And on a ticket that already has an agent, the same key ASKS it.** Shift+Enter says one sentence
+— *ask claude, and stay on the board* — at three stages: before the ticket exists it mints, spawns
+and submits the title (`Verb::SaveStart`); on a ticket with a live claude PANE it opens a one-line
+field on the card (`Verb::Prompt` → `InputPurpose::Prompt`); inside that field Enter sends and so
+does a second Shift+Enter (the finger is still holding shift). `shift_enter_asks_claude_at_every_stage`
+is what keeps that one idea; a fourth home makes it two, and the atom is off the legacy floor
+precisely because it buys ONE. The gate is `Ctx::ticket_promptable` — `has_pane()`, NOT
+`ticket_has_claude`'s `is_live()`, which counts a `Sleeping` session that has no process to type
+at — and it mirrors the daemon's `prompt_target`, which picks the same session `board_enter`
+focuses. `Command::PromptSession { ticket, text }` is `MergeToAgent`'s twin (same `paste_text`
+delivery: bracketed paste, then a SEPARATE `send-keys Enter`), and the difference is whose words
+travel: the merge flow pastes mesimon's, this pastes only the user's, which is why this one hangs
+off an ordinary key. `command::sanitize_prompt` only ever REMOVES (control chars — a bare CR would
+split one prompt into two turns — and anything past 4 KB) and nothing is appended, so what Claude
+reads is a SUBSEQUENCE of what the user typed; `agent_allows` denies the command outright. The
+field hangs UNDER the card rather than taking the title line: the ticket is not what is being
+edited, it is who the text is going to, so the card renders whole and the prompted card stays the
+cursor card (the only text field that does). Status line says `asked`, never "sent" — whether the
+agent took it is the hooks' to say. E2e: `crates/mesimon/tests/prompt_e2e.rs` (a `read`-loop stub
+writing to a file, so one line proves delivery AND submission). Board only, deliberately — the
+ticket page's rail has its own selected session and "which claude" answers differently there.
+(STALE-MAP "Shift+Enter asks the agent from the board".)
+
 **Tags are ticket metadata on an axis, and `^t` opens a picker.** `Board.tags` is the registry
 (`Tag {name, group, color}`), persisted in `columns.toml` (schema 2 — the bump exists so an older
 build bars its writes instead of dropping the registry); `Ticket.tags` is `Vec<TagRef {name,
@@ -263,7 +375,21 @@ the only legacy-floor atom a text field cannot swallow — `ctrl+<digit>` is a b
 STALE-MAP "Ticket tags"). The picker is a grid: `hjkl` walks it, a digit jumps to that group's
 row and cycles along it on a repeat, `enter` wears/unwears (or opens the name field on `+ new`),
 `tab` cycles the tint, `r` renames, `d` deletes board-wide in two presses, `esc` leaves the field
-then the picker. Naming edits the cell **in place**, in its own slot in the grid, with the real
+then the picker. (`w` cycled where the second tag went; it and its two losing homes are gone —
+see the stripe paragraph below.)
+
+**`HJKL` (or `alt+hjkl`) carries the tag under the cursor** — the board's nudge, in the picker's
+grid, and the cursor rides with it. Along the row it is ORDER, which is what the row draws and
+what a repeated digit walks; across rows it is the AXIS, and before this a tag created on the
+wrong one had no repair at all (`d` is the only other way off an axis and it strips the tag from
+every ticket on the way out). One wire command, `Command::MoveTag { group, name, to_group,
+to_index }` → `board::move_tag`, and the wearers travel with it. A cross-axis move is **refused,
+never resolved**, when a ticket wearing the tag already wears one on the destination: one tag per
+group is what lets a digit address an axis, and the alternative is dropping somebody else's tag
+off a card nobody is looking at. The other two refusals are `register_tag`'s — a full axis, a
+name that axis already holds. A tag arriving on an axis JOINS it at the end (`to_index` past the
+row is the row's end), and the composer mirrors the wearer check client-side because its picks
+are on no ticket for the daemon to see. E2e: `crates/mesimon/tests/tags_e2e.rs`. Naming edits the cell **in place**, in its own slot in the grid, with the real
 hardware cursor — there is no edit mode, and no block glyph standing in for a cursor. **While naming, resolve against `Scope::TagChord`, never `Scope::Input`** — that
 borrow leaked the composer's own hints ("shift+enter save + ask claude") under a tag-name field.
 An atom may not appear twice in a scope even with different `avail`, so `enter`/`esc` are one
@@ -276,36 +402,61 @@ else** (author 2026-09-01): state is the glyph's job, and needs-you also has the
 row, so a second colour ladder on the bar was saying it twice. The ASCII tiers keep their `: | #`
 ladder (a shape, not a colour) and a move trail still goes ghost.
 
-**Where the SECOND tag goes is on trial**, and `w` in the picker cycles three homes live
-(`MESIMON_TAG_SECOND=stack|half|edge` picks the startup one): `Second::Stack` (the default) draws
-`▀` in the FIRST tag's tint over the second tag's paint — the split runs across the bar, and since
-a cell is taller than it is wide those are the fatter halves; `Second::Half` draws `▌` so the two
-sit side by side; `Second::Edge` paints the card's right-edge cell, which was trailing pad. No home
-costs a cell — `test_the_second_tag_costs_no_width` renders all three and compares.
-**`▀` U+2580 and `▌` U+258C are admitted exceptions** — inside the `0x2500-0x259F` range the L1 law
-bans AND East Asian Width *Ambiguous* — granted because the channel they replaced (an SGR-58
-underline across the bar) was built, shipped, and could not be seen: one pixel at the bottom of a
-fully painted cell. `test_no_drawn_structure` names the two admitted codepoints and still bans
-`▔`/`█` and the rest of the range; a width test pins both at one cell. Below TrueColor there is no
-tint and no half-block: a plain underline says "tagged" without saying which. Tags past the second
+**The SECOND tag stacks, and where the stripe is tall it stops being a half-block.** A resting
+card has ONE bar cell, so `tags::bar_cell` draws `▀` in the FIRST tag's tint over the second tag's
+paint — the split runs across the bar, and since a cell is taller than it is wide those are the
+fatter halves. An OPEN card's stripe is three to six cells, and there `tags::stack_full` repaints
+it as two runs of full painted blocks: the first tag takes the top ~70%, the second the ~30% under
+it, same order, no glyph at all. `second_rows` is the arithmetic (rounded, never fewer than one
+row, never more than half) and it returns `None` below three rows, which is what keeps a short
+card on the half-block instead of calling a 1/1 split "70/30". The repaint touches span 0 of each
+line and nothing else, so no text moves. Two rival homes were built and CUT (author 2026-09-01):
+`▌` side-by-side, and the card's right-edge pad — with them went `w`, `MESIMON_TAG_SECOND` and
+`tags::Second`, and the picker footer cell `w` held is what `HJKL move tag` now sits in.
+**`▀` U+2580 is the ONE admitted exception** — inside the `0x2500-0x259F` range the L1 law bans
+AND East Asian Width *Ambiguous* — granted because the channel it replaced (an SGR-58 underline
+across the bar) was built, shipped, and could not be seen: one pixel at the bottom of a fully
+painted cell. `▌` went back to being banned with the home that spent it: an exception nothing
+uses is a ban. `test_no_drawn_structure` names the one admitted codepoint and still bans `▔`/`█`
+and the rest of the range; a width test pins it at one cell. The second tag costs no width either
+way — `test_the_second_tag_costs_no_width` renders one tag against two, peek off and on. Below
+TrueColor there is no tint, no half-block and no split: a plain underline says "tagged" without
+saying which. Tags past the second
 are named in the peek row and on the ticket page, never on the card. `board::sanitize_tag` runs at
 the daemon boundary: a tag name is user text on a card row.
 
-**The palette is six hues at one lightness per flavor, and it has three loudnesses.** Graphite is
-L* 62 / C* 30, chalk L* 45 / C* 26 — same six hues both times, chosen for separation rather than
-even spacing: the 60-90° band is skipped because that is where `attn` lives. The ramp stays a
-register below the accent: `attn` keeps a 2x chroma margin and is still the only token above C* 30,
-which `test_pip_ramp_is_low_chroma_and_legible` enforces (ceiling 30.5, 2x under attn, ≥ 4.5 on the
-page ground — the ticket page writes the ground onto a chip of the tint, so that number IS the
-chip's text contrast — and ≥ 4.0 on the selected surface).
+**The palette is TEN hues on one ring, at a lightness each flavor picks for itself, and it has
+three loudnesses.** Ten because that is `MAX_TAGS_PER_GROUP`, so one axis can be entirely
+colour-distinct (`theme::PIPS` == `board::TAG_TINTS` == 10, pinned by `tag_tints_agree`); six ran
+out in use. The hues are even around the wheel EXCEPT the 50-100° band, which is skipped because
+that is where `attn` lives — at ten, even spacing is what maximises the worst pair, and the
+hand-picked six-hue set could no longer be reproduced. **One ring, not two rings of five**: a
+second lightness separates same-hue pairs by ΔL* alone (~ΔE 12) and loses to ten hues on one ring
+(ΔE 15.6 graphite / 13.2 chalk), and it would make some tags louder than others, which a tag axis
+may never do. Graphite is L* 62 / C* 30; **chalk is L* 38 / C* 26, and the lightness gap is
+deliberate** — chalk's ground is paper, so a tint is INK on it and has to be as far below the paper
+as graphite's is above its ground. At L* 45 it cleared the text floor and still read as a smudge
+(author 2026-09-01: "barely visible on light theme"). Chalk's chroma stays a step lower because
+its own accent has less to be a register above: `attn` C* 53.8 puts the ceiling at 26.9. The ramp
+stays a register below the accent: `attn` keeps a 2x chroma margin and is still the only token
+above C* 30, which `test_pip_ramp_is_low_chroma_and_legible` enforces (ceiling 30.5, 2x under attn,
+≥ 4.5 on the page ground — the ticket page writes the ground onto a chip of the tint, so that
+number IS the chip's text contrast — ≥ 4.0 on the selected surface, and now every PAIR ≥ ΔE76 12,
+which is the number that says whether ten will still go).
 
 A terminal has no alpha, so **`Theme::faded(colour, TagLevel)` blends toward the page ground** (down
 into graphite, up into chalk — receding on either flavor) and the card's own state picks the level:
-`Selected` is the full tint (the cursor card carries the loudest tags on the board), `Rest` is 0.70
-(where almost every tag is read), `Sleeping` is 0.38 (a parked ticket still has to answer "which
-tag", so the floor is hue survival, not contrast). The first cut used 0.82/0.50 and **neither
-boundary was visible on a real board** — an 18% blend is nothing on a one-cell block — so the law
-test now also asserts each step is ≥ 12% of the ground-to-tint distance. "Parked" is read off the
+`Selected` is the full tint (the cursor card carries the loudest tags on the board), `Rest` is
+where almost every tag is read, `Sleeping` is a parked ticket that still has to answer "which tag",
+so its floor is hue survival, not contrast. The first cut used 0.82/0.50 and **neither boundary was
+visible on a real board** — an 18% blend is nothing on a one-cell block — so the law test also
+asserts each step is ≥ 12% of the ground-to-tint distance. **The two flavors need different
+constants to mean the same thing**: the blend is a ratio in sRGB bytes and the same ratio costs far
+more toward WHITE than toward black, so graphite is 0.70/0.38 and chalk is 0.76/0.46. Under one
+pair, chalk's resting tint landed at C* 16.8 / contrast 2.82 where graphite's landed at 21.7 / 3.61,
+and its sleeping tint sat on the C* 8 floor — the other half of "barely visible on light theme".
+With the darker ramp and the gentler steps every chalk level now meets or beats the graphite one it
+mirrors (rest C* 17.9 / k 3.77, sleep C* 9.8 / k 2.08) while the step stays a step. "Parked" is read off the
 SESSIONS (a Sleeping session and no pane), never off the aggregate glyph, which missed any ticket
 whose parked session sat behind another glyph. **The ladder is the CARD's, not the palette's**: an
 untagged card's neutral block dims and brightens exactly the same way (`tags::bar_cell` fades the
@@ -320,7 +471,17 @@ name-chips under the title, above the reply. Colour says how many and which hues
 which tag, and the stripe only has room for two. Several tags share the row longest-gives-first,
 never an equal split (an equal split cut "BUG" to make room for a "STAGING" that then got cut
 anyway), nothing shrinks below three cells, and the tail drops rather than every name going
-illegible.
+illegible. The row is the TICKET's metadata, so an open card earns it with no session at all —
+gating it on `peek.is_some()` meant the commonest tagged card on the board could never show it.
+
+**And a quick-tag digit opens the card it tagged, for 1500 ms.** The stripe is one cell at rest
+and carries no words, so `cycle_tag` arms `App::tag_flash` and the card draws itself open —
+chip row, and the tall stripe's 70/30 split. `App::peek_showing(ticket)` is the seam (`p` OR a
+live flash) and `ui/board.rs` is its only caller. Keyed to the ticket, so `j` ends it; every
+repeat re-arms it, so walking an axis keeps the card open for the whole walk; a refusal arms
+nothing. `Ctx::peek_on` stays the PREFERENCE — `p` keeps hinting `show replies` under a flash,
+because the footer describes the toggle and a flash is not a state anyone toggled. (STALE-MAP
+"A quick tag opens the card it tagged".)
 
 **The ticket page's PREVIEW zone reads markdown (`tui/src/rich.rs`).** An agent reply is
 markdown, so the zone draws it instead of showing its source — but 06 §5.1 bans SGR 2/3/5/9 and
@@ -358,6 +519,14 @@ its age stops ticking seconds, and a card whose only live session is a shell car
 glyph. The spinner is the one place D19's motion ban bends and it may only bend for something
 moving. (STALE-MAP "A shell does not spin".)
 
+**A card's age is time in COLUMN.** `Ticket.entered_at` is stamped by `mint_ticket` and by
+`place_ticket` on a column change (and by `unarchive_ticket` only when its fallback changes the
+column) — never by a reorder, a rename, a tag or a session — and `card.rs` renders `age_slot` off
+`Ticket::column_since` (falls back to `created_at` on a pre-field ticket) for EVERY card, session
+or not; the seconds band still ticks only while an agent works. It was the newest session state
+change, which reset on every hook. `reorder_e2e` pins it. (STALE-MAP "A card's age is time in
+column".)
+
 **And a launching card wears that arc slowed, not nothing.** `glyphs::launching` is
 `spinner(tier, frame / SLOW_STEP_TICKS)` — the working shape at 400 ms a frame, because spawning
 is not a different thing from working, it is working that has not started, and the slowness IS
@@ -375,6 +544,36 @@ binding — sound because `queue_provision` is reachable only from a spawn. Deli
 disjoint from the spinner, where `waiting` must be: `Unknown` means we lost track, launching means
 we are seconds early. One fast cadence and one slow one on the board, no third. (STALE-MAP "The
 launch window is visible".)
+
+**A turn parked on a backgrounded task is `Idle{Background}`, not `Running` and not done.** When
+`Stop` arrives carrying a live entry in `background_tasks[]` (`attention::task_blocks_end_turn` —
+a dormant `monitor` does NOT count), the turn is PAUSED: the agent said its piece and is waiting
+on work it started. Re-asserting `Running` there was two lies in a row — the pane stops painting
+the moment the agent parks, so `probe_activity` refuted it 8 s later by demoting to
+`Idle{Interrupted}`, which nothing had interrupted, which `automove` rightly refuses to promote,
+and which `card_glyph` had no arm for at all: the card went BLANK for the life of the task
+(dogfood 2026-09-01, T-128, a backgrounded build-poll, two minutes). `Idle` is invisible to
+`probe_activity` (it only scans `Running`), so the misread stops being possible instead of
+needing a corrective — which is the difference from `SubagentStop`, the one misread that has one.
+Rank is untouched (`Idle{..}` is 13, so D28's table does not move) and only `EndTurn` promotes, so
+the ticket correctly stays in IN PROGRESS. The wake arrives as a `UserPromptSubmit` only when a
+TASK NOTIFICATION delivers it (a background shell, an unnamed subagent); a named agent in an
+interactive session is an in-process TEAMMATE whose report wakes the lead as a teammate message
+and fires no prompt hook at all, so the lead's own `PostToolUse` frames (`ToolCompleted { nested:
+false }` — `nested` is the payload's `agent_id`, which only a subagent's tool carries) are what
+promote a parked turn back to `Running`. **And a teammate is listed `running` in every later Stop
+payload for its whole life, idle or not**, so it is COUNTED (`Signal::Stop::teammates`), never
+classed: the machine parks iff `blocking_tasks || teammates > idle_teammates.len()`, where the set
+is fed by `TeammateIdle{name}` / drained by `SendMessage`'s addressee (`TeammateMessaged`) and
+persisted on the record (`SessionRecord.idle_teammates`) so a restart cannot re-park a finished
+session (dogfood 2026-09-01, T-135: four idle `/simplify` reviewers held a finished lead at
+`Idle{Background}` through three Stops; STALE-MAP "Idle teammates do not hold a turn open").
+Its glyph rides the SLOW cadence, because a build
+genuinely IS running, just not in this pane — `⠒ ⠌ ⠡`, a two-dot bar turning through the CENTRE,
+against `waiting`'s two-dot pair on the rim and the spinner's three-dot arc. Two dots is forced:
+one is invisible at dim2 (which is why `waiting` has two) and three would claim work in flight
+HERE. ASCII cannot borrow it — `| / - \` ARE the spinner — so it breathes, `o O`. Still no third
+speed. (STALE-MAP "A turn parked on background work is its own state".)
 
 **Leaving a Claude session is the same thing as sleeping it.** Ctrl+C-out, `/exit` and Ctrl+D end
 the process, never the conversation, so `Daemon::park_on_exit` converts a clean exit to `Sleeping`
@@ -405,14 +604,16 @@ is gone. D24 is what makes that free: mesimon's identity is `rec.id` in the `--s
 `--mcp-config` blobs, so hooks and the MCP principal never notice the conversation's id move.
 
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
-NO key — they live in the Esc menu (`ui/menu.rs`, rows from `keymap::menu_items`), because
-they are rare, are not about the selection, and a menu row has room to say what it will do.
+NO key, bar the two the header itself teaches (`U` reloads, `Z` sleeps the done agents — both
+overlay-only, so the footer stays the selection's) — they live in the Esc menu (`ui/menu.rs`,
+rows from `keymap::menu_items`), because they are rare, are not about the selection, and a menu
+row has room to say what it will do.
 
 **Suggestions are pointers at menu rows, never their own surface.** `keymap::SUGGESTIONS` is a
 priority-ordered list (update ready > sleep N agents > archive N tickets); each entry's
 availability IS its menu row's `avail`, so the header cannot offer what the menu will not do,
 and `menu_items` floats the suggested rows to the top in that order. The header shows exactly
-ONE — right-aligned, `(esc)` or `(U ∙ esc)` for the route, no count of the rest — and `◦`
+ONE — right-aligned, `(esc)` or `(U ∙ esc)`/`(Z ∙ esc)` for the route, no count of the rest — `◦`
 marks both the chip and the rows it stands in front of. To add one: add the menu row, add the
 `Suggestion`, done. (STALE-MAP "Suggestions are one right-hand chip and a marked menu".)
 
@@ -452,7 +653,7 @@ definitions, the description lint (no second person, no imperatives) and the ≤
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
 command will not compile until someone decides whether an agent may send it. That is the
 enforcement for D10's never-tier — no spawn, no kill, no delete/archive/rename, no workspace, no
-merge, no diff, no tags (all five tag commands mutate board-wide registry state), no session
+merge, no diff, no tags (all six tag commands mutate board-wide registry state), no session
 read at any tier. `authorize()` is now real for `Agent`: `Session` is denied outright and so is
 `Mutate` on `Resource::Board`.
 
@@ -527,7 +728,10 @@ required by `restart_skew_e2e`, the only test that drives the real `Client::conn
 test binary has no `daemon` subcommand), `MESIMON_CLAUDE_HOME` (census root override for fabricated `~/.claude`
 trees),
 `MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s sleep floor), `MESIMON_PANE_QUIET_MS`
-(shrink the 8 s interrupt-probe quiet threshold), `MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s
+(shrink the 8 s interrupt-probe quiet threshold), `MESIMON_NO_UPDATE_CHECK` (the user-facing opt-out for the release
+check), `MESIMON_UPDATE_CHECK` (force a dev build past the CHANNEL gate — the build-tree guard
+still refuses, so copy the binary out of `target/` first),
+`MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s
 server-alive guard cadence). E2e pattern: in-process
 daemon thread + real tmux + the real built binary via `env!("CARGO_BIN_EXE_mesimon")` (only
 available in `crates/mesimon/tests/`).

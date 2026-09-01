@@ -104,7 +104,11 @@ pub fn save_bindings(paths: &Paths, b: &Bindings) -> Result<()> {
     // One durability implementation for every file mesimon authors — this
     // used to be a second, fsync-less copy of store::write_atomic.
     let bf = BindingsFile { schema_version: BINDINGS_SCHEMA, bindings: b.clone() };
-    crate::store::write_atomic(&bindings_file(paths), &serde_json::to_string_pretty(&bf)?)
+    crate::store::write_atomic(
+        &bindings_file(paths),
+        &serde_json::to_string_pretty(&bf)?,
+        crate::store::PRIVATE,
+    )
 }
 
 /// Rebuild bindings from what git and our own ownership markers still know.
@@ -224,7 +228,7 @@ pub fn load_or_recover(paths: &Paths) -> (Bindings, Vec<Notice>, bool) {
 /// `~/.local/state/mesimon/<proj16>/worktrees/` — created once, 0700, spotlight
 /// and Time Machine excluded (best effort).
 pub fn ensure_root(paths: &Paths) -> Result<PathBuf> {
-    let root = paths.state_dir.join("worktrees");
+    let root = paths.worktrees_root();
     if !root.is_dir() {
         std::fs::create_dir_all(&root)?;
         let perm = std::os::unix::fs::PermissionsExt::from_mode(0o700);
@@ -246,7 +250,7 @@ pub fn ensure_root(paths: &Paths) -> Result<PathBuf> {
 /// Run git with argv, capture stdout; non-zero exit becomes an error carrying
 /// stderr (callers rewrap into mesimon-voiced messages before the UI).
 fn git(repo: &Path, args: &[&str]) -> Result<String> {
-    let out = Command::new("git").arg("-C").arg(repo).args(args).output().context("run git")?;
+    let out = crate::git::git(repo).args(args).output().context("run git")?;
     if !out.status.success() {
         bail!(
             "git {} failed: {}",
@@ -454,9 +458,7 @@ fn copy_worktreeinclude(repo: &Path, dest: &Path) -> Result<()> {
         return Ok(());
     }
     // The gitignored universe (files only, NUL-safe).
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let out = crate::git::git(repo)
         .args([
             "--no-optional-locks",
             "ls-files",
@@ -561,9 +563,7 @@ pub struct WtRow {
 }
 
 pub fn list_worktrees(repo: &Path) -> Result<Vec<WtRow>> {
-    let out = Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    let out = crate::git::git(repo)
         .args(["--no-optional-locks", "worktree", "list", "--porcelain", "-z"])
         .output()
         .context("worktree list")?;
@@ -642,9 +642,7 @@ pub fn branch_conflicts(rows: &[WtRow]) -> Vec<String> {
 /// False = base moved since the branch was cut — the agent rebases first
 /// (mesimon never mints merge commits; history stays linear).
 pub fn ff_possible(repo: &Path, branch: &str, base: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    crate::git::git(repo)
         .args(["--no-optional-locks", "merge-base", "--is-ancestor", base, branch])
         .output()
         .map(|o| o.status.success())
@@ -669,9 +667,7 @@ pub fn ahead_count(repo: &Path, branch: &str, base: &str) -> u32 {
 }
 
 pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
-    Command::new("git")
-        .arg("-C")
-        .arg(repo)
+    crate::git::git(repo)
         .args(["--no-optional-locks", "merge-base", "--is-ancestor", branch, base])
         .output()
         .map(|o| o.status.success())

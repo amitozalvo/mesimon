@@ -11,6 +11,7 @@ mod glyphs;
 mod handover;
 mod layout;
 mod peek;
+mod release;
 mod rich;
 mod tags;
 mod text;
@@ -32,6 +33,12 @@ use ratatui::crossterm::terminal::{
 
 use app::App;
 use client::Client;
+
+/// What `mesimon doctor` says about release checks — whether they are on, and
+/// when they last answered. Exported because the checker lives here, beside
+/// the offer it raises, and the doctor must not carry a second copy of the
+/// rules for when it runs.
+pub use release::doctor_line as update_check_status;
 
 pub fn run(repo_root: &Path) -> Result<()> {
     // Capability detection runs exactly once, before raw mode and before any

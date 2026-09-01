@@ -66,7 +66,12 @@ struct SessionsFile {
     sessions: Vec<SessionRecord>,
 }
 
-pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
+/// State-dir files: argv (with `--resume <id>`), socket and transcript paths.
+pub(crate) const PRIVATE: u32 = 0o600;
+/// Board files inside the repo: the user's data, at the umask like any file.
+pub(crate) const SHARED: u32 = 0o644;
+
+pub(crate) fn write_atomic(path: &Path, content: &str, mode: u32) -> Result<()> {
     // 13 §13.9.1: temp + fsync + rename + directory fsync, measured at ~170 µs
     // total. Without the fsync a crash between write and rename leaves a
     // truncated file — precisely the malformed input `load` now has to
@@ -79,7 +84,15 @@ pub(crate) fn write_atomic(path: &Path, content: &str) -> Result<()> {
     // temp out of any `*.json`/`*.toml` glob.
     let tmp = path.with_extension("tmp");
     {
-        let mut f = std::fs::File::create(&tmp)?;
+        use std::os::unix::fs::OpenOptionsExt;
+        let mut f = std::fs::OpenOptions::new()
+            .write(true)
+            .create(true)
+            .truncate(true)
+            .mode(mode)
+            .open(&tmp)?;
+        // `mode` only applies at creation; a leftover temp keeps its old bits.
+        f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode))?;
         std::io::Write::write_all(&mut f, content.as_bytes())?;
         f.sync_all()?;
     }
@@ -436,14 +449,14 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         columns: board.columns.clone(),
         tags: board.tags.clone(),
     };
-    write_atomic(&paths.board_dir.join("board/columns.toml"), &toml::to_string_pretty(&cf)?)
+    write_atomic(&paths.board_dir.join("board/columns.toml"), &toml::to_string_pretty(&cf)?, SHARED)
 }
 
 pub fn save_ticket(paths: &Paths, t: &Ticket) -> Result<()> {
     let dir = paths.board_dir.join("board/tickets").join(&t.short_key);
     std::fs::create_dir_all(&dir)?;
     let tf = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
-    write_atomic(&dir.join("ticket.toml"), &toml::to_string_pretty(&tf)?)
+    write_atomic(&dir.join("ticket.toml"), &toml::to_string_pretty(&tf)?, SHARED)
 }
 
 pub fn delete_ticket_dir(paths: &Paths, short_key: &str) -> Result<()> {
@@ -456,7 +469,7 @@ pub fn delete_ticket_dir(paths: &Paths, short_key: &str) -> Result<()> {
 
 pub fn save_sessions(paths: &Paths, board: &Board) -> Result<()> {
     let sf = SessionsFile { schema_version: SESSIONS_SCHEMA, sessions: board.sessions.clone() };
-    write_atomic(&paths.sessions_file(), &serde_json::to_string_pretty(&sf)?)
+    write_atomic(&paths.sessions_file(), &serde_json::to_string_pretty(&sf)?, PRIVATE)
 }
 
 #[cfg(test)]
@@ -754,6 +767,7 @@ workspace = "worktree"
             column: "DONE".into(),
             order: "a0".into(),
             created_at: "@0".into(),
+            entered_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             archived: Some(mesimon_core::board::Archived {
@@ -788,6 +802,7 @@ workspace = "worktree"
             column: "DONE".into(),
             order: "a0".into(),
             created_at: "@0".into(),
+            entered_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             archived: Some(mesimon_core::board::Archived {
@@ -836,6 +851,7 @@ by = "local"
                 column: "DONE".into(),
                 order: "a0".into(),
                 created_at: "@0".into(),
+                entered_at: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
                 archived: Some(mesimon_core::board::Archived {
@@ -939,6 +955,7 @@ by = "local"
             column: "TODO".into(),
             order: "a0".into(),
             created_at: "@0".into(),
+            entered_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             archived: None,
