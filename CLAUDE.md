@@ -36,7 +36,16 @@ cargo test -p mesimon-core attention # one module's tests
 cargo test -p mesimon --test hook_e2e # the M2 attention e2e (real hook binary + in-process daemon)
 cargo clippy --workspace --all-targets # keep clean; workspace warns on unwrap_used (tests exempt by convention)
 cargo run                            # TUI for cwd; `cargo run -- daemon --repo <path>` runs the daemon foreground
+ci/release.sh --dry-run              # the full release gate, minus the upload
 ```
+
+**Releases are cut locally**, not on a runner (`ci/release.sh`): GitHub's macOS
+runners bill at 10x on a private repo and the only shipped target is this machine.
+The script is the gate — clean tree, tag == HEAD == workspace version, tag pushed,
+clippy, dup-dep drift, the full suite with `MESIMON_REQUIRE_TMUX=1` — then build,
+`codesign -v` (the binary is deliberately NOT stripped: strip invalidates the
+linker's ad-hoc arm64 signature and the symptom elsewhere is SIGKILL), run the
+packaged artifact, upload. `.github/workflows/ci.yml` is manual-dispatch only.
 
 **Rebuild trap:** the daemon is a singleton (flock) started detached; a rebuild swaps the binary on
 disk but the RUNNING daemon keeps old code and old `current_exe()` paths. After changing daemon
@@ -214,16 +223,39 @@ borrow leaked the composer's own hints ("shift+enter save + ask claude") under a
 An atom may not appear twice in a scope even with different `avail`, so `enter`/`esc` are one
 binding each whose hint switches on `Ctx::tag_naming`.
 
-A tag renders as a **segmented coloured UNDERLINE on the card block's bottom row** — its own row
-when resting, the last accordion row when selected. Several tags split it left to right, one equal
-segment each. It costs the card no row and no cell: `tags::underline` restyles the line that is
-already there and changes not one character. **Never a glyph**: `▀` U+2580, `▔` U+2594 and `█`
-U+2588 all sit inside the `0x2500-0x259F` range the L1 law bans AND are East Asian Width
-*Ambiguous*, the class that already cost a render bug here — SGR 58 has no width, so it cannot.
-Needs ratatui's `underline-color` feature; a terminal without SGR 58 still draws the underline in
-the row's own foreground, so "this ticket is tagged" survives even where "which tag" does not.
-Untagged tickets are not restyled at all, which keeps the resting board identical to the pre-tags
-one. `board::sanitize_tag` runs at the daemon boundary: a tag name is user text on a card row.
+A tag renders as **the card's own accent bar, painted**: neutral while nothing is tagged, the
+tag's tint once something is. The card spends NO cell on tags — the frame is still
+`[bar 1][pad 1][content T][pad 1]`, `T = width - 3`. **The bar is the tag channel and nothing
+else** (author 2026-09-01): state is the glyph's job, and needs-you also has the inverted title
+row, so a second colour ladder on the bar was saying it twice. The ASCII tiers keep their `: | #`
+ladder (a shape, not a colour) and a move trail still goes ghost.
+
+**Where the SECOND tag goes is on trial**, and `w` in the picker cycles three homes live
+(`MESIMON_TAG_SECOND=stack|half|edge` picks the startup one): `Second::Stack` (the default) draws
+`▀` in the FIRST tag's tint over the second tag's paint — the split runs across the bar, and since
+a cell is taller than it is wide those are the fatter halves; `Second::Half` draws `▌` so the two
+sit side by side; `Second::Edge` paints the card's right-edge cell, which was trailing pad. No home
+costs a cell — `test_the_second_tag_costs_no_width` renders all three and compares.
+**`▀` U+2580 and `▌` U+258C are admitted exceptions** — inside the `0x2500-0x259F` range the L1 law
+bans AND East Asian Width *Ambiguous* — granted because the channel they replaced (an SGR-58
+underline across the bar) was built, shipped, and could not be seen: one pixel at the bottom of a
+fully painted cell. `test_no_drawn_structure` names the two admitted codepoints and still bans
+`▔`/`█` and the rest of the range; a width test pins both at one cell. Below TrueColor there is no
+tint and no half-block: a plain underline says "tagged" without saying which. Tags past the second
+are named in the peek row and on the ticket page, never on the card. `board::sanitize_tag` runs at
+the daemon boundary: a tag name is user text on a card row.
+
+The tint ramp is C* ~24 at L* 58/47 — calm's register, NOT the accent's: `attn` keeps a 2x chroma
+margin and stays the only token above C* 30, which is what
+`test_pip_ramp_is_low_chroma_and_legible` enforces (ceiling 26.5, 2x under attn, ≥ 4.5 on the page
+ground because the ticket page writes the ground onto a chip of the tint).
+
+**The peek names them** (`tags::chips`): with `p` on, the cursor card carries one row of painted
+name-chips under the title, above the reply. Colour says how many and which hues; only words say
+which tag, and the stripe only has room for two. Several tags share the row longest-gives-first,
+never an equal split (an equal split cut "BUG" to make room for a "STAGING" that then got cut
+anyway), nothing shrinks below three cells, and the tail drops rather than every name going
+illegible.
 
 **The ticket page's transcript zone reads markdown (`tui/src/rich.rs`).** An agent reply is
 markdown, so the zone draws it instead of showing its source — but 06 §5.1 bans SGR 2/3/5/9 and

@@ -2,6 +2,9 @@
 /target/
 **/*.rs.bk
 
+# release staging (ci/release.sh)
+/dist/
+
 # research scratch (pre-project experiments)
 /mt/
 

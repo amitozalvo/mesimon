@@ -52,7 +52,14 @@ The first build shared outside the author's machine.
 
 ### Project
 
-- CI on macOS arm64: fmt, clippy (`-D warnings`), the full suite with tmux
-  required, and a duplicate-dependency drift gate. Tagged releases build,
-  verify the code signature, smoke-test the artifact, and publish a checksummed
-  tarball.
+- `ci/release.sh` is the release: clippy `-D warnings`, a duplicate-dependency
+  drift gate, and the full suite with tmux **required** (a skipped e2e suite
+  certifies nothing), then build, verify the code signature, run the packaged
+  artifact, and upload a checksummed tarball. It refuses a dirty tree, a tag
+  that is not HEAD, a tag that does not match the workspace version, and a tag
+  that is not on origin.
+- The build runs on the maintainer's machine rather than a GitHub runner:
+  macOS runners bill at 10x on a private repo, and the only target shipped is
+  the machine it is developed on. `.github/workflows/ci.yml` is kept for the
+  clean-room check a laptop cannot give (fresh checkout, empty state dir) and
+  runs on demand only.

@@ -1,13 +1,15 @@
 name: ci
 
-# macOS runners bill at 10x minutes on a private repo, so this does NOT run on
-# every branch push. main, PRs, and tags are the things worth paying for.
-# The release workflow calls this one, so a tag does not run it twice.
+# MANUAL ONLY. GitHub-hosted macOS runners bill at 10x minutes on a private
+# repo, and the only target mesimon ships is the machine it is developed on,
+# so the real gate is `ci/release.sh`, which runs this same suite locally
+# before it will cut a release.
+#
+# This workflow is kept for the clean-room check a laptop cannot give you —
+# a fresh checkout, an empty ~/.local/state, no leftover tmux servers. Run it
+# from the Actions tab (or `gh workflow run ci.yml`) when that is worth the
+# minutes, typically before handing the thing to someone new.
 on:
-  push:
-    branches: [main]
-  pull_request:
-  workflow_call:
   workflow_dispatch:
 
 env:
