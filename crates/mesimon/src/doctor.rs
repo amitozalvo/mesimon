@@ -231,12 +231,25 @@ fn install(verbose: bool) -> Section {
     Section { name: "install", records }
 }
 
-fn multiplexer() -> Section {
+fn multiplexer(verbose: bool) -> Section {
     let mut records = Vec::new();
-    match tool_version("tmux", &["-V"]) {
+    // The same ladder the daemon uses, so this reports the tmux that will
+    // actually run — not whatever `tmux` means to your shell.
+    let bin = mesimon_backend_tmux::tmux_bin();
+    let shown = redact(&bin.display().to_string(), verbose);
+    records.push(if std::env::var_os("MESIMON_TMUX_BIN").is_some() {
+        rec(Level::Note, "tmux binary", format!("{shown} (MESIMON_TMUX_BIN)"))
+    } else if bin.is_absolute() {
+        rec(Level::Note, "tmux binary", format!("{shown} (shipped with mesimon)"))
+    } else {
+        // A release ships its own; falling back to PATH means this is a
+        // source build, or the bundled binary is missing from the install.
+        rec(Level::Note, "tmux binary", "resolved from PATH")
+    });
+    match tool_version(&bin.display().to_string(), &["-V"]) {
         None => records.push(
-            rec(Level::Fail, "tmux", "not found on PATH").advice(
-                "mesimon runs every agent in its own private tmux server and cannot spawn without it. Install: brew install tmux",
+            rec(Level::Fail, "tmux", "not found").advice(
+                "mesimon runs every agent in its own private tmux server and cannot spawn without it. A release build ships one; if you built from source, install tmux: brew install tmux",
             ),
         ),
         Some(v) => {
@@ -476,7 +489,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let all = vec![
         environment(verbose),
         install(verbose),
-        multiplexer(),
+        multiplexer(verbose),
         agents(verbose),
         git_section(),
         daemon(&repo, verbose),

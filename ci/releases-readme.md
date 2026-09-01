@@ -13,6 +13,8 @@ author. It will change under you.
 curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
 ```
 
+Nothing else to install first.
+
 Then:
 
 ```sh
@@ -25,11 +27,13 @@ Re-running the install line is how you update.
 ## Requirements
 
 - **macOS on Apple Silicon.** That is the only build published.
-- **tmux 3.1+** — `brew install tmux`. Every agent runs in a pane on a *private*
-  tmux server, never yours.
 - **git**.
 - **[Claude Code](https://claude.com/claude-code)** on your `PATH`, to spawn
   Claude sessions.
+
+tmux is **not** a prerequisite: mesimon ships its own, installed alongside it as
+`mesimon-tmux`. It never shadows or touches the tmux you already have — agents
+run on a private server with a generated conf, exactly as before.
 
 `mesimon doctor` checks all of these and tells you the exact line to fix any
 that are missing.

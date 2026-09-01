@@ -10,3 +10,6 @@
 
 # local editor/OS noise
 .DS_Store
+
+# vendored tmux build (ci/build-tmux.sh)
+/vendor/

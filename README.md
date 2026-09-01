@@ -28,16 +28,15 @@ report.
 
 - **macOS on Apple Silicon.** The published build is `aarch64-apple-darwin`. The code is
   Unix-only by design (unix sockets, tmux); Linux is buildable but untested and unshipped.
-- **tmux 3.1+** — every agent runs in a pane on a *private* tmux server, never your own.
-- **git**.
+- **git**. (tmux is *not* required — mesimon ships its own, installed as
+  `mesimon-tmux` so it never shadows yours.)
 - **[Claude Code](https://claude.com/claude-code)** on your `PATH`, to spawn Claude sessions.
 
 ## Install
 
 ```sh
-brew install tmux                                    # if you do not have it
 curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
-mesimon doctor                                       # confirm the environment
+mesimon doctor    # confirm the environment
 ```
 
 Binaries are published from

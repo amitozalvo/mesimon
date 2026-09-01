@@ -14,6 +14,38 @@ use mesimon_core::reconcile::PaneSnapshot;
 const ENV_ALLOWLIST: &[&str] =
     &["HOME", "USER", "LOGNAME", "SHELL", "LANG", "LC_ALL", "LC_CTYPE", "TMPDIR", "PATH"];
 
+/// Which tmux to run.
+///
+/// mesimon treats tmux as a private implementation detail — its own server, its
+/// own socket, its own generated conf, never the user's tmux — so it ships one
+/// and prefers it over whatever happens to be on PATH. That removes the class
+/// of bug where a tester's tmux version behaves differently from the author's,
+/// and it means a fresh machine needs nothing installed.
+///
+/// Ladder: an explicit override, then a `mesimon-tmux` sitting beside our own
+/// executable (how the release lays it out), then PATH.
+///
+/// The sibling is deliberately NOT named `tmux`. Installing under that name
+/// would put it on the user's PATH and shadow their own tmux — the exact
+/// trespass mesimon promises never to commit — and a bare `tmux` sibling would
+/// also mean installing mesimon into, say, /opt/homebrew/bin silently
+/// "bundles" whatever tmux already lives there.
+pub const BUNDLED_TMUX: &str = "mesimon-tmux";
+
+pub fn tmux_bin() -> PathBuf {
+    if let Some(p) = std::env::var_os("MESIMON_TMUX_BIN") {
+        return PathBuf::from(p);
+    }
+    if let Ok(exe) = std::env::current_exe() {
+        if let Some(sibling) = exe.parent().map(|d| d.join(BUNDLED_TMUX)) {
+            if sibling.is_file() {
+                return sibling;
+            }
+        }
+    }
+    PathBuf::from("tmux")
+}
+
 pub struct TmuxBackend {
     sock: PathBuf,
     conf: PathBuf,
@@ -61,7 +93,7 @@ impl TmuxBackend {
     }
 
     fn tmux(&self) -> Command {
-        let mut c = Command::new("tmux");
+        let mut c = Command::new(tmux_bin());
         c.arg("-S").arg(&self.sock).arg("-f").arg(&self.conf);
         // The server inherits this env on first launch — scrub it (D29, spike T-2).
         c.env_clear();
@@ -291,7 +323,11 @@ impl TmuxBackend {
     /// argv for the focus handover (docs/19 §2): the TUI execs this as a child.
     pub fn attach_argv(&self, sid16: &str) -> Vec<String> {
         vec![
-            "tmux".into(),
+            // The same binary that started the server, not whatever `tmux`
+            // resolves to for the user: a client and server from different
+            // tmux builds refuse each other over protocol version, and this
+            // argv is exec'd by the TUI for the focus handover.
+            tmux_bin().display().to_string(),
             "-S".into(),
             self.sock.display().to_string(),
             "-f".into(),

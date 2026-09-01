@@ -42,9 +42,6 @@ die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
 
 command -v curl >/dev/null 2>&1 || die "curl is required"
 
-command -v tmux >/dev/null 2>&1 || die "tmux is required — mesimon runs every agent in its own private tmux server" \
-  "brew install tmux"
-
 command -v git >/dev/null 2>&1 || die "git is required" "xcode-select --install"
 
 # Not fatal: you can browse a board without ever spawning an agent.
@@ -89,7 +86,8 @@ else
 fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
-bin="$tmp/mesimon-$VERSION-aarch64-apple-darwin/mesimon"
+unpacked="$tmp/mesimon-$VERSION-aarch64-apple-darwin"
+bin="$unpacked/mesimon"
 [ -x "$bin" ] || die "the archive did not contain an executable" "report this with the release tag"
 
 # Run it BEFORE installing: an arm64 binary with a broken signature dies with
@@ -105,6 +103,16 @@ mkdir -p "$PREFIX"
 mv "$bin" "$PREFIX/mesimon.new"
 chmod +x "$PREFIX/mesimon.new"
 mv "$PREFIX/mesimon.new" "$PREFIX/mesimon"
+
+# tmux goes NEXT TO mesimon, under a name that will not shadow yours on PATH.
+# mesimon prefers this sibling over whatever `tmux` means to your shell, so
+# your own tmux, its version, and its config are left completely alone.
+if [ -x "$unpacked/mesimon-tmux" ]; then
+  mv "$unpacked/mesimon-tmux" "$PREFIX/mesimon-tmux.new"
+  chmod +x "$PREFIX/mesimon-tmux.new"
+  mv "$PREFIX/mesimon-tmux.new" "$PREFIX/mesimon-tmux"
+  echo "installed $("$PREFIX/mesimon-tmux" -V) -> $PREFIX/mesimon-tmux (mesimon's own; yours is untouched)"
+fi
 
 echo
 echo "installed $("$PREFIX/mesimon" --version) -> $PREFIX/mesimon"

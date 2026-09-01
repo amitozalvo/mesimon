@@ -40,6 +40,16 @@ cargo run                            # TUI for cwd; `cargo run -- daemon --repo 
 ci/release.sh --dry-run              # the full release gate, minus the upload
 ```
 
+**mesimon ships its own tmux** (alpha-2): `ci/build-tmux.sh` builds a static tmux 3.6a
+(libevent/ncursesw/utf8proc static, system terminfo, pinned+checksummed sources) into
+`vendor/tmux/`, and the release packages it beside the binary as `mesimon-tmux` — NOT `tmux`,
+which would shadow the user's own on PATH and would also mean an install into a directory that
+already has tmux silently "bundles" that one. `mesimon_backend_tmux::tmux_bin()` is the ladder
+(`MESIMON_TMUX_BIN` → sibling `mesimon-tmux` → PATH) and BOTH the server commands and
+`attach_argv` must use it: a client from a different tmux build refuses the server over protocol
+version. `ci/release.sh` runs the e2e suite against the bundled binary, so what ships is what was
+tested.
+
 **Releases are cut locally**, not on a runner (`ci/release.sh`): GitHub's macOS
 runners bill at 10x on a private repo and the only shipped target is this machine.
 The script is the gate — clean tree, tag == HEAD == workspace version, tag pushed,

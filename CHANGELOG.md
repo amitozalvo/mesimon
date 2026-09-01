@@ -4,6 +4,29 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.2
+
+- **mesimon ships its own tmux.** A fresh Mac now needs nothing installed —
+  `brew install tmux` is gone from the instructions. It is a statically linked
+  tmux 3.6a (libevent, ncursesw and utf8proc all static; only libSystem and
+  libresolv dynamic), built by `ci/build-tmux.sh` from pinned, checksummed
+  sources, and it reads macOS's own terminfo database so no data files travel
+  with it.
+
+  It installs as `mesimon-tmux`, deliberately not `tmux`: installing under the
+  real name would put it on your PATH and shadow your own tmux, which is the
+  exact trespass mesimon promises never to commit. Your tmux, its version and
+  its config are untouched — mesimon has always run its agents on a private
+  server with a generated conf, and now it owns that server's binary too.
+
+  This also closes a bug class rather than just an install step: a tester on
+  tmux 3.2a could hit behaviour the author could not reproduce on 3.6a. The
+  release gate now runs the whole e2e suite against the bundled binary, so the
+  tmux that ships is the tmux that was tested.
+
+  `MESIMON_TMUX_BIN` overrides the choice; `mesimon doctor` reports which tmux
+  is in play and where it came from.
+
 ## v0.1.0-alpha.1
 
 The first build shared outside the author's machine.

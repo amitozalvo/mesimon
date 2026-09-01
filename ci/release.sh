@@ -76,9 +76,18 @@ cargo clippy --workspace --all-targets -- -D warnings
 step "duplicate dependency drift"
 ./ci/check-dup-deps.sh
 
-step "tests (tmux required)"
-command -v tmux >/dev/null || die "tmux is required to run the e2e suite" "brew install tmux"
-MESIMON_REQUIRE_TMUX=1 cargo test --workspace
+step "bundled tmux"
+# Shipped beside mesimon so a fresh machine needs nothing installed, and so
+# every tester runs the same tmux the author does. Cached across releases;
+# the script verifies a cached binary rather than trusting it.
+./ci/build-tmux.sh
+[ -x vendor/tmux/tmux ] || die "vendor/tmux/tmux missing after build"
+
+step "tests (driven by the bundled tmux)"
+# Test what actually ships. The suite used to run against whatever tmux the
+# author had on PATH, which is precisely the variable bundling exists to
+# remove — so the bundled binary is the one that has to pass.
+MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 cargo test --workspace
 
 # --- build ------------------------------------------------------------------
 
@@ -103,7 +112,12 @@ name="mesimon-$tag-$TARGET"
 rm -rf dist
 mkdir -p "dist/$name"
 cp "$bin" "dist/$name/"
+# tmux sits BESIDE mesimon under a name that will not shadow the user's own
+# on PATH: that adjacency is the resolution ladder's middle rung (tmux_bin()),
+# so both the location and the name are load-bearing.
+cp vendor/tmux/tmux "dist/$name/mesimon-tmux"
 cp README.md LICENSE NOTICE TRADEMARK.md "dist/$name/"
+cp -R vendor/tmux/licenses "dist/$name/licenses-bundled"
 tar -czf "dist/$name.tar.gz" -C dist "$name"
 ( cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" )
 cat "dist/$name.tar.gz.sha256"
@@ -117,6 +131,15 @@ trap 'rm -rf "$tmp"' EXIT
 tar -xzf "dist/$name.tar.gz" -C "$tmp"
 "$tmp/$name/mesimon" --version >/dev/null || die "the packaged binary would not run"
 echo "unpacked and ran: $("$tmp/$name/mesimon" --version)"
+# Prove the bundled tmux is the one mesimon will pick from that layout, and
+# that it runs from a path it was never built in.
+"$tmp/$name/mesimon-tmux" -V >/dev/null || die "the packaged tmux would not run"
+picked=$("$tmp/$name/mesimon" doctor multiplexer --verbose | grep 'tmux binary' || true)
+case "$picked" in
+  *"$tmp/$name/mesimon-tmux"*) echo "mesimon picks its bundled tmux: $("$tmp/$name/mesimon-tmux" -V)" ;;
+  *) die "the packaged mesimon did not resolve its bundled tmux:
+$picked" ;;
+esac
 
 # --- notes ------------------------------------------------------------------
 
