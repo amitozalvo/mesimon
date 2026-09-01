@@ -13,6 +13,7 @@
                                   TICKETS
                                     o         open ticket
                                     > <       move card
+                                    alt+hjkl  move card now
                                     r         rename
                                     ^t        tags
                                     a         archive
@@ -26,5 +27,4 @@
                                   VIEW
                                     p         show replies
 
-                                  APP
  BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ c claude ∙ s shell ∙ > < move card ∙ ^t tags ∙ ? keys

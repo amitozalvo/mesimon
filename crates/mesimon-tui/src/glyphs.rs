@@ -26,11 +26,14 @@ pub(crate) const SPIN_STEP_MS: u64 = 100;
 const WAIT_UNICODE: &[char] = &['⠉', '⠘', '⠰', '⠤', '⠆', '⠃'];
 const WAIT_ASCII: &[char] = &['"', ':', ','];
 
-/// Redraw ticks per waiting step: 4 × `SPIN_STEP_MS` = 400 ms a frame, four
-/// times slower than the spinner. Waiting is not progress; it should barely
-/// move (D19's motion ban bends for the spinner — it must not bend twice at
-/// the same speed).
-const WAIT_STEP_TICKS: usize = 4;
+/// Redraw ticks per SLOW step: 4 × `SPIN_STEP_MS` = 400 ms a frame, four
+/// times slower than the spinner. Waiting is not progress and launching is
+/// not yet progress; neither should do more than barely move (D19's motion
+/// ban bends for the spinner — it must not bend twice at the same speed).
+/// Waiting and launching share this one cadence deliberately: the board has
+/// a fast register and a slow one, and a third speed would be a third thing
+/// moving.
+const SLOW_STEP_TICKS: usize = 4;
 
 /// The peek's activity mark: a bullet that BLINKS rather than spins. The row
 /// beside it already names the step, so a second spinner would be two things
@@ -69,7 +72,21 @@ pub(crate) fn spinner(tier: Tier, frame: usize) -> char {
 /// rides; the divisor is what makes it slower).
 pub(crate) fn waiting(tier: Tier, frame: usize) -> char {
     let frames = if tier == Tier::Ascii { WAIT_ASCII } else { WAIT_UNICODE };
-    frames[(frame / WAIT_STEP_TICKS) % frames.len()]
+    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+}
+
+/// The launching glyph: the WORKING arc at the slow cadence. Spawning is not
+/// a different thing from working — it is working that has not started yet —
+/// so a different shape would overstate the difference. The slowness is the
+/// whole message: the same arc, not turning over yet.
+///
+/// Deliberately NOT disjoint from the spinner, where `waiting` must be and
+/// is: `Unknown` means the daemon has lost track, and a still frame of that
+/// must never read as progress. Launching resolves into working within
+/// seconds and both mean the same thing to the reader — the agent is going,
+/// leave it alone.
+pub(crate) fn launching(tier: Tier, frame: usize) -> char {
+    spinner(tier, frame / SLOW_STEP_TICKS)
 }
 
 /// The plan-review mark: stacked lines read as a list of steps (U+2261
@@ -95,7 +112,7 @@ fn plan_mark(tier: Tier) -> char {
 /// U+25E6 is a small mid-height ring, directionless, EAW=N, and 06 §4.1 scores
 /// it 6/7 present.
 ///
-/// It is 06 §4.2's `idle`/`spawning` mark reused, deliberately: that glyph
+/// It is 06 §4.2's `idle` mark reused, deliberately: that glyph
 /// lives on cards, this one lives in the chrome, and the two never share a
 /// region — no row ever shows both. The ASCII tier falls back to `*` rather
 /// than §4.1's `.`, which is too faint to read as a mark of its own.
@@ -142,15 +159,50 @@ pub(crate) fn is_working(rec: &SessionRecord) -> bool {
     rec.kind == SessionKind::Claude && rec.state == SessionState::Running
 }
 
+/// Is this session still in its launch window — the pane opening, or the
+/// composed prompt typed and not yet accepted?
+///
+/// `Spawning` is only the first half of it. Shift+Enter's Enter is DEFERRED
+/// to the `SessionStart` frame (paste detection swallows one sent with the
+/// text), and that same frame moves the record to `Idle{Unknown}` — a state
+/// that rightly carries no glyph, because an idle agent is one waiting for
+/// you. So the card went dark for the ~500 ms between the session starting
+/// and `UserPromptSubmit` acking the prompt, mid-launch (dogfood 2026-09-01).
+/// `pending_submit` is precisely what says that wait is OURS: the daemon is
+/// still pressing Enter on a 500 ms cadence and the turn has not begun.
+///
+/// It mirrors the daemon's own `pressable` predicate (server.rs
+/// `retry_pending_submits`) — the launch mark is shown exactly while the
+/// daemon still expects the prompt to land — minus its `Running` arm, which
+/// the spinner outranks here: once work is in flight the fast arc is the
+/// truthful one. A stale flag cannot strand the mark: the daemon clears it on
+/// the ack, on giving up, and on any state where the pane stopped being
+/// pressable, and no state outside these two ever consults it.
+pub(crate) fn is_launching(rec: &SessionRecord) -> bool {
+    match &rec.state {
+        SessionState::Spawning => true,
+        // `EndTurn` is a turn that FINISHED, which is only reachable through
+        // the ack that clears the flag — so it never rides this path live,
+        // and a record reloaded holding a stale one keeps `done`, which is
+        // both the truer word and the one the card already preferred.
+        SessionState::Idle { stop_reason } => {
+            rec.pending_submit && !matches!(stop_reason, StopReason::EndTurn)
+        }
+        _ => false,
+    }
+}
+
 /// The card's aggregate state glyph, or None when nothing is abnormal —
 /// a normal card starts its title at T[0] (07 §4.1).
 ///
 /// Precedence (07 §4.2, D34.9 removes unclaimed, no dependency model yet):
 /// requires_action > failed/exited{!=0} > idle{end_turn} unseen > running >
-/// sleeping (all sessions) > unknown. Running is a deviation from 07 §4.1's
-/// "normal card has no glyph": the ticking age alone read as ambiguous, so a
-/// working card carries the grey spinner (author 2026-08-30). `spin` is the
-/// redraw-clock frame; it matters for the working and waiting glyphs.
+/// launching (`is_launching`) > sleeping (all sessions) > unknown. Running is a deviation from
+/// 07 §4.1's "normal card has no glyph": the ticking age alone read as
+/// ambiguous, so a working card carries the grey spinner (author 2026-08-30),
+/// and spawning followed it for the same reason one press later. `spin` is
+/// the redraw-clock frame; it matters for the working, launching and waiting
+/// glyphs.
 pub(crate) fn card_glyph(
     sessions: &[&SessionRecord],
     tier: Tier,
@@ -191,6 +243,17 @@ pub(crate) fn card_glyph(
     if sessions.iter().any(|s| is_working(s)) {
         return Some((spinner(tier, spin), Register::Grey));
     }
+    // Spawning is the launch window, and until Shift+Enter nobody watched it:
+    // every other spawn hands the focus straight to the pane, so the card had
+    // nothing to say and 07 §4.1's "a normal card has no glyph" cost nothing.
+    // The composer's Shift+Enter stays on the board on purpose — the card IS
+    // how the user watches the work land — and for the seconds between the
+    // press and the first hook the card was a title with no sign of life
+    // (author 2026-09-01). It is the slow arc, never the spinner: nothing is
+    // in flight yet.
+    if sessions.iter().any(|s| is_launching(s)) {
+        return Some((launching(tier, spin), Register::Grey));
+    }
     if sessions.iter().all(|s| matches!(s.state, SessionState::Sleeping)) {
         return Some(('z', Register::Grey));
     }
@@ -211,8 +274,13 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
     if rec.state == SessionState::Running && !is_working(rec) {
         return (if ascii { '.' } else { '◦' }, Register::Grey);
     }
+    // The launch window, which outlives `Spawning`: the composed prompt is
+    // typed but not yet accepted, so this `Idle` is not a settled state.
+    if is_launching(rec) {
+        return (launching(tier, spin), Register::Grey);
+    }
     match &rec.state {
-        SessionState::Spawning => (if ascii { '.' } else { '◦' }, Register::Grey),
+        SessionState::Spawning => (launching(tier, spin), Register::Grey),
         SessionState::Running => (spinner(tier, spin), Register::Grey),
         SessionState::RequiresAction { reason: Reason::Plan } => (plan_mark(tier), Register::Attn),
         SessionState::RequiresAction { .. } => ('!', Register::Attn),
@@ -284,9 +352,142 @@ mod tests {
         assert_eq!(card_glyph(&[&a], Tier::Ascii, 0), Some(('|', Register::Grey)));
         // The frame advances the glyph — that IS the animation.
         assert_ne!(card_glyph(&[&a], Tier::Unicode, 1), card_glyph(&[&a], Tier::Unicode, 0));
-        // Spawning alone stays glyph-less: title at T[0] until work starts.
-        assert_eq!(card_glyph(&[&b], Tier::Unicode, 0), None);
+        // A working session outranks a launching one on the same card: the
+        // fast arc is the truthful one while anything is actually in flight.
+        assert_eq!(
+            card_glyph(&[&b, &a], Tier::Unicode, 0),
+            Some((spinner(Tier::Unicode, 0), Register::Grey))
+        );
         assert_eq!(card_glyph(&[], Tier::Unicode, 0), None);
+    }
+
+    /// Shift+Enter mints a ticket, spawns claude and STAYS on the board — the
+    /// card is the only thing the user can watch. It used to show a title and
+    /// nothing else until the first hook landed, so the launch window now
+    /// carries the working arc at a quarter speed: the same shape as work,
+    /// visibly not working yet.
+    #[test]
+    fn spawning_launches_slowly() {
+        use unicode_width::UnicodeWidthChar;
+        let spawning = rec(SessionState::Spawning);
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            assert_eq!(
+                card_glyph(&[&spawning], tier, 0),
+                Some((launching(tier, 0), Register::Grey)),
+                "a spawning card says nothing"
+            );
+            // The rail and the accordion dots say it too.
+            assert_eq!(session_glyph(&spawning, tier, 0), (launching(tier, 0), Register::Grey));
+            for f in 0..3 {
+                assert_eq!(launching(tier, f), launching(tier, f + 1), "held for four ticks");
+            }
+            assert_ne!(launching(tier, 3), launching(tier, 4), "and then it steps");
+            let cycle =
+                if tier == Tier::Ascii { SPIN_ASCII } else { SPIN_UNICODE }.len() * SLOW_STEP_TICKS;
+            assert_eq!(launching(tier, 0), launching(tier, cycle), "wraps cleanly");
+            for f in 0..48 {
+                assert_eq!(
+                    launching(tier, f).width(),
+                    Some(1),
+                    "{:?} not one cell",
+                    launching(tier, f)
+                );
+                // It is the WORKING arc, slowed — never a shape of its own,
+                // and never one of the waiting frames, which mean the daemon
+                // has lost track rather than not started yet.
+                assert!((0..48).any(|w| spinner(tier, w) == launching(tier, f)));
+                for w in 0..48 {
+                    assert_ne!(
+                        waiting(tier, w),
+                        launching(tier, f),
+                        "launching wore the waiting mark"
+                    );
+                }
+            }
+        }
+    }
+
+    /// The launch window does not end at `SessionStart`. That frame moves the
+    /// record to `Idle{Unknown}` AND is when the deferred Enter is first
+    /// pressed; the turn only begins at the `UserPromptSubmit` ack ~500 ms
+    /// later. Between them the card went dark and then came back spinning
+    /// (dogfood 2026-09-01, "for half a second it removed the animated
+    /// glyph"). `pending_submit` is what keeps the mark lit across the seam.
+    #[test]
+    fn the_owed_enter_is_still_launching() {
+        let mut composed = rec(SessionState::Idle { stop_reason: StopReason::Unknown });
+        composed.pending_submit = true;
+        // The same record without the owed Enter is an ordinary idle agent
+        // waiting for YOU, and says nothing — that part must not change.
+        let plain = rec(SessionState::Idle { stop_reason: StopReason::Unknown });
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            assert!(is_launching(&composed));
+            assert!(!is_launching(&plain));
+            assert_eq!(
+                card_glyph(&[&composed], tier, 0),
+                Some((launching(tier, 0), Register::Grey)),
+                "the card went dark mid-launch"
+            );
+            assert_eq!(card_glyph(&[&plain], tier, 0), None);
+            assert_eq!(session_glyph(&composed, tier, 0), (launching(tier, 0), Register::Grey));
+            // And the whole press-to-turn path is one unbroken mark: spawn,
+            // session start, ack. Only the last frame changes what it says.
+            let spawning = rec(SessionState::Spawning);
+            let running = rec(SessionState::Running);
+            assert_eq!(card_glyph(&[&spawning], tier, 0), card_glyph(&[&composed], tier, 0));
+            assert_eq!(
+                card_glyph(&[&running], tier, 0),
+                Some((spinner(tier, 0), Register::Grey)),
+                "the ack hands over to the working arc"
+            );
+        }
+    }
+
+    /// The flag is only ever read inside the launch window. A record that
+    /// carries it into any other state — a restart reloads it from disk — is
+    /// not launching, and must keep the mark its own state earned.
+    #[test]
+    fn a_stale_owed_enter_never_relabels_a_state() {
+        for state in [
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+            SessionState::Sleeping,
+            SessionState::Exited { reason: ExitReason::UserQuit },
+            SessionState::Failed { reason: FailReason::Server },
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        ] {
+            let mut owed = rec(state.clone());
+            owed.pending_submit = true;
+            let clean = rec(state.clone());
+            assert_eq!(
+                session_glyph(&owed, Tier::Unicode, 0),
+                session_glyph(&clean, Tier::Unicode, 0),
+                "{state:?} was relabelled by a stale owed Enter"
+            );
+            assert_eq!(
+                card_glyph(&[&owed], Tier::Unicode, 0),
+                card_glyph(&[&clean], Tier::Unicode, 0),
+                "{state:?} was relabelled by a stale owed Enter"
+            );
+        }
+    }
+
+    /// Everything abnormal still outranks the launch window: a card with a
+    /// spawning session and a pending question is a card that needs you.
+    #[test]
+    fn launching_yields_to_every_real_state() {
+        let spawning = rec(SessionState::Spawning);
+        let attn = rec(SessionState::RequiresAction { reason: Reason::Question });
+        let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        let fail = rec(SessionState::Failed { reason: FailReason::Server });
+        assert_eq!(card_glyph(&[&spawning, &attn], Tier::Unicode, 0).unwrap().1, Register::Attn);
+        assert_eq!(card_glyph(&[&spawning, &fail], Tier::Unicode, 0), Some(('x', Register::Err)));
+        assert_eq!(card_glyph(&[&spawning, &done], Tier::Unicode, 0), Some(('✓', Register::Calm)));
+        // But it outranks a parked session: `z` means nothing is happening.
+        let sleep = rec(SessionState::Sleeping);
+        assert_eq!(
+            card_glyph(&[&sleep, &spawning], Tier::Unicode, 0),
+            Some((launching(Tier::Unicode, 0), Register::Grey))
+        );
     }
 
     /// A shell is `Running` from spawn to pane death (D15) — that is the
@@ -377,7 +578,7 @@ mod tests {
             }
             assert_ne!(waiting(tier, 3), waiting(tier, 4), "and then it steps");
             let frames = if tier == Tier::Ascii { WAIT_ASCII } else { WAIT_UNICODE };
-            let cycle = frames.len() * WAIT_STEP_TICKS;
+            let cycle = frames.len() * SLOW_STEP_TICKS;
             assert_eq!(waiting(tier, 0), waiting(tier, cycle), "wraps cleanly");
         }
     }

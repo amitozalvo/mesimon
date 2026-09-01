@@ -138,6 +138,16 @@ enum LastUndo {
     Archive(ulid::Ulid),
 }
 
+/// The most recent action `.` can do again. A move is the only one so far —
+/// it is the gesture that costs the most aiming and gets repeated the most
+/// (triage is "these four go to done"). The column is remembered by NAME and
+/// re-resolved against the live board every frame: an index would follow a
+/// column that was renamed or removed into meaning something else.
+#[derive(Debug, Clone, PartialEq)]
+enum LastAction {
+    Move { column: String },
+}
+
 /// Where a focus handover started — unfocus returns exactly there (author
 /// 2026-08-30): board Enter comes back to the board, ticket-screen focus
 /// comes back to the ticket screen.
@@ -304,6 +314,10 @@ pub struct App {
     /// ticket in the snapshot, so it needs no daemon-side grace band — it
     /// just needs to be reachable, which is what this is.
     last_undo: Option<LastUndo>,
+    /// What `.` would do again. Set only by an action the USER took here —
+    /// an automove or another client's move is not something this hand did,
+    /// so it never arms the key.
+    last_action: Option<LastAction>,
     /// The `?` overlay is up. The next key — any key — puts it away.
     pub help: bool,
     /// `^L`: the main loop clears and redraws from scratch.
@@ -377,6 +391,7 @@ impl App {
             tag_second: crate::tags::Second::from_env(),
             archive_armed: None,
             last_undo: None,
+            last_action: None,
             help: false,
             force_redraw: false,
             pending_suspend: false,
@@ -815,6 +830,12 @@ impl App {
                 Some(LastUndo::Archive(_)) => "undo archive",
                 _ => "undo delete",
             },
+            can_nudge: self.can_nudge(),
+            can_repeat: self.repeat_target().is_some(),
+            repeat_word: match self.last_action {
+                Some(LastAction::Move { .. }) => "move again",
+                None => "again",
+            },
             bulk_sleep: self.resources.reclaim_sessions,
             bulk_sleep_bytes: self.resources.reclaim_bytes,
             bulk_archive: self.resources.archive_tickets,
@@ -1023,6 +1044,8 @@ impl App {
                 }
             }
             Verb::Grab => self.grab(key, scope, ctx)?,
+            Verb::Nudge => self.nudge(key)?,
+            Verb::Repeat => self.repeat_last()?,
             // `a` on a ticket that is already archived restores it right
             // away; otherwise it arms, and the second `a` archives.
             Verb::TagPrefix => {
@@ -1673,6 +1696,64 @@ impl App {
         Ok(())
     }
 
+    /// Is there anywhere for `alt+<direction>` to send the selected card —
+    /// another column, or another row in this one? One column holding one
+    /// card is the board where the gesture means nothing, and the hint goes
+    /// down with the key.
+    fn can_nudge(&self) -> bool {
+        let Some(col) = self.selected_ticket().map(|t| t.column.clone()) else {
+            return false;
+        };
+        self.columns().len() > 1 || self.board.column_tickets(&col).len() > 1
+    }
+
+    /// `alt+<direction>`: the move `> <` makes, without the ghost. One press
+    /// carries the card one column over or one row along and the cursor rides
+    /// with it — the card is the thing being aimed, so the eye should not
+    /// have to go back for it. Sideways it enters the foreign column at the
+    /// top, which is exactly where a grabbed ghost enters one; an edge press
+    /// stays put rather than wrapping, because a wrap is a fine thing to do
+    /// to a ghost you can still cancel and a poor thing to do to a card that
+    /// has already moved.
+    fn nudge(&mut self, key: Key) -> Result<()> {
+        let cols = self.columns();
+        let Some(id) = self.selected_ticket().map(|t| t.id) else {
+            return Ok(());
+        };
+        if cols.is_empty() {
+            return Ok(());
+        }
+        let (col, idx) = match key {
+            Key::AltLeft | Key::AltRight => {
+                let to = if key == Key::AltRight {
+                    (self.cursor_col + 1).min(cols.len() - 1)
+                } else {
+                    self.cursor_col.saturating_sub(1)
+                };
+                if to == self.cursor_col {
+                    return Ok(());
+                }
+                (to, 0)
+            }
+            Key::AltUp | Key::AltDown => {
+                // `ghost_len` counts the column without this card in it, which
+                // is the same count an insertion index is measured against.
+                let n = self.ghost_len(&cols, self.cursor_col, id);
+                let to = if key == Key::AltDown {
+                    self.cursor_row + 1
+                } else {
+                    self.cursor_row.saturating_sub(1)
+                };
+                if to == self.cursor_row || to > n {
+                    return Ok(());
+                }
+                (self.cursor_col, to)
+            }
+            _ => return Ok(()),
+        };
+        self.drop_ghost(&cols, id, col, idx)
+    }
+
     /// `!` in the diff viewer: a shell in the worktree, at its root.
     fn worktree_shell(&mut self) {
         let Screen::Diff { ticket } = self.screen else {
@@ -1756,7 +1837,7 @@ impl App {
             return Ok(());
         };
         let word = crate::keys::word_wise(mods);
-        let key = crate::keys::to_key(code, mods);
+        let key = crate::keys::to_key_text(code, mods);
         let ctx = self.ctx();
         let verb = key.and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
         match verb {
@@ -1826,7 +1907,7 @@ impl App {
     /// table stands down while a name is being typed.
     fn key_tag(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
         let Some(mut arm) = self.tag_armed.take() else { return Ok(()) };
-        let Some(key) = crate::keys::to_key(code, mods) else {
+        let Some(key) = crate::keys::to_key_text(code, mods) else {
             self.tag_armed = Some(arm);
             return Ok(());
         };
@@ -2352,9 +2433,63 @@ impl App {
             .collect();
         let before = others.get(idx).copied();
         self.mode = Mode::Normal;
+        // A move that stays inside its column is a reorder, not a filing, and
+        // `repeat_target` refuses to repeat one anyway (the card is already
+        // there). Arming on it would leave `.` aimed at whichever column the
+        // cursor happened to be standing in.
+        if self.board.ticket(ticket).is_some_and(|t| t.column != target_col) {
+            self.last_action = Some(LastAction::Move { column: target_col.clone() });
+        }
         self.send(Command::MoveTicket { id: ticket, column: target_col, before })?;
         self.cursor_col = col;
         self.cursor_row = idx;
+        Ok(())
+    }
+
+    /// Which column `.` would move the selected card into, or `None` when the
+    /// key is inert. Re-derived from the live board rather than trusted, the
+    /// way `undo_target` is: the column may have been renamed away, and a card
+    /// already sitting in the target has nothing to repeat — moving it would
+    /// be a shuffle, not the same action again.
+    fn repeat_target(&self) -> Option<usize> {
+        // No `_` arm: the second repeatable action must be decided here.
+        match self.last_action.as_ref() {
+            Some(LastAction::Move { column }) => {
+                if !matches!(self.screen, Screen::Board) {
+                    return None;
+                }
+                let id = self.selected_ticket().map(|t| t.id)?;
+                if self.board.ticket(id)?.column == *column {
+                    return None;
+                }
+                self.columns().iter().position(|c| c == column)
+            }
+            None => None,
+        }
+    }
+
+    /// `.` — the last move again, on the card under the cursor, without the
+    /// aiming. The cursor deliberately does NOT follow the card the way a drop
+    /// makes it: the whole point of the key is that the next card slides up
+    /// under the cursor, so `. . .` files three of them without a keystroke
+    /// spent travelling back. It lands at the top of the target column, which
+    /// is exactly where a fresh grab's ghost enters a foreign column.
+    fn repeat_last(&mut self) -> Result<()> {
+        let Some(col) = self.repeat_target() else { return Ok(()) };
+        let Some(id) = self.selected_ticket().map(|t| t.id) else { return Ok(()) };
+        let cols = self.columns();
+        let (home_col, home_row) = (self.cursor_col, self.cursor_row);
+        self.drop_ghost(&cols, id, col, 0)?;
+        self.cursor_col = home_col;
+        self.cursor_row = home_row;
+        self.clamp_cursor();
+        // Only claim it if it happened: `drop_ghost` puts a refusal (the DONE
+        // gate on an unmerged worktree is the live one) into the status, and
+        // saying "moved to done" over it would be the report contradicting
+        // the board. The card is proof either way.
+        if self.board.ticket(id).is_some_and(|t| t.column == cols[col]) {
+            self.status = format!("moved to {}", cols[col]);
+        }
         Ok(())
     }
 
@@ -2749,6 +2884,19 @@ pub(crate) mod test_support {
                     shell_env: self.shell_env.clone(),
                 }),
                 Command::MoveTicket { id, column, before } => {
+                    // The daemon's DONE gate, as close as the fake can stand
+                    // in for it: it holds no worktree bindings, so a ticket
+                    // that WANTS a worktree plays the part of one whose branch
+                    // has not merged. The point under test is the refusal
+                    // reaching the client, not which git fact caused it.
+                    if column == "DONE"
+                        && self.board.ticket(id).and_then(|t| t.workspace)
+                            == Some(mesimon_core::board::WorkspaceStrategy::Worktree)
+                    {
+                        return Ok(Response::Err {
+                            message: "worktree unmerged — merge before DONE".into(),
+                        });
+                    }
                     let mut order: Vec<ulid::Ulid> = self
                         .board
                         .column_tickets(&column)
@@ -3380,6 +3528,187 @@ mod tests {
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(3), ulid::Ulid(1), ulid::Ulid(2)]);
         assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+    }
+
+    fn alt(app: &mut App, code: KeyCode) {
+        app.handle_key(code, KeyModifiers::ALT).unwrap();
+    }
+
+    /// `alt+<direction>` moves the CARD and takes the cursor with it — one
+    /// press, no ghost, no Enter. Both spellings of a direction do it.
+    #[test]
+    fn alt_direction_moves_the_card_and_the_cursor_rides_along() {
+        let mut app = app_three_columns();
+        assert!(app.ctx().can_nudge);
+        // Sideways: into the next column, at its top, cursor on it.
+        alt(&mut app, KeyCode::Right);
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
+        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
+        // The letter spelling is the same atom.
+        alt(&mut app, KeyCode::Char('l'));
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "done");
+        assert_eq!((app.cursor_col, app.cursor_row), (2, 0));
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(
+            done,
+            vec![ulid::Ulid(1), ulid::Ulid(3)],
+            "a foreign column takes it at the top"
+        );
+        // And back the way it came.
+        alt(&mut app, KeyCode::Char('h'));
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
+        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
+    }
+
+    /// Up and down reorder inside the column, and the cursor stays on the
+    /// card it is carrying.
+    #[test]
+    fn alt_up_and_down_reorder_within_the_column() {
+        let mut app = app_three_columns();
+        alt(&mut app, KeyCode::Down);
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+        alt(&mut app, KeyCode::Char('k'));
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+    }
+
+    /// Every edge stays put rather than wrapping: a ghost you can cancel may
+    /// wrap, a card that has already moved may not. And a reorder does not
+    /// arm `.` — it filed nothing.
+    #[test]
+    fn alt_direction_stops_at_the_edges_and_arms_nothing() {
+        let mut app = app_three_columns();
+        alt(&mut app, KeyCode::Left);
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        alt(&mut app, KeyCode::Up);
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+        // Bottom of the column: down is inert too.
+        alt(&mut app, KeyCode::Down);
+        alt(&mut app, KeyCode::Down);
+        assert_eq!(app.cursor_row, 1);
+        assert!(!app.ctx().can_repeat, "a reorder is not a filing");
+        // Right to the last column, then one more.
+        app.cursor_col = 2;
+        app.cursor_row = 0;
+        alt(&mut app, KeyCode::Right);
+        assert_eq!(app.board.ticket(ulid::Ulid(3)).unwrap().column, "done");
+        assert_eq!(app.cursor_col, 2);
+    }
+
+    /// One column, one card: nowhere to send it, so the key is inert and the
+    /// `?` overlay does not offer it.
+    #[test]
+    fn alt_direction_is_inert_with_nowhere_to_send_the_card() {
+        let mut b = Board::default();
+        b.columns.push(Column { name: "todo".into(), order: "0".into() });
+        b.tickets.push(ticket(1, "todo", "a"));
+        let mut app = App::for_test(b, theme());
+        assert!(!app.ctx().can_nudge);
+        alt(&mut app, KeyCode::Down);
+        alt(&mut app, KeyCode::Right);
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+    }
+
+    /// The composer keeps Alt as its "by word" modifier: `alt+←` walks a word
+    /// in the title, it does not move a card.
+    #[test]
+    fn alt_in_the_composer_still_jumps_by_word() {
+        let mut app = app_three_columns();
+        press(&mut app, 'o');
+        for c in "fix the thing".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Left, KeyModifiers::ALT).unwrap();
+        app.handle_key(KeyCode::Char('X'), KeyModifiers::NONE).unwrap();
+        let Mode::Input { buffer, .. } = &app.mode else { panic!("left the composer") };
+        assert_eq!(buffer.as_str(), "fix the Xthing");
+        // And the board did not move underneath it.
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+    }
+
+    /// `.` does the last move again, and the cursor stays put — that is the
+    /// whole reason the key exists. A drop follows the card; a repeat lets the
+    /// next card slide up under the cursor, so `. . .` files three of them.
+    #[test]
+    fn dot_repeats_the_last_move_and_leaves_the_cursor_home() {
+        let mut app = app_three_columns();
+        // Ticket 1: grab, aim at column 3 ("done"), drop. The cursor follows.
+        press(&mut app, '>');
+        press(&mut app, '3');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!((app.cursor_col, app.cursor_row), (2, 0));
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "done");
+
+        // Back to todo, on ticket 2 — the one press repeats the whole gesture.
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        assert_eq!(app.ctx().repeat_word, "move again");
+        assert!(app.ctx().can_repeat);
+        press(&mut app, '.');
+        assert_eq!(app.board.ticket(ulid::Ulid(2)).unwrap().column, "done");
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(done, vec![ulid::Ulid(2), ulid::Ulid(1), ulid::Ulid(3)]);
+        // Still standing in the column we were filing from.
+        assert_eq!(app.cursor_col, 0);
+        assert!(app.board.column_tickets("todo").is_empty());
+        assert_eq!(app.status, "moved to done");
+    }
+
+    /// A refused repeat reports the refusal, not the move. The daemon's DONE
+    /// gate is the live case; the fake transport refuses the same shape.
+    #[test]
+    fn a_refused_repeat_keeps_the_refusal_on_screen() {
+        let mut b = board_three_columns();
+        b.columns.push(Column { name: "DONE".into(), order: "3".into() });
+        // Ticket 2 wants a worktree, which is what the fake reads as unmerged.
+        if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid::Ulid(2)) {
+            t.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
+        }
+        let mut app = App::for_test(b, theme());
+        // Ticket 1 has no worktree, so it files into DONE and arms `.`.
+        press(&mut app, '>');
+        press(&mut app, '4');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "DONE");
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        assert!(app.ctx().can_repeat);
+        press(&mut app, '.');
+        assert_eq!(app.board.ticket(ulid::Ulid(2)).unwrap().column, "todo");
+        assert_eq!(app.status, "worktree unmerged — merge before DONE");
+    }
+
+    /// The other half: the key is inert AND unhinted where repeating means
+    /// nothing — before any move, and on a card already in the target column.
+    #[test]
+    fn dot_is_inert_before_a_move_and_on_a_card_already_there() {
+        let mut app = app_three_columns();
+        assert!(!app.ctx().can_repeat);
+        assert_eq!(app.ctx().repeat_word, "again");
+        press(&mut app, '.');
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+
+        press(&mut app, '>');
+        press(&mut app, '3');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // The cursor followed the card into "done": repeating here would be a
+        // shuffle inside one column, not the same action again.
+        assert!(!app.ctx().can_repeat);
+        press(&mut app, '.');
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(done, vec![ulid::Ulid(1), ulid::Ulid(3)], "a no-op, not a reorder");
+
+        // A column that went away takes the offer down with it.
+        app.cursor_col = 0;
+        assert!(app.ctx().can_repeat);
+        app.board.columns.retain(|c| c.name != "done");
+        assert!(!app.ctx().can_repeat);
     }
 
     #[test]

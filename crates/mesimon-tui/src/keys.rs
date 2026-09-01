@@ -9,7 +9,20 @@ use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 /// construction rather than by omission.
 pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     let ctrl = mods.contains(KeyModifiers::CONTROL);
+    let alt = mods.contains(KeyModifiers::ALT) && !ctrl;
     Some(match code {
+        // Option/Alt on a direction, either spelling, is one atom. Whether it
+        // arrives at all is the terminal's call and nothing detects it in
+        // advance, which is why the keymap spends no capability on it
+        // (`keymap::alt_is_admitted_only_for_the_nudge`): macOS Terminal
+        // composes `⌥h` into `˙`, iTerm2 sends the modifier only with
+        // `Option Key Sends: Esc+`, and a profile that maps `⌥←` to a word
+        // jump sends `esc b` — an alt+`b` this map has no atom for, so it
+        // resolves to nothing rather than to the wrong verb.
+        KeyCode::Char('h') | KeyCode::Left if alt => Key::AltLeft,
+        KeyCode::Char('l') | KeyCode::Right if alt => Key::AltRight,
+        KeyCode::Char('k') | KeyCode::Up if alt => Key::AltUp,
+        KeyCode::Char('j') | KeyCode::Down if alt => Key::AltDown,
         // `to_ascii_lowercase` leaves `]` and `5` alone, which is what makes
         // the two spellings of ctrl+] (kitty's true `C-]`, and the `C-5` that
         // legacy terminals send for 0x1D) land on the same atom.
@@ -39,6 +52,14 @@ pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
     })
 }
 
+/// The same conversion, as a text field reads it: Alt there is the "by word"
+/// modifier ([`word_wise`]), never an atom of its own — a composer that let
+/// `alt+←` become [`Key::AltLeft`] would stop jumping by word, and the board's
+/// nudge is not something a half-typed title can do anyway.
+pub fn to_key_text(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
+    to_key(code, mods - KeyModifiers::ALT)
+}
+
 /// Ctrl or Alt both mean "by word" in a text field — terminals disagree about
 /// which one ctrl+backspace and option+arrow actually report. This stays out
 /// of the keymap table because it is a modifier reading, not a binding.
@@ -49,6 +70,36 @@ pub fn word_wise(mods: KeyModifiers) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Both spellings of a direction land on one atom, and the modifier only
+    /// counts on the four the keymap knows: an `alt+b` (what iTerm2's word
+    /// jump sends for `⌥←`) must not arrive as a bare `b` and file a card.
+    #[test]
+    fn alt_directions_are_one_atom_and_nothing_else_is() {
+        let a = KeyModifiers::ALT;
+        assert_eq!(to_key(KeyCode::Char('h'), a), Some(Key::AltLeft));
+        assert_eq!(to_key(KeyCode::Left, a), Some(Key::AltLeft));
+        assert_eq!(to_key(KeyCode::Char('j'), a), Some(Key::AltDown));
+        assert_eq!(to_key(KeyCode::Down, a), Some(Key::AltDown));
+        assert_eq!(to_key(KeyCode::Char('k'), a), Some(Key::AltUp));
+        assert_eq!(to_key(KeyCode::Char('l'), a), Some(Key::AltRight));
+        assert_eq!(to_key(KeyCode::Char('b'), a), Some(Key::Char('b')));
+        // Ctrl wins the letter it already owns.
+        assert_eq!(to_key(KeyCode::Char('t'), a | KeyModifiers::CONTROL), Some(Key::Ctrl('t')));
+        // Unmodified, they are the plain atoms they always were.
+        assert_eq!(to_key(KeyCode::Char('h'), KeyModifiers::NONE), Some(Key::Char('h')));
+        assert_eq!(to_key(KeyCode::Left, KeyModifiers::NONE), Some(Key::Left));
+    }
+
+    /// A text field reads Alt as "by word": the arrows must stay arrows there
+    /// or the composer loses `alt+←`.
+    #[test]
+    fn a_text_field_never_sees_an_alt_atom() {
+        let a = KeyModifiers::ALT;
+        assert_eq!(to_key_text(KeyCode::Left, a), Some(Key::Left));
+        assert_eq!(to_key_text(KeyCode::Char('h'), a), Some(Key::Char('h')));
+        assert!(word_wise(a));
+    }
 
     #[test]
     fn both_spellings_of_ctrl_bracket_agree() {

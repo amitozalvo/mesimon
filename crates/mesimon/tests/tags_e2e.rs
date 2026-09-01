@@ -14,7 +14,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::Board;
+use mesimon_core::board::{Board, MAX_TAGS_PER_GROUP};
 use mesimon_core::command::{Command, Envelope, Response};
 use mesimon_core::Principal;
 
@@ -203,8 +203,9 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     assert_eq!(board.ticket(id).unwrap().tag_in(5).unwrap().name, "DUET", "the wearer followed");
     assert_eq!(board.tag_def(5, "DUET").unwrap().tint(), 3, "and kept its colour");
 
-    // A group is a small readable set, not a list.
-    for i in 0..4 {
+    // A group is a capped set, not a list — and the cap is read from the
+    // constant, not counted out here: the number moved once already.
+    for i in 0..(MAX_TAGS_PER_GROUP - 1) {
         assert!(matches!(
             c.request(Command::RegisterTag { group: 5, name: format!("f{i}") }),
             Response::Ok

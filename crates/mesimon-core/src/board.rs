@@ -304,9 +304,12 @@ pub struct Tag {
 /// modulus has to live on both sides. `tag_tints_agree` pins them together.
 pub const TAG_TINTS: u8 = 6;
 
-/// Most tags one axis may hold. A group is a small, readable set — past this
-/// it is not an axis any more, it is a list, and the picker row stops fitting.
-pub const MAX_TAGS_PER_GROUP: usize = 5;
+/// Most tags one axis may hold. A group is still meant to be a readable set
+/// rather than a list, but five was too tight for a real vocabulary (author
+/// 2026-09-01), so the cap is the same ten the groups themselves run to. The
+/// picker row no longer has to fit the whole axis to stay usable: it windows
+/// around the cursor cell (`ui/tagpicker.rs::window`).
+pub const MAX_TAGS_PER_GROUP: usize = 10;
 
 /// The colour a name falls back to when nobody has picked one: stable across
 /// machines and screenshots, never the order it was created in.
@@ -742,8 +745,10 @@ mod tests {
         assert_eq!(b.group_tags(1), vec!["REGR"]);
     }
 
-    /// A group is a small readable set, not a list: past the cap the picker
-    /// row stops fitting and the axis stops being an axis.
+    /// An axis is capped: ten names, the same ten the groups run to. Past it
+    /// a group stops being an axis and becomes a list, and the picker row —
+    /// windowed since the cap went up — spends more of itself scrolling than
+    /// showing.
     #[test]
     fn a_group_fills_up() {
         let mut b = Board::with_default_columns();

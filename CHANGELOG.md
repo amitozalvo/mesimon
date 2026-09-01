@@ -4,6 +4,39 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.4
+
+- **`alt`+direction moves a card.** Option plus `hjkl` or an arrow key nudges the
+  selected card one step and takes the cursor with it — the gesture every editor
+  and every list in the OS already binds. The board's only mover was `> <`, a
+  ghost you aim and an `Enter` you commit, three keys deep for "this one goes
+  right". `> <` is unchanged and stays the spelling that works everywhere:
+  terminals that eat the Option modifier make the new key inert, never wrong.
+  (On iTerm2, `⌥←`/`⌥→` are mapped to a word jump by default — the left Option
+  key with `hjkl` or `↑↓` works out of the box.)
+
+- **`.` does the last move again.** Triage is a run of the same gesture — *these
+  four go to done* — and it now costs one key per card. `.` files the card under
+  the cursor into the column the last move went to, and the cursor stays put, so
+  the next card slides up under it and `. . .` files three without travelling
+  back. The column is remembered by name, so a rename or a delete takes the key
+  out of service instead of quietly re-aiming it.
+
+- **A launching agent shows it.** Shift+Enter in the composer stays on the board
+  — the card is how you watch the work land — and the card sat there with a
+  title and no sign of life until the agent's first hook arrived. It now wears
+  the working arc at a quarter speed for the whole launch: spawning is not a
+  different thing from working, it is working that has not started, and the
+  slowness is the message. A ticket waiting on its worktree gets the same mark,
+  which is the longest wait on the board.
+
+- **An axis holds ten tags, not five.** Five is a sample, not a vocabulary, and
+  a user who wants six components on one group is not building a list. Ten is
+  also the number of groups, so both numbers in the tag system are now the same
+  number. Ten names do not fit a picker row on an 80-column terminal, so the row
+  scrolls with the cursor instead of being cut off: the cell you are on is
+  always drawn, and a `~` marks the side still holding tags.
+
 ## v0.1.0-alpha.3
 
 - **Your shell environment reaches your agents.** An `export` you add to

@@ -48,6 +48,24 @@ pub enum Key {
     Right,
     Up,
     Down,
+    /// Option/Alt held on a direction. `alt+h` and `alt+←` are the SAME atom,
+    /// the way the two spellings of `ctrl+]` are — the keymap wants a
+    /// direction, and the terminal may spell it either way.
+    ///
+    /// The second family off the legacy floor, and it is admitted on a
+    /// different clause from [`Key::ShiftEnter`]. That atom is *ambiguous*: a
+    /// terminal that cannot report it sends a plain `Enter`, which is another
+    /// verb, so it had to be gated on `Ctx::rich_keys` to keep from acting
+    /// wrongly. Alt is merely *absent* — a terminal that swallows Option
+    /// (macOS Terminal composes `˙` for `⌥h`; iTerm2 needs `Option Key Sends:
+    /// Esc+`) delivers no atom at all, and the key is inert rather than wrong.
+    /// Inert is affordable here and only here, because every move these four
+    /// make, `> <` also makes: they buy speed, never capability
+    /// (`alt_is_admitted_only_for_the_nudge`).
+    AltLeft,
+    AltRight,
+    AltUp,
+    AltDown,
     Home,
     End,
     PageUp,
@@ -67,6 +85,10 @@ impl fmt::Display for Key {
             Key::Space => write!(f, "space"),
             Key::Backspace => write!(f, "backspace"),
             Key::Delete => write!(f, "delete"),
+            Key::AltLeft => write!(f, "alt+←"),
+            Key::AltRight => write!(f, "alt+→"),
+            Key::AltUp => write!(f, "alt+↑"),
+            Key::AltDown => write!(f, "alt+↓"),
             Key::Left => write!(f, "←"),
             Key::Right => write!(f, "→"),
             Key::Up => write!(f, "↑"),
@@ -193,6 +215,14 @@ pub enum Verb {
     Undo,
     /// `>` / `<` — the handler reads which one off the key.
     Grab,
+    /// `alt+hjkl` / `alt+<arrow>` — move the card one step that way, right
+    /// now, with no ghost to aim and no Enter to commit. Same shape as
+    /// [`Verb::Grab`]: the handler reads the direction off the key.
+    Nudge,
+    /// `.` — do the last action again on the card under the cursor. Move is
+    /// the only action it repeats today; the verb is deliberately the general
+    /// one, so the second repeatable action is a variant and a match arm.
+    Repeat,
     Peek,
     /// Esc on the board — opens the menu below.
     Menu,
@@ -341,6 +371,19 @@ pub struct Ctx {
     pub can_undo: bool,
     /// What `u` would undo right now — "undo delete", "undo archive".
     pub undo_word: &'static str,
+    /// `.` has an action to do again AND doing it here would change
+    /// something. Both halves matter: repeating a move onto a card that is
+    /// already in that column is not a repeat, it is a shuffle.
+    pub can_repeat: bool,
+    /// What `.` would do again — "move again". Same shape as `undo_word`,
+    /// and for the same reason: a hint is a `&'static str`, so the word comes
+    /// from a fixed set and the column name lives in the status line.
+    pub repeat_word: &'static str,
+    /// `alt+<direction>` has somewhere to send the card under the cursor —
+    /// another column, or another row in this one. A board of one column
+    /// holding one card offers the gesture nothing, and the hint goes with
+    /// the key.
+    pub can_nudge: bool,
     pub bulk_sleep: usize,
     /// What sleeping those sessions would hand back. The suggestion does not
     /// gate on it — the menu row's detail spends it as the payoff word.
@@ -412,6 +455,9 @@ impl Default for Ctx {
             ticket_hot: false,
             can_undo: false,
             undo_word: "undo",
+            can_repeat: false,
+            repeat_word: "again",
+            can_nudge: false,
             bulk_sleep: 0,
             bulk_sleep_bytes: 0,
             bulk_archive: 0,
@@ -683,6 +729,36 @@ static BOARD: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 60,
+    },
+    Binding {
+        // The same move `> <` makes, minus the aiming: one press takes the
+        // card one column over or one row along, and the cursor rides with
+        // it. Overlay-only (`prio: 0`) — it is an accelerator for the gesture
+        // the footer already teaches two entries up, and the footer's cells
+        // are better spent on a verb that has no other spelling.
+        keys: &[Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown],
+        verb: Verb::Nudge,
+        show: "alt+hjkl",
+        hint: |_| "move card now",
+        avail: |c| c.can_nudge,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
+        // Vim's `.`, and the same bargain: the aiming was the expensive part
+        // of the last gesture, so the repeat spends no keys on it. It sits
+        // beside `> <` in the footer because that is what it repeats.
+        keys: &[Key::Char('.')],
+        verb: Verb::Repeat,
+        show: ".",
+        hint: |c| c.repeat_word,
+        avail: |c| c.has_ticket && c.can_repeat,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 65,
     },
     Binding {
         keys: &[Key::Char('r')],
@@ -2066,9 +2142,11 @@ mod tests {
         }
     }
 
-    /// 04 §2.0 rule 1: every atom is expressible on the legacy floor —
-    /// `Key::ShiftEnter` excepted, and only because the test below proves it
-    /// binds nothing on a terminal that cannot report it.
+    /// 04 §2.0 rule 1: every atom is expressible on the legacy floor — the
+    /// two exceptions are `Key::ShiftEnter` and the four Alt directions, and
+    /// each one is held down by a test of its own below
+    /// (`shift_enter_is_inert_without_rich_keys`,
+    /// `alt_is_admitted_only_for_the_nudge`).
     #[test]
     fn every_atom_is_on_the_legacy_floor() {
         for scope in ALL_SCOPES {
@@ -2080,10 +2158,11 @@ mod tests {
                         // arrives as Ctrl+5 on terminals without kitty).
                         Key::Ctrl(c) => c.is_ascii_lowercase() || *c == ']' || *c == '5',
                         Key::ShiftEnter => false,
+                        Key::AltLeft | Key::AltRight | Key::AltUp | Key::AltDown => false,
                         _ => true,
                     };
                     assert!(
-                        ok || *k == Key::ShiftEnter,
+                        ok || OFF_FLOOR.contains(k),
                         "{k:?} in {scope:?} is not on the legacy floor"
                     );
                 }
@@ -2134,9 +2213,55 @@ mod tests {
         );
     }
 
-    /// 04 §2.0 rule 2, the part that bit us: no Alt/Meta atom exists at all
-    /// (there is no `Key::Alt` to construct), and no `ctrl+<digit>` other than
-    /// the `Ctrl+5` that IS `ctrl+]` on legacy terminals.
+    /// Every atom the legacy floor cannot spell. The list is short on
+    /// purpose: each entry is answered by a named test, and a fifth entry is
+    /// a decision, not an addition.
+    const OFF_FLOOR: &[Key] =
+        &[Key::ShiftEnter, Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown];
+
+    /// Alt's escape clause, and the reason it is not `rich_keys`. Shift+Enter
+    /// had to be gated because a terminal that cannot report it does report
+    /// something — a plain `Enter`, which saves without asking. Alt fails the
+    /// other way: the terminal eats the modifier and NOTHING arrives, so the
+    /// only cost is a hint for a key that does not press. That is affordable
+    /// exactly while the atom is an accelerator, so this test pins it to one
+    /// verb, on one screen, and holds `> <` beside it as the spelling every
+    /// terminal can reach.
+    #[test]
+    fn alt_is_admitted_only_for_the_nudge() {
+        let mut found = 0;
+        for scope in ALL_SCOPES {
+            for b in bindings(scope) {
+                if b.keys
+                    .iter()
+                    .any(|k| matches!(k, Key::AltLeft | Key::AltRight | Key::AltUp | Key::AltDown))
+                {
+                    found += 1;
+                    assert_eq!(scope, Scope::Board, "alt outside the board");
+                    assert_eq!(b.verb, Verb::Nudge, "alt on a verb that is not the nudge");
+                }
+            }
+        }
+        assert_eq!(found, 1, "one alt binding, or the clause needs rewriting");
+        // The capability it accelerates, still on the floor and still hinted.
+        let ctx =
+            Ctx { has_ticket: true, multi_column: true, can_nudge: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('>'), &ctx), Some(Verb::Grab));
+        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card")));
+        // And the nudge is the board's alone: no fall-through from Global.
+        assert_eq!(resolve(Scope::Ticket, Key::AltLeft, &ctx), None);
+        assert_eq!(resolve(Scope::Board, Key::AltLeft, &ctx), Some(Verb::Nudge));
+        // Nothing to send anywhere: inert, and unhinted with it.
+        let alone = Ctx { can_nudge: false, ..ctx };
+        assert_eq!(resolve(Scope::Board, Key::AltLeft, &alone), None);
+        assert_eq!(hint_for(Scope::Board, Verb::Nudge, &alone), None);
+    }
+
+    /// 04 §2.0 rule 2, the part that bit us: no `ctrl+<digit>` other than the
+    /// `Ctrl+5` that IS `ctrl+]` on legacy terminals. The rule used to ban
+    /// Alt/Meta outright too — `Key::Alt` did not exist to be constructed —
+    /// and `alt_is_admitted_only_for_the_nudge` is what replaced that ban:
+    /// four atoms, one verb, no capability behind them.
     #[test]
     fn no_banned_atoms() {
         for scope in ALL_SCOPES {
@@ -2290,6 +2415,25 @@ mod tests {
         // One column: nowhere to move to, so the grab stays inert.
         let one_col = Ctx { has_ticket: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Char('>'), &one_col), None);
+    }
+
+    /// `.` is bound to nothing until there is something to repeat, and its
+    /// hint appears on exactly the same condition — the footer cannot offer a
+    /// repeat of an action that was never taken.
+    #[test]
+    fn repeat_is_unbound_until_there_is_something_to_repeat() {
+        let selected = Ctx { has_ticket: true, multi_column: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('.'), &selected), None);
+        assert_eq!(hint_for(Scope::Board, Verb::Repeat, &selected), None);
+        let armed = Ctx { can_repeat: true, repeat_word: "move again", ..selected };
+        assert_eq!(resolve(Scope::Board, Key::Char('.'), &armed), Some(Verb::Repeat));
+        assert_eq!(hint_for(Scope::Board, Verb::Repeat, &armed), Some((".", "move again")));
+        // A repeat needs a card under the cursor like every other card verb.
+        let no_card = Ctx { has_ticket: false, ..armed };
+        assert_eq!(resolve(Scope::Board, Key::Char('.'), &no_card), None);
+        // And it is the board's key alone: the ticket screen has no move to
+        // repeat, so `.` must not reach it through the global scope.
+        assert_eq!(resolve(Scope::Ticket, Key::Char('.'), &armed), None);
     }
 
     /// The collisions this rework existed to remove. Each of these keys used

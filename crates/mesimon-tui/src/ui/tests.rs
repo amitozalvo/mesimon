@@ -742,6 +742,41 @@ fn golden_card_branch_line_120() {
     golden("board_worktree_120x30", &render(&app, 120, 30));
 }
 
+/// Shift+Enter on a worktree ticket parks the spawn while the worktree is
+/// cut, so there is no session record to hang the launch mark on — and that
+/// is exactly the longest wait on the board. The binding's own status stands
+/// in for the record: provisioning is lazy, so a queued binding IS a parked
+/// spawn (author 2026-09-01).
+#[test]
+fn a_provisioning_ticket_launches_too() {
+    let mut app = app_graphite(fixture(false));
+    let wt = |status: &str| mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(1),
+        branch: "msmn/T-1-decay-treatments".into(),
+        status: status.into(),
+        merged: false,
+        conflict: false,
+        ahead: 0,
+        needs_rebase: false,
+        detail: None,
+        path: None,
+    };
+    // T-1 has no sessions at all, so whatever mark sits in front of its
+    // title is the launch one. The board row spans every column — hence the
+    // title in the needle, or T-3's real spinner answers for it.
+    let mark = crate::glyphs::launching(crate::glyphs::Tier::Unicode, 0);
+    let want = format!("{mark} Decay treatments");
+    let launching = |app: &App| render(app, 120, 30).iter().any(|l| l.contains(&want));
+    assert!(!launching(&app), "an unprovisioned card already had the mark");
+    for status in ["queued", "provisioning"] {
+        app.worktrees = vec![wt(status)];
+        assert!(launching(&app), "{status} card says nothing");
+    }
+    // Attached is the end of the wait — the mark goes with it.
+    app.worktrees = vec![wt("attached")];
+    assert!(!launching(&app), "attached card still launching");
+}
+
 /// The tags fixture keeps its own tickets so the thirteen board goldens above
 /// stay byte-identical: an untagged card must render exactly as it did before
 /// tags existed, which is what the zero-width tag zone buys.
@@ -1228,6 +1263,55 @@ fn test_the_picker_reaches_the_ticket_screen() {
         lines.last().is_some_and(|l| l.contains("TAG ") && l.contains("hjkl move")),
         "the footer lost the chord's hints:\n{joined}"
     );
+}
+
+/// A FULL axis is wider than an 80-column row — ten tags at eleven cells
+/// each — so the picker windows it around the cursor rather than letting the
+/// panel clip the tail. Before the cap went to ten the row always fit, and
+/// clipping was invisible; now the last tags of a full group have to be
+/// reachable, which means the cell under the cursor is always drawn and a `~`
+/// says which side is holding the rest.
+#[test]
+fn test_the_picker_windows_a_full_axis() {
+    let mut board = fixture(false);
+    for i in 0..mesimon_core::board::MAX_TAGS_PER_GROUP {
+        board.register_tag(1, &format!("AXIS{i}")).expect("registered");
+    }
+    let arm = |col: usize| crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        row: 0,
+        col,
+        naming: None,
+        forget_armed: false,
+    };
+    let mut app = app_graphite(board);
+
+    // Cursor at the head: the row is anchored at its start and the tail is
+    // the side that gets the marker.
+    app.tag_armed = Some(arm(0));
+    let lines = render(&app, 80, 30);
+    let row = lines.iter().find(|l| l.contains("AXIS0")).expect("group 1 row").clone();
+    assert!(!row.contains("AXIS9"), "eighty columns cannot hold ten tags: {row:?}");
+    assert!(row.contains('~'), "a windowed row must say there is more: {row:?}");
+
+    // Cursor at the tail: the window follows it there, and the head is what
+    // scrolls off instead.
+    app.tag_armed = Some(arm(mesimon_core::board::MAX_TAGS_PER_GROUP - 1));
+    let lines = render(&app, 80, 30);
+    let row = lines
+        .iter()
+        .find(|l| l.contains("AXIS9"))
+        .expect("the cursor cell must be drawn, wherever it sits on the axis")
+        .clone();
+    assert!(row.contains("[   AXIS9]"), "the cursor cell keeps its brackets: {row:?}");
+    assert!(!row.contains("AXIS0"), "the head is what scrolls off: {row:?}");
+    assert!(row.contains('~'), "a windowed row must say there is more: {row:?}");
+
+    // Given the room, the whole axis is drawn and nothing is marked.
+    let lines = render(&app, 120, 30);
+    let row = lines.iter().find(|l| l.contains("AXIS0")).expect("group 1 row").clone();
+    assert!(row.contains("AXIS9"), "120 columns hold the whole axis: {row:?}");
+    assert!(!row.contains('~'), "a row that fits spends no marker: {row:?}");
 }
 
 #[test]

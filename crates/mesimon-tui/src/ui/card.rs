@@ -4,7 +4,8 @@
 //! bar is both the state ladder and the tag mark: `tags::tint_bar` repaints
 //! it in the ticket's colours, and tags cost the card no cell at all.
 //! Line 1: `[glyph+sp when stateful][title][fill][age 3]` — a card with no
-//! aggregate glyph (spawning/quiet-idle only) starts its title at T[0]. The meta strip (line 2) carries only the session
+//! aggregate glyph (quiet-idle only) starts its title at T[0]; spawning left
+//! that set when Shift+Enter made the launch window something a user watches. The meta strip (line 2) carries only the session
 //! dots in M3.5: the tag and stage zones collapse to zero width (no tags
 //! field yet; stages are tags per D33g), and a session-less card is a single
 //! line with no age (07 §4.4). The cursor card expands in place — accordion,
@@ -146,7 +147,16 @@ pub(super) fn render(
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
     let tier = theme.glyph_tier();
-    let glyph = glyphs::card_glyph(sessions, tier, ctx.spin);
+    // The launch window starts at the keypress, not at the session record.
+    // A worktree ticket's first spawn is PARKED while the worktree is cut
+    // (~2 s of git, sometimes more), and provisioning is lazy — a queued or
+    // in-flight binding IS a parked spawn, and nothing else queues one. So
+    // the card carries the same slow arc it will carry a moment later, and
+    // Shift+Enter is answered on the frame after the press either way.
+    let glyph = glyphs::card_glyph(sessions, tier, ctx.spin).or_else(|| {
+        let launching = wt.is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"));
+        launching.then(|| (glyphs::launching(tier, ctx.spin), Register::Grey))
+    });
     // A pending move's trail is semi-transparent everything — even an attn
     // card demotes while its ghost is in hand (the ghost carries the weight).
     let attn_card = !trail && matches!(glyph, Some((_, Register::Attn)));

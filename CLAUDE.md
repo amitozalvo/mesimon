@@ -216,11 +216,20 @@ no key bound twice in a scope chain, legacy-floor atoms only, no banned atoms, a
 product rules (one verb per key across screens, Shift stays on one axis, `q` pops, `?`
 everywhere). The `mutates` field is what the D22 `--observer` client will be generated from.
 
-`Key::ShiftEnter` is the ONE atom off the legacy floor, and it is only admissible because every
-binding on it is gated on `Ctx::rich_keys` — the cached kitty-protocol probe, set on `App` by
-`lib.rs` after `init_terminal`. A terminal that reports Shift+Enter as a bare Enter therefore
-gets the key unbound AND unhinted, never half-working; `shift_enter_is_inert_without_rich_keys`
-is what keeps that exception honest. Do not add a second off-floor atom without the same gate.
+**Two atom families sit off the legacy floor, on two different clauses**, and `OFF_FLOOR` in the
+test module is the whole list. `Key::ShiftEnter` is *ambiguous* — a terminal that cannot report
+it sends a plain `Enter`, which is another verb — so every binding on it is gated on
+`Ctx::rich_keys`, the cached kitty-protocol probe set on `App` by `lib.rs` after `init_terminal`,
+and the key is unbound AND unhinted where the terminal cannot spell it
+(`shift_enter_is_inert_without_rich_keys`). The four Alt directions (`AltLeft`/`Right`/`Up`/`Down`
+— `alt+h` and `alt+←` are one atom, the way the two spellings of `ctrl+]` are) fail the other
+way: the modifier is eaten and NOTHING arrives, so the key is inert rather than wrong. That is
+affordable only while the atom is an accelerator, so `alt_is_admitted_only_for_the_nudge` pins it
+to ONE verb on ONE screen (`Verb::Nudge`, the board) with `> <` beside it as the spelling every
+terminal can reach. A text field never sees an Alt atom at all: `keys::to_key_text` strips the
+modifier, because there Alt is `word_wise`'s "by word" and nothing else. A third off-floor atom
+needs one of these two clauses, argued — not a third one. (STALE-MAP "Alt is admitted, for one
+verb".)
 
 **Composing a ticket: Enter saves, Shift+Enter saves and asks.** A fresh Claude spawn always
 types the ticket title into the agent's box and stops (zero token injection, a README promise).
@@ -244,8 +253,10 @@ build bars its writes instead of dropping the registry); `Ticket.tags` is `Vec<T
 group}>`, a pointer into it. Colour lives on the REGISTRY, never on the ticket, so recolouring
 repaints every card at once instead of leaving 40 tickets holding a stale copy. Nothing is seeded:
 "create on the fly" means no setup step, not a derived list — a name enters by being typed in the
-picker and stays until `ForgetTag`. Max `MAX_TAGS_PER_GROUP` (5) per axis; groups are 1-10 (`0`
-addresses 10).
+picker and stays until `ForgetTag`. Max `MAX_TAGS_PER_GROUP` (10) per axis; groups are 1-10 (`0`
+addresses 10). Ten names is more than a picker row fits, so the row is WINDOWED, not
+clipped (`tagpicker::window`): the cell under the cursor is always drawn, the window grows
+left from it first and then right, and a `~` marks the side still holding cells.
 
 `^t` opens `Scope::TagChord` from the board, the ticket screen AND the composer (a Ctrl-letter is
 the only legacy-floor atom a text field cannot swallow — `ctrl+<digit>` is a banned atom, see
@@ -346,6 +357,24 @@ not activity: `glyphs::is_working` is the single test, a live shell wears the un
 its age stops ticking seconds, and a card whose only live session is a shell carries no aggregate
 glyph. The spinner is the one place D19's motion ban bends and it may only bend for something
 moving. (STALE-MAP "A shell does not spin".)
+
+**And a launching card wears that arc slowed, not nothing.** `glyphs::launching` is
+`spinner(tier, frame / SLOW_STEP_TICKS)` — the working shape at 400 ms a frame, because spawning
+is not a different thing from working, it is working that has not started, and the slowness IS
+the message. It exists because Shift+Enter STAYS on the board (the card is how you watch the work
+land) and the card said nothing until the first hook. It sits between `running` and `sleeping` in
+`card_glyph`; `session_glyph` gives it to the rail too. **The window is `glyphs::is_launching`,
+NOT `Spawning`** — the `SessionStart` frame both moves the record to `Idle{Unknown}` and is when
+the deferred Enter is first pressed, so keying on `Spawning` went dark for the ~500 ms before the
+`UserPromptSubmit` ack. `pending_submit` carries it across that seam (an `Idle` agent otherwise
+rightly has no glyph: idle means it waits for YOU, and the owed Enter says the wait is ours); it
+mirrors the daemon's `pressable`, excludes `Idle{EndTurn}`, and is consulted in no other state, so
+a flag reloaded from disk can never strand the mark. Since a worktree ticket's first spawn is
+parked with no record at all, `card.rs` falls back to the same arc on a `queued`/`provisioning`
+binding — sound because `queue_provision` is reachable only from a spawn. Deliberately NOT
+disjoint from the spinner, where `waiting` must be: `Unknown` means we lost track, launching means
+we are seconds early. One fast cadence and one slow one on the board, no third. (STALE-MAP "The
+launch window is visible".)
 
 **Leaving a Claude session is the same thing as sleeping it.** Ctrl+C-out, `/exit` and Ctrl+D end
 the process, never the conversation, so `Daemon::park_on_exit` converts a clean exit to `Sleeping`

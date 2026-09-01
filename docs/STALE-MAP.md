@@ -1786,3 +1786,176 @@ for a second key to get back, precisely what "one finger reaches every tag on an
 avoid. It is modulo the row length now (`ui::tag_row_len`, floored at 1 so the empty spare row
 cycles onto itself), and the jump also clears `forget_armed`, because a `d` armed on one cell must
 not still be armed under the next one.
+
+## `.` repeats the last action, starting with move (2026-09-01)
+
+Triage is a run of the same gesture — *these four go to done* — and `> < ` spends every keystroke
+on the aiming rather than on the act. `.` on the board does the last move again on the card under
+the cursor: same target column, no ghost, no aiming.
+
+**The cursor deliberately does not follow the card.** A drop lands the cursor on what it moved
+(`drop_ghost`), which is right for one deliberate placement and fatal for a repeat: the second `.`
+would be filing a card in the destination column. `repeat_last` restores the cursor and clamps, so
+the next card slides up under it and `. . .` files three without a keystroke spent travelling back.
+
+**It lands at the top of the target column**, which is exactly where a fresh grab's ghost enters a
+foreign column (`ghost_entry_idx` → 0, `double_grab_lands_on_top_of_the_next_column`). `.` is
+therefore `>`-aim-`enter` with the aim already made, and nothing else.
+
+**The column is remembered by NAME and re-resolved every frame.** `LastAction::Move { column }` is
+re-derived through `repeat_target()` the way `undo_target()` re-derives `u`: an index would follow
+a renamed or removed column into meaning something else, and a card already sitting in the target
+has nothing to repeat — moving it would be a shuffle, so `can_repeat` goes false there and the key
+goes inert AND unhinted with it. Only a move the USER made here arms it (recorded in `drop_ghost`,
+the TUI's single commit point); an automove or another client's move is not something this hand
+did.
+
+**The verb is `Repeat`, not `RepeatMove`.** `repeat_target()` matches `Option<&LastAction>` with no
+`_` arm, so the second repeatable action is a variant plus a match arm the compiler asks for.
+`Ctx::repeat_word` is the `undo_word` shape for the same reason and the same constraint: `Hint` is
+`fn(&Ctx) -> &'static str`, so the word comes from a fixed set ("move again") and the column name
+lives in the status line ("moved to done").
+
+Tests: `repeat_is_unbound_until_there_is_something_to_repeat` (keymap),
+`dot_repeats_the_last_move_and_leaves_the_cursor_home` and
+`dot_is_inert_before_a_move_and_on_a_card_already_there` (app).
+
+## An axis holds ten, and the picker row windows (2026-09-01)
+
+`MAX_TAGS_PER_GROUP` was 5, on the reasoning recorded above: past five "a row stops fitting and an
+axis stops being an axis". Dogfooding refuted the first half of that and left the second intact —
+five is not a vocabulary, it is a sample of one, and a user who wants six components on group 3 is
+not building a list. The cap is now **10**, the same ten the groups themselves run to, so both
+numbers in the tag system are the same number.
+
+What that costs is exactly what the old comment predicted, and it is a rendering problem rather
+than a modelling one:
+
+- **A full row does not fit.** A cell is `[` + a two-cell swatch + the mark + the name + `]` + a
+  space, so ten five-letter tags want 110 columns plus the five-column digit gutter — fine at 120,
+  over at 80. Nothing before this needed to care: at five tags the row always fit, so the panel's
+  silent clip had never been reachable.
+- **So the row is WINDOWED, not clipped** (`ui/tagpicker.rs::window`). The cells of a row are
+  built first and placed second; the window is the run of them around the cursor that fits, and a
+  `~` — `text::truncate`'s marker, spent here for the same reason — sits on whichever side still
+  holds cells. The cursor's own cell is never the one dropped.
+- **It grows left first, then right.** That is a one-line field's scroll: the row stays anchored
+  at its start until the cursor walks past the edge, and then follows it a cell at a time. A row
+  the cursor is not on is anchored at its start instead — a digit jump lands at the head.
+- **The window is a function of the cursor and nothing else.** No remembered scroll offset, so
+  there is no second piece of state to fall out of step with a board that just lost a tag.
+
+The naming cursor moved with it: a cell now carries the hardware cursor's offset *within itself*
+and the assembly adds the window's origin, because a cell no longer knows its own column until the
+window has been chosen.
+
+`tags_e2e` counted the cap out by hand (`for i in 0..4` after one tag) and broke on the bump; it
+reads `MAX_TAGS_PER_GROUP` now. The card is untouched — it still names at most two tags and the
+peek row still drops the tail rather than shrinking every name.
+
+## Alt is admitted, for one verb (2026-09-01, dogfood)
+
+04 §2.0 rule 2 banned Alt/Meta outright, and `no_banned_atoms` enforced it the strongest way
+available: there was no `Key::Alt` to construct. The ban was right about terminals and wrong
+about the conclusion. Option+direction is what a person's hands already do to move an item —
+every editor and every list in the OS binds it — and the board's only mover was `> <`, a grab
+you aim and an Enter you commit, three keys deep for "this one goes right".
+
+So `alt+hjkl` / `alt+<arrow>` now moves the card one step and takes the cursor with it
+(`Verb::Nudge`), and the ban became a whitelist:
+
+- **Four atoms, one verb, one scope**, held by `alt_is_admitted_only_for_the_nudge`. `alt+h` and
+  `alt+←` are the SAME atom, the way the two spellings of `ctrl+]` are — the keymap wants a
+  direction and the terminal may spell it either way.
+- **The escape clause is NOT `rich_keys`, and the difference is the whole argument.**
+  `ShiftEnter` had to be gated because a terminal that cannot report it reports something else —
+  a plain `Enter`, which is another verb. Alt fails the other way: the modifier is eaten and
+  NOTHING arrives, so the key is inert, never wrong. Inert is affordable exactly while the atom
+  is an accelerator, which is why the whitelist pins it to one verb and holds `> <` beside it as
+  the spelling every terminal can reach.
+- **Measured on the author's own terminal, not assumed.** iTerm2 3.6.11 with `Option Key Sends:
+  Esc+` delivers `⌥h` and `⌥↑`/`⌥↓` as the ALT modifier; the RIGHT option key is set to `Normal`
+  and composes instead, and both profiles map `⌥←`/`⌥→` to send `esc b`/`esc f` (a word jump).
+  That last one is why the map is a whitelist and not "alt+anything": `alt+b` has no atom, so it
+  resolves to `None` rather than to `b`'s verb. On that machine the gesture is left-option plus
+  `hjkl` or `↑↓` until those two profile mappings are deleted.
+- **A text field never sees an Alt atom** (`keys::to_key_text`). Alt there is `word_wise`'s "by
+  word" modifier, and a composer whose `alt+←` became `Key::AltLeft` would stop jumping by word.
+
+The move itself is `drop_ghost`, so it inherits the laws the grab already had: sideways enters a
+foreign column at the top, exactly where a ghost enters one. Two things it deliberately does not
+inherit — an edge press **stays put rather than wrapping** (`>` wraps, because a ghost can still
+be cancelled and a card that has already moved cannot), and a same-column reorder no longer arms
+`.`: `repeat_target` refuses to repeat a move onto a card already in that column, so arming would
+have left the repeat aimed at whatever column the cursor was standing in.
+
+`prio: 0` — the `?` overlay carries it, the footer does not. The footer already teaches `> <` two
+entries up, and its cells are better spent on verbs with no other spelling. The board overlay is
+now one row longer, which on a 30-row terminal costs the dangling `APP` heading whose rows were
+already being clipped (`help_board_120x30`); the overlay has never scrolled.
+
+## The launch window is visible (2026-09-01, dogfood)
+
+`SessionState::Spawning` carried no card glyph, on purpose: 07 §4.1 says a normal card starts its
+title at T[0], and until Shift+Enter every spawn handed the focus straight to the pane, so nobody
+was looking at the card during those seconds anyway. **The composer's Shift+Enter stays on the
+board by design — the card IS how the user watches the work land** — and there it showed a title
+and no sign of life until the first `SessionStart` hook flipped the record to `Running`. Nothing
+distinguished "claude is booting" from "nothing happened".
+
+**`glyphs::launching` is the working arc at the slow cadence** — `spinner(tier, frame /
+SLOW_STEP_TICKS)`, 400 ms a frame against the spinner's 100. Spawning is not a different thing
+from working, it is working that has not started, so a different SHAPE would have overstated the
+difference; the slowness is the whole message. It rides `Register::Grey` and sits between
+`running` and `sleeping` in `card_glyph`'s precedence: anything abnormal still outranks it, and it
+still outranks `z`, which means nothing is happening. `session_glyph` gives it to `Spawning` too,
+so the ticket rail and the accordion dots move with the card (the rail row already reads
+`spawning`; now it does not sit still while it says so).
+
+- **It is deliberately NOT disjoint from the spinner, where `waiting` must be and is.** A still
+  frame of `waiting` must never read as progress, because `Unknown` means the daemon has lost
+  track. Launching resolves into working within seconds and both frames mean the same thing to
+  the reader — the agent is going, leave it alone. `spawning_launches_slowly` asserts every
+  launching frame IS a spinner frame and is never a waiting one.
+- **`WAIT_STEP_TICKS` became `SLOW_STEP_TICKS`, shared.** D19's motion ban bends once for the
+  spinner; the board now has one fast cadence and one slow one, and a third speed would have been
+  a third thing moving. (The peek's `pulse` is the standing exception — it changes weight, not
+  shape.)
+- **The worktree provisioning window is covered by the binding, not by a record.** A worktree
+  ticket's first spawn is PARKED (`Response::Provisioning`) while the worktree is cut — ~2 s of
+  git, and the longest wait on the board — and there is no `SessionRecord` yet to hang a mark on.
+  `card.rs` falls back to the same arc when the ticket's `WorktreeItem.status` is `queued` or
+  `provisioning`: provisioning is lazy, `queue_provision` is reachable only from
+  `resolve_spawn_cwd`, so **a queued binding IS a parked spawn** and no new wire field was needed.
+  `a_provisioning_ticket_launches_too` pins it, including that `attached` drops the mark.
+- **Answered on the frame after the press, both ways.** `start_composed` already calls `refresh()`
+  after the spawn request, so the `Spawning` record (shared checkout) or the queued binding
+  (worktree) is on screen at the next draw.
+
+**Correction, same day: the window is not `Spawning`, and the first cut flickered.** `Spawning` is
+only its first half. Shift+Enter's Enter is DEFERRED to the `SessionStart` frame (paste detection
+swallows one sent with the text) — and that same frame is what moves the record off `Spawning`, to
+`Idle { stop_reason: Unknown }` (`attention.rs`, `Signal::SessionStart{..} => t(S::Idle{Unknown})`).
+The turn only begins at the `UserPromptSubmit` ack, measured at ~94 ms in T-5 but a retry cadence
+of 500 ms behind it. So the mark lit, went dark for half a second, and came back as the working
+spinner — the card said "nothing is happening" in the middle of its own launch (dogfood
+2026-09-01, "for half a second it removed the animated glyph").
+
+`glyphs::is_launching` is now the predicate, and `SessionRecord::pending_submit` is what carries it
+across the seam: an `Idle` agent normally rightly has no glyph, because idle means it is waiting
+for YOU — the owed Enter is what says this wait is OURS.
+
+- **It mirrors the daemon's `pressable`** (`retry_pending_submits`), minus that predicate's
+  `Running` arm, which the spinner outranks here: once work is in flight the fast arc is truthful.
+  Showing the launch mark exactly while the daemon still expects the prompt to land is the same
+  discipline park-on-exit used (park exactly when wake would succeed).
+- **`Idle{EndTurn}` is excluded.** A finished turn is only reachable through the ack that clears
+  the flag, so it never rides this path live; a record reloaded holding a stale flag keeps `done`,
+  which is both truer and what `card_glyph`'s precedence already preferred. `session_glyph` needed
+  saying explicitly — its early return fires before the `EndTurn` arm.
+- **A stale flag cannot strand the mark.** The daemon clears `pending_submit` on the ack, on
+  giving up after `SUBMIT_ATTEMPTS`, and on any state where the pane stopped being pressable; no
+  state outside `Spawning` and non-`EndTurn` `Idle` consults it. `a_stale_owed_enter_never_relabels_a_state`
+  pins that for `Unknown`/`Sleeping`/`Exited`/`Failed`/`Idle{EndTurn}`.
+
+No golden moved: no golden board has a spawning session or an unattached worktree.
