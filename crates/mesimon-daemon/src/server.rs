@@ -1831,9 +1831,18 @@ impl Daemon {
         if !self.board.columns.iter().any(|c| c.name == dest) {
             return Err(format!("no such column: {dest}"));
         }
-        // A move to where it already is is a no-op, not an event: it must not
-        // reach the feed, the ping-pong guard or the flap fuse.
+        // A move to the column it is already in is not a column move: it must
+        // not reach the feed, the ping-pong guard or the flap fuse. But the
+        // MOVE ghost's drop arrives on this same command, and dropped in its
+        // own column it means "same column, new slot" — the board's only
+        // in-column reorder. `Position::Before` is what carries a slot (every
+        // automatic mover says `Top`), so that case is answered as an order
+        // change and nothing else. Returning `Ok` for it without moving
+        // anything is what made the drop look like it worked and land nowhere.
         if from == dest {
+            if let Position::Before(_) = pos {
+                self.reorder_within(id, dest, &pos, by)?;
+            }
             return Ok(from);
         }
         // M4 DONE gate (author rule 3): DONE means the work landed — an
@@ -1883,6 +1892,49 @@ impl Daemon {
             self.moves.leave();
         }
         Ok(dest.to_string())
+    }
+
+    /// The in-column reorder: `order`, and nothing else.
+    ///
+    /// No feed line, no ping-pong record, no fuse tick — a card sliding within
+    /// its column changes no state any automation watches, and counting it as
+    /// a move would let a few drags by hand trip a fuse built for automations.
+    /// The column and archived checks are the caller's; this only authorizes
+    /// the write.
+    fn reorder_within(
+        &mut self,
+        id: ulid::Ulid,
+        column: &str,
+        pos: &Position,
+        by: &Principal,
+    ) -> std::result::Result<(), String> {
+        if let Decision::Deny { reason } = authorize(by, &Action::Mutate, &Resource::Ticket { id })
+        {
+            return Err(format!("denied: {reason}"));
+        }
+        let siblings: Vec<ulid::Ulid> =
+            self.board.column_tickets(column).iter().map(|t| t.id).collect();
+        let at = siblings.iter().position(|t| *t == id);
+        let others: Vec<ulid::Ulid> = siblings.into_iter().filter(|t| *t != id).collect();
+        // Removing the card and reinserting it at `want` in what is left puts
+        // it back at index `want` — so `want == at` is the ghost dropped where
+        // it was picked up. Minting a fresh index for that would only lengthen
+        // the fractional key and broadcast a board that did not change.
+        let want = match pos {
+            Position::Before(Some(b)) => others.iter().position(|t| t == b).unwrap_or(others.len()),
+            _ => others.len(),
+        };
+        if at == Some(want) {
+            return Ok(());
+        }
+        let order = self.order_within(column, id, pos);
+        if let Some(t) = self.board.ticket_mut(id) {
+            t.order = order;
+            let t = t.clone();
+            let _ = store::save_ticket(&self.paths, &t);
+        }
+        self.broadcast();
+        Ok(())
     }
 
     /// The fractional index a ticket takes in its destination column.
@@ -1977,6 +2029,12 @@ impl Daemon {
             resources: self.resources(),
             worktrees,
             notices,
+            shell_env: mesimon_core::command::ShellEnvStatus {
+                stale: self.shell_env_stale(),
+                reloading: self.shell_env_capturing,
+                failed: self.shell_env_error.is_some(),
+                vars: self.shell_env.vars.len(),
+            },
         }
     }
 
@@ -2029,12 +2087,6 @@ impl Daemon {
         }
         let _ = worktree::save_bindings(&self.paths, &self.worktrees);
     }
-            shell_env: mesimon_core::command::ShellEnvStatus {
-                stale: self.shell_env_stale(),
-                reloading: self.shell_env_capturing,
-                failed: self.shell_env_error.is_some(),
-                vars: self.shell_env.vars.len(),
-            },
 
     /// Header figures (D33e) — real measurements only.
     fn resources(&self) -> Resources {
@@ -3356,6 +3408,14 @@ impl Daemon {
             // conversation, and the prompt is already in it), so an Enter
             // owed by the old one is stale — never carry it across.
             rec.pending_submit = false;
+            if let Some(new_id) = fresh {
+                // Point the record at the conversation it is actually hosting
+                // now. The stale path would otherwise send the NEXT resume
+                // back to the id that had no transcript — the dead end, one
+                // wake later.
+                rec.claude_session_id = Some(new_id);
+                rec.transcript_path = None;
+            }
         }
         self.tails.remove(&id); // hooks own the state from here
         self.probe_stage.remove(&id);
@@ -3408,14 +3468,6 @@ impl Daemon {
 
     /// D23/14 §6.1, tmux-recast: copy transcript, park the record FIRST (the
     /// machine's Sleeping latch swallows the kill's own SessionEnd/pane-died),
-            if let Some(new_id) = fresh {
-                // Point the record at the conversation it is actually hosting
-                // now. The stale path would otherwise send the NEXT resume
-                // back to the id that had no transcript — the dead end, one
-                // wake later.
-                rec.claude_session_id = Some(new_id);
-                rec.transcript_path = None;
-            }
     /// SIGTERM the group, kill-pane after grace. Never SIGKILL.
     fn sleep_one(
         &mut self,
@@ -3461,58 +3513,6 @@ impl Daemon {
         Ok(())
     }
 
-    fn wake_session(&mut self, id: uuid::Uuid) -> Response {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
-            return Response::Err { message: "no such session".into() };
-        };
-        if !matches!(rec.state, SessionState::Sleeping) {
-            return Response::Err { message: "not asleep".into() };
-        }
-        if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
-            return Response::Err { message: "ticket archived — restore it first".into() };
-        }
-        match rec.kind {
-            SessionKind::Claude => self.resume_session(id, false),
-            SessionKind::Bash => {
-                let (sid, argv, cwd, ticket) = (
-                    rec.sid16(),
-                    rec.argv.clone(),
-                    std::path::PathBuf::from(rec.cwd.clone()),
-                    rec.ticket,
-                );
-                if !cwd.is_dir() {
-                    return Response::Err {
-                        message: format!(
-                            "session's directory is gone ({}) — cannot wake",
-                            cwd.display()
-                        ),
-                    };
-                }
-                if let Some(message) = self.spawn_gate() {
-                    return Response::Err { message };
-                }
-                self.reaping.remove(&sid);
-                let _ = self.backend.kill_session(&sid);
-                let env = self.session_env(ticket, &cwd);
-                if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
-                    return Response::Err { message: format!("wake spawn failed: {e}") };
-                }
-                let now = now_ms();
-                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                    rec.state = SessionState::Running;
-                    rec.state_changed_at = Some(now);
-                }
-                self.machines.insert(id, Machine::new(SessionState::Running, now));
-                Response::Spawned { id, fresh: false }
-            }
-        }
-    }
-
-    /// 04's reclaim: sleep everything eligible, report the honest split.
-    fn reclaim_all(&mut self) -> (usize, usize) {
-        // The header offer's action: sleep-safe tickets only. Z must sleep
-        // exactly the set the suggestion prices, never sessions on tickets
-        // still in play (2026-08-30 rescope; per-column policy lands in M5).
     /// A Claude session the user left on purpose is PARKED, not buried.
     ///
     /// Ctrl+C-out, `/exit` and Ctrl+D end the process; they do not end the
@@ -3594,6 +3594,58 @@ impl Daemon {
         true
     }
 
+    fn wake_session(&mut self, id: uuid::Uuid) -> Response {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return Response::Err { message: "no such session".into() };
+        };
+        if !matches!(rec.state, SessionState::Sleeping) {
+            return Response::Err { message: "not asleep".into() };
+        }
+        if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
+            return Response::Err { message: "ticket archived — restore it first".into() };
+        }
+        match rec.kind {
+            SessionKind::Claude => self.resume_session(id, false),
+            SessionKind::Bash => {
+                let (sid, argv, cwd, ticket) = (
+                    rec.sid16(),
+                    rec.argv.clone(),
+                    std::path::PathBuf::from(rec.cwd.clone()),
+                    rec.ticket,
+                );
+                if !cwd.is_dir() {
+                    return Response::Err {
+                        message: format!(
+                            "session's directory is gone ({}) — cannot wake",
+                            cwd.display()
+                        ),
+                    };
+                }
+                if let Some(message) = self.spawn_gate() {
+                    return Response::Err { message };
+                }
+                self.reaping.remove(&sid);
+                let _ = self.backend.kill_session(&sid);
+                let env = self.session_env(ticket, &cwd);
+                if let Err(e) = self.backend.spawn(&sid, &cwd, &argv, &env) {
+                    return Response::Err { message: format!("wake spawn failed: {e}") };
+                }
+                let now = now_ms();
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.state = SessionState::Running;
+                    rec.state_changed_at = Some(now);
+                }
+                self.machines.insert(id, Machine::new(SessionState::Running, now));
+                Response::Spawned { id, fresh: false }
+            }
+        }
+    }
+
+    /// 04's reclaim: sleep everything eligible, report the honest split.
+    fn reclaim_all(&mut self) -> (usize, usize) {
+        // The header offer's action: sleep-safe tickets only. Z must sleep
+        // exactly the set the suggestion prices, never sessions on tickets
+        // still in play (2026-08-30 rescope; per-column policy lands in M5).
         let safe: std::collections::HashSet<ulid::Ulid> = self
             .board
             .tickets

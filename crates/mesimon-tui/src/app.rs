@@ -3412,6 +3412,24 @@ mod tests {
     fn double_gt_cycles_off_last_column_to_first() {
         let mut app = app_three_columns();
         app.cursor_col = 2; // "done", ticket 3
+    /// The in-column reorder: out with `>`, home with `h`, up a row, drop.
+    /// The daemon used to answer this `Ok` and change nothing, because the
+    /// column it lands in is the one it left.
+    #[test]
+    fn move_home_and_up_a_row_reorders_the_column() {
+        let mut app = app_three_columns();
+        app.cursor_row = 1; // ticket 2, second in todo
+        press(&mut app, '>');
+        press(&mut app, 'h'); // back home, at its own row
+        press(&mut app, 'k'); // one row up: above ticket 1
+        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 0, .. }));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+    }
+
         press(&mut app, '>');
         press(&mut app, '>');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();

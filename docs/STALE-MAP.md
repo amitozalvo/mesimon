@@ -1715,3 +1715,43 @@ that cannot parse a `Response` line drops it and then waits forever for a reply 
 `m3_e2e`'s "ghost resume must refuse" assertion is now "ghost resume must start fresh", and it
 asserts the argv carries `--session-id` and not `--resume` — the original concern, kept as the
 thing actually checked.
+
+## Reordering a card inside its own column (2026-09-01)
+
+**The MOVE ghost could be placed anywhere in its home column and the drop did nothing.** T-84
+folded three movers into one `Daemon::place_ticket`, and it opens with a no-op guard — `if from ==
+dest { return Ok(from) }` — written for the automatic movers, where a move to the column the
+ticket is already in is genuinely not an event and must not reach the feed, the ping-pong guard or
+the flap fuse. But the human's drop arrives on the same command, and dropped in its own column it
+carries the one thing the guard threw away: a new slot. The daemon answered `Response::Ok`, so the
+TUI showed no error and simply refreshed the board back to the order it already had. The gesture
+looked implemented and was not.
+
+`Position` is what separates the two cases and it always did: every automatic mover says `Top`,
+and `Before` exists precisely because it is "a human drag, which carries its own ordering". So the
+guard now routes `Before` in a same-column move to `reorder_within` and keeps its early return for
+everything else.
+
+**A reorder is not a move, and it deliberately does less.** `reorder_within` authorizes the write,
+recomputes the fractional index, saves the ticket file and broadcasts — no feed line, no
+`moves.record`, no fuse tick. The fuse exists to stop an automation ping-ponging a card between
+columns; charging it for a card sliding two rows by hand would let a few honest drags suspend
+automation for that ticket. Nothing that watches for a move can see a reorder, which is correct:
+no column changed.
+
+It also short-circuits when the ghost is dropped where it was picked up (`want == at`, computed
+against the column MINUS the moving card, which is the same index space the TUI's `drop_ghost`
+builds `before` from). `move_back_home_restores_the_original_height` already called that a perfect
+no-op; minting a fresh index for it would lengthen the fractional key on every cancel-by-drop and
+broadcast a board that did not change.
+
+**The seam that hid it:** the TUI's in-process fake daemon implements `MoveTicket` correctly,
+including `before` inside the same column, so every client-side move test passed against a
+reorder the real daemon refused to perform. Tests: `reorder_e2e` (real daemon, real wire — top,
+bottom, and the disk round-trip) and `move_home_and_up_a_row_reorders_the_column`.
+
+**Still true and not fixed here:** MOVE is entered only by `> <`, which shifts the ghost a column
+immediately, so an in-column reorder reads `>` `h` `j/k` `enter` — out and back. The board binding
+is also gated on `Ctx::multi_column`, so a one-column board has no reorder gesture at all. Both
+follow from the author's rule that `> <` is "move card" between columns; a grab-in-place would be
+a new binding, not a repair.
