@@ -2,18 +2,18 @@
 
  IN PROGRESS ∙ created by you >1y ago
 
-  DOCUMENTS                                                                         (0)    SESSIONS                  2
+  PREVIEW                                                                                  SESSIONS                  2
 
-    drop files into this ticket's directory                                               ⠋ ✻ claude               >1y
-    ticket directories land with the adoption IA (M4)                                     ◦ $ bash                 >1y
-
-
-  PREVIEW
-
-    Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and
-    clippy is clean.
+    Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and   ⠋ ✻ claude               >1y
+    clippy is clean.                                                                      ◦ $ bash                 >1y
 
     ● working ∙ Run the golden tests
+
+
+
+
+
+
 
 
 

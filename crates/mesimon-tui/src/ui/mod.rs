@@ -46,6 +46,23 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     if let Screen::Ticket { ticket, rail_idx } = &app.screen {
         ticket::draw(f, app, *ticket, *rail_idx);
+        // `^t` is bound on this screen too, so the panel has to reach it —
+        // the footer already flips to the chord's hints, and a footer naming
+        // keys over a grid that is not drawn is worse than no picker at all.
+        if app.tag_armed.is_some() {
+            let area = f.area();
+            tagpicker::draw(f, area, app);
+            chrome::draw_footer(
+                f,
+                ratatui::layout::Rect {
+                    x: area.x,
+                    y: area.y + area.height - 1,
+                    width: area.width,
+                    height: 1,
+                },
+                app,
+            );
+        }
         if app.help {
             help::draw(f, app);
         }

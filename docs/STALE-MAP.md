@@ -1755,3 +1755,34 @@ immediately, so an in-column reorder reads `>` `h` `j/k` `enter` — out and bac
 is also gated on `Ctx::multi_column`, so a one-column board has no reorder gesture at all. Both
 follow from the author's rule that `> <` is "move card" between columns; a grab-in-place would be
 a new binding, not a repair.
+
+## The ticket page's preview zone, and a chord that drew nothing (2026-09-01)
+
+Three things on the ticket screen, all found by using it.
+
+**The DOCUMENTS zone was a placeholder holding the page's best real estate.** It owned the top of
+the left column, printed two lines about ticket directories landing with the adoption IA and
+reported `(0)` — while PREVIEW, which now carries an agent's markdown reply or a live shell's pane
+tail, took whatever was left underneath it. The previous block already settled that ONE heading
+covers both kinds of preview; this is the removal that decision implied and did not make.
+`draw_documents` is `draw_preview`, the heading and its count are gone, and the zone starts at the
+top of the column. Six goldens moved with it.
+
+**Tags read before the branch on the ident row.** The worktree clause is built into its own span
+vector and appended after the tag chips, so the row says what the ticket IS before it says where
+its code lives. The width budget sums both vectors, so nothing about the truncation changed.
+
+**`^t` was bound on the ticket screen and drew nothing.** `ui::draw` returns early for
+`Screen::Ticket`, and the tag-picker panel is drawn past that return — so the footer dutifully
+flipped to `Scope::TagChord`'s hints over a grid that was never rendered. The keys were live and
+invisible, which is the exact failure the keymap's hint-and-avail pairing exists to prevent: here
+the binding and its hint agreed with each other and both lied about the screen. The ticket arm now
+draws the panel and re-draws the footer over it — the same two calls the board arm makes. Golden:
+`ticket_tag_chord_120x30`.
+
+**A digit repeat walked off the end of its row.** `arm.col += 1` with no wrap, so the fourth press
+of `1` on a three-tag row moved the cursor past the last cell and the key went dead — which asks
+for a second key to get back, precisely what "one finger reaches every tag on an axis" was meant to
+avoid. It is modulo the row length now (`ui::tag_row_len`, floored at 1 so the empty spare row
+cycles onto itself), and the jump also clears `forget_armed`, because a `d` armed on one cell must
+not still be armed under the next one.

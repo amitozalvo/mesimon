@@ -2,15 +2,15 @@
 
  IN PROGRESS ∙ created by you >1y ago
 
-  DOCUMENTS                                                                         (0)    SESSIONS                  2
+  PREVIEW                                                                                  SESSIONS                  2
 
-    drop files into this ticket's directory                                               ⠋ ✻ claude               >1y
-    ticket directories land with the adoption IA (M4)                                     ◦ $ bash                 >1y
+    ● working                                                                             ⠋ ✻ claude               >1y
+                                                                                          ◦ $ bash                 >1y
 
 
-  PREVIEW
 
-    ● working
+
+
 
 
 

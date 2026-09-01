@@ -250,7 +250,7 @@ addresses 10).
 `^t` opens `Scope::TagChord` from the board, the ticket screen AND the composer (a Ctrl-letter is
 the only legacy-floor atom a text field cannot swallow — `ctrl+<digit>` is a banned atom, see
 STALE-MAP "Ticket tags"). The picker is a grid: `hjkl` walks it, a digit jumps to that group's
-row and steps along it on a repeat, `enter` wears/unwears (or opens the name field on `+ new`),
+row and cycles along it on a repeat, `enter` wears/unwears (or opens the name field on `+ new`),
 `tab` cycles the tint, `r` renames, `d` deletes board-wide in two presses, `esc` leaves the field
 then the picker. Naming edits the cell **in place**, in its own slot in the grid, with the real
 hardware cursor — there is no edit mode, and no block glyph standing in for a cursor. **While naming, resolve against `Scope::TagChord`, never `Scope::Input`** — that

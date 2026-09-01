@@ -645,9 +645,10 @@ const RICH_REPLY: &str = "## What changed\n\nThe OSC-11 query now runs **once**,
 #[test]
 fn golden_ticket_peek_120() {
     // The left zone previews the selected rail session's latest assistant
-    // reply under the PREVIEW heading — always on, no toggle (the zone is
-    // otherwise empty until documents land in M4). A running session's
-    // indicator names the step underway, not just that one is.
+    // reply under the PREVIEW heading — always on, no toggle, and the whole
+    // zone (a DOCUMENTS placeholder stood above it until 2026-09-01). A
+    // running session's indicator names the step underway, not just that
+    // one is.
     let path = write_transcript(
         "tpeek-golden",
         &format!(
@@ -1201,6 +1202,46 @@ fn golden_ticket_tags_120() {
     let mut app = app_graphite(fixture_tagged());
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     golden("ticket_tags_120x30", &render(&app, 120, 30));
+}
+
+/// `^t` is bound on the ticket screen, and the screen's early return in
+/// `ui::draw` used to skip the panel entirely: the footer flipped to the
+/// chord's hints over a grid nobody drew. The keys were live and invisible.
+#[test]
+fn test_the_picker_reaches_the_ticket_screen() {
+    let mut app = app_graphite(fixture_tagged());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        row: 0,
+        col: 1,
+        naming: None,
+        forget_armed: false,
+    });
+    let lines = render(&app, 120, 30);
+    let joined = lines.join("\n");
+    assert!(joined.contains(" TAGS "), "the picker panel never drew:\n{joined}");
+    assert!(joined.contains("STAGING"), "the grid drew no vocabulary:\n{joined}");
+    // The panel is anchored to the bottom and covers the footer row, so the
+    // footer is redrawn over it — the chord's keys have to stay named.
+    assert!(
+        lines.last().is_some_and(|l| l.contains("TAG ") && l.contains("hjkl move")),
+        "the footer lost the chord's hints:\n{joined}"
+    );
+}
+
+#[test]
+fn golden_ticket_tag_chord_120() {
+    let mut app = app_graphite(fixture_tagged());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        row: 0,
+        col: 1,
+        naming: None,
+        forget_armed: false,
+    });
+    golden("ticket_tag_chord_120x30", &render(&app, 120, 30));
 }
 
 #[test]

@@ -2,15 +2,15 @@
                                   ticket — everything you can press here
  IN PROGRESS ∙ created by you >1y
                                   MOVE AROUND
-  DOCUMENTS                         jk        select session                               SESSIONS                  2
+  PREVIEW                           jk        select session                               SESSIONS                  2
                                     q         board
-    drop files into this ticket's   tab       needs you                                   ⠋ ✻ claude               >1y
-    ticket directories land with    shift+tab previous needs you                          ◦ $ bash                 >1y
+    ● working                       tab       needs you                                   ⠋ ✻ claude               >1y
+                                    shift+tab previous needs you                          ◦ $ bash                 >1y
 
                                   TICKETS
-  PREVIEW                           r         rename
+                                    r         rename
                                     ^t        tags
-    ● working                       a         archive
+                                    a         archive
                                     d         delete
 
                                   SESSIONS

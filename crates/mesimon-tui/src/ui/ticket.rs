@@ -94,6 +94,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .unwrap_or_default();
         ident_spans.push(Span::styled(format!(" ∙ archived{how}"), theme.dim1()));
     }
+    // The worktree clause is built aside so the tags can sit in front of it:
+    // what a ticket IS reads before where its code lives (author 2026-09-01).
+    let mut wt_spans = Vec::new();
     if let Some(w) = app.wt_item(ticket.id) {
         // Quiet-tickets rule: a mid-turn agent blocks the merge, so the hint
         // withholds the key (the count still shows what's waiting).
@@ -121,7 +124,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         } else {
             String::new()
         };
-        ident_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
+        wt_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
         if !state.is_empty() {
             let actionable =
                 !w.merged && w.status == "attached" && (w.needs_rebase || (w.ahead > 0 && !busy));
@@ -134,24 +137,25 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             } else {
                 theme.dim2()
             };
-            ident_spans.push(Span::styled(state, style));
+            wt_spans.push(Span::styled(state, style));
         }
         if note.is_none() {
             if let Some(d) = &w.detail {
-                ident_spans.push(Span::styled(format!(" ∙ {d}"), theme.dim2()));
+                wt_spans.push(Span::styled(format!(" ∙ {d}"), theme.dim2()));
             }
         }
     } else if let Some(n) = &note {
         // A merge reply with no binding ("no worktree on this ticket").
-        ident_spans.push(Span::styled(format!(" ∙ {n}"), theme.calm_text()));
+        wt_spans.push(Span::styled(format!(" ∙ {n}"), theme.calm_text()));
     } else if ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree {
-        ident_spans.push(Span::styled(" ∙ ⎇ worktree", theme.dim2()));
+        wt_spans.push(Span::styled(" ∙ ⎇ worktree", theme.dim2()));
     }
     // Tags, spelled out: the ticket page is where you came to read, so there
     // is no reason to make you decode a pip here. Budgeted against the width
     // so a long vocabulary truncates the clause instead of wrapping the row.
     if !ticket.tags.is_empty() {
-        let used: usize = ident_spans.iter().map(|s| s.content.width()).sum();
+        let used: usize =
+            ident_spans.iter().chain(wt_spans.iter()).map(|s| s.content.width()).sum();
         let mut budget = (area.width as usize).saturating_sub(used + 4);
         ident_spans.push(Span::styled(" ∙", theme.dim2()));
         // Each tag as a short painted chip carrying its name — the same paint
@@ -171,6 +175,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             }
         }
     }
+    ident_spans.extend(wt_spans);
     let ident = Line::from(ident_spans);
 
     // Breathing row between the breadcrumb and the identity line too — the
@@ -210,7 +215,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .filter(|t| sel.is_some_and(|s| s.id == t.session))
             .map(|t| t.lines.as_slice());
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
-        draw_documents(
+        draw_preview(
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
             app,
@@ -253,7 +258,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     );
 }
 
-fn draw_documents(
+fn draw_preview(
     f: &mut Frame,
     area: Rect,
     app: &App,
@@ -262,20 +267,7 @@ fn draw_documents(
     shell: Option<&[String]>,
 ) {
     let theme = &app.theme;
-    let mut head = vec![Span::styled(" DOCUMENTS", theme.dim1().add_modifier(Modifier::BOLD))];
-    let right = "(0)";
-    let used: usize = 10 + right.width() + 1;
-    head.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
-    head.push(Span::styled(right.to_string(), theme.dim2()));
-    let mut lines = vec![
-        Line::from(head),
-        Line::default(),
-        Line::from(Span::styled("   drop files into this ticket's directory", theme.dim3())),
-        Line::from(Span::styled(
-            "   ticket directories land with the adoption IA (M4)",
-            theme.dim3(),
-        )),
-    ];
+    let mut lines: Vec<Line<'static>> = Vec::new();
 
     // The selected session's latest assistant reply, wrapped into whatever
     // height the zone has left. Absent transcript (bash, fresh spawn) means
@@ -288,8 +280,6 @@ fn draw_documents(
     // side is the record, both are the last of it, and the rail row beside it
     // already says which session the cursor is on (author 2026-09-01).
     if let Some(tail) = shell {
-        lines.push(Line::default());
-        lines.push(Line::default());
         lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
         lines.push(Line::default());
         if tail.is_empty() {
@@ -309,8 +299,6 @@ fn draw_documents(
             lines.push(Line::from(vec![Span::raw("   "), Span::styled(row, theme.dim1())]));
         }
     } else if reply.is_some() || working {
-        lines.push(Line::default());
-        lines.push(Line::default());
         lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
         lines.push(Line::default());
         if let Some(text) = reply {

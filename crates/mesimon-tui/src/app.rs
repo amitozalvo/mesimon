@@ -1047,15 +1047,19 @@ impl App {
                 let group = if d == 0 { 10u8 } else { d as u8 };
                 let rows = crate::ui::tag_rows(self);
                 let Some(row) = rows.iter().position(|g| *g == group) else { return Ok(()) };
+                let len = crate::ui::tag_row_len(self, group).max(1);
                 if let Some(arm) = self.tag_armed.as_mut() {
-                    // Pressing the same digit again steps along that row, so
-                    // one finger reaches every tag on an axis.
+                    // Pressing the same digit again steps along that row and
+                    // wraps at its end, so one finger reaches every tag on an
+                    // axis and keeps reaching them — a key that goes dead on
+                    // the last cell asks for a second key to get back.
                     if arm.row == row {
-                        arm.col += 1;
+                        arm.col = (arm.col + 1) % len;
                     } else {
                         arm.row = row;
                         arm.col = 0;
                     }
+                    arm.forget_armed = false;
                 }
                 self.tag_clamp();
             }
@@ -1168,10 +1172,6 @@ impl App {
                     self.archive_gated(id)?;
                 }
             }
-            Verb::ArchiveAllDone => {
-                match self.req(Command::ArchiveAll) {
-                    Response::Archived { archived, skipped } => {
-                        self.status = match (archived, skipped) {
             Verb::ReloadShellEnv => {
                 self.send(Command::ReloadShellEnv)?;
                 // Names the boundary in the same breath as the confirmation: a
@@ -1181,6 +1181,10 @@ impl App {
                 self.status = "re-reading your shell environment ∙                                new and woken sessions get it"
                     .into();
             }
+            Verb::ArchiveAllDone => {
+                match self.req(Command::ArchiveAll) {
+                    Response::Archived { archived, skipped } => {
+                        self.status = match (archived, skipped) {
                             (0, 0) => "nothing was ready to archive".into(),
                             (n, 0) => format!("archived {n} ∙ esc menu lists them"),
                             (n, k) => format!("archived {n} ∙ {k} not ready"),
@@ -1575,10 +1579,6 @@ impl App {
             let Some(sid) = self.selected_session() else {
                 return Ok(());
             };
-            let cmd = if ctx.sel_sleeping {
-                Command::WakeSession { id: sid }
-            } else {
-                Command::SleepSession { id: sid }
             // A corpse cannot be slept, so `x` there is the rail's dismissal
             // gesture instead — the record stays on the board and re-imports
             // through the drawer; only the rail stops showing it. Before
@@ -1599,6 +1599,10 @@ impl App {
                 };
                 return self.refresh();
             }
+            let cmd = if ctx.sel_sleeping {
+                Command::WakeSession { id: sid }
+            } else {
+                Command::SleepSession { id: sid }
             };
             return self.send(cmd);
         }
@@ -2510,10 +2514,6 @@ impl App {
                 match self.req(cmd) {
                     Response::Spawned { fresh, .. } => {
                         self.resume_refused = None;
-                        self.refresh()?;
-                        // fall through to the focus flow below
-                    }
-                    Response::Err { message } => {
                         // The row said "resume" and this is not one: the
                         // record had no conversation left, so the daemon
                         // started a new one rather than refusing forever.
@@ -2522,6 +2522,10 @@ impl App {
                         if fresh {
                             self.status = "nothing to resume ∙ started a fresh conversation".into();
                         }
+                        self.refresh()?;
+                        // fall through to the focus flow below
+                    }
+                    Response::Err { message } => {
                         if message.contains("running elsewhere") {
                             // The daemon's message says "resume again to
                             // override" — the next Enter carries the confirm.
@@ -2676,11 +2680,11 @@ pub(crate) mod test_support {
         pub grace: Vec<GraceItem>,
         pub external: Vec<ExternalItem>,
         pub resources: Resources,
+        pub shell_env: mesimon_core::command::ShellEnvStatus,
         /// Debug-formatted log of every request, for behavior assertions.
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         /// Make FocusStart answer Err (the daemon refusing a focus).
         pub refuse_focus: bool,
-        pub shell_env: mesimon_core::command::ShellEnvStatus,
     }
 
     impl Transport for FakeTransport {
@@ -2742,11 +2746,11 @@ pub(crate) mod test_support {
                     resources: self.resources.clone(),
                     worktrees: Vec::new(),
                     notices: Vec::new(),
+                    shell_env: self.shell_env.clone(),
                 }),
                 Command::MoveTicket { id, column, before } => {
                     let mut order: Vec<ulid::Ulid> = self
                         .board
-                    shell_env: self.shell_env.clone(),
                         .column_tickets(&column)
                         .iter()
                         .map(|t| t.id)
@@ -2822,11 +2826,11 @@ pub(crate) mod test_support {
                 grace: vec![],
                 external: vec![],
                 resources: Resources::default(),
+                shell_env: Default::default(),
                 sent: sent.clone(),
                 refuse_focus,
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
-                shell_env: Default::default(),
                 .expect("fake transport snapshot");
             (app, sent)
         }
@@ -3074,13 +3078,25 @@ mod tests {
         press(&mut app, 'h');
         assert_eq!(name(&app).as_deref(), Some("DEV"));
 
-        // A digit jumps; the same digit again steps along.
+        // A digit jumps; the same digit again steps along, and the row
+        // wraps rather than going dead on its last cell.
         press(&mut app, '1');
         assert_eq!(name(&app).as_deref(), Some("BUG"));
         press(&mut app, '1');
         assert_eq!(name(&app).as_deref(), Some("REGR"));
+        press(&mut app, '1');
+        assert_eq!(name(&app).as_deref(), Some("FTR"));
+        press(&mut app, '1');
+        assert_eq!(name(&app), None, "the `+ new` cell is the row's last stop");
+        press(&mut app, '1');
+        assert_eq!(name(&app).as_deref(), Some("BUG"), "and then round again");
         press(&mut app, '2');
         assert_eq!(name(&app).as_deref(), Some("DEV"));
+        // The empty spare row holds one cell and cycles onto itself.
+        press(&mut app, '3');
+        press(&mut app, '3');
+        let arm = app.tag_armed.as_ref().expect("armed");
+        assert_eq!((arm.row, arm.col), (2, 0));
     }
 
     /// Tab cycles the tint, and it is a registry property — so it repaints
@@ -3396,22 +3412,6 @@ mod tests {
         assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
     }
 
-    #[test]
-    fn ctrl_bracket_pops_the_ticket_screen_to_board() {
-        // Ctrl+] is the tmux detach key — right after an unfocus it keeps
-        // popping outward. Both encodings: kitty (']') and legacy 0x1D ('5').
-        let mut app = app_three_columns();
-        for key in [']', '5'] {
-            app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-            app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
-            assert_eq!(app.screen, Screen::Board);
-        }
-    }
-
-    #[test]
-    fn double_gt_cycles_off_last_column_to_first() {
-        let mut app = app_three_columns();
-        app.cursor_col = 2; // "done", ticket 3
     /// The in-column reorder: out with `>`, home with `h`, up a row, drop.
     /// The daemon used to answer this `Ok` and change nothing, because the
     /// column it lands in is the one it left.
@@ -3430,6 +3430,22 @@ mod tests {
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
     }
 
+    #[test]
+    fn ctrl_bracket_pops_the_ticket_screen_to_board() {
+        // Ctrl+] is the tmux detach key — right after an unfocus it keeps
+        // popping outward. Both encodings: kitty (']') and legacy 0x1D ('5').
+        let mut app = app_three_columns();
+        for key in [']', '5'] {
+            app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+            app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
+            assert_eq!(app.screen, Screen::Board);
+        }
+    }
+
+    #[test]
+    fn double_gt_cycles_off_last_column_to_first() {
+        let mut app = app_three_columns();
+        app.cursor_col = 2; // "done", ticket 3
         press(&mut app, '>');
         press(&mut app, '>');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();

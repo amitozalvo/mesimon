@@ -21,10 +21,10 @@
 
 
 
-
-
-
-
-
-
- TICKET  jk select session ∙ enter focus ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ ^t tags ∙ q board ∙ ? keys
+ TAGS Fix OSC-11 detection
+  1     •BUG  [   FTR]     REGR   + new
+  2     •STAGING      PRODUCTION   + new
+  3      auth   + new
+  4      p1   + new
+  5   + new
+ TAG  hjkl move ∙ 1-0 group ∙ enter add ∙ tab colour ∙ r rename ∙ d delete ∙ w 2nd tag beside ∙ esc done ∙ ? keys

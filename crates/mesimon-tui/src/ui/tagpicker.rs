@@ -2,7 +2,7 @@
 //!
 //! One row per group, the tags of that group across it, and a `+` cell at the
 //! end of each row for making a new one. The cursor is a cell; `hjkl` walks
-//! it, a digit jumps to that group's row and steps along it, and the actions
+//! it, a digit jumps to that group's row and cycles along it, and the actions
 //! all apply to the cell under the cursor.
 //!
 //! It is a panel rather than a one-line hint because the vocabulary is the
