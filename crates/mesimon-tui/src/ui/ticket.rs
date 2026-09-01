@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap;
 
-use crate::app::{App, InputPurpose, Mode};
+use crate::app::{App, InputPurpose, Mode, PreviewView};
 use crate::glyphs;
 use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
@@ -219,6 +219,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
             app,
+            sel.map(|s| s.id),
             peek.as_ref(),
             working,
             shell,
@@ -237,6 +238,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             now,
         );
     } else {
+        // No zone, nothing to page: the footer must not offer `{ }`.
+        app.preview_view.set(PreviewView::default());
         draw_rail(
             f,
             Rect { x: area.x + 1, y: body_y, width: area.width.saturating_sub(2), height: body_h },
@@ -262,12 +265,15 @@ fn draw_preview(
     f: &mut Frame,
     area: Rect,
     app: &App,
+    session: Option<uuid::Uuid>,
     peek: Option<&crate::peek::Peek>,
     working: bool,
     shell: Option<&[String]>,
 ) {
     let theme = &app.theme;
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Until something below measures a document, there is nothing to page.
+    app.preview_view.set(PreviewView::default());
 
     // The selected session's latest assistant reply, wrapped into whatever
     // height the zone has left. Absent transcript (bash, fresh spawn) means
@@ -287,16 +293,28 @@ fn draw_preview(
         }
         let budget = (area.height as usize).saturating_sub(lines.len());
         let width = (area.width as usize).saturating_sub(4);
+        let rows: Vec<Line<'static>> = tail
+            .iter()
+            .map(|row| {
+                // Output is column-aligned — wrapping would mangle the
+                // alignment it was printed with, so an over-wide line is cut
+                // instead. It goes through the peek's sweep first: a pane
+                // holds whatever a command decided to print, box-drawing and
+                // all.
+                let row = crate::text::truncate(&crate::peek::sanitize(row), width);
+                Line::from(Span::styled(row, theme.dim1()))
+            })
+            .collect();
         // Newest at the bottom, exactly as the pane holds it: the latest
         // command and what it printed are what the rows are for, so a tail
-        // too long for the zone loses its top, never its end.
-        for row in tail.iter().skip(tail.len().saturating_sub(budget)) {
-            // Output is column-aligned — wrapping would mangle the alignment
-            // it was printed with, so an over-wide line is cut instead. It
-            // goes through the peek's sweep first: a pane holds whatever a
-            // command decided to print, box-drawing and all.
-            let row = crate::text::truncate(&crate::peek::sanitize(row), width);
-            lines.push(Line::from(vec![Span::raw("   "), Span::styled(row, theme.dim1())]));
+        // too long for the zone loses its top, never its end — until `{`
+        // asks for the top, and then the window is the reader's.
+        let key = session.map(|s| doc_key(s, None));
+        let shown = window(app, key, rows, budget, width, true);
+        for row in shown {
+            let mut spans = vec![Span::raw("   ")];
+            spans.extend(row.spans);
+            lines.push(Line::from(spans));
         }
     } else if reply.is_some() || working {
         lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
@@ -309,7 +327,12 @@ fn draw_preview(
             // ticket page is the surface with room to read it as such
             // (rich.rs — value, weight, paint and space only).
             let width = (area.width as usize).saturating_sub(4);
-            for row in crate::rich::render(text, width, budget, theme) {
+            // Keyed to the reply as well as the session: a page into this
+            // reply must not open the next one halfway down.
+            let key = session.map(|s| doc_key(s, Some(text)));
+            let rows = crate::rich::render_all(text, width, theme);
+            let shown = window(app, key, rows, budget, width, false);
+            for row in shown {
                 let mut spans = vec![Span::raw("   ")];
                 spans.extend(row.spans);
                 lines.push(Line::from(spans));
@@ -340,6 +363,61 @@ fn draw_preview(
         }
     }
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// Which document the preview zone is showing, for the scroll to belong to:
+/// the session, and for an agent the reply itself (a shell's pane is one
+/// continuous stream, so new output does not make it a new document).
+fn doc_key(session: uuid::Uuid, reply: Option<&str>) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    session.hash(&mut h);
+    reply.hash(&mut h);
+    h.finish()
+}
+
+/// The zone's window onto `rows`: honours the offset `{ }` asked for
+/// (`App::preview_scroll`, only if it was asked of THIS document), clamps
+/// it the way the diff pane does and writes the clamp back, and records what
+/// was shown (`App::preview_view`) so the next press and the footer know
+/// the page size and whether there is a further one. A window that stops
+/// short of the last row ends in the `~` cut mark.
+fn window(
+    app: &App,
+    key: Option<u64>,
+    rows: Vec<Line<'static>>,
+    budget: usize,
+    width: usize,
+    follows_tail: bool,
+) -> Vec<Line<'static>> {
+    let total = rows.len();
+    let max = total.saturating_sub(budget);
+    let asked = match (app.preview_scroll.get(), key) {
+        (Some((k, n)), Some(key)) if k == key => Some(n),
+        _ => None,
+    };
+    let offset = match asked {
+        Some(n) => n.min(max),
+        None if follows_tail => max,
+        None => 0,
+    };
+    if asked.is_some() {
+        // A tail scrolled to its bottom is released, not pinned to it.
+        let back = if follows_tail && offset >= max { None } else { key.map(|k| (k, offset)) };
+        app.preview_scroll.set(back);
+    }
+    app.preview_view.set(PreviewView {
+        key,
+        offset,
+        max,
+        page: budget.saturating_sub(1).max(1),
+        follows_tail,
+    });
+    let mut shown: Vec<Line<'static>> = rows.into_iter().skip(offset).take(budget).collect();
+    if offset + shown.len() < total {
+        crate::rich::mark_cut(&mut shown, width, &app.theme);
+    }
+    shown
 }
 
 fn draw_rail(
@@ -385,6 +463,7 @@ fn draw_rail(
             glyphs::Register::Err => theme.err_text(),
             glyphs::Register::Calm => theme.calm_text(),
             glyphs::Register::Grey => theme.dim2(),
+            glyphs::Register::Dormant => theme.dim3(),
         };
         // The session's own name (OSC-0 title, same as the tmux status bar's
         // breadcrumb leaf) when it set one, else the kind word.

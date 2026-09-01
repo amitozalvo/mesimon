@@ -154,6 +154,13 @@ add it here.
 3. `cargo ut`: the keymap validators run. A hint that shows on the board changes the board
    goldens: `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui`, then review the diff by eye.
 
+**A theme:** a `static` `Palette` in `tui/src/theme.rs` (every profile, hand-authored — never
+nearest-matched), a `Flavor` variant and its arms in `palette`/`name`/`blurb` (the compiler
+finds them), a `Kind` for the law or a fourth clause argued in `test_chroma_law`. `cargo ut`
+runs the laws over `Flavor::ALL`; the ring, if there is one, must skip the accent's hue band AND
+the ground's. The picker, the prefs file and the goldens need nothing: rows come from
+`Flavor::ALL` and goldens are colourless.
+
 **A card or ticket-page visual:** `tui/src/ui/card.rs` / `ticket.rs` / `tags.rs`; a golden in
 `tui/src/ui/tests.rs` (`MESIMON_UPDATE_GOLDEN=1` mints it). The L1 law tests
 (`test_no_banned_sgr`, `test_no_drawn_structure`) and, for a colour, the law tests in
@@ -203,11 +210,14 @@ retired. What holds now:
 **M3.5 (built 2026-08-29) is the design foundation**: OSC-11 light/dark detection
 (`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, first asked before raw mode and then
 re-asked every 3 s from inside `App::tick`, so an OS appearance flip repaints the board live —
-`detect::FlavorWatch`; the terminal is the authority, never the OS, and `MESIMON_THEME`, a
+`detect::GroundWatch`; the terminal is the authority, never the OS, and `MESIMON_THEME`, a
 terminal that cannot answer, a waiting keypress and an open text field each disarm or defer the
-query; STALE-MAP "Light/dark follows the terminal, live"),
-the graphite/chalk token themes for all five colour profiles (`theme.rs` — the colour-law tests
-in it are the palette's spec), pure board geometry (`layout.rs`, post-D33k arithmetic), card
+query; STALE-MAP "Light/dark follows the terminal, live"; and a reply that comes back AFTER the
+150 ms budget lands on stdin as keystrokes — `tui/src/osc.rs::ReplySwallow` recognises it on the
+raw crossterm event ahead of the keymap and the text-field barrier and discards it, STALE-MAP "A
+late reply to the colour query is caught before it can type"),
+the token themes for all five colour profiles (`theme.rs` — graphite and chalk, then blue, amber
+and green since 2026-09-02; the colour-law tests in it are the palette's spec), pure board geometry (`layout.rs`, post-D33k arithmetic), card
 anatomy per 07 §4 (`ui/card.rs`), spines + the minted cursor-column treatment (`ui/board.rs`),
 and the ticket screen skeleton (`ui/ticket.rs` — replaced `Mode::Pick`; zero daemon changes).
 Deviations recorded in STALE-MAP's "M3.5 implementation deviations". Rendering goldens live in
@@ -216,6 +226,38 @@ after a deliberate visual change; review the diff by eye. `MESIMON_THEME`/`MESIM
 flavor/profile. Remaining polish (decay, animation, banners, density ladder, keymap validator)
 stays in M6. One hard visual rule: exactly ONE saturated colour on the board, reserved for
 needs-you (`Theme::attn`; `test_attn_provenance*` enforces it), nothing else ever.
+
+**Five themes, picked from the Esc menu, saved in two slots (2026-09-02, user request).** A
+theme is a `Palette` TABLE in `theme.rs` (truecolor hexes plus hand-authored 256/16/8 forms, the
+diff tints, the tag ring, and `shadow`, the colour `faded()` blends toward) and
+`Flavor::palette()` is the exhaustive gate — a sixth flavor does not compile until `palette`,
+`name`, `blurb` and `from_name` classify it; the law tests read the table, never a
+transcription. The law has three `Kind`s, matched exhaustively in `test_chroma_law`: `Paper`
+(graphite, chalk: greys C* ≤ 8.2 plus three registers), `ChromaticGround` (blue: the navy IS a
+colour, both ramps stay grey, every register ≥ 60° of hue from the ground, and the fade target
+is a NEUTRAL at the ground's lightness — a tint blended into navy takes the navy's hue and ten
+tags become one), and `Phosphor` (amber, green: one hue within ±6° everywhere, loudness is
+lightness, `attn` is the white-hot top by ≥ 8 L* and the LEAST chromatic bright token, and the
+tag ring's "register below the accent" is a LIGHTNESS gap of 15 plus ≥ 35° of hue from the
+phosphor — it shipped ringless for an hour and the author wanted the colours back). Wherever the
+ground has a hue the fade target `shadow` is a neutral at its lightness, never the ground.
+Nvim's `#005faf` cursor line was refused as blue's cursor surface (2.7:1 under a mid-ramp grey;
+it is `#2C3590`). `attn_is_its_own_colour` is what keeps `test_attn_provenance*` meaningful on
+a phosphor, and both provenance laws now sweep `Flavor::ALL`. The picker is a menu row
+(`Verb::ThemePick` → `Mode::Theme`, `ui/themes.rs`, `Scope::Theme` with the menu's three
+shapes) whose cursor IS the preview — `App::preview` is the one road every retheme takes, the
+watch's included — Enter keeps, Esc puts `App::resting_flavor()` back. The preference is
+`tui/src/prefs.rs`: `~/.local/state/mesimon/prefs.json`, one theme per GROUND (`dark`/`light`,
+what OSC 11 can say; the watch now reports a `Ground` and `App::watch_flavor` maps it to the
+slot; a pick sets the slot the terminal is on). It is a PREFERENCE, the inverse of
+`update-check.json`'s rule: a newer schema is read and never written back, garbage falls to the
+defaults with a status line, saves merge into the loaded document so a foreign name in the other
+slot survives, and `lib.rs` loads it — never `App::new`, so no test reads the developer's file
+(`prefs_path` None = never write). `MESIMON_THEME` accepts every name, still pins and disarms the
+watch (the ground is still asked ONCE so the picker sets the right slot), and a menu pick
+outranks it for the session while the status says it pins the next launch. `mesimon doctor`
+prints a `theme` line. (STALE-MAP "Five themes, and the law learns three kinds" + "Themes are a
+menu row with two slots".)
 
 ## Architecture
 
@@ -511,6 +553,13 @@ is unaffected because `peek::wrap` splits on whitespace, and single-row consumer
 transcript to the ticket screen and assert it is on screen before sweeping. (STALE-MAP "The
 transcript zone reads markdown".)
 
+**And `{ }` (or `pgup`/`pgdn`) page it**, the diff's keys on the diff's verb, routed by
+`App::dispatch` on the screen. Hinted only while the zone overflows: `Ctx::preview_scrolls` reads
+`App::preview_view`, which the DRAW writes (the zone's height is a fact of the frame), and the
+request `App::preview_scroll` is keyed to the document (session + reply text, `ticket::doc_key`),
+so a rail move or a new reply starts at the top. A shell tail defaults to its bottom and is
+released back to following when `}` reaches it. (STALE-MAP "The preview zone pages".)
+
 **The same zone previews a SHELL's pane, and it is the one thing the TUI polls.** A shell keeps no
 transcript — tmux is its only record — so a live-shell selection on the ticket page draws the
 pane's last lines there instead (`Command::PaneTail` → `TmuxBackend::capture_tail`, oldest first,
@@ -588,6 +637,16 @@ against `waiting`'s two-dot pair on the rim and the spinner's three-dot arc. Two
 one is invisible at dim2 (which is why `waiting` has two) and three would claim work in flight
 HERE. ASCII cannot borrow it — `| / - \` ARE the spinner — so it breathes, `o O`. Still no third
 speed. (STALE-MAP "A turn parked on background work is its own state".)
+
+**A ticket holds ONE claude, and the second seat is a shell** (2026-09-02). `spawn_session`
+refuses a `Claude` spawn when `Board::live_claude(ticket)` finds one (`is_live`, so a parked one
+holds the seat); resume and wake re-enter an existing record and are not gated, so older boards
+keep what they have. `C`/`Verb::ClaudeNew` is gone, `S`/`ShellNew` stays, and `c` on a parked
+claude hints `wake claude` and wakes it (`focus_session` resumes a paneless record before it
+attaches). Everything that picks "the" agent of a ticket — `pane_target`, `board_enter`,
+`auto_move`, `card_glyph`, the worktree lock — assumes one; with two they picked the first in
+spawn order and automove ping-ponged the column between their turns. (STALE-MAP "One claude per
+ticket".)
 
 **Leaving a Claude session is the same thing as sleeping it.** Ctrl+C-out, `/exit` and Ctrl+D end
 the process, never the conversation, so `Daemon::park_on_exit` converts a clean exit to `Sleeping`

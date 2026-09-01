@@ -2832,3 +2832,263 @@ interrupted agent is nobody's to watch — so the card went blank for each gap.
 Deferred: the flap-pin interaction — a session that misfired often enough sat at `Confidence::Low`
 (`FLAP_MAX`), where `automove` refuses to move; with the misfires gone this should stop being
 reachable in normal use, but nothing asserts it.
+
+## The preview zone pages (2026-09-02, dogfood)
+
+A long agent reply on the ticket page showed its first ~20 rows and a `~`, and nothing read the
+rest — the diff's hunk pane had `{ }` / `pgup pgdn` and the zone beside it had nothing (author:
+"`{ }` keys on ticket page to scroll big transcripts, like in diff").
+
+- **Same verb, same keys, one more scope.** `Scope::Ticket` binds `{ } pgup pgdn` to
+  `Verb::PageDown` (`resolve` folds `{`/`pgup` to `PageUp` exactly as it does for the diff), and
+  `App::dispatch` routes the verb on `self.screen`: the diff pane or the preview zone. `jk` stays
+  the rail's — the zone is read, not picked.
+- **Hinted only while there is a further page.** `Ctx::preview_scrolls` is `App::preview_view.max
+  > 0`, MEASURED BY THE LAST DRAW: the zone's height is a fact of the frame, not of the board, so
+  the footer's "{ } page preview" appears under a reply that overflows and the keys are inert
+  under one that fits. The footer is drawn after the zone in the same frame, so the first frame
+  of a page is already right; a narrow terminal (one zone) resets the measurement.
+- **The scroll belongs to the document, not the page.** `App::preview_scroll` is
+  `Cell<Option<(key, rows_hidden_above)>>` where `key` hashes the session AND, for an agent, the
+  reply text (`ticket::doc_key`) — moving the rail or a new reply landing reads as offset 0, so a
+  page into one reply never opens the next one halfway; a shell's pane is one continuous stream
+  and keys on the session alone. Draw clamps the request against the rendered rows and writes the
+  clamp back, the diff pane's own treatment, and the press ALSO advances the measured offset, so a
+  held key that queues several presses before a frame still turns several pages.
+- **A shell tail opens at its bottom and is RELEASED there.** The zone's default for a pane is its
+  newest line, so "no request" means `max`; `{` pins the window and new output no longer moves it;
+  a `}` that reaches `max` clears the request instead of pinning today's last row, and the tail
+  follows the pane again. One page back down after the pane grew lands one row short (a page is a
+  page) and the next press releases — `test_preview_pages_a_shell_tail` says so.
+- `rich::render_all` + `rich::mark_cut` (the `~` `finish` used to add) let the zone own its
+  window; `render` stays for a zone that only ever shows the top. Page = window − 1 row of overlap.
+
+Tests: `test_preview_pages_a_long_reply`, `test_preview_pages_a_shell_tail` (ui/tests.rs). No
+golden moved: none of the ticket fixtures overflows the zone, so no footer gained the hint.
+
+## The sleeping mark recedes with its bar (2026-09-02, author)
+
+Author: "better sleep glyph (`z` is low effort). `⏾` can be nice, or an emoji without color." The
+shape was measured against 06 §4.1's rule before anything moved, and the rule is what kept it.
+
+- **Every picture fails presence.** By the same seven-face check (`fc-list :charset=` over Menlo,
+  Monaco, `.SF NS Mono`, Courier New, JetBrains Mono NF, MesloLGS NF): `⏾` U+23FE POWER SLEEP is
+  in the two Nerd Fonts only (2/7), `☾` U+263E and `◗` U+25D7 in Menlo + Meslo (3/7), `◔` U+25D4
+  4/7. The doc rejected `⚑` at 3/7. The author's own profile is MesloLGS NF, which carries all of
+  them — the exact trap §4.1 was written for: on SF Mono or JetBrains Mono a terminal falls back
+  to San Francisco or STIX at another weight, and DejaVu Sans Mono on Linux draws tofu. An emoji
+  is out on the `▪` precedent (Emoji_Presentation, two cells, colour, VS15 honoured by few).
+  Nothing moon-shaped exists in the 6/7–7/7 set (`› ‹ « » ∙ ◦`).
+- **What was low effort was the colour.** 06 §4.2 specifies the sleeping mark at `dim3`; the code
+  rode `Register::Grey` = `dim2`, the same weight as the idle ring and the working spinner, beside
+  a bar that `tags::bar_cell` had already faded to its Sleeping level. The glyph was the one
+  element on a parked card not walking the ladder.
+- **`Register::Dormant`** (`glyphs.rs`) resolves to `theme.dim3()` in `card.rs::register_style`
+  and the ticket rail; both `card_glyph` and `session_glyph` put `Sleeping` on it. `card.rs`
+  now routes the bar weight off the register (`Some((_, Register::Dormant)) => BarWeight::Dormant`)
+  instead of matching the letter `z`, and `Theme::bar` gained the exhaustive
+  `Live(Dormant)` arm, mapped to the dormant paint because a parked mark never asks for a live
+  bar. `x` and `z` stay the board's two lowercase letters — the two "no process here" states.
+
+Test: `test_sleeping_mark_is_dormant` (ui/tests.rs) reads the cell on the board AND in the rail;
+no golden moved, because the goldens are text and this is paint. A nerd tier (06 §4.2's
+`nf-md-sleep` U+F04B2, never auto-selected) remains the home for a picture, and `Tier` still has
+two inhabitants: one glyph does not buy a third.
+
+## One claude per ticket (2026-09-02, user request)
+
+Author: "multiple claude sessions in one ticket can be problematic ... should we just limit to
+one claude, if the user wants multiple they can use shell to create another one." Agreed, and
+the audit that preceded it is the reason.
+
+- **It worked mechanically and nothing was designed for it.** Every record is keyed by its own
+  uuid — own tmux session, own hooks file, own `--session-id`, own transcript — so two claudes
+  on a ticket parked and resumed independently and no bug lived on that road. Everything that
+  has to pick *the* agent of a ticket assumed one: `Board::pane_target` (the board's Shift+Enter
+  prompt AND the merge flow's rebase notice) took the first claude in spawn order whatever the
+  second was doing; `board_enter` focused the first hot one; `auto_move` fires per session, so
+  agent A's `EndTurn` moved the ticket to REVIEW while B still worked and B's next prompt moved
+  it back, until the movegate fuse suspended automation; `card_glyph` ranks `✓` above the
+  spinner, so one finished agent plus one working agent read as done; and the worktree lock is
+  taken once, so both edited one checkout with no coordination. 00-DECISIONS' "holds N sessions
+  of mixed kinds and mixed vendors" was about claude + shells, or another vendor, never N claudes
+  on one work item — parallelism inside a ticket is the agent's own subagents and teammates.
+- **The gate is the daemon's, on NEW records only.** `spawn_session` refuses `SessionKind::Claude`
+  when `Board::live_claude(ticket)` finds one — `is_live`, so a Sleeping record holds the seat
+  too — with "ticket already has a claude session — wake/focus it instead". `resume_session` and
+  `wake_session` re-enter an existing record and are NOT gated, so a board written before this
+  keeps every session it has, and `pending_spawns` replay through the same function and meet the
+  same check. A shell is never gated: `S` still adds one, and `claude` typed into a shell pane is
+  the second seat for anyone who wants it — no hooks, no attention, adoptable observe-only
+  through the drawer, which is the right amount of support for an escape hatch.
+- **`C` / `Verb::ClaudeNew` is gone**; `ShellNew` stays. It was `prio: 0`, so only the help
+  golden moved (`help_ticket_120x30`). `c` keeps its one verb and gains a third hint: on a ticket
+  whose claude is parked it reads `wake claude`, because `focus_kind_or_spawn` finds the Sleeping
+  record and `focus_session` already resumes a paneless record before attaching — the key woke
+  and attached before this, but the footer said `claude`, and the daemon never has to refuse it.
+  `Ctx::ticket_has_claude && !ticket_promptable` is exactly Sleeping (live, no pane).
+
+Tests: `c_wakes_a_parked_claude_instead_of_starting_a_second` (app.rs) pins the hint and that the
+wire sees `ResumeSession`, never `SpawnSession`; `shift_stays_on_one_axis` now asserts `C` is
+inert; `hook_e2e` asserts the refusal while its stub claude is alive; `exit_parks_e2e` gives the
+no-transcript case its own ticket. Not done, on purpose: refusing the wake of a second parked
+record on a pre-existing board — it would strand a conversation that already exists.
+
+## The peek shows what the transcript holds, and a task notification is not a prompt (2026-09-02)
+
+Dogfood: "transcript peek sometimes skips the latest agent message and shows an earlier one".
+Two findings, one fix.
+
+- **The walk was right; the record was missing.** `tui/src/peek.rs::latest_preview` was run over
+  1,356 local transcripts against a full-file reference walk: zero wrong picks (the only
+  differences were the designed `last-prompt` fallback past 256 KiB, and a session id that lives
+  in two project dirs). Live probe of this session's own `.jsonl` (Claude Code 2.1.257): a
+  message's records land in ONE append ~250 ms after the message finishes streaming — never per
+  block — and **3 of 6 visible text blocks that preceded a `tool_use` in the same message were
+  never written at all** (their `thinking` and `tool_use` records were). Nothing arrives late:
+  0 out-of-order assistant records in 8,279 across 120 files. So mid-turn narration is not a
+  reliable part of the transcript, and the peek's answer is the newest text that EXISTS. Not
+  fixable from the transcript; the `Stop` hook's `last_assistant_message` covers the end of a turn
+  only. Filed to Claude Code. Any later "peek is stale" report: check the file before the walk.
+- **`<task-notification>` is the harness, not the user** (`core/src/adopt.rs::user_prompt`). The
+  wake that ends a turn parked on a background task is a plain-string `user` record with
+  `isMeta` false (22 of 22 in the local corpus), so the walk took it as the newest prompt and a
+  card read `> <task-notification><task-id>…` with `thinking` under it. Rejected by its opening
+  tag; the walk continues to the agent's last words. `<command-name>`, `<bash-input>` and the
+  `*-stdout` records are also unflagged but are things the user typed or asked for, and are left
+  as prompts on purpose.
+
+## A late reply to the colour query is caught before it can type (2026-09-02)
+
+Dogfood: under iTerm2's key-remap sheet (and "a few times" with no obvious trigger) the board
+opened rename on the cursor card with `gb:1e1e/1e1e/1e1e\` in the field. Not another tab
+sending keys — mesimon's own `OSC 11` query coming back after its 150 ms budget. Nothing can
+unsend a reply: it waits in the tty queue and crossterm reads it as keystrokes. crossterm drops
+the `DA1` half (`CSI ? … c` is an internal event) but has no OSC parser, so the colour half
+arrives as `alt+]` `1` `1` `;` `r` `g` `b` `:` … `alt+\` — `1` `1` is quick-tag (a SILENT
+mutation of the cursor card's group-1 tag, twice), `r` is rename, and the rest is the "title".
+Anything that delays iTerm's answer past 150 ms does it: a preferences sheet, a background tab
+it deprioritises, a `cargo build` pegging the machine. The startup query is exposed too (its
+reply can land during the connect or crossterm's kitty probe, which queues what it does not
+recognise for the first `read`).
+
+Fix: `tui/src/osc.rs::ReplySwallow`, a grammar over the RAW crossterm key events, permanently
+armed, fed by `App::on_key` before the text-field barrier and before the keymap (a field strips
+Alt, so placed later it would miss the prefix exactly where the reply does the most damage).
+The prefix `alt+]` `1` `1` `;` is nothing a hand types; the prefix keys are held and replayed in
+order if the fourth never comes (a real `alt+]` costs one keystroke of latency, nothing else);
+once the prefix is complete the reply is proven, body chars (`hex / : # r g`) are discarded up
+to `alt+\` or ctrl+g (BEL), and a key outside the grammar ends the swallow and passes through
+alone. Not a longer budget: a reply can always be later than any deadline, and the read blocks
+the frame. Known gap: crossterm splitting the reply at its first byte would deliver a bare Esc
+then `]`, and a bare Esc is deliberately NOT an opener (holding a real Esc would delay the menu
+it opens); the tty hands the reply over in one write, so this is not expected in practice. The
+cleaner root fix — the watch writing the query itself with no blocking read and the swallow
+parsing the colour out of the reply — is not built: it means re-implementing colorsaurus's
+parsing and lightness formula. Tests: five in `osc.rs`; `a_late_colour_reply_neither_tags_nor_renames`
+and `a_late_colour_reply_types_nothing_into_an_open_field` in `app.rs`.
+
+## Five themes, and the law learns three kinds (2026-09-02, user request)
+
+The author wanted more themes and named the first: their Neovim `blue` scheme (Neovim's own
+`blue.vim`, gold `#ffd700` on navy `#000087`, cursor line `#005faf`), the Borland / Norton
+Commander look — which they run as nvim's LIGHT-mode theme, `astrodark` being the dark one.
+Three shipped: `blue`, `amber` (a P3 phosphor monitor) and `green` (P1), beside graphite and
+chalk. Two decisions were the author's: gold is `attn` and nothing else (cream body text, navy
+ink on a gold title row — the one-saturated-colour rule stays whole), and the roster is the
+'90s pack rather than Solarized/Catppuccin/Gruvbox, which are multi-hue schemes that lose most
+of what people like about them under a one-accent, grey-ramp law.
+
+**A theme became a table.** Graphite and chalk were two ~90-line constructors differing only in
+constants, and the law tests carried a second hand-transcribed copy of the hexes. Now every
+flavor is a `static Palette` (truecolor, 256, 16, a shared 8-colour form; the diff tints; the
+tag ring; `shadow`) and `Theme::new` is one builder over it; the tests read the table.
+`Flavor::palette()` is the exhaustive gate.
+
+**Two things the nvim scheme wanted did not survive the numbers.** `#005faf` as the cursor-card
+surface: it is L* 40, and a mid-ramp grey (L* 70) measures 2.7:1 on it against the 4.0 floor;
+even index 25 puts dim2 at 3.0. The surface is `#2C3590` — L* 27, 8° off the navy, the same
+one-step lift graphite's 234→236 makes — and the gold row is what carries the look. And
+`faded()` blending toward the ground: a C* 34 tint blended 62% into navy is navy-hued whatever
+it started as (169° of hue drift at the sleeping level, pairwise ΔE 3.9 — ten tags one colour),
+and the old `C* ≥ 8` clause passed VACUOUSLY because the navy donated the chroma. Each palette
+now declares `shadow`, the fade target: the ground on paper and phosphor, a neutral at the
+ground's lightness (`#242424`) on blue. Drift is now ≤ 4.4°, and the pip law has a new clause
+(Selected→Sleeping hue drift ≤ 20°) that would have caught it.
+
+**The law is three kinds, matched exhaustively.** `Paper` is the old law. `ChromaticGround`:
+C*(bg) ≥ 40, bg and selected within 15° of hue, selected ≥ 8 L* up, both ramps C* ≤ 8.2
+(neutral ink on coloured paper), every register ≥ 60° of hue from the ground (blue: 100° err,
+109° calm, 145° attn), the Paper chroma budget, shadow neutral within 3 L* of bg. `Phosphor`:
+every token within ±6° of one hue (amber spread 1.8°, green 0.4°), C*(bg) ≥ 5, `attn` the top
+by ≥ 8 L* AND C* ≤ 35 — white-hot is DEFINED by low chroma at the top, which is how it parts
+from `err` on both axes (ΔE 40 / 61) — `err` ≥ 4 L* over sel.base, `calm` the pale rung (C* ≤
+rest.base − 25, ΔE ≥ 20 from every ramp step), ink = bg, no diff tint, no ring. A phosphor is
+a lightness ladder (L* 6 / 13 / 36 / 52 / 62 / 74 / 82 / 92) and the registers are named rungs;
+which is which is the glyph's job, which is what a P1/P3 monitor can honestly do. Tight margins
+to know: rest.dim2 4.44 and sel.dim2 4.25 (floor 4.0), err over sel.base 4.8 L*.
+
+**The phosphors got their ring back within the hour.** The first cut shipped them ringless:
+with a white-hot `attn` at C* 20–30 the 2× rule caps a tint at C* 10–15, where ten hues cannot
+reach ΔE 12, and ten foreign hues on a one-hue screen looked like the fiction broken. The author
+saw it and said the tags "don't render colored blocks correctly (it's simply amber / green)" —
+a tag's colour is what the tag is FOR, and a theme does not get to take it away. So the clause
+is restated for the kind, not exempted: on a phosphor the accent's loudness is lightness, so a
+tint sits a register below it by ≥ 15 L* (attn 92, ring 62) instead of by half its chroma, and
+the ring keeps ≥ 35° of hue from the phosphor, which every other token wears. Both rings are
+graphite's L* 62 / C* 30 on ten hues at 29° spacing with a 70° band cut around the phosphor
+(amber from 127.5°, green from 192.5°; worst pairs ΔE 14.8 / 14.3, ≥ 6.2 on bg). And the same
+fade lesson as navy, milder: the sleeping level blended into the TINTED black drifted 47° and
+fell to C* 4.7 on green, so both phosphors fade toward a neutral `#151515` (L* 6.8) — the
+`shadow` clause is now "neutral within 3 L* of the ground" for every kind whose ground has a
+hue. Blue's ring skips the navy's band (276–336°)
+as well as the gold's (60–120°): ten hues at L* 70, C* 34 (ceiling 35 — a ring UNDER a C* 83
+ground may be a step louder; gold at C* 87 leaves the 2× margin whole), worst pair ΔE 15.1.
+`attn_is_its_own_colour` (ALL × four colour profiles: attn ∉ ramps ∪ registers ∪ surfaces ∪
+bars ∪ pips ∪ diff) is what keeps `test_attn_provenance*` meaningful on a phosphor, and forbids
+the tempting `{3,3,3,3}` eight-colour ramp whose base IS the accent. The indexed forms are
+hand-authored: blue 18/19 (25 rejected), bright 9/14 for err/calm at 16 colours (the dark pair
+is 1.7:1 on navy), Norton's cyan cursor surface rejected because `code_bg()` IS that surface;
+amber and green sit on the grey cube's 232/234 (no dark phosphor in the cube), paint no cursor
+card at 16 colours, and all three dark themes share graphite's eight-colour form — eight
+colours cannot hold a navy or a phosphor, and saying so is 06 §2.7. Both provenance laws,
+`test_no_banned_sgr`, `test_diff_add_del_registers` and the rich/tags sweeps now iterate
+`Flavor::ALL`. The daemon stays theme-blind: its tmux chip wears graphite's pair everywhere.
+
+## Themes are a menu row with two slots (2026-09-02, user request)
+
+**Two slots, keyed on the GROUND.** The terminal's OSC 11 answer is the one fact the board has
+about where it is read, and it only ever says light or dark — so the preference is a theme for
+each answer (defaults graphite / chalk), the watch keeps flipping between the two picks, and a
+pick sets the slot the terminal currently reports. That is the author's own editor setup
+(`astrodark` dark, `blue` light) and it means picking blue never costs the light-mode board.
+A terminal that cannot answer sets the dark slot. The watch now reports a `Ground`
+(`detect::GroundWatch`); `App::watch_flavor` maps it through `prefs.for_ground`, and under an
+open picker it only moves the slot the popup's header names — the preview stays.
+
+**The picker's cursor IS the preview.** `App::theme` was already a plain field the watch
+rebuilt wholesale; `App::preview(flavor)` is that, factored, and every retheme goes through it
+(watch, picker cursor, Esc, Enter). `Mode::Theme { idx }` stores no entry flavor: Esc restores
+`App::resting_flavor()` = the pin or the current ground's slot, which is also what makes a
+ground flip under the picker right for free. Enter is `mutates: false` — nothing the daemon owns
+changes. Words, never a mark, for "which slot holds this": `◦` is the suggestion chip's and
+`›`/`◊` were rejected; the row's detail says `your pick for a dark terminal`. The menu row sits
+beside `p`: the two view preferences together, never a suggestion (a theme is not something
+worth doing right now), never a footer cell (the `p` argument).
+
+**`prefs.json` is at the state root and is a preference, not a cache.** `~/.local/state/mesimon/`
+is inside README promise 1; `~/.config/` is not, and would collide with promise 2. One binary
+per machine, one file per machine, beside `update-check.json` — with the OPPOSITE rule: a newer
+schema is read where it can be and never written back (writes barred for the session, the four
+state files' discipline), garbage falls to defaults with a status line and the next pick
+rewrites it, saves MERGE into the loaded document so a name this build does not know in the
+other slot survives a pick in this one (picking THAT slot is what replaces it), and the write is
+the store's `write_atomic` (made `pub` for this one caller), 0644 because two theme names are no
+secret. `lib.rs` loads it, never `App::new`: `prefs_path` None means never write, which is every
+test app. `MESIMON_THEME` accepts every `Flavor::name` plus the old `dark`/`light` aliases,
+still pins and disarms the watch — but the ground is asked ONCE under a pin, so the picker sets
+the right slot — and a menu pick outranks it for the session (the more recent explicit choice)
+while the status appends `MESIMON_THEME=… pins the next launch`; the row stays visible under a
+pin because it is the only road to the file. `mesimon doctor` prints `theme  dark: … ∙ light: …`
+and never asks the terminal (pipes). The peek toggle `p` is the first candidate to move into
+this file; not done here.

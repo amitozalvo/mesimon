@@ -13,6 +13,7 @@ mod menu;
 mod tagpicker;
 #[cfg(test)]
 mod tests;
+mod themes;
 mod ticket;
 
 use ratatui::layout::{Constraint, Direction, Layout};
@@ -105,6 +106,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);
+    }
+    if let Mode::Theme { idx } = &app.mode {
+        themes::draw(f, app, *idx);
     }
     // The overlay is the last thing drawn on every screen: it answers a
     // question about whatever is underneath it.

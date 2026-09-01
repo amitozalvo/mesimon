@@ -163,6 +163,16 @@ pub(crate) enum Register {
     /// Done-unseen — decays once seen (decay is M6).
     Calm,
     Grey,
+    /// Parked — no process, nothing to watch. `dim3`, the de-emphasis floor
+    /// (06 §4.2 specifies the sleeping mark there), one step under `Grey`:
+    /// on `Grey` the `z` sat as loud as the idle ring and the working
+    /// spinner beside it, while the card's own bar had already faded to
+    /// its Sleeping level (`tags::bar_cell`). The glyph is the one element
+    /// on a parked card that was not walking the ladder, and that — not the
+    /// letter — is what read as low effort (author 2026-09-02). The letter
+    /// stays: `⏾` U+23FE is present in 2 of 06 §4.1's seven faces and `☾`
+    /// U+263E in 3, both under the `⚑` the doc rejected at 3/7.
+    Dormant,
 }
 
 /// Glyph tier: unicode is the default; ascii is forced under mono terminals
@@ -292,7 +302,7 @@ pub(crate) fn card_glyph(
         return Some((background(tier, spin), Register::Grey));
     }
     if sessions.iter().all(|s| matches!(s.state, SessionState::Sleeping)) {
-        return Some(('z', Register::Grey));
+        return Some(('z', Register::Dormant));
     }
     if sessions.iter().any(|s| matches!(s.state, SessionState::Unknown { .. })) {
         return Some((waiting(tier, spin), Register::Grey));
@@ -328,7 +338,7 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
             (background(tier, spin), Register::Grey)
         }
         SessionState::Idle { .. } => (if ascii { '.' } else { '◦' }, Register::Grey),
-        SessionState::Sleeping => ('z', Register::Grey),
+        SessionState::Sleeping => ('z', Register::Dormant),
         SessionState::Exited { reason: ExitReason::Crashed } => ('x', Register::Err),
         SessionState::Exited { .. } => (if ascii { '+' } else { '✓' }, Register::Grey),
         SessionState::Failed { .. } => ('x', Register::Err),
@@ -714,7 +724,7 @@ mod tests {
     fn z_requires_all_sessions_sleeping() {
         let sleep = rec(SessionState::Sleeping);
         let run = rec(SessionState::Running);
-        assert_eq!(card_glyph(&[&sleep], Tier::Unicode, 0), Some(('z', Register::Grey)));
+        assert_eq!(card_glyph(&[&sleep], Tier::Unicode, 0), Some(('z', Register::Dormant)));
         assert_eq!(card_glyph(&[&sleep, &run], Tier::Unicode, 0), Some(('⠋', Register::Grey)));
     }
 

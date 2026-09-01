@@ -95,6 +95,26 @@ pub(crate) fn render(
     out.finish()
 }
 
+/// Every line of `src` at `width`, unmarked: the caller owns the window and
+/// says where the cut is (`mark_cut`). The ticket page's preview scrolls
+/// through this; `render` stays the one-shot form for a zone that only ever
+/// shows the top.
+pub(crate) fn render_all(src: &str, width: usize, theme: &Theme) -> Vec<Line<'static>> {
+    render(src, width, usize::MAX, theme)
+}
+
+/// End `lines` in the `~` cut marker — the same mark `render` leaves when it
+/// runs out of rows, for a window that stops short of the last one. Clips
+/// the last row to make the cell if it has to.
+pub(crate) fn mark_cut(lines: &mut [Line<'static>], width: usize, theme: &Theme) {
+    let Some(last) = lines.last_mut() else { return };
+    let w: usize = last.spans.iter().map(|s| s.content.width()).sum();
+    if w >= width {
+        clip(&mut last.spans, width.saturating_sub(1));
+    }
+    last.spans.push(Span::styled("~", theme.dim2()));
+}
+
 // ---------------------------------------------------------------------------
 // parse
 // ---------------------------------------------------------------------------
@@ -733,15 +753,7 @@ impl Out<'_> {
             self.lines.pop();
         }
         if self.cut {
-            let width = self.width;
-            let style = self.theme.dim2();
-            if let Some(last) = self.lines.last_mut() {
-                let w: usize = last.spans.iter().map(|s| s.content.width()).sum();
-                if w >= width {
-                    clip(&mut last.spans, width.saturating_sub(1));
-                }
-                last.spans.push(Span::styled("~", style));
-            }
+            mark_cut(&mut self.lines, self.width, self.theme);
         }
         self.lines
     }
@@ -804,7 +816,7 @@ mod tests {
     use crate::theme::{Profile, Theme};
 
     fn dark() -> Theme {
-        Theme::graphite(Profile::TrueColor)
+        Theme::new(crate::theme::Flavor::Graphite, Profile::TrueColor)
     }
 
     /// The rendered text, one String per row.
@@ -868,7 +880,7 @@ mod tests {
         assert_eq!(style_for(&out, "cargo test").bg, t.code_bg());
         assert!(t.code_bg().is_some());
 
-        let mono = Theme::graphite(Profile::Mono);
+        let mono = Theme::new(crate::theme::Flavor::Graphite, Profile::Mono);
         assert_eq!(mono.code_bg(), None);
         let out = render("run `cargo test` twice", 60, 4, &mono);
         assert_eq!(plain(&out), vec!["run `cargo test` twice"]);
@@ -885,7 +897,7 @@ mod tests {
             vec!["\u{2022} alpha beta", "  gamma delta", "\u{2022} second", "", "1. numbered"]
         );
         // ASCII tier gets a hyphen, never a bullet it cannot draw.
-        let ascii = Theme::graphite(Profile::Mono);
+        let ascii = Theme::new(crate::theme::Flavor::Graphite, Profile::Mono);
         assert_eq!(plain(&render("- x", 10, 2, &ascii)), vec!["- x"]);
     }
 
@@ -983,7 +995,7 @@ mod tests {
         for profile in
             [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono]
         {
-            for t in [Theme::graphite(profile), Theme::chalk(profile)] {
+            for t in crate::theme::Flavor::ALL.map(|f| Theme::new(f, profile)) {
                 for width in [12usize, 40, 83] {
                     let out = render(kitchen, width, 40, &t);
                     let ramp = [t.rest.base, t.rest.dim1, t.rest.dim2, t.rest.dim3];

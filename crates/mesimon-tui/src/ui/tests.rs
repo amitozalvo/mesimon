@@ -101,6 +101,11 @@ fn fixture(waiting: bool) -> Board {
     b
 }
 
+fn press(app: &mut App, c: char) {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("key");
+}
+
 fn render(app: &App, w: u16, h: u16) -> Vec<String> {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
     terminal.draw(|f| super::draw(f, app)).expect("draw");
@@ -352,6 +357,15 @@ fn golden_menu_120() {
     golden("menu_120x30", &render(&app, 120, 30));
 }
 
+/// The theme picker over the board: five rows, the flavor's ground at the
+/// right edge, and the saved slots named in words on their rows.
+#[test]
+fn golden_theme_picker_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Theme { idx: 0 };
+    golden("theme_picker_120x30", &render(&app, 120, 30));
+}
+
 /// The three standing offers, in priority order, right-aligned in the header —
 /// and the same three at the top of the menu wearing the same `›`. This golden
 /// is the whole suggestion language in one picture.
@@ -534,7 +548,10 @@ fn test_suggested_rows_lead_the_menu_and_wear_the_mark() {
     let mut app = suggesting_app();
     app.mode = Mode::Menu { idx: 0 };
     let lines = render(&app, 120, 30);
-    let marked: Vec<&String> = lines.iter().filter(|l| l.trim_start().starts_with('◦')).collect();
+    // Past the header (whose chip wears the same mark): a 12-row menu starts
+    // on row 1 of a 30-row frame, beside the board's own text, so the mark
+    // is looked for anywhere on the line rather than at its start.
+    let marked: Vec<&String> = lines.iter().skip(1).filter(|l| l.contains('◦')).collect();
     assert_eq!(marked.len(), 3, "one marked row per chip: {marked:?}");
     assert!(marked[0].contains("Restart on the new build"), "{marked:?}");
     assert!(marked[1].contains("Sleep 3 agents in done"), "{marked:?}");
@@ -719,6 +736,108 @@ fn golden_ticket_richtext_120() {
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     golden("ticket_richtext_120x30", &render(&app, 120, 30));
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// `{ }` on the ticket page turns the preview a page at a time, the way the
+/// diff's hunk pane does. The keys are hinted only while there is a further
+/// page, the window clamps at the last full one, and a reply that changes
+/// under the reader starts over at its top.
+#[test]
+fn test_preview_pages_a_long_reply() {
+    let long: String = (1..=60).map(|i| format!("row {i:02} of the reply\n\n")).collect();
+    let path = write_transcript("preview-pages", &reply_record(&long));
+    let mut b = fixture(false);
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let shows = |app: &App, row: &str| render(app, 120, 30).iter().any(|l| l.contains(row));
+    let footer = |app: &App| render(app, 120, 30).last().cloned().unwrap_or_default();
+
+    assert!(shows(&app, "row 01"), "a fresh page starts at the top");
+    assert!(!shows(&app, "row 60"));
+    assert!(footer(&app).contains("{ }"), "an overflowing preview offers the page keys");
+    let v = app.preview_view.get();
+    assert!(v.max > 0 && v.page > 1 && !v.follows_tail, "{v:?}");
+
+    press(&mut app, '}');
+    assert!(!shows(&app, "row 01"), "one page down and the first row is gone");
+    let first = app.preview_view.get().offset;
+    assert_eq!(first, v.page);
+    // Past the end: the last window is a FULL one, marked nowhere.
+    for _ in 0..20 {
+        press(&mut app, '}');
+    }
+    assert!(shows(&app, "row 60"));
+    assert_eq!(app.preview_view.get().offset, v.max);
+    assert!(
+        !render(&app, 120, 30).iter().any(|l| l.contains("row 60 of the reply~")),
+        "the last row is not a cut"
+    );
+    press(&mut app, '{');
+    assert!(!shows(&app, "row 60"));
+    for _ in 0..20 {
+        press(&mut app, '{');
+    }
+    assert!(shows(&app, "row 01"));
+    assert_eq!(app.preview_view.get().offset, 0);
+
+    // Scrolled halfway, then the reply changes: the new one opens at its top.
+    press(&mut app, '}');
+    assert!(!shows(&app, "row 01"));
+    std::fs::write(&path, reply_record(&long.replace("of the reply", "of the next reply")))
+        .expect("rewrite");
+    let meta = std::fs::metadata(&path).expect("meta");
+    // The peek cache keys on (len, mtime); the length differs, which is enough.
+    assert_ne!(meta.len(), 0);
+    assert!(shows(&app, "row 01 of the next reply"), "a new reply starts at its top");
+
+    // A reply that fits offers nothing to turn: keys inert, hint gone.
+    std::fs::write(&path, reply_record("short")).expect("rewrite");
+    assert!(shows(&app, "short"));
+    assert!(!footer(&app).contains("{ }"));
+    press(&mut app, '}');
+    assert_eq!(app.preview_view.get().offset, 0);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// The same keys on a shell's pane: it opens at its bottom (the newest line
+/// is what a tail is for), `{` walks up, and `}` back down releases it to
+/// follow the pane again rather than pinning it to today's last row.
+#[test]
+fn test_preview_pages_a_shell_tail() {
+    let mut app = app_graphite(fixture(false));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
+    let tail: Vec<String> = (1..=60).map(|i| format!("line {i:02}")).collect();
+    app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), tail.clone()));
+    let shows = |app: &App, row: &str| render(app, 120, 30).iter().any(|l| l.contains(row));
+
+    assert!(shows(&app, "line 60") && !shows(&app, "line 01"), "a tail opens at its bottom");
+    let v = app.preview_view.get();
+    assert!(v.follows_tail && v.offset == v.max && v.max > 0, "{v:?}");
+    assert!(app.preview_scroll.get().is_none(), "following is the absence of a request");
+
+    press(&mut app, '{');
+    assert!(!shows(&app, "line 60"));
+    assert!(shows(&app, "line 60~") || render(&app, 120, 30).iter().any(|l| l.ends_with('~')));
+    // New output while scrolled up: the reader's window holds still.
+    let before = app.preview_view.get().offset;
+    let mut more = tail.clone();
+    more.push("line 61".into());
+    app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), more));
+    let _ = render(&app, 120, 30);
+    assert_eq!(app.preview_view.get().offset, before);
+    assert!(!shows(&app, "line 61"));
+
+    // One page back down lands where the bottom WAS: the pane grew a row
+    // meanwhile, so the window stops one short, says so, and stays pinned
+    // (a page is a page, as in the diff). The next press reaches the end
+    // and releases it — the new line arrives with it.
+    press(&mut app, '}');
+    assert!(shows(&app, "line 60~") && !shows(&app, "line 61"));
+    assert!(app.preview_scroll.get().is_some());
+    press(&mut app, '}');
+    assert!(shows(&app, "line 61"), "back at the bottom, and the new line is there");
+    assert!(app.preview_scroll.get().is_none(), "at the bottom the tail is released");
 }
 
 #[test]
@@ -1544,8 +1663,14 @@ fn golden_composer_selector_120() {
 /// colour amendment) — and context stays grey, so the registers stay earned.
 #[test]
 fn test_diff_add_del_registers() {
-    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-    let mut app = app_graphite(fixture(false));
+    for flavor in Flavor::ALL {
+        diff_registers_hold(flavor);
+    }
+}
+
+fn diff_registers_hold(flavor: Flavor) {
+    let theme = Theme::new(flavor, Profile::TrueColor);
+    let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
     install_diff(&mut app);
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
@@ -1558,9 +1683,17 @@ fn test_diff_add_del_registers() {
         }
         None
     };
-    assert_eq!(fg_at("metrics.increment").expect("add line"), theme.calm, "adds = calm");
-    assert_eq!(fg_at("const t = await exchange(code)").expect("del line"), theme.err, "dels = err");
-    assert_eq!(fg_at("return persist").expect("ctx line"), theme.rest.dim2, "ctx = grey");
+    assert_eq!(fg_at("metrics.increment").expect("add line"), theme.calm, "{flavor:?} adds = calm");
+    assert_eq!(
+        fg_at("const t = await exchange(code)").expect("del line"),
+        theme.err,
+        "{flavor:?} dels = err"
+    );
+    assert_eq!(
+        fg_at("return persist").expect("ctx line"),
+        theme.rest.dim2,
+        "{flavor:?} ctx = grey"
+    );
 
     // Full-line grounds (M4b dogfood): the tint spans the WHOLE row — the
     // text cells and the trailing empty cells alike — and context rows stay
@@ -1574,21 +1707,33 @@ fn test_diff_add_del_registers() {
         }
         None
     };
-    let add_bg = theme.diff_add_bg().expect("graphite truecolor has a tint");
-    let del_bg = theme.diff_del_bg().expect("graphite truecolor has a tint");
-    let (text, tail) = bg_row("metrics.increment").expect("add line");
-    assert_eq!((text, tail), (add_bg, add_bg), "add tint spans the row");
-    let (text, tail) = bg_row("const t = await exchange(code)").expect("del line");
-    assert_eq!((text, tail), (del_bg, del_bg), "del tint spans the row");
-    let (text, _) = bg_row("return persist").expect("ctx line");
-    assert_ne!(text, add_bg, "ctx stays on the page ground");
-    assert_ne!(text, del_bg, "ctx stays on the page ground");
+    let page = theme.bg.expect("truecolor paints the page");
+    match (theme.diff_add_bg(), theme.diff_del_bg()) {
+        (Some(add_bg), Some(del_bg)) => {
+            let (text, tail) = bg_row("metrics.increment").expect("add line");
+            assert_eq!((text, tail), (add_bg, add_bg), "{flavor:?} add tint spans the row");
+            let (text, tail) = bg_row("const t = await exchange(code)").expect("del line");
+            assert_eq!((text, tail), (del_bg, del_bg), "{flavor:?} del tint spans the row");
+            let (text, _) = bg_row("return persist").expect("ctx line");
+            assert_ne!(text, add_bg, "{flavor:?} ctx stays on the page ground");
+            assert_ne!(text, del_bg, "{flavor:?} ctx stays on the page ground");
+        }
+        // A phosphor has no second hue to tint a row with: the register on
+        // the text and the glyph carry it, and every row keeps the ground.
+        (None, None) => {
+            for needle in ["metrics.increment", "const t = await exchange(code)"] {
+                let (text, tail) = bg_row(needle).expect(needle);
+                assert_eq!((text, tail), (page, page), "{flavor:?} untinted row keeps the ground");
+            }
+        }
+        other => panic!("{flavor:?}: half a diff tint {other:?}"),
+    }
 
     // The top band (row 3) actually paints — the empty-Line idiom regressed
     // silently once already (invisible since M3.5).
-    let band_bg = theme.selected_bg.expect("graphite truecolor paints selected");
-    assert_eq!(buf[(5u16, 3u16)].bg, band_bg, "top band paints");
-    assert_eq!(buf[(118u16, 3u16)].bg, band_bg, "top band spans the width");
+    let band_bg = theme.selected_bg.expect("truecolor paints selected");
+    assert_eq!(buf[(5u16, 3u16)].bg, band_bg, "{flavor:?} top band paints");
+    assert_eq!(buf[(118u16, 3u16)].bg, band_bg, "{flavor:?} top band spans the width");
 }
 
 /// The diff footer mirrors the ticket rule: a status outranks the hints.
@@ -1772,21 +1917,29 @@ fn test_layout_arithmetic() {
     }
 }
 
+/// Graphite's accent, for the tests that render graphite alone. The two
+/// provenance laws sweep every flavor's own `attn` instead.
 const ATTN_GRAPHITE: Color = Color::Rgb(0xF0, 0xA9, 0x3A);
 
-/// L3: on a calm board not one cell renders the saturated colour.
+/// L3: on a calm board not one cell renders the saturated colour — on any
+/// flavor. On a phosphor every token shares a hue, so this and
+/// `attn_is_its_own_colour` are what keep "the one bright thing" true there.
 #[test]
 fn test_attn_provenance_calm() {
-    let mut app = app_graphite(fixture(false));
-    app.cursor_col = 1;
-    let mut arch = app_graphite(fixture_archived());
-    arch.mode = Mode::Archived { idx: 0 };
-    for buf in [cells(&app, 120, 30), cells(&arch, 120, 30)] {
-        for y in 0..30 {
-            for x in 0..120 {
-                let c = &buf[(x, y)];
-                assert_ne!(c.fg, ATTN_GRAPHITE, "attn fg at {x},{y} on a calm board");
-                assert_ne!(c.bg, ATTN_GRAPHITE, "attn bg at {x},{y} on a calm board");
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let attn = theme.attn;
+        let mut app = App::for_test(fixture(false), theme);
+        app.cursor_col = 1;
+        let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, Profile::TrueColor));
+        arch.mode = Mode::Archived { idx: 0 };
+        for buf in [cells(&app, 120, 30), cells(&arch, 120, 30)] {
+            for y in 0..30 {
+                for x in 0..120 {
+                    let c = &buf[(x, y)];
+                    assert_ne!(c.fg, attn, "{flavor:?} attn fg at {x},{y} on a calm board");
+                    assert_ne!(c.bg, attn, "{flavor:?} attn bg at {x},{y} on a calm board");
+                }
             }
         }
     }
@@ -1796,7 +1949,15 @@ fn test_attn_provenance_calm() {
 /// waiting card's own rows.
 #[test]
 fn test_attn_provenance_waiting() {
-    let mut app = app_graphite(fixture(true));
+    for flavor in Flavor::ALL {
+        attn_stays_on_the_waiting_card(flavor);
+    }
+}
+
+fn attn_stays_on_the_waiting_card(flavor: Flavor) {
+    let theme = Theme::new(flavor, Profile::TrueColor);
+    let attn = theme.attn;
+    let mut app = App::for_test(fixture(true), theme);
     app.cursor_col = 0; // cursor away from the waiting card
     let buf = cells(&app, 120, 30);
     // Rows that legally carry attn: the header (0) and the rows of the card
@@ -1814,13 +1975,16 @@ fn test_attn_provenance_waiting() {
     for y in 0..30usize {
         for x in 0..120u16 {
             let c = &buf[(x, y as u16)];
-            if c.fg == ATTN_GRAPHITE || c.bg == ATTN_GRAPHITE {
+            if c.fg == attn || c.bg == attn {
                 seen_attn = true;
-                assert!(legal.contains(&y), "attn cell at {x},{y} outside the earned rows");
+                assert!(
+                    legal.contains(&y),
+                    "{flavor:?} attn cell at {x},{y} outside the earned rows"
+                );
             }
         }
     }
-    assert!(seen_attn, "the waiting board must show attn somewhere");
+    assert!(seen_attn, "{flavor:?}: the waiting board must show attn somewhere");
 }
 
 /// What a shell pane actually holds: a command that drew a tree, a progress
@@ -1839,11 +2003,11 @@ fn dirty_tail() -> Vec<String> {
 #[test]
 fn test_no_banned_sgr() {
     let path = write_transcript("sgr-law", &reply_record(RICH_REPLY));
-    for (flavor, profile) in [
-        (Flavor::Graphite, Profile::TrueColor),
-        (Flavor::Chalk, Profile::TrueColor),
-        (Flavor::Graphite, Profile::Ansi256),
-    ] {
+    let pairs = Flavor::ALL
+        .map(|f| (f, Profile::TrueColor))
+        .into_iter()
+        .chain([(Flavor::Graphite, Profile::Ansi256), (Flavor::Blue, Profile::Ansi256)]);
+    for (flavor, profile) in pairs {
         let mut app = App::for_test(fixture(true), Theme::new(flavor, profile));
         // Rich transcript text is the one surface that renders arbitrary
         // markdown, so it is where a banned attribute would sneak in.
@@ -1851,9 +2015,12 @@ fn test_no_banned_sgr() {
         app.cursor_col = 1;
         let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, profile));
         arch.mode = Mode::Archived { idx: 0 };
+        let mut picker = App::for_test(fixture(false), Theme::new(flavor, profile));
+        picker.mode = Mode::Theme { idx: 2 };
         for buf in [
             cells(&app, 120, 30),
             cells(&arch, 120, 30),
+            cells(&picker, 120, 30),
             {
                 app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
                 assert!(
@@ -1915,9 +2082,12 @@ fn test_no_drawn_structure() {
     app.cursor_col = 1;
     let mut arch = app_graphite(fixture_archived());
     arch.mode = Mode::Archived { idx: 0 };
+    let mut picker = app_graphite(fixture(false));
+    picker.mode = Mode::Theme { idx: 2 };
     let screens: Vec<Vec<String>> = vec![
         render(&app, 120, 30),
         render(&arch, 120, 30),
+        render(&picker, 120, 30),
         {
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
             let lines = render(&app, 120, 30);
@@ -2033,6 +2203,33 @@ fn test_alarm_never_dimmed() {
         (0..120u16).all(|x| buf[(x, y as u16)].bg != err),
         "the bar is the tag channel now; err must not paint it"
     );
+}
+
+/// A parked card's mark recedes with its bar. The sleeping `z` rides
+/// `Register::Dormant` = `dim3`, one step under the grey the idle ring and
+/// the spinner ride: on `dim2` it sat as loud as a live mark beside a bar
+/// that had already faded to its Sleeping level (author 2026-09-02, "z is
+/// low effort" — the colour was, not the letter). The goldens are text-only,
+/// so this reads the cell.
+#[test]
+fn test_sleeping_mark_is_dormant() {
+    let mut app = app_graphite(fixture(true));
+    app.cursor_col = 0;
+    let (dim2, dim3) = (app.theme.rest.dim2, app.theme.rest.dim3);
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let y =
+        lines.iter().position(|l| l.contains("Painted accent bar")).expect("T-7 rendered") as u16;
+    let x = (0..120u16).find(|&x| buf[(x, y)].symbol() == "z").expect("sleeping card wears z");
+    assert_eq!(buf[(x, y)].fg, dim3, "the sleeping mark rides the de-emphasis floor");
+    assert_ne!(dim3, dim2, "or the floor is no step at all");
+    // The rail says the same thing of the session itself.
+    app.screen = Screen::Ticket { ticket: ulid_n(7), rail_idx: 0 };
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("$ bash")).expect("rail row") as u16;
+    let x = (0..120u16).find(|&x| buf[(x, y)].symbol() == "z").expect("rail wears z");
+    assert_eq!(buf[(x, y)].fg, dim3, "the rail's sleeping mark is dormant too");
 }
 
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.

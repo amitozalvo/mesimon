@@ -71,7 +71,11 @@ const TARGET: Option<&str> = Some("x86_64-unknown-linux-musl");
 const TARGET: Option<&str> = Some("aarch64-unknown-linux-musl");
 #[cfg(not(any(
     all(target_os = "macos", target_arch = "aarch64"),
-    all(target_os = "linux", target_env = "musl", any(target_arch = "x86_64", target_arch = "aarch64"))
+    all(
+        target_os = "linux",
+        target_env = "musl",
+        any(target_arch = "x86_64", target_arch = "aarch64")
+    )
 )))]
 const TARGET: Option<&str> = None;
 
@@ -422,9 +426,8 @@ fn latest_tag(body: &str) -> Option<String> {
 // ---- taking the offer ------------------------------------------------------
 
 fn install(tag: &str, exe: &Path, stage_dir: &Path) -> Result<(), String> {
-    let target = TARGET
-        .filter(|t| PUBLISHED.contains(t))
-        .ok_or("no published build for this platform")?;
+    let target =
+        TARGET.filter(|t| PUBLISHED.contains(t)).ok_or("no published build for this platform")?;
     let name = format!("mesimon-{tag}-{target}");
     let asset = format!("{name}.tar.gz");
     let base = format!("https://github.com/{DIST_REPO}/releases/download/{tag}");
@@ -758,7 +761,10 @@ mod tests {
         let build_linux_sh = include_str!("../../../ci/build-linux.sh");
         let install_sh = include_str!("../../../install.sh");
         for t in PUBLISHED {
-            assert!(release_sh.contains(t) || build_linux_sh.contains(t), "{t} is built by no script in ci/");
+            assert!(
+                release_sh.contains(t) || build_linux_sh.contains(t),
+                "{t} is built by no script in ci/"
+            );
             assert!(install_sh.contains(t), "install.sh cannot name the {t} asset");
         }
         if let Some(t) = TARGET {

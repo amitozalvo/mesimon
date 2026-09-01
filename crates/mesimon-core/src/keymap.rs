@@ -139,6 +139,10 @@ pub enum Scope {
     Menu,
     Drawer,
     Archived,
+    /// The theme picker, reached from a menu row: a list over the flavors
+    /// whose cursor IS the preview (the board behind it repaints as the
+    /// cursor moves), so Enter keeps and Esc puts the resting theme back.
+    Theme,
     /// Scope barrier: owns every key, inherits nothing.
     Input,
 }
@@ -147,7 +151,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 13] = [
+    pub const ALL: [Scope; 14] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -160,6 +164,7 @@ impl Scope {
         Scope::Menu,
         Scope::Drawer,
         Scope::Archived,
+        Scope::Theme,
         Scope::Input,
     ];
 
@@ -172,7 +177,8 @@ impl Scope {
             | Scope::Move
             | Scope::Menu
             | Scope::Drawer
-            | Scope::Archived => Some(Scope::Global),
+            | Scope::Archived
+            | Scope::Theme => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
             | Scope::DeleteChord
@@ -196,6 +202,7 @@ impl Scope {
             Scope::Menu => "MENU",
             Scope::Drawer => "EXTERNAL",
             Scope::Archived => "ARCHIVED",
+            Scope::Theme => "THEME",
             Scope::Input => "INPUT",
         }
     }
@@ -253,6 +260,10 @@ pub enum Verb {
     Menu,
     ExternalDrawer,
     ArchivedList,
+    /// Open the theme picker from the menu. No key of its own: a theme is
+    /// picked once and lived with, the same argument that took `p` off the
+    /// footer.
+    ThemePick,
     // ---- sessions ----
     Claude,
     Shell,
@@ -263,7 +274,9 @@ pub enum Verb {
     /// ticket and the agent do not exist yet, so the press mints both and
     /// asks the title; here they do, so it only asks.
     Prompt,
-    ClaudeNew,
+    /// `S` on the ticket page: a second shell beside whatever is there.
+    /// There is no Claude twin: a ticket holds ONE claude (2026-09-02), and a
+    /// second seat is a shell — see STALE-MAP "One claude per ticket".
     ShellNew,
     Sleep,
     SleepAllDone,
@@ -444,6 +457,20 @@ pub struct Ctx {
     pub bulk_archive: usize,
     pub has_archived: bool,
     pub peek_on: bool,
+    /// The live theme's id (`Flavor::name`), for the menu row's label.
+    pub theme_name: &'static str,
+    /// Its one-line blurb, for the row's detail.
+    pub theme_blurb: &'static str,
+    /// Which slot a pick would set: `"dark"` or `"light"`, the ground the
+    /// terminal currently reports.
+    pub theme_slot_word: &'static str,
+    /// `MESIMON_THEME` is pinning the live theme; a pick still saves.
+    pub theme_pinned: bool,
+    /// The ticket page's preview zone holds more rows than it can show, so
+    /// there is somewhere to page to. Measured by the last draw (the zone's
+    /// height is a fact of the frame, not of the board), which is also what
+    /// keeps `{ }` inert — and unhinted — under a reply that fits.
+    pub preview_scrolls: bool,
     pub update_ready: bool,
     /// A newer release than this build is published, and taking the offer
     /// downloads it. Never true beside `update_ready`: a binary already
@@ -774,7 +801,11 @@ static BOARD: &[Binding] = &[
         verb: Verb::Claude,
         show: "c",
         hint: |c| {
-            if c.ticket_has_claude {
+            // Live but paneless is exactly Sleeping: the press wakes the
+            // parked conversation and attaches, so the hint says so.
+            if c.ticket_has_claude && !c.ticket_promptable {
+                "wake claude"
+            } else if c.ticket_has_claude {
                 "claude"
             } else {
                 "start claude"
@@ -1051,6 +1082,21 @@ static TICKET: &[Binding] = &[
         prio: 10,
     },
     Binding {
+        // The diff's page keys, on the preview zone: a long reply is read
+        // here, not picked, and `jk` is already the rail's. Same verb, same
+        // spelling, and available only while there is a further page — a
+        // reply that fits offers nothing to turn.
+        keys: &[Key::Char('}'), Key::Char('{'), Key::PageDown, Key::PageUp],
+        verb: Verb::PageDown,
+        show: "{ }",
+        hint: |_| "page preview",
+        avail: |c| c.preview_scrolls,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
+    },
+    Binding {
         keys: &[Key::Enter],
         verb: Verb::Act,
         show: "enter",
@@ -1074,7 +1120,11 @@ static TICKET: &[Binding] = &[
         verb: Verb::Claude,
         show: "c",
         hint: |c| {
-            if c.ticket_has_claude {
+            // Live but paneless is exactly Sleeping: the press wakes the
+            // parked conversation and attaches, so the hint says so.
+            if c.ticket_has_claude && !c.ticket_promptable {
+                "wake claude"
+            } else if c.ticket_has_claude {
                 "claude"
             } else {
                 "start claude"
@@ -1096,17 +1146,6 @@ static TICKET: &[Binding] = &[
         group: Group::Sessions,
         mutates: true,
         prio: 40,
-    },
-    Binding {
-        keys: &[Key::Char('C')],
-        verb: Verb::ClaudeNew,
-        show: "C",
-        hint: |_| "another claude",
-        avail: always,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        prio: 0,
     },
     Binding {
         keys: &[Key::Char('S')],
@@ -1698,6 +1737,45 @@ static MENU: &[Binding] = &[
     },
 ];
 
+/// The theme picker's three shapes are the menu's. `Act` does not mutate:
+/// nothing the daemon owns changes, and the file it writes is this
+/// machine's own preference.
+static THEME: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "preview",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "keep",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "put it back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// One row of the Esc menu. A row is a [`Verb`], not a key — which is how the
 /// menu can offer actions that have no binding at all (the two lists) beside
 /// actions that do (peek), showing the key so the menu teaches it.
@@ -1798,6 +1876,21 @@ static MENU_ITEMS: &[MenuItem] = &[
         detail: |_| "the latest reply under the selected card".into(),
         avail: always,
         key: "p",
+    },
+    // Beside the peek: the two view preferences sit together. Never a
+    // suggestion — a theme is not something worth doing right now.
+    MenuItem {
+        verb: Verb::ThemePick,
+        label: |c| format!("Theme: {}", c.theme_name),
+        detail: |c| {
+            if c.theme_pinned {
+                "pinned by MESIMON_THEME ∙ a pick here still saves for the next launch".into()
+            } else {
+                format!("{} ∙ for a {} terminal", c.theme_blurb, c.theme_slot_word)
+            }
+        },
+        avail: always,
+        key: "",
     },
     MenuItem {
         verb: Verb::Help,
@@ -2232,6 +2325,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Menu => MENU,
         Scope::Drawer => DRAWER,
         Scope::Archived => ARCHIVED,
+        Scope::Theme => THEME,
         Scope::Input => INPUT,
     }
 }
@@ -2404,7 +2498,8 @@ mod tests {
                 Scope::Menu => 9,
                 Scope::Drawer => 10,
                 Scope::Archived => 11,
-                Scope::Input => 12,
+                Scope::Theme => 12,
+                Scope::Input => 13,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -3055,7 +3150,9 @@ mod tests {
     #[test]
     fn undo_reaches_every_screen() {
         let ctx = Ctx { can_undo: true, ..Default::default() };
-        for s in [Scope::Board, Scope::Ticket, Scope::Diff, Scope::Drawer, Scope::Menu] {
+        for s in
+            [Scope::Board, Scope::Ticket, Scope::Diff, Scope::Drawer, Scope::Menu, Scope::Theme]
+        {
             assert_eq!(resolve(s, Key::Char('u'), &ctx), Some(Verb::Undo), "{s:?}");
         }
         let nothing = Ctx::default();
@@ -3073,7 +3170,9 @@ mod tests {
     fn shift_stays_on_one_axis() {
         let t = Ctx { sel_session: true, ..Default::default() };
         assert_eq!(resolve(Scope::Ticket, Key::Char('c'), &t), Some(Verb::Claude));
-        assert_eq!(resolve(Scope::Ticket, Key::Char('C'), &t), Some(Verb::ClaudeNew));
+        // `C` is gone: a ticket holds one claude, and the second seat is a
+        // shell (STALE-MAP "One claude per ticket"). Shift on `c` is inert.
+        assert_eq!(resolve(Scope::Ticket, Key::Char('C'), &t), None);
         assert_eq!(resolve(Scope::Ticket, Key::Char('s'), &t), Some(Verb::Shell));
         assert_eq!(resolve(Scope::Ticket, Key::Char('S'), &t), Some(Verb::ShellNew));
         // The picker's pair is the same bargain on a motion: `hjkl` steps,
@@ -3127,6 +3226,7 @@ mod tests {
             Verb::ArchivedList,
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
+            Verb::ThemePick,
             Verb::Help,
             Verb::Quit,
         ] {
@@ -3261,6 +3361,9 @@ mod tests {
             release_available: true,
             release_tag: "v0.1.0-alpha.5".into(),
             shell_env_stale: true,
+            theme_name: "graphite",
+            theme_blurb: "dark, the default",
+            theme_slot_word: "dark",
             ..Default::default()
         };
         for m in MENU_ITEMS {
@@ -3337,7 +3440,9 @@ mod tests {
     fn q_pops_and_help_is_everywhere() {
         let ctx = Ctx::default();
         assert_eq!(resolve(Scope::Board, Key::Char('q'), &ctx), Some(Verb::Quit));
-        for s in [Scope::Ticket, Scope::Diff, Scope::Drawer, Scope::Archived, Scope::Menu] {
+        for s in
+            [Scope::Ticket, Scope::Diff, Scope::Drawer, Scope::Archived, Scope::Menu, Scope::Theme]
+        {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");
         }

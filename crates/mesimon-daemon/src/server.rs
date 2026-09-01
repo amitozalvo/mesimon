@@ -3025,6 +3025,26 @@ impl Daemon {
         if self.board.ticket(ticket).is_some_and(|t| t.is_archived()) {
             return Response::Err { message: "ticket archived — restore it first".into() };
         }
+        // One claude per ticket (2026-09-02). Everything that has to pick
+        // "the" agent of a ticket — the board's prompt, the merge notice,
+        // Enter's focus, automove, the card glyph — assumed one, and with two
+        // they picked the first in spawn order while the second did the
+        // work, automove ping-ponged the column between their turns, and both
+        // edited one worktree with no coordination. Parallelism inside a
+        // ticket is the agent's own subagents; a second seat is a shell.
+        // Gated on `is_live`, so a parked claude also holds the seat — `c`
+        // wakes it rather than starting a rival beside it. Only NEW records
+        // are refused: a record that already exists resumes as it did, so a
+        // board that predates this keeps every session it has.
+        if kind == SessionKind::Claude {
+            if let Some(held) = self.board.live_claude(ticket) {
+                let verb =
+                    if matches!(held.state, SessionState::Sleeping) { "wake" } else { "focus" };
+                return Response::Err {
+                    message: format!("ticket already has a claude session — {verb} it instead"),
+                };
+            }
+        }
         if let Some(message) = self.spawn_gate() {
             return Response::Err { message };
         }
@@ -3967,7 +3987,9 @@ impl Daemon {
             // to the terminal's default background (illegible on light
             // terminals). Graphite's attn pair (06 §2.2) — legibility is
             // internal to the chip, so it needs no flavor detection here;
-            // tmux maps the hex down to 256/16 colours itself.
+            // tmux maps the hex down to 256/16 colours itself. The daemon
+            // is theme-blind (06 §2.9) — five themes exist in the TUI and
+            // this chip wears graphite's pair on all of them.
             format!("#[noreverse]#[fg=#131417,bg=#F0A93A,bold] !{needs_you} #[default]")
         } else {
             String::new()

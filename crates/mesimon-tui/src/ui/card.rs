@@ -129,6 +129,7 @@ fn register_style(theme: &Theme, reg: Register) -> Style {
         Register::Err => theme.err_text(),
         Register::Calm => theme.calm_text(),
         Register::Grey => theme.dim2(),
+        Register::Dormant => theme.dim3(),
     }
 }
 
@@ -224,7 +225,7 @@ pub(super) fn render(
             Some((_, Register::Attn)) => BarWeight::Live(Register::Attn),
             Some((_, Register::Err)) => BarWeight::Live(Register::Err),
             Some((_, Register::Calm)) => BarWeight::Live(Register::Calm),
-            Some(('z', _)) => BarWeight::Dormant,
+            Some((_, Register::Dormant)) => BarWeight::Dormant,
             _ if sessions.iter().any(|s| s.state.has_pane()) => BarWeight::Live(Register::Grey),
             _ => BarWeight::Dormant,
         }

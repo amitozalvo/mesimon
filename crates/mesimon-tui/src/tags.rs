@@ -345,7 +345,7 @@ mod tests {
     /// thing the colour is there to say.
     #[test]
     fn the_three_levels_fade_but_keep_the_hue() {
-        for flavor in [Flavor::Graphite, Flavor::Chalk] {
+        for flavor in Flavor::ALL {
             let theme = Theme::new(flavor, Profile::TrueColor);
             for n in 0..PIPS {
                 let full = theme.pip_at(n, TagLevel::Selected);

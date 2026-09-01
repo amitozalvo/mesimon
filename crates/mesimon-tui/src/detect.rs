@@ -2,13 +2,18 @@
 //! ladders run once, at startup, before the daemon connect and before raw
 //! mode — never while a session is focused, and never in the daemon.
 //!
-//! Light/dark is then WATCHED for the process lifetime (`FlavorWatch`): the
+//! Light/dark is then WATCHED for the process lifetime (`GroundWatch`): the
 //! OS flips appearance at sunset, the terminal follows it, and a board that
 //! keeps painting graphite on a now-white terminal is unreadable until it is
 //! restarted. The watch re-asks the terminal — never the OS — because the
 //! terminal's background is the thing the palette has to sit on: a terminal
-//! pinned to a dark profile must keep graphite through an OS flip, and it
-//! does, because its answer never changes.
+//! pinned to a dark profile must keep its dark pick through an OS flip, and
+//! it does, because its answer never changes.
+//!
+//! The answer is a GROUND, not a flavor: the terminal only knows light or
+//! dark, and which theme sits on each is the user's (`prefs.rs`, two slots).
+//! Resolving one to the other is `lib.rs`'s job at startup and
+//! `App::watch_flavor`'s afterwards.
 //!
 //! Deferred rungs, deliberately: `CSI ? 996 n` + `CSI ? 2031` (one Contour
 //! extension; with 2031 never armed there is no unsolicited DSR to disarm
@@ -18,11 +23,11 @@
 
 use std::time::{Duration, Instant};
 
-use crate::theme::{Flavor, Profile, Theme};
+use crate::theme::{Flavor, Ground, Profile};
 
-/// How often the flavor is re-asked. Slow on purpose: an appearance flip is
+/// How often the ground is re-asked. Slow on purpose: an appearance flip is
 /// a once-a-day event, and every query is a read off the tty (see
-/// `FlavorWatch::poll`).
+/// `GroundWatch::poll`).
 const RECHECK_EVERY: Duration = Duration::from_secs(3);
 
 /// Consecutive unanswered queries that end the watch. A terminal that
@@ -31,28 +36,34 @@ const RECHECK_EVERY: Duration = Duration::from_secs(3);
 const STRIKES: u8 = 3;
 
 pub(crate) struct Detected {
-    pub theme: Theme,
-    /// Armed only when the terminal actually answered the light/dark query:
-    /// a forced flavor is the user's word (never overridden), and a terminal
-    /// that could not answer once will not answer later either.
-    pub watch: Option<FlavorWatch>,
+    pub profile: Profile,
+    /// What the terminal said, or `Dark` when it could not say.
+    pub ground: Ground,
+    /// `MESIMON_THEME`: the user's word, pinned for the process.
+    pub forced: Option<Flavor>,
+    /// Armed only when the terminal actually answered the light/dark query
+    /// and nothing is pinned: a forced flavor is not a starting point to be
+    /// corrected three seconds later, and a terminal that could not answer
+    /// once will not answer later either.
+    pub watch: Option<GroundWatch>,
 }
 
 pub(crate) fn detect() -> Detected {
     let profile = profile_from_env();
     // Mono never queries the tty — there is nothing to colour, so there is
-    // nothing to watch either.
+    // nothing to watch either, and no flavor to pin.
     if profile == Profile::Mono {
-        return Detected { theme: Theme::new(Flavor::Graphite, profile), watch: None };
+        return Detected { profile, ground: Ground::Dark, forced: None, watch: None };
     }
-    if let Some(flavor) = forced_flavor() {
-        return Detected { theme: Theme::new(flavor, profile), watch: None };
-    }
-    match query_flavor() {
-        Some(flavor) => {
-            Detected { theme: Theme::new(flavor, profile), watch: Some(FlavorWatch::new(flavor)) }
-        }
-        None => Detected { theme: Theme::new(Flavor::Graphite, profile), watch: None },
+    let forced = forced_flavor();
+    // Asked even under a pin: the picker sets the slot the terminal is on,
+    // and a one-shot query corrects nothing. Only the WATCH stands down.
+    let answer = query_ground();
+    Detected {
+        profile,
+        ground: answer.unwrap_or(Ground::Dark),
+        forced,
+        watch: if forced.is_none() { answer.map(GroundWatch::new) } else { None },
     }
 }
 
@@ -85,29 +96,26 @@ fn profile_from_env() -> Profile {
     }
 }
 
-/// The top of the light/dark ladder: `MESIMON_THEME` (the config-file rung
-/// until a config system exists). It short-circuits the query AND the watch —
-/// an explicit choice is not a starting point to be corrected.
+/// The top of the theme ladder: `MESIMON_THEME`, any `Flavor::name` or the
+/// two aliases `dark`/`light`. It short-circuits the watch — an explicit
+/// choice is not a starting point to be corrected — but not the prefs file,
+/// which a pick in the menu still writes for the next launch.
 fn forced_flavor() -> Option<Flavor> {
-    match std::env::var("MESIMON_THEME").ok()?.as_str() {
-        "light" | "chalk" => Some(Flavor::Chalk),
-        "dark" | "graphite" => Some(Flavor::Graphite),
-        _ => None,
-    }
+    Flavor::from_name(&std::env::var("MESIMON_THEME").ok()?)
 }
 
 /// One OSC 11 round-trip through terminal-colorsaurus (which reads
 /// `/dev/tty`, sidestepping the T-4 stdin race). `None` is "no usable
 /// answer" — unsupported, timed out, or unparseable — and is discarded
 /// silently (06 §2.9).
-pub(crate) fn query_flavor() -> Option<Flavor> {
+pub(crate) fn query_ground() -> Option<Ground> {
     let mut opts = terminal_colorsaurus::QueryOptions::default();
     // 06 §2.9: 150 ms budget. Terminals that can't answer are detected as
     // such well before the timeout; the ladder must not stall startup.
     opts.timeout = Duration::from_millis(150);
     match terminal_colorsaurus::theme_mode(opts) {
-        Ok(terminal_colorsaurus::ThemeMode::Light) => Some(Flavor::Chalk),
-        Ok(terminal_colorsaurus::ThemeMode::Dark) => Some(Flavor::Graphite),
+        Ok(terminal_colorsaurus::ThemeMode::Light) => Some(Ground::Light),
+        Ok(terminal_colorsaurus::ThemeMode::Dark) => Some(Ground::Dark),
         Err(_) => None,
     }
 }
@@ -120,16 +128,16 @@ pub(crate) fn query_flavor() -> Option<Flavor> {
 /// keypress already waiting and never under a text field, because the read
 /// discards whatever it finds ahead of the reply — which would be the key
 /// that was just typed.
-pub(crate) struct FlavorWatch {
-    current: Flavor,
+pub(crate) struct GroundWatch {
+    current: Ground,
     last: Instant,
     /// Consecutive silences. Reset by any answer; `STRIKES` of them ends the
     /// watch for good.
     strikes: u8,
 }
 
-impl FlavorWatch {
-    fn new(current: Flavor) -> Self {
+impl GroundWatch {
+    fn new(current: Ground) -> Self {
         Self { current, last: Instant::now(), strikes: 0 }
     }
 
@@ -139,16 +147,16 @@ impl FlavorWatch {
         self.strikes < STRIKES && self.last.elapsed() >= RECHECK_EVERY
     }
 
-    /// Run one query. `Some` only when the flavor actually changed — a board
+    /// Run one query. `Some` only when the ground actually changed — a board
     /// that repaints in the same colours is a repaint for nothing.
-    pub(crate) fn poll(&mut self, query: impl FnOnce() -> Option<Flavor>) -> Option<Flavor> {
+    pub(crate) fn poll(&mut self, query: impl FnOnce() -> Option<Ground>) -> Option<Ground> {
         self.last = Instant::now();
-        let Some(flavor) = query() else {
+        let Some(ground) = query() else {
             self.strikes = self.strikes.saturating_add(1);
             return None;
         };
         self.strikes = 0;
-        (flavor != std::mem::replace(&mut self.current, flavor)).then_some(flavor)
+        (ground != std::mem::replace(&mut self.current, ground)).then_some(ground)
     }
 }
 
@@ -156,23 +164,23 @@ impl FlavorWatch {
 mod tests {
     use super::*;
 
-    fn watch() -> FlavorWatch {
-        FlavorWatch::new(Flavor::Graphite)
+    fn watch() -> GroundWatch {
+        GroundWatch::new(Ground::Dark)
     }
 
     #[test]
     fn an_unchanged_answer_repaints_nothing() {
         let mut w = watch();
-        assert_eq!(w.poll(|| Some(Flavor::Graphite)), None);
-        assert_eq!(w.poll(|| Some(Flavor::Graphite)), None);
+        assert_eq!(w.poll(|| Some(Ground::Dark)), None);
+        assert_eq!(w.poll(|| Some(Ground::Dark)), None);
     }
 
     #[test]
     fn a_flip_is_reported_once_and_becomes_the_new_resting_state() {
         let mut w = watch();
-        assert_eq!(w.poll(|| Some(Flavor::Chalk)), Some(Flavor::Chalk));
-        assert_eq!(w.poll(|| Some(Flavor::Chalk)), None);
-        assert_eq!(w.poll(|| Some(Flavor::Graphite)), Some(Flavor::Graphite));
+        assert_eq!(w.poll(|| Some(Ground::Light)), Some(Ground::Light));
+        assert_eq!(w.poll(|| Some(Ground::Light)), None);
+        assert_eq!(w.poll(|| Some(Ground::Dark)), Some(Ground::Dark));
     }
 
     #[test]
@@ -180,7 +188,7 @@ mod tests {
         let mut w = watch();
         assert_eq!(w.poll(|| None), None);
         assert_eq!(w.poll(|| None), None);
-        assert_eq!(w.poll(|| Some(Flavor::Chalk)), Some(Flavor::Chalk));
+        assert_eq!(w.poll(|| Some(Ground::Light)), Some(Ground::Light));
         // The answer cleared the strikes, so a fresh run of silence gets its
         // own full allowance.
         for _ in 0..STRIKES - 1 {
@@ -204,5 +212,15 @@ mod tests {
     fn the_cadence_holds_the_query_back() {
         let w = watch();
         assert!(!w.due(), "a query just ran; the next one waits out the cadence");
+    }
+
+    /// Every flavor name pins, and so do the two old aliases.
+    #[test]
+    fn the_env_var_names_every_flavor() {
+        for f in Flavor::ALL {
+            assert_eq!(Flavor::from_name(f.name()), Some(f));
+        }
+        assert_eq!(Flavor::from_name("dark"), Some(Flavor::Graphite));
+        assert_eq!(Flavor::from_name("light"), Some(Flavor::Chalk));
     }
 }

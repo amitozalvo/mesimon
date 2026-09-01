@@ -71,7 +71,10 @@ pub(crate) const PRIVATE: u32 = 0o600;
 /// Board files inside the repo: the user's data, at the umask like any file.
 pub(crate) const SHARED: u32 = 0o644;
 
-pub(crate) fn write_atomic(path: &Path, content: &str, mode: u32) -> Result<()> {
+/// `pub` for one outside caller: the TUI's per-machine `prefs.json`
+/// (`mesimon-tui/src/prefs.rs`), which wants the same crash-safety and no
+/// second copy of it.
+pub fn write_atomic(path: &Path, content: &str, mode: u32) -> Result<()> {
     // 13 §13.9.1: temp + fsync + rename + directory fsync, measured at ~170 µs
     // total. Without the fsync a crash between write and rename leaves a
     // truncated file — precisely the malformed input `load` now has to

@@ -765,6 +765,16 @@ impl Board {
             .find(|s| s.ticket == ticket && s.kind == SessionKind::Claude && s.state.has_pane())
     }
 
+    /// The claude a ticket already holds, parked or not — `is_live`, so a
+    /// Sleeping record counts. A ticket holds ONE claude (2026-09-02): the
+    /// daemon refuses a second spawn by this, and `c` wakes rather than
+    /// starts by the same fact. A second seat on a ticket is a shell.
+    pub fn live_claude(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.sessions
+            .iter()
+            .find(|s| s.ticket == ticket && s.kind == SessionKind::Claude && s.state.is_live())
+    }
+
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
         self.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).count()
     }

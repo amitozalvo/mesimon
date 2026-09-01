@@ -138,6 +138,7 @@ Inside the board, `Z` parks every idle session, which is the gentler version.
 | `$GIT_DIR/info/exclude` | One line, so `.mesimon/` does not show up in `git status`. |
 | `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, logs, the private tmux socket and conf. |
 | `~/.local/state/mesimon/update-check.json` | When the release check last answered, and what it heard. One per machine, not per repo. |
+| `~/.local/state/mesimon/prefs.json` | Your theme picks, one for a dark terminal and one for a light one. One per machine, not per repo. |
 | Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. |
 
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting

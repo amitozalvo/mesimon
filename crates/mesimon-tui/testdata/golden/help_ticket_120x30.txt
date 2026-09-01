@@ -17,7 +17,6 @@
                                     enter     focus
                                     c         claude
                                     s         shell
-                                    C         another claude
                                     S         another shell
                                     x         sleep
                                     P         keep awake
@@ -26,5 +25,6 @@
                                     ?         keys
                                     ^L        redraw
                                     ^Z        suspend mesimon
+
 
  TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ q board ∙ ? keys

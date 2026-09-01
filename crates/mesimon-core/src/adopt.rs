@@ -191,6 +191,13 @@ pub fn tool_activity(v: &Value) -> Option<String> {
 /// turn late (verified in a live transcript — the latch for the message being
 /// worked on lands mid-tool-run, after the agent has already answered), so
 /// only the record's position says when the user actually spoke.
+///
+/// One plain-string record is the harness's, not the user's, and carries no
+/// flag saying so: the `<task-notification>` that wakes a turn parked on a
+/// background task (`isMeta` false; 22 of 22 in the local corpus). Reading it
+/// as a prompt put `> <task-notification><task-id>…` on a card and called the
+/// agent "thinking" under it (dogfood 2026-09-02). It is skipped by its tag,
+/// so the walk continues to the agent's real last words.
 pub fn user_prompt(v: &Value) -> Option<String> {
     if v.get("type").and_then(Value::as_str) != Some("user")
         || v.get("uuid").is_none()
@@ -202,19 +209,29 @@ pub fn user_prompt(v: &Value) -> Option<String> {
         return None;
     }
     let content = v.get("message")?.get("content")?;
-    if let Some(s) = content.as_str() {
-        return Some(s.trim().to_string()).filter(|s| !s.is_empty());
-    }
-    let blocks = content.as_array()?;
-    if blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+    let text = match content.as_str() {
+        Some(s) => s,
+        None => {
+            let blocks = content.as_array()?;
+            if blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+                return None;
+            }
+            blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .find_map(|b| b.get("text").and_then(Value::as_str))?
+        }
+    };
+    let text = text.trim();
+    if text.is_empty() || text.starts_with(TASK_NOTIFICATION_TAG) {
         return None;
     }
-    let text = blocks
-        .iter()
-        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
-        .find_map(|b| b.get("text").and_then(Value::as_str))?;
-    Some(text.trim().to_string()).filter(|s| !s.is_empty())
+    Some(text.to_string())
 }
+
+/// The opening tag of the harness's background-task wake-up, written as a
+/// plain `user` record with no `isMeta`.
+const TASK_NOTIFICATION_TAG: &str = "<task-notification>";
 
 #[cfg(test)]
 mod tests {
@@ -316,6 +333,16 @@ mod tests {
             r#"{"uuid":"u5","type":"user","interruptedMessageId":"msg_1","message":{"content":[
                 {"type":"text","text":"[Request interrupted by user]"}]}}"#,
         );
+        assert_eq!(user_prompt(&v), None);
+
+        // The background-task wake-up is the harness speaking, in a plain
+        // string record with no flag — only its tag says so.
+        let v = val(
+            r#"{"uuid":"u8","type":"user","message":{"content":"<task-notification>\n<task-id>aac805ad</task-id>\n<status>completed</status>\n</task-notification>"}}"#,
+        );
+        assert_eq!(user_prompt(&v), None);
+        let v = val(r#"{"uuid":"u9","type":"user","message":{"content":[
+                {"type":"text","text":"  <task-notification><task-id>x</task-id></task-notification>"}]}}"#);
         assert_eq!(user_prompt(&v), None);
 
         // A subagent's prompt is not the user speaking, and neither is a

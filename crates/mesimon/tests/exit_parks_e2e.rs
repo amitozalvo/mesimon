@@ -67,9 +67,16 @@ fn leaving_claude_parks_the_session() {
     ));
 
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "left it".into() });
-    let ticket = c.board().tickets.first().expect("ticket").id;
+    // A ticket holds one claude (2026-09-02), so the case with no conversation
+    // needs a ticket of its own.
+    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "lost it".into() });
+    let find = |c: &mut TestClient, title: &str| {
+        c.board().tickets.iter().find(|t| t.title == title).expect("ticket").id
+    };
+    let ticket = find(&mut c, "left it");
+    let other = find(&mut c, "lost it");
 
-    let spawn = |c: &mut TestClient, kind| match c.request(Command::SpawnSession {
+    let spawn = |c: &mut TestClient, ticket, kind| match c.request(Command::SpawnSession {
         ticket,
         kind,
         submit_prompt: false,
@@ -79,7 +86,7 @@ fn leaving_claude_parks_the_session() {
     };
 
     // ---- 1. a conversation to come back to → the exit is a park ----------
-    let kept = spawn(&mut c, SessionKind::Claude);
+    let kept = spawn(&mut c, ticket, SessionKind::Claude);
     // Claude's own store is what `--resume` reads, so that file existing is
     // the whole difference between a session that can wake and one that
     // cannot. Write one for this session and not for the next.
@@ -90,10 +97,10 @@ fn leaving_claude_parks_the_session() {
     .unwrap();
 
     // ---- 2. no conversation → the exit is an exit ------------------------
-    let lost = spawn(&mut c, SessionKind::Claude);
+    let lost = spawn(&mut c, other, SessionKind::Claude);
 
     // ---- 3. a shell is its pane; there is nothing to resume --------------
-    let shell = spawn(&mut c, SessionKind::Bash);
+    let shell = spawn(&mut c, ticket, SessionKind::Bash);
 
     let parked = c.await_state(kept, "sleeping", |s| !matches!(s, SessionState::Spawning));
     assert_eq!(parked, SessionState::Sleeping, "a resumable claude exit parks");

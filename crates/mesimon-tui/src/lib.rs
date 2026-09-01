@@ -10,7 +10,9 @@ mod detect;
 mod glyphs;
 mod handover;
 mod layout;
+mod osc;
 mod peek;
+mod prefs;
 mod release;
 mod rich;
 mod tags;
@@ -34,6 +36,8 @@ use ratatui::crossterm::terminal::{
 use app::App;
 use client::Client;
 
+/// What `mesimon doctor` says about the theme picks (`prefs.rs`).
+pub use prefs::doctor_line as theme_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
 /// the offer it raises, and the doctor must not carry a second copy of the
@@ -43,9 +47,20 @@ pub use release::doctor_line as update_check_status;
 pub fn run(repo_root: &Path) -> Result<()> {
     // Capability detection runs exactly once, before raw mode and before any
     // PTY exists (06 §2.9 query hygiene; handovers reuse the cached answers).
-    // Light/dark is the one rung that keeps asking — see `detect::FlavorWatch`
+    // Light/dark is the one rung that keeps asking — see `detect::GroundWatch`
     // — but only from inside the event loop, where nothing else owns stdin.
     let detected = detect::detect();
+    // The two slots are loaded HERE and never in `App::new`, so no test app
+    // ever reads the developer's own file.
+    let prefs_path = prefs::prefs_path();
+    let loaded = prefs_path.as_deref().map(prefs::load).unwrap_or_else(|| prefs::Loaded {
+        prefs: Default::default(),
+        write_barred: false,
+        notice: None,
+    });
+    // The pin outranks the slot; the slot is the ground's.
+    let flavor = detected.forced.unwrap_or(loaded.prefs.for_ground(detected.ground));
+    let theme = theme::Theme::new(flavor, detected.profile);
 
     // Hard floor (07 §2.4): refuse to start below 60x20.
     if let Ok((w, h)) = ratatui::crossterm::terminal::size() {
@@ -60,8 +75,16 @@ pub fn run(repo_root: &Path) -> Result<()> {
     }
 
     let client = Client::connect(repo_root)?;
-    let mut app = App::new(Box::new(client), repo_root.to_path_buf(), detected.theme)?;
+    let mut app = App::new(Box::new(client), repo_root.to_path_buf(), theme)?;
     app.flavor_watch = detected.watch;
+    app.ground = detected.ground;
+    app.forced = detected.forced;
+    app.prefs = loaded.prefs;
+    app.prefs_path = prefs_path;
+    app.prefs_write_barred = loaded.write_barred;
+    if let Some(notice) = loaded.notice {
+        app.status = notice;
+    }
 
     let mut terminal = init_terminal()?;
     // Set AFTER init_terminal, which is what runs (and caches) the probe —

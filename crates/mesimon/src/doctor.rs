@@ -200,6 +200,10 @@ fn environment(verbose: bool) -> Section {
         rec(Level::Ok, "TERM", term)
     });
 
+    // The two theme slots, and whether MESIMON_THEME is pinning one. Never
+    // which ground the terminal is on: doctor runs in pipes.
+    records.push(rec(Level::Note, "theme", mesimon_tui::theme_status()));
+
     records.push(match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => rec(Level::Ok, "HOME", redact(&h, verbose)),
         _ => rec(Level::Fail, "HOME", "unset").advice(
@@ -634,7 +638,10 @@ mod tests {
     /// misbehaving, and paste where the font is unknown.
     #[test]
     fn output_is_ascii_only() {
-        let s = render(&[environment(false), install(false), git_section(std::path::Path::new("."), false)], false);
+        let s = render(
+            &[environment(false), install(false), git_section(std::path::Path::new("."), false)],
+            false,
+        );
         assert!(s.is_ascii(), "non-ascii in doctor output:\n{s}");
     }
 

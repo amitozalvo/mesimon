@@ -293,7 +293,21 @@ fn m2_attention_headless() {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     assert_eq!(cursor_y(&claude_sid16), "0", "a plain spawn must never press Enter");
+    // A ticket holds ONE claude (2026-09-02): while this one is alive a second
+    // is refused, and the message names the gesture that reaches the seat.
+    match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: true,
+    }) {
+        Response::Err { message } => {
+            assert!(message.contains("already has a claude"), "{message}");
+            assert!(message.contains("focus"), "{message}");
+        }
+        other => panic!("a second claude on one ticket must be refused, got {other:?}"),
+    }
     let _ = c.request(Command::KillSession { id: claude_sid });
+    // Killed is Exited, not live: the seat is free again.
 
     // The composer's Shift+Enter (submit_prompt): the SAME prefill, plus an
     // Enter that mesimon owes the session. It is not paid at spawn — T-5 arm C

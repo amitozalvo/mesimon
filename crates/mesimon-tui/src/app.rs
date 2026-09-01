@@ -19,7 +19,7 @@ use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind,
 
 use crate::client::Transport;
 use crate::text::EditBuffer;
-use crate::theme::Theme;
+use crate::theme::{Flavor, Ground, Theme};
 
 /// Which screen owns the keymap and the frame (07 §1). `Mode` remains the
 /// board's sub-state; the ticket screen has no modes yet.
@@ -51,6 +51,28 @@ impl ShellTail {
     pub(crate) fn new(session: uuid::Uuid, lines: Vec<String>) -> Self {
         Self { session, lines, fetched: Instant::now() }
     }
+}
+
+/// What the last draw of the ticket page's preview zone measured: which
+/// document it showed, where it was scrolled to, and how far it could go.
+/// Draw-side state, written by `ui/ticket.rs` and read by the `{ }` press
+/// and the footer — the zone's height is a fact of the frame, so the page
+/// size and the overflow can only be known there.
+#[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
+pub struct PreviewView {
+    /// The document on screen: the selected session and, for a reply, the
+    /// reply itself. `None` while the zone shows nothing.
+    pub key: Option<u64>,
+    /// Rows hidden above the window, after the clamp.
+    pub offset: usize,
+    /// The largest offset that still fills the window (0 = it all fits).
+    pub max: usize,
+    /// One press's worth of rows: the window less one row of overlap.
+    pub page: usize,
+    /// A shell tail sits at its bottom unless told otherwise — the newest
+    /// line is what it is for — so scrolling back down to `max` hands it
+    /// back to the pane rather than pinning it to today's last row.
+    pub follows_tail: bool,
 }
 
 /// Everything the diff screen holds (M4b). Per-view and in-memory only —
@@ -113,6 +135,11 @@ pub enum Mode {
     /// The Esc menu (07 §16): everything that acts on the board as a whole,
     /// plus the two lists that are not the board.
     Menu {
+        idx: usize,
+    },
+    /// The theme picker: `idx` is the cursor over `Flavor::ALL`, and the
+    /// live `theme` IS the preview — nothing else is kept in step.
+    Theme {
         idx: usize,
     },
 }
@@ -306,6 +333,14 @@ pub struct App {
     /// transcript file to read the way `peek_cache` reads an agent's, so
     /// this comes over the wire, and only while a shell is being looked at.
     pub shell_tail: Option<ShellTail>,
+    /// Where `{ }` asked the preview zone to be: rows hidden above, and the
+    /// document (`PreviewView::key`) that was asked for. Another document
+    /// under the cursor — the rail moved, or a new reply landed — reads it
+    /// as zero, so a page into one reply never opens the next one halfway.
+    /// Draw clamps it and writes the clamp back, as the diff pane does.
+    pub preview_scroll: Cell<Option<(u64, usize)>>,
+    /// What the last draw of that zone measured (see `PreviewView`).
+    pub preview_view: Cell<PreviewView>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
@@ -351,10 +386,6 @@ pub struct App {
     /// in `handle_key`, so arming from the composer leaves the half-typed
     /// title untouched underneath and Esc returns to it.
     pub(crate) tag_armed: Option<TagArm>,
-    /// Where the second tag goes (`w` in the picker). A view setting held for
-    /// the session: it changes nothing the daemon owns, and there is no place
-    /// to persist a preference that would not be board data belonging to
-    /// everyone on the repo.
     /// What `u` would undo. Archiving is fully reversible and leaves the
     /// ticket in the snapshot, so it needs no daemon-side grace band — it
     /// just needs to be reachable, which is what this is.
@@ -380,10 +411,28 @@ pub struct App {
     /// plain Enter.
     pub rich_keys: bool,
     /// Light/dark watch (`lib.rs::run` arms it, and only when the terminal
-    /// answered the startup query). None means the flavor is settled for the
+    /// answered the startup query). None means the ground is settled for the
     /// process: forced by `MESIMON_THEME`, mono, or a terminal that cannot
     /// be asked.
-    pub flavor_watch: Option<crate::detect::FlavorWatch>,
+    pub flavor_watch: Option<crate::detect::GroundWatch>,
+    /// The ground the terminal last reported — the slot a pick sets.
+    pub ground: Ground,
+    /// `MESIMON_THEME`, while it holds: cleared by a pick, which is the more
+    /// recent explicit choice.
+    pub forced: Option<Flavor>,
+    /// The two slots (`prefs.rs`). `prefs_path` None means never write —
+    /// every test app, and a machine with no HOME. This is the per-machine
+    /// preference store the peek toggle (`p`) never had; carrying `p` here
+    /// is a follow-up.
+    pub prefs: crate::prefs::Prefs,
+    pub prefs_path: Option<PathBuf>,
+    /// A newer build wrote the file: picks last the session, nothing is
+    /// written back.
+    pub prefs_write_barred: bool,
+    /// The flavor query's reply, when it comes back after the query gave up
+    /// on it, arrives as keystrokes; this recognises and discards it ahead
+    /// of everything else (`osc.rs`).
+    reply_swallow: crate::osc::ReplySwallow,
     /// Daemon connection lost: keep the last board, re-dial on a slow cadence.
     daemon_down: bool,
     last_reconnect: Option<Instant>,
@@ -423,6 +472,8 @@ impl App {
             peek_cache: crate::peek::PeekCache::default(),
             tag_flash: None,
             shell_tail: None,
+            preview_scroll: Cell::new(None),
+            preview_view: Cell::new(PreviewView::default()),
             spin_epoch: Cell::new(None),
             diff: None,
             pending_attach: None,
@@ -434,6 +485,12 @@ impl App {
             prompt_history: Vec::new(),
             rich_keys: false,
             flavor_watch: None,
+            ground: Ground::Dark,
+            forced: None,
+            prefs: Default::default(),
+            prefs_path: None,
+            prefs_write_barred: false,
+            reply_swallow: crate::osc::ReplySwallow::default(),
             update_watch: crate::update::UpdateWatch::new(),
             release,
             pending_reexec: false,
@@ -719,13 +776,28 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return Ok(dirty);
         }
+        Ok(self.on_key(key.code, key.modifiers)? || dirty)
+    }
+
+    /// One raw key event from the terminal. The reply swallow sees it first —
+    /// before the text-field barrier, before the keymap — because a late
+    /// answer to our own colour query is the one thing on stdin that is not
+    /// the user, and it must never reach either. Returns whether anything
+    /// was handled.
+    pub fn on_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<bool> {
+        let keys = match self.reply_swallow.feed(code, mods) {
+            crate::osc::Feed::Swallowed => return Ok(false),
+            crate::osc::Feed::Pass(keys) => keys,
+        };
         // Any keypress abandons a parked spawn-focus: the user moved on, and
         // yanking them into a session mid-thought is worse than not focusing.
         // (A new `c` re-arms it below; the session itself still spawns.)
         self.pending_spawn_focus = None;
         self.status.clear();
         self.merge_note.clear();
-        self.handle_key(key.code, key.modifiers)?;
+        for (code, mods) in keys {
+            self.handle_key(code, mods)?;
+        }
         Ok(true)
     }
 
@@ -798,15 +870,68 @@ impl App {
         if self.typing() || event::poll(Duration::ZERO)? {
             return Ok(());
         }
-        if let Some(flavor) =
-            self.flavor_watch.as_mut().and_then(|w| w.poll(crate::detect::query_flavor))
+        if let Some(ground) =
+            self.flavor_watch.as_mut().and_then(|w| w.poll(crate::detect::query_ground))
         {
-            self.theme = Theme::new(flavor, self.theme.profile);
-            // Same recovery as ^L: repaint from nothing rather than trust a
-            // cell-level diff to have touched every cell whose colour moved.
-            self.force_redraw = true;
+            self.ground = ground;
+            // Under the picker the preview stays: the popup's header starts
+            // naming the new slot and Enter writes that one. A watch and a
+            // pin never coexist, so the slot's pick is the resting theme.
+            if !matches!(self.mode, Mode::Theme { .. }) {
+                self.preview(self.prefs.for_ground(ground));
+            }
         }
         Ok(())
+    }
+
+    /// Wear a flavor now. The one road every retheme takes — the watch, the
+    /// picker's cursor, Esc's put-back — so they cannot disagree about it.
+    fn preview(&mut self, flavor: Flavor) {
+        if self.theme.flavor == flavor {
+            return;
+        }
+        self.theme = Theme::new(flavor, self.theme.profile);
+        // Same recovery as ^L: repaint from nothing rather than trust a
+        // cell-level diff to have touched every cell whose colour moved.
+        self.force_redraw = true;
+    }
+
+    /// The theme the board rests on when nobody is previewing: the pin, or
+    /// the current ground's slot.
+    fn resting_flavor(&self) -> Flavor {
+        self.forced.unwrap_or(self.prefs.for_ground(self.ground))
+    }
+
+    /// Enter in the picker: the slot the terminal is on takes the flavor,
+    /// and the file follows where it may. A pick outranks `MESIMON_THEME`
+    /// for the rest of the session — it is the more recent explicit choice —
+    /// but the env var still pins the next launch, and the status says so.
+    fn commit_theme(&mut self, flavor: Flavor) {
+        let slot = match self.ground {
+            Ground::Dark => "dark",
+            Ground::Light => "light",
+        };
+        self.prefs.set(self.ground, flavor);
+        let pinned = self.forced.take().is_some();
+        self.mode = Mode::Normal;
+        self.preview(flavor);
+        let name = flavor.name();
+        self.status = match self.prefs_path.as_ref() {
+            _ if self.prefs_write_barred => format!(
+                "{name} for this session ∙ prefs.json was written by a newer mesimon, not touched"
+            ),
+            None => format!("{name} for this session"),
+            Some(path) => match crate::prefs::save(path, &self.prefs) {
+                Ok(()) => format!("{name} saved for {slot} terminals"),
+                Err(e) => {
+                    format!("{name} for this session ∙ could not write {}: {e}", path.display())
+                }
+            },
+        };
+        if pinned {
+            let var = std::env::var("MESIMON_THEME").unwrap_or_default();
+            self.status.push_str(&format!(" ∙ MESIMON_THEME={var} pins the next launch"));
+        }
     }
 
     /// A text field owns the keyboard: the composer, a rename, or a tag name.
@@ -846,6 +971,7 @@ impl App {
             Mode::Menu { .. } => Scope::Menu,
             Mode::External { .. } => Scope::Drawer,
             Mode::Archived { .. } => Scope::Archived,
+            Mode::Theme { .. } => Scope::Theme,
             _ => match self.screen {
                 Screen::Diff { .. } => Scope::Diff,
                 Screen::Ticket { .. } => Scope::Ticket,
@@ -912,6 +1038,14 @@ impl App {
             bulk_archive: self.resources.archive_tickets,
             has_archived: !self.board.archived_tickets().is_empty(),
             peek_on: self.peek,
+            theme_name: self.theme.flavor.name(),
+            theme_blurb: self.theme.flavor.blurb(),
+            theme_slot_word: match self.ground {
+                Ground::Dark => "dark",
+                Ground::Light => "light",
+            },
+            theme_pinned: self.forced.is_some(),
+            preview_scrolls: self.preview_view.get().max > 0,
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
             // what you have before fetching it again. This is also what keeps
@@ -1328,11 +1462,9 @@ impl App {
                     self.focus_kind_or_spawn(id, kind)?;
                 }
             }
-            Verb::ClaudeNew | Verb::ShellNew => {
-                let kind =
-                    if verb == Verb::ClaudeNew { SessionKind::Claude } else { SessionKind::Bash };
+            Verb::ShellNew => {
                 if let Some(id) = self.subject() {
-                    self.spawn_and_focus(id, kind)?;
+                    self.spawn_and_focus(id, SessionKind::Bash)?;
                 }
             }
             // Open the field on the card and get out of the way. Nothing is
@@ -1384,8 +1516,16 @@ impl App {
             // ---- diff ------------------------------------------------------
             Verb::ScrollDown => self.diff_scroll(1),
             Verb::ScrollUp => self.diff_scroll(-1),
-            Verb::PageDown => self.diff_scroll(DIFF_PAGE as isize),
-            Verb::PageUp => self.diff_scroll(-(DIFF_PAGE as isize)),
+            // One pair of keys, two read-only zones: the diff's hunk pane
+            // and the ticket page's preview. Which one is the screen's to say.
+            Verb::PageDown | Verb::PageUp => {
+                let dir: isize = if verb == Verb::PageDown { 1 } else { -1 };
+                match self.screen {
+                    Screen::Diff { .. } => self.diff_scroll(dir * DIFF_PAGE as isize),
+                    Screen::Ticket { .. } => self.preview_page(dir),
+                    Screen::Board => {}
+                }
+            }
             Verb::NextFile => self.diff_nav(1),
             Verb::PrevFile => self.diff_nav(-1),
             Verb::Refresh => {
@@ -1469,6 +1609,10 @@ impl App {
                 } else {
                     self.mode = Mode::Archived { idx: 0 };
                 }
+            }
+            Verb::ThemePick => {
+                let idx = Flavor::ALL.iter().position(|f| *f == self.theme.flavor).unwrap_or(0);
+                self.mode = Mode::Theme { idx };
             }
             Verb::AdoptObserve => self.adopt_external(false)?,
             // ---- input (handled in key_input; unreachable here) -------------
@@ -1617,6 +1761,16 @@ impl App {
                     if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
                 self.mode = Mode::Archived { idx };
             }
+            Scope::Theme => {
+                let Mode::Theme { idx } = self.mode else {
+                    return;
+                };
+                let n = Flavor::ALL.len();
+                let idx = if down { (idx + 1).min(n - 1) } else { idx.saturating_sub(1) };
+                self.mode = Mode::Theme { idx };
+                // The cursor is the preview.
+                self.preview(Flavor::ALL[idx]);
+            }
             _ => {}
         }
     }
@@ -1658,6 +1812,12 @@ impl App {
                 }
                 Ok(())
             }
+            Scope::Theme => {
+                if let Mode::Theme { idx } = self.mode {
+                    self.commit_theme(Flavor::ALL[idx.min(Flavor::ALL.len() - 1)]);
+                }
+                Ok(())
+            }
             _ => Ok(()),
         }
     }
@@ -1674,6 +1834,13 @@ impl App {
                 };
                 self.diff = None;
                 self.screen = Screen::Ticket { ticket, rail_idx };
+            }
+            Scope::Theme => {
+                // Put it back: whatever was previewed, the board returns to
+                // the theme it rests on. No entry flavor is stored, which is
+                // also what makes a ground flip under the picker right.
+                self.mode = Mode::Normal;
+                self.preview(self.resting_flavor());
             }
             _ => self.mode = Mode::Normal,
         }
@@ -1891,6 +2058,25 @@ impl App {
         let Some(d) = self.diff.as_ref() else { return };
         let now = d.scroll.get() as isize;
         d.scroll.set(now.saturating_add(delta).max(0) as usize);
+    }
+
+    /// `{ }` on the ticket page: move the preview zone one page, by what the
+    /// last draw measured. Clamped here AND at draw, so a press past the end
+    /// sits on the last full window rather than a blank one; a shell tail
+    /// scrolled back to its bottom is released to follow the pane again.
+    fn preview_page(&mut self, dir: isize) {
+        let v = self.preview_view.get();
+        let Some(key) = v.key else { return };
+        let next = (v.offset as isize + dir * v.page as isize).clamp(0, v.max as isize) as usize;
+        if v.follows_tail && next >= v.max {
+            self.preview_scroll.set(None);
+        } else {
+            self.preview_scroll.set(Some((key, next)));
+        }
+        // The next press may land before the next frame (a held key queues
+        // several), so the measurement moves with the request instead of
+        // waiting for the draw to say so.
+        self.preview_view.set(PreviewView { offset: next, ..v });
     }
 
     /// The external drawer's two verbs. `resume` adopts and takes the
@@ -2618,6 +2804,9 @@ impl App {
     fn focus_kind_or_spawn(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
         // Live sessions only: the rail's resumable corpse is Enter's business —
         // `c` on a ticket whose claude died spawns fresh, as it always has.
+        // A Sleeping one is live and lands in `focus_session`, which resumes
+        // before it attaches — so `c` on a parked claude wakes it, and the
+        // daemon's one-claude gate never has to refuse this key.
         let existing = self
             .rail_sessions(ticket)
             .iter()
@@ -3385,6 +3574,84 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     }
 
+    /// The theme picker is a menu row too.
+    fn open_theme_picker(app: &mut App) {
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        let items = keymap::menu_items(&app.ctx());
+        let idx = items.iter().position(|m| m.verb == Verb::ThemePick).expect("the theme row");
+        for _ in 0..idx {
+            press(app, 'j');
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    }
+
+    #[test]
+    fn theme_row_opens_the_picker_on_the_current_theme() {
+        let mut app = app_three_columns();
+        app.theme = Theme::new(Flavor::Blue, Profile::TrueColor);
+        open_theme_picker(&mut app);
+        assert_eq!(app.mode, Mode::Theme { idx: 2 }, "the cursor starts on blue");
+        assert_eq!(app.scope(), Scope::Theme);
+        assert_eq!(app.theme.flavor, Flavor::Blue, "opening previews nothing");
+    }
+
+    #[test]
+    fn moving_the_cursor_previews_and_esc_puts_it_back() {
+        let mut app = app_three_columns();
+        open_theme_picker(&mut app);
+        assert_eq!(app.mode, Mode::Theme { idx: 0 });
+        press(&mut app, 'j');
+        assert_eq!(app.theme.flavor, Flavor::Chalk, "the cursor is the preview");
+        press(&mut app, 'j');
+        assert_eq!(app.theme.flavor, Flavor::Blue);
+        assert!(app.force_redraw, "a retheme repaints from nothing");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.theme.flavor, Flavor::Graphite, "esc puts the resting theme back");
+        assert_eq!(app.prefs.dark, Flavor::Graphite, "nothing was saved");
+    }
+
+    #[test]
+    fn enter_saves_the_slot_the_terminal_reports() {
+        let dir = std::env::temp_dir().join(format!("msmn-app-prefs-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let path = dir.join("prefs.json");
+        let mut app = app_three_columns();
+        app.prefs_path = Some(path.clone());
+        app.ground = Ground::Light;
+        open_theme_picker(&mut app);
+        press(&mut app, 'j');
+        press(&mut app, 'j');
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.theme.flavor, Flavor::Amber);
+        assert_eq!(app.status, "amber saved for light terminals");
+        let back = crate::prefs::load(&path).prefs;
+        assert_eq!(back.light, Flavor::Amber);
+        assert_eq!(back.dark, Flavor::Graphite, "the other slot is untouched");
+        // A ground flip now lands on the other slot's pick.
+        app.ground = Ground::Dark;
+        assert_eq!(app.resting_flavor(), Flavor::Graphite);
+    }
+
+    #[test]
+    fn a_pin_is_cleared_by_a_pick_and_the_status_says_so() {
+        let mut app = app_three_columns();
+        app.forced = Some(Flavor::Green);
+        app.theme = Theme::new(Flavor::Green, Profile::TrueColor);
+        let ctx = app.ctx();
+        assert!(ctx.theme_pinned);
+        open_theme_picker(&mut app);
+        press(&mut app, 'k');
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.theme.flavor, Flavor::Blue);
+        assert!(app.forced.is_none(), "the pick is the more recent choice");
+        assert!(app.status.contains("pins the next launch"), "{}", app.status);
+        assert_eq!(app.prefs.dark, Flavor::Blue);
+    }
+
     #[test]
     fn enter_on_plain_ticket_opens_the_ticket_screen() {
         let mut app = app_three_columns();
@@ -3574,6 +3841,31 @@ mod tests {
         assert!(!sent_contains(&sent, "PromptSession"));
     }
 
+    /// A ticket holds one claude (2026-09-02). `c` on a parked one is a wake
+    /// — the resume road, then the attach — and never a second spawn beside
+    /// it; the hint says the same word. `c` on a ticket with none starts one.
+    #[test]
+    fn c_wakes_a_parked_claude_instead_of_starting_a_second() {
+        let (mut app, sent, sid) = app_with_claude(SessionState::Sleeping, false);
+        assert_eq!(
+            keymap::hint_for(Scope::Board, Verb::Claude, &app.ctx()),
+            Some(("c", "wake claude"))
+        );
+        press(&mut app, 'c');
+        assert!(
+            sent_contains(&sent, &format!("ResumeSession {{ id: {sid}")),
+            "{:?}",
+            sent.borrow()
+        );
+        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        assert_eq!(keymap::hint_for(Scope::Board, Verb::Claude, &app.ctx()), Some(("c", "claude")));
+        press(&mut app, 'c');
+        assert!(sent_contains(&sent, "FocusStart"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+    }
+
     /// The legacy floor. A terminal that cannot spell Shift+Enter sends a
     /// plain Enter, which on the board means "go to the agent" — so the key
     /// must resolve to nothing here rather than half-working.
@@ -3690,6 +3982,47 @@ mod tests {
         sent.borrow_mut().clear();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent.borrow().join(" ").contains("name: None"), "{:?}", sent.borrow());
+    }
+
+    /// The terminal's late answer to the colour query, fed the way `tick`
+    /// feeds it: `alt+]` `1` `1` `;` `rgb:…` `alt+\`. The `1`s are the
+    /// quick-tag key and the `r` is rename, and neither may fire — and the
+    /// machine is idle again afterwards, so the next real `r` does.
+    #[test]
+    fn a_late_colour_reply_neither_tags_nor_renames() {
+        let mut board = board_three_columns();
+        board.register_tag(1, "BUG").expect("registered");
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        app.cursor_col = 0;
+        app.cursor_row = 0;
+        app.on_key(KeyCode::Char(']'), KeyModifiers::ALT).unwrap();
+        for c in "11;rgb:1e1e/1e1e/1e1e".chars() {
+            app.on_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.on_key(KeyCode::Char('\\'), KeyModifiers::ALT).unwrap();
+        assert!(!sent_contains(&sent, "SetTag"), "{:?}", sent.borrow());
+        assert!(!matches!(app.mode, Mode::Input { .. }), "rename opened");
+        assert!(app.tag_flash.is_none());
+
+        assert!(app.on_key(KeyCode::Char('r'), KeyModifiers::NONE).unwrap());
+        assert!(matches!(app.mode, Mode::Input { .. }), "a real r still renames");
+    }
+
+    /// The same reply landing INSIDE a text field — the composer is open —
+    /// types nothing into it, since the swallow sits ahead of the barrier
+    /// that strips Alt.
+    #[test]
+    fn a_late_colour_reply_types_nothing_into_an_open_field() {
+        let mut app = app_three_columns();
+        press(&mut app, 'o');
+        press(&mut app, 'x');
+        app.on_key(KeyCode::Char(']'), KeyModifiers::ALT).unwrap();
+        for c in "11;rgb:1e1e/1e1e/1e1e".chars() {
+            app.on_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.on_key(KeyCode::Char('\\'), KeyModifiers::ALT).unwrap();
+        let Mode::Input { buffer, .. } = &app.mode else { panic!("composer closed") };
+        assert_eq!(buffer.as_str(), "x");
     }
 
     /// hjkl walks the grid and a digit jumps to that group's row, stepping

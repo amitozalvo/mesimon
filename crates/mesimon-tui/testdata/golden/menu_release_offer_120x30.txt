@@ -4,8 +4,7 @@
 
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
 
-   Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
-                              menu
+   Keymap validator       >1y menu
 
                               ◦ Install v0.1.0-alpha.5
                                   downloads and verifies it ∙ nothing restarts yet
@@ -15,11 +14,12 @@
                                   off the board, still here
                                 Show agent replies                                       p
                                   the latest reply under the selected card
+                                Theme: graphite
+                                  dark, the default ∙ for a dark terminal
                                 All keys on this screen                                  ?
 
                                 Quit mesimon                                             q
                                   sessions keep running
-
 
 
 
