@@ -159,7 +159,7 @@ fn m2_attention_headless() {
         kind: SessionKind::Bash,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     // Drain the spawn's own BoardChanged push.
@@ -284,7 +284,7 @@ fn m2_attention_headless() {
         kind: SessionKind::Claude,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("claude spawn failed: {other:?}"),
     };
     let (board, _) = board_of(c.request(Command::Snapshot));
@@ -368,7 +368,7 @@ fn m2_attention_headless() {
         kind: SessionKind::Claude,
         submit_prompt: true,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("claude spawn failed: {other:?}"),
     };
     let (board, _) = board_of(c.request(Command::Snapshot));
@@ -440,7 +440,7 @@ fn m2_attention_headless() {
         kind: SessionKind::Bash,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     let (board, _) = board_of(c.request(Command::Snapshot));

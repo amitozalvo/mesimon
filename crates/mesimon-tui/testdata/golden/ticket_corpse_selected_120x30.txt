@@ -1,0 +1,30 @@
+ mesimon > kanban-tui > Fix OSC-11 detection
+
+ IN PROGRESS ∙ created by you >1y ago
+
+                                                                                           SESSIONS                  3
+
+                                                                                          ⠋ ✻ claude               >1y
+                                                                                          ◦ $ bash                 >1y
+                                                                                          ✓ ✻ claude               >1y
+                                                                                              enter resumes
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ TICKET  jk select session ∙ enter resume ∙ c claude ∙ s shell ∙ x dismiss ∙ r rename ∙ ^t tags ∙ q board ∙ ? keys

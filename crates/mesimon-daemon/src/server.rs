@@ -253,6 +253,12 @@ pub fn run(paths: Paths) -> Result<()> {
     // Reconcile persisted records against the live private server (D24).
     let snap = backend.snapshot().unwrap_or_default();
     let rec = reconcile(&board.sessions, &snap);
+    // The user may have left a session while the daemon was down (this repo
+    // restarts one after every daemon-side rebuild). Reconcile still says
+    // `Exited`; `park_on_exit` gets the same say it would have had live —
+    // but only over records THIS reconcile just moved, never over corpses
+    // that were already persisted as dead, which must stay dead.
+    let mut just_exited = Vec::new();
     for (id, link) in &rec.links {
         if let Some(r) = board.sessions.iter_mut().find(|s| s.id == *id) {
             // Observe-only records (imported, never spawned) have no pane by
@@ -261,7 +267,12 @@ pub fn run(paths: Paths) -> Result<()> {
             if observe_only && matches!(link, mesimon_core::reconcile::Link::Missing) {
                 continue;
             }
+            let was_live = r.state.is_live();
             r.state = state_for(link, &r.state, r.kind == SessionKind::Claude);
+            if was_live && matches!(r.state, SessionState::Exited { reason: ExitReason::UserQuit })
+            {
+                just_exited.push(*id);
+            }
         }
     }
     if !sessions_write_barred {
@@ -397,20 +408,35 @@ pub fn run(paths: Paths) -> Result<()> {
         moves: MoveGate::new(),
         board_version: 0,
         agent_replay: HashMap::new(),
+        shell_env: crate::shellenv::ShellEnv::default(),
+        shell_env_capturing: false,
+        shell_env_error: None,
     };
+    let mut parked = false;
+    for id in just_exited {
+        parked |= d.park_on_exit(id);
+    }
+    if parked {
+        // The reconcile above already saved the corpse; write the park over
+        // it, so a daemon that dies in its first second does not lose it.
+        d.persist_sessions();
+    }
     d.refresh_worktree_flags();
+    // Ask the user's shell what the environment is, immediately. Until the
+    // answer lands, spawns fall back to the daemon's own inherited env — which
+    // is what every spawn used before this existed, so the window is a
+    // regression to the old behaviour rather than to no behaviour at all.
+    d.queue_shell_env_capture();
 
     for msg in rx {
         match msg {
             Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
             Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
+            Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
-        shell_env: crate::shellenv::ShellEnv::default(),
-        shell_env_capturing: false,
-        shell_env_error: None,
                 let _ = reply.send(resp);
                 if shutdown {
                     break;
@@ -422,18 +448,12 @@ pub fn run(paths: Paths) -> Result<()> {
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());
     Ok(())
-    // Ask the user's shell what the environment is, immediately. Until the
-    // answer lands, spawns fall back to the daemon's own inherited env — which
-    // is what every spawn used before this existed, so the window is a
-    // regression to the old behaviour rather than to no behaviour at all.
-    d.queue_shell_env_capture();
 }
 
 impl Daemon {
     /// Per-session env (layer 1 of "the session knows where it is": silent,
     /// zero-token, keyed off by hooks and shell scripts; the agent sees it
     /// when it looks).
-            Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
     ///
     /// `MESIMON_TICKET` goes to EVERY session mesimon spawns. It used to be
     /// worktree-only, which meant a shared-checkout session — the board
@@ -460,26 +480,6 @@ impl Daemon {
         }
         env
     }
-}
-
-/// The user's own configured permission default mode, read from the same
-/// config-home ladder the census uses (MESIMON_CLAUDE_HOME → CLAUDE_CONFIG_DIR
-/// → ~/.claude). `permissions.defaultMode` first, top-level `defaultMode` as
-/// the legacy spelling. Read-only — mesimon never writes config (doctor rule).
-fn user_default_mode() -> Option<String> {
-    let home = std::env::var("MESIMON_CLAUDE_HOME")
-        .or_else(|_| std::env::var("CLAUDE_CONFIG_DIR"))
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
-        });
-    let text = std::fs::read_to_string(home.join("settings.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("permissions")
-        .and_then(|p| p.get("defaultMode"))
-        .or_else(|| v.get("defaultMode"))
-        .and_then(|m| m.as_str())
-        .map(str::to_string)
 
     /// Ask the user's login shell for its environment, off the writer thread.
     ///
@@ -546,12 +546,36 @@ fn user_default_mode() -> Option<String> {
     }
 }
 
+/// The user's own configured permission default mode, read from the same
+/// config-home ladder the census uses (MESIMON_CLAUDE_HOME → CLAUDE_CONFIG_DIR
+/// → ~/.claude). `permissions.defaultMode` first, top-level `defaultMode` as
+/// the legacy spelling. Read-only — mesimon never writes config (doctor rule).
+fn user_default_mode() -> Option<String> {
+    let home = std::env::var("MESIMON_CLAUDE_HOME")
+        .or_else(|_| std::env::var("CLAUDE_CONFIG_DIR"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|_| {
+            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
+        });
+    let text = std::fs::read_to_string(home.join("settings.json")).ok()?;
+    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
+    v.get("permissions")
+        .and_then(|p| p.get("defaultMode"))
+        .or_else(|| v.get("defaultMode"))
+        .and_then(|m| m.as_str())
+        .map(str::to_string)
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0)
 }
+
+/// The notice kind a failed shell-env capture stands under. One kind, replaced
+/// rather than appended, so a shell that fails on every reload leaves one row.
+const SHELL_ENV_NOTICE: &str = "shell_env";
 
 /// How many git-backed diff requests run at once, across all connections.
 const DIFF_PERMITS: usize = 2;
@@ -573,10 +597,6 @@ struct DiffCtx {
     /// has no worktree — a lie. It never quarantines: only the writer thread
     /// renames, so the two can never race.
     worktrees_barred: Arc<std::sync::atomic::AtomicBool>,
-/// The notice kind a failed shell-env capture stands under. One kind, replaced
-/// rather than appended, so a shell that fails on every reload leaves one row.
-const SHELL_ENV_NOTICE: &str = "shell_env";
-
 }
 
 /// RAII permit from the bounded diff pool.
@@ -765,6 +785,7 @@ impl Daemon {
             Command::ArchiveTicket { id } => Some(("archive_ticket", Some(*id))),
             Command::UnarchiveTicket { id } => Some(("unarchive_ticket", Some(*id))),
             Command::ArchiveAll => Some(("archive_all", None)),
+            Command::ReloadShellEnv => Some(("reload_shell_env", None)),
             Command::SpawnSession { ticket, .. } => Some(("spawn_session", Some(*ticket))),
             Command::KillSession { .. } => Some(("kill_session", None)),
             Command::AttachExternal { ticket, .. } => Some(("attach_external", *ticket)),
@@ -785,7 +806,6 @@ impl Daemon {
                             "protocol {version} unsupported; daemon speaks {PROTOCOL_VERSION}"
                         ),
                     };
-            Command::ReloadShellEnv => Some(("reload_shell_env", None)),
                 }
                 Response::Hello {
                     version: PROTOCOL_VERSION,
@@ -849,6 +869,15 @@ impl Daemon {
                 }
                 Response::Archived { archived, skipped }
             }
+            Command::ReloadShellEnv => {
+                self.queue_shell_env_capture();
+                // Broadcast now, not on the capture's return: `reloading`
+                // becoming true is what takes the offer off the header, and a
+                // slow rc file must not leave the chip standing for 15 s as
+                // though the press had missed.
+                self.persist_and_notify();
+                Response::Ok
+            }
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
             Command::SpawnSession { ticket, .. }
                 if self.worktrees_barred && self.ticket_wants_worktree(ticket) =>
@@ -869,15 +898,6 @@ impl Daemon {
             Command::GateStatus => self.gate_status(),
             Command::GatePassed => {
                 let _ = std::fs::write(self.paths.gate_file(), "1");
-            Command::ReloadShellEnv => {
-                self.queue_shell_env_capture();
-                // Broadcast now, not on the capture's return: `reloading`
-                // becoming true is what takes the offer off the header, and a
-                // slow rc file must not leave the chip standing for 15 s as
-                // though the press had missed.
-                self.persist_and_notify();
-                Response::Ok
-            }
                 let _ = self.backend.kill_session(GATE_SESSION);
                 Response::Ok
             }
@@ -895,7 +915,7 @@ impl Daemon {
                 match self.attach_external(claude_session_id, ticket) {
                     Ok(id) => {
                         self.persist_and_notify();
-                        Response::Spawned { id }
+                        Response::Spawned { id, fresh: false }
                     }
                     Err(message) => Response::Err { message },
                 }
@@ -1396,6 +1416,8 @@ impl Daemon {
             if let Some(change) = machine.apply(&sig, now) {
                 dirty |=
                     self.apply_change(id, &change, ingest::detail_of(&frame), Some(&frame.event));
+                // ...unless the user simply left. A clean exit is a park.
+                dirty |= self.park_on_exit(id);
             }
             // Harvest done (status came in the frame) — remove the dead pane
             // remain-on-exit was holding (docs/19 §1 lifecycle).
@@ -2007,6 +2029,12 @@ impl Daemon {
         }
         let _ = worktree::save_bindings(&self.paths, &self.worktrees);
     }
+            shell_env: mesimon_core::command::ShellEnvStatus {
+                stale: self.shell_env_stale(),
+                reloading: self.shell_env_capturing,
+                failed: self.shell_env_error.is_some(),
+                vars: self.shell_env.vars.len(),
+            },
 
     /// Header figures (D33e) — real measurements only.
     fn resources(&self) -> Resources {
@@ -2029,12 +2057,6 @@ impl Daemon {
         }
     }
 
-            shell_env: mesimon_core::command::ShellEnvStatus {
-                stale: self.shell_env_stale(),
-                reloading: self.shell_env_capturing,
-                failed: self.shell_env_error.is_some(),
-                vars: self.shell_env.vars.len(),
-            },
     /// One `ps` fork on the 10 s bucket, over the pane process groups we own.
     /// The same bucket recomputes the sleep suggestion (nothing here forks
     /// more than the `ps` and the one snapshot).
@@ -2820,7 +2842,7 @@ impl Daemon {
         self.board.sessions.push(rec);
         self.lock_worktree(ticket, id);
         self.persist_and_notify();
-        Response::Spawned { id }
+        Response::Spawned { id, fresh: false }
     }
 
     /// M4 workspace resolution. `Ok(None)` = provisioning queued/in flight.
@@ -3278,15 +3300,32 @@ impl Daemon {
         if let Some(message) = self.resume_guard(id, claude_id, confirm) {
             return Response::Err { message };
         }
-        if self.resume_transcript_missing(rec, claude_id) {
-            return Response::Err {
-                message: "no transcript to resume — the session ended before its first prompt"
-                    .into(),
-            };
-        }
-        let argv = match self.resume_argv(rec) {
-            Ok(a) => a,
-            Err(message) => return Response::Err { message },
+        // Nothing to come back to? Then "resume" and "start fresh" have the
+        // SAME outcome — no conversation is lost either way — and refusing was
+        // pure friction: the record could never be entered again, and the row
+        // went on offering `enter resume` forever. So start a fresh
+        // conversation in the same record instead, and say so.
+        //
+        // The conversation gets a NEWLY MINTED id rather than reusing the
+        // record's own. Claude has already been handed `rec.id` once, and
+        // whether it will accept that id a second time is not something this
+        // code knows — a fresh uuid cannot collide by construction. Nothing
+        // downstream cares: mesimon's identity is `rec.id` and travels in the
+        // `--settings` and `--mcp-config` blobs (D24 — identity is never
+        // discovered), so hook routing and the MCP principal are untouched.
+        // `claude_session_id` is the field that already exists for exactly
+        // this — "the conversation this record hosts is not its own uuid" —
+        // and the in-app `/resume` relearn writes it the same way.
+        let fresh = self.resume_transcript_missing(rec, claude_id).then(uuid::Uuid::new_v4);
+        let argv = match fresh {
+            Some(new_id) => match self.claude_argv(rec.id, "--session-id", &new_id.to_string()) {
+                Ok(a) => a,
+                Err(message) => return Response::Err { message },
+            },
+            None => match self.resume_argv(rec) {
+                Ok(a) => a,
+                Err(message) => return Response::Err { message },
+            },
         };
         let (sid, cwd, ticket) =
             (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()), rec.ticket);
@@ -3321,7 +3360,7 @@ impl Daemon {
         self.tails.remove(&id); // hooks own the state from here
         self.probe_stage.remove(&id);
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));
-        Response::Spawned { id }
+        Response::Spawned { id, fresh: fresh.is_some() }
     }
 
     /// D23 floors, tmux-recast. `Err` carries the user-facing refusal.
@@ -3369,6 +3408,14 @@ impl Daemon {
 
     /// D23/14 §6.1, tmux-recast: copy transcript, park the record FIRST (the
     /// machine's Sleeping latch swallows the kill's own SessionEnd/pane-died),
+            if let Some(new_id) = fresh {
+                // Point the record at the conversation it is actually hosting
+                // now. The stale path would otherwise send the NEXT resume
+                // back to the id that had no transcript — the dead end, one
+                // wake later.
+                rec.claude_session_id = Some(new_id);
+                rec.transcript_path = None;
+            }
     /// SIGTERM the group, kill-pane after grace. Never SIGKILL.
     fn sleep_one(
         &mut self,
@@ -3456,7 +3503,7 @@ impl Daemon {
                     rec.state_changed_at = Some(now);
                 }
                 self.machines.insert(id, Machine::new(SessionState::Running, now));
-                Response::Spawned { id }
+                Response::Spawned { id, fresh: false }
             }
         }
     }
@@ -3466,6 +3513,87 @@ impl Daemon {
         // The header offer's action: sleep-safe tickets only. Z must sleep
         // exactly the set the suggestion prices, never sessions on tickets
         // still in play (2026-08-30 rescope; per-column policy lands in M5).
+    /// A Claude session the user left on purpose is PARKED, not buried.
+    ///
+    /// Ctrl+C-out, `/exit` and Ctrl+D end the process; they do not end the
+    /// conversation. `claude --resume` brings it back by exactly the road
+    /// `wake_session` already drives, so recording it as a corpse asked the
+    /// user to learn a second gesture for a state that is `Sleeping` in
+    /// everything but name — no process, no pane, one key from running. It
+    /// also cost them the things `is_live()` gates: the ticket's worktree
+    /// lock was released under a session that was coming back.
+    ///
+    /// The scope is deliberately narrow — only what `resume_session` will
+    /// actually accept afterwards:
+    ///
+    /// * `UserQuit` only, which is where BOTH clean-exit roads land
+    ///   (`SessionEnd{prompt_input_exit}` and `pane-died` status 0), so
+    ///   whichever wins the race parks. `Crashed` keeps its error mark (a
+    ///   nonzero exit is worth seeing and is still resumable with Enter),
+    ///   `LoggedOut` would wake into an auth wall, and `Cleared`/`Resumed`/
+    ///   `Killed`/`Dismissed` are not deaths of this shape.
+    /// * argv non-empty: an observe-only adopted record has no pane of ours
+    ///   and nothing to replay.
+    /// * the SAME transcript predicate `resume_session` refuses on. A session
+    ///   Ctrl+C-ed before its first prompt wrote no conversation, and parking
+    ///   it would mint a sleeper that can never wake. That one really did
+    ///   just end.
+    ///
+    /// Re-minting the machine as `Sleeping` is what makes the aftermath
+    /// harmless: the latch swallows the pane-died that follows the hook (or
+    /// the SessionEnd that follows pane-died), so the park cannot be flipped
+    /// back into a corpse by its own echo.
+    fn park_on_exit(&mut self, id: uuid::Uuid) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        if rec.kind != SessionKind::Claude
+            || rec.argv.is_empty()
+            || !matches!(rec.state, SessionState::Exited { reason: ExitReason::UserQuit })
+        {
+            return false;
+        }
+        let claude_id = rec.claude_session_id.unwrap_or(rec.id);
+        if self.resume_transcript_missing(rec, claude_id) {
+            return false;
+        }
+        let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
+
+        // Sleep's B-A22 copy, same reason and same place: the conversation
+        // belongs to Claude's own store, and this is our snapshot of it.
+        if let Some(t) = &transcript {
+            let dir = self.paths.transcripts_dir();
+            if std::fs::create_dir_all(&dir).is_ok() {
+                let _ = std::fs::copy(t, dir.join(format!("{id}.jsonl")));
+            }
+        }
+
+        let now = now_ms();
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.state = SessionState::Sleeping;
+            rec.confidence = Confidence::High;
+            rec.waiting_since = None;
+            rec.state_changed_at = Some(now);
+            rec.detail = None;
+        }
+        self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
+        self.tails.remove(&id);
+        self.probe_stage.remove(&id);
+        // No SIGTERM: the process left on its own. The pane is only still
+        // standing because remain-on-exit is holding the corpse, so hand it
+        // to the same reaper sleep uses rather than killing it inline.
+        self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        let snapshot = self.board.sessions.iter().find(|s| s.id == id).cloned();
+        if let Some(s) = snapshot {
+            self.feed.session_state(
+                &s,
+                &SessionState::Exited { reason: ExitReason::UserQuit },
+                None,
+            );
+        }
+        true
+    }
+
         let safe: std::collections::HashSet<ulid::Ulid> = self
             .board
             .tickets

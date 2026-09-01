@@ -132,7 +132,7 @@ fn archive_gates_suggests_and_restores() {
         kind: SessionKind::Claude,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     let transcript = dir.join("cold.jsonl");

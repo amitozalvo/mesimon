@@ -127,7 +127,7 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
         kind: SessionKind::Claude,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     let start_body = format!(

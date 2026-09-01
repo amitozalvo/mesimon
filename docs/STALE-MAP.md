@@ -1618,3 +1618,100 @@ breaking the law that a suggestion's availability IS its menu row's.
 E2e: `crates/mesimon/tests/shell_env_e2e.rs` — a fake `$SHELL` exports a variable and a hostile
 `MESIMON_TICKET`, and the test reads the environment of the process tmux really exec'd: the
 variable arrives, the captured PATH arrives, the real ticket survives, and the dump is gone.
+
+## Leaving a Claude session parks it (2026-09-01, dogfood)
+
+Ctrl+C-out, `/exit` and Ctrl+D end the PROCESS. They do not end the conversation — `claude
+--resume` brings it back by exactly the road `wake_session` already drives. Recording that as
+`Exited` was therefore filing a live thing under "dead", and it cost three separate things:
+
+- **Two gestures for one state.** `x` slept a session and `x` woke it; a session the user had
+  left instead needed `Enter` on the ticket rail, an affordance that says "focus", on a record
+  the board drew with the same `✓` an idle turn wears. Nobody found it. The first report of this
+  was a user asking what to do when Claude Code says *"update available, restart to apply"* —
+  the honest answer was "sleep it and wake it", which is a strange thing to have to say about a
+  session the user could just as well have exited.
+- **`is_live()` gates real machinery.** An exited record leaves the working set, so the ticket's
+  worktree lock was released under a session that was coming back.
+- **No transcript snapshot.** Sleep takes the B-A22 copy; the exit road took none.
+
+So `Daemon::park_on_exit` converts a clean exit to `Sleeping`, and the gate is deliberately the
+SAME predicate `resume_session` will judge it by afterwards — park exactly when wake would
+succeed, never a sleeper that can never wake:
+
+- **`ExitReason::UserQuit` only.** That is where BOTH clean-exit roads land —
+  `SessionEnd{prompt_input_exit}` and `pane-died` status 0 — so whichever wins the race parks,
+  which matters because the race is real and undecided. `Crashed` keeps its error mark (a
+  nonzero exit is worth seeing, and Enter still resumes it), `LoggedOut` would wake into an auth
+  wall, and `Cleared`/`Resumed`/`Killed`/`Dismissed` are not deaths of this shape.
+- **Non-empty argv.** An observe-only adopted record has no pane of ours and nothing to replay.
+- **`!resume_transcript_missing()`.** A session Ctrl+C-ed before its first prompt wrote no
+  conversation. Parking it would mint a record `x` refuses forever with "no transcript to
+  resume"; that one really did just end.
+- **Claude only.** A shell's pane IS its record. There is no conversation, and a woken one would
+  be a *different* shell wearing the same row.
+
+Re-minting the machine as `Sleeping` is what makes the aftermath harmless: the Sleeping latch
+swallows the pane-died that follows the hook (or the SessionEnd that follows pane-died), so a
+park cannot be flipped back into a corpse by its own echo. No SIGTERM — the process already
+left — just the same reaper `sleep_one` hands the pane to.
+
+The startup reconcile gets the same say, because this repo restarts a daemon after every
+daemon-side rebuild and "I exited claude while the daemon was down" is the ordinary case, not
+the exotic one. Scope there is narrow on purpose: only records THIS reconcile moved from live to
+`Exited{UserQuit}`, never corpses already persisted as dead — otherwise every old corpse on the
+board would quietly rejoin the working set on the next restart.
+
+E2e: `crates/mesimon/tests/exit_parks_e2e.rs` drives the real `pane-died` road (a stub that
+exits 0 under real tmux, no hook frame sent) and asserts all three gates plus the wake.
+
+### Three more, found while reading, fixed in the same pass
+
+**`/clear` recorded a live pane as dead.** `SessionEnd{clear}` mapped to `Exited{Cleared}`, which
+is terminal, so the `SessionStart{clear}` that follows *in the same living pane* was swallowed by
+the latch and the record read dead for as long as the session went on. This is precisely the shape
+the 2026-08-30 dogfood fixed for `EndKind::Resume`, and `clear` is the harsher twin: a `/resume`
+handoff at least ends up somewhere, while a `/clear` leaves a working agent filed as a corpse with
+no event left that can correct it. `target` now returns `None` for both kinds, and the
+terminal-latch refinement refuses to relabel a real death as either. `ExitReason::Cleared` and
+`Resumed` are consequently unmintable — they survive only to read back a state file an older build
+wrote. Test: `in_app_clear_is_not_an_exit`, which drives the whole round trip (end, start, settle)
+and checks a late clear cannot relabel a crash.
+
+**`x` on a corpse had no handler.** `rail_sessions`' doc claimed `x` marked a dead record
+`Dismissed` and `Daemon::kill_session` implemented it, but nothing in the TUI ever sent
+`Command::KillSession` — the press reached `sleep_verb`, which answered "only idle sessions
+sleep": true, and useless. `sleep_verb` now routes on `Ctx::sel_dead` (the flag `Enter` next door
+already reads to hint "resume"), and the `x` hint carries a third word, `dismiss`. The status line
+does NOT say "still in the drawer", which was the first thing written and is only sometimes true —
+the drawer is a transcript census, so a dismissed record only reappears there if it has a
+transcript, which the commonest corpse reaching this key does not. It says the conversation is
+untouched, which is unconditional. Tests: `x_says_what_it_will_do_to_the_row_under_it`, and
+`ticket_corpse_selected_120x30` — the existing corpse golden had the cursor on a LIVE row,
+so the footer it captured was never the corpse's own.
+
+**"no transcript to resume" was a dead end.** A session killed before its first prompt wrote no
+conversation, and `resume_session` refused it forever with that message — while the row went on
+offering `enter resume` and `x` (before the fix above) offered nothing at all. The refusal was
+written against a real failure — spawning `claude --resume <id>` on a conversation that does not
+exist makes claude exit 1 inside a second, which the pane-died path then files as a crash — but
+refusing is not the only way to avoid that. Where there is no conversation, "resume" and "start
+fresh" have the SAME outcome, because there is nothing to lose. `resume_session` now spawns a
+fresh conversation in the same record.
+
+The new conversation gets a **newly minted uuid**, not the record's own. Claude has already been
+handed `rec.id` once and whether it will take that id a second time is not something this code
+knows; a fresh uuid cannot collide by construction. Nothing downstream notices, and that is D24
+paying off: mesimon's identity is `rec.id` and rides the `--settings` and `--mcp-config` blobs, so
+hook routing and the MCP principal are untouched by the conversation's id moving.
+`claude_session_id` is the field that already exists for exactly this state, and the in-app
+`/resume` relearn writes it the same way. The record's `transcript_path` is cleared with it —
+leaving the stale one would send the NEXT resume back to the id that had no transcript, which is
+the same dead end one wake later.
+
+`Response::Spawned` grew `#[serde(default)] fresh: bool` so the TUI can say *"nothing to resume ∙
+started a fresh conversation"* — a defaulted FIELD rather than a new variant, because a client
+that cannot parse a `Response` line drops it and then waits forever for a reply that already came.
+`m3_e2e`'s "ghost resume must refuse" assertion is now "ghost resume must start fresh", and it
+asserts the argv carries `--session-id` and not `--resume` — the original concern, kept as the
+thing actually checked.

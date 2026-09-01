@@ -331,6 +331,13 @@ pub enum Response {
     },
     Spawned {
         id: uuid::Uuid,
+        /// The spawn started a NEW conversation where a resume was asked for,
+        /// because the record had none to come back to. Defaulted rather than
+        /// required: an added field is the only safe way to grow this enum —
+        /// a client that cannot parse a `Response` line DROPS it and then
+        /// waits forever for a reply that already came (see `Notice::kind`).
+        #[serde(default)]
+        fresh: bool,
     },
     /// ReclaimAll's receipt: how many actually slept, and why others did not.
     Reclaimed {
@@ -358,6 +365,11 @@ pub enum Response {
         /// daemon parses as empty.
         #[serde(default)]
         notices: Vec<Notice>,
+        /// What the user's shell environment is doing (see [`ShellEnvStatus`]).
+        /// Serde-additive: absent from an older daemon parses as "fresh and
+        /// empty", which shows no offer — the right way to fail.
+        #[serde(default)]
+        shell_env: ShellEnvStatus,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -365,11 +377,6 @@ pub enum Response {
     Provisioning,
     /// MergeTicket's receipt.
     Merge {
-        /// What the user's shell environment is doing (see [`ShellEnvStatus`]).
-        /// Serde-additive: absent from an older daemon parses as "fresh and
-        /// empty", which shows no offer — the right way to fail.
-        #[serde(default)]
-        shell_env: ShellEnvStatus,
         outcome: MergeOutcome,
         detail: String,
     },
@@ -582,13 +589,6 @@ pub struct Resources {
     pub archive_tickets: usize,
 }
 
-/// Pushed to subscribed clients whenever board state changes.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-#[serde(tag = "event", rename_all = "snake_case")]
-pub enum Event {
-    BoardChanged,
-}
-
 /// The state of the environment mesimon hands to new panes.
 ///
 /// A Claude pane is exec'd directly by tmux, so it reads no shell startup file
@@ -613,6 +613,13 @@ pub struct ShellEnvStatus {
     /// it as the concrete thing the reload would change.
     #[serde(default)]
     pub vars: usize,
+}
+
+/// Pushed to subscribed clients whenever board state changes.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum Event {
+    BoardChanged,
 }
 
 #[cfg(test)]

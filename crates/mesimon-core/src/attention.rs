@@ -111,6 +111,10 @@ pub enum EndKind {
 }
 
 impl EndKind {
+    /// Total by construction, but `Clear` and `Resume` no longer reach it:
+    /// both are in-app conversation handoffs that `target` refuses to treat
+    /// as exits at all, so `Cleared`/`Resumed` are now only ever read back
+    /// out of a state file an older build wrote.
     fn exit_reason(self) -> ExitReason {
         match self {
             EndKind::Clear => ExitReason::Cleared,
@@ -342,12 +346,12 @@ impl Machine {
             return None;
         }
         // Exited is terminal: publish once (02 §7.3). A late SessionEnd may
-        // refine a pane-derived reason in place, silently — except the
-        // resume kind, which is a conversation handoff, not an exit, and
-        // must never relabel a real death.
+        // refine a pane-derived reason in place, silently — except the two
+        // in-app kinds, `resume` and `clear`, which end a CONVERSATION inside
+        // a living pane and must never relabel a real death.
         if let SessionState::Exited { reason } = &self.state {
             if let Signal::SessionEnd { kind } = sig {
-                if !matches!(kind, EndKind::Resume)
+                if !matches!(kind, EndKind::Resume | EndKind::Clear)
                     && matches!(reason, ExitReason::UserQuit | ExitReason::Crashed)
                 {
                     self.state = SessionState::Exited { reason: kind.exit_reason() };
@@ -463,13 +467,18 @@ impl Machine {
             // SessionStart mid-turn and the turn continues.
             Signal::SessionStart { source: StartSource::Compact } => t(S::Running),
             Signal::SessionStart { .. } => t(S::Idle { stop_reason: StopReason::Unknown }),
-            // In-app `/resume` ends the CONVERSATION, not the process: Claude
-            // Code fires SessionEnd{reason:resume} then SessionStart
-            // {source:resume} in the same live pane (dogfood 2026-08-30:
-            // honoring it as an exit stranded a live session as a corpse and
-            // wedged every later resume). Identity moves via the SessionStart
-            // frame's transcript_path; real death still arrives as PaneDied.
-            Signal::SessionEnd { kind: EndKind::Resume } => None,
+            // In-app `/resume` and `/clear` end the CONVERSATION, not the
+            // process: Claude Code fires SessionEnd{reason:X} then
+            // SessionStart{source:X} in the same live pane (dogfood
+            // 2026-08-30: honoring it as an exit stranded a live session as a
+            // corpse and wedged every later resume). `clear` was the same bug
+            // wearing a different word and kept it for a year of the corpus —
+            // it is the harsher one, because the SessionStart that follows is
+            // then swallowed by the terminal latch and the session reads dead
+            // for as long as the pane goes on living. Identity moves via the
+            // SessionStart frame's transcript_path; real death still arrives
+            // as PaneDied.
+            Signal::SessionEnd { kind: EndKind::Resume | EndKind::Clear } => None,
             Signal::SessionEnd { kind } => t(S::Exited { reason: kind.exit_reason() }),
             Signal::UserPromptSubmit => t(S::Running),
             Signal::Stop { stop_hook_active: true, .. } => None, // re-entrancy guard
@@ -1018,7 +1027,6 @@ mod tests {
     #[test]
     fn session_end_kinds_map() {
         for (kind, reason) in [
-            (EndKind::Clear, ExitReason::Cleared),
             (EndKind::Logout, ExitReason::LoggedOut),
             (EndKind::PromptInputExit, ExitReason::UserQuit),
             (EndKind::Other, ExitReason::Crashed),
@@ -1027,6 +1035,37 @@ mod tests {
             let c = ma.apply(&Signal::SessionEnd { kind }, 1).unwrap();
             assert_eq!(c.to, SessionState::Exited { reason });
         }
+    }
+
+    /// `/clear` is `/resume`'s twin and was the worse of the two: the pane
+    /// lives on, so honoring the end as an exit left the record dead for the
+    /// rest of the session — the SessionStart that follows arrives into a
+    /// terminal state and the latch drops it.
+    #[test]
+    fn in_app_clear_is_not_an_exit() {
+        for state in
+            [SessionState::Running, SessionState::Idle { stop_reason: StopReason::EndTurn }]
+        {
+            let mut ma = m(state.clone());
+            assert!(
+                ma.apply(&Signal::SessionEnd { kind: EndKind::Clear }, 1).is_none(),
+                "clear end must be inert from {state:?}"
+            );
+            assert_eq!(ma.state(), &state);
+        }
+        // ...and the whole round trip from where a user actually types it:
+        // mid-turn, so the fresh conversation settles to idle rather than
+        // snapping there, and the pane is still ours the whole way through.
+        let mut ma = m(SessionState::Running);
+        assert!(ma.apply(&Signal::SessionEnd { kind: EndKind::Clear }, 1).is_none());
+        assert!(ma.apply(&Signal::SessionStart { source: StartSource::Clear }, 2).is_none());
+        let c = ma.tick(2 + SETTLE_MS).expect("the cleared session is alive and idle");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Unknown });
+        // A real death still relabels nothing: a late clear over a corpse is
+        // not a reason to call that corpse "cleared".
+        let mut dead = m(SessionState::Exited { reason: ExitReason::Crashed });
+        assert!(dead.apply(&Signal::SessionEnd { kind: EndKind::Clear }, 3).is_none());
+        assert_eq!(dead.state(), &SessionState::Exited { reason: ExitReason::Crashed });
     }
 
     #[test]

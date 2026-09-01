@@ -181,7 +181,7 @@ fn m3_adoption_and_sleep() {
     let foreign: uuid::Uuid = FOREIGN_SID.parse().unwrap();
     let obs = match c.request(Command::AttachExternal { claude_session_id: foreign, ticket: None })
     {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("attach: {other:?}"),
     };
     let board = board_of(c.request(Command::Snapshot));
@@ -237,7 +237,7 @@ fn m3_adoption_and_sleep() {
 
     // --- Takeover: spawn `claude --resume <foreign>` with our hooks.
     let resumed = match c.request(Command::ResumeSession { id: obs, confirm: false }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("resume: {other:?}"),
     };
     assert_eq!(resumed, obs);
@@ -356,7 +356,7 @@ fn m3_adoption_and_sleep() {
     // --- Wake: same record, argv replayed (already a --resume argv).
     std::fs::write(&argv_log, "").unwrap();
     let woke = match c.request(Command::WakeSession { id: obs }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("wake: {other:?}"),
     };
     assert_eq!(woke, obs);
@@ -411,7 +411,7 @@ fn m3_adoption_and_sleep() {
         ticket: None,
         confirm: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("re-import resume: {other:?}"),
     };
     assert_eq!(back, obs, "re-import must reuse the dead record, not mint a new one");
@@ -433,23 +433,38 @@ fn m3_adoption_and_sleep() {
     let _ = c.request(Command::KillSession { id: obs });
 
     // --- Resume with no transcript: a spawned session killed before its
-    // first prompt never wrote one, so resume must refuse up front with the
-    // honest reason — not spawn claude, watch it exit 1, and call it a crash.
+    // first prompt never wrote one. The old contract refused up front, which
+    // beat the thing it was written against — spawning `claude --resume <id>`,
+    // watching it exit 1 and filing that as a crash — but it left the record
+    // permanently un-enterable while its row went on offering "resume". Now
+    // it starts a FRESH conversation in the same record: nothing is lost,
+    // because there was nothing. The argv is what proves the original concern
+    // still holds — no doomed `--resume` is ever spawned.
     let ghost = match c.request(Command::SpawnSession {
         ticket: home_ticket,
         kind: SessionKind::Claude,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("ghost spawn: {other:?}"),
     };
     assert!(matches!(c.request(Command::KillSession { id: ghost }), Response::Ok));
     match c.request(Command::ResumeSession { id: ghost, confirm: false }) {
-        Response::Err { message } => {
-            assert!(message.contains("no transcript"), "wrong refusal: {message}")
+        Response::Spawned { fresh, .. } => {
+            assert!(fresh, "a resume with nothing to resume is a fresh conversation")
         }
-        other => panic!("ghost resume must refuse, got {other:?}"),
+        other => panic!("ghost resume must start fresh, got {other:?}"),
     }
+    let board = board_of(c.request(Command::Snapshot));
+    let rec = board.sessions.iter().find(|s| s.id == ghost).unwrap();
+    assert!(rec.argv.iter().any(|a| a == "--session-id"), "argv: {:?}", rec.argv);
+    assert!(
+        !rec.argv.iter().any(|a| a == "--resume"),
+        "never spawn a resume that can only exit 1: {:?}",
+        rec.argv
+    );
+    let hosting = rec.claude_session_id.expect("record points at its new conversation");
+    assert_ne!(hosting, ghost, "a newly minted id, never the one with no transcript");
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();

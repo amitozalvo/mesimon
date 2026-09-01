@@ -130,7 +130,7 @@ fn restart_recovers_state_from_the_transcript() {
         kind: SessionKind::Claude,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     hook_send(
@@ -269,7 +269,7 @@ fn restart_recovers_done_from_a_resting_transcript() {
         kind: SessionKind::Claude,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     hook_send(

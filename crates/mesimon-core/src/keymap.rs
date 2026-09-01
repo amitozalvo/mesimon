@@ -878,7 +878,19 @@ static TICKET: &[Binding] = &[
         keys: &[Key::Char('x')],
         verb: Verb::Sleep,
         show: "x",
-        hint: |c| if c.sel_sleeping { "wake" } else { "sleep" },
+        // Three words, one verb: a corpse cannot be slept and a sleeper
+        // cannot be dismissed, so the same key means the only thing it
+        // could mean for the row under the cursor. `Enter` next door
+        // switches on `sel_dead` the same way ("resume").
+        hint: |c| {
+            if c.sel_dead {
+                "dismiss"
+            } else if c.sel_sleeping {
+                "wake"
+            } else {
+                "sleep"
+            }
+        },
         avail: |c| c.sel_session,
         class: Class::Plain,
         group: Group::Sessions,
@@ -1436,18 +1448,6 @@ static MENU_ITEMS: &[MenuItem] = &[
         key: "U",
     },
     MenuItem {
-        verb: Verb::SleepAllDone,
-        label: |c| format!("Sleep {} in done", plural(c.bulk_sleep, "agent")),
-        detail: |c| match gib(c.bulk_sleep_bytes) {
-            Some(g) => format!("frees ~{g:.1}GiB ∙ they wake where they left off"),
-            None => "frees their memory ∙ they wake where they left off".into(),
-        },
-        avail: |c| c.bulk_sleep > 0,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::ArchiveAllDone,
-    MenuItem {
         verb: Verb::ReloadShellEnv,
         label: |c| {
             if c.shell_env_failed {
@@ -1470,6 +1470,18 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.shell_env_stale || c.shell_env_failed,
         key: "",
     },
+    MenuItem {
+        verb: Verb::SleepAllDone,
+        label: |c| format!("Sleep {} in done", plural(c.bulk_sleep, "agent")),
+        detail: |c| match gib(c.bulk_sleep_bytes) {
+            Some(g) => format!("frees ~{g:.1}GiB ∙ they wake where they left off"),
+            None => "frees their memory ∙ they wake where they left off".into(),
+        },
+        avail: |c| c.bulk_sleep > 0,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ArchiveAllDone,
         label: |c| format!("Archive {} in done", plural(c.bulk_archive, "ticket")),
         detail: |_| "clears the column ∙ restore any of them later".into(),
         avail: |c| c.bulk_archive > 0,
@@ -1556,18 +1568,6 @@ pub struct Suggestion {
 static SUGGESTIONS: &[Suggestion] = &[
     Suggestion { verb: Verb::Reload, headline: |_| "update ready".into(), key: "U" },
     Suggestion {
-        verb: Verb::SleepAllDone,
-        headline: |c| format!("sleep {}", plural(c.bulk_sleep, "agent")),
-        key: "",
-    },
-    Suggestion {
-        verb: Verb::ArchiveAllDone,
-        headline: |c| format!("archive {}", plural(c.bulk_archive, "ticket")),
-        key: "",
-    },
-];
-
-    Suggestion {
         verb: Verb::ReloadShellEnv,
         // A failure and a change lead to the same act but are not the same
         // news, and the chip is the only place the difference gets said.
@@ -1580,6 +1580,18 @@ static SUGGESTIONS: &[Suggestion] = &[
         },
         key: "",
     },
+    Suggestion {
+        verb: Verb::SleepAllDone,
+        headline: |c| format!("sleep {}", plural(c.bulk_sleep, "agent")),
+        key: "",
+    },
+    Suggestion {
+        verb: Verb::ArchiveAllDone,
+        headline: |c| format!("archive {}", plural(c.bulk_archive, "ticket")),
+        key: "",
+    },
+];
+
 /// The menu row a verb belongs to, if any.
 fn menu_row(verb: Verb) -> Option<&'static MenuItem> {
     MENU_ITEMS.iter().find(|m| m.verb == verb)
@@ -2321,6 +2333,28 @@ mod tests {
             .any(|b| b.class == Class::Arm && b.verb == Verb::Sleep));
     }
 
+    /// `x` is one verb wearing three words, and the word has to be the one
+    /// the row under the cursor can actually do. The dismiss case is the one
+    /// that was missing: `x` on a corpse resolved to `Verb::Sleep`, hinted
+    /// "sleep", and came back "only idle sessions sleep".
+    #[test]
+    fn x_says_what_it_will_do_to_the_row_under_it() {
+        let live = Ctx { sel_session: true, ..Default::default() };
+        let asleep = Ctx { sel_session: true, sel_sleeping: true, ..Default::default() };
+        let corpse = Ctx { sel_session: true, sel_dead: true, ..Default::default() };
+        for c in [&live, &asleep, &corpse] {
+            assert_eq!(resolve(Scope::Ticket, Key::Char('x'), c), Some(Verb::Sleep));
+        }
+        assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &live), Some(("x", "sleep")));
+        assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &asleep), Some(("x", "wake")));
+        assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &corpse), Some(("x", "dismiss")));
+        // `Enter` next door reads the same flag, so the two keys never
+        // disagree about what the selected row is.
+        assert_eq!(hint_for(Scope::Ticket, Verb::Act, &corpse), Some(("enter", "resume")));
+        // Nothing is offered when nothing is selected.
+        assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &Ctx::default()), None);
+    }
+
     /// Deleting takes two deliberate presses, and the branch-discarding form
     /// is only reachable from inside the chord.
     #[test]
@@ -2438,6 +2472,7 @@ mod tests {
         assert!(!quiet_verbs.contains(&Verb::ArchivedList));
         assert!(!quiet_verbs.contains(&Verb::SleepAllDone));
         assert!(!quiet_verbs.contains(&Verb::Reload));
+        assert!(!quiet_verbs.contains(&Verb::ReloadShellEnv));
         // Every menu row that names a key must name one the keymap really has.
         for m in menu_items(&ctx) {
             if m.key.is_empty() {
@@ -2471,8 +2506,8 @@ mod tests {
             bulk_archive: 2,
             has_archived: true,
             update_ready: true,
+            shell_env_stale: true,
             ..Default::default()
-        assert!(!quiet_verbs.contains(&Verb::ReloadShellEnv));
         };
         // Declared priority, in the header and at the top of the menu alike.
         let heads: Vec<String> = suggestions(&all).iter().map(|s| (s.headline)(&all)).collect();
@@ -2515,7 +2550,6 @@ mod tests {
                     );
                 }
             }
-            shell_env_stale: true,
         }
         // Nothing to offer is the resting state: no chips, no marked rows.
         assert!(suggestions(&Ctx::default()).is_empty());
@@ -2530,6 +2564,7 @@ mod tests {
             bulk_archive: 1,
             has_archived: true,
             update_ready: true,
+            shell_env_stale: true,
             ..Default::default()
         };
         for m in MENU_ITEMS {
@@ -2564,7 +2599,6 @@ mod tests {
         }
         let ctx = Ctx {
             has_ticket: true,
-            shell_env_stale: true,
             multi_column: true,
             ticket_has_sessions: true,
             ..Default::default()

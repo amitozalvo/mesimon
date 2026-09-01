@@ -120,7 +120,7 @@ fn z_sleeps_only_the_done_column() {
             kind: SessionKind::Claude,
             submit_prompt: false,
         }) {
-            Response::Spawned { id } => id,
+            Response::Spawned { id, .. } => id,
             other => panic!("spawn failed: {other:?}"),
         };
         // A transcript with one user + one assistant record keeps the sleep

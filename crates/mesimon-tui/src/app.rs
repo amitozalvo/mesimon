@@ -1579,6 +1579,26 @@ impl App {
                 Command::WakeSession { id: sid }
             } else {
                 Command::SleepSession { id: sid }
+            // A corpse cannot be slept, so `x` there is the rail's dismissal
+            // gesture instead — the record stays on the board and re-imports
+            // through the drawer; only the rail stops showing it. Before
+            // this, the press reached `SleepSession` and came back "only idle
+            // sessions sleep", which is true and useless.
+            if ctx.sel_dead {
+                let resp = self.req(Command::KillSession { id: sid });
+                self.status = match resp {
+                    // NOT "still in the drawer": the drawer is a transcript
+                    // census, so a dismissed record only reappears there if
+                    // it has one — which the no-transcript corpse, now the
+                    // commonest kind reaching this key, does not. What IS
+                    // unconditionally true is that dismissing touches the
+                    // record and never Claude's own store.
+                    Response::Ok => "dismissed ∙ the conversation is untouched".into(),
+                    Response::Err { message } => message,
+                    _ => String::new(),
+                };
+                return self.refresh();
+            }
             };
             return self.send(cmd);
         }
@@ -1688,7 +1708,7 @@ impl App {
         let claude_session_id = self.external[idx].claude_session_id;
         if !resume {
             match self.req(Command::AttachExternal { claude_session_id, ticket: None }) {
-                Response::Spawned { id } => {
+                Response::Spawned { id, .. } => {
                     self.refresh()?;
                     self.status = self
                         .board
@@ -2418,9 +2438,15 @@ impl App {
     /// resorted by activity (06 §7 R4). `Exited` drops out, with one exception:
     /// the latest exited claude conversation stays on the rail (Enter resumes
     /// it — the transcript survives the process, a deliberate `x` kill
-    /// included) unless dismissed (`x` on the corpse marks it `Dismissed` —
-    /// the one exit the rail hides). Older corpses re-import through the
-    /// drawer.
+    /// included) unless dismissed. Since park-on-exit a corpse here is the
+    /// UN-wakeable kind: a crash, a logout, or a session that never wrote a
+    /// transcript; a clean exit is `Sleeping` and never reaches this branch.
+    /// Older corpses re-import through the drawer.
+    ///
+    /// `Dismissed` is the one exit the rail hides, and it is currently
+    /// unreachable from the TUI: `Daemon::kill_session` mints it, but nothing
+    /// here sends `Command::KillSession` — `x` on a corpse goes to
+    /// `sleep_verb`, which refuses with "only idle sessions sleep".
     pub fn rail_sessions(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
         let corpse = self
             .board
@@ -2442,7 +2468,7 @@ impl App {
 
     fn spawn_and_focus(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
         match self.req(Command::SpawnSession { ticket, kind, submit_prompt: false }) {
-            Response::Spawned { id } => {
+            Response::Spawned { id, .. } => {
                 self.refresh()?;
                 self.focus_session(id)?;
             }
@@ -2482,12 +2508,20 @@ impl App {
                     Command::ResumeSession { id: sid, confirm: self.resume_refused == Some(sid) }
                 };
                 match self.req(cmd) {
-                    Response::Spawned { .. } => {
+                    Response::Spawned { fresh, .. } => {
                         self.resume_refused = None;
                         self.refresh()?;
                         // fall through to the focus flow below
                     }
                     Response::Err { message } => {
+                        // The row said "resume" and this is not one: the
+                        // record had no conversation left, so the daemon
+                        // started a new one rather than refusing forever.
+                        // Someone who thought they were picking up work has
+                        // to be told they are not.
+                        if fresh {
+                            self.status = "nothing to resume ∙ started a fresh conversation".into();
+                        }
                         if message.contains("running elsewhere") {
                             // The daemon's message says "resume again to
                             // override" — the next Enter carries the confirm.
@@ -2646,6 +2680,7 @@ pub(crate) mod test_support {
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         /// Make FocusStart answer Err (the daemon refusing a focus).
         pub refuse_focus: bool,
+        pub shell_env: mesimon_core::command::ShellEnvStatus,
     }
 
     impl Transport for FakeTransport {
@@ -2680,7 +2715,6 @@ pub(crate) mod test_support {
                 Command::MergeTicket { .. } => {
                     return Ok(Response::Merge {
                         outcome: MergeOutcome::Merged,
-        pub shell_env: mesimon_core::command::ShellEnvStatus,
                         detail: "merged 2 commit(s)".into(),
                     });
                 }
@@ -2696,7 +2730,7 @@ pub(crate) mod test_support {
                     rec.pending_submit = submit_prompt;
                     let id = rec.id;
                     self.board.sessions.push(rec);
-                    return Ok(Response::Spawned { id });
+                    return Ok(Response::Spawned { id, fresh: false });
                 }
                 _ => {}
             }
@@ -2712,6 +2746,7 @@ pub(crate) mod test_support {
                 Command::MoveTicket { id, column, before } => {
                     let mut order: Vec<ulid::Ulid> = self
                         .board
+                    shell_env: self.shell_env.clone(),
                         .column_tickets(&column)
                         .iter()
                         .map(|t| t.id)
@@ -2746,7 +2781,6 @@ pub(crate) mod test_support {
                                 at: "@1000".into(),
                                 by: "local".into(),
                             });
-                    shell_env: self.shell_env.clone(),
                             Ok(Response::Ok)
                         }
                         None => Ok(Response::Err { message: "no such ticket".into() }),
@@ -2792,6 +2826,7 @@ pub(crate) mod test_support {
                 refuse_focus,
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
+                shell_env: Default::default(),
                 .expect("fake transport snapshot");
             (app, sent)
         }
@@ -2826,7 +2861,6 @@ mod tests {
         b.tickets.push(ticket(1, "todo", "a"));
         b.tickets.push(ticket(2, "todo", "b"));
         b.tickets.push(ticket(3, "done", "a"));
-                shell_env: Default::default(),
         b
     }
 

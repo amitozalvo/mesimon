@@ -122,7 +122,7 @@ fn interrupted_turn_demotes_to_idle_without_any_hook() {
         kind: SessionKind::Claude,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     // The hooks a real session would fire: started, then a submitted prompt.

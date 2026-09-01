@@ -95,7 +95,7 @@ fn the_terminal_zone_reads_the_shell_pane() {
         kind: SessionKind::Bash,
         submit_prompt: false,
     }) {
-        Response::Spawned { id } => id,
+        Response::Spawned { id, .. } => id,
         other => panic!("spawn failed: {other:?}"),
     };
     let sid16 = sid.simple().to_string()[..16].to_string();

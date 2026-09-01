@@ -347,6 +347,34 @@ its age stops ticking seconds, and a card whose only live session is a shell car
 glyph. The spinner is the one place D19's motion ban bends and it may only bend for something
 moving. (STALE-MAP "A shell does not spin".)
 
+**Leaving a Claude session is the same thing as sleeping it.** Ctrl+C-out, `/exit` and Ctrl+D end
+the process, never the conversation, so `Daemon::park_on_exit` converts a clean exit to `Sleeping`
+and `x` wakes it — one gesture, not two, and the ticket keeps its worktree lock. The gate is the
+SAME predicate `resume_session` judges it by afterwards (park exactly when wake would succeed):
+`ExitReason::UserQuit` only — where BOTH clean-exit roads land, `SessionEnd{prompt_input_exit}` and
+`pane-died` status 0, so whichever wins the race parks — plus non-empty argv and a transcript that
+exists. A crash keeps its error mark, a shell is never parked (its pane IS its record), and a
+session Ctrl+C-ed before its first prompt stays `Exited` because parking it would mint a sleeper
+`x` refuses forever. Re-minting the machine as `Sleeping` is load-bearing: the latch swallows the
+pane-died that follows the hook, so a park cannot be flipped back into a corpse by its own echo.
+The startup reconcile gets the same say, over records IT just moved and never over already-dead
+corpses. E2e: `crates/mesimon/tests/exit_parks_e2e.rs`. (STALE-MAP "Leaving a Claude session parks
+it".)
+
+Three neighbours went with it. **`/clear` is not an exit** — like `/resume` before it, it ends the
+CONVERSATION inside a living pane, and honoring `SessionEnd{clear}` as a death left the record a
+corpse for the rest of the session, since the `SessionStart{clear}` that follows hits the terminal
+latch. Both kinds now return `None` from `target`, and neither may relabel a real death, which
+makes `ExitReason::Cleared`/`Resumed` unmintable (they read old state files and nothing else).
+**`x` on a corpse dismisses it** — `sleep_verb` routes on `Ctx::sel_dead`, the same flag `Enter`
+reads to hint "resume", and `x` hints a third word. **And "no transcript to resume" is no longer a
+dead end**: where there is no conversation, resuming and starting fresh have the same outcome, so
+`resume_session` spawns a fresh one in the same record under a NEWLY MINTED uuid (never `rec.id`
+again — collision is not this code's to reason about), sets `claude_session_id`, clears
+`transcript_path`, and reports `Response::Spawned { fresh: true }` so the TUI can say the history
+is gone. D24 is what makes that free: mesimon's identity is `rec.id` in the `--settings`/
+`--mcp-config` blobs, so hooks and the MCP principal never notice the conversation's id move.
+
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
 NO key — they live in the Esc menu (`ui/menu.rs`, rows from `keymap::menu_items`), because
 they are rare, are not about the selection, and a menu row has room to say what it will do.

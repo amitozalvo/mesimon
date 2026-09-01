@@ -585,6 +585,29 @@ fn golden_ticket_corpse_120() {
     golden("ticket_corpse_120x30", &render(&app, 120, 30));
 }
 
+/// ...and with the cursor ON it, which is the only place the corpse's own
+/// affordances are legible. `x` there is `dismiss`, not `sleep` — a corpse
+/// cannot be slept, and the press used to come back "only idle sessions
+/// sleep" — and `enter` is `resume`.
+#[test]
+fn golden_ticket_corpse_selected_120() {
+    let mut b = fixture(false);
+    b.sessions.push(session(
+        39,
+        ulid_n(3),
+        SessionKind::Claude,
+        SessionState::Exited { reason: ExitReason::UserQuit },
+    ));
+    let mut app = app_graphite(b);
+    let idx = app
+        .rail_sessions(ulid_n(3))
+        .iter()
+        .position(|s| s.id == uuid_n(39))
+        .expect("the corpse is on the rail");
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: idx };
+    golden("ticket_corpse_selected_120x30", &render(&app, 120, 30));
+}
+
 /// A transcript file holding one assistant reply (plus whatever else the
 /// caller appends), written where a peek can read it.
 fn write_transcript(name: &str, jsonl: &str) -> std::path::PathBuf {
