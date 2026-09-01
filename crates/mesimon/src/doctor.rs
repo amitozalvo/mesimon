@@ -180,7 +180,8 @@ fn environment(verbose: bool) -> Section {
     let mut records = Vec::new();
     let os = tool_version("uname", &["-sr"]).unwrap_or_else(|| "unknown".into());
     let arch = tool_version("uname", &["-m"]).unwrap_or_else(|| "unknown".into());
-    records.push(rec(Level::Ok, "os", format!("{os} ({arch})")));
+    let wsl = if is_wsl() { ", WSL" } else { "" };
+    records.push(rec(Level::Ok, "os", format!("{os} ({arch}{wsl})")));
 
     let shell = std::env::var("SHELL").unwrap_or_default();
     records.push(if shell.is_empty() {
@@ -231,6 +232,14 @@ fn install(verbose: bool) -> Section {
     // A checker that quietly does nothing looks exactly like one that broke,
     // so the reason it is off is printed even when the reason is the point.
     records.push(rec(Level::Note, "update checks", mesimon_tui::update_check_status()));
+    // Both the check and the download ride `curl`. macOS ships it; a minimal
+    // Linux (a fresh WSL distro, a container) may not, and then the checker
+    // is silently a no-op — exactly the shape the line above exists to catch.
+    if which("curl").is_none() {
+        records.push(rec(Level::Warn, "curl", "not found on PATH").advice(
+            "The release check and install.sh both use curl. Install it with your package manager.",
+        ));
+    }
     Section { name: "install", records }
 }
 
@@ -240,41 +249,81 @@ fn multiplexer(verbose: bool) -> Section {
     // actually run — not whatever `tmux` means to your shell.
     let bin = mesimon_backend_tmux::tmux_bin();
     let shown = redact(&bin.display().to_string(), verbose);
+    let bundled = bin.file_name().is_some_and(|n| n == mesimon_backend_tmux::BUNDLED_TMUX);
     records.push(if std::env::var_os("MESIMON_TMUX_BIN").is_some() {
         rec(Level::Note, "tmux binary", format!("{shown} (MESIMON_TMUX_BIN)"))
-    } else if bin.is_absolute() {
+    } else if bundled {
         rec(Level::Note, "tmux binary", format!("{shown} (shipped with mesimon)"))
     } else {
-        // A release ships its own; falling back to PATH means this is a
-        // source build, or the bundled binary is missing from the install.
-        rec(Level::Note, "tmux binary", "resolved from PATH")
+        // The ladder resolves PATH to an absolute path too, so "absolute"
+        // does not mean "ours": only the sibling's NAME does. On macOS a
+        // release ships one and PATH means a source build or a missing
+        // sibling; on Linux PATH is where the release expects to find it.
+        rec(Level::Note, "tmux binary", format!("{shown} (from PATH)"))
     });
     match tool_version(&bin.display().to_string(), &["-V"]) {
-        None => records.push(
-            rec(Level::Fail, "tmux", "not found").advice(
-                "mesimon runs every agent in its own private tmux server and cannot spawn without it. A release build ships one; if you built from source, install tmux: brew install tmux",
-            ),
-        ),
-        Some(v) => {
-            // The generated conf uses brace-literal hooks and `extended-keys
-            // always`, which need tmux >= 3.1.
-            let num: f32 = v
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("0")
-                .trim_end_matches(|c: char| c.is_ascii_alphabetic())
-                .parse()
-                .unwrap_or(0.0);
-            records.push(if num >= 3.1 {
-                rec(Level::Ok, "tmux", format!("{v} (needs >= 3.1)"))
+        None => records.push(rec(Level::Fail, "tmux", "not found").advice(format!(
+            "mesimon runs every agent in its own private tmux server and cannot spawn without it. {}",
+            if cfg!(target_os = "macos") {
+                "A release build ships one; if you built from source, install tmux: brew install tmux".to_string()
             } else {
-                rec(Level::Warn, "tmux", format!("{v} is below the 3.1 floor")).advice(
-                    "mesimon's generated conf uses brace-literal hooks and extended-keys, both 3.1+. Upgrade: brew upgrade tmux",
-                )
-            });
-        }
+                format!("The Linux build does not bundle one. Install it: {}", tmux_pkg_line("install"))
+            }
+        ))),
+        Some(v) => records.push(tmux_verdict(&v)),
     }
     Section { name: "multiplexer", records }
+}
+
+/// The line that installs or upgrades tmux here. Advice only — doctor prints
+/// fixes and never applies them (16 §8).
+fn tmux_pkg_line(verb: &str) -> String {
+    if cfg!(target_os = "macos") {
+        format!("brew {verb} tmux")
+    } else {
+        "sudo apt install tmux (Debian, Ubuntu, WSL; otherwise your distro's package manager)"
+            .into()
+    }
+}
+
+/// Two floors, and they read differently on purpose. Below 3.1 the generated
+/// conf does not parse (brace-literal hooks, `extended-keys`). Between 3.1
+/// and 3.3 it runs, but `allow-passthrough` is an option that tmux does not
+/// have yet — and before the option existed, passthrough was simply on — so
+/// an agent can write straight to the outer terminal and T-10's containment
+/// is a line tmux ignored. Every tmux a distro ships today is 3.2a or newer,
+/// which is why the middle band is a warning and not a failure.
+fn tmux_verdict(v: &str) -> Record {
+    let num: f32 = v
+        .split_whitespace()
+        .nth(1)
+        .unwrap_or("0")
+        .trim_end_matches(|c: char| c.is_ascii_alphabetic())
+        .parse()
+        .unwrap_or(0.0);
+    if num >= 3.3 {
+        rec(Level::Ok, "tmux", format!("{v} (needs >= 3.3)"))
+    } else if num >= 3.1 {
+        rec(Level::Warn, "tmux", format!("{v} runs, but is below the 3.3 containment floor")).advice(
+            format!(
+                "tmux gained allow-passthrough in 3.3; before it an agent's escape sequences reach your terminal unfiltered. Upgrade: {}",
+                tmux_pkg_line("upgrade")
+            ),
+        )
+    } else {
+        rec(Level::Warn, "tmux", format!("{v} is below the 3.1 floor")).advice(format!(
+            "mesimon's generated conf uses brace-literal hooks and extended-keys, both 3.1+. Upgrade: {}",
+            tmux_pkg_line("upgrade")
+        ))
+    }
+}
+
+/// Windows Subsystem for Linux announces itself in the kernel string, and it
+/// is the one Linux where a repo can sit on a foreign filesystem (`/mnt/c`).
+fn is_wsl() -> bool {
+    cfg!(target_os = "linux")
+        && std::fs::read_to_string("/proc/version")
+            .is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"))
 }
 
 fn agents(verbose: bool) -> Section {
@@ -299,13 +348,23 @@ fn agents(verbose: bool) -> Section {
     Section { name: "agents", records }
 }
 
-fn git_section() -> Section {
+fn git_section(repo: &Path, verbose: bool) -> Section {
     let mut records = Vec::new();
     match tool_version("git", &["--version"]) {
         Some(v) => records.push(rec(Level::Ok, "git", v)),
         None => records.push(rec(Level::Fail, "git", "not found on PATH").advice(
             "Per-ticket worktrees, the diff viewer and the merge flow all shell out to git.",
         )),
+    }
+    // A repo on the Windows drive reaches git through WSL's 9p bridge, where
+    // every operation is many times slower — and worktrees, the diff viewer
+    // and the merge flow shell out to git constantly. Only WSL mounts drives
+    // under /mnt/<letter>, so the path is the whole test.
+    if is_wsl() && repo.starts_with("/mnt") {
+        records.push(
+            rec(Level::Warn, "repo", format!("{} is on a Windows drive", redact(&repo.display().to_string(), verbose)))
+                .advice("Keep the repo in the Linux filesystem (under ~): git across the WSL boundary is an order of magnitude slower, and mesimon shells out to it for worktrees, diffs and merges."),
+        );
     }
     Section { name: "git", records }
 }
@@ -494,7 +553,7 @@ pub fn run(args: &[String]) -> Result<()> {
         install(verbose),
         multiplexer(verbose),
         agents(verbose),
-        git_section(),
+        git_section(&repo, verbose),
         daemon(&repo, verbose),
     ];
     let names: Vec<&str> = all.iter().map(|s| s.name).collect();
@@ -519,6 +578,26 @@ pub fn run(args: &[String]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Two floors, read differently: 3.3 is where containment starts, 3.1 is
+    /// where the conf parses at all. Every distro tmux today sits in or above
+    /// the middle band, so the middle band must warn, never fail.
+    #[test]
+    fn the_tmux_floor_is_3_3_and_3_1_still_runs() {
+        let new = tmux_verdict("tmux 3.6a");
+        assert!(new.level == Level::Ok);
+        assert!(new.value.contains(">= 3.3"), "{}", new.value);
+        assert!(tmux_verdict("tmux 3.3a").level == Level::Ok, "3.3 is the floor, inclusive");
+
+        let mid = tmux_verdict("tmux 3.2a");
+        assert!(mid.level == Level::Warn, "runs, but unfiltered");
+        assert!(mid.advice.as_deref().unwrap_or("").contains("allow-passthrough"));
+
+        let old = tmux_verdict("tmux 3.0");
+        assert!(old.level == Level::Warn);
+        assert!(old.value.contains("3.1 floor"), "{}", old.value);
+        assert!(tmux_verdict("tmux next-3.7").level == Level::Warn, "unreadable is not a pass");
+    }
 
     /// The rule is 78 columns, always — including when the summary is empty.
     /// A mockup nobody checks drifts, so this is the check (16 §8).
@@ -555,7 +634,7 @@ mod tests {
     /// misbehaving, and paste where the font is unknown.
     #[test]
     fn output_is_ascii_only() {
-        let s = render(&[environment(false), install(false), git_section()], false);
+        let s = render(&[environment(false), install(false), git_section(std::path::Path::new("."), false)], false);
         assert!(s.is_ascii(), "non-ascii in doctor output:\n{s}");
     }
 

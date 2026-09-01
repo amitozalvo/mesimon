@@ -1,14 +1,16 @@
 name: ci
 
 # MANUAL ONLY. GitHub-hosted macOS runners bill at 10x minutes on a private
-# repo, and the only target mesimon ships is the machine it is developed on,
+# repo, and the macOS target mesimon ships is the machine it is developed on,
 # so the real gate is `ci/release.sh`, which runs this same suite locally
-# before it will cut a release.
+# before it will cut a release — on macOS directly, and on Linux in Docker
+# (ci/test-linux.sh).
 #
 # This workflow is kept for the clean-room check a laptop cannot give you —
 # a fresh checkout, an empty ~/.local/state, no leftover tmux servers. Run it
 # from the Actions tab (or `gh workflow run ci.yml`) when that is worth the
-# minutes, typically before handing the thing to someone new.
+# minutes, typically before handing the thing to someone new. The Linux job
+# is the cheap half (1x billing) and the one a WSL tester's machine looks like.
 on:
   workflow_dispatch:
 
@@ -24,14 +26,22 @@ env:
 
 jobs:
   test:
-    # arm64: the only target shipped, so the only one tested.
-    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        # macos-14 is arm64, the macOS target shipped. ubuntu-24.04 is x86_64
+        # with apt's tmux 3.4 — a distro tmux, which is the point: every tmux
+        # before 3.6 sanitizes format output differently from the one bundled
+        # on macOS, and the suite has to pass on what a Linux user has.
+        os: [macos-14, ubuntu-24.04]
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
       - name: Install tmux
-        run: brew install tmux
+        run: |
+          if [ "$RUNNER_OS" = macOS ]; then brew install tmux; else sudo apt-get install -y tmux; fi
 
       - uses: dtolnay/rust-toolchain@stable
         with:

@@ -53,12 +53,60 @@ set -g window-status-current-format ""
 /// stays: inner apps still can't touch the clipboard, only tmux's own copy
 /// does, via a local pipe. None on platforms without a known clipboard tool
 /// (defaults keep the selection in tmux's buffer, as before).
-fn copy_pipe_cmd() -> Option<&'static str> {
+///
+/// macOS is `pbcopy`. Linux is decided at runtime by [`linux_clipboard`],
+/// because which clipboard a Linux box has is not a compile-time fact: under
+/// WSL it is Windows' own, on a desktop it is Wayland's or X's, on a server
+/// there is none.
+fn copy_pipe_cmd() -> Option<String> {
     if cfg!(target_os = "macos") {
-        Some("pbcopy")
-    } else {
-        None
+        return Some("pbcopy".into());
     }
+    if cfg!(target_os = "linux") {
+        let kernel = std::fs::read_to_string("/proc/version").unwrap_or_default();
+        return linux_clipboard(
+            &kernel,
+            std::env::var_os("WAYLAND_DISPLAY").is_some(),
+            std::env::var_os("DISPLAY").is_some(),
+            |name| {
+                crate::which_on_path(name).or_else(|| {
+                    // WSL puts the Windows System32 on PATH by default, but a
+                    // user who turned that off still has the drive mounted.
+                    let fixed = std::path::PathBuf::from("/mnt/c/Windows/System32").join(name);
+                    (name == "clip.exe" && fixed.is_file()).then_some(fixed)
+                })
+            },
+        );
+    }
+    None
+}
+
+/// Which clipboard a Linux copy reaches, from three facts so the choice is a
+/// pure function: a kernel string naming Microsoft is WSL, whose clipboard is
+/// Windows' own (`clip.exe`, reachable through interop); a Wayland session is
+/// `wl-copy`; an X session is `xclip`. Paths come back ABSOLUTE, because the
+/// pipe runs under the tmux server's frozen environment (D29) and a bare name
+/// would be looked up on whatever PATH the server was born with.
+pub(crate) fn linux_clipboard(
+    kernel: &str,
+    wayland: bool,
+    x11: bool,
+    which: impl Fn(&str) -> Option<std::path::PathBuf>,
+) -> Option<String> {
+    if kernel.to_ascii_lowercase().contains("microsoft") {
+        return which("clip.exe").map(|p| p.display().to_string());
+    }
+    if wayland {
+        if let Some(p) = which("wl-copy") {
+            return Some(p.display().to_string());
+        }
+    }
+    if x11 {
+        if let Some(p) = which("xclip") {
+            return Some(format!("{} -in -selection clipboard", p.display()));
+        }
+    }
+    None
 }
 
 /// Copy-mode bindings `(table, key, pipe_cmd)` that end a selection through
@@ -66,14 +114,14 @@ fn copy_pipe_cmd() -> Option<&'static str> {
 /// live commands (`TmuxBackend::install_copy_bindings`) — a running server
 /// never re-reads `-f`. Mouse drag-end plus the two keyboard copy keys;
 /// `copy-pipe-and-cancel` matches the default bindings' cancel behavior.
-pub fn copy_pipe_bindings() -> Vec<(&'static str, &'static str, &'static str)> {
+pub fn copy_pipe_bindings() -> Vec<(&'static str, &'static str, String)> {
     let Some(pipe) = copy_pipe_cmd() else {
         return Vec::new();
     };
     vec![
-        ("copy-mode", "MouseDragEnd1Pane", pipe),
-        ("copy-mode-vi", "MouseDragEnd1Pane", pipe),
-        ("copy-mode", "Enter", pipe),
+        ("copy-mode", "MouseDragEnd1Pane", pipe.clone()),
+        ("copy-mode-vi", "MouseDragEnd1Pane", pipe.clone()),
+        ("copy-mode", "Enter", pipe.clone()),
         ("copy-mode-vi", "y", pipe),
     ]
 }
@@ -104,6 +152,44 @@ mod tests {
         assert!(conf.contains("bind-key -T copy-mode-vi MouseDragEnd1Pane"));
         // T-10 containment must survive the clipboard fix.
         assert!(conf.contains("set-clipboard off"));
+    }
+
+    /// The Linux choice is a pure function of three facts, so every branch is
+    /// pinned here without a Wayland session or a Windows drive in the room.
+    #[test]
+    fn a_linux_copy_finds_the_clipboard_it_has() {
+        use std::path::PathBuf;
+        let have = |names: &'static [&'static str]| {
+            move |n: &str| names.contains(&n).then(|| PathBuf::from("/usr/bin").join(n))
+        };
+        let wsl = "Linux version 5.15.167.4-microsoft-standard-WSL2 (root@...)";
+        let plain = "Linux version 6.8.0-45-generic (buildd@lcy02) ...";
+
+        assert_eq!(
+            linux_clipboard(wsl, false, false, have(&["clip.exe", "xclip"])).as_deref(),
+            Some("/usr/bin/clip.exe"),
+            "WSL is Windows' clipboard, whatever else is installed"
+        );
+        assert_eq!(linux_clipboard(wsl, false, false, have(&[])), None, "no interop, no pipe");
+        assert_eq!(
+            linux_clipboard(plain, true, true, have(&["wl-copy", "xclip"])).as_deref(),
+            Some("/usr/bin/wl-copy"),
+            "Wayland outranks X when both are up"
+        );
+        assert_eq!(
+            linux_clipboard(plain, false, true, have(&["xclip"])).as_deref(),
+            Some("/usr/bin/xclip -in -selection clipboard")
+        );
+        assert_eq!(
+            linux_clipboard(plain, false, false, have(&["xclip"])),
+            None,
+            "no display: a server"
+        );
+        assert_eq!(
+            linux_clipboard(plain, true, false, have(&["xclip"])),
+            None,
+            "wayland without wl-copy"
+        );
     }
 
     #[test]

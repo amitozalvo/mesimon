@@ -13,7 +13,8 @@ author. It will change under you.
 curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
 ```
 
-Nothing else to install first.
+On macOS there is nothing else to install first. On Linux, tmux from your
+package manager (`sudo apt install tmux`).
 
 Then:
 
@@ -26,14 +27,19 @@ Re-running the install line is how you update.
 
 ## Requirements
 
-- **macOS on Apple Silicon.** That is the only build published.
+- **macOS on Apple Silicon, or Linux on x86_64 / aarch64.** The Linux build is
+  static, so it runs on any distro — and under **WSL2**, which is how to run it
+  on Windows. Keep the repo in the Linux filesystem (under `~`), not on
+  `/mnt/c`: git across that boundary is an order of magnitude slower.
 - **git**.
 - **[Claude Code](https://claude.com/claude-code)** on your `PATH`, to spawn
   Claude sessions.
 
-tmux is **not** a prerequisite: mesimon ships its own, installed alongside it as
-`mesimon-tmux`. It never shadows or touches the tmux you already have — agents
-run on a private server with a generated conf, exactly as before.
+On macOS, tmux is **not** a prerequisite: mesimon ships its own, installed
+alongside it as `mesimon-tmux`. It never shadows or touches the tmux you
+already have — agents run on a private server with a generated conf, exactly
+as before. On Linux, install your distro's tmux (3.3 or newer; 3.1 runs, but
+without the clipboard containment `mesimon doctor` will warn about).
 
 `mesimon doctor` checks all of these and tells you the exact line to fix any
 that are missing.

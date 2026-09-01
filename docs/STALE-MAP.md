@@ -2714,3 +2714,121 @@ to `SIG_DFL`, so the next wheel tick (≤ 250 ms) runs `begin_shutdown` on the w
 second TERM still kills. `pkill -f "mesimon daemon"` is therefore a clean exit now, not a signal
 death. E2e: `shutdown_flush_e2e` — the in-process road via `Shutdown`, and the real binary under
 `kill -TERM` (asserts exit 0, socket gone, ticket in REVIEW on disk, record `idle/end_turn`).
+
+## The prompt field remembers what was asked (2026-09-02)
+
+**Was:** the board's Shift+Enter field (`InputPurpose::Prompt`) opened empty every time, so
+"run the tests" on the fourth ticket of the day was typed for the fourth time, and an ask sent
+to the wrong ticket was gone the moment Enter landed.
+
+**Is:** a shell-style history, in the field and nowhere else. `App::prompt_history` holds every
+ask sent this TUI run, oldest first, one copy of each (a repeat moves to the end), capped at 50 —
+in memory only: a recall aid, not a record, and the transcript already is the record, so no
+state file and no write outside the allowlist. `↑` (`Verb::HistoryPrev`) keeps the draft under
+the cursor and shows the newest ask, each further `↑` goes one older and the oldest is a wall,
+not a wrap; `↓` (`Verb::HistoryNext`) walks forward and the step past the newest puts the draft
+back — the walk lives on `InputPurpose::Prompt { walk: Option<HistoryWalk> }`, so it dies with
+the field. **Both keys are gated on `Ctx::prompting && Ctx::prompt_history`**: a composer has no
+earlier titles, and a field with nothing to recall hints nothing (`↑ earlier asks` appears only
+once something was asked; `↓` is bound and silent, the `> <` shape). The `board_prompt` golden
+is unchanged for exactly that reason. Barrier scopes are exempt from the one-verb-per-key rule,
+which is why `↑` may mean this here and cursor-up on the board. Tests:
+`prompt_field_walks_its_history_and_comes_back_to_the_draft` (app.rs) and
+`prompt_history_is_the_prompt_fields_and_needs_a_past` (keymap.rs).
+
+## Linux ships, and every tmux before 3.6 rewrites a tab (2026-09-02, user request)
+
+**Was:** the README said "Linux is buildable but untested and unshipped", `install.sh` refused
+anything but Darwin/arm64, `release.rs` knew one asset name, and the suite had only ever run
+against tmux 3.6a — the brew one and the bundled one, which are the same build.
+
+**Refuted, by measurement:** the workspace cross-compiles clean for Linux with zero code changes
+(`cargo check --workspace --all-targets --target x86_64-unknown-linux-gnu`), and then 4 tests fail
+on Debian 12 with every pane alive. `tmux` 3.2a (Ubuntu 22.04), 3.3a (Debian 12), 3.4 (Ubuntu
+24.04) and 3.5a (Debian 13) all rewrite a control character in `-F` format OUTPUT as `_`; only
+3.6a passes a tab through. `snapshot`/`activity`/`titles` split on `\t`, so on any distro tmux
+the parse yielded nothing: reconcile read every session as `Exited{Crashed}` after a restart, the
+Esc-interrupt probe never saw a quiet pane, and the backend's own roundtrip test failed in 10 ms.
+Not in tmux's CHANGES; found by instrumenting the run (`abc123_276_0_` where `abc123\t276\t0\t`
+was expected). Autopsy of the servers the failing tests left running is what separated "pane
+died" from "parse failed".
+
+**Is:**
+- **`SEP = '|'`** in `backend-tmux/src/lib.rs`, one constant for the format string (`fields`)
+  and the parsers (`parse_snapshot`, `pairs`), so they cannot drift; a unit test pins that it is
+  printable and that a title containing it survives `split_once`. Verified: 4/4 on tmux 3.3a,
+  the backend suite on 3.6a.
+- **Linux is a shipped target, two of them:** `x86_64-unknown-linux-musl` and
+  `aarch64-unknown-linux-musl`, cross-linked FROM THE MAC by the toolchain's own `rust-lld`
+  (`ci/build-linux.sh`; the dependency graph has no C, so no cross C toolchain). Static musl
+  rather than glibc so one binary runs on Ubuntu 22.04's glibc 2.35 as well as Debian 13's —
+  and under WSL2, which is the Windows answer (native Windows is 26 compile errors in the daemon
+  plus the SIGTERM ladder plus tmux itself; not a target). `release.rs` carries `PUBLISHED`, and
+  a test reads `ci/release.sh`, `ci/build-linux.sh` and `install.sh` so the three name lists
+  stay one. `install.sh` derives the asset from `uname`, verifies with `sha256sum` or `shasum`,
+  and prints the rc line for the shell it is in.
+- **The release gate grew a Linux leg:** `ci/test-linux.sh` runs the whole suite in Docker
+  (Debian 12, arm64 native, the DISTRO's tmux 3.3a — the version a `sudo apt install tmux`
+  gives, which is the point) and dies without Docker rather than skipping; `ci/release.sh`
+  packages a tarball per Linux target and executes each inside a `debian:bookworm-slim` of its
+  own architecture (`--version` + the `update checks` stamp), the x86_64 one under emulation.
+  Bundled licenses and `mesimon-tmux` are macOS-only in the package.
+- **tmux is NOT bundled for Linux** — a deviation from alpha-2's "ships its own tmux". Every
+  distro packages a tmux mesimon now runs on, `ci/build-tmux.sh` is Darwin-bound (otool, a
+  Mac-only static recipe), and a second static tmux build was more risk than the fix above
+  left behind. `doctor`'s floor is now **3.3, on two floors**: below 3.1 the conf does not
+  parse; 3.1–3.2 runs but `allow-passthrough` does not exist yet, and before the option existed
+  passthrough was simply on, so T-10's containment is a line tmux ignored — a WARN naming it,
+  never a FAIL, since every distro tmux today is 3.2a or newer. `tmux_verdict` is the pure
+  function; a test pins both floors. The "tmux binary" note reads `(shipped with mesimon)` off
+  the sibling's NAME now, not off "is absolute" — the ladder resolves PATH to an absolute path
+  too, so the old test said "shipped" for a brew tmux.
+- **The clipboard is decided at runtime on Linux** (`conf::linux_clipboard`, pure over three
+  facts): WSL (`/proc/version` names Microsoft) is `clip.exe` via interop, Wayland is `wl-copy`,
+  X is `xclip`; absolute paths, since the pipe runs under the server's frozen D29 env. Before
+  this `copy_pipe_cmd` was `None` off macOS and a Linux copy silently stayed in tmux's buffer.
+- **doctor learns WSL:** the `os` line says so, `git` warns when the repo is under `/mnt` (the
+  9p bridge makes git an order of magnitude slower and mesimon shells out to it constantly),
+  and `install` warns when `curl` is missing, since the checker is silently inert without it.
+- **Verification recipe** (also the CI matrix's second leg, `ubuntu-24.04`): the tree mounted
+  read-only into `rust:<local rustc>-bookworm`, build in a named volume, `cargo test --workspace
+  --locked` under `MESIMON_REQUIRE_TMUX=1`. ~90 s warm. Never mount the checkout read-write: the
+  container's host triple is Linux and it would overwrite `target/debug`.
+
+Deferred: a bundled Linux tmux (would need `build-tmux.sh` ported to an alpine/musl container);
+OSC-11 flavor detection through Windows Terminal is unverified; a second `~/.claude` on the
+Windows side is invisible to the adoption census.
+
+## A working pane goes quiet, so the quiet probe waits a minute (2026-09-02, dogfood)
+
+T-71's card kept dropping its spinner while its agent was visibly mid-turn (T-144). The activity
+log shows why: `probe_activity` demoted the session `Running → Idle{Interrupted}` at Medium four
+times in ninety seconds, each verdict `hook: null`, and each was undone by the very next
+`PostToolUse` 3–11 s later. `card_glyph` has no arm for `Idle{Interrupted}` — rightly, an
+interrupted agent is nobody's to watch — so the card went blank for each gap.
+
+- **The probe's premise is refuted.** The 8 s threshold (STALE-MAP "the interrupt emits
+  nothing", 2026-08-30) rested on "a turn in flight repaints sub-second (spinner); 8 s is ~8x the
+  largest gap measured while working". Sampled `#{window_activity}` once a second across every
+  live pane on 2026-09-02 (Claude Code 2.1.257): a working pane holds the stamp still for 6–10 s
+  routinely, and the transcript puts the long silences exactly where the model is streaming a
+  large `Edit`/`Write` input — nothing paints until the tool call is whole. Across the whole
+  activity log since 2026-08-30, **19 of the probe's 40 verdicts were followed by a `PostToolUse`
+  or a `Stop`** — the turn it had just declared dead, still running — with silences of 10–50 s
+  behind the `PostToolUse` ones (plus one 15-minute outlier and the 200 s+ `Stop` ones, which
+  predate "a turn parked on background work is its own state" and are that bug, not this one).
+- **Fix: `PANE_QUIET_MS` 8 s → 60 s.** Not a smarter probe, because there is no smarter signal:
+  neither the transcript nor a hook moves while a tool input streams, and reading the pane's
+  CONTENT for Claude Code's own spinner line is a UI-string heuristic the design rules refuse.
+  The number is sized for what the probe now is — the FALLBACK for the recordless Esc (one
+  landing before the first assistant output). The primary catch, the transcript's `[Request
+  interrupted by user]` record through `poll_tails`' abort-only class, lands in ~2 s regardless,
+  and post-interrupt painting already held a pane "active" for 60–80 s live (the T-50 amendment),
+  so the recordless case was paying most of that minute already. Sixty seconds clears every
+  working silence measured.
+- Seam `MESIMON_PANE_QUIET_MS` unchanged; `interrupt_e2e` (1.5 s) and `interrupt_tail_e2e`
+  (600 s, i.e. off) set it and are unaffected.
+
+Deferred: the flap-pin interaction — a session that misfired often enough sat at `Confidence::Low`
+(`FLAP_MAX`), where `automove` refuses to move; with the misfires gone this should stop being
+reachable in normal use, but nothing asserts it.

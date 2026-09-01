@@ -251,8 +251,9 @@ pub enum Signal {
         resume: bool,
     },
     /// Daemon-side probe while `Running`: the pane stopped painting past the
-    /// quiet threshold. A turn in flight repaints continuously (spinner), so
-    /// sustained silence means the turn is over. An Esc interrupt still fires
+    /// quiet threshold (60 s — a working pane goes quiet for 6–10 s routinely
+    /// and ~50 s while a large tool input streams, dogfood 2026-09-02, so
+    /// only a long silence says the turn is over). An Esc interrupt still fires
     /// no hook (spike S-E), but current Claude Code DOES write an interrupt
     /// record to the transcript, and that is the primary catch (poll_tails'
     /// abort-only class → `TranscriptHint{AbortedMidStream}`, dogfood

@@ -117,6 +117,20 @@ pub enum Mode {
     },
 }
 
+/// A prompt field's position in the ask history while `↑`/`↓` walk it.
+#[derive(Debug, Clone, PartialEq)]
+pub struct HistoryWalk {
+    /// Index into `App::prompt_history` currently shown in the field.
+    pub idx: usize,
+    /// What was in the field when the walk began — restored by `↓` past
+    /// the newest entry, so browsing never eats a half-typed prompt.
+    pub draft: String,
+}
+
+/// How many asks the prompt field remembers. In memory only, per TUI run:
+/// a recall aid, not a record — the transcript is the record.
+const PROMPT_HISTORY_MAX: usize = 50;
+
 /// The m key's staged progression (author 2026-08-30): each press shows what
 /// the next press does. Stage is derived from git state, never stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -178,6 +192,10 @@ pub enum InputPurpose {
     /// becomes `send`.
     Prompt {
         ticket: ulid::Ulid,
+        /// `Some` while `↑`/`↓` are walking [`App::prompt_history`]: where
+        /// the walk is and the draft it stepped off, so `↓` past the newest
+        /// ask puts the user's own words back. `None` is the ordinary field.
+        walk: Option<HistoryWalk>,
     },
 }
 
@@ -311,6 +329,10 @@ pub struct App {
     /// straight away (the fresh-ticket fast path). Any other key closes the
     /// window — browsing away means the moment passed.
     just_created: Option<ulid::Ulid>,
+    /// Every prompt sent from the board this run, oldest first, one copy of
+    /// each (a repeat moves to the end), at most `PROMPT_HISTORY_MAX`. `↑`
+    /// in a prompt field walks it — see `HistoryWalk`.
+    prompt_history: Vec<String>,
     /// New-binary watch (dev rebuild or prod upgrade — same signal).
     update_watch: crate::update::UpdateWatch,
     /// Is a newer RELEASE published? Inert in every build `ci/release.sh`
@@ -409,6 +431,7 @@ impl App {
             pending_spawn_focus: None,
             focused_session_hint: None,
             just_created: None,
+            prompt_history: Vec::new(),
             rich_keys: false,
             flavor_watch: None,
             update_watch: crate::update::UpdateWatch::new(),
@@ -653,7 +676,7 @@ impl App {
             dirty = true;
         }
         // The release checker, on its own long clock: at most one question
-        // every six hours, and none at all from a build that was not cut by
+        // every half hour, and none at all from a build that was not cut by
         // `ci/release.sh`. What it has to say is a chip, plus one status line
         // for the moments a download starts, lands or falls over.
         if self.release.tick() {
@@ -923,6 +946,7 @@ impl App {
                 self.mode,
                 Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }
             ),
+            prompt_history: !self.prompt_history.is_empty(),
             tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
             tag_on_entry: self.tag_cell().is_some(),
             tag_worn: self.tag_cell().is_some_and(|(g, n, _)| {
@@ -1317,7 +1341,7 @@ impl App {
             Verb::Prompt => {
                 if let Some(id) = self.subject() {
                     self.mode = Mode::Input {
-                        purpose: InputPurpose::Prompt { ticket: id },
+                        purpose: InputPurpose::Prompt { ticket: id, walk: None },
                         buffer: EditBuffer::new(),
                     };
                 }
@@ -1460,7 +1484,9 @@ impl App {
             | Verb::EditBackspace
             | Verb::EditDelete
             | Verb::EditDeleteWord
-            | Verb::EditKillToStart => {}
+            | Verb::EditKillToStart
+            | Verb::HistoryPrev
+            | Verb::HistoryNext => {}
         }
         Ok(())
     }
@@ -1964,6 +1990,39 @@ impl App {
                         None => Some(WorkspaceStrategy::Worktree),
                         Some(_) => None,
                     };
+                }
+            }
+            // The ask history, shell-style. `↑` from the ordinary field keeps
+            // the draft and shows the newest ask; each further `↑` goes one
+            // older and stops at the oldest. `↓` comes back the same way, and
+            // the step past the newest is the draft again, walk over. The
+            // keymap only binds these while prompting with history, so the
+            // `Prompt` arm is the only one that can be reached.
+            Some(Verb::HistoryPrev) => {
+                if let InputPurpose::Prompt { walk, .. } = &mut purpose {
+                    let newest = self.prompt_history.len().checked_sub(1);
+                    let next = match (&*walk, newest) {
+                        (None, Some(newest)) => Some((newest, buffer.clone().into_text())),
+                        (Some(w), _) if w.idx > 0 => Some((w.idx - 1, w.draft.clone())),
+                        _ => None,
+                    };
+                    if let Some((idx, draft)) = next {
+                        buffer = EditBuffer::from_text(self.prompt_history[idx].clone());
+                        *walk = Some(HistoryWalk { idx, draft });
+                    }
+                }
+            }
+            Some(Verb::HistoryNext) => {
+                if let InputPurpose::Prompt { walk, .. } = &mut purpose {
+                    if let Some(w) = walk.take() {
+                        match self.prompt_history.get(w.idx + 1) {
+                            Some(newer) => {
+                                buffer = EditBuffer::from_text(newer.clone());
+                                *walk = Some(HistoryWalk { idx: w.idx + 1, draft: w.draft });
+                            }
+                            None => buffer = EditBuffer::from_text(w.draft),
+                        }
+                    }
                 }
             }
             // Backspace and the arrows widen to a word under ctrl/alt; which
@@ -2777,7 +2836,8 @@ impl App {
             // sending IS the whole act here, so both Enters do it — see the
             // input scope's ShiftEnter binding for why the harder one stays
             // bound rather than dying under the finger that opened the field.
-            InputPurpose::Prompt { ticket } => {
+            InputPurpose::Prompt { ticket, .. } => {
+                self.remember_prompt(&title);
                 self.status = match self.req(Command::PromptSession { ticket, text: title }) {
                     // Deliberately not "sent to claude": what is provably
                     // true is that it went into the box and Enter was
@@ -2792,6 +2852,15 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// One copy of each ask, newest last: a repeat moves to the end rather
+    /// than appearing twice on the walk, and the oldest falls off at the cap.
+    fn remember_prompt(&mut self, text: &str) {
+        self.prompt_history.retain(|p| p != text);
+        self.prompt_history.push(text.to_string());
+        let over = self.prompt_history.len().saturating_sub(PROMPT_HISTORY_MAX);
+        self.prompt_history.drain(..over);
     }
 
     /// Shift+Enter's second half: start claude on the ticket the composer just
@@ -3360,7 +3429,7 @@ mod tests {
         // …and it is the ticket under the cursor that gets asked.
         assert!(matches!(
             app.mode,
-            Mode::Input { purpose: InputPurpose::Prompt { ticket }, .. } if ticket == ulid::Ulid(1)
+            Mode::Input { purpose: InputPurpose::Prompt { ticket, .. }, .. } if ticket == ulid::Ulid(1)
         ));
         for c in "run the tests".chars() {
             press(&mut app, c);
@@ -3375,6 +3444,88 @@ mod tests {
         assert_eq!(app.screen, Screen::Board, "the board never leaves");
         assert!(app.pending_attach.is_none(), "no handover — that is the point");
         assert_eq!(app.mode, Mode::Normal, "the field closed");
+    }
+
+    /// `↑` in the prompt field recalls what was asked before, newest first;
+    /// `↓` walks back toward the present, and the step past the newest ask
+    /// is the draft that was under the cursor when the walk began. A recalled
+    /// ask is sent as-is by Enter, and sending it again moves it to the end
+    /// of the walk rather than listing it twice.
+    #[test]
+    fn prompt_field_walks_its_history_and_comes_back_to_the_draft() {
+        fn field(app: &App) -> String {
+            match &app.mode {
+                Mode::Input { buffer, .. } => buffer.as_str().to_string(),
+                m => panic!("not in a field: {m:?}"),
+            }
+        }
+        fn open(app: &mut App) {
+            app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+            assert!(matches!(app.mode, Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }));
+        }
+        fn up(app: &mut App) {
+            app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        }
+        fn down(app: &mut App) {
+            app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        }
+        fn ask(app: &mut App, text: &str) {
+            open(app);
+            for c in text.chars() {
+                press(app, c);
+            }
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        }
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+
+        // No past: the arrows are inert and the draft is untouched.
+        open(&mut app);
+        press(&mut app, 'x');
+        up(&mut app);
+        down(&mut app);
+        assert_eq!(field(&app), "x", "nothing to recall yet");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+
+        ask(&mut app, "run the tests");
+        ask(&mut app, "rebase");
+
+        open(&mut app);
+        for c in "dra".chars() {
+            press(&mut app, c);
+        }
+        up(&mut app);
+        assert_eq!(field(&app), "rebase", "first ↑ is the newest ask");
+        up(&mut app);
+        assert_eq!(field(&app), "run the tests", "second ↑ is one older");
+        up(&mut app);
+        assert_eq!(field(&app), "run the tests", "the oldest is a wall, not a wrap");
+        down(&mut app);
+        assert_eq!(field(&app), "rebase");
+        down(&mut app);
+        assert_eq!(field(&app), "dra", "↓ past the newest ask is the draft again");
+        assert!(
+            matches!(
+                &app.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { walk: None, .. }, .. }
+            ),
+            "back on the draft, the walk is over"
+        );
+        down(&mut app);
+        assert_eq!(field(&app), "dra", "and stays the draft");
+
+        // Recall the oldest and send it: it travels verbatim and moves to the
+        // end of the walk — one copy, newest position.
+        up(&mut app);
+        up(&mut app);
+        assert_eq!(field(&app), "run the tests");
+        sent.borrow_mut().clear();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "run the tests"));
+        assert_eq!(app.prompt_history, vec!["rebase".to_string(), "run the tests".to_string()]);
+        open(&mut app);
+        up(&mut app);
+        assert_eq!(field(&app), "run the tests", "the repeat is now the newest");
     }
 
     /// The finger is still holding shift from the press that opened the

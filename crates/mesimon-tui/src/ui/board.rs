@@ -105,7 +105,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // and stay on screen while the sentence is typed.
     let prompt_of = |t: &Ticket| -> Option<&EditBuffer> {
         match editing {
-            Some((InputPurpose::Prompt { ticket }, buf)) if *ticket == t.id => Some(buf),
+            Some((InputPurpose::Prompt { ticket, .. }, buf)) if *ticket == t.id => Some(buf),
             _ => None,
         }
     };

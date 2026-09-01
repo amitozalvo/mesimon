@@ -2,9 +2,11 @@
 # Cut a release from THIS machine and upload it to GitHub.
 #
 # GitHub-hosted macOS runners bill at 10x minutes on a private repo, and the
-# only target we ship is the one this laptop already is. So the build happens
-# here — but every gate the workflow would have applied still applies, because
-# a local build is only trustworthy if it refuses to cut corners:
+# macOS target we ship is the one this laptop already is; the two Linux
+# targets are cross-linked from here as well (ci/build-linux.sh), so a release
+# is one machine's work. Every gate the workflow would have applied still
+# applies, because a local build is only trustworthy if it refuses to cut
+# corners:
 #
 #   * the working tree must be clean, so the artifact is the tagged commit and
 #     nothing else — this is the failure mode a CI runner cannot have
@@ -13,8 +15,12 @@
 #     nobody else can fetch
 #   * the full suite and clippy must pass, with tmux REQUIRED (a skipped e2e
 #     suite is a gate that certifies nothing)
-#   * the binary is never stripped, and its signature is verified
-#   * the packaged artifact is executed before it is published
+#   * the suite must pass on Linux too, in Docker, against the tmux a distro
+#     ships rather than the one we bundle (ci/test-linux.sh) — Docker is
+#     required here, not skipped, for the same reason tmux is
+#   * the macOS binary is never stripped, and its signature is verified
+#   * every packaged artifact is executed before it is published, the Linux
+#     ones inside a Debian container of their own architecture
 #
 # Usage:  ci/release.sh              build, verify, package, publish
 #         ci/release.sh --dry-run    everything except the upload
@@ -26,6 +32,10 @@ DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
 TARGET="aarch64-apple-darwin"
+# Cross-linked from this Mac (ci/build-linux.sh): static musl, one binary per
+# architecture. The names are what install.sh derives from `uname` and what
+# release.rs carries, pinned by a unit test that reads this file.
+LINUX_TARGETS="x86_64-unknown-linux-musl aarch64-unknown-linux-musl"
 # Source repo (private) and the public repo the binaries are published to.
 # The split is what lets a tester install with a curl and no GitHub account,
 # while the code stays private.
@@ -89,6 +99,14 @@ step "tests (driven by the bundled tmux)"
 # remove — so the bundled binary is the one that has to pass.
 MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 cargo test --workspace
 
+step "tests on Linux (Docker, the distro's own tmux)"
+# The same suite on the platform the Linux artifacts are for, driven by the
+# tmux a `sudo apt install tmux` gives people — 3.3a on Debian 12 — which is
+# where a 3.6-only assumption (a tab in `-F` output) first failed with every
+# pane alive. The script dies without Docker rather than skipping: a Linux
+# gate that ran nothing would certify a Linux build nobody had tested.
+./ci/test-linux.sh
+
 # --- build ------------------------------------------------------------------
 
 step "build --release --target $TARGET"
@@ -111,11 +129,19 @@ step "smoke test"
 "$bin" --version
 "$bin" --help >/dev/null
 
+step "build for Linux ($LINUX_TARGETS)"
+# Cross-linked here with the toolchain's own rust-lld: static musl, so one
+# binary per architecture runs on every distro and under WSL2. The release
+# stamp is PASSED THROUGH, not set a second time — the note above still
+# holds; this is the same build step reaching two more targets.
+MESIMON_RELEASE=1 ./ci/build-linux.sh $LINUX_TARGETS
+
 # --- package ----------------------------------------------------------------
 
 step "package"
-name="mesimon-$tag-$TARGET"
 rm -rf dist
+assets=()
+name="mesimon-$tag-$TARGET"
 mkdir -p "dist/$name"
 cp "$bin" "dist/$name/"
 # tmux sits BESIDE mesimon under a name that will not shadow the user's own
@@ -128,6 +154,27 @@ tar -czf "dist/$name.tar.gz" -C dist "$name"
 ( cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256" )
 cat "dist/$name.tar.gz.sha256"
 ls -lh "dist/$name.tar.gz"
+assets+=("dist/$name.tar.gz" "dist/$name.tar.gz.sha256")
+
+# The Linux packages carry no tmux (ci/build-linux.sh says why) and so no
+# bundled licenses; everything else is the layout install.sh unpacks. The
+# checksum file is `shasum`'s `<hex>  <name>` line, which Linux's `sha256sum
+# -c` reads unchanged.
+for t in $LINUX_TARGETS; do
+  lname="mesimon-$tag-$t"
+  mkdir -p "dist/$lname"
+  cp "target/$t/release/mesimon" "dist/$lname/"
+  cp README.md LICENSE NOTICE TRADEMARK.md "dist/$lname/"
+  # bsdtar records every file's `com.apple.provenance` xattr, and GNU tar on
+  # the other end prints a warning per file while unpacking it. Measured on
+  # Debian 12: five warnings before "installed". Strip the Mac metadata here;
+  # nothing in the package needs it.
+  COPYFILE_DISABLE=1 tar --no-xattrs --no-mac-metadata -czf "dist/$lname.tar.gz" -C dist "$lname"
+  ( cd dist && shasum -a 256 "$lname.tar.gz" > "$lname.tar.gz.sha256" )
+  cat "dist/$lname.tar.gz.sha256"
+  ls -lh "dist/$lname.tar.gz"
+  assets+=("dist/$lname.tar.gz" "dist/$lname.tar.gz.sha256")
+done
 
 # Prove the tarball is the thing install.sh will unpack, from the archive
 # rather than from the build directory.
@@ -159,6 +206,32 @@ $checks" "MESIMON_RELEASE=1 must be set on the cargo build above" ;;
   *) die "the packaged mesimon printed no 'update checks' line at all" \
       "mesimon doctor install must report it — see crates/mesimon-tui/src/release.rs" ;;
 esac
+
+# The same two proofs for each Linux artifact — it runs, and it is stamped —
+# from inside a Debian container of its own architecture (the x86_64 one
+# under Docker's emulation, which is exactly enough for `--version`). The
+# checker's build-tree guard is exercised for real here too: /pkg has no
+# `target` component, so `off` can only mean a missing stamp or a target the
+# checker does not know.
+step "verify the Linux artifacts (Docker)"
+for t in $LINUX_TARGETS; do
+  lname="mesimon-$tag-$t"
+  tar -xzf "dist/$lname.tar.gz" -C "$tmp"
+  case "$t" in
+    x86_64-*)  plat=linux/amd64 ;;
+    aarch64-*) plat=linux/arm64 ;;
+    *) die "no docker platform for $t" ;;
+  esac
+  said=$(docker run --rm --platform "$plat" -v "$tmp/$lname:/pkg:ro" -e HOME=/root \
+      debian:bookworm-slim \
+      sh -c '/pkg/mesimon --version && /pkg/mesimon doctor install --verbose | grep "update checks"') \
+    || die "the packaged $t binary would not run in a $plat container, or printed no 'update checks' line"
+  echo "$said"
+  case "$said" in
+    *"off ∙"*) die "the packaged $t mesimon will not check for updates:
+$said" "MESIMON_RELEASE=1 must reach ci/build-linux.sh, and release.rs must name $t" ;;
+  esac
+done
 
 # --- notes ------------------------------------------------------------------
 
@@ -199,7 +272,7 @@ gh release create "$tag" \
   --title "$tag" \
   --notes-file dist/notes.md \
   --prerelease \
-  "dist/$name.tar.gz" "dist/$name.tar.gz.sha256"
+  "${assets[@]}"
 
 # Keep the public repo's install.sh and README in step with what was just
 # released — the curl one-liner reads them straight off its main branch.

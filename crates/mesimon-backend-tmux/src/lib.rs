@@ -54,11 +54,58 @@ pub fn tmux_bin() -> PathBuf {
 }
 
 /// First executable named `name` on the current process's `PATH`.
-fn which_on_path(name: &str) -> Option<PathBuf> {
+pub(crate) fn which_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))
         .find(|cand| std::fs::metadata(cand).is_ok_and(|m| m.is_file()))
+}
+
+/// The field separator in every `-F` format this backend reads back, and it
+/// is a PRINTABLE character on purpose.
+///
+/// Every tmux from 3.2a through 3.5a rewrites a control character in format
+/// OUTPUT as `_` (measured 2026-09-01 on Ubuntu 22.04 and 24.04, Debian 12
+/// and 13); only 3.6 passes a tab through, and 3.6 was the one tmux this code
+/// had ever run against. With `\t` here the parse yielded nothing on every
+/// distro tmux — an empty snapshot reads every session as crashed at
+/// reconcile, and an empty activity list is an interrupt probe that never
+/// fires — while the panes sat there alive. `|` cannot occur in a session
+/// name (sid16 is hex) or in a pid, and the one free-text field, `pane_title`,
+/// is always last, where `split_once` leaves it whole.
+const SEP: char = '|';
+
+/// `#{a}|#{b}|…` — the format string for `fields`, built from the same
+/// separator the parsers split on, so the two cannot drift apart.
+fn fields(names: &[&str]) -> String {
+    let parts: Vec<String> = names.iter().map(|n| format!("#{{{n}}}")).collect();
+    parts.join(&SEP.to_string())
+}
+
+/// `list-panes -a` output into snapshots: `session|pid|dead|status`, one per
+/// line. A line with fewer than three fields is not a pane row and is skipped.
+fn parse_snapshot(out: &str) -> Vec<PaneSnapshot> {
+    let mut v = Vec::new();
+    for line in out.lines() {
+        let mut f = line.split(SEP);
+        let (Some(name), Some(pid), Some(dead), status) = (f.next(), f.next(), f.next(), f.next())
+        else {
+            continue;
+        };
+        v.push(PaneSnapshot {
+            session_name: name.to_string(),
+            pane_pid: pid.parse().unwrap_or(0),
+            pane_dead: dead == "1",
+            dead_status: status.and_then(|s| s.parse().ok()),
+        });
+    }
+    v
+}
+
+/// `session|value` rows. The split is on the FIRST separator, so a value that
+/// itself contains one (a pane title can) comes back intact.
+fn pairs(out: &str) -> impl Iterator<Item = (&str, &str)> {
+    out.lines().filter_map(|l| l.split_once(SEP))
 }
 
 pub struct TmuxBackend {
@@ -142,7 +189,7 @@ impl TmuxBackend {
                 "send-keys",
                 "-X",
                 "copy-pipe-and-cancel",
-                pipe,
+                &pipe,
             ])?;
         }
         Ok(())
@@ -267,24 +314,9 @@ impl TmuxBackend {
             "list-panes",
             "-a",
             "-F",
-            "#{session_name}\t#{pane_pid}\t#{pane_dead}\t#{pane_dead_status}",
+            &fields(&["session_name", "pane_pid", "pane_dead", "pane_dead_status"]),
         ])?;
-        let mut v = Vec::new();
-        for line in out.lines() {
-            let mut f = line.split('\t');
-            let (Some(name), Some(pid), Some(dead), status) =
-                (f.next(), f.next(), f.next(), f.next())
-            else {
-                continue;
-            };
-            v.push(PaneSnapshot {
-                session_name: name.to_string(),
-                pane_pid: pid.parse().unwrap_or(0),
-                pane_dead: dead == "1",
-                dead_status: status.and_then(|s| s.parse().ok()),
-            });
-        }
-        Ok(v)
+        Ok(parse_snapshot(&out))
     }
 
     /// Per-pane last-output time, epoch seconds (`#{window_activity}`; tmux
@@ -296,14 +328,9 @@ impl TmuxBackend {
         if !self.server_alive() {
             return Ok(Vec::new());
         }
-        let out = self.run(&["list-panes", "-a", "-F", "#{session_name}\t#{window_activity}"])?;
-        Ok(out
-            .lines()
-            .filter_map(|l| {
-                let (name, t) = l.split_once('\t')?;
-                Some((name.to_string(), t.parse().ok()?))
-            })
-            .collect())
+        let out =
+            self.run(&["list-panes", "-a", "-F", &fields(&["session_name", "window_activity"])])?;
+        Ok(pairs(&out).filter_map(|(name, t)| Some((name.to_string(), t.parse().ok()?))).collect())
     }
 
     /// Every pane's OSC-0 title in one fork (`#{pane_title}`; tmux reports
@@ -313,14 +340,9 @@ impl TmuxBackend {
         if !self.server_alive() {
             return Ok(Vec::new());
         }
-        let out = self.run(&["list-panes", "-a", "-F", "#{session_name}\t#{pane_title}"])?;
-        Ok(out
-            .lines()
-            .filter_map(|l| {
-                let (name, t) = l.split_once('\t')?;
-                Some((name.to_string(), t.trim().to_string()))
-            })
-            .collect())
+        let out =
+            self.run(&["list-panes", "-a", "-F", &fields(&["session_name", "pane_title"])])?;
+        Ok(pairs(&out).map(|(name, t)| (name.to_string(), t.trim().to_string())).collect())
     }
 
     /// Kill ladder rung 1: SIGTERM the pane's process group; caller escalates to
@@ -416,6 +438,33 @@ mod tests {
         let d = PathBuf::from(format!("/tmp/msmn-test-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    /// The separator is printable, because every tmux before 3.6 rewrites a
+    /// control character in format output as `_` — and `spawn_snapshot_kill_roundtrip`
+    /// below is the live half of this: on Debian's tmux 3.3a it failed with
+    /// the pane alive, which is how the tab was found.
+    #[test]
+    fn the_format_separator_is_printable_and_a_title_may_contain_it() {
+        assert!(!SEP.is_control(), "tmux < 3.6 turns a control character in -F output into `_`");
+        assert!(!SEP.is_whitespace(), "a title is trimmed, a whitespace separator would vanish");
+        assert_eq!(fields(&["session_name", "pane_pid"]), "#{session_name}|#{pane_pid}");
+
+        let snap = parse_snapshot("abc123|42|0|\ndead1|43|1|7\nnot a pane row\n");
+        assert_eq!(snap.len(), 2);
+        assert_eq!(
+            (snap[0].session_name.as_str(), snap[0].pane_pid, snap[0].pane_dead),
+            ("abc123", 42, false)
+        );
+        assert_eq!(snap[0].dead_status, None);
+        assert_eq!((snap[1].pane_dead, snap[1].dead_status), (true, Some(7)));
+
+        let titled: Vec<_> = pairs("abc123|claude | T-12 fix\nbare\n").collect();
+        assert_eq!(
+            titled,
+            [("abc123", "claude | T-12 fix")],
+            "split once: the title keeps its own bar"
+        );
     }
 
     #[test]

@@ -1349,8 +1349,10 @@ fn golden_prompt_field_120() {
     for c in "rebase onto main".chars() {
         buffer.insert(c);
     }
-    app.mode =
-        Mode::Input { purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) }, buffer };
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
+        buffer,
+    };
     let lines = render(&app, 120, 30);
     assert!(
         lines.iter().any(|l| l.contains("Fix OSC-11 detection")),
@@ -1377,7 +1379,7 @@ fn test_an_empty_prompt_field_names_itself() {
     app.cursor_col = 1;
     app.cursor_row = 0;
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
         buffer: crate::text::EditBuffer::new(),
     };
     let lines = render(&app, 120, 30);
@@ -1404,7 +1406,7 @@ fn test_the_prompt_field_moves_no_text() {
     app.cursor_row = 0;
     let before = render(&app, 120, 30);
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
         buffer: crate::text::EditBuffer::new(),
     };
     let after = render(&app, 120, 30);
@@ -1881,7 +1883,7 @@ fn test_no_banned_sgr() {
                 p.rich_keys = true;
                 p.cursor_col = 1;
                 p.mode = Mode::Input {
-                    purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+                    purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
                     buffer: crate::text::EditBuffer::new(),
                 };
                 cells(&p, 120, 30)
@@ -1980,7 +1982,7 @@ fn test_no_drawn_structure() {
                 buf.insert(c);
             }
             p.mode = Mode::Input {
-                purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3) },
+                purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
                 buffer: buf,
             };
             let lines = render(&p, 120, 30);

@@ -38,6 +38,8 @@ cargo test -p mesimon-core attention # one module's tests
 cargo test -p mesimon --test hook_e2e # one e2e (real hook binary + in-process daemon + real tmux; skips without tmux)
 cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact clippy; tests are exempt from unwrap_used via clippy.toml
 cargo run                            # TUI for cwd; `cargo run -- daemon --repo <path>` runs the daemon foreground
+ci/test-linux.sh                     # the whole suite on Linux (Docker, Debian 12, the DISTRO's tmux 3.3a); ~90 s warm. Docker Desktop must be up — SAY SO before `open -a Docker`
+ci/build-linux.sh                    # the two Linux release binaries, cross-linked from this Mac (static musl, rust-lld, no Docker)
 ci/release.sh --dry-run              # the full release gate, minus the upload
 ```
 
@@ -49,15 +51,27 @@ already has tmux silently "bundles" that one. `mesimon_backend_tmux::tmux_bin()`
 (`MESIMON_TMUX_BIN` → sibling `mesimon-tmux` → PATH) and BOTH the server commands and
 `attach_argv` must use it: a client from a different tmux build refuses the server over protocol
 version. `ci/release.sh` runs the e2e suite against the bundled binary, so what ships is what was
-tested.
+tested. **That is macOS only. Linux ships no tmux** and runs the distro's (3.2a on Ubuntu 22.04
+up to 3.5a on Debian 13) — and **every tmux before 3.6 rewrites a control character in `-F`
+format OUTPUT as `_`**, which is why `SEP` in `backend-tmux/src/lib.rs` is a printable `|` and
+why the suite has to run on a distro tmux, not the bundled one (`ci/test-linux.sh`). Doctor's
+floor is 3.3 (`allow-passthrough`; 3.1–3.2 runs but WARNs that T-10's containment is off).
+(STALE-MAP "Linux ships, and every tmux before 3.6 rewrites a tab".)
 
 **Releases are cut locally**, not on a runner (`ci/release.sh`): GitHub's macOS
-runners bill at 10x on a private repo and the only shipped target is this machine.
-The script is the gate — clean tree, tag == HEAD == workspace version, tag pushed,
-clippy, dup-dep drift, the full suite with `MESIMON_REQUIRE_TMUX=1` — then build,
-`codesign -v` (the binary is deliberately NOT stripped: strip invalidates the
-linker's ad-hoc arm64 signature and the symptom elsewhere is SIGKILL), run the
-packaged artifact, upload. `.github/workflows/ci.yml` is manual-dispatch only.
+runners bill at 10x on a private repo and the macOS target is this machine; the two
+Linux targets (`x86_64`/`aarch64-unknown-linux-musl`, static, WSL2 is the Windows
+road) are cross-linked here by the toolchain's own `rust-lld` (`ci/build-linux.sh`,
+no C in the dependency graph so no cross toolchain). The script is the gate — clean
+tree, tag == HEAD == workspace version, tag pushed, clippy, dup-dep drift, the full
+suite with `MESIMON_REQUIRE_TMUX=1`, the same suite on Linux in Docker (dies without
+Docker, never skips) — then build, `codesign -v` (the macOS binary is deliberately NOT
+stripped: strip invalidates the linker's ad-hoc arm64 signature and the symptom
+elsewhere is SIGKILL), run every packaged artifact (the Linux ones inside a Debian
+container of their own architecture, checking `--version` and the `update checks`
+stamp), upload. The asset names live in `release.rs::PUBLISHED`, `ci/build-linux.sh`
+and `install.sh`, pinned to each other by a unit test that reads the scripts.
+`.github/workflows/ci.yml` is manual-dispatch only, a macOS + ubuntu matrix.
 
 **Rebuild trap:** the daemon is a singleton (flock) started detached; a rebuild swaps the binary on
 disk but the RUNNING daemon keeps old code and old `current_exe()` paths. After changing daemon
@@ -76,7 +90,7 @@ also survives daemon death now (reconnect cadence in `tui/src/client.rs`).
 **A RELEASED board also asks whether a newer one exists, and a dev board never does.**
 `update.rs` only ever fires for someone who already updated — on a released machine nothing moves
 that mtime but a hand-run `install.sh` — so `tui/src/release.rs` supplies the missing half and
-only that half: it asks the dist repo for the newest tag (at most every 6 h, `curl` on a worker,
+only that half: it asks the dist repo for the newest tag (at most every 30 min, `curl` on a worker,
 the LIST endpoint because `/releases/latest` skips the prereleases every alpha is), raises
 `◦ v0.1.0-alpha.5 available (esc)`, and on the menu row being taken downloads it, verifies the
 published `.sha256` (**absent means refuse** — `install.sh` only warns because a person is
@@ -272,7 +286,7 @@ ranks 0–8 are the attention set; debounce: enters 0 ms, leaves 1500 ms settle,
 demote). **No polling for exits**: tmux's `pane-died` hook is the only exit signal, and a 15 s
 server-alive guard catches wholesale tmux death. One deliberate poll exists for the Esc
 interrupt, which emits NOTHING (no hook, no transcript record — spike S-E refuted the corpus's
-OSC Tier A−): a `Running` Claude pane whose `#{window_activity}` goes quiet 8 s demotes to
+OSC Tier A−): a `Running` Claude pane whose `#{window_activity}` goes quiet 60 s demotes to
 `Idle{Interrupted}` at medium confidence, demotion-only (`probe_activity` in server.rs). After a
 daemon restart, our own Claude sessions sit at `Unknown{DaemonRestarted}` (reconcile never trusts
 stale claims) and borrow the observe tier while `Unknown`: the transcript tail re-derives state at
@@ -728,7 +742,7 @@ required by `restart_skew_e2e`, the only test that drives the real `Client::conn
 test binary has no `daemon` subcommand), `MESIMON_CLAUDE_HOME` (census root override for fabricated `~/.claude`
 trees),
 `MESIMON_SLEEP_MIN_AGE_MS` (e2e cannot wait out the 60 s sleep floor), `MESIMON_PANE_QUIET_MS`
-(shrink the 8 s interrupt-probe quiet threshold), `MESIMON_NO_UPDATE_CHECK` (the user-facing opt-out for the release
+(shrink the 60 s interrupt-probe quiet threshold — 8 s until 2026-09-02, when a working pane was measured silent for up to ~50 s while a large tool input streamed), `MESIMON_NO_UPDATE_CHECK` (the user-facing opt-out for the release
 check), `MESIMON_UPDATE_CHECK` (force a dev build past the CHANNEL gate — the build-tree guard
 still refuses, so copy the binary out of `target/` first),
 `MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s

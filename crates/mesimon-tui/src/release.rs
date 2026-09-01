@@ -35,14 +35,14 @@ use sha2::{Digest, Sha256};
 /// and no GitHub account (README, "Install").
 const DIST_REPO: &str = "amitozalvo/mesimon-releases";
 
-/// Six hours between questions. An alpha moves in days, not minutes, and the
-/// stamp is shared by every board on this machine — so this is the rate for
-/// the user, not for the process.
-const CHECK_EVERY: Duration = Duration::from_secs(6 * 60 * 60);
-/// A request that did not answer is retried sooner than the full cadence, but
-/// not soon enough to be a poll: a laptop that opened a board on a plane
-/// should notice the network came back the same afternoon.
-const RETRY_AFTER: Duration = Duration::from_secs(30 * 60);
+/// Half an hour between questions. The stamp is shared by every board on
+/// this machine, so this is the rate for the USER, not the process — a dozen
+/// open repos still make one request per interval, two an hour against
+/// GitHub's sixty. Cheap enough that a tester told "alpha.5 is out" sees the
+/// offer before the conversation is over, which is the whole point of asking.
+/// A request that did not answer simply waits out the same interval: at this
+/// cadence a separate retry clock would be the same number.
+const CHECK_EVERY: Duration = Duration::from_secs(30 * 60);
 /// Never during the first paint. Startup already spawns a daemon, probes the
 /// terminal twice and loads a board; the least urgent thing mesimon does can
 /// wait three seconds.
@@ -54,12 +54,25 @@ const DOWNLOAD_TIMEOUT_SECS: &str = "180";
 
 const STAMP_SCHEMA: u64 = 1;
 
-/// The one target the release channel publishes. `None` anywhere else, which
-/// makes the whole module inert rather than making it guess at an asset name
-/// that was never uploaded.
+/// Every target the release channel publishes — `ci/release.sh`'s list, and
+/// the names `install.sh` derives from `uname`. A unit test reads both files,
+/// so the three copies cannot drift. `TARGET` is the one THIS binary is, and
+/// `None` anywhere else, which makes the whole module inert rather than making
+/// it guess at an asset name that was never uploaded. Linux is the musl pair
+/// only: a `cargo install` from source is a glibc build, and a source build
+/// is a dev build besides, so it never gets here.
+pub(crate) const PUBLISHED: &[&str] =
+    &["aarch64-apple-darwin", "x86_64-unknown-linux-musl", "aarch64-unknown-linux-musl"];
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 const TARGET: Option<&str> = Some("aarch64-apple-darwin");
-#[cfg(not(all(target_os = "macos", target_arch = "aarch64")))]
+#[cfg(all(target_os = "linux", target_arch = "x86_64", target_env = "musl"))]
+const TARGET: Option<&str> = Some("x86_64-unknown-linux-musl");
+#[cfg(all(target_os = "linux", target_arch = "aarch64", target_env = "musl"))]
+const TARGET: Option<&str> = Some("aarch64-unknown-linux-musl");
+#[cfg(not(any(
+    all(target_os = "macos", target_arch = "aarch64"),
+    all(target_os = "linux", target_env = "musl", any(target_arch = "x86_64", target_arch = "aarch64"))
+)))]
 const TARGET: Option<&str> = None;
 
 /// What the offer is doing. `Quiet` is both "nothing has answered yet" and
@@ -235,8 +248,9 @@ impl ReleaseWatch {
             }
             // The request did not answer. The stamp is deliberately NOT
             // written: it records when we last HEARD, so a week offline must
-            // not read back as a week of successful checks.
-            Outcome::Latest(None) => self.next_check = Some(Instant::now() + RETRY_AFTER),
+            // not read back as a week of successful checks. The next attempt
+            // is already on the clock (`tick` set it before spawning).
+            Outcome::Latest(None) => {}
             Outcome::Installed(tag) => {
                 self.note = Some(format!("{tag} is installed ∙ U restarts on it"));
                 self.stage = Stage::Installed(tag);
@@ -408,7 +422,9 @@ fn latest_tag(body: &str) -> Option<String> {
 // ---- taking the offer ------------------------------------------------------
 
 fn install(tag: &str, exe: &Path, stage_dir: &Path) -> Result<(), String> {
-    let target = TARGET.ok_or("no published build for this platform")?;
+    let target = TARGET
+        .filter(|t| PUBLISHED.contains(t))
+        .ok_or("no published build for this platform")?;
     let name = format!("mesimon-{tag}-{target}");
     let asset = format!("{name}.tar.gz");
     let base = format!("https://github.com/{DIST_REPO}/releases/download/{tag}");
@@ -730,5 +746,23 @@ mod tests {
         assert!(read_stamp(&p).expect("read").age() > CHECK_EVERY);
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// The target names live in three places — this list, the scripts that
+    /// build and package them, and the installer that derives them from
+    /// `uname` — and this is what keeps them one list. A name missing from
+    /// the scripts is an asset the checker would ask for and never find.
+    #[test]
+    fn every_published_target_is_built_by_ci_and_installable() {
+        let release_sh = include_str!("../../../ci/release.sh");
+        let build_linux_sh = include_str!("../../../ci/build-linux.sh");
+        let install_sh = include_str!("../../../install.sh");
+        for t in PUBLISHED {
+            assert!(release_sh.contains(t) || build_linux_sh.contains(t), "{t} is built by no script in ci/");
+            assert!(install_sh.contains(t), "install.sh cannot name the {t} asset");
+        }
+        if let Some(t) = TARGET {
+            assert!(PUBLISHED.contains(&t), "this binary's target {t} is not a published one");
+        }
     }
 }

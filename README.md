@@ -26,10 +26,13 @@ report.
 
 ## Requirements
 
-- **macOS on Apple Silicon.** The published build is `aarch64-apple-darwin`. The code is
-  Unix-only by design (unix sockets, tmux); Linux is buildable but untested and unshipped.
-- **git**. (tmux is *not* required — mesimon ships its own, installed as
-  `mesimon-tmux` so it never shadows yours.)
+- **macOS on Apple Silicon, or Linux on x86_64 / aarch64 — WSL2 included.** The published
+  builds are `aarch64-apple-darwin` and a static-musl pair for Linux, so one binary runs on any
+  distro. The code is Unix-only by design (unix sockets, tmux): on Windows, WSL2 is the way in,
+  and keep the repo in the Linux filesystem, not under `/mnt/c` (`mesimon doctor` says so too).
+- **git**. On macOS tmux is *not* required — mesimon ships its own, installed as `mesimon-tmux`
+  so it never shadows yours. On Linux, install the distro's (`sudo apt install tmux`, 3.3 or
+  newer; `mesimon doctor` names the floor).
 - **[Claude Code](https://claude.com/claude-code)** on your `PATH`, to spawn Claude sessions.
 
 ## Install
@@ -50,7 +53,7 @@ mesimon` (Rust 1.85+, and `CARGO_NET_GIT_FETCH_WITH_CLI=true` for the private fe
 
 ## Updating
 
-**A board tells you.** Every few hours it asks the releases repo whether a newer version is out,
+**A board tells you.** Every half hour it asks the releases repo whether a newer version is out,
 and when there is one the header says so: `◦ v0.1.0-alpha.5 available (esc)`. Esc opens the menu,
 `Install v0.1.0-alpha.5` downloads it and checks it against the published checksum, and then the
 offer becomes the one below — nothing restarts until you press `U`.

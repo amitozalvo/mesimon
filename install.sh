@@ -34,15 +34,31 @@ die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
 
 # --- preconditions, each with the exact line that fixes it -------------------
 
-[ "$(uname -s)" = "Darwin" ] || die "the published build is macOS-only (this is $(uname -s))" \
-  "build from source instead — ask for access to the repo"
+# One asset per platform. The Linux builds are static musl, so one binary
+# runs on every distro — and under WSL2, which is the way in on Windows.
+os="$(uname -s)"
+arch="$(uname -m)"
+case "$os/$arch" in
+  Darwin/arm64)               target="aarch64-apple-darwin" ;;
+  Linux/x86_64)               target="x86_64-unknown-linux-musl" ;;
+  Linux/aarch64|Linux/arm64)  target="aarch64-unknown-linux-musl" ;;
+  *) die "no published build for $os $arch (published: macOS arm64, Linux x86_64 and aarch64)" \
+       "build from source instead — ask for access to the repo" ;;
+esac
 
-[ "$(uname -m)" = "arm64" ] || die "the published build is Apple Silicon only (this is $(uname -m))" \
-  "build from source instead — ask for access to the repo"
+command -v curl >/dev/null 2>&1 || die "curl is required" \
+  "$([ "$os" = Darwin ] && echo 'it ships with macOS — check your PATH' || echo 'sudo apt install curl')"
 
-command -v curl >/dev/null 2>&1 || die "curl is required"
+command -v git >/dev/null 2>&1 || die "git is required" \
+  "$([ "$os" = Darwin ] && echo 'xcode-select --install' || echo 'sudo apt install git')"
 
-command -v git >/dev/null 2>&1 || die "git is required" "xcode-select --install"
+# macOS gets a bundled tmux (below). The Linux build does not carry one: every
+# distro packages a tmux mesimon runs on, and `mesimon doctor` names the
+# version floor. Not fatal here — you can browse a board without an agent.
+if [ "$os" = Linux ] && ! command -v tmux >/dev/null 2>&1; then
+  echo "note: tmux is not on your PATH. mesimon needs it to run agents:"
+  echo "      sudo apt install tmux      (3.3 or newer; mesimon doctor checks)"
+fi
 
 # Not fatal: you can browse a board without ever spawning an agent.
 command -v claude >/dev/null 2>&1 || {
@@ -66,7 +82,7 @@ if [ -z "$VERSION" ]; then
     "check https://github.com/$REPO/releases"
 fi
 
-asset="mesimon-$VERSION-aarch64-apple-darwin.tar.gz"
+asset="mesimon-$VERSION-$target.tar.gz"
 base="https://github.com/$REPO/releases/download/$VERSION"
 
 echo "downloading $asset"
@@ -77,7 +93,16 @@ curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256" 2>/dev/null || true
 # --- verify -------------------------------------------------------------------
 
 if [ -s "$tmp/$asset.sha256" ]; then
-  ( cd "$tmp" && shasum -a 256 -c "$asset.sha256" >/dev/null ) \
+  # The file is `shasum`'s `<hex>  <name>` line; coreutils' sha256sum reads it
+  # unchanged, and every Linux has one of the two.
+  if command -v sha256sum >/dev/null 2>&1; then
+    sum="sha256sum -c"
+  elif command -v shasum >/dev/null 2>&1; then
+    sum="shasum -a 256 -c"
+  else
+    die "no sha256 tool to verify the download (need sha256sum or shasum)"
+  fi
+  ( cd "$tmp" && $sum "$asset.sha256" >/dev/null ) \
     || die "checksum mismatch on $asset — refusing to install" \
        "re-run; if it persists, the release asset is corrupt"
   echo "checksum ok"
@@ -86,12 +111,13 @@ else
 fi
 
 tar -xzf "$tmp/$asset" -C "$tmp"
-unpacked="$tmp/mesimon-$VERSION-aarch64-apple-darwin"
+unpacked="$tmp/mesimon-$VERSION-$target"
 bin="$unpacked/mesimon"
 [ -x "$bin" ] || die "the archive did not contain an executable" "report this with the release tag"
 
-# Run it BEFORE installing: an arm64 binary with a broken signature dies with
-# "Killed: 9", and finding that out now beats finding out from a wedged board.
+# Run it BEFORE installing: an arm64 Mac binary with a broken signature dies
+# with "Killed: 9", and finding that out now beats finding out from a wedged
+# board. On Linux this is the static binary proving it is one.
 "$bin" --version >/dev/null || die "the downloaded binary would not run" \
   "report this with the output of: $bin --version"
 
@@ -120,9 +146,15 @@ echo "installed $("$PREFIX/mesimon" --version) -> $PREFIX/mesimon"
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
   *)
+    # The line for the shell you are actually in: zsh on a Mac, bash on most
+    # Linux and every fresh WSL distro.
+    case "${SHELL:-}" in
+      */zsh) rc="~/.zshrc"; sh="zsh" ;;
+      *)     rc="~/.bashrc"; sh="bash" ;;
+    esac
     echo
     echo "$PREFIX is not on your PATH. Add it:"
-    echo "  echo 'export PATH=\"$PREFIX:\$PATH\"' >> ~/.zshrc && exec zsh"
+    echo "  echo 'export PATH=\"$PREFIX:\$PATH\"' >> $rc && exec $sh"
     ;;
 esac
 

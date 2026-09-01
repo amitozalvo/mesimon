@@ -349,6 +349,12 @@ pub enum Verb {
     EditDelete,
     EditDeleteWord,
     EditKillToStart,
+    /// `↑` in a prompt field: the previous thing this board asked an agent,
+    /// oldest at the far end. The draft under the cursor is kept, not lost.
+    HistoryPrev,
+    /// `↓` walks the other way, and one step past the newest ask puts the
+    /// kept draft back — the field returns to what was being written.
+    HistoryNext,
 }
 
 /// 04 §2.0's legend. `Grace` actions land in the undo band; `Arm` actions name
@@ -477,6 +483,10 @@ pub struct Ctx {
     /// saves nothing and creates nothing, so every word the input scope
     /// spends on saving is wrong here — `enter` sends.
     pub prompting: bool,
+    /// Something has been asked from this board before, so `↑` in a prompt
+    /// field has somewhere to go. Gates the key AND its hint: a field with
+    /// no history offers no history.
+    pub prompt_history: bool,
     // ---- tags ----
     /// A tag name is being typed. While true every binding in the tag tail
     /// stands down, so the digits are text and not axis picks.
@@ -2087,6 +2097,37 @@ static INPUT: &[Binding] = &[
         prio: 30,
     },
     Binding {
+        // The prompt field's own history, the way a shell's is: `↑` recalls
+        // the previous ask, `↓` walks forward again, and one step past the
+        // newest restores the draft that was under the cursor when the walk
+        // began. Prompt-only — a title being composed has no "previous". The
+        // hint stands only once there is something to recall, because a
+        // hinted key that does nothing is the one thing the footer may not
+        // teach.
+        keys: &[Key::Up],
+        verb: Verb::HistoryPrev,
+        show: "↑",
+        hint: |_| "earlier asks",
+        avail: |c| c.prompting && c.prompt_history,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 40,
+    },
+    Binding {
+        // Silent: `↑ earlier asks` one cell over already implies its opposite,
+        // the shape `> <` and `shift+enter` use.
+        keys: &[Key::Down],
+        verb: Verb::HistoryNext,
+        show: "↓",
+        hint: |_| "",
+        avail: |c| c.prompting && c.prompt_history,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         keys: &[Key::Left],
         verb: Verb::EditLeft,
         show: "←",
@@ -2488,6 +2529,29 @@ mod tests {
         // pick, because there is no ticket being made.
         assert_eq!(resolve(Scope::Input, Key::BackTab, &prompting), None);
         assert_eq!(resolve(Scope::Input, Key::Ctrl('t'), &prompting), None);
+    }
+
+    /// `↑`/`↓` in a prompt field walk what was asked before — and ONLY there,
+    /// and only once there is something to walk. A composer has no earlier
+    /// titles, and a field with an empty history must not hint a key that
+    /// would do nothing.
+    #[test]
+    fn prompt_history_is_the_prompt_fields_and_needs_a_past() {
+        let fresh = Ctx { prompting: true, ..Default::default() };
+        let seasoned = Ctx { prompting: true, prompt_history: true, ..Default::default() };
+        let composing = Ctx { composing: true, prompt_history: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Up, &fresh), None);
+        assert_eq!(resolve(Scope::Input, Key::Down, &fresh), None);
+        assert_eq!(hint_for(Scope::Input, Verb::HistoryPrev, &fresh), None);
+        assert_eq!(resolve(Scope::Input, Key::Up, &seasoned), Some(Verb::HistoryPrev));
+        assert_eq!(resolve(Scope::Input, Key::Down, &seasoned), Some(Verb::HistoryNext));
+        assert_eq!(
+            hint_for(Scope::Input, Verb::HistoryPrev, &seasoned),
+            Some(("↑", "earlier asks"))
+        );
+        // `↓` is bound and silent: `↑`'s hint implies it.
+        assert_eq!(hint_for(Scope::Input, Verb::HistoryNext, &seasoned), None);
+        assert_eq!(resolve(Scope::Input, Key::Up, &composing), None);
     }
 
     /// A prompt needs a box to land in. `ticket_has_claude` counts a parked

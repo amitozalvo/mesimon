@@ -60,12 +60,27 @@ const SLEEP_MIN_AGE_MS: u64 = 60_000;
 /// RSS aggregate refresh (10 s) — one `ps` fork, only while panes exist.
 const RSS_TICKS: u64 = 40;
 /// Pane silent past this while `Running` means the turn is no longer in
-/// flight — the Esc-interrupt catch (spike S-E: an interrupt fires no hook
-/// and may write nothing to the transcript; the pane byte stream is the only
-/// evidence left). A turn in flight repaints sub-second (spinner), so 8 s is
-/// ~8x the largest gap measured while working; idle statusline bursts only
-/// delay the verdict, never defeat it.
-const PANE_QUIET_MS: u64 = 8_000;
+/// flight — the recordless Esc-interrupt catch (spike S-E: an interrupt fires
+/// no hook, and one landing before the first assistant output writes nothing
+/// to the transcript either; the pane byte stream is the only evidence left).
+///
+/// This is the FALLBACK, and the number is sized for a fallback. The 8 s it
+/// started at rested on "a turn in flight repaints sub-second (spinner)",
+/// which was true when measured and is not now: on Claude Code 2.1.257 a
+/// working pane holds `#{window_activity}` still for 6–10 s as a matter of
+/// course and for up to ~50 s while the model streams a large tool input (an
+/// `Edit`/`Write` payload — nothing paints until the call is whole). Under
+/// 8 s the probe fired four times in ninety seconds on one ticket, and each
+/// verdict blanked the card until the next `PostToolUse` put the spinner
+/// back (dogfood 2026-09-02, T-71; over the whole activity log 19 of the
+/// probe's 40 verdicts were followed by a `PostToolUse` or `Stop`, i.e. by
+/// the turn it had just declared dead). The primary catch — the transcript's
+/// `[Request interrupted by user]` record, `poll_tails`' abort-only class —
+/// lands in ~2 s regardless, and post-interrupt painting already held the
+/// pane "active" for 60–80 s live (STALE-MAP, T-50), so the recordless case
+/// was never a fast one. Sixty seconds clears every working silence
+/// measured and costs that rare case a minute it was mostly paying anyway.
+const PANE_QUIET_MS: u64 = 60_000;
 /// Tickets in this column are sleep-safe: their sessions feed the header's
 /// sleep suggestion. Interim hardcode — becomes a per-column sleep policy
 /// (`never|offer|auto`) with M5's column policies.
@@ -4034,7 +4049,7 @@ fn archive_suggest_ms() -> u64 {
         .unwrap_or(ARCHIVE_SUGGEST_MS)
 }
 
-/// Test seam only — e2e cannot spend 8 real seconds per quiet verdict.
+/// Test seam only — e2e cannot spend a real minute per quiet verdict.
 fn pane_quiet_ms() -> u64 {
     std::env::var("MESIMON_PANE_QUIET_MS")
         .ok()
