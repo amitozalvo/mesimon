@@ -202,8 +202,20 @@ fn m2_attention_headless() {
         watcher.next_event(Duration::from_secs(3)).is_some(),
         "settled leave must push from the tick wheel"
     );
-    let (board, _) = board_of(c.request(Command::Snapshot));
-    let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
+    // ...but not necessarily THAT push first. `changed` on the wheel is also
+    // raised by the RSS refresh, whose figures move whenever the machine is
+    // busy — so under a parallel suite a resource push can beat the 1500 ms
+    // settle here and the snapshot below reads a state that has not left yet.
+    // The event assertion above still stands; the state is polled for.
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let (board, rec) = loop {
+        let (board, _) = board_of(c.request(Command::Snapshot));
+        let rec = board.sessions.iter().find(|s| s.id == sid).unwrap().clone();
+        if rec.state == SessionState::Running || Instant::now() >= deadline {
+            break (board, rec);
+        }
+        std::thread::sleep(Duration::from_millis(100));
+    };
     assert_eq!(rec.state, SessionState::Running);
     assert!(rec.waiting_since.is_none());
     assert!(rec.detail.is_none());

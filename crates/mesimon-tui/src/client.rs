@@ -333,10 +333,24 @@ mod tests {
         Some(ExeStamp { mtime_ms: mtime, len: 100 })
     }
 
+    /// `build_skew` reads `MESIMON_NO_DAEMON_RESTART`, and the seam test sets
+    /// it — process-wide, while cargo runs the rest of this module on other
+    /// threads. Every test here takes this lock first, or the seam leaks into
+    /// whichever positive assertion happens to be mid-flight (seen:
+    /// `empty_build_falls_through_to_the_stamp` failing about one workspace
+    /// run in three). A poisoned lock is not a failure of the thing under
+    /// test, so the guard steps over it.
+    static ENV_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+    fn env_guard() -> std::sync::MutexGuard<'static, ()> {
+        ENV_LOCK.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
     /// A daemon living inside our own process is the in-process one the e2e
     /// tests run. Structural guard: no test can trip the restart path.
     #[test]
     fn never_restarts_a_daemon_in_our_own_process() {
+        let _env = env_guard();
         let mut d = ident("0.0.1", 1, true);
         d.pid = std::process::id();
         assert!(!build_skew(&d, stamp(2)));
@@ -346,12 +360,14 @@ mod tests {
     /// them, however stale it looks.
     #[test]
     fn never_restarts_a_foreground_daemon() {
+        let _env = env_guard();
         assert!(!build_skew(&ident("0.0.1", 1, false), stamp(2)));
     }
 
     /// The release-time signal: an OLDER daemon is skew.
     #[test]
     fn older_build_is_skew() {
+        let _env = env_guard();
         assert!(build_skew(&ident("0.0.1", 1, true), stamp(1)));
     }
 
@@ -359,12 +375,14 @@ mod tests {
     /// different builds from restarting each other forever.
     #[test]
     fn newer_daemon_is_left_alone() {
+        let _env = env_guard();
         assert!(!build_skew(&ident("99.0.0", 1, true), stamp(1)));
     }
 
     /// A version we cannot order is a version we do not act on.
     #[test]
     fn unparseable_build_is_never_skew() {
+        let _env = env_guard();
         assert!(!build_skew(&ident("not-a-version", 1, true), stamp(1)));
     }
 
@@ -372,6 +390,7 @@ mod tests {
     /// rebuild, so the exe stamp is what actually moves.
     #[test]
     fn same_build_newer_exe_is_skew() {
+        let _env = env_guard();
         let d = ident(env!("CARGO_PKG_VERSION"), 5, true);
         assert!(build_skew(&d, stamp(6)), "our binary is newer");
         assert!(!build_skew(&d, stamp(5)), "identical stamp is not skew");
@@ -381,6 +400,7 @@ mod tests {
     /// Unknown on either side means unknown, never "changed" (D26).
     #[test]
     fn unknown_stamp_is_never_skew() {
+        let _env = env_guard();
         let mut d = ident(env!("CARGO_PKG_VERSION"), 1, true);
         assert!(!build_skew(&d, None));
         d.exe_stamp = None;
@@ -391,6 +411,7 @@ mod tests {
     /// alone unless its exe stamp says otherwise — the bootstrap gap.
     #[test]
     fn empty_build_falls_through_to_the_stamp() {
+        let _env = env_guard();
         let d = ident("", 5, true);
         assert!(build_skew(&d, stamp(6)));
         assert!(!build_skew(&d, stamp(4)));
@@ -399,10 +420,12 @@ mod tests {
     /// The seam that turns the whole mechanism off.
     #[test]
     fn env_seam_disables_restart() {
+        let _env = env_guard();
         let d = ident("0.0.1", 1, true);
         // (0.0.1 is older than any real build, so this is genuine skew.)
         assert!(build_skew(&d, stamp(2)), "skew without the seam");
-        // SAFETY: single-threaded test, no daemon threads reading env here.
+        // SAFETY: `env_guard` holds off every other reader in this module,
+        // and no daemon thread reads env here.
         unsafe { std::env::set_var("MESIMON_NO_DAEMON_RESTART", "1") };
         let off = build_skew(&d, stamp(2));
         unsafe { std::env::remove_var("MESIMON_NO_DAEMON_RESTART") };
