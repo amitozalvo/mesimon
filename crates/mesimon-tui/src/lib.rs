@@ -146,8 +146,9 @@ fn event_loop(
     }
 }
 
-fn init_terminal() -> Result<ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>>
-{
+type Term = ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>;
+
+fn init_terminal() -> Result<Term> {
     enable_raw_mode()?;
     let mut stdout = std::io::stdout();
     // No EnableMouseCapture: we handle no mouse events, and capture steals the

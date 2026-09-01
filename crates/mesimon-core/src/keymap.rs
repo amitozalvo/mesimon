@@ -231,6 +231,9 @@ pub enum Verb {
     TagRename,
     /// Delete the cell's tag from the registry and every ticket. Two presses.
     TagForget,
+    /// Switch how much ink the mark under a tagged card spends. A view
+    /// setting, and the picker is where you are looking at tags.
+    TagWeight,
     /// Leave the picker.
     TagDone,
     Merge,
@@ -374,6 +377,10 @@ pub struct Ctx {
     pub tag_worn: bool,
     /// `d` is armed: the next `d` deletes that tag board-wide.
     pub tag_forget_armed: bool,
+    /// What the next `w` gives the second tag ("2nd tag stacked", "…beside",
+    /// "…on edge"). A hint that named the current state instead of the next
+    /// press would be a key you press to find out what it does.
+    pub tag_second_next: &'static str,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -418,6 +425,7 @@ impl Default for Ctx {
             tag_on_entry: false,
             tag_worn: false,
             tag_forget_armed: false,
+            tag_second_next: "2nd tag beside",
             rich_keys: false,
         }
     }
@@ -1240,6 +1248,20 @@ static TAG: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 60,
+    },
+    Binding {
+        // The mark's weight, switched where you can see it change. It is a
+        // view setting and nothing on the board moves, so it earns a key in
+        // the picker rather than a row in the menu.
+        keys: &[Key::Char('w')],
+        verb: Verb::TagWeight,
+        show: "w",
+        hint: |c| c.tag_second_next,
+        avail: |c| !c.tag_naming,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 70,
     },
     Binding {
         // One Esc binding, two meanings, because an atom may not appear twice

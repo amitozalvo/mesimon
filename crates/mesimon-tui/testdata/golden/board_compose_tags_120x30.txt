@@ -2,7 +2,7 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-   Decay treatments              ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+   Decay treatments            ▀ ⠋ Fix OSC-11 detection >1y  ▀ ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
 
    Keymap validator              ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
@@ -27,4 +27,4 @@
   3      auth   + new
   4      p1   + new
   5   + new
- TAG  hjkl move ∙ 1-0 group ∙ enter remove ∙ tab colour ∙ r rename ∙ d delete ∙ esc done ∙ ? keys
+ TAG  hjkl move ∙ 1-0 group ∙ enter remove ∙ tab colour ∙ r rename ∙ d delete ∙ w 2nd tag beside ∙ esc done ∙ ? keys

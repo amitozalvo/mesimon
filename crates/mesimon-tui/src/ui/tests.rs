@@ -693,66 +693,199 @@ fn fixture_tagged() -> Board {
         }
     };
     tag(&mut b, 3, &[(1, "BUG"), (2, "STAGING")]);
+    // T-7's only session is asleep: the fixture's card for the third level.
+    tag(&mut b, 7, &[(1, "FTR")]);
     tag(&mut b, 1, &[(1, "FTR")]);
     // Four tags on one card: the run caps at three and collapses to `+1`.
     tag(&mut b, 5, &[(1, "REGR"), (2, "PRODUCTION"), (3, "auth"), (4, "p1")]);
     b
 }
 
-/// Goldens capture `.symbol()` only, and the tags are an SGR attribute with
-/// no symbol at all — so nothing above would notice if they vanished. This is
-/// the test that actually looks at the underline.
+/// Goldens capture `.symbol()` only, and the mark is paint with no symbol at
+/// all — so nothing above would notice if it vanished. This is the test that
+/// actually looks at the colour.
 #[test]
-fn test_tags_underline_the_card_in_their_own_tint() {
+fn test_the_bar_carries_the_tags_in_their_own_tints() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
+    // Column 0's cards start at the board's one-cell left margin, and the
+    // bar IS the mark — the card spends no cell of its own on tags.
+    let bar_x = 1u16;
 
-    // T-1 "Decay treatments" wears exactly one tag (FTR), so its whole row
-    // carries that tag's tint on the underline — and no row of its own.
+    // T-1 "Decay treatments" wears exactly one tag (FTR): the bar is painted
+    // in its tint and asks for no stroke.
     let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card") as u16;
+    // "Decay treatments" is the first card of the cursor column, so it is the
+    // cursor card and wears its tag at full strength.
     let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("registered").tint() as usize);
-    let underlined = (0..28u16)
-        .filter(|x| {
-            let c = &buf[(*x, y)];
-            c.modifier.contains(Modifier::UNDERLINED) && c.underline_color == tint
-        })
-        .count();
-    assert!(underlined > 20, "the card is not underlined in its tag tint: {underlined} cells");
+    let cell = &buf[(bar_x, y)];
+    assert_eq!(cell.symbol(), " ", "the bar drew a glyph");
+    assert_eq!(cell.bg, tint, "the bar is not painted in the tag's tint");
+    assert!(!cell.modifier.contains(Modifier::UNDERLINED), "one tag, but a stroke appeared");
 
-    // An untagged card is untouched — no underline anywhere on its row.
+    // An untagged card keeps the neutral bar the state ladder gave it.
     let uy = lines.iter().position(|l| l.contains("Keymap validator")).expect("card") as u16;
-    let stray =
-        (0..28u16).filter(|x| buf[(*x, uy)].modifier.contains(Modifier::UNDERLINED)).count();
-    assert_eq!(stray, 0, "an untagged card got underlined");
+    let plain = &buf[(bar_x, uy)];
+    assert_ne!(plain.bg, tint, "an untagged card wore a tag colour");
+    assert!(!plain.modifier.contains(Modifier::UNDERLINED));
 }
 
-/// Several tags split the row left to right, so the proportions read the
-/// count back without anyone counting.
+/// Two tags, one cell, three ways: stacked across the bar cell, beside each
+/// other in it, or the second on the card's right edge — which was trailing
+/// pad, so no home costs the card a cell.
 #[test]
-fn test_several_tags_segment_the_underline() {
+fn test_two_tags_ride_one_cell() {
     let mut app = app_graphite(fixture_tagged());
-    // Cursor elsewhere, so T-3 is a plain one-row card and its own row IS the
-    // block's bottom row. On a SELECTED card the underline moves to the last
-    // accordion row — the bottom of the block, which is the point.
+    app.cursor_col = 0;
+    // The card is not the cursor and not asleep, so its tags are at rest.
+    let at = |group: u8, name: &str| {
+        app.theme.pip_at(
+            app.board.tag_def(group, name).expect("registered").tint() as usize,
+            crate::theme::TagLevel::Rest,
+        )
+    };
+    let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
+    assert_ne!(first, second, "the two channels must read apart");
+    let y =
+        render(&app, 120, 30).iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+
+    // Stacked (the default): `▀` is the first tag over the second.
+    let buf = cells(&app, 120, 30);
+    let x = (0..120u16).find(|x| buf[(*x, y)].symbol() == "▀").expect("no stacked mark");
+    assert_eq!(buf[(x, y)].fg, first, "the first tag must be the top half");
+    assert_eq!(buf[(x, y)].bg, second);
+
+    // Beside: `▌` in the second tag's colour over the first tag's paint.
+    app.tag_second = crate::tags::Second::Half;
+    let buf = cells(&app, 120, 30);
+    assert_eq!(buf[(x, y)].symbol(), "▌");
+    assert_eq!(buf[(x, y)].bg, first);
+    assert_eq!(buf[(x, y)].fg, second);
+
+    // Edge: a plain painted bar, and exactly one cell at the card's other end.
+    app.tag_second = crate::tags::Second::Edge;
+    let buf = cells(&app, 120, 30);
+    assert_eq!(buf[(x, y)].symbol(), " ", "Edge kept a half-block");
+    assert_eq!(buf[(x, y)].bg, first);
+    let edge: Vec<u16> = (0..120u16).filter(|c| buf[(*c, y)].bg == second).collect();
+    assert_eq!(edge.len(), 1, "the edge tag should be exactly one cell: {edge:?}");
+    assert!(edge[0] > x, "the edge tag must sit at the card's other end");
+}
+
+/// Three loudnesses on one board: the cursor card at full strength, a
+/// resting card a step down, a sleeping one well down but still hued. There
+/// is no alpha in a terminal, so each level is a blend toward the ground.
+#[test]
+fn test_the_card_state_sets_the_tag_loudness() {
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 0;
+    app.cursor_row = 0; // "Decay treatments" (FTR) is the cursor card
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let tint = app.board.tag_def(1, "FTR").expect("registered").tint() as usize;
+    let at = |level| app.theme.pip_at(tint, level);
+    // Cards from every column share a screen row, and two of them wear the
+    // same tag here — so the search is scoped to the card's own column.
+    let bar_of = |lines: &[String],
+                  needle: &str,
+                  buf: &ratatui::buffer::Buffer,
+                  cols: std::ops::Range<u16>| {
+        let y = lines.iter().position(|l| l.contains(needle)).expect("card") as u16;
+        cols.clone()
+            .find(|x| {
+                buf[(*x, y)].bg == at(crate::theme::TagLevel::Selected)
+                    || buf[(*x, y)].bg == at(crate::theme::TagLevel::Rest)
+                    || buf[(*x, y)].bg == at(crate::theme::TagLevel::Sleeping)
+            })
+            .map(|x| buf[(x, y)].bg)
+    };
+    assert_eq!(
+        bar_of(&lines, "Decay treatments", &buf, 0..30),
+        Some(at(crate::theme::TagLevel::Selected)),
+        "the cursor card must wear its tag at full strength"
+    );
+    // T-7's session is asleep, and its tag is the quietest of the three.
+    assert_eq!(
+        bar_of(&lines, "Painted accent bar", &buf, 88..120),
+        Some(at(crate::theme::TagLevel::Sleeping)),
+        "a sleeping ticket must keep its hue, quietly"
+    );
+    // Move the cursor off, and the same card steps down to rest.
+    app.cursor_row = 1;
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    assert_eq!(
+        bar_of(&lines, "Decay treatments", &buf, 0..30),
+        Some(at(crate::theme::TagLevel::Rest)),
+        "a card off the cursor sits at rest"
+    );
+}
+
+/// The three loudnesses are the CARD's, not the palette's: an untagged
+/// board ladders too. This is the one that shipped broken twice — the levels
+/// only reached tag tints, so a sleeping ticket with no tags looked exactly
+/// like a busy one.
+#[test]
+fn test_an_untagged_block_ladders_too() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.cursor_row = 0; // "Decay treatments": no sessions, and the cursor card
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let bar = |needle: &str, lines: &[String], buf: &ratatui::buffer::Buffer, x: u16| {
+        let y = lines.iter().position(|l| l.contains(needle)).expect("card") as u16;
+        buf[(x, y)].bg
+    };
+    let selected = bar("Decay treatments", &lines, &buf, 1);
+    let resting = bar("Keymap validator", &lines, &buf, 1);
+    // T-7's only session is asleep; its column starts near the right edge.
+    let sleeping = bar("Painted accent bar", &lines, &buf, 91);
+    assert_ne!(selected, resting, "selection did not brighten the block");
+    assert_ne!(resting, sleeping, "a sleeping ticket looks like a busy one");
+
+    // And they are ordered: further from the page ground means louder.
+    let lum = |c: ratatui::style::Color| match c {
+        ratatui::style::Color::Rgb(r, g, b) => r as u32 + g as u32 + b as u32,
+        other => panic!("the block is not painted: {other:?}"),
+    };
+    assert!(lum(selected) > lum(resting), "the cursor card must be the loudest");
+    assert!(lum(resting) > lum(sleeping), "a parked ticket must be the quietest");
+}
+
+/// A tagged card that is waiting wears BOTH: the tag on the bar, the alarm
+/// on the inverted title row and the glyph. The bar carries tags only, so
+/// needs-you had to survive without it — and it does, on the loudest surface
+/// the board has.
+#[test]
+fn test_a_waiting_card_still_shouts() {
+    let mut b = fixture_tagged();
+    let mut s = session(
+        42,
+        ulid_n(3),
+        SessionKind::Claude,
+        SessionState::RequiresAction { reason: Reason::Permission },
+    );
+    s.waiting_since = Some(1);
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
     app.cursor_col = 0;
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
-    // T-3 wears two tags (BUG in group 1, STAGING in group 2).
     let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
-    let mut seen: Vec<ratatui::style::Color> = Vec::new();
-    for x in 30..56u16 {
-        let c = &buf[(x, y)];
-        if !c.modifier.contains(Modifier::UNDERLINED) {
-            continue;
-        }
-        if seen.last() != Some(&c.underline_color) {
-            seen.push(c.underline_color);
-        }
-    }
-    assert_eq!(seen.len(), 2, "two tags should give two segments, got {seen:?}");
-    assert_ne!(seen[0], seen[1]);
+    let tint = app.theme.pip_at(
+        app.board.tag_def(1, "BUG").expect("registered").tint() as usize,
+        crate::theme::TagLevel::Rest,
+    );
+    assert!(
+        (0..120u16).any(|x| buf[(x, y)].bg == tint || buf[(x, y)].fg == tint),
+        "the waiting card lost its tag"
+    );
+    assert!(
+        (0..120u16).any(|x| buf[(x, y)].bg == ATTN_GRAPHITE),
+        "the waiting card lost its alarm row"
+    );
 }
 
 /// Tags now spend ink on the underline channel, so the one-saturated-colour
@@ -776,6 +909,109 @@ fn test_tag_underlines_never_spend_the_accent() {
     }
 }
 
+/// `w` cycles where the second tag goes, and the footer offers the other
+/// home — a hint that named the current state would be a key you press to
+/// find out what it does.
+#[test]
+fn test_w_cycles_the_second_tag_home() {
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 1;
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: Some(ulid_n(3)),
+        row: 0,
+        col: 0,
+        naming: None,
+        forget_armed: false,
+    });
+    assert_eq!(app.tag_second, crate::tags::Second::Stack, "stacked is the default");
+    assert!(render(&app, 120, 30).iter().any(|l| l.contains("2nd tag beside")), "no offer");
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Char('w'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("w");
+    assert_eq!(app.tag_second, crate::tags::Second::Half);
+    assert!(app.status.contains("beside"), "the switch says nothing: {:?}", app.status);
+    app.status.clear(); // the status row borrows the footer while it stands
+    assert!(
+        render(&app, 120, 30).iter().any(|l| l.contains("2nd tag on edge")),
+        "the offer did not move on"
+    );
+}
+
+/// Either home, the card is the same size and the same text: the second tag
+/// takes a cell that was already there.
+#[test]
+fn test_the_second_tag_costs_no_width() {
+    let plain = |lines: Vec<String>| -> Vec<String> {
+        lines.iter().map(|l| l.replace(['▌', '▀'], " ")).collect()
+    };
+    let mut base: Option<Vec<String>> = None;
+    for mode in [crate::tags::Second::Stack, crate::tags::Second::Half, crate::tags::Second::Edge] {
+        let mut app = app_graphite(fixture_tagged());
+        app.cursor_col = 0;
+        app.tag_second = mode;
+        let shown = plain(render(&app, 120, 30));
+        match &base {
+            None => base = Some(shown),
+            // Only the bar cell differs, and only by an admitted half-block.
+            Some(want) => assert_eq!(&shown, want, "{mode:?} moved the board"),
+        }
+    }
+}
+
+/// The peek names the tags: colour says how many, words say which. The row
+/// sits under the title and above the reply.
+#[test]
+fn test_the_peek_names_the_tags() {
+    let path = write_transcript("tags-peek", &reply_record("Rebased and green."));
+    let mut b = fixture_tagged();
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.cursor_col = 1; // T-3 "Fix OSC-11 detection": BUG + STAGING
+    app.cursor_row = 0;
+    app.peek = true;
+    let lines = render(&app, 120, 30);
+    let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
+    let names = &lines[title + 1];
+    assert!(names.contains("BUG") && names.contains("STAGING"), "tag row missing: {names:?}");
+    let reply = lines.iter().position(|l| l.contains("Rebased and green")).expect("reply");
+    assert!(reply > title + 1, "the tags must sit above the reply");
+    // Painted in their own tints, the same ones the mark under the card uses.
+    let buf = cells(&app, 120, 30);
+    let tint = app.theme.pip(app.board.tag_def(1, "BUG").expect("registered").tint() as usize);
+    let y = (title + 1) as u16;
+    assert!((30..58u16).any(|x| buf[(x, y)].bg == tint), "the chips are not wearing the tag tint");
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
+/// A peeked card with a long vocabulary still names every tag: the names
+/// share the row instead of the first one eating it.
+#[test]
+fn test_a_crowded_peek_row_names_them_all() {
+    let path = write_transcript("tags-peek-crowd", &reply_record("Done."));
+    let mut b = fixture_tagged();
+    attach_transcript(&mut b, &path);
+    // Session 31 is on T-3; move the crowded ticket's tags onto it.
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.set_tag(3, Some("auth".into()));
+        t.set_tag(4, Some("p1".into()));
+    }
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    app.peek = true;
+    let lines = render(&app, 120, 30);
+    let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
+    let names = &lines[title + 1];
+    // Four tags on a 28-cell card: the long one gives up cells, the short
+    // ones keep theirs.
+    for tag in ["BUG", "ST", "auth", "p1"] {
+        assert!(names.contains(tag), "{tag} went unnamed in {names:?}");
+    }
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 #[test]
 fn golden_board_tags_120() {
     // At rest a tag is one lowercase letter in its own tint — the minimal
@@ -783,6 +1019,24 @@ fn golden_board_tags_120() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
     golden("board_tags_120x30", &render(&app, 120, 30));
+}
+
+/// The peeked card with its tags named: the row under the title, then the
+/// reply. This is the picture the colour alone could not give.
+#[test]
+fn golden_board_tags_peek_120() {
+    let path = write_transcript(
+        "tags-peek-golden",
+        &reply_record("Rebased onto main, tests green, ready to merge."),
+    );
+    let mut b = fixture_tagged();
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    app.peek = true;
+    golden("board_tags_peek_120x30", &render(&app, 120, 30));
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
 #[test]
@@ -1263,8 +1517,14 @@ fn test_no_drawn_structure() {
         for l in &lines {
             for ch in l.chars() {
                 let cp = ch as u32;
+                // `▀` U+2580 and `▌` U+258C are the ONLY admitted codepoints
+                // in the range, on an explicit exception from the author
+                // (2026-09-01): they carry the second tag inside the bar
+                // cell, which no attribute can do — an underline is a pixel
+                // at the bottom of a painted cell and cannot be seen.
+                // `▔` and `█` stay banned, and so does the rest of the range.
                 assert!(
-                    !(0x2500..=0x259F).contains(&cp),
+                    !(0x2500..=0x259F).contains(&cp) || ch == '▌' || ch == '▀',
                     "drawn-structure codepoint {ch:?} in {l:?}"
                 );
             }
@@ -1284,14 +1544,14 @@ fn test_alarm_never_dimmed() {
     let err = Color::Rgb(0xD5, 0x80, 0x9A);
     let y =
         lines.iter().position(|l| l.contains("Flaky e2e on runner")).expect("failed card rendered");
-    // Its bar cell is the first cell of the review column's slot.
-    let mut found = false;
-    for x in 0..120 {
-        if buf[(x, y as u16)].bg == err {
-            found = true;
-        }
-    }
-    assert!(found, "failed card lost its err bar");
+    // The bar became the tag channel (2026-09-01), so the err register lives
+    // on the card's glyph — at full value, never dimmed, cursor elsewhere.
+    let found = (0..120u16).any(|x| buf[(x, y as u16)].fg == err);
+    assert!(found, "failed card lost its err register");
+    assert!(
+        (0..120u16).all(|x| buf[(x, y as u16)].bg != err),
+        "the bar is the tag channel now; err must not paint it"
+    );
 }
 
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.

@@ -74,7 +74,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
     let count = rows.len() + ghost.map(|_| 1).unwrap_or(0);
 
-    let ctx = CardCtx { theme, width: area.width, now_ms: now_ms(), spin: app.spin_frame() };
+    let ctx = CardCtx {
+        theme,
+        second: app.tag_second,
+        width: area.width,
+        now_ms: now_ms(),
+        spin: app.spin_frame(),
+    };
 
     // Marquee clock: reset when the cursor lands on a different ticket.
     let marquee_ms = |t: &Ticket| -> u64 {
@@ -113,8 +119,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut push_card = |t: &Ticket, selected: bool, held: bool| {
         let sessions = ticket_sessions(app, t.id);
         let waiting = card::is_waiting(&sessions);
+        // The registry lives on the board, so colours resolve here rather
+        // than inside the card, which never sees it.
+        let painted = crate::tags::painted(&app.board, &t.tags);
         if let Some(buf) = rename_of(t) {
-            let (line, x_off) = card::render_edit(&ctx, buf);
+            let (line, x_off) = card::render_edit(&ctx, buf, &painted);
             groups.push(Group {
                 lines: vec![line],
                 cursor: true,
@@ -143,9 +152,6 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             None
         };
         let wt = app.wt_item(t.id);
-        // The registry lives on the board, so colours resolve here rather
-        // than inside the card, which never sees it.
-        let painted = crate::tags::painted(&app.board, &t.tags);
         let lines = card::render(
             &ctx,
             t,
@@ -189,13 +195,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // The second line is the M4 workspace selector (Shift+Tab cycles it).
     if is_cursor_col {
         if let Some((InputPurpose::Create { workspace, tags }, buf)) = editing {
-            let (line, x_off) = card::render_edit(&ctx, buf);
-            let selector = card::render_workspace_selector(&ctx, *workspace);
-            // The tags picked with `^t` underline the phantom card exactly as
-            // they will underline the real one — otherwise you are picking
+            // The tags picked with `^t` stripe the phantom card exactly as
+            // they will stripe the real one — otherwise you are picking
             // blind until the ticket exists.
             let painted = crate::tags::painted(&app.board, tags);
-            let selector = crate::tags::underline(theme, selector, &painted, ctx.width as usize);
+            let (line, x_off) = card::render_edit(&ctx, buf, &painted);
+            let selector = card::render_workspace_selector(&ctx, *workspace);
             groups.push(Group {
                 lines: vec![line, selector],
                 cursor: true,
@@ -302,6 +307,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let (gch, gstyle) = theme.bar(crate::theme::BarWeight::Ghost);
         for (i, span) in l.spans.iter_mut().enumerate() {
             if i == 0 {
+                // The bar loses its tag colour with everything else: a lit
+                // tint would be the only thing at full value on a ghost.
                 span.content = gch.to_string().into();
                 span.style = gstyle;
             } else {

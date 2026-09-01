@@ -1,6 +1,8 @@
 //! One card (07 §4 owns the anatomy; 06 supplies glyphs and tokens).
 //!
-//! Frame per line: `[bar 1][pad 1][content T][pad 1]`, `T = width - 3`.
+//! Frame per line: `[bar 1][pad 1][content T][pad 1]`, `T = width - 3`. The
+//! bar is both the state ladder and the tag mark: `tags::tint_bar` repaints
+//! it in the ticket's colours, and tags cost the card no cell at all.
 //! Line 1: `[glyph+sp when stateful][title][fill][age 3]` — a card with no
 //! aggregate glyph (spawning/quiet-idle only) starts its title at T[0]. The meta strip (line 2) carries only the session
 //! dots in M3.5: the tag and stage zones collapse to zero width (no tags
@@ -20,6 +22,8 @@ use crate::theme::{BarWeight, Theme};
 
 pub(super) struct CardCtx<'a> {
     pub theme: &'a Theme,
+    /// Where the second tag goes (`w` cycles it).
+    pub second: crate::tags::Second,
     /// Column width including the accent bar and both pads.
     pub width: u16,
     pub now_ms: u64,
@@ -29,16 +33,31 @@ pub(super) struct CardCtx<'a> {
 
 /// Render the in-place title editor as a card line (create + rename share it).
 /// Returns the line and the cursor x-offset within the column rect.
-pub(super) fn render_edit(ctx: &CardCtx, buffer: &EditBuffer) -> (Line<'static>, u16) {
+pub(super) fn render_edit(
+    ctx: &CardCtx,
+    buffer: &EditBuffer,
+    tags: &[crate::tags::Painted],
+) -> (Line<'static>, u16) {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
     let (bar_ch, bar_style) = theme.bar(BarWeight::Cursor);
+    // The tags picked with `^t` colour the phantom card's bar exactly as they
+    // will colour the real one.
+    // The composer's phantom card is the cursor card by construction.
+    let (bar_ch, bar_style) = crate::tags::bar_cell(
+        theme,
+        bar_ch,
+        bar_style,
+        tags,
+        ctx.second,
+        crate::theme::TagLevel::Selected,
+    );
     // Scroll only as far as keeps the hardware cursor visible.
     let budget = t_cells.saturating_sub(1);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
     let x_off = 2 + cx;
     let spans = vec![
-        Span::styled(bar_ch.to_string(), bar_style),
+        Span::styled(bar_ch, bar_style),
         Span::raw(" "),
         Span::styled(shown, Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)),
     ];
@@ -159,7 +178,45 @@ pub(super) fn render(
             _ => BarWeight::Dormant,
         }
     };
-    let (bar_ch, bar_style) = theme.bar(bar);
+    // The bar is the TAG channel, and nothing else (author 2026-09-01): state
+    // is the glyph's job, and needs-you also has the inverted title row, so a
+    // second colour ladder on the bar was saying it twice. Untagged means
+    // neutral. The ASCII tiers keep their `: | #` ladder, which is a shape
+    // and not a colour, and a move trail still goes ghost with the card.
+    let (ladder_ch, state_style) = theme.bar(bar);
+    // Three loudnesses, and the card's own state picks one: the cursor card
+    // wears its tags at full strength, a sleeping ticket at a level that
+    // still answers "which tag", everything else one small step down from
+    // the cursor — which is where nearly every tag on the board is read.
+    // Sleeping is read off the SESSIONS, not off the aggregate glyph: a
+    // ticket whose parked session sits behind any other glyph still has
+    // nothing running, and the glyph check missed exactly those (dogfood
+    // 2026-09-01, "sleeping vs not sleeping looks the same").
+    let parked = !sessions.is_empty()
+        && sessions.iter().any(|s| s.state == SessionState::Sleeping)
+        && !sessions.iter().any(|s| s.state.has_pane());
+    let level = if cursorish {
+        crate::theme::TagLevel::Selected
+    } else if parked {
+        crate::theme::TagLevel::Sleeping
+    } else {
+        crate::theme::TagLevel::Rest
+    };
+    let (bar_ch, bar_style) = if trail {
+        (ladder_ch.to_string(), state_style)
+    } else {
+        crate::tags::bar_cell(
+            theme,
+            ladder_ch,
+            theme.bar(BarWeight::Dormant).1,
+            tags,
+            ctx.second,
+            level,
+        )
+    };
+    // `Second::Edge` puts the second tag on the card's last cell, which was
+    // trailing pad — so it costs no width and never touches the bar.
+    let edge = if trail { None } else { crate::tags::edge_cell(theme, tags, ctx.second, level) };
 
     // ---- line 1: [glyph sp?][title][fill][wt][age] ------------------------
     let wt_mark = worktree_mark(wt, tier == crate::glyphs::Tier::Ascii);
@@ -216,7 +273,7 @@ pub(super) fn render(
         theme.dim2()
     };
 
-    let mut spans: Vec<Span<'static>> = vec![Span::styled(bar_ch.to_string(), bar_style)];
+    let mut spans: Vec<Span<'static>> = vec![Span::styled(bar_ch.clone(), bar_style)];
     spans.push(Span::styled(" ".to_string(), Style::default()));
     if let Some((g, reg)) = glyph {
         let gs = if trail {
@@ -243,22 +300,11 @@ pub(super) fn render(
     if let Some(a) = &age {
         spans.push(Span::styled(format!(" {a:>3}"), quiet_style));
     }
-    spans.push(Span::raw(" "));
+    spans.push(Span::styled(" ".to_string(), edge.unwrap_or_default()));
     let mut lines = vec![Line::from(spans).style(row_style)];
 
-    // The tags colour the block's BOTTOM ROW as a segmented underline —
-    // costing the card no row of its own, which is the whole point of moving
-    // them here. Written as a closure because the card has four exits, and a
-    // line missed on one of them is a card that loses its tags when selected.
-    let close = |mut lines: Vec<Line<'static>>| -> Vec<Line<'static>> {
-        if let Some(last) = lines.pop() {
-            lines.push(crate::tags::underline(theme, last, tags, ctx.width as usize));
-        }
-        lines
-    };
-
     if held {
-        return close(lines);
+        return lines;
     }
 
     // ---- accordion (07 §4.3; session rows only — short keys are hidden
@@ -270,16 +316,34 @@ pub(super) fn render(
         let quiet = Style::default().fg(theme.sel.dim2);
         let mut push = |spans: Vec<Span<'static>>| {
             let mut all = vec![
-                Span::styled(bar_ch.to_string(), bar_style),
+                Span::styled(bar_ch.clone(), bar_style),
                 Span::styled(" ".to_string(), Style::default()),
             ];
             all.extend(spans);
-            // Pad the interior so the surface paints the full card width.
+            // Pad the interior so the surface paints the full card width,
+            // keeping the last cell for the edge tag when it wants one.
             let used: usize = all.iter().map(|s| s.content.width()).sum();
             let pad = (ctx.width as usize).saturating_sub(used);
-            all.push(Span::raw(" ".repeat(pad)));
+            match edge {
+                Some(style) if pad > 0 => {
+                    all.push(Span::raw(" ".repeat(pad - 1)));
+                    all.push(Span::styled(" ".to_string(), style));
+                }
+                _ => all.push(Span::raw(" ".repeat(pad))),
+            }
             lines.push(Line::from(all).style(acc_style));
         };
+
+        // The peek names the tags. The mark under the card says how many and
+        // in which colours; only words say WHICH, and a card open far enough
+        // to show a sentence can afford the row. It sits directly under the
+        // title, above the reply — the ticket's own metadata before the
+        // agent's.
+        if peek.is_some() && !tags.is_empty() {
+            let mut row = vec![Span::raw("  ".to_string())];
+            row.extend(crate::tags::chips(theme, tags, t_cells.saturating_sub(2)));
+            push(row);
+        }
 
         let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
         ranked.sort_by_key(|s| (rank(&s.state), s.id));
@@ -357,17 +421,17 @@ pub(super) fn render(
                 ]);
             }
         }
-        return close(lines);
+        return lines;
     }
     if selected {
         // Session-less card: nothing to expand, nothing shifts.
-        return close(lines);
+        return lines;
     }
 
     // No meta strip at rest (author 2026-08-30): the session dots repeated
-    // the aggregate glyph — a resting card is one line plus its bands.
+    // the aggregate glyph — a resting card is one line, plus its stripe.
     // Per-session detail lives in the accordion and the ticket rail.
-    close(lines)
+    lines
 }
 
 /// Does this ticket currently hold a usable-confidence attention session?

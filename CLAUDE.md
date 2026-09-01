@@ -101,7 +101,11 @@ retired. What holds now:
    the source are provenance, not obligation.
 
 **M3.5 (built 2026-08-29) is the design foundation**: OSC-11 light/dark detection
-(`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, queried exactly once before raw mode),
+(`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, first asked before raw mode and then
+re-asked every 3 s from inside `App::tick`, so an OS appearance flip repaints the board live —
+`detect::FlavorWatch`; the terminal is the authority, never the OS, and `MESIMON_THEME`, a
+terminal that cannot answer, a waiting keypress and an open text field each disarm or defer the
+query; STALE-MAP "Light/dark follows the terminal, live"),
 the graphite/chalk token themes for all five colour profiles (`theme.rs` — the colour-law tests
 in it are the palette's spec), pure board geometry (`layout.rs`, post-D33k arithmetic), card
 anatomy per 07 §4 (`ui/card.rs`), spines + the minted cursor-column treatment (`ui/board.rs`),
@@ -245,10 +249,29 @@ tint and no half-block: a plain underline says "tagged" without saying which. Ta
 are named in the peek row and on the ticket page, never on the card. `board::sanitize_tag` runs at
 the daemon boundary: a tag name is user text on a card row.
 
-The tint ramp is C* ~24 at L* 58/47 — calm's register, NOT the accent's: `attn` keeps a 2x chroma
-margin and stays the only token above C* 30, which is what
-`test_pip_ramp_is_low_chroma_and_legible` enforces (ceiling 26.5, 2x under attn, ≥ 4.5 on the page
-ground because the ticket page writes the ground onto a chip of the tint).
+**The palette is six hues at one lightness per flavor, and it has three loudnesses.** Graphite is
+L* 62 / C* 30, chalk L* 45 / C* 26 — same six hues both times, chosen for separation rather than
+even spacing: the 60-90° band is skipped because that is where `attn` lives. The ramp stays a
+register below the accent: `attn` keeps a 2x chroma margin and is still the only token above C* 30,
+which `test_pip_ramp_is_low_chroma_and_legible` enforces (ceiling 30.5, 2x under attn, ≥ 4.5 on the
+page ground — the ticket page writes the ground onto a chip of the tint, so that number IS the
+chip's text contrast — and ≥ 4.0 on the selected surface).
+
+A terminal has no alpha, so **`Theme::faded(colour, TagLevel)` blends toward the page ground** (down
+into graphite, up into chalk — receding on either flavor) and the card's own state picks the level:
+`Selected` is the full tint (the cursor card carries the loudest tags on the board), `Rest` is 0.70
+(where almost every tag is read), `Sleeping` is 0.38 (a parked ticket still has to answer "which
+tag", so the floor is hue survival, not contrast). The first cut used 0.82/0.50 and **neither
+boundary was visible on a real board** — an 18% blend is nothing on a one-cell block — so the law
+test now also asserts each step is ≥ 12% of the ground-to-tint distance. "Parked" is read off the
+SESSIONS (a Sleeping session and no pane), never off the aggregate glyph, which missed any ticket
+whose parked session sat behind another glyph. **The ladder is the CARD's, not the palette's**: an
+untagged card's neutral block dims and brightens exactly the same way (`tags::bar_cell` fades the
+neutral bg too), because a board where only tagged tickets answer "is this asleep?" answers it for
+some cards and not others — that is the bug that shipped twice. The law test holds `Rest` above
+the dim2 body floor and `Sleeping` above the dim3 de-emphasis floor, and asserts every level keeps
+C* ≥ 9 and stays distinct per tag. Below TrueColor the levels collapse: one grey, no ground to fade
+into.
 
 **The peek names them** (`tags::chips`): with `p` on, the cursor card carries one row of painted
 name-chips under the title, above the reply. Colour says how many and which hues; only words say

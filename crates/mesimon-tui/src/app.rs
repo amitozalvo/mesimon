@@ -263,6 +263,11 @@ pub struct App {
     /// in `handle_key`, so arming from the composer leaves the half-typed
     /// title untouched underneath and Esc returns to it.
     pub(crate) tag_armed: Option<TagArm>,
+    /// Where the second tag goes (`w` in the picker). A view setting held for
+    /// the session: it changes nothing the daemon owns, and there is no place
+    /// to persist a preference that would not be board data belonging to
+    /// everyone on the repo.
+    pub(crate) tag_second: crate::tags::Second,
     /// What `u` would undo. Archiving is fully reversible and leaves the
     /// ticket in the snapshot, so it needs no daemon-side grace band — it
     /// just needs to be reachable, which is what this is.
@@ -335,6 +340,7 @@ impl App {
             pending_reexec: false,
             delete_armed: None,
             tag_armed: None,
+            tag_second: crate::tags::Second::from_env(),
             archive_armed: None,
             last_undo: None,
             help: false,
@@ -553,6 +559,7 @@ impl App {
         if self.update_watch.tick() {
             dirty = true;
         }
+        self.watch_flavor()?;
         // Async board-changed events from the daemon.
         while self.client.poll_event() {
             dirty = true;
@@ -741,6 +748,7 @@ impl App {
                 self.tag_subject().is_some_and(|t| t.iter().any(|t| t.group == g && t.name == n))
             }),
             tag_forget_armed: self.tag_armed.as_ref().is_some_and(|a| a.forget_armed),
+            tag_second_next: self.tag_second.next_word(),
             rich_keys: self.rich_keys,
         }
     }
@@ -958,6 +966,10 @@ impl App {
                     self.status = message;
                 }
                 self.refresh()?;
+            }
+            Verb::TagWeight => {
+                self.tag_second = self.tag_second.next();
+                self.status = format!("second tag {}", self.tag_second.word());
             }
             Verb::TagRename => {
                 let Some((_, name, _)) = self.tag_cell() else { return Ok(()) };

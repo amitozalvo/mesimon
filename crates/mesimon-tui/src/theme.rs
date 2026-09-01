@@ -51,6 +51,23 @@ pub(crate) enum BarWeight {
     Cursor,
 }
 
+/// How loud a tag's colour is on a card. There is no alpha in a terminal, so
+/// the levels are blends toward the page ground (`Theme::pip_at`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TagLevel {
+    /// The cursor card: full strength, so the card you are on carries the
+    /// loudest tags on the board.
+    Selected,
+    /// A card at rest: one step down. This is the level almost every tag on
+    /// the board is read at, and the step has to be big enough to SEE — the
+    /// first cut used 0.82 and the boundary was invisible.
+    Rest,
+    /// A sleeping session: quiet, but the hue must survive. "Which tag" is
+    /// the one thing the colour is for, and a parked ticket still has to
+    /// answer it.
+    Sleeping,
+}
+
 pub(crate) struct Theme {
     pub profile: Profile,
     #[allow(dead_code)] // detection provenance; useful for doctor output later
@@ -348,12 +365,20 @@ impl Theme {
     }
     /// A tag pip's tint, `n = stable_hash(name) % PIPS`.
     ///
-    /// Six muted hues at one lightness (D31b): tag pips draw from a
-    /// restricted low-chroma ramp and may NEVER spend the one saturated
-    /// colour reserved for "needs you" — the failure D19 names is that the
-    /// alert stops being the only bright thing and users learn to distrust it
-    /// within a week. Every hue here sits at C* ~8, an order of magnitude
-    /// below `attn`.
+    /// Six hues at one lightness (D31b): tag tints draw from their own ramp
+    /// and may NEVER spend the one saturated colour reserved for "needs you"
+    /// — the failure D19 names is that the alert stops being the only bright
+    /// thing and users learn to distrust it within a week.
+    ///
+    /// The ramp was C* ~7 and it FAILED IN USE (2026-08-31): at that chroma
+    /// the mark read as another grey rule and the tag said nothing. It is now
+    /// C* 30 (graphite) / 26 (chalk) — a register below the accent, never
+    /// beside it: `attn` keeps at least 2x the chroma of any tint. A colour
+    /// nobody sees encodes nothing, and an unread tag is a worse outcome than
+    /// a board with six quiet hues on it.
+    ///
+    /// This is the FULL strength of a tint, which only the cursor card wears;
+    /// `pip_at` steps it down for the rest.
     ///
     /// Below TrueColor the tint is abandoned DELIBERATELY rather than
     /// approximated: the indexed cube has no low-chroma hue wheel, so any
@@ -368,16 +393,63 @@ impl Theme {
             return self.rest.dim2;
         }
         let ramp = match self.flavor {
-            // L* 52, C* 7. Measured: >= 4.39 on bg, >= 3.39 on the selected
-            // surface.
-            Flavor::Graphite => [0x897877, 0x827B70, 0x757F75, 0x6D7F81, 0x757D88, 0x837983],
-            // L* 54, C* 8 — re-derived, NOT the corpus's L* 62 ramp, which
-            // measured 2.3:1 on the selected surface (below even the dim3
-            // de-emphasis floor). Same six hues, dropped until both surfaces
-            // clear 3.0 with C* still under the 8.2 ceiling.
-            Flavor::Chalk => [0x907D7C, 0x888073, 0x798479, 0x708587, 0x79828F, 0x897E89],
+            // L* 62, C* 30, six hues chosen for separation rather than for
+            // even spacing: the 60-90 band is skipped because that is where
+            // `attn` lives, and a tag the colour of the alert is the D19
+            // failure however low its chroma. Measured: >= 6.19 on bg,
+            // >= 4.78 on the selected surface.
+            Flavor::Graphite => [0xCB8289, 0x9B9862, 0x68A27F, 0x3DA4A7, 0x6B9ACA, 0xAF89B8],
+            // The same six hues at L* 45, C* 26 — darker and a step quieter,
+            // because chalk's ground is the bright one and its accent has
+            // less chroma to be a register above. Measured: >= 5.04 on bg,
+            // >= 4.17 on the selected surface.
+            Flavor::Chalk => [0x955A60, 0x6E6D40, 0x447557, 0x1A7679, 0x456E95, 0x7F6087],
         };
         hex(ramp[n % PIPS])
+    }
+
+    /// The same tint at the loudness the card has earned.
+    ///
+    /// There is no alpha in a terminal, so "less visible" is a blend toward
+    /// the page ground — which is what the eye reads as a colour receding
+    /// anyway, on either flavor: a tint fades DOWN into graphite and UP into
+    /// chalk. The hue survives every level, because which tag it is remains
+    /// the only thing the colour is there to say.
+    pub(crate) fn pip_at(&self, n: usize, level: TagLevel) -> Color {
+        self.faded(self.pip(n), level)
+    }
+
+    /// Any block colour at the loudness the card has earned — the tag tints
+    /// go through here, and so does the NEUTRAL block of an untagged ticket.
+    ///
+    /// The three states are a property of the CARD, not of the palette: a
+    /// board where only tagged tickets dim answers "is this one asleep?" for
+    /// some cards and not others, which is what the first cut did and what
+    /// the author saw (2026-09-01).
+    ///
+    /// The steps are wide on purpose. 0.82/0.50 shipped first and neither
+    /// boundary was visible on a real board: an 18% blend is nothing on a
+    /// one-cell block, and a level nobody can tell from its neighbour is not
+    /// a level.
+    pub(crate) fn faded(&self, base: Color, level: TagLevel) -> Color {
+        let k = match level {
+            TagLevel::Selected => return base,
+            TagLevel::Rest => 0.70,
+            TagLevel::Sleeping => 0.38,
+        };
+        if self.profile != Profile::TrueColor {
+            return base; // no ground to blend into, and one grey to blend
+        }
+        let Color::Rgb(r, g, b) = base else { return base };
+        let ground = match self.bg {
+            Some(Color::Rgb(rr, gg, bb)) => (rr, gg, bb),
+            _ => match self.flavor {
+                Flavor::Graphite => (0x13, 0x14, 0x17),
+                Flavor::Chalk => (0xFA, 0xF8, 0xF4),
+            },
+        };
+        let mix = |a: u8, b: u8| (a as f32 * k + b as f32 * (1.0 - k)).round() as u8;
+        Color::Rgb(mix(r, ground.0), mix(g, ground.1), mix(b, ground.2))
     }
 
     /// Are the six tag tints actually distinguishable here?
@@ -568,12 +640,17 @@ mod tests {
         }
     }
 
-    /// The tag ramp obeys the same chroma law as the greys and never comes
-    /// near the accent (D31b: a tag pip may not spend the one saturated
-    /// colour). Held to >= 3.0 on BOTH surfaces — above the `dim3`
-    /// de-emphasis floor, below the `dim2` body floor: a pip is read, but it
-    /// is ambient. The corpus's chalk ramp measured 2.3 here and was
-    /// re-derived; this test is why.
+    /// The tag ramp is chromatic — that is the point of it — but it stays a
+    /// register below the accent (D31b: a tag may not spend the one saturated
+    /// colour). Two numbers hold that line: a C* ceiling of 30.5, and a 2x
+    /// margin under `attn`. Legibility is held to >= 4.5 on the page ground
+    /// (the ticket page paints a chip in the tint and writes the ground on
+    /// it, so this IS that chip's text contrast) and >= 4.0 on the selected
+    /// surface. The raises from C* 7 are recorded on `pip()`.
+    ///
+    /// The three levels are checked here too, because "less visible" must
+    /// stop short of "gone": a resting tag still clears the dim2 body floor
+    /// and a sleeping one still clears the dim3 de-emphasis floor.
     #[test]
     fn test_pip_ramp_is_low_chroma_and_legible() {
         for (flavor, bg, selbg, attn) in [
@@ -588,15 +665,40 @@ mod tests {
                 };
                 let rgb = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
                 let (_, c) = lch(rgb);
-                assert!(c <= 8.2, "{flavor:?} pip {n} {rgb:06X} has C* {c:.1} > 8.2");
-                // An order of magnitude below the accent, not a near miss.
+                assert!(c <= 30.5, "{flavor:?} pip {n} {rgb:06X} has C* {c:.1} > 30.5");
+                // A register below the accent, and it must stay there.
                 assert!(
-                    c_attn >= c * 4.0,
-                    "{flavor:?} pip {n} C* {c:.1} is not far below attn C* {c_attn:.1}"
+                    c_attn >= c * 2.0,
+                    "{flavor:?} pip {n} C* {c:.1} is not a register below attn C* {c_attn:.1}"
                 );
-                for surface in [bg, selbg] {
+                for (surface, floor) in [(bg, 4.5), (selbg, 4.0)] {
                     let k = contrast(rgb, surface);
-                    assert!(k >= 3.0, "{flavor:?} pip {n} {rgb:06X} on {surface:06X} is {k:.2}");
+                    assert!(k >= floor, "{flavor:?} pip {n} {rgb:06X} on {surface:06X} is {k:.2}");
+                }
+                // The quieter levels: still seen, still hued, never gone.
+                // Floors, not targets: a quiet level is allowed under the
+                // body-text floor, because it is paint and not text — what it
+                // may never do is stop being a colour.
+                for (level, floor) in [(TagLevel::Rest, 2.8), (TagLevel::Sleeping, 1.4)] {
+                    let Color::Rgb(r, g, b) = t.pip_at(n, level) else {
+                        panic!("{flavor:?} {level:?} {n} is not truecolor");
+                    };
+                    let faded = ((r as u32) << 16) | ((g as u32) << 8) | b as u32;
+                    let k = contrast(faded, bg);
+                    assert!(k >= floor, "{flavor:?} {level:?} pip {n} {faded:06X} is {k:.2}");
+                    let (_, cf) = lch(faded);
+                    assert!(cf >= 8.0, "{flavor:?} {level:?} pip {n} lost its hue: C* {cf:.1}");
+                    // Each step has to be visible as a step, not just be a
+                    // different number: >= 12% of the ground-to-tint distance.
+                    let step = |a: u32, b: u32| {
+                        let ch = |v: u32, s: u32| ((v >> s) & 255) as f64;
+                        (0..3).map(|i| (ch(a, i * 8) - ch(b, i * 8)).abs()).sum::<f64>()
+                    };
+                    let span = step(rgb, bg);
+                    assert!(
+                        step(faded, rgb) >= span * 0.12,
+                        "{flavor:?} {level:?} pip {n} is not far enough from the tint"
+                    );
                 }
             }
             // Six DISTINCT hues, or the ramp encodes nothing.
@@ -609,7 +711,7 @@ mod tests {
     }
 
     /// Below TrueColor the tint is abandoned, not approximated: every pip is
-    /// the same grey, and the letter carries the tag.
+    /// the same grey and the name carries the tag.
     #[test]
     fn test_pips_lose_the_tint_below_truecolor() {
         for flavor in [Flavor::Graphite, Flavor::Chalk] {

@@ -1296,3 +1296,163 @@ strings and not only files (so nothing is written to disk); `--strict-mcp-config
 `hookSpecificOutput` / `hookEventName` / `permissionDecision` / `permissionDecisionReason` are
 all present in the binary; `CLAUDE_CODE_MCP_ALLOWLIST_ENV` gates MCP child-env scrubbing and
 defaults to `CLAUDE_CODE_ENTRYPOINT === "local-agent"`, which mesimon never sets.
+
+## The tag mark: seven attempts, and what it cost (2026-08-31/09-01, dogfood)
+
+Author, looking at a real board: the underline is too thin — "can be thicker on demand?" — and
+"colors are too muted. I wasn't noticable." Both were true, and the second had a law behind it.
+What followed is the most-revised surface in the project so far, so the whole ladder is recorded:
+each rung was cheap to build and only the board could tell us it was wrong.
+
+**The chroma fix, which every version keeps.** The ramp moves from C\* 7 to C\* ~24 (graphite
+L\* 58, chalk L\* 47; six hues 60° apart). D31b's low-chroma grant was written before anything
+was on screen; at C\* 7 a tint is a grey with a rumour of hue in it. The one-saturated-colour law
+(D19) is NOT repealed: `attn` keeps a 2x chroma margin and remains the only token above C\* 30,
+`test_pip_ramp_is_low_chroma_and_legible` now enforces a 26.5 ceiling plus that margin, and the
+contrast floor rose to 4.5 on the page ground (the ticket page paints a chip in the tint and
+writes the ground onto it, so that number IS the chip's text contrast). A colour nobody sees
+encodes nothing.
+
+**Rung 1 — a painted row under the card.** Cheap (it took the blank rhythm row the board already
+puts between cards, so it cost no line) and wrong on sight: "there's an extra block line below the
+ticket. I only wanted colored *thick* underline." A full cell of paint is a block, and the reader
+files it as another element rather than as the edge of the card above.
+
+**Rung 2 — a double underline stroke.** SGR 4 is one or two pixels of the font's choosing and
+there is no half-cell (`▀` U+2580 and friends are banned twice over: the L1 range, and East Asian
+Width Ambiguous). What is available is the kitty/VTE extension `CSI 4:2 m`, two strokes in one
+cell. It cannot travel in a `Style` — ratatui's `Modifier` has no bit for it and the buffer is
+everything `CrosstermBackend` sees — so `tui/src/sgr.rs` wraps the terminal's *writer* and appends
+the upgrade after the four bytes crossterm emits for `Modifier::UNDERLINED`. **Additive on
+purpose**: `\x1b[4m` first, `\x1b[4:2m` after, so a terminal that ignores subparameter SGR keeps
+the single stroke — the mark degrades to thin and never vanishes. The matcher is a four-byte state
+machine because crossterm writes through a buffer and `\x1b[48;…` / `\x1b[49m` share the prefix; a
+lost escape would repaint the screen wrong, which is what `no_other_sgr_is_touched` guards.
+**This makes 06 §5.1's reservation of SGR 4 load-bearing** — it used to be a style rule, it is now
+the precondition for a byte rewrite. Verified live: **iTerm2 3.6.11 draws `4:2`** even though its
+escape-code page documents only `4:3`; `MESIMON_TAG_STROKE` reaches the other styles for terminals
+where it does not.
+
+**Rung 3 — the mark gets shorter.** A full-width rule read as a border rather than as something
+the ticket wears, so it became two cells per tag at the card's content start. Better, but the
+stroke still sat tight under the text — "increase space of underline? it's too high" — and a
+terminal draws an underline at the bottom of the cell with no sub-cell offset to spend.
+
+**Rung 4 — a stripe cell of its own, left of the bar.** Two tags in one cell (paint for the first,
+underline stroke for the second), full cell height, no extra row. It lasted one look: a painted
+cell sitting against the painted accent bar reads as **one two-tone bar**, not as two things, and
+it cost every title a cell (`GUT = 1`, so the cell had to come out of the card — the single cell
+left of a card is the only thing separating columns).
+
+**Rung 5 — the bar IS the mark.** The author's call: neutral while nothing is tagged, the tag's
+tint once something is, and — first attempt — the second tag as an SGR-58 underline across that
+same cell. Tags cost the card nothing; the frame went back to `[bar][pad][content][pad]` and all
+twenty-one board goldens went back to byte-identical. Two corrections came straight back from the
+board:
+
+- **"no tag = neutral. we already have glyph for state, no need colored block."** The bar was
+  still carrying the state ladder for untagged cards, which is the same thing the glyph says. It
+  is now the tag channel and nothing else. Needs-you keeps the inverted title row (the loudest
+  surface the board has) and `err` moved to the glyph — `test_alarm_never_dimmed` asserts the
+  register on the glyph now, and that the bar is NOT painted with it.
+- **"this one has 2 tags, I see only one."** True, and the design was wrong, not the data: the
+  ticket wore two tints. An underline is one or two pixels at the *bottom of a cell*, and against
+  a fully painted cell it is invisible at any font size. The "two colours in one cell" idea only
+  ever worked under text. `sgr.rs` and the whole double-stroke apparatus came back out with it.
+
+**Rung 6, on trial — three homes for the second tag, cycled with `w`.** `Second::Stack` (the
+default, and the author's follow-up ask: "possible to do vertical instead?") draws `▀` with the
+FIRST tag in the foreground over the second tag's paint, so the split runs across the bar — a cell
+is taller than it is wide, so stacking gives the fatter pair of halves. `Second::Half` draws `▌`
+for the side-by-side split. `Second::Edge` paints the card's right-edge cell, which was trailing
+pad. None of the three costs the card a cell (`test_the_second_tag_costs_no_width` renders all
+three and compares), and `MESIMON_TAG_SECOND` picks the startup home.
+
+**`▀` and `▌` are admitted exceptions to the L1 law, granted by the author 2026-09-01.** They are
+inside `0x2500–0x259F` and East Asian Width *Ambiguous* — the class that has already cost this
+project a render bug — and they are here because every attribute-only channel was tried first and
+could not be seen. The risk is scoped and stated rather than hidden: it only misfires where a
+terminal renders Ambiguous-width as double (iTerm2 has that setting, off by default),
+`unicode-width` counts both as one cell (`the_half_blocks_are_one_cell`), and
+`test_no_drawn_structure` admits exactly these two codepoints by name while still banning `▔`, `█`
+and the rest of the range.
+
+**Two things that were decided rather than defaulted, and still hold:**
+
+- **The alarm never rides the tag channel.** `attn` keeps the inverted row and `err` the glyph, so
+  a tagged card that needs you still shouts (`test_a_waiting_card_still_shouts`).
+- **No cell is spent on tags.** Every home so far that asked for one — the band row, the stripe
+  cell — was rejected on sight, and the two survivors both reuse a cell the card already had.
+
+**Rung 7 — the palette gets rethought, and the block gets three loudnesses** (author, same
+session). Six hues at one lightness per flavor: graphite L* 62 / C* 30, chalk L* 45 / C* 26. The
+hues are chosen for separation rather than even spacing, and the 60-90° band is deliberately empty
+— that is `attn`'s hue, and a tag the colour of the alert is the D19 failure however low its
+chroma. Both ramps clear 4.5 on their own ground and 4.0 on the selected surface, and `attn` keeps
+a 2x chroma margin (`test_pip_ramp_is_low_chroma_and_legible`, ceiling now 30.5).
+
+A terminal has no alpha, so "opacity" is a blend toward the page ground — which is what the eye
+reads as a colour receding on either flavor: a tint fades DOWN into graphite and UP into chalk.
+`Theme::pip_at(n, TagLevel)` does it, and the card's own state picks the level: `Selected` full
+strength, `Rest` 0.70, `Sleeping` 0.38.
+
+**The first cut used 0.82/0.50 and both boundaries were invisible** ("sleeping vs not sleeping
+looks the same"; "selecting … doesn't change the intensity"). An 18% blend is nothing on a
+one-cell block — a level nobody can tell from its neighbour is not a level — so the steps widened
+and the law test now asserts each one moves ≥ 12% of the ground-to-tint distance, on top of its
+contrast floor. Those floors are floors and not targets: a quiet level is allowed under the
+body-text floor because it is paint, not text; what it may never do is stop being a colour (C* ≥ 8
+at every level, and distinct per tag).
+
+**The same report caught two real bugs.** "Parked" was read off the aggregate card glyph (`z`), so
+a ticket whose sleeping session sat behind any other glyph never reached the quiet level; it is
+read off the sessions now — a `Sleeping` session and no pane. And the ladder only ever reached tag
+TINTS, so on a board whose sleeping tickets happen to be untagged (which was the author's board,
+in the screenshot) nothing moved at all: an untagged card's neutral block now fades and brightens
+with the same three levels. The loudness says what the CARD is doing, so every card has to be able
+to answer it — `test_an_untagged_block_ladders_too` is the standing check. Below TrueColor the levels collapse,
+because there is one grey and no ground to fade into.
+
+**Peek carries the tags the card cannot** (`tags::chips`): with `p` on, the cursor card shows a row
+of painted name-chips under the title, above the reply. Names share the row
+**longest-gives-first**, never an equal split — an equal split cut "BUG" down to make room for a
+"STAGING" that then got cut anyway, and three tags all arrived as two letters and a tilde. Nothing
+shrinks below three cells, and the tail drops rather than every name going illegible.
+
+## Light/dark follows the terminal, live (2026-09-01)
+
+06 §2.9's query hygiene said the light/dark question is asked **exactly once**, at startup, and
+M3.5 shipped it that way. That is right about *where* it may be asked and wrong about *how often*:
+the OS flips appearance at sunset, the terminal follows it, and a board started in the morning
+keeps painting graphite onto a now-white terminal until someone restarts it. The rule that
+actually holds is narrower — **never ask while anything else owns the input stream** — and the TUI
+event loop is precisely the place where nothing else does.
+
+So `detect::FlavorWatch` re-asks OSC 11 every 3 s from inside `App::tick`, and a changed answer
+rebuilds `App::theme` in the other flavor. No refresh goes with it: the daemon owns none of this,
+the next frame is drawn unconditionally, and ratatui's diff repaints every cell whose style moved.
+
+**The terminal is asked, never the OS.** `defaults read -g AppleInterfaceStyle` is the obvious
+signal and it is the wrong one: a terminal pinned to a dark profile stays dark through an OS flip,
+and a board that followed the OS there would paint chalk ink onto a black background. The
+terminal's own background is the surface the palette has to sit on, so it is the only authority —
+and when the terminal does follow the OS (iTerm2's light/dark profile pair), asking it gives the
+OS answer for free. It also costs nothing on Linux, where there is no OS appearance to read.
+
+Guards, each of them load-bearing:
+
+- **`MESIMON_THEME` disarms the watch entirely.** An explicit choice is not a starting point to be
+  corrected three seconds later.
+- **A terminal that cannot answer is never asked twice.** The watch is armed only if the startup
+  query answered; three consecutive silences after that end it for good.
+- **Never with a keypress waiting, never under a text field.** `terminal-colorsaurus` reads
+  `/dev/tty` and discards everything ahead of the reply, so a query racing a keystroke eats it.
+  `due()` is cheap and stays true, so both cases simply wait for the next frame — the cost of a
+  late flip is nothing, and the cost of a lost character in a ticket title is not.
+- **The query lives in `tick` only**, so it cannot run during a handover, a suspend, or a
+  provisioning stall — the same fence the once-only rule was really protecting.
+
+`CSI ? 2031` live re-theming stays deferred, and now probably forever: it would trade a 3 s poll
+the terminal never notices for unsolicited DSRs that must be disarmed before every PTY attach, on
+suspend and on every exit path — the failure mode being escape-sequence garbage typed into a live
+agent. Polling has no armed state to leak. `test_dsr_2031_disarmed` defers with it.
