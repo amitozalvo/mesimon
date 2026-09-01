@@ -26,7 +26,11 @@ DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
 
 TARGET="aarch64-apple-darwin"
-REPO="amitozalvo/mesimon"
+# Source repo (private) and the public repo the binaries are published to.
+# The split is what lets a tester install with a curl and no GitHub account,
+# while the code stays private.
+SRC_REPO="amitozalvo/mesimon"
+DIST_REPO="amitozalvo/mesimon-releases"
 
 die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
 step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
@@ -132,17 +136,46 @@ fi
 
 # --- publish ----------------------------------------------------------------
 
-step "publish to $REPO"
+step "publish to $DIST_REPO"
 command -v gh >/dev/null || die "the GitHub CLI is required to publish" "brew install gh"
 gh auth status >/dev/null 2>&1 || die "gh is not logged in" "gh auth login"
+gh repo view "$DIST_REPO" >/dev/null 2>&1 || \
+  die "the public releases repo does not exist yet" \
+      "gh repo create $DIST_REPO --public --add-readme"
+
+# The dist repo carries no source, so its tag would otherwise name nothing.
+# Record the commit this artifact was actually built from.
+sha=$(git rev-parse HEAD)
+{
+  echo
+  echo "---"
+  echo "Built from \`$SRC_REPO\` at \`${sha:0:7}\`."
+} >> dist/notes.md
 
 gh release create "$tag" \
-  --repo "$REPO" \
+  --repo "$DIST_REPO" \
   --title "$tag" \
   --notes-file dist/notes.md \
   --prerelease \
   "dist/$name.tar.gz" "dist/$name.tar.gz.sha256"
 
+# Keep the public repo's install.sh and README in step with what was just
+# released — the curl one-liner reads them straight off its main branch.
+publish_file() {
+  local src="$1" dest="$2" existing
+  existing=$(gh api "repos/$DIST_REPO/contents/$dest" --jq .sha 2>/dev/null || true)
+  set -- -X PUT "repos/$DIST_REPO/contents/$dest" \
+    -f message="sync $dest ($tag)" \
+    -f content="$(base64 < "$src" | tr -d '\n')"
+  [ -n "$existing" ] && set -- "$@" -f sha="$existing"
+  gh api "$@" --silent
+}
+step "sync install.sh + README to $DIST_REPO"
+publish_file install.sh install.sh
+publish_file ci/releases-readme.md README.md
+
 echo
 echo "published $tag"
-echo "install anywhere with:  sh install.sh"
+echo
+echo "share this line:"
+echo "  curl -fsSL https://raw.githubusercontent.com/$DIST_REPO/main/install.sh | sh"

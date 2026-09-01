@@ -1,20 +1,23 @@
 #!/usr/bin/env sh
 # mesimon installer.
 #
+#   curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
+#
 # Re-running this IS the update: it replaces the binary at the same path, and a
 # running board notices the new mtime and offers `update ready (U reloads)`.
 # If no board is open, the next one restarts the stale daemon by itself.
 #
-#   sh install.sh                  install or update
-#   sh install.sh --version v0.1.0-alpha.1
-#   PREFIX=~/bin sh install.sh     install somewhere else
+#   sh install.sh                          install or update
+#   sh install.sh --version v0.1.0-alpha.1 pin a version
+#   PREFIX=~/bin sh install.sh             install somewhere else
 #
-# The repo is private, so the download goes through `gh` (which carries your
-# GitHub login) rather than a bare curl.
+# Binaries are published from a separate public repo, so there is no GitHub
+# account, login, or invite involved. The source lives in a private repo and
+# is not needed to run mesimon.
 
 set -eu
 
-REPO="amitozalvo/mesimon"
+REPO="amitozalvo/mesimon-releases"
 PREFIX="${PREFIX:-$HOME/.local/bin}"
 VERSION=""
 
@@ -22,7 +25,7 @@ while [ $# -gt 0 ]; do
   case "$1" in
     --version) VERSION="${2:-}"; shift 2 ;;
     --prefix)  PREFIX="${2:-}"; shift 2 ;;
-    -h|--help) sed -n '2,14p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    -h|--help) sed -n '2,18p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
     *) echo "unknown argument: $1" >&2; exit 2 ;;
   esac
 done
@@ -31,16 +34,13 @@ die() { echo "error: $1" >&2; [ $# -gt 1 ] && echo "  fix: $2" >&2; exit 1; }
 
 # --- preconditions, each with the exact line that fixes it -------------------
 
-[ "$(uname -s)" = "Darwin" ] || die "mesimon builds are macOS-only right now (this is $(uname -s))" \
-  "build from source instead: cargo install --git https://github.com/$REPO --locked mesimon"
+[ "$(uname -s)" = "Darwin" ] || die "the published build is macOS-only (this is $(uname -s))" \
+  "build from source instead — ask for access to the repo"
 
 [ "$(uname -m)" = "arm64" ] || die "the published build is Apple Silicon only (this is $(uname -m))" \
-  "build from source instead: cargo install --git https://github.com/$REPO --locked mesimon"
+  "build from source instead — ask for access to the repo"
 
-command -v gh >/dev/null 2>&1 || die "the GitHub CLI (gh) is required to download from a private repo" \
-  "brew install gh && gh auth login"
-
-gh auth status >/dev/null 2>&1 || die "gh is installed but not logged in" "gh auth login"
+command -v curl >/dev/null 2>&1 || die "curl is required"
 
 command -v tmux >/dev/null 2>&1 || die "tmux is required — mesimon runs every agent in its own private tmux server" \
   "brew install tmux"
@@ -53,26 +53,33 @@ command -v claude >/dev/null 2>&1 || {
   echo "      Claude session will fail until Claude Code is installed."
 }
 
-# --- download ---------------------------------------------------------------
+# --- resolve the version ------------------------------------------------------
 
 tmp="$(mktemp -d)"
 trap 'rm -rf "$tmp"' EXIT INT TERM
 
 if [ -z "$VERSION" ]; then
-  VERSION="$(gh release list --repo "$REPO" --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
-  [ -n "$VERSION" ] || die "no releases found on $REPO" \
-    "check that you have access: gh repo view $REPO"
+  # NOT /releases/latest — that endpoint skips prereleases, and every alpha is
+  # one, so it would 404 until the first stable build. The list endpoint is
+  # newest-first and includes them.
+  VERSION="$(curl -fsSL "https://api.github.com/repos/$REPO/releases" 2>/dev/null \
+    | grep -m1 '"tag_name"' \
+    | sed -E 's/.*"tag_name"[[:space:]]*:[[:space:]]*"([^"]+)".*/\1/')"
+  [ -n "$VERSION" ] || die "could not find a published release on $REPO" \
+    "check https://github.com/$REPO/releases"
 fi
 
 asset="mesimon-$VERSION-aarch64-apple-darwin.tar.gz"
+base="https://github.com/$REPO/releases/download/$VERSION"
+
 echo "downloading $asset"
-gh release download "$VERSION" --repo "$REPO" --pattern "$asset" --pattern "$asset.sha256" --dir "$tmp" \
-  || die "could not download $asset from $VERSION" \
-     "list what exists: gh release view $VERSION --repo $REPO"
+curl -fsSL -o "$tmp/$asset" "$base/$asset" \
+  || die "could not download $asset" "check https://github.com/$REPO/releases"
+curl -fsSL -o "$tmp/$asset.sha256" "$base/$asset.sha256" 2>/dev/null || true
 
-# --- verify -----------------------------------------------------------------
+# --- verify -------------------------------------------------------------------
 
-if [ -f "$tmp/$asset.sha256" ]; then
+if [ -s "$tmp/$asset.sha256" ]; then
   ( cd "$tmp" && shasum -a 256 -c "$asset.sha256" >/dev/null ) \
     || die "checksum mismatch on $asset — refusing to install" \
        "re-run; if it persists, the release asset is corrupt"
@@ -90,7 +97,7 @@ bin="$tmp/mesimon-$VERSION-aarch64-apple-darwin/mesimon"
 "$bin" --version >/dev/null || die "the downloaded binary would not run" \
   "report this with the output of: $bin --version"
 
-# --- install ----------------------------------------------------------------
+# --- install ------------------------------------------------------------------
 
 mkdir -p "$PREFIX"
 # Same path every time, replaced atomically. Load-bearing: hook settings embed

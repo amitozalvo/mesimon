@@ -31,26 +31,27 @@ report.
 - **tmux 3.1+** — every agent runs in a pane on a *private* tmux server, never your own.
 - **git**.
 - **[Claude Code](https://claude.com/claude-code)** on your `PATH`, to spawn Claude sessions.
-- A GitHub account with access to this repo, and `gh` (the repo is private).
 
 ## Install
 
 ```sh
-brew install tmux gh          # if you do not have them
-gh auth login                 # once
-sh install.sh                 # installs to ~/.local/bin/mesimon
-mesimon doctor                # confirm the environment
+brew install tmux                                    # if you do not have it
+curl -fsSL https://raw.githubusercontent.com/amitozalvo/mesimon-releases/main/install.sh | sh
+mesimon doctor                                       # confirm the environment
 ```
 
-`install.sh` verifies the checksum, runs the binary once before installing it, and tells you
-exactly what to fix if anything is missing.
+Binaries are published from
+[amitozalvo/mesimon-releases](https://github.com/amitozalvo/mesimon-releases), a public repo that
+carries releases and nothing else — so installing needs no GitHub account, no login, and no access
+to this repo. `install.sh` verifies the checksum, runs the binary once before installing it, and
+tells you exactly what to fix if anything is missing.
 
-Prefer building it yourself? `cargo install --git https://github.com/amitozalvo/mesimon --locked
-mesimon` (Rust 1.85+).
+Working on mesimon itself? `cargo install --git https://github.com/amitozalvo/mesimon --locked
+mesimon` (Rust 1.85+, and `CARGO_NET_GIT_FETCH_WITH_CLI=true` for the private fetch).
 
 ## Updating
 
-**Re-run `install.sh`.** That is the whole procedure.
+**Re-run the install line.** That is the whole procedure.
 
 - If a board is open, it notices the new binary and offers `update ready (U reloads)`. `U`
   restarts it in place.
