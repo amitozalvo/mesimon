@@ -248,6 +248,16 @@ pub enum Command {
         context: u32,
     },
 
+    /// The ticket page's preview zone (M4b's read-only spirit, shells): the
+    /// last non-empty lines a pane has on screen. Sessions are the daemon's
+    /// to read — the backend is its alone — and `mcp::agent_allows` denies
+    /// this outright, which is D10's "no session read at any tier".
+    PaneTail {
+        session: uuid::Uuid,
+        /// How many non-empty lines to take from the bottom; clamped daemon-side.
+        lines: u16,
+    },
+
     // ------------------------------------------------------------------
     // The agent tier (T-84). Three commands, reachable only by
     // `Principal::Agent`, and gated by `mcp::agent_allows` — which is an
@@ -376,6 +386,12 @@ pub enum Response {
     },
     DiffFile {
         file: crate::diff::FileDiff,
+    },
+    /// PaneTail's answer: oldest line first, ready to draw in that order.
+    /// Bounded daemon-side; the client still sanitizes, because a pane holds
+    /// whatever a command decided to print.
+    PaneTail {
+        lines: Vec<String>,
     },
     /// AgentGetTicket's answer.
     AgentTicket {

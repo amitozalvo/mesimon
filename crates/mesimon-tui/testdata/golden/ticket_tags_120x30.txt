@@ -8,7 +8,7 @@
     ticket directories land with the adoption IA (M4)                                     ◦ $ bash                 >1y
 
 
-  TRANSCRIPT
+  PREVIEW
 
     ● working
 

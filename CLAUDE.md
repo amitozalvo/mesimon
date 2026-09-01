@@ -280,7 +280,7 @@ never an equal split (an equal split cut "BUG" to make room for a "STAGING" that
 anyway), nothing shrinks below three cells, and the tail drops rather than every name going
 illegible.
 
-**The ticket page's transcript zone reads markdown (`tui/src/rich.rs`).** An agent reply is
+**The ticket page's PREVIEW zone reads markdown (`tui/src/rich.rs`).** An agent reply is
 markdown, so the zone draws it instead of showing its source — but 06 §5.1 bans SGR 2/3/5/9 and
 reserves SGR 4, so the whole vocabulary is value, weight, paint and space: body `dim1`, emphasis
 one step up to `base`, strong adds bold, struck text falls to `dim3`, a quote takes the `›`
@@ -293,6 +293,28 @@ is unaffected because `peek::wrap` splits on whitespace, and single-row consumer
 `text::one_line`. `test_no_banned_sgr` / `test_no_drawn_structure` now attach a markdown
 transcript to the ticket screen and assert it is on screen before sweeping. (STALE-MAP "The
 transcript zone reads markdown".)
+
+**The same zone previews a SHELL's pane, and it is the one thing the TUI polls.** A shell keeps no
+transcript — tmux is its only record — so a live-shell selection on the ticket page draws the
+pane's last lines there instead (`Command::PaneTail` → `TmuxBackend::capture_tail`, oldest first,
+bounded 200 lines x 1000 cols). A tty echoes what is typed into it, so the capture carries the
+command AND its output with no parsing. **One heading, PREVIEW, covers both** (author
+2026-09-01): neither side is the record, both are the last of it, and the rail row beside the zone
+already says which session the cursor is on — the zone was briefly TRANSCRIPT/TERMINAL and the
+split name earned nothing. It rides the writer thread (the diff service's off-thread
+treatment exists for git, not for one small fork); `App::poll_shell_tail` asks on a 1 s clock and
+ONLY while a ticket page has a live shell selected, keyed to that session so the cursor never
+shows another pane; a refusal still stamps the attempt. Pane bytes go through `peek::sanitize`
+before a cell, and both L1 law tests render a dirty tail to prove it. `mcp::agent_allows` denies
+`PaneTail`, and `authorize` gets a real `Resource::Session` on that path. E2e:
+`crates/mesimon/tests/pane_tail_e2e.rs`. (STALE-MAP "The ticket page reads a shell's pane".)
+
+**A shell never wears the working spinner.** The daemon pins a `Bash` session at `Running` for the
+whole life of its pane (D15 — pane death is the only shell event), so `Running` there is liveness,
+not activity: `glyphs::is_working` is the single test, a live shell wears the unmoving idle mark,
+its age stops ticking seconds, and a card whose only live session is a shell carries no aggregate
+glyph. The spinner is the one place D19's motion ban bends and it may only bend for something
+moving. (STALE-MAP "A shell does not spin".)
 
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
 NO key — they live in the Esc menu (`ui/menu.rs`, rows from `keymap::menu_items`), because

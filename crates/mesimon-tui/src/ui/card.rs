@@ -154,10 +154,12 @@ pub(super) fn render(
 
     // Age: newest state change across the ticket's sessions; suppressed on a
     // session-less card (07 §4.4 — created_at staleness handling is deferred).
-    // Seconds tick only while that session is Running.
+    // Seconds tick only while that session is working — a shell's `Running`
+    // is not work (`glyphs::is_working`), so its age counts in minutes like
+    // any other settled row.
     let age = sessions
         .iter()
-        .filter_map(|s| s.state_changed_at.map(|ms| (ms, s.state == SessionState::Running)))
+        .filter_map(|s| s.state_changed_at.map(|ms| (ms, glyphs::is_working(s))))
         .max_by_key(|(ms, _)| *ms)
         .map(|(ms, running)| age_slot(ctx.now_ms, ms, running));
 
@@ -373,10 +375,10 @@ pub(super) fn render(
             } else {
                 truncate(word, budget)
             };
-            let (g, reg) = glyphs::session_glyph(&s.state, tier, ctx.spin);
+            let (g, reg) = glyphs::session_glyph(s, tier, ctx.spin);
             let a = s
                 .state_changed_at
-                .map(|ms| age_slot(ctx.now_ms, ms, s.state == SessionState::Running))
+                .map(|ms| age_slot(ctx.now_ms, ms, glyphs::is_working(s)))
                 .unwrap_or_default();
             // Right-align glyph + age into the same columns the resting
             // card uses (dots under the age slot) — selection must not make

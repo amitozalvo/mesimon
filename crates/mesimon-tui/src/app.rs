@@ -37,6 +37,22 @@ pub enum Screen {
     },
 }
 
+/// One shell pane's last lines, as last fetched (`Command::PaneTail`).
+pub struct ShellTail {
+    pub session: uuid::Uuid,
+    /// Oldest line first — draw order.
+    pub lines: Vec<String>,
+    /// Last ATTEMPT, not last success: a daemon that cannot answer must be
+    /// asked on the same slow beat as one that can.
+    fetched: Instant,
+}
+
+impl ShellTail {
+    pub(crate) fn new(session: uuid::Uuid, lines: Vec<String>) -> Self {
+        Self { session, lines, fetched: Instant::now() }
+    }
+}
+
 /// Everything the diff screen holds (M4b). Per-view and in-memory only —
 /// no persistent caches; R and the density cycle recompute.
 pub struct DiffState {
@@ -181,6 +197,14 @@ pub enum Naming {
 /// the rendered height, so this approximates a screenful; draw clamps.
 const DIFF_PAGE: usize = 20;
 
+/// How often the ticket page re-captures the selected shell's pane. Slow on
+/// purpose: it is a fork per beat, and a terminal a person is reading rather
+/// than driving does not need to be a live mirror.
+const SHELL_TAIL_EVERY: Duration = Duration::from_millis(1000);
+/// How many lines to ask for — more than the zone can hold at any sane
+/// height, so the draw does the trimming and a resize needs no refetch.
+const SHELL_TAIL_LINES: u16 = 60;
+
 pub struct App {
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
@@ -225,6 +249,11 @@ pub struct App {
     /// reply, read from the transcript at draw time (peek.rs).
     pub peek: bool,
     pub peek_cache: crate::peek::PeekCache,
+    /// The ticket page's preview zone: the selected shell's pane tail, and
+    /// when it was fetched. Per-view and in memory only — a shell has no
+    /// transcript file to read the way `peek_cache` reads an agent's, so
+    /// this comes over the wire, and only while a shell is being looked at.
+    pub shell_tail: Option<ShellTail>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
@@ -326,6 +355,7 @@ impl App {
             scroll_row: Cell::new(0),
             peek: false,
             peek_cache: crate::peek::PeekCache::default(),
+            shell_tail: None,
             spin_epoch: Cell::new(None),
             diff: None,
             pending_attach: None,
@@ -580,6 +610,9 @@ impl App {
             self.refresh()?;
             dirty = true;
         }
+        // The ticket page's preview zone, on its own slow cadence — it is
+        // the one thing on screen the daemon does not push.
+        dirty |= self.poll_shell_tail();
         if !event::poll(Duration::from_millis(100))? {
             return Ok(dirty);
         }
@@ -598,6 +631,57 @@ impl App {
         self.merge_note.clear();
         self.handle_key(key.code, key.modifiers)?;
         Ok(true)
+    }
+
+    /// The ticket page's preview zone (shells only): re-ask the daemon for
+    /// the pane's last lines. A shell has no transcript to read off disk —
+    /// tmux is the only record it keeps — so this is the one view that pulls
+    /// on a clock instead of on a push.
+    ///
+    /// It is deliberately narrow: one fork a second, and only while a ticket
+    /// page has a live shell selected. The board never asks, a parked shell
+    /// never asks, and moving off the row drops the state.
+    fn poll_shell_tail(&mut self) -> bool {
+        let Some(session) = self.selected_shell() else {
+            return self.shell_tail.take().is_some();
+        };
+        if self
+            .shell_tail
+            .as_ref()
+            .is_some_and(|t| t.session == session && t.fetched.elapsed() < SHELL_TAIL_EVERY)
+        {
+            return false;
+        }
+        let lines = match self.req(Command::PaneTail { session, lines: SHELL_TAIL_LINES }) {
+            Response::PaneTail { lines } => lines,
+            // A pane that just died, or a daemon mid-reconnect: keep the last
+            // good capture rather than blinking the zone empty — the rail row
+            // beside it is what says the session is gone — but still stamp
+            // the attempt, or a refusal becomes a fork every 100 ms.
+            _ => match self.shell_tail.as_mut() {
+                Some(t) if t.session == session => {
+                    t.fetched = Instant::now();
+                    return false;
+                }
+                _ => Vec::new(),
+            },
+        };
+        let same =
+            self.shell_tail.as_ref().is_some_and(|t| t.session == session && t.lines == lines);
+        self.shell_tail = Some(ShellTail::new(session, lines));
+        !same
+    }
+
+    /// The ticket page's selected rail session, when it is a shell with a
+    /// live pane — the only session kind whose story is on a pane and not in
+    /// a transcript.
+    fn selected_shell(&self) -> Option<uuid::Uuid> {
+        let Screen::Ticket { ticket, rail_idx } = &self.screen else {
+            return None;
+        };
+        let rail = self.rail_sessions(*ticket);
+        let s = rail.get((*rail_idx).min(rail.len().saturating_sub(1)))?;
+        (s.kind == SessionKind::Bash && s.state.has_pane()).then_some(s.id)
     }
 
     /// The OS flipped appearance (or the user flipped the terminal's theme)

@@ -200,6 +200,15 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // for the line to qualify — Claude only).
         let working =
             sel.is_some_and(|s| s.kind == SessionKind::Claude && s.state == SessionState::Running);
+        // A shell keeps no transcript — tmux is its only record — so the zone
+        // shows the pane itself, under its own heading. Only ever what the
+        // poll already fetched for THIS session: a stale capture under a
+        // freshly selected row would be another session's screen.
+        let shell = app
+            .shell_tail
+            .as_ref()
+            .filter(|t| sel.is_some_and(|s| s.id == t.session))
+            .map(|t| t.lines.as_slice());
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
         draw_documents(
             f,
@@ -207,6 +216,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             app,
             peek.as_ref(),
             working,
+            shell,
         );
         draw_rail(
             f,
@@ -249,6 +259,7 @@ fn draw_documents(
     app: &App,
     peek: Option<&crate::peek::Peek>,
     working: bool,
+    shell: Option<&[String]>,
 ) {
     let theme = &app.theme;
     let mut head = vec![Span::styled(" DOCUMENTS", theme.dim1().add_modifier(Modifier::BOLD))];
@@ -272,13 +283,35 @@ fn draw_documents(
     // is mid-turn: then the section closes with the rail's own spinner and
     // state word, so a stale reply (or no reply yet) reads as in-progress.
     let reply = peek.and_then(|p| p.text.as_deref());
-    if reply.is_some() || working {
+    // A shell keeps no transcript, so the zone shows its pane instead. One
+    // heading covers both, and PREVIEW is the honest word for either: neither
+    // side is the record, both are the last of it, and the rail row beside it
+    // already says which session the cursor is on (author 2026-09-01).
+    if let Some(tail) = shell {
         lines.push(Line::default());
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled(
-            " TRANSCRIPT",
-            theme.dim1().add_modifier(Modifier::BOLD),
-        )));
+        lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
+        lines.push(Line::default());
+        if tail.is_empty() {
+            lines.push(Line::from(Span::styled("   nothing on screen yet", theme.dim3())));
+        }
+        let budget = (area.height as usize).saturating_sub(lines.len());
+        let width = (area.width as usize).saturating_sub(4);
+        // Newest at the bottom, exactly as the pane holds it: the latest
+        // command and what it printed are what the rows are for, so a tail
+        // too long for the zone loses its top, never its end.
+        for row in tail.iter().skip(tail.len().saturating_sub(budget)) {
+            // Output is column-aligned — wrapping would mangle the alignment
+            // it was printed with, so an over-wide line is cut instead. It
+            // goes through the peek's sweep first: a pane holds whatever a
+            // command decided to print, box-drawing and all.
+            let row = crate::text::truncate(&crate::peek::sanitize(row), width);
+            lines.push(Line::from(vec![Span::raw("   "), Span::styled(row, theme.dim1())]));
+        }
+    } else if reply.is_some() || working {
+        lines.push(Line::default());
+        lines.push(Line::default());
+        lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
         lines.push(Line::default());
         if let Some(text) = reply {
             // Reserve the indicator's rows so a long reply never pushes it off.
@@ -358,7 +391,7 @@ fn draw_rail(
 
     for (i, s) in rail.iter().enumerate() {
         let selected = i == rail_idx;
-        let (g, reg) = glyphs::session_glyph(&s.state, tier, app.spin_frame());
+        let (g, reg) = glyphs::session_glyph(s, tier, app.spin_frame());
         let glyph_style = match reg {
             glyphs::Register::Attn => theme.attn_text(),
             glyphs::Register::Err => theme.err_text(),
@@ -394,7 +427,7 @@ fn draw_rail(
         let mark = glyphs::kind_mark(s.kind, tier);
         let age = s
             .state_changed_at
-            .map(|ms| age_slot(now, ms, s.state == SessionState::Running))
+            .map(|ms| age_slot(now, ms, glyphs::is_working(s)))
             .unwrap_or_default();
         // A dead row (the rail's one resumable corpse) wears the dim register
         // so the living read first; selection still lifts it to legibility.

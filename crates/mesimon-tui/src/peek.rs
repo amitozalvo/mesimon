@@ -204,7 +204,7 @@ impl PeekCache {
 /// unaffected: `wrap` splits on whitespace, so a newline was only ever a word
 /// break there. Anything that must stay on ONE row flattens at its own
 /// boundary (`text::one_line`), which is where that call belongs.
-fn sanitize(s: &str) -> String {
+pub(crate) fn sanitize(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
         let cp = c as u32;

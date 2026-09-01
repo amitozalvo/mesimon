@@ -8,7 +8,7 @@
     ticket directories land with    shift+tab previous needs you                          ◦ $ bash                 >1y
 
                                   TICKETS
-  TRANSCRIPT                        r         rename
+  PREVIEW                           r         rename
                                     ^t        tags
     ● working                       a         archive
                                     d         delete

@@ -68,12 +68,9 @@ fn fixture(waiting: bool) -> Board {
 
     let t3 = ulid_n(3);
     b.sessions.push(session(31, t3, SessionKind::Claude, SessionState::Running));
-    b.sessions.push(session(
-        32,
-        t3,
-        SessionKind::Bash,
-        SessionState::Idle { stop_reason: StopReason::Interrupted },
-    ));
+    // A shell as the daemon actually records one: `Running` for the whole
+    // life of its pane, because pane death is the only shell event there is.
+    b.sessions.push(session(32, t3, SessionKind::Bash, SessionState::Running));
     if waiting {
         let mut s = session(
             41,
@@ -581,7 +578,7 @@ const RICH_REPLY: &str = "## What changed\n\nThe OSC-11 query now runs **once**,
 #[test]
 fn golden_ticket_peek_120() {
     // The left zone previews the selected rail session's latest assistant
-    // reply under a TRANSCRIPT heading — always on, no toggle (the zone is
+    // reply under the PREVIEW heading — always on, no toggle (the zone is
     // otherwise empty until documents land in M4). A running session's
     // indicator names the step underway, not just that one is.
     let path = write_transcript(
@@ -1224,6 +1221,40 @@ fn test_diff_footer_shows_status() {
     assert!(!footer.contains("jk scroll"), "hints should yield to status");
 }
 
+/// A shell keeps no transcript, so the ticket page previews its pane instead:
+/// the latest command and what it printed, under the same PREVIEW heading an
+/// agent's reply gets. One name, because both are the last of a record and
+/// neither is the record — the rail row says which session it belongs to.
+#[test]
+fn test_shell_zone_previews_the_pane() {
+    let mut app = app_graphite(fixture(false));
+    // Rail row 1 of T-3 is the shell; row 0 is the agent.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
+    app.shell_tail = Some(crate::app::ShellTail::new(
+        uuid_n(32),
+        vec!["$ cargo test -p mesimon-tui".into(), "test result: ok. 212 passed; 0 failed".into()],
+    ));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("PREVIEW")), "the zone keeps its heading");
+    assert!(
+        lines.iter().any(|l| l.contains("$ cargo test -p mesimon-tui")),
+        "the command must be on screen"
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("test result: ok. 212 passed")),
+        "and so must what it printed"
+    );
+
+    // A capture belongs to the session it was taken from: select the agent
+    // and no shell output is left standing under the heading.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        !lines.iter().any(|l| l.contains("cargo test -p mesimon-tui")),
+        "another session's pane must not follow the cursor"
+    );
+}
+
 /// A daemon refusal set into `app.status` must reach the ticket footer —
 /// it outranks the key hints there just as it does on the board.
 #[test]
@@ -1410,6 +1441,18 @@ fn test_attn_provenance_waiting() {
     assert!(seen_attn, "the waiting board must show attn somewhere");
 }
 
+/// What a shell pane actually holds: a command that drew a tree, a progress
+/// bar, an SGR escape that survived `capture-pane`, and an invisible width
+/// hazard. The preview zone renders pane bytes, so the two laws below have
+/// to see them or they do not cover the zone at all.
+fn dirty_tail() -> Vec<String> {
+    vec![
+        "$ tree -L 1 crates".to_string(),
+        "\u{251c}\u{2500}\u{2500} mesimon-core  \u{2588}\u{2588}\u{2594} 60%".to_string(),
+        "\u{1b}[1m\u{1b}[3mdone\u{1b}[0m in 2.4s\u{200b}\u{fe0f}".to_string(),
+    ]
+}
+
 /// 06 §5.1: banned SGR never reaches a cell; REVERSED only in Mono/Ansi8.
 #[test]
 fn test_no_banned_sgr() {
@@ -1434,6 +1477,16 @@ fn test_no_banned_sgr() {
                 assert!(
                     render(&app, 120, 30).iter().any(|l| l.contains("What changed")),
                     "the rich transcript must be ON SCREEN, or this law does not bite"
+                );
+                cells(&app, 120, 30)
+            },
+            {
+                // The shell's preview zone: raw pane bytes on the same page.
+                app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
+                app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), dirty_tail()));
+                assert!(
+                    render(&app, 120, 30).iter().any(|l| l.contains("in 2.4s")),
+                    "the whole shell tail must be ON SCREEN, or this law does not bite"
                 );
                 cells(&app, 120, 30)
             },
@@ -1477,6 +1530,18 @@ fn test_no_drawn_structure() {
             assert!(
                 lines.iter().any(|l| l.contains("What changed")),
                 "the rich transcript must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
+        {
+            // A `tree` in a shell pane is a boxful of the banned range, and
+            // the preview zone draws pane bytes: it has to be swept too.
+            app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
+            app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), dirty_tail()));
+            let lines = render(&app, 120, 30);
+            assert!(
+                lines.iter().any(|l| l.contains("in 2.4s")),
+                "the whole shell tail must be ON SCREEN, or this law does not bite"
             );
             lines
         },

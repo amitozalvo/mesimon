@@ -465,6 +465,14 @@ fn now_ms() -> u64 {
 /// How many git-backed diff requests run at once, across all connections.
 const DIFF_PERMITS: usize = 2;
 
+/// Ceiling on a `PaneTail` answer. A pane is at most its own height, so this
+/// is a bound on a malformed request, not a display choice — the client asks
+/// for what its zone can hold.
+const MAX_PANE_TAIL_LINES: u16 = 200;
+/// And on how much of each line rides the wire: a pane can hold a single line
+/// thousands of columns wide (`capture-pane -J` joins wrapped ones).
+const MAX_PANE_TAIL_COLS: usize = 1000;
+
 /// Everything the off-writer diff service needs, shared across connections.
 struct DiffCtx {
     paths: Paths,
@@ -630,10 +638,19 @@ impl Daemon {
             // Mutates only the daemon's discovery cache, never board state.
             | Command::RescanExternal
             | Command::DiffList { .. }
-            | Command::DiffFile { .. } => Action::Read,
+            | Command::DiffFile { .. }
+            | Command::PaneTail { .. } => Action::Read,
             _ => Action::Mutate,
         };
-        if let Decision::Deny { reason } = authorize(&env.principal, &action, &Resource::Board) {
+        // Reading a pane IS reading the session, and the chokepoint should
+        // say so: `authorize` denies an agent `Resource::Session` outright,
+        // and naming the resource here is what makes that rule reachable
+        // rather than merely true.
+        let resource = match &env.command {
+            Command::PaneTail { session, .. } => Resource::Session { id: *session },
+            _ => Resource::Board,
+        };
+        if let Decision::Deny { reason } = authorize(&env.principal, &action, &resource) {
             return Response::Err { message: format!("denied: {reason}") };
         }
 
@@ -768,6 +785,7 @@ impl Daemon {
             Command::DiffList { .. } | Command::DiffFile { .. } => Response::Err {
                 message: "diff commands are served on the connection thread".into(),
             },
+            Command::PaneTail { session, lines } => self.pane_tail(session, lines),
             Command::AttachExternal { claude_session_id, ticket } => {
                 match self.attach_external(claude_session_id, ticket) {
                     Ok(id) => {
@@ -995,6 +1013,36 @@ impl Daemon {
             }
         }
         changed
+    }
+
+    /// The ticket page's preview zone: what a shell pane has on screen,
+    /// oldest line first. Read-only — no state moves, nothing is broadcast,
+    /// and the record is only consulted for the pane's name.
+    ///
+    /// This rides the writer thread, unlike the diff service. That exception
+    /// exists for git, which can spend seconds in a packfile; `capture-pane`
+    /// is one small fork the tick already makes twice a second, and paying a
+    /// second `DiffCtx` to move it off would buy nothing.
+    fn pane_tail(&self, session: uuid::Uuid, lines: u16) -> Response {
+        let Some(rec) = self.board.sessions.iter().find(|r| r.id == session) else {
+            return Response::Err { message: "no such session".into() };
+        };
+        if !rec.state.has_pane() {
+            return Response::Err { message: "session has no pane".into() };
+        }
+        let n = lines.clamp(1, MAX_PANE_TAIL_LINES) as usize;
+        match self.backend.capture_tail(&rec.sid16(), n) {
+            // A pane holds whatever a command decided to print, so bound what
+            // rides the wire here; what is *drawable* stays the client's own
+            // question, the same way transcript text is.
+            Ok(v) => Response::PaneTail {
+                lines: v
+                    .into_iter()
+                    .map(|l| l.chars().take(MAX_PANE_TAIL_COLS).collect())
+                    .collect(),
+            },
+            Err(e) => Response::Err { message: e.to_string() },
+        }
     }
 
     /// Session names for the board: latch each live pane's OSC-0 title onto

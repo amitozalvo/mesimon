@@ -1,0 +1,172 @@
+//! The ticket page's preview zone, end to end: a shell keeps no transcript,
+//! so `Command::PaneTail` is the only way the board can show what it has been
+//! doing. Real tmux, in-process daemon, a real shell in a real pane — the
+//! test types a command into it and asks the daemon what the pane says.
+
+// Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
+// #[test], not the helpers beside them, so the D26 exemption is stated here.
+#![allow(clippy::unwrap_used, clippy::expect_used)]
+
+mod common;
+
+use std::io::{BufRead, BufReader, Write};
+use std::os::unix::net::UnixStream;
+use std::process::Command as Proc;
+use std::time::{Duration, Instant};
+
+use mesimon_core::board::{Board, SessionKind};
+use mesimon_core::command::{Command, Envelope, Response};
+use mesimon_core::Principal;
+
+struct TestClient {
+    write: UnixStream,
+    read: BufReader<UnixStream>,
+}
+
+impl TestClient {
+    fn connect(sock: &std::path::Path) -> Self {
+        let stream = UnixStream::connect(sock).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let read = BufReader::new(stream.try_clone().unwrap());
+        Self { write: stream, read }
+    }
+
+    fn request(&mut self, command: Command) -> Response {
+        let env = Envelope { principal: Principal::Local, command };
+        let line = serde_json::to_string(&env).unwrap();
+        writeln!(self.write, "{line}").unwrap();
+        loop {
+            let mut buf = String::new();
+            self.read.read_line(&mut buf).expect("read");
+            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
+                return resp;
+            }
+        }
+    }
+}
+
+fn board_of(resp: Response) -> Board {
+    match resp {
+        Response::Board { board, .. } => board,
+        other => panic!("expected board, got {other:?}"),
+    }
+}
+
+#[test]
+fn the_terminal_zone_reads_the_shell_pane() {
+    if !common::require_tmux() {
+        return;
+    }
+    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-tail-{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&dir);
+    let repo = dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+
+    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let sock = paths.orch_sock();
+    let state_dir = paths.state_dir.clone();
+    let rt_dir = paths.rt_dir.clone();
+    let tmux_sock = paths.tmux_sock();
+
+    // The pane runs `$SHELL` (D29: allowlisted, never inherited wholesale).
+    // Pin it so the prompt and the echo are the same on every machine.
+    std::env::set_var("SHELL", "/bin/sh");
+    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+
+    let daemon_repo = repo.clone();
+    let daemon = std::thread::spawn(move || {
+        let _ = mesimon_daemon::run_foreground(&daemon_repo);
+    });
+    let deadline = Instant::now() + Duration::from_secs(5);
+    while !sock.exists() {
+        assert!(Instant::now() < deadline, "daemon socket never appeared");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    let mut c = TestClient::connect(&sock);
+    assert!(matches!(
+        c.request(Command::Hello { version: 1, client: "tail".into() }),
+        Response::Hello { .. }
+    ));
+    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "tail".into() });
+    let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
+
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Bash,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let sid16 = sid.simple().to_string()[..16].to_string();
+
+    // Type a command into the pane the way a person would. The tty echoes it,
+    // so the capture holds the command AND what it printed — which is exactly
+    // what the zone is for.
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        let sent = Proc::new("tmux")
+            .arg("-S")
+            .arg(&tmux_sock)
+            .args(["send-keys", "-t", &sid16, "echo mesimon-probe-42", "Enter"])
+            .output();
+        if sent.map(|o| o.status.success()).unwrap_or(false) {
+            break;
+        }
+        assert!(Instant::now() < deadline, "pane never accepted keys");
+        std::thread::sleep(Duration::from_millis(200));
+    }
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let lines = loop {
+        let lines = match c.request(Command::PaneTail { session: sid, lines: 20 }) {
+            Response::PaneTail { lines } => lines,
+            other => panic!("pane tail failed: {other:?}"),
+        };
+        // The result line: the echo's output, alone on its row. Waiting for
+        // that (not for the command) is what makes the assertion below about
+        // a command that RAN, not one that was merely typed.
+        if lines.iter().any(|l| l.trim() == "mesimon-probe-42") {
+            break lines;
+        }
+        assert!(Instant::now() < deadline, "the shell never echoed: {lines:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(
+        lines.iter().any(|l| l.contains("echo mesimon-probe-42")),
+        "the command itself must be in the tail: {lines:?}"
+    );
+    // Oldest first: the command is typed before its output is printed, and
+    // the zone draws the vector in order.
+    let cmd = lines.iter().position(|l| l.contains("echo mesimon-probe-42")).unwrap();
+    let out = lines.iter().position(|l| l.trim() == "mesimon-probe-42").unwrap();
+    assert!(cmd < out, "the tail must read top-down, oldest first: {lines:?}");
+
+    // A session with no pane has nothing to show, and says so rather than
+    // answering with an empty screen.
+    let _ = c.request(Command::KillSession { id: sid });
+    let deadline = Instant::now() + Duration::from_secs(10);
+    loop {
+        match c.request(Command::PaneTail { session: sid, lines: 20 }) {
+            Response::Err { message } => {
+                assert!(message.contains("no pane"), "wrong refusal: {message}");
+                break;
+            }
+            other => {
+                assert!(Instant::now() < deadline, "a dead session kept answering: {other:?}");
+                std::thread::sleep(Duration::from_millis(200));
+            }
+        }
+    }
+    assert!(matches!(
+        c.request(Command::PaneTail { session: uuid::Uuid::nil(), lines: 20 }),
+        Response::Err { .. }
+    ));
+
+    assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+    daemon.join().unwrap();
+    let _ = Proc::new("tmux").arg("-S").arg(&tmux_sock).arg("kill-server").output();
+    let _ = std::fs::remove_dir_all(&dir);
+    let _ = std::fs::remove_dir_all(&state_dir);
+    let _ = std::fs::remove_dir_all(&rt_dir);
+}

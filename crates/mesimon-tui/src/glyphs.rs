@@ -4,7 +4,7 @@
 //! banner (M6), not a per-card flag (D14/D19).
 
 use mesimon_core::board::{
-    Confidence, ExitReason, Reason, SessionRecord, SessionState, StopReason,
+    Confidence, ExitReason, Reason, SessionKind, SessionRecord, SessionState, StopReason,
 };
 
 /// Working-spinner frames. Braille dots on the unicode tier (one cell, Neutral
@@ -131,6 +131,17 @@ pub(crate) enum Tier {
     Ascii,
 }
 
+/// Does this session's `Running` mean work is in flight? Only an agent's
+/// does. A shell has no hook stream, so the daemon pins it at `Running` for
+/// the whole life of its pane (D15: "a live pane is all running means") —
+/// that is liveness, not activity, and the working spinner on it told the
+/// board a shell sitting at its prompt was busy (dogfood 2026-09-01). The
+/// spinner is the one place D19's motion ban bends; it may only bend for
+/// something actually moving.
+pub(crate) fn is_working(rec: &SessionRecord) -> bool {
+    rec.kind == SessionKind::Claude && rec.state == SessionState::Running
+}
+
 /// The card's aggregate state glyph, or None when nothing is abnormal —
 /// a normal card starts its title at T[0] (07 §4.1).
 ///
@@ -177,7 +188,7 @@ pub(crate) fn card_glyph(
     {
         return Some((if tier == Tier::Ascii { '+' } else { '✓' }, Register::Calm));
     }
-    if sessions.iter().any(|s| matches!(s.state, SessionState::Running)) {
+    if sessions.iter().any(|s| is_working(s)) {
         return Some((spinner(tier, spin), Register::Grey));
     }
     if sessions.iter().all(|s| matches!(s.state, SessionState::Sleeping)) {
@@ -192,9 +203,15 @@ pub(crate) fn card_glyph(
 /// Per-session liveness glyph (06 §3.2) — the meta-strip dots, the accordion
 /// rows, and the ticket-screen rail. Never blended with the card glyph (D28).
 /// `spin` animates the working and waiting glyphs, exactly as on the card.
-pub(crate) fn session_glyph(state: &SessionState, tier: Tier, spin: usize) -> (char, Register) {
+pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (char, Register) {
     let ascii = tier == Tier::Ascii;
-    match state {
+    // A live shell is quiet, not working (`is_working`): it wears the idle
+    // mark for as long as its pane lives, because pane death is the only
+    // shell event there is.
+    if rec.state == SessionState::Running && !is_working(rec) {
+        return (if ascii { '.' } else { '◦' }, Register::Grey);
+    }
+    match &rec.state {
         SessionState::Spawning => (if ascii { '.' } else { '◦' }, Register::Grey),
         SessionState::Running => (spinner(tier, spin), Register::Grey),
         SessionState::RequiresAction { reason: Reason::Plan } => (plan_mark(tier), Register::Attn),
@@ -272,6 +289,39 @@ mod tests {
         assert_eq!(card_glyph(&[], Tier::Unicode, 0), None);
     }
 
+    /// A shell is `Running` from spawn to pane death (D15) — that is the
+    /// pane being alive, never a command being in flight — so it must not
+    /// wear the working spinner. Dogfood 2026-09-01: a shell idling at its
+    /// prompt read as loading, forever.
+    #[test]
+    fn a_shell_never_spins() {
+        let mut sh = rec(SessionState::Running);
+        sh.kind = SessionKind::Bash;
+        let agent = rec(SessionState::Running);
+        assert!(!is_working(&sh));
+        assert!(is_working(&agent));
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            let idle = session_glyph(
+                &rec(SessionState::Idle { stop_reason: StopReason::Unknown }),
+                tier,
+                0,
+            );
+            for f in 0..24 {
+                let (g, reg) = session_glyph(&sh, tier, f);
+                assert_ne!(g, spinner(tier, f), "the shell picked up the spinner");
+                assert_eq!((g, reg), idle, "a live shell wears the idle mark, unmoving");
+            }
+            // And it carries no aggregate glyph of its own: nothing about an
+            // open shell is abnormal, so the title starts at T[0].
+            assert_eq!(card_glyph(&[&sh], tier, 0), None);
+            // An agent on the same card still spins.
+            assert_eq!(
+                card_glyph(&[&sh, &agent], tier, 0),
+                Some((spinner(tier, 0), Register::Grey))
+            );
+        }
+    }
+
     #[test]
     fn spinner_frames_wrap_and_stay_one_cell() {
         use unicode_width::UnicodeWidthChar;
@@ -292,7 +342,7 @@ mod tests {
         use unicode_width::UnicodeWidthChar;
         let unk = rec(SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
         for tier in [Tier::Unicode, Tier::Ascii] {
-            let (g, reg) = session_glyph(&unk.state, tier, 0);
+            let (g, reg) = session_glyph(&unk, tier, 0);
             assert_ne!(g, '?', "the question mark is retired");
             assert_eq!(reg, Register::Grey, "waiting never leaves the grey ramp");
             assert_eq!(card_glyph(&[&unk], tier, 0), Some((g, Register::Grey)));
@@ -348,8 +398,8 @@ mod tests {
         assert_eq!(card_glyph(&[&plan], Tier::Ascii, 0), Some(('=', Register::Attn)));
         // A co-pending non-plan reason keeps the generic bang on the card.
         assert_eq!(card_glyph(&[&plan, &perm], Tier::Unicode, 0), Some(('!', Register::Attn)));
-        assert_eq!(session_glyph(&plan.state, Tier::Unicode, 0), ('≡', Register::Attn));
-        assert_eq!(session_glyph(&perm.state, Tier::Unicode, 0).0, '!');
+        assert_eq!(session_glyph(&plan, Tier::Unicode, 0), ('≡', Register::Attn));
+        assert_eq!(session_glyph(&perm, Tier::Unicode, 0).0, '!');
         assert_eq!('≡'.width(), Some(1));
     }
 
@@ -390,8 +440,9 @@ mod tests {
     fn ascii_tier_substitutes() {
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
         assert_eq!(card_glyph(&[&done], Tier::Ascii, 0), Some(('+', Register::Calm)));
-        assert_eq!(session_glyph(&SessionState::Running, Tier::Ascii, 0).0, '|');
-        assert_eq!(session_glyph(&SessionState::Running, Tier::Unicode, 0).0, '⠋');
+        let run = rec(SessionState::Running);
+        assert_eq!(session_glyph(&run, Tier::Ascii, 0).0, '|');
+        assert_eq!(session_glyph(&run, Tier::Unicode, 0).0, '⠋');
     }
 
     /// The suggestion mark is its own thing at both tiers, and one cell wide

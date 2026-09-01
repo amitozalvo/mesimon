@@ -274,7 +274,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::GatePassed
         | Command::Shutdown
         | Command::DiffList { .. }
-        | Command::DiffFile { .. } => false,
+        | Command::DiffFile { .. }
+        // A pane's contents are the session itself. `authorize` already
+        // denies an agent `Resource::Session` at every action, and this is
+        // the same rule stated where a new command has to walk past it.
+        | Command::PaneTail { .. } => false,
     }
 }
 
@@ -451,6 +455,7 @@ mod tests {
             Command::Shutdown,
             Command::DiffList { ticket: t },
             Command::DiffFile { ticket: t, path: "a".into(), context: 3 },
+            Command::PaneTail { session: s, lines: 20 },
         ];
         for c in &denied {
             assert!(!agent_allows(c), "{c:?} must stay out of the tier");

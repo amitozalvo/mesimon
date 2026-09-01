@@ -1,4 +1,4 @@
-//! Rich text for the ticket page's TRANSCRIPT zone (author 2026-08-31).
+//! Rich text for the ticket page's PREVIEW zone (author 2026-08-31).
 //!
 //! An agent's reply IS markdown — headings, bullets, `code`, **emphasis**,
 //! fenced blocks, the odd table — and the zone used to render the source:

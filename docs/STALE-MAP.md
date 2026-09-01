@@ -1456,3 +1456,78 @@ Guards, each of them load-bearing:
 the terminal never notices for unsolicited DSRs that must be disarmed before every PTY attach, on
 suspend and on every exit path — the failure mode being escape-sequence garbage typed into a live
 agent. Polling has no armed state to leak. `test_dsr_2031_disarmed` defers with it.
+
+## A shell does not spin (2026-09-01, dogfood)
+
+**Symptom:** an open shell on the ticket rail wore the working spinner forever, with nothing
+running in it. Reported as "bash showing loading state even though it's not running any command".
+
+**Cause:** two true things meeting. The daemon pins a `Bash` session at `SessionState::Running`
+from spawn to pane death — D15's "a live pane is all running means", and there is no second shell
+state to move to because tmux's `pane-died` is the only shell event we get. The TUI then painted
+`Running` with `spinner()` regardless of kind. So the spinner was reporting that a pane existed,
+which is not what a spinner says.
+
+**Fix:** `glyphs::is_working(rec)` — only an agent's `Running` is work. A live shell wears the
+idle mark (`◦` / `.`), unmoving, and its age counts in minutes rather than ticking seconds; a
+card whose only live session is a shell carries no aggregate glyph at all, which is the same
+answer 07 §4.1 gives for anything not abnormal. `session_glyph` now takes the whole
+`SessionRecord` rather than a bare `&SessionState` (all three call sites already had one).
+`a_shell_never_spins` pins it across every frame at both tiers. The board fixture's shell was
+`Idle{Interrupted}` — a state the daemon never produces for a shell — and is now `Running`, so
+the goldens actually cover the real record; they did not move, because both render `◦`.
+
+The spinner is the one place D19's motion ban bends. It may only bend for something moving.
+
+**Not done, and deliberately:** tmux can say what a pane is actually running
+(`#{pane_current_command}` — the login shell's name at the prompt, the command's otherwise), which
+would make a shell running `cargo build` spin truthfully. That is an enhancement, not this bug,
+and it is not free: `SessionState::Running` is load-bearing for shells in `sleep_session` and its
+neighbours (`(SessionKind::Bash, SessionState::Running) => {}`, else "no live shell to sleep"), so
+a real busy/idle split has to widen those gates or ride a display-only field (`detail` is unused
+for shells today). Worth doing on its own terms, with those gates in the diff.
+
+## The ticket page previews a shell's pane (2026-09-01)
+
+A shell keeps no transcript. An agent writes JSONL the TUI reads straight off disk (`peek.rs`),
+and the ticket page's preview zone renders it as markdown; a shell writes to a pty and tmux is
+the only record it keeps. So the zone had nothing to show for a shell and drew nothing at all —
+the one session kind where "what did it just do" is a question with an answer sitting one
+`capture-pane` away.
+
+**`Command::PaneTail { session, lines }` → `Response::PaneTail { lines }`.** Oldest line first,
+non-empty lines only (`TmuxBackend::capture_tail`, which the spawn probe already used), bounded
+daemon-side at 200 lines × 1000 columns. Because a tty echoes what is typed into it, the capture
+holds the command AND its output with no parsing at all — the e2e asserts both, in that order,
+from a real `send-keys`.
+
+**The zone is called PREVIEW, for both kinds.** It shipped for an hour as TRANSCRIPT for an agent
+and TERMINAL for a shell, on the reasoning that a transcript is what an agent said and a terminal
+is what a command printed. That distinction is real and it was not worth a name: neither side is
+the record — one is the last reply out of a JSONL file, the other the last screenful out of a
+scrollback — and the rail row two columns away already says whether the cursor is on `✻ claude` or
+`$ bash`. A heading that changes under a moving cursor costs a re-read every time and settles
+nothing (author 2026-09-01, "it captures both and actually is a preview"). The earlier block
+"The transcript zone reads markdown" predates the rename; that zone is this one.
+
+Decisions worth keeping:
+
+- **It rides the writer thread**, unlike DiffList/DiffFile. That exception exists for git, which
+  can spend seconds in a packfile. `capture-pane` is one small fork the tick already makes twice a
+  second, and a second `DiffCtx` to move it off would buy nothing.
+- **The client pulls, on a 1 s clock** (`App::poll_shell_tail`), and only while a ticket page has
+  a live shell selected. Everything else on the board is pushed; a pane is the one thing the
+  daemon has no event for, so it is the one thing polled — narrowly, and never from the board.
+  A refusal still stamps the attempt, or a dead pane becomes a fork every 100 ms.
+- **The capture is keyed to its session.** The zone draws `shell_tail` only when it matches the
+  selected row, so moving the cursor never shows another session's screen for a frame.
+- **The client sanitizes**, same as transcript text: `peek::sanitize` (now `pub(crate)`) sweeps a
+  pane's bytes before they reach a cell — a `tree` is a boxful of the banned 0x2500–0x259F range.
+  Both L1 law tests now render a shell tail full of exactly that and assert it is on screen first.
+  Lines are truncated, never wrapped: output is column-aligned and wrapping mangles it.
+- **`mcp::agent_allows` denies it**, which is what the exhaustive match is for. `authorize` is also
+  handed a real `Resource::Session { id }` on this path rather than the blanket `Resource::Board`,
+  so D10's "no session read at any tier" is reachable rather than merely true.
+
+E2e: `crates/mesimon/tests/pane_tail_e2e.rs` — real tmux, `SHELL=/bin/sh` pinned for a predictable
+prompt, `send-keys` types a command, and a killed session must refuse rather than answer empty.
