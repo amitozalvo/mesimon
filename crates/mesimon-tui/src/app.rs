@@ -283,6 +283,11 @@ pub struct App {
     /// is what keeps the composer from hinting a key that would land as a
     /// plain Enter.
     pub rich_keys: bool,
+    /// Light/dark watch (`lib.rs::run` arms it, and only when the terminal
+    /// answered the startup query). None means the flavor is settled for the
+    /// process: forced by `MESIMON_THEME`, mono, or a terminal that cannot
+    /// be asked.
+    pub flavor_watch: Option<crate::detect::FlavorWatch>,
     /// Daemon connection lost: keep the last board, re-dial on a slow cadence.
     daemon_down: bool,
     last_reconnect: Option<Instant>,
@@ -325,6 +330,7 @@ impl App {
             focused_session_hint: None,
             just_created: None,
             rich_keys: false,
+            flavor_watch: None,
             update_watch: crate::update::UpdateWatch::new(),
             pending_reexec: false,
             delete_armed: None,
@@ -585,6 +591,41 @@ impl App {
         self.merge_note.clear();
         self.handle_key(key.code, key.modifiers)?;
         Ok(true)
+    }
+
+    /// The OS flipped appearance (or the user flipped the terminal's theme)
+    /// and the terminal followed: re-ask on the watch's cadence and rebuild
+    /// the theme in the other flavor. No refresh — the daemon owns none of
+    /// this, and the next frame is drawn unconditionally, so a swapped theme
+    /// IS the repaint.
+    ///
+    /// The query reads the tty and discards whatever sits ahead of the reply,
+    /// so it never runs with a keypress already waiting, and never under a
+    /// text field where the cost of eating one would be a character lost from
+    /// a title. Both cases just wait: `due` stays true and the next frame
+    /// tries again.
+    fn watch_flavor(&mut self) -> Result<()> {
+        if !self.flavor_watch.as_ref().is_some_and(|w| w.due()) {
+            return Ok(());
+        }
+        if self.typing() || event::poll(Duration::ZERO)? {
+            return Ok(());
+        }
+        if let Some(flavor) =
+            self.flavor_watch.as_mut().and_then(|w| w.poll(crate::detect::query_flavor))
+        {
+            self.theme = Theme::new(flavor, self.theme.profile);
+            // Same recovery as ^L: repaint from nothing rather than trust a
+            // cell-level diff to have touched every cell whose colour moved.
+            self.force_redraw = true;
+        }
+        Ok(())
+    }
+
+    /// A text field owns the keyboard: the composer, a rename, or a tag name.
+    fn typing(&self) -> bool {
+        matches!(self.mode, Mode::Input { .. })
+            || self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some())
     }
 
     /// Which keymap owns this keypress. Derived, never stored — the chord

@@ -34,10 +34,11 @@ use app::App;
 use client::Client;
 
 pub fn run(repo_root: &Path) -> Result<()> {
-    // Capability + light/dark detection runs exactly once, before raw mode,
-    // before any PTY exists, and never again for the process lifetime
-    // (06 §2.9 query hygiene; handovers reuse the cached theme).
-    let theme = detect::detect();
+    // Capability detection runs exactly once, before raw mode and before any
+    // PTY exists (06 §2.9 query hygiene; handovers reuse the cached answers).
+    // Light/dark is the one rung that keeps asking — see `detect::FlavorWatch`
+    // — but only from inside the event loop, where nothing else owns stdin.
+    let detected = detect::detect();
 
     // Hard floor (07 §2.4): refuse to start below 60x20.
     if let Ok((w, h)) = ratatui::crossterm::terminal::size() {
@@ -52,7 +53,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     }
 
     let client = Client::connect(repo_root)?;
-    let mut app = App::new(Box::new(client), repo_root.to_path_buf(), theme)?;
+    let mut app = App::new(Box::new(client), repo_root.to_path_buf(), detected.theme)?;
+    app.flavor_watch = detected.watch;
 
     let mut terminal = init_terminal()?;
     // Set AFTER init_terminal, which is what runs (and caches) the probe —
