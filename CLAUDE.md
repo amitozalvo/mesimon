@@ -28,7 +28,8 @@ mesimon (fast-forward only, so a green rebased branch is the deliverable).
 
 ## Commands
 
-Cargo is not on the default PATH — `source ~/.cargo/env` (or prefix `PATH="$HOME/.cargo/bin:$PATH"`).
+Cargo is on PATH (`~/.cargo/bin`, via the shell profile). A session whose shell was started
+before that was set up may still need `source ~/.cargo/env`.
 
 ```sh
 cargo test --workspace              # all tests; e2e tests need tmux installed (skip gracefully)

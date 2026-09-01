@@ -36,6 +36,14 @@ step() { printf '\n\033[1m==> %s\033[0m\n' "$1"; }
 [ "$(uname -sm)" = "Darwin arm64" ] || \
   die "this script builds $TARGET and must run on Apple Silicon macOS (this is $(uname -sm))"
 
+# Check the toolchain before anything slow, so a missing one costs a line
+# rather than four steps. Diagnosed, not repaired: this project's own doctor
+# rule is that we print the fix and never apply it, and a release script
+# silently rewriting your PATH is the same trespass one layer down.
+command -v cargo >/dev/null 2>&1 || \
+  die "cargo is not on PATH" "source ~/.cargo/env"
+command -v git >/dev/null 2>&1 || die "git is not on PATH"
+
 version=$(grep -m1 '^version = ' Cargo.toml | cut -d'"' -f2)
 tag="v$version"
 
