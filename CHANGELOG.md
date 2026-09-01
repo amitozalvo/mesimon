@@ -4,6 +4,37 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.5
+
+- **Linux ships — and with it, Windows through WSL2.** Two static builds, `x86_64` and
+  `aarch64`, cross-linked from the same Mac that cuts the macOS release, installed by the same
+  `install.sh` (it reads `uname`), updated by the same in-board offer. tmux comes from your
+  distro (3.3 or newer; `mesimon doctor` names the floor and the `apt` line) — the Linux
+  package bundles none.
+
+- **Every tmux before 3.6 rewrote a tab in `-F` output as `_`.** The suite had only ever run
+  on 3.6a, the one brew and the bundle share. On Debian's 3.3a and Ubuntu's 3.2a and 3.4 the
+  daemon's every snapshot parsed to nothing while the panes sat alive: a restart read every
+  session as crashed, and an interrupted turn never read as idle. The separator is a printable
+  `|` now, and the release gate runs the whole suite on a distro tmux in Docker before it will
+  cut anything.
+
+- **Copying from an agent pane reaches the clipboard on Linux too**: `clip.exe` under WSL,
+  `wl-copy` on Wayland, `xclip` on X — decided when the server starts, not when the binary is
+  built.
+
+- **`↑`/`↓` in the prompt field recall what this board asked before.** The draft under the
+  cursor is kept and comes back one step past the newest entry, the way a shell's history
+  behaves. Fifty entries, in memory, per run — a recall aid; the transcript is the record.
+
+- **The interrupt probe waits a full minute, not eight seconds.** A working pane was measured
+  silent for up to ~50 s while a large tool input streamed, and the old threshold read that as
+  an interrupted turn. The release check asks every half hour rather than every six.
+
+- **`mesimon doctor` knows WSL**: it names it on the `os` line, warns when the repo sits on a
+  Windows drive under `/mnt` (git across that boundary is an order of magnitude slower), and
+  warns when `curl` is missing, since the update check is silently inert without it.
+
 ## v0.1.0-alpha.4
 
 - **`alt`+direction moves a card.** Option plus `hjkl` or an arrow key nudges the
