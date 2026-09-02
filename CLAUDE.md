@@ -512,26 +512,23 @@ number IS the chip's text contrast — ≥ 4.0 on the selected surface, and now 
 which is the number that says whether ten will still go).
 
 A terminal has no alpha, so **`Theme::faded(colour, TagLevel)` blends toward the page ground** (down
-into graphite, up into chalk — receding on either flavor) and the card's own state picks the level:
-`Selected` is the full tint (the cursor card carries the loudest tags on the board), `Rest` is
-where almost every tag is read, `Sleeping` is a parked ticket that still has to answer "which tag",
-so its floor is hue survival, not contrast. The first cut used 0.82/0.50 and **neither boundary was
-visible on a real board** — an 18% blend is nothing on a one-cell block — so the law test also
-asserts each step is ≥ 12% of the ground-to-tint distance. **The two flavors need different
-constants to mean the same thing**: the blend is a ratio in sRGB bytes and the same ratio costs far
-more toward WHITE than toward black, so graphite is 0.70/0.38 and chalk is 0.76/0.46. Under one
-pair, chalk's resting tint landed at C* 16.8 / contrast 2.82 where graphite's landed at 21.7 / 3.61,
-and its sleeping tint sat on the C* 8 floor — the other half of "barely visible on light theme".
-With the darker ramp and the gentler steps every chalk level now meets or beats the graphite one it
-mirrors (rest C* 17.9 / k 3.77, sleep C* 9.8 / k 2.08) while the step stays a step. "Parked" is read off the
-SESSIONS (a Sleeping session and no pane), never off the aggregate glyph, which missed any ticket
-whose parked session sat behind another glyph. **The ladder is the CARD's, not the palette's**: an
-untagged card's neutral block dims and brightens exactly the same way (`tags::bar_cell` fades the
-neutral bg too), because a board where only tagged tickets answer "is this asleep?" answers it for
-some cards and not others — that is the bug that shipped twice. The law test holds `Rest` above
-the dim2 body floor and `Sleeping` above the dim3 de-emphasis floor, and asserts every level keeps
-C* ≥ 9 and stays distinct per tag. Below TrueColor the levels collapse: one grey, no ground to fade
-into.
+into graphite, up into chalk — receding on either flavor) and the cursor picks the level: `Selected`
+is the full tint (the cursor card carries the loudest tags on the board), `Rest` is every other
+card, one step down. **Two levels, not three** (author 2026-09-02): a quieter `Sleeping` level for
+a parked ticket (0.38 graphite / 0.46 chalk, read off the sessions) shipped 2026-09-01 and was cut
+the next day as too muted — the glyph already says asleep, and the block's one job is "which tag".
+The first cut used 0.82 and **the boundary was not visible on a real board** — an 18% blend is
+nothing on a one-cell block — so the law test asserts the step is ≥ 12% of the ground-to-tint
+distance. **The two flavors need different constants to mean the same thing**: the blend is a
+ratio in sRGB bytes and the same ratio costs far more toward WHITE than toward black, so graphite
+is 0.70 and chalk 0.76 (`Tints::fade`). Under one number, chalk's resting tint landed at C* 16.8 /
+contrast 2.82 where graphite's landed at 21.7 / 3.61 — the other half of "barely visible on light
+theme"; with the darker ramp and the gentler step chalk's rest is C* 17.9 / k 3.77. **The ladder
+is the CARD's, not the palette's**: an untagged card's neutral block dims and brightens exactly
+the same way (`tags::bar_cell` fades the neutral bg too), because a board where only tagged
+tickets answer "is this the cursor card?" answers it for some cards and not others — that is the
+bug that shipped twice. The law test holds `Rest` above the dim2 body floor, C* ≥ 8 and distinct
+per tag. Below TrueColor the levels collapse: one grey, no ground to fade into.
 
 **The peek names them** (`tags::chips`): with `p` on, the cursor card carries one row of painted
 name-chips under the title, above the reply. Colour says how many and which hues; only words say

@@ -3143,3 +3143,17 @@ cluster boundary and the status says `paste trimmed ∙ a title holds at most 2 
 a character count is wrong in Hebrew); a key past it is inert; text loaded over it (an older
 board) is kept whole and just not grown. Terminals without bracketed paste (none of the supported
 ones) still send keystrokes, and there nothing changed.
+
+## The tag block has two loudnesses, not three (2026-09-02, author)
+
+"A card's state sets the tag loudness" (2026-09-01) gave the bar three levels — the cursor card
+at the full tint, a card at rest one step down, and a parked ticket (a Sleeping session, no pane)
+a second step down, still hued. The author read the third one as "too muted" after a day on the
+board: a sleeping ticket's block was answering a question the glyph already answers, and paying
+for it in the one thing the block is for, "which tag". `TagLevel::Sleeping` is gone, `Tints::fade`
+is one factor (0.70 graphite, 0.76 chalk, 0.70 elsewhere), `card.rs` no longer reads the sessions
+for the level — the cursor is the only input — and the law test holds one quiet level instead of
+two. The card-not-palette rule stands (an untagged block still steps with the cursor); what
+changed is that "selected or not" is the whole ladder. The per-flavor constants and the 12% step
+floor recorded in "The simplify pass" and "Barely visible on light theme" still hold for the one
+step that remains.

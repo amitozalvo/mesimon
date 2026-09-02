@@ -236,24 +236,14 @@ pub(super) fn render(
     // neutral. The ASCII tiers keep their `: | #` ladder, which is a shape
     // and not a colour, and a move trail still goes ghost with the card.
     let (ladder_ch, state_style) = theme.bar(bar);
-    // Three loudnesses, and the card's own state picks one: the cursor card
-    // wears its tags at full strength, a sleeping ticket at a level that
-    // still answers "which tag", everything else one small step down from
-    // the cursor — which is where nearly every tag on the board is read.
-    // Sleeping is read off the SESSIONS, not off the aggregate glyph: a
-    // ticket whose parked session sits behind any other glyph still has
-    // nothing running, and the glyph check missed exactly those (dogfood
-    // 2026-09-01, "sleeping vs not sleeping looks the same").
-    let parked = !sessions.is_empty()
-        && sessions.iter().any(|s| s.state == SessionState::Sleeping)
-        && !sessions.iter().any(|s| s.state.has_pane());
-    let level = if cursorish {
-        crate::theme::TagLevel::Selected
-    } else if parked {
-        crate::theme::TagLevel::Sleeping
-    } else {
-        crate::theme::TagLevel::Rest
-    };
+    // Two loudnesses, and the cursor picks: the cursor card wears its block
+    // at full strength, every other card one small step down — which is
+    // where nearly every tag on the board is read. A third, quieter level
+    // for a parked ticket lived here for a day (read off the sessions, not
+    // the glyph) and was cut as too muted (author 2026-09-02): the glyph
+    // already says asleep, and the block's one job is "which tag".
+    let level =
+        if cursorish { crate::theme::TagLevel::Selected } else { crate::theme::TagLevel::Rest };
     let bar_base = theme.bar(BarWeight::Dormant).1;
     let (bar_ch, bar_style) = if trail {
         (ladder_ch.to_string(), state_style)

@@ -165,11 +165,12 @@ pub(crate) enum TagLevel {
     /// A card at rest: one step down. This is the level almost every tag on
     /// the board is read at, and the step has to be big enough to SEE — the
     /// first cut used 0.82 and the boundary was invisible.
+    ///
+    /// Two levels, not three (author, 2026-09-02): a third, quieter one for
+    /// a parked ticket shipped for a day and read as "too muted" — the glyph
+    /// already says asleep, and the block's job is "which tag", loud enough
+    /// to read. The block answers selected-or-not and nothing else.
     Rest,
-    /// A sleeping session: quiet, but the hue must survive. "Which tag" is
-    /// the one thing the colour is for, and a parked ticket still has to
-    /// answer it.
-    Sleeping,
 }
 
 // -- the tables ---------------------------------------------------------------
@@ -223,8 +224,8 @@ pub(crate) struct Tints {
     /// that sits UNDER a C* 83 ground may be a step louder.
     #[cfg_attr(not(test), allow(dead_code))]
     pub ceiling: f64,
-    /// The blend factors for `TagLevel::Rest` and `TagLevel::Sleeping`.
-    pub fade: (f32, f32),
+    /// The blend factor for `TagLevel::Rest`.
+    pub fade: f32,
 }
 
 pub(crate) struct Ansi256 {
@@ -293,7 +294,7 @@ static GRAPHITE: Palette = Palette {
                 0xB288B6, 0xC6829D,
             ],
             ceiling: 30.5,
-            fade: (0.70, 0.38),
+            fade: 0.70,
         }),
         shadow: 0x131417,
     },
@@ -354,7 +355,7 @@ static CHALK: Palette = Palette {
             ceiling: 30.5,
             // Chalk fades LESS per step than graphite: the same sRGB ratio
             // costs far more toward white than toward black.
-            fade: (0.76, 0.46),
+            fade: 0.76,
         }),
         shadow: 0xFAF8F4,
     },
@@ -418,7 +419,7 @@ static BLUE: Palette = Palette {
                 0xE7968E, 0xDC9D79,
             ],
             ceiling: 35.0,
-            fade: (0.70, 0.38),
+            fade: 0.70,
         }),
         shadow: 0x242424,
     },
@@ -485,7 +486,7 @@ static AMBER: Palette = Palette {
                 0xC88297, 0xCA847E,
             ],
             ceiling: 30.5,
-            fade: (0.70, 0.38),
+            fade: 0.70,
         }),
         shadow: 0x151515,
     },
@@ -543,7 +544,7 @@ static GREEN: Palette = Palette {
                 0xBB8C67, 0xA59560,
             ],
             ceiling: 30.5,
-            fade: (0.70, 0.38),
+            fade: 0.70,
         }),
         shadow: 0x151515,
     },
@@ -857,26 +858,28 @@ impl Theme {
     /// Any block colour at the loudness the card has earned — the tag tints
     /// go through here, and so does the NEUTRAL block of an untagged ticket.
     ///
-    /// The three states are a property of the CARD, not of the palette: a
-    /// board where only tagged tickets dim answers "is this one asleep?" for
+    /// The levels are a property of the CARD, not of the palette: a board
+    /// where only tagged tickets dim answers "is this the cursor card?" for
     /// some cards and not others, which is what the first cut did and what
     /// the author saw (2026-09-01).
     ///
-    /// The steps are wide on purpose. 0.82/0.50 shipped first and neither
-    /// boundary was visible on a real board: an 18% blend is nothing on a
-    /// one-cell block, and a level nobody can tell from its neighbour is not
-    /// a level.
+    /// There are two: the cursor card at the full tint, every other card one
+    /// step down. A third, quieter level for a parked ticket (0.38 graphite /
+    /// 0.46 chalk) shipped 2026-09-01 and was cut the next day as too muted —
+    /// the glyph says asleep, the block says which tag.
+    ///
+    /// The step is wide on purpose. 0.82 shipped first and the boundary was
+    /// not visible on a real board: an 18% blend is nothing on a one-cell
+    /// block, and a level nobody can tell from its neighbour is not a level.
     ///
     /// **The flavors need different numbers to mean the same thing.** The
     /// blend is a ratio in sRGB bytes, and the same ratio costs far more
     /// toward WHITE than toward black: chalk's resting tint was landing at
-    /// C* 16.8 / contrast 2.82 where graphite's landed at 21.7 / 3.61, and
-    /// its sleeping one at C* 8.2 — on the floor, which is where "barely
-    /// visible on light theme" came from (author 2026-09-01). Chalk therefore
-    /// fades LESS per step (0.76/0.46) and its ramp starts darker (`pip`);
-    /// together those put every chalk level at or above the graphite one it
-    /// mirrors, while the step stays a step (dE76 14 and 20 between levels,
-    /// against graphite's 17 and 19).
+    /// C* 16.8 / contrast 2.82 where graphite's landed at 21.7 / 3.61, which
+    /// is where "barely visible on light theme" came from (author
+    /// 2026-09-01). Chalk therefore fades LESS (0.76) and its ramp starts
+    /// darker (`pip`); together those put the chalk level at or above the
+    /// graphite one it mirrors, while the step stays a step.
     ///
     /// **And the blend target is the palette's `shadow`, not always its
     /// ground.** On a navy ground a tint blended 62% into the ground is
@@ -886,11 +889,9 @@ impl Theme {
     pub(crate) fn faded(&self, base: Color, level: TagLevel) -> Color {
         // A tintless palette still fades its neutral block: the ladder is the
         // card's, not the ring's.
-        let (rest, sleeping) = self.tints().map_or((0.70, 0.38), |t| t.fade);
         let k = match level {
             TagLevel::Selected => return base,
-            TagLevel::Rest => rest,
-            TagLevel::Sleeping => sleeping,
+            TagLevel::Rest => self.tints().map_or(0.70, |t| t.fade),
         };
         if self.profile != Profile::TrueColor {
             return base; // no ground to blend into, and one grey to blend
@@ -1277,11 +1278,11 @@ mod tests {
                     let k = contrast(full, surface);
                     assert!(k >= floor, "{flavor:?} pip {n} {full:06X} on {surface:06X} is {k:.2}");
                 }
-                // The quieter levels: still seen, still hued, never gone.
-                // Floors, not targets: a quiet level is allowed under the
-                // body-text floor, because it is paint and not text — what it
-                // may never do is stop being a colour.
-                for (level, floor) in [(TagLevel::Rest, 2.8), (TagLevel::Sleeping, 1.4)] {
+                // The quieter level: still seen, still hued, never gone.
+                // A floor, not a target: the resting level is allowed under
+                // the body-text floor, because it is paint and not text —
+                // what it may never do is stop being a colour.
+                for (level, floor) in [(TagLevel::Rest, 2.8)] {
                     let faded = rgb(t.pip_at(n, level));
                     let k = contrast(faded, bg);
                     assert!(k >= floor, "{flavor:?} {level:?} pip {n} {faded:06X} is {k:.2}");

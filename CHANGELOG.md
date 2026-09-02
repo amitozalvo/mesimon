@@ -17,6 +17,10 @@ old file is preserved, never overwritten.
   does. A paste past the limit is cut at a character boundary and the status line says
   `paste trimmed ∙ a title holds at most 2 KB`; typing past it is inert.
 
+- **A sleeping ticket's colour block is no longer extra-muted.** The bar had three loudnesses
+  and the quietest, for a parked ticket, read as washed out. There are two now: the cursor card
+  at full strength, every other card one step down. The glyph is what says asleep.
+
 ## v0.1.0-alpha.7
 
 - **The board no longer re-asks the terminal whether it is light or dark.** The 3-second

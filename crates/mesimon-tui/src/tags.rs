@@ -90,7 +90,7 @@ pub(crate) const TAGS_ON_CARD: usize = 2;
 /// as full blocks does not reach for it at all (`stack_full`).
 ///
 /// `level` is how loud the colour is allowed to be — the cursor card gets it
-/// at full strength, a sleeping one gets it faded but still legible as a hue
+/// at full strength, every other card one step down, still legible as a hue
 /// (`Theme::pip_at`).
 ///
 /// Off TrueColor there is no tint and the bar is a character rather than
@@ -104,9 +104,9 @@ pub(crate) fn bar_cell(
 ) -> (String, Style) {
     let mut worn = tags.iter().take(TAGS_ON_CARD);
     let Some(first) = worn.next() else {
-        // Untagged, and still a block: the three loudnesses belong to the
-        // CARD, so an untagged sleeping ticket dims exactly like a tagged one
-        // and the cursor card's block is the brightest either way.
+        // Untagged, and still a block: the two loudnesses belong to the
+        // CARD, so an untagged card off the cursor dims exactly like a tagged
+        // one and the cursor card's block is the brightest either way.
         let faded = style.bg.map(|c| theme.faded(c, level));
         return (ch.to_string(), faded.map(|c| style.bg(c)).unwrap_or(style));
     };
@@ -339,26 +339,24 @@ mod tests {
         }
     }
 
-    /// Three loudnesses, and they are ordered: the cursor card's tag is the
-    /// full tint, a resting card's is a small step down, a sleeping one's is
-    /// well down — but every one of them keeps the hue, which is the only
-    /// thing the colour is there to say.
+    /// Two loudnesses, and they are ordered: the cursor card's tag is the
+    /// full tint, every other card's is a small step down — and both keep
+    /// the hue, which is the only thing the colour is there to say. (A third,
+    /// quieter level for a parked ticket was cut 2026-09-02: too muted.)
     #[test]
-    fn the_three_levels_fade_but_keep_the_hue() {
+    fn the_two_levels_fade_but_keep_the_hue() {
         for flavor in Flavor::ALL {
             let theme = Theme::new(flavor, Profile::TrueColor);
             for n in 0..PIPS {
                 let full = theme.pip_at(n, TagLevel::Selected);
                 assert_eq!(full, theme.pip(n), "{flavor:?} the selected level is the tint");
                 let rest = theme.pip_at(n, TagLevel::Rest);
-                let sleep = theme.pip_at(n, TagLevel::Sleeping);
                 assert_ne!(rest, full, "{flavor:?} rest did not step down");
-                assert_ne!(sleep, rest, "{flavor:?} sleeping did not step down");
-                // Every level is still a distinct colour per tag, so two
-                // sleeping cards never read as the same tag.
+                // The resting level is still a distinct colour per tag, so
+                // two resting cards never read as the same tag.
                 for other in 0..PIPS {
                     if other != n {
-                        assert_ne!(sleep, theme.pip_at(other, TagLevel::Sleeping));
+                        assert_ne!(rest, theme.pip_at(other, TagLevel::Rest));
                     }
                 }
             }
@@ -366,7 +364,7 @@ mod tests {
         // Below TrueColor there is no ground to fade into, so the levels
         // collapse rather than inventing greys the palette does not have.
         let flat = Theme::new(Flavor::Graphite, Profile::Ansi256);
-        assert_eq!(flat.pip_at(0, TagLevel::Sleeping), flat.pip(0));
+        assert_eq!(flat.pip_at(0, TagLevel::Rest), flat.pip(0));
     }
 
     /// One tag paints the bar and asks for nothing else — no half-block, no

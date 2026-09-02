@@ -1065,9 +1065,11 @@ fn test_an_open_card_runs_the_tags_down_its_stripe() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// Three loudnesses on one board: the cursor card at full strength, a
-/// resting card a step down, a sleeping one well down but still hued. There
-/// is no alpha in a terminal, so each level is a blend toward the ground.
+/// Two loudnesses on one board: the cursor card at full strength, every
+/// other card a step down — a parked ticket included, since the glyph says
+/// asleep and the block says which tag (the quieter third level was cut
+/// 2026-09-02 as too muted). There is no alpha in a terminal, so the step
+/// is a blend toward the ground.
 #[test]
 fn test_the_card_state_sets_the_tag_loudness() {
     let mut app = app_graphite(fixture_tagged());
@@ -1088,7 +1090,6 @@ fn test_the_card_state_sets_the_tag_loudness() {
             .find(|x| {
                 buf[(*x, y)].bg == at(crate::theme::TagLevel::Selected)
                     || buf[(*x, y)].bg == at(crate::theme::TagLevel::Rest)
-                    || buf[(*x, y)].bg == at(crate::theme::TagLevel::Sleeping)
             })
             .map(|x| buf[(x, y)].bg)
     };
@@ -1097,11 +1098,12 @@ fn test_the_card_state_sets_the_tag_loudness() {
         Some(at(crate::theme::TagLevel::Selected)),
         "the cursor card must wear its tag at full strength"
     );
-    // T-7's session is asleep, and its tag is the quietest of the three.
+    // T-7's session is asleep, and its tag sits at rest like any other
+    // card off the cursor: the block does not say "asleep", the glyph does.
     assert_eq!(
         bar_of(&lines, "Painted accent bar", &buf, 88..120),
-        Some(at(crate::theme::TagLevel::Sleeping)),
-        "a sleeping ticket must keep its hue, quietly"
+        Some(at(crate::theme::TagLevel::Rest)),
+        "a sleeping ticket wears its tag at the ordinary resting level"
     );
     // Move the cursor off, and the same card steps down to rest.
     app.cursor_row = 1;
@@ -1114,10 +1116,12 @@ fn test_the_card_state_sets_the_tag_loudness() {
     );
 }
 
-/// The three loudnesses are the CARD's, not the palette's: an untagged
-/// board ladders too. This is the one that shipped broken twice — the levels
-/// only reached tag tints, so a sleeping ticket with no tags looked exactly
-/// like a busy one.
+/// The two loudnesses are the CARD's, not the palette's: an untagged board
+/// steps too. This is the one that shipped broken twice — the levels only
+/// reached tag tints, so an untagged card off the cursor looked exactly like
+/// the cursor card. And a parked ticket is NOT a third step: it sits at rest
+/// with every other card off the cursor (the quieter level was cut
+/// 2026-09-02 as too muted; the glyph is what says asleep).
 #[test]
 fn test_an_untagged_block_ladders_too() {
     let mut app = app_graphite(fixture(false));
@@ -1134,7 +1138,7 @@ fn test_an_untagged_block_ladders_too() {
     // T-7's only session is asleep; its column starts near the right edge.
     let sleeping = bar("Painted accent bar", &lines, &buf, 91);
     assert_ne!(selected, resting, "selection did not brighten the block");
-    assert_ne!(resting, sleeping, "a sleeping ticket looks like a busy one");
+    assert_eq!(resting, sleeping, "a sleeping ticket must wear the ordinary resting block");
 
     // And they are ordered: further from the page ground means louder.
     let lum = |c: ratatui::style::Color| match c {
@@ -1142,7 +1146,6 @@ fn test_an_untagged_block_ladders_too() {
         other => panic!("the block is not painted: {other:?}"),
     };
     assert!(lum(selected) > lum(resting), "the cursor card must be the loudest");
-    assert!(lum(resting) > lum(sleeping), "a parked ticket must be the quietest");
 }
 
 /// A tagged card that is waiting wears BOTH: the tag on the bar, the alarm
