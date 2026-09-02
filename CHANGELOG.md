@@ -4,6 +4,19 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.8
+
+- **Pasting several lines no longer saves the first one and types the rest.** The composer, a
+  rename and the ask field took a paste as keystrokes, so a newline was an Enter: the first line
+  became the ticket and the lines after it walked the board as keys. A paste is now one event.
+  It goes into whichever text field is open, flattened to one line (newlines become spaces),
+  and with no field open it does nothing at all.
+
+- **A title has a ceiling, and a big paste says when it hit it.** Titles are capped at 2 KB,
+  tags and asks keep their existing caps, and every field enforces the same number the daemon
+  does. A paste past the limit is cut at a character boundary and the status line says
+  `paste trimmed ∙ a title holds at most 2 KB`; typing past it is inert.
+
 ## v0.1.0-alpha.7
 
 - **The board no longer re-asks the terminal whether it is light or dark.** The 3-second
