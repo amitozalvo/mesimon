@@ -4,6 +4,38 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.6
+
+- **Five themes, picked from the Esc menu.** Graphite and chalk are joined by blue (navy and
+  gold, the Borland look), amber and green (one phosphor each, a P3 and a P1 monitor). The
+  `Theme:` row opens a picker whose cursor IS the preview — the board repaints as you move,
+  Enter keeps, Esc puts the old one back. The choice is saved per ground, one theme for a dark
+  terminal and one for a light one (`~/.local/state/mesimon/prefs.json`), so an OS appearance
+  flip still lands on a theme you chose. `MESIMON_THEME` accepts every name and still pins the
+  launch; `mesimon doctor` prints a `theme` line. Every palette passes the same colour law —
+  one saturated colour on the board, reserved for needs-you — extended to a ground that is a
+  colour and to a single-hue phosphor.
+
+- **One claude per ticket.** A ticket now holds one Claude session and its second seat is a
+  shell: `c` on a parked claude wakes it instead of starting another, and `C` is gone. Every
+  place that picks "the" agent of a ticket assumed one, and with two the automove ping-ponged
+  the column between their turns.
+
+- **`{` `}` (or `pgup`/`pgdn`) page the ticket page's preview.** Hinted only while the zone
+  overflows; a shell's tail keeps following its bottom until you scroll it, and returns to
+  following when you scroll back down.
+
+- **A late reply to the colour query can no longer type into the board.** A terminal that
+  answers the light/dark probe after the 150 ms budget lands the answer on stdin as keystrokes;
+  it is recognised and discarded before the keymap sees it.
+
+- **The peek shows what the agent was actually asked.** A harness task notification (a
+  backgrounded build finishing, a subagent reporting) is no longer shown as a prompt with the
+  agent "thinking" under it.
+
+- **A sleeping agent's `z` recedes with its bar**: the glyph walks the same dim ladder the tag
+  stripe already does, so a parked ticket reads as parked from either.
+
 ## v0.1.0-alpha.5
 
 - **Linux ships — and with it, Windows through WSL2.** Two static builds, `x86_64` and
