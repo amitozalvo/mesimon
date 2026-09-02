@@ -1282,7 +1282,8 @@ mod tests {
                 // A floor, not a target: the resting level is allowed under
                 // the body-text floor, because it is paint and not text —
                 // what it may never do is stop being a colour.
-                for (level, floor) in [(TagLevel::Rest, 2.8)] {
+                {
+                    let (level, floor) = (TagLevel::Rest, 2.8);
                     let faded = rgb(t.pip_at(n, level));
                     let k = contrast(faded, bg);
                     assert!(k >= floor, "{flavor:?} {level:?} pip {n} {faded:06X} is {k:.2}");
