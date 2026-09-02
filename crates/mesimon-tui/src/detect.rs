@@ -2,7 +2,8 @@
 //! ladders run once, at startup, before the daemon connect and before raw
 //! mode — never while a session is focused, and never in the daemon.
 //!
-//! Light/dark is then WATCHED for the process lifetime (`GroundWatch`): the
+//! Light/dark can then be WATCHED for the process lifetime (`GroundWatch`,
+//! opt-in via `MESIMON_GROUND_WATCH=1` — see `watch_enabled`): the
 //! OS flips appearance at sunset, the terminal follows it, and a board that
 //! keeps painting graphite on a now-white terminal is unreadable until it is
 //! restarted. The watch re-asks the terminal — never the OS — because the
@@ -63,8 +64,24 @@ pub(crate) fn detect() -> Detected {
         profile,
         ground: answer.unwrap_or(Ground::Dark),
         forced,
-        watch: if forced.is_none() { answer.map(GroundWatch::new) } else { None },
+        watch: if forced.is_none() && watch_enabled() {
+            answer.map(GroundWatch::new)
+        } else {
+            None
+        },
     }
+}
+
+/// The live re-ask is OFF unless `MESIMON_GROUND_WATCH=1` (author,
+/// 2026-09-02). Every query is a write to the tty and a timed read back, and
+/// a reply that arrives after the budget lands on stdin as keystrokes —
+/// `osc::ReplySwallow` catches the common shape, but a reply split at its
+/// first byte still typed `1 1 ; r …` into the board and opened rename on a
+/// ticket. One query at startup is one exposure; one every 3 s for the life
+/// of the process was the bug. The deferred root fix (the watch parses its
+/// own reply, no blocking read) is what would earn the default back.
+fn watch_enabled() -> bool {
+    std::env::var_os("MESIMON_GROUND_WATCH").is_some_and(|v| v == "1")
 }
 
 /// Colour-profile ladder, first hit wins: NO_COLOR → MESIMON_COLOR (the

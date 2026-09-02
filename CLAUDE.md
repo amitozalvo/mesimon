@@ -65,7 +65,9 @@ road) are cross-linked here by the toolchain's own `rust-lld` (`ci/build-linux.s
 no C in the dependency graph so no cross toolchain). The script is the gate — clean
 tree, tag == HEAD == workspace version, tag pushed, clippy, dup-dep drift, the full
 suite with `MESIMON_REQUIRE_TMUX=1`, the same suite on Linux in Docker (dies without
-Docker, never skips) — then build, `codesign -v` (the macOS binary is deliberately NOT
+Docker, never skips — **but both Docker steps are PAUSED by the author since 2026-09-02
+until they say Windows/WSL2 is operational**: the script prints `SKIPPED` for each and
+`MESIMON_RELEASE_DOCKER=1` runs them; do not open Docker Desktop for a release) — then build, `codesign -v` (the macOS binary is deliberately NOT
 stripped: strip invalidates the linker's ad-hoc arm64 signature and the symptom
 elsewhere is SIGKILL), run every packaged artifact (the Linux ones inside a Debian
 container of their own architecture, checking `--version` and the `update checks`
@@ -209,8 +211,10 @@ retired. What holds now:
 
 **M3.5 (built 2026-08-29) is the design foundation**: OSC-11 light/dark detection
 (`mesimon-tui/src/detect.rs`, via terminal-colorsaurus, first asked before raw mode and then
-re-asked every 3 s from inside `App::tick`, so an OS appearance flip repaints the board live —
-`detect::GroundWatch`; the terminal is the authority, never the OS, and `MESIMON_THEME`, a
+— optionally — re-asked every 3 s from inside `App::tick`, so an OS appearance flip repaints the board live —
+`detect::GroundWatch`, **OFF by default since 2026-09-02** (`MESIMON_GROUND_WATCH=1` arms it): a late
+reply to the periodic query kept typing into the board and opening rename, STALE-MAP "The ground
+watch is opt-in"; the terminal is the authority, never the OS, and `MESIMON_THEME`, a
 terminal that cannot answer, a waiting keypress and an open text field each disarm or defer the
 query; STALE-MAP "Light/dark follows the terminal, live"; and a reply that comes back AFTER the
 150 ms budget lands on stdin as keystrokes — `tui/src/osc.rs::ReplySwallow` recognises it on the

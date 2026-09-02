@@ -3092,3 +3092,29 @@ while the status appends `MESIMON_THEME=… pins the next launch`; the row stays
 pin because it is the only road to the file. `mesimon doctor` prints `theme  dark: … ∙ light: …`
 and never asks the terminal (pipes). The peek toggle `p` is the first candidate to move into
 this file; not done here.
+
+## The release gate's Docker steps are paused (2026-09-02, author)
+
+`ci/release.sh` ran the suite on Debian's tmux in Docker and executed each Linux artifact in a
+container of its own architecture, and died without Docker rather than skipping. Both steps are
+OFF by default now, on the author's call, until they declare Windows/WSL2 operational:
+`DOCKER_GATE` reads `MESIMON_RELEASE_DOCKER` (default `0`), each step prints a `SKIPPED` line
+naming the variable, and nothing else moves — the Linux binaries are still cross-linked and
+published, unexecuted. The `never skips` reasoning in the header still stands and is what the
+pause is measured against; restoring it is flipping the default to `1`.
+
+## The ground watch is opt-in (2026-09-02, author)
+
+`detect::GroundWatch` re-asked the terminal for its background every 3 s so an OS appearance
+flip repainted the board live. Every query is a write to the tty and a 150 ms read back, and a
+reply that comes in after the budget lands on stdin as keys. `osc::ReplySwallow` (shipped the
+same day) catches the common shape, but the leak recurred — the board opened rename on a ticket
+with reply bytes in it — and the author chose the easy road: the watch is armed only under
+`MESIMON_GROUND_WATCH=1` (`detect::watch_enabled`). The one-shot startup query stays, so the
+picker still sets the right slot and the launch ground is still the terminal's; `MESIMON_THEME`
+still disarms the watch; the swallow stays in front of the keymap for the startup reply. What
+was lost is the live repaint on an appearance flip — a relaunch (or a pick) is now how the
+board follows the terminal. The root fix recorded under "A late reply to the colour query is
+caught before it can type" (the watch writes the query itself, no blocking read, and the swallow
+parses the colour out of the reply) is what would earn the default back; widening the grammar
+would not.

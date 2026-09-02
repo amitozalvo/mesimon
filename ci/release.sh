@@ -17,19 +17,29 @@
 #     suite is a gate that certifies nothing)
 #   * the suite must pass on Linux too, in Docker, against the tmux a distro
 #     ships rather than the one we bundle (ci/test-linux.sh) — Docker is
-#     required here, not skipped, for the same reason tmux is
+#     required here, not skipped, for the same reason tmux is. PAUSED
+#     (author, 2026-09-02): both Docker steps are off until the author says
+#     Windows/WSL2 is operational; MESIMON_RELEASE_DOCKER=1 runs them.
 #   * the macOS binary is never stripped, and its signature is verified
 #   * every packaged artifact is executed before it is published, the Linux
 #     ones inside a Debian container of their own architecture
 #
 # Usage:  ci/release.sh              build, verify, package, publish
 #         ci/release.sh --dry-run    everything except the upload
+#         MESIMON_RELEASE_DOCKER=1 ci/release.sh   with the Docker steps
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 DRY_RUN=0
 [ "${1:-}" = "--dry-run" ] && DRY_RUN=1
+# The Linux gate (the suite on a distro tmux, and running each Linux artifact
+# in a container of its own architecture) is Docker's. It is OFF by default
+# for now — the author's call, until Windows/WSL2 is declared operational —
+# and the two steps say so out loud when they are skipped, so a release log
+# never reads as if Linux had been tested. Flip it back on by making 1 the
+# default here; the env var is the road in the meantime.
+DOCKER_GATE="${MESIMON_RELEASE_DOCKER:-0}"
 
 TARGET="aarch64-apple-darwin"
 # Cross-linked from this Mac (ci/build-linux.sh): static musl, one binary per
@@ -105,7 +115,11 @@ step "tests on Linux (Docker, the distro's own tmux)"
 # where a 3.6-only assumption (a tab in `-F` output) first failed with every
 # pane alive. The script dies without Docker rather than skipping: a Linux
 # gate that ran nothing would certify a Linux build nobody had tested.
-./ci/test-linux.sh
+if [ "$DOCKER_GATE" = "1" ]; then
+  ./ci/test-linux.sh
+else
+  echo "SKIPPED: the Linux suite did not run (MESIMON_RELEASE_DOCKER=1 runs it)"
+fi
 
 # --- build ------------------------------------------------------------------
 
@@ -214,7 +228,10 @@ esac
 # `target` component, so `off` can only mean a missing stamp or a target the
 # checker does not know.
 step "verify the Linux artifacts (Docker)"
+[ "$DOCKER_GATE" = "1" ] || \
+  echo "SKIPPED: the Linux artifacts were not executed (MESIMON_RELEASE_DOCKER=1 runs them)"
 for t in $LINUX_TARGETS; do
+  [ "$DOCKER_GATE" = "1" ] || break
   lname="mesimon-$tag-$t"
   tar -xzf "dist/$lname.tar.gz" -C "$tmp"
   case "$t" in
