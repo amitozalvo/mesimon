@@ -4,6 +4,15 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.7
+
+- **The board no longer re-asks the terminal whether it is light or dark.** The 3-second
+  re-query behind live theme switching could land its reply on stdin as keystrokes, and the
+  alpha.6 guard did not catch every shape: a reply still opened rename on a ticket with its
+  bytes in the title. The periodic query is off; the launch still asks once, so the theme
+  picker still lands on the right slot. Live repaint on an OS appearance flip is gone with it
+  — relaunch, or pick from the Esc menu. `MESIMON_GROUND_WATCH=1` re-arms it.
+
 ## v0.1.0-alpha.6
 
 - **Five themes, picked from the Esc menu.** Graphite and chalk are joined by blue (navy and
