@@ -25,8 +25,8 @@ use std::path::Path;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    DisableMouseCapture, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
-    PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, KeyboardEnhancementFlags,
+    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -183,7 +183,11 @@ fn init_terminal() -> Result<Term> {
     let mut stdout = std::io::stdout();
     // No EnableMouseCapture: we handle no mouse events, and capture steals the
     // terminal's native text selection.
-    execute!(stdout, EnterAlternateScreen)?;
+    // Bracketed paste: the clipboard arrives as ONE `Event::Paste`, so a
+    // multi-line paste into the composer is one title and a paste on the
+    // board is inert, instead of both being typed as keystrokes (the
+    // newline was an Enter, and it saved). `App::on_paste` takes it.
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
     // Kitty keyboard protocol, disambiguate tier only: it is what makes
     // Shift+Enter distinguishable from Enter (board: force the ticket
     // screen). The support probe is a terminal query, so it runs once per
@@ -218,7 +222,7 @@ fn restore_terminal() -> Result<()> {
         execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
     }
     disable_raw_mode()?;
-    execute!(std::io::stdout(), DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
     Ok(())
 }
 

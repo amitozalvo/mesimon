@@ -3118,3 +3118,28 @@ board follows the terminal. The root fix recorded under "A late reply to the col
 caught before it can type" (the watch writes the query itself, no blocking read, and the swallow
 parses the colour out of the reply) is what would earn the default back; widening the grammar
 would not.
+
+## A paste is one event, and a title has a ceiling (2026-09-02, dogfood)
+
+A multi-line paste into the composer, a rename or the ask field saved on its first newline and
+typed the rest onto the board — the terminal was sending the clipboard as keystrokes, so a `\n`
+was an Enter and the lines after it were `j`, `d`, `n`… walking the keymap. `lib.rs::init_terminal`
+now arms bracketed paste for the life of the alt screen (`DisableBracketedPaste` on restore, so
+a handover's tmux client gets the terminal the way it was found) and `App::tick` takes
+`Event::Paste` whole into `App::on_paste`, which hands it to whichever text field is open — the
+composer, a rename, the ask field, a tag name — and to nothing else: a paste on the board, or into
+an open picker with no name field, is inert. `EditBuffer::paste` flattens it with `one_line`
+(newline and whitespace runs become one space, the ends are trimmed, since the commonest paste is a
+copied line with its newline still on) and inserts at the cursor, grapheme by grapheme. Newlines
+are NOT kept even for the ask: the field is one line, and the daemon's `sanitize_prompt` already
+dropped them (glueing the words together); a paragraph belongs in the pane.
+
+Every `EditBuffer` now carries a byte `limit`, the daemon's own cap for that text, so what the
+field shows is what the daemon keeps: `board::TITLE_MAX_BYTES` (2048, new — a title had no bound
+at all, and a pasted document would have ridden the slugger, the feed and every card row forever;
+`board::sanitize_title` is the daemon boundary on both `CreateTicket` and `RenameTicket`),
+`board::TAG_MAX_BYTES` (24) and `command::PROMPT_MAX_BYTES` (4096). A paste past it is cut at a
+cluster boundary and the status says `paste trimmed ∙ a title holds at most 2 KB` (bytes, honestly:
+a character count is wrong in Hebrew); a key past it is inert; text loaded over it (an older
+board) is kept whole and just not grown. Terminals without bracketed paste (none of the supported
+ones) still send keystrokes, and there nothing changed.

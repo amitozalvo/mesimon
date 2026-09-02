@@ -382,6 +382,22 @@ impl Tag {
 /// daemon boundary by `sanitize_tag`, not here.
 pub const TAG_MAX_BYTES: usize = 24;
 
+/// The longest a ticket title may be, in bytes. A title is one line on a
+/// card, and past a few hundred cells nothing ever draws the rest — but a
+/// paste can land a whole document in the field, and the slugger, the
+/// activity feed and every card row would carry it forever. Large on purpose
+/// (a long sentence in a four-byte script still fits), never infinite. The
+/// composer's field mirrors it; the daemon's `sanitize_title` is the bound.
+pub const TITLE_MAX_BYTES: usize = 2048;
+
+/// The daemon-side boundary for a ticket title: user text on a card row,
+/// scrubbed of what would break the row and capped at [`TITLE_MAX_BYTES`],
+/// never split mid-character. Only ever removes.
+pub fn sanitize_title(raw: &str) -> String {
+    use crate::text::{cap_bytes, scrub_cells};
+    cap_bytes(&scrub_cells(raw, false), TITLE_MAX_BYTES).to_string()
+}
+
 /// Strip what a card row must never carry, then bound the length.
 ///
 /// A tag name is user text rendered on a card row, so it runs the same
@@ -1109,6 +1125,21 @@ mod tests {
     /// gauntlet as peek text: a terminal-vs-unicode-width disagreement there
     /// strands a `selected_bg` cell past the card edge that the diff never
     /// repaints.
+    #[test]
+    fn sanitize_title_caps_without_splitting_a_character() {
+        // A pasted document: bounded, and the cut never lands inside a
+        // multi-byte character (Hebrew is two bytes a letter).
+        let long = "ש".repeat(TITLE_MAX_BYTES);
+        let out = sanitize_title(&long);
+        assert!(out.len() <= TITLE_MAX_BYTES, "{} bytes", out.len());
+        assert!(out.chars().all(|c| c == 'ש'));
+        assert_eq!(out.chars().count(), TITLE_MAX_BYTES / 2);
+        // Under the cap nothing moves.
+        assert_eq!(sanitize_title("fix the auth bug"), "fix the auth bug");
+        // Control characters go, as on every card row.
+        assert_eq!(sanitize_title("fix\u{1b}[31m bug"), "fix[31m bug");
+    }
+
     #[test]
     fn sanitize_tag_strips_the_width_hazards() {
         assert_eq!(sanitize_tag("BUG"), Some("BUG".into()));

@@ -108,21 +108,67 @@ pub(crate) fn marquee_offset(elapsed_ms: u64, overflow: usize) -> usize {
 /// In-place title editing: the text plus a byte cursor kept on grapheme
 /// boundaries. Word ops are whitespace-delimited (readline's unix-word):
 /// a title is prose, not code, so `-`/`_` stay inside a word.
+///
+/// Every field has a byte `limit`, the same number the daemon caps the text
+/// at on arrival (`TITLE_MAX_BYTES`, `TAG_MAX_BYTES`, `PROMPT_MAX_BYTES`), so
+/// what the field shows is what the daemon keeps: a cap the field did not
+/// mirror would let a pasted document look accepted and land truncated.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct EditBuffer {
     text: String,
     cursor: usize,
+    limit: usize,
+}
+
+/// What a paste did to the field: how much of it went in, and whether the
+/// limit cut it — the one case the status line has to say something.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct Pasted {
+    pub(crate) trimmed: bool,
 }
 
 impl EditBuffer {
-    pub(crate) fn new() -> Self {
-        Self { text: String::new(), cursor: 0 }
+    pub(crate) fn new(limit: usize) -> Self {
+        Self { text: String::new(), cursor: 0, limit }
     }
 
-    /// Start editing existing text, cursor at the end.
-    pub(crate) fn from_text(text: String) -> Self {
+    /// Start editing existing text, cursor at the end. Text already past the
+    /// limit (an older board, a title minted by another client) is kept
+    /// whole — the field refuses to grow it, never eats it.
+    pub(crate) fn from_text(text: String, limit: usize) -> Self {
         let cursor = text.len();
-        Self { text, cursor }
+        Self { text, cursor, limit }
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
+    }
+
+    /// Room left under the limit, in bytes.
+    fn room(&self) -> usize {
+        self.limit.saturating_sub(self.text.len())
+    }
+
+    /// A bracketed paste into a one-line field. Every field here is one
+    /// line — a title, a tag, a prompt — so the newlines a multi-line paste
+    /// carries become spaces rather than Enters (which is what an unbracketed
+    /// paste turned them into: the first line saved and the rest typed onto
+    /// the board). Whitespace runs collapse and the ends are trimmed, since
+    /// the commonest paste is a copied line with its newline still on it.
+    /// Inserted at the cursor, grapheme by grapheme, up to the limit; the
+    /// cut never splits a cluster.
+    pub(crate) fn paste(&mut self, raw: &str) -> Pasted {
+        let flat = one_line(raw);
+        let mut trimmed = false;
+        for g in flat.graphemes(true) {
+            if g.len() > self.room() {
+                trimmed = true;
+                break;
+            }
+            self.text.insert_str(self.cursor, g);
+            self.cursor += g.len();
+        }
+        Pasted { trimmed }
     }
 
     pub(crate) fn as_str(&self) -> &str {
@@ -182,7 +228,12 @@ impl EditBuffer {
         self.text.len()
     }
 
+    /// One typed character. Past the limit the key is inert: the same bound
+    /// the daemon applies, felt here rather than discovered on save.
     pub(crate) fn insert(&mut self, c: char) {
+        if c.len_utf8() > self.room() {
+            return;
+        }
         self.text.insert(self.cursor, c);
         self.cursor += c.len_utf8();
     }
@@ -357,28 +408,28 @@ mod tests {
     #[test]
     fn edit_word_delete() {
         // ctrl+backspace at the end: word goes, trailing space too.
-        let mut b = EditBuffer::from_text("fix auth bug".into());
+        let mut b = EditBuffer::from_text("fix auth bug".into(), 64);
         b.delete_word_back();
         assert_eq!(b.as_str(), "fix auth ");
         b.delete_word_back();
         assert_eq!(b.as_str(), "fix ");
         // Mid-string: only the word left of the cursor dies.
-        let mut b = EditBuffer::from_text("fix auth bug".into());
+        let mut b = EditBuffer::from_text("fix auth bug".into(), 64);
         b.word_left(); // cursor before "bug"
         b.delete_word_back();
         assert_eq!(b.as_str(), "fix bug");
         // Empty and all-whitespace never panic.
-        let mut b = EditBuffer::new();
+        let mut b = EditBuffer::new(64);
         b.delete_word_back();
         assert_eq!(b.as_str(), "");
-        let mut b = EditBuffer::from_text("   ".into());
+        let mut b = EditBuffer::from_text("   ".into(), 64);
         b.delete_word_back();
         assert_eq!(b.as_str(), "");
     }
 
     #[test]
     fn edit_word_jump() {
-        let mut b = EditBuffer::from_text("fix auth bug".into());
+        let mut b = EditBuffer::from_text("fix auth bug".into(), 64);
         b.word_left();
         assert_eq!(b.width_before_cursor(), 9); // before "bug"
         b.word_left();
@@ -397,7 +448,7 @@ mod tests {
 
     #[test]
     fn edit_cursor_insert_delete() {
-        let mut b = EditBuffer::from_text("abd".into());
+        let mut b = EditBuffer::from_text("abd".into(), 64);
         b.left();
         b.insert('c');
         assert_eq!(b.as_str(), "abcd");
@@ -410,10 +461,62 @@ mod tests {
         b.kill_to_start();
         assert_eq!(b.as_str(), "");
         // Grapheme moves: combining accent travels with its base.
-        let mut b = EditBuffer::from_text("cafe\u{301}!".into());
+        let mut b = EditBuffer::from_text("cafe\u{301}!".into(), 64);
         b.left();
         b.backspace();
         assert_eq!(b.as_str(), "caf!");
+    }
+
+    #[test]
+    fn paste_is_one_line_at_the_cursor() {
+        // The bug: a multi-line paste's newlines arrived as Enters and saved
+        // the first line. Now they are spaces, and the copied line's own
+        // trailing newline is nothing.
+        let mut b = EditBuffer::from_text("fix ".into(), 64);
+        assert_eq!(b.paste("the auth\nbug\r\n"), Pasted { trimmed: false });
+        assert_eq!(b.as_str(), "fix the auth bug");
+        assert_eq!(b.width_before_cursor(), 16);
+        // Mid-string, at the cursor, cursor rides to the end of the paste.
+        let mut b = EditBuffer::from_text("ab".into(), 64);
+        b.left();
+        b.paste("x\ty");
+        assert_eq!(b.as_str(), "ax yb");
+        assert_eq!(b.width_before_cursor(), 4);
+        // Blank pastes are nothing.
+        let mut b = EditBuffer::new(64);
+        assert_eq!(b.paste("\n\n  \n"), Pasted { trimmed: false });
+        assert_eq!(b.as_str(), "");
+    }
+
+    #[test]
+    fn the_limit_holds_for_pastes_and_keys() {
+        // A paste past the limit is cut at a cluster boundary and says so.
+        let mut b = EditBuffer::new(10);
+        assert_eq!(b.paste("abcdefghijklmnop"), Pasted { trimmed: true });
+        assert_eq!(b.as_str(), "abcdefghij");
+        // Hebrew is two bytes a letter: the cut never splits one.
+        let mut b = EditBuffer::new(5);
+        assert_eq!(b.paste("שלום"), Pasted { trimmed: true });
+        assert_eq!(b.as_str(), "של");
+        // A combining cluster goes in whole or not at all.
+        let mut b = EditBuffer::new(5);
+        b.paste("cafe\u{301}");
+        assert_eq!(b.as_str(), "caf");
+        // Typing at the limit is inert, and deleting makes room again.
+        let mut b = EditBuffer::new(3);
+        for c in "abcd".chars() {
+            b.insert(c);
+        }
+        assert_eq!(b.as_str(), "abc");
+        b.backspace();
+        b.insert('z');
+        assert_eq!(b.as_str(), "abz");
+        // Text loaded over the limit is kept, just not grown.
+        let mut b = EditBuffer::from_text("abcdef".into(), 3);
+        b.insert('x');
+        assert_eq!(b.as_str(), "abcdef");
+        assert_eq!(b.paste("y"), Pasted { trimmed: true });
+        assert_eq!(b.as_str(), "abcdef");
     }
 
     #[test]

@@ -274,6 +274,17 @@ const SHELL_TAIL_LINES: u16 = 60;
 /// keeps the card open for the whole walk instead of blinking once per press.
 const TAG_FLASH: Duration = Duration::from_millis(1500);
 
+/// A field's byte limit as the status line says it: the round ones in KB
+/// (`2 KB`, `4 KB`), a tag's `24 bytes`. Bytes, honestly — the cap is a byte
+/// cap at the daemon, and a character count would be wrong in Hebrew.
+fn limit_words(bytes: usize) -> String {
+    if bytes > 0 && bytes % 1024 == 0 {
+        format!("{} KB", bytes / 1024)
+    } else {
+        format!("{bytes} bytes")
+    }
+}
+
 pub struct App {
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
@@ -769,9 +780,12 @@ impl App {
         if !event::poll(Duration::from_millis(100))? {
             return Ok(dirty);
         }
-        let ev = event::read()?;
-        let TermEvent::Key(key) = ev else {
-            return Ok(dirty);
+        let key = match event::read()? {
+            TermEvent::Key(key) => key,
+            // Bracketed paste (armed by `lib.rs::init_terminal`): the whole
+            // clipboard as one event, never as keystrokes.
+            TermEvent::Paste(text) => return Ok(self.on_paste(&text)? || dirty),
+            _ => return Ok(dirty),
         };
         if key.kind != KeyEventKind::Press {
             return Ok(dirty);
@@ -797,6 +811,39 @@ impl App {
         self.merge_note.clear();
         for (code, mods) in keys {
             self.handle_key(code, mods)?;
+        }
+        Ok(true)
+    }
+
+    /// One bracketed paste from the terminal, as one event. Only a text
+    /// field takes it — the composer, a rename, the ask field, a tag name —
+    /// and everywhere else it is inert. Before bracketed paste was armed a
+    /// paste arrived as keystrokes: a multi-line paste into the composer
+    /// saved the first line on its newline and typed the rest onto the
+    /// board as verbs, and a paste with no field open walked the keymap.
+    /// The field flattens it to one line (see `EditBuffer::paste`) and the
+    /// status line says when the field's limit cut it. Returns whether the
+    /// screen changed.
+    pub fn on_paste(&mut self, text: &str) -> Result<bool> {
+        self.pending_spawn_focus = None;
+        self.status.clear();
+        self.merge_note.clear();
+        let (what, pasted, limit) = if let Some(arm) = self.tag_armed.as_mut() {
+            // The picker owns the keys while it is open; a paste with no
+            // name field under it goes nowhere, not into the composer behind.
+            let Some((_, buf)) = arm.naming.as_mut() else { return Ok(false) };
+            ("a tag name", buf.paste(text), buf.limit())
+        } else if let Mode::Input { purpose, buffer } = &mut self.mode {
+            let what = match purpose {
+                InputPurpose::Create { .. } | InputPurpose::Rename { .. } => "a title",
+                InputPurpose::Prompt { .. } => "an ask",
+            };
+            (what, buffer.paste(text), buffer.limit())
+        } else {
+            return Ok(false);
+        };
+        if pasted.trimmed {
+            self.status = format!("paste trimmed ∙ {what} holds at most {}", limit_words(limit));
         }
         Ok(true)
     }
@@ -1237,7 +1284,7 @@ impl App {
             Verb::OpenTicket => {
                 self.mode = Mode::Input {
                     purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
-                    buffer: EditBuffer::new(),
+                    buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
             }
             Verb::TicketScreen => {
@@ -1249,7 +1296,10 @@ impl App {
                 if let Some(t) = self.subject().and_then(|id| self.board.ticket(id)) {
                     self.mode = Mode::Input {
                         purpose: InputPurpose::Rename { id: t.id },
-                        buffer: EditBuffer::from_text(t.title.clone()),
+                        buffer: EditBuffer::from_text(
+                            t.title.clone(),
+                            mesimon_core::board::TITLE_MAX_BYTES,
+                        ),
                     };
                 }
             }
@@ -1330,7 +1380,10 @@ impl App {
             Verb::TagRename => {
                 let Some((_, name, _)) = self.tag_cell() else { return Ok(()) };
                 if let Some(arm) = self.tag_armed.as_mut() {
-                    arm.naming = Some((Naming::Rename, EditBuffer::from_text(name)));
+                    arm.naming = Some((
+                        Naming::Rename,
+                        EditBuffer::from_text(name, mesimon_core::board::TAG_MAX_BYTES),
+                    ));
                 }
             }
             Verb::TagToggle => {
@@ -1351,7 +1404,10 @@ impl App {
                     // The `+ new` cell.
                     None => {
                         if let Some(arm) = self.tag_armed.as_mut() {
-                            arm.naming = Some((Naming::New, EditBuffer::new()));
+                            arm.naming = Some((
+                                Naming::New,
+                                EditBuffer::new(mesimon_core::board::TAG_MAX_BYTES),
+                            ));
                         }
                     }
                 }
@@ -1474,7 +1530,7 @@ impl App {
                 if let Some(id) = self.subject() {
                     self.mode = Mode::Input {
                         purpose: InputPurpose::Prompt { ticket: id, walk: None },
-                        buffer: EditBuffer::new(),
+                        buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                     };
                 }
             }
@@ -2193,7 +2249,10 @@ impl App {
                         _ => None,
                     };
                     if let Some((idx, draft)) = next {
-                        buffer = EditBuffer::from_text(self.prompt_history[idx].clone());
+                        buffer = EditBuffer::from_text(
+                            self.prompt_history[idx].clone(),
+                            mesimon_core::command::PROMPT_MAX_BYTES,
+                        );
                         *walk = Some(HistoryWalk { idx, draft });
                     }
                 }
@@ -2203,10 +2262,18 @@ impl App {
                     if let Some(w) = walk.take() {
                         match self.prompt_history.get(w.idx + 1) {
                             Some(newer) => {
-                                buffer = EditBuffer::from_text(newer.clone());
+                                buffer = EditBuffer::from_text(
+                                    newer.clone(),
+                                    mesimon_core::command::PROMPT_MAX_BYTES,
+                                );
                                 *walk = Some(HistoryWalk { idx: w.idx + 1, draft: w.draft });
                             }
-                            None => buffer = EditBuffer::from_text(w.draft),
+                            None => {
+                                buffer = EditBuffer::from_text(
+                                    w.draft,
+                                    mesimon_core::command::PROMPT_MAX_BYTES,
+                                )
+                            }
                         }
                     }
                 }
@@ -3556,6 +3623,96 @@ mod tests {
     fn archive(app: &mut App) {
         press(app, 'a');
         press(app, 'a');
+    }
+
+    fn field_text(app: &App) -> String {
+        match &app.mode {
+            Mode::Input { buffer, .. } => buffer.as_str().to_string(),
+            _ => panic!("no text field open"),
+        }
+    }
+
+    /// The bug: a multi-line paste into the composer arrived as keystrokes,
+    /// so the first newline saved a one-line ticket and the rest of the
+    /// clipboard walked the board as verbs. As one event it is one title.
+    #[test]
+    fn paste_into_the_composer_is_one_title() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.mode = Mode::Input {
+            purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
+            buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+        };
+        assert!(app.on_paste("fix the\nauth bug\n").unwrap());
+        assert_eq!(field_text(&app), "fix the auth bug");
+        assert!(!sent_contains(&sent, "create_ticket"), "a paste never saves");
+        assert!(app.status.is_empty(), "{}", app.status);
+        // Enter saves the whole line, once.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(sent_contains(&sent, "fix the auth bug"));
+    }
+
+    /// With no field open a paste is nothing — not a walk through the keymap.
+    #[test]
+    fn paste_on_the_board_is_inert() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        let before = sent.borrow().len();
+        assert!(!app.on_paste("j\nd\nd\nn\n").unwrap());
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.cursor_row, 0);
+        assert_eq!(sent.borrow().len(), before);
+    }
+
+    /// A paste past the field's limit is cut at the daemon's own cap and the
+    /// status says so — the one thing about a paste the user cannot see.
+    #[test]
+    fn oversized_paste_is_trimmed_and_announced() {
+        use mesimon_core::command::PROMPT_MAX_BYTES;
+        let mut app = app_three_columns();
+        app.mode = Mode::Input {
+            purpose: InputPurpose::Prompt { ticket: ulid::Ulid(1), walk: None },
+            buffer: EditBuffer::new(PROMPT_MAX_BYTES),
+        };
+        app.on_paste(&"x".repeat(PROMPT_MAX_BYTES + 100)).unwrap();
+        assert_eq!(field_text(&app).len(), PROMPT_MAX_BYTES);
+        assert!(app.status.contains("paste trimmed"), "{}", app.status);
+        assert!(app.status.contains("an ask holds at most 4 KB"), "{}", app.status);
+        // The composer's limit is the title's, and the words say so.
+        app.mode = Mode::Input {
+            purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
+            buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+        };
+        app.on_paste(&"y".repeat(mesimon_core::board::TITLE_MAX_BYTES + 1)).unwrap();
+        assert!(app.status.contains("a title holds at most 2 KB"), "{}", app.status);
+        // The next keypress clears it, like every status.
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        app.on_key(KeyCode::Char('z'), KeyModifiers::NONE).unwrap();
+        assert!(app.status.is_empty());
+    }
+
+    /// The tag picker: a name field takes the paste under its own cap, and
+    /// an open picker with no field takes nothing (never the composer
+    /// underneath).
+    #[test]
+    fn paste_into_the_picker_goes_to_the_name_field_only() {
+        use mesimon_core::board::TAG_MAX_BYTES;
+        let mut app = app_three_columns();
+        app.mode = Mode::Input {
+            purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
+            buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+        };
+        app.tag_armed =
+            Some(TagArm { ticket: None, row: 0, col: 0, naming: None, forget_armed: false });
+        assert!(!app.on_paste("HOTFIX\n").unwrap());
+        assert_eq!(field_text(&app), "");
+        app.tag_armed.as_mut().unwrap().naming =
+            Some((Naming::New, EditBuffer::new(TAG_MAX_BYTES)));
+        assert!(app.on_paste("HOT\nFIX ".repeat(6).as_str()).unwrap());
+        let name = app.tag_armed.as_ref().unwrap().naming.as_ref().unwrap().1.as_str().to_string();
+        assert!(name.starts_with("HOT FIX HOT FIX"), "{name}");
+        assert!(name.len() <= TAG_MAX_BYTES);
+        assert!(app.status.contains("a tag name holds at most 24 bytes"), "{}", app.status);
+        assert_eq!(field_text(&app), "", "the composer under the picker took nothing");
     }
 
     /// The archived list has no key of its own any more — it is a menu row.

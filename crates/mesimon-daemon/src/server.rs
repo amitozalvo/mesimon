@@ -921,7 +921,7 @@ impl Daemon {
             }
             Command::CreateTicket { column, title } => self.create_ticket(column, title),
             Command::RenameTicket { id, title } => self
-                .with_ticket(id, |t| t.title = mesimon_core::text::scrub_cells(&title, false))
+                .with_ticket(id, |t| t.title = mesimon_core::board::sanitize_title(&title))
                 .unwrap_or(Response::Err { message: "no such ticket".into() }),
             Command::DeleteTicket { id, discard_worktree } => {
                 self.delete_ticket(id, discard_worktree)
@@ -2449,8 +2449,9 @@ impl Daemon {
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
         }
-        // A title is user text on a card row; scrubbed here, at the boundary.
-        let title = mesimon_core::text::scrub_cells(&title, false);
+        // A title is user text on a card row; scrubbed and bounded here, at
+        // the boundary — the composer's own cap is a courtesy a client can lift.
+        let title = mesimon_core::board::sanitize_title(&title);
         let id = self.mint_ticket(column, title);
         self.persist_and_notify();
         Response::Created { id }

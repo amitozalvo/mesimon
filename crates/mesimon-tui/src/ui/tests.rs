@@ -1402,7 +1402,7 @@ fn golden_tag_naming_120() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
     app.cursor_row = 0;
-    let mut buffer = crate::text::EditBuffer::new();
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "HOTFIX".chars() {
         buffer.insert(c);
     }
@@ -1422,7 +1422,7 @@ fn golden_compose_tags_120() {
     // until it has an id. This is the case a bare `t` could never serve.
     let mut app = app_graphite(fixture_tagged());
     app.rich_keys = true;
-    let mut buffer = crate::text::EditBuffer::new();
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "Fix the merge race".chars() {
         buffer.insert(c);
     }
@@ -1464,7 +1464,7 @@ fn golden_prompt_field_120() {
     // T-3, in progress, with a live claude on it.
     app.cursor_col = 1;
     app.cursor_row = 0;
-    let mut buffer = crate::text::EditBuffer::new();
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "rebase onto main".chars() {
         buffer.insert(c);
     }
@@ -1499,7 +1499,7 @@ fn test_an_empty_prompt_field_names_itself() {
     app.cursor_row = 0;
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
-        buffer: crate::text::EditBuffer::new(),
+        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     let lines = render(&app, 120, 30);
     assert!(
@@ -1526,7 +1526,7 @@ fn test_the_prompt_field_moves_no_text() {
     let before = render(&app, 120, 30);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
-        buffer: crate::text::EditBuffer::new(),
+        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     let after = render(&app, 120, 30);
     let card = before
@@ -1645,7 +1645,7 @@ fn golden_composer_selector_120() {
     // which `shift_enter_is_inert_without_rich_keys` pins from the keymap side.
     let mut app = app_graphite(fixture(false));
     app.rich_keys = true;
-    let mut buffer = crate::text::EditBuffer::new();
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "Ship the diff viewer".chars() {
         buffer.insert(c);
     }
@@ -2051,7 +2051,7 @@ fn test_no_banned_sgr() {
                 p.cursor_col = 1;
                 p.mode = Mode::Input {
                     purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
-                    buffer: crate::text::EditBuffer::new(),
+                    buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
                 cells(&p, 120, 30)
             },
@@ -2128,7 +2128,7 @@ fn test_no_drawn_structure() {
         },
         {
             let mut t = app_graphite(fixture_tagged());
-            let mut buf = crate::text::EditBuffer::new();
+            let mut buf = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
             for c in "HOTFIX".chars() {
                 buf.insert(c);
             }
@@ -2147,7 +2147,7 @@ fn test_no_drawn_structure() {
             let mut p = app_graphite(fixture(false));
             p.rich_keys = true;
             p.cursor_col = 1;
-            let mut buf = crate::text::EditBuffer::new();
+            let mut buf = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
             for c in "rebase onto main".chars() {
                 buf.insert(c);
             }

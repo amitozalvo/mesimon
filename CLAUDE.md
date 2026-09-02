@@ -179,6 +179,13 @@ tmux socket, which is what lets nextest run them in parallel. `prompt_e2e.rs` is
 boundary it crosses — `scrub_cells` before it is drawn, `scrub_text` before it leaves for
 another process. The hazard lists live there and nowhere else; do not write a sanitizer.
 
+**A paste is ONE event, and only a text field takes it.** `init_terminal` arms bracketed paste,
+`App::tick` routes `Event::Paste` to `App::on_paste`, and `EditBuffer::paste` flattens it to one
+line (newlines are spaces, never Enters) under the field's byte `limit` — the same number the
+daemon caps the text at (`board::TITLE_MAX_BYTES` 2 KB via `sanitize_title`, `TAG_MAX_BYTES`,
+`command::PROMPT_MAX_BYTES`); a cut says `paste trimmed ∙ … holds at most …` in the status. A
+new text field passes its limit to `EditBuffer::new`. (STALE-MAP "A paste is one event".)
+
 **Git, in the daemon,** is `crate::git::git(repo)`, never `Command::new("git")`: it scrubs the
 `GIT_*` targeting variables a dogfooding daemon inherits.
 
