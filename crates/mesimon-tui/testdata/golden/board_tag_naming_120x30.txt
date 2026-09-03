@@ -1,4 +1,4 @@
- mesimon > kanban-tui   7 tickets
+ BOARD   mesimon > kanban-tui   7 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
@@ -20,11 +20,11 @@
 
 
 
-
- TAGS Fix OSC-11 detection
-  1  [   HOTFIX]     FTR      REGR   + new
-  2     •STAGING      PRODUCTION   + new
-  3      auth   + new
-  4      p1   + new
-  5   + new
- TAG  enter save ∙ esc cancel ∙ ? keys
+╭─ TAGS ∙ Fix OSC-11 detection ────────────────────────────────────────────────────────────────────────────────────────╮
+│  1  [   HOTFIX]     FTR      REGR   + new                                                                            │
+│  2     •STAGING      PRODUCTION   + new                                                                              │
+│  3      auth   + new                                                                                                 │
+│  4      p1   + new                                                                                                   │
+│  5   + new                                                                                                           │
+╰──────────────────────────────────────────────────────────────────────────────────────────── enter save ∙ esc cancel ─╯
+ TAG

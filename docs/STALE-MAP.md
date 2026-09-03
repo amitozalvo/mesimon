@@ -3405,3 +3405,24 @@ daemon restart inside the band still means gone. The tui e2e (`m1_acceptance_hea
 a note before the delete and reads it after the undo. Deferred: a repair road for an orphan
 that already exists (the editor could open it empty so a save re-creates the body) — the one
 on the author's board was healed by hand through `WriteNote`.
+
+## Shift+Enter in the editor is a newline (2026-09-03, user request)
+
+**Refuted:** the editor the composer grows into carried the one-line composer's Shift+Enter
+("save + ask claude") while composing, argued as the same sentence in a bigger room rather than a
+fourth home (the note editor left the atom unbound). In use it was the wrong reflex: the editor
+is a BODY, and every chat-shaped box the user types into — claude's own included — has taught the
+finger that Shift+Enter breaks a line. The press that wanted a blank line in a description minted
+the ticket and started an agent; in a note it did nothing at all.
+
+**Built:** `Scope::Editor` binds `Key::ShiftEnter` to `Verb::EditorNewline`, the same verb as
+`Enter` — in the body a newline, in the composer's title the way down to the body — for the
+description and a note alike, unhinted (`enter` beside it already teaches the verb), `prio: 0`.
+Gated on `rich_keys` like every ShiftEnter binding, and this is the one place the legacy-floor
+degradation is exact: a terminal that cannot spell the atom sends `Enter`, which is the same verb.
+`App::editor_save` lost its `start` flag (the editor never asks now), so the composing road is `^s`
+to mint and then the board's Shift+Enter on the minted card, which starts claude on the title (the
+"empty seat" block above) — the sentence keeps its three homes and nothing is lost.
+`shift_enter_asks_claude_at_every_stage` now asserts the editor resolves to the newline, and
+`shift_enter_in_the_editor_is_a_newline` (app tests) types through it in both editors. Golden
+`editor_compose_120x30` drops the hint from the footer.

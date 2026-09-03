@@ -54,15 +54,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
     };
     let Some(d) = app.diff.as_ref() else { return };
 
-    // ---- top block: breadcrumb > title > diff, identity, painted band -----
-    let mut head = chrome::breadcrumb(app);
-    let sep = Style::default().fg(theme.rest.dim3);
-    head.push(Span::styled(" > ".to_string(), sep));
-    let prefix_w: usize = head.iter().map(|s| s.content.width()).sum();
-    let budget = (area.width as usize).saturating_sub(prefix_w + " > diff ".len());
-    head.push(Span::styled(truncate(&ticket.title, budget), Style::default().fg(theme.rest.base)));
-    head.push(Span::styled(" > ".to_string(), sep));
-    head.push(Span::styled("diff".to_string(), theme.dim1()));
+    // ---- top block: the header (DIFF chip, breadcrumb, the ticket as its
+    // leaf), identity, painted band --------------------------------------------
+    chrome::draw_header(
+        f,
+        Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+        app,
+        Some(&ticket.title),
+    );
 
     let (adds, dels) = d
         .files
@@ -90,10 +89,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
         }
         None => Line::default(),
     };
-    let top = vec![Line::from(head), Line::default(), Line::from(ident), band];
+    let top = vec![Line::default(), Line::from(ident), band];
     f.render_widget(
         Paragraph::new(top),
-        Rect { x: area.x, y: area.y, width: area.width, height: 4.min(area.height) },
+        Rect { x: area.x, y: area.y + 1, width: area.width, height: 3.min(area.height - 1) },
     );
 
     // ---- body: file list pane + hunk pane (or one of them, below the

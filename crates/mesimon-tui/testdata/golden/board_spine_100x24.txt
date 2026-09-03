@@ -1,4 +1,4 @@
- mesimon > kanban-tui  !1    7 tickets
+ BOARD   mesimon > kanban-tui  !1    7 tickets
 
    TODO                        2    IN PROGRESS                2    REVIEW                     2
 
@@ -21,4 +21,4 @@
 
                                                                                                   1
 
- BOARD  enter ticket page ∙ tab needs you ∙ o open ticket ∙ option+hjkl move card ∙ ? keys
+ enter ticket page ∙ tab needs you ∙ o new ticket ∙ option+hjkl move card         esc menu ∙ ? keys

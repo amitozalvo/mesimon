@@ -1,11 +1,13 @@
- mesimon > kanban-tui  !1  > Adopt drawer import
+ TICKET   mesimon > kanban-tui  !1
 
- IN PROGRESS ∙ created by you >1y ago
+ Adopt drawer import
+ IN PROGRESS ∙ >1y here ∙ created >1y ago
 
   SESSIONS                                                                                       1
 
  ! ✻ claude                                                                                    >1y
      Bash(rm -rf node_modules)
+  c claude ∙ s shell ∙ x sleep
 
 
 
@@ -19,6 +21,4 @@
 
 
 
-
-
- TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ ? keys
+ jk select session ∙ enter focus ∙ tab needs you ∙ r rename ∙ d delete ∙ n describe          ? keys

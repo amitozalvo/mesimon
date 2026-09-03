@@ -1,11 +1,13 @@
- mesimon > kanban-tui > Fix OSC-11 detection
+ TICKET   mesimon > kanban-tui
 
- IN PROGRESS ∙ created by you >1y ago ∙  BUG   STAGING
+ Fix OSC-11 detection
+ IN PROGRESS ∙ >1y here ∙ created >1y ago ∙  BUG   STAGING
 
   PREVIEW                                                                                  SESSIONS                  2
 
     ● working                                                                             ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
+                                                                                           c claude ∙ s shell ∙ x sleep
 
 
 
@@ -18,13 +20,11 @@
 
 
 
-
-
-
- TAGS Fix OSC-11 detection
-  1     •BUG  [   FTR]     REGR   + new
-  2     •STAGING      PRODUCTION   + new
-  3      auth   + new
-  4      p1   + new
-  5   + new
- TAG  hjkl move ∙ HJKL move tag ∙ 1-0 group ∙ enter add ∙ tab colour ∙ r rename ∙ d delete ∙ esc done ∙ ? keys
+╭─ TAGS ∙ Fix OSC-11 detection ────────────────────────────────────────────────────────────────────────────────────────╮
+│  1     •BUG  [   FTR]     REGR   + new                                                                               │
+│  2     •STAGING      PRODUCTION   + new                                                                              │
+│  3      auth   + new                                                                                                 │
+│  4      p1   + new                                                                                                   │
+│  5   + new                                                                                                           │
+╰──────────────────── hjkl move ∙ HJKL move tag ∙ 1-0 group ∙ enter add ∙ tab colour ∙ r rename ∙ d delete ∙ esc done ─╯
+ TAG

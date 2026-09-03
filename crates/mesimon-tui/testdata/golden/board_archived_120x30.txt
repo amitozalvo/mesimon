@@ -1,4 +1,4 @@
- mesimon > kanban-tui   6 tickets                                                              ◦ archive 1 ticket (esc)
+ BOARD   mesimon > kanban-tui   6 tickets                                                      ◦ archive 1 ticket (esc)
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
@@ -27,4 +27,4 @@
 
 
 
- BOARD  enter ticket page ∙ o open ticket ∙ option+hjkl move card ∙ r rename ∙ ? keys
+ enter ticket page ∙ o new ticket ∙ option+hjkl move card ∙ r rename                                  esc menu ∙ ? keys

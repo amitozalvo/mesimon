@@ -1,30 +1,30 @@
- mesimon > kanban-tui   7 tickets
+ BOARD   mesimon > kanban-tui   7 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
-
-   Decay treatments       >1y    Ship the diff viewer                                        z Painted accent bar  >1y
-                                 NEW TICKET ∙ TODO column ∙ ⎇ shared
-   Keymap validator       >1y
-                                 why
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
- TAGS new ticket
-  1  [   BUG]     FTR      REGR   + new
-  2      STAGING      PRODUCTION   + new
-  3      auth   + new
-  4      p1   + new
-  5   + new
- TAG  hjkl move ∙ HJKL move tag ∙ 1-0 group ∙ enter add ∙ tab colour ∙ r rename ∙ d delete ∙ esc done ∙ ? keys
+                              ╭─ NEW TICKET ──────────────────────────────────────────────╮
+   Decay treatments       >1y │  Ship the diff viewer                                     │  z Painted accent bar  >1y
+                              │  TODO column ∙ ⎇ shared                                   │
+   Keymap validator       >1y │                                                           │
+                              │  why                                                      │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+╭─ TAGS ∙ new ticket ──────────────────────────────────────────────────────────────────────────────────────────────────╮
+│  1  [   BUG]     FTR      REGR   + new                                                                               │
+│  2      STAGING      PRODUCTION   + new                                                                              │
+│  3      auth   + new                                                                                                 │
+│  4      p1   + new                                                                                                   │
+│  5   + new                                                                                                           │
+╰──────────────────── hjkl move ∙ HJKL move tag ∙ 1-0 group ∙ enter add ∙ tab colour ∙ r rename ∙ d delete ∙ esc done ─╯
+ TAG

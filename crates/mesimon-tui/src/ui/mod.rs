@@ -7,6 +7,7 @@
 mod board;
 mod card;
 mod chrome;
+mod dialog;
 pub(crate) mod diff;
 mod editor;
 mod help;
@@ -32,6 +33,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Some(bg) = app.theme.bg {
         f.render_widget(Block::default().style(Style::default().bg(bg)), f.area());
     }
+    // This frame's dialog frames, recorded as they are drawn (`dialog::frame`).
+    app.frames.borrow_mut().clear();
 
     // Live-resize floor (07 §2.4): a notice, never a broken layout.
     let area = f.area();
@@ -115,7 +118,7 @@ pub fn draw(f: &mut Frame, app: &App) {
         ])
         .split(f.area());
 
-    chrome::draw_header(f, outer[0], app);
+    chrome::draw_header(f, outer[0], app, None);
     board::draw_columns(f, outer[2], app);
     chrome::draw_advisory(f, outer[3], app);
     chrome::draw_footer(f, outer[4], app);
@@ -132,10 +135,10 @@ pub fn draw(f: &mut Frame, app: &App) {
         chrome::draw_footer(f, outer[4], app);
     }
     if let Mode::External { idx } = &app.mode {
-        chrome::draw_drawer(f, app, *idx);
+        dialog::draw_drawer(f, app, *idx);
     }
     if let Mode::Archived { idx } = &app.mode {
-        chrome::draw_archived(f, app, *idx);
+        dialog::draw_archived(f, app, *idx);
     }
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);

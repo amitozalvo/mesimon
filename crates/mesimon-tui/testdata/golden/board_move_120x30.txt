@@ -1,4 +1,4 @@
- mesimon > kanban-tui   7 tickets
+ BOARD   mesimon > kanban-tui   7 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   3    DONE                    1
 
@@ -27,4 +27,4 @@
 
 
 
- MOVE  hjkl place ∙ 1-9 column ∙ enter drop ∙ esc cancel ∙ ? keys
+ MOVE  hjkl place ∙ 1-9 column ∙ enter drop ∙ esc cancel                                                         ? keys

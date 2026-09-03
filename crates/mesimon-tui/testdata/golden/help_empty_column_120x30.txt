@@ -1,30 +1,30 @@
- mesimon > kanban-tui   6 tickets
+ BOARD   mesimon > kanban-tui   6 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
-   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    o  open ticket
-                                  board — everything you can press here
-   Keymap validator       >1y                                                          1y
-                                  MOVE AROUND
-                                    hjkl      move around
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    o  new ticket
 
-                                  TICKETS
-                                    o         open ticket
-
-                                  VIEW
-                                    p         show replies
-
-                                  APP
-                                    esc       menu
-                                    q         quit
-                                    ?         keys
-                                    ^L        redraw
-                                    ^Z        suspend mesimon
-
-
-
+   Keymap validator       >1y    ╭─ KEYS ∙ board ─────────────────────────────────────╮1y
+                                 │ MOVE AROUND                                        │
+                                 │   hjkl      move around                            │
+                                 │                                                    │
+                                 │ TICKETS                                            │
+                                 │   o         new ticket                             │
+                                 │                                                    │
+                                 │ VIEW                                               │
+                                 │   p         show replies                           │
+                                 │                                                    │
+                                 │ APP                                                │
+                                 │   esc       menu                                   │
+                                 │   q         quit                                   │
+                                 │   ?         keys                                   │
+                                 │   ^L        redraw                                 │
+                                 │   ^Z        suspend mesimon                        │
+                                 ╰────────────────────────────────────────────────────╯
 
 
 
 
- BOARD  o open ticket ∙ ? keys
+
+
+ o new ticket                                                                                         esc menu ∙ ? keys

@@ -1,6 +1,6 @@
- mesimon > kanban-tui > Fix OSC-11 detection
+ NOTE   mesimon > kanban-tui > Fix OSC-11 detection
 
- NEW NOTE
+ new note
 
   the window to scroll under the cursor, which is what the narrow golden is for, and then some more
  short
@@ -21,4 +21,4 @@
 
 
 
- NOTE  esc close ∙ ? keys
+ esc close

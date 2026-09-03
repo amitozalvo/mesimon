@@ -489,6 +489,11 @@ pub struct App {
     /// rectangle Tab's dialog grows out of. Draw-side, like `preview_view`:
     /// the card's place on screen is a fact of the frame, not of the board.
     pub compose_card: Cell<Option<ratatui::layout::Rect>>,
+    /// Every dialog frame the last draw put on screen (`ui::dialog::frame`
+    /// records, `ui::draw` clears). Draw-side, like `compose_card`: it is
+    /// how `test_no_drawn_structure` tells a frame's box glyph, which the L1
+    /// law admits, from one that leaked in anywhere else, which it bans.
+    pub frames: std::cell::RefCell<Vec<ratatui::layout::Rect>>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
@@ -624,6 +629,7 @@ impl App {
             preview_scroll: Cell::new(None),
             preview_view: Cell::new(PreviewView::default()),
             compose_card: Cell::new(None),
+            frames: std::cell::RefCell::new(Vec::new()),
             spin_epoch: Cell::new(None),
             diff: None,
             pending_attach: None,
@@ -2638,8 +2644,7 @@ impl App {
         }
         match verb {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
-            Some(Verb::EditorSave) => return self.editor_save(ed, false),
-            Some(Verb::SaveStart) => return self.editor_save(ed, true),
+            Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::TagPrefix) => {
                 self.mode = Mode::Editor(ed);
                 self.tag_armed = Some(TagArm {
@@ -2757,11 +2762,12 @@ impl App {
         Ok(())
     }
 
-    /// `^s` (and, composing, Shift+Enter with `start`). Composing mints the
-    /// ticket and closes. A note is written and the editor STAYS — it is a
+    /// `^s`. Composing mints the ticket and closes — never asking claude:
+    /// that is the one-line composer's Shift+Enter, and the editor's is a
+    /// newline. A note is written and the editor STAYS — it is a
     /// document being kept, not a field being submitted — and the same key
     /// on a saved note tells the ticket's claude to go read it.
-    fn editor_save(&mut self, mut ed: Editor, start: bool) -> Result<()> {
+    fn editor_save(&mut self, mut ed: Editor) -> Result<()> {
         match ed.purpose.clone() {
             EditorPurpose::Compose { workspace, tags } => {
                 let title = ed.title.as_str().trim().to_string();
@@ -2776,7 +2782,7 @@ impl App {
                     Some(ed.body.as_str().to_string())
                 };
                 self.mode = Mode::Normal;
-                self.mint_ticket(title, workspace, tags, body, start)
+                self.mint_ticket(title, workspace, tags, body, false)
             }
             EditorPurpose::Note { ticket, note } => {
                 let body = ed.body.as_str().to_string();
@@ -4420,8 +4426,12 @@ mod tests {
         assert!(app.status.contains("enter starts claude"), "{}", app.status);
     }
 
+    /// Shift+Enter in the editor is a newline, in the composer's description
+    /// and in a note alike (2026-09-03, user request) — it minted the ticket
+    /// and started claude before, and the press that wanted a blank line
+    /// got an agent. Nothing leaves for the daemon.
     #[test]
-    fn shift_enter_in_the_editor_mints_and_starts() {
+    fn shift_enter_in_the_editor_is_a_newline() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         press(&mut app, 'o');
@@ -4432,10 +4442,32 @@ mod tests {
         for c in "why".chars() {
             press(&mut app, c);
         }
+        let before = sent.borrow().len();
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert_eq!(app.mode, Mode::Normal);
-        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
-        assert!(sent_contains(&sent, "WriteNote"), "{:?}", sent.borrow());
+        press(&mut app, 'x');
+        let ed = editor(&app);
+        assert_eq!(ed.body.as_str(), "why\nx");
+        assert!(matches!(ed.purpose, EditorPurpose::Compose { .. }), "still composing");
+        assert_eq!(sent.borrow().len(), before, "nothing sent: {:?}", sent.borrow());
+        // In the title it is Enter's other meaning: down to the body.
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(editor(&app).focus, Field::Title);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(editor(&app).focus, Field::Body);
+        assert_eq!(editor(&app).title.as_str(), "Ship it");
+
+        // A note too.
+        let (mut app, sent) = app_with_note();
+        app.rich_keys = true;
+        press(&mut app, 'n');
+        let before = sent.borrow().len();
+        // The note opens at its top; End is the end of the heading line.
+        app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        press(&mut app, 'x');
+        assert_eq!(editor(&app).body.as_str(), "# Why\nx\n\nbecause");
+        assert_eq!(sent.borrow().len(), before, "nothing sent: {:?}", sent.borrow());
     }
 
     #[test]

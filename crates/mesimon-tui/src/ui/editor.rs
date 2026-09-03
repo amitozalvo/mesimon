@@ -17,9 +17,8 @@
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Editor, EditorPurpose, Field};
 use crate::layout::{self, Slot};
@@ -27,7 +26,10 @@ use crate::tags;
 use crate::text::{age_slot, area_window, created_at_epoch_ms, edit_window, truncate};
 use crate::theme::{BarWeight, Ramp, TagLevel, Theme};
 
+use mesimon_core::keymap::Scope;
+
 use super::chrome;
+use super::dialog;
 
 /// Rows above the body, full screen: title, breathing, context, breathing.
 const HEAD_ROWS: u16 = 4;
@@ -64,19 +66,37 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
     let theme = &app.theme;
     let area = f.area();
 
-    // ---- line 0: breadcrumb + the title -----------------------------------
-    let mut head = chrome::breadcrumb(app);
-    head.push(Span::styled(" > ".to_string(), Style::default().fg(theme.rest.dim3)));
-    let prefix_w: usize = head.iter().map(|s| s.content.width()).sum();
-    let (spans, cx) =
-        title_spans(ed, (area.width as usize).saturating_sub(prefix_w + 1), &theme.rest);
-    head.extend(spans);
-    let mut cursor =
-        cx.map(|cx| ((prefix_w as u16 + cx).min(area.width.saturating_sub(1)), area.y));
-
-    let mut ctx = context_line(app, ed, &theme.rest);
+    // ---- row 0: the header — the NOTE chip, the breadcrumb, and the ticket
+    // the note belongs to as its leaf (T-158: the editor never named its
+    // ticket before). Row 2 is the context line; composing full screen (a
+    // room the composer no longer opens, kept for the shape) the title is
+    // typed on row 2 and the context sits under it.
+    let leaf = match &ed.purpose {
+        EditorPurpose::Note { .. } => Some(ed.title.as_str().to_string()),
+        EditorPurpose::Compose { .. } => None,
+    };
+    chrome::draw_header(
+        f,
+        Rect { x: area.x, y: area.y, width: area.width, height: 1 },
+        app,
+        leaf.as_deref(),
+    );
+    let mut ctx = context_line(app, ed, &theme.rest, false);
     ctx.spans.insert(0, Span::raw(" ".repeat(PAGE_PAD as usize)));
-    let top = vec![Line::from(head), Line::default(), ctx, Line::default()];
+    let mut cursor = None;
+    let top = match &ed.purpose {
+        EditorPurpose::Note { .. } => vec![Line::default(), Line::default(), ctx, Line::default()],
+        EditorPurpose::Compose { .. } => {
+            let (mut spans, cx) = title_spans(
+                ed,
+                (area.width as usize).saturating_sub(PAGE_PAD as usize + 1),
+                &theme.rest,
+            );
+            spans.insert(0, Span::raw(" ".repeat(PAGE_PAD as usize)));
+            cursor = cx.map(|cx| ((PAGE_PAD + cx).min(area.width.saturating_sub(1)), area.y + 2));
+            vec![Line::default(), Line::default(), Line::from(spans), ctx]
+        }
+    };
     f.render_widget(
         Paragraph::new(top),
         Rect { x: area.x, y: area.y, width: area.width, height: HEAD_ROWS.min(area.height) },
@@ -124,8 +144,29 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         return;
     }
     let (surface, ink) = surface(theme);
-    f.render_widget(Clear, area);
-    f.render_widget(Block::default().style(surface), area);
+    // Whether `dialog::frame` will draw one (its floor): the context row
+    // says NEW TICKET itself when there is no edge to say it.
+    let framed = area.width >= 4 && area.height >= 3;
+    // Framed (T-158): the frame stands one cell outside the column run on
+    // every side — in the gutters and the breathing rows the inset kept
+    // clear — so the stripe still sits on the column's own bar cell and the
+    // cards beside it stay whole. Below three rows `dialog::frame` draws no
+    // frame and hands the area back, which is what keeps frame zero of the
+    // grow the card itself.
+    let area = dialog::frame(
+        f,
+        app,
+        area,
+        surface,
+        ink,
+        dialog::Edges {
+            title: dialog::title(ink, "NEW TICKET"),
+            tail: dialog::keys(app, Scope::Editor, ink, (area.width as usize).saturating_sub(6)),
+        },
+    );
+    if area.width <= DIALOG_FRAME || area.height == 0 {
+        return;
+    }
 
     // ---- the stripe: the card's bar, one cell per row, wearing the tags
     // exactly as the real card will (`render_edit` paints the phantom card's
@@ -155,7 +196,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     };
     let (spans, cx) = title_spans(ed, inner.width as usize, ink);
     let mut cursor = cx.map(|cx| ((inner.x + cx).min(area.x + area.width - 1), inner.y));
-    let head = vec![Line::from(spans), context_line(app, ed, ink), Line::default()];
+    let head = vec![Line::from(spans), context_line(app, ed, ink, framed), Line::default()];
     f.render_widget(
         Paragraph::new(head),
         Rect { height: DIALOG_HEAD_ROWS.min(inner.height), ..inner },
@@ -194,11 +235,14 @@ fn dialog_rect(app: &App, cards: Rect) -> Rect {
         .collect();
     let (x, width) = snap_to_columns(&cols, cards.width)
         .unwrap_or((DIALOG_INSET_X, cards.width.saturating_sub(2 * DIALOG_INSET_X).max(1)));
+    // The frame's cell on every side: the gutter (or page pad) beside the
+    // run, the breathing row over the cards, the row under them.
+    let y = cards.y + DIALOG_INSET_Y.min(cards.height.saturating_sub(1));
     Rect {
-        x: cards.x + x,
-        y: cards.y + DIALOG_INSET_Y.min(cards.height.saturating_sub(1)),
-        width,
-        height: cards.height.saturating_sub(2 * DIALOG_INSET_Y).max(1),
+        x: cards.x + x.saturating_sub(1),
+        y: y.saturating_sub(1),
+        width: width + 2,
+        height: cards.height.saturating_sub(2 * DIALOG_INSET_Y).max(1) + 2,
     }
 }
 
@@ -225,10 +269,10 @@ fn snap_to_columns(cols: &[(u16, u16)], zone_w: u16) -> Option<(u16, u16)> {
 /// where the profile paints one, and the page's where it does not (light-256
 /// and mono carry the cursor structurally, and a whole dialog in reverse
 /// video would be a fourth SGR-7 use, not one of the three sanctioned).
-fn surface(theme: &Theme) -> (Style, &Ramp) {
+fn surface(theme: &Theme) -> (Option<ratatui::style::Color>, &Ramp) {
     match theme.selected_bg {
-        Some(bg) => (Style::default().bg(bg), &theme.sel),
-        None => (theme.bg.map(|bg| Style::default().bg(bg)).unwrap_or_default(), &theme.rest),
+        Some(bg) => (Some(bg), &theme.sel),
+        None => (theme.bg, &theme.rest),
     }
 }
 
@@ -276,7 +320,7 @@ fn title_spans(ed: &Editor, budget: usize, ink: &Ramp) -> (Vec<Span<'static>>, O
 /// The quiet line under the title: what this is, and what rides along.
 /// Composing, it names the COLUMN the ticket lands in — the panel covers
 /// the cards, so the cursor column's band alone no longer says it.
-fn context_line(app: &App, ed: &Editor, ink: &Ramp) -> Line<'static> {
+fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'static> {
     let theme = &app.theme;
     let dim1 = Style::default().fg(ink.dim1);
     let dim2 = Style::default().fg(ink.dim2);
@@ -292,9 +336,13 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp) -> Line<'static> {
                 Some(mesimon_core::board::WorkspaceStrategy::AdoptExisting) => "adopt",
                 Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
             };
-            ctx_spans.push(Span::styled("NEW TICKET".to_string(), dim2));
+            // Framed, the top edge already says NEW TICKET; the row starts
+            // at the column. (Unframed — frame zero of the grow, a terminal
+            // too short for a frame — it says it here.)
+            if !framed {
+                ctx_spans.push(Span::styled("NEW TICKET ∙ ".to_string(), dim2));
+            }
             if let Some(col) = app.columns().get(app.cursor_col) {
-                ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
                 ctx_spans.push(Span::styled(col.to_uppercase(), dim1));
                 ctx_spans.push(Span::styled(" column".to_string(), dim2));
             }
@@ -318,29 +366,31 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp) -> Line<'static> {
         }
         EditorPurpose::Note { ticket, note } => {
             let meta = note.and_then(|id| app.board.ticket(*ticket).and_then(|t| t.note(id)));
+            // The header's chip says NOTE and its leaf names the ticket;
+            // this row says WHICH note — the description or another — and
+            // who last wrote it (T-158).
             match meta {
                 Some(m) => {
                     let who = super::ticket::author_word(&m.edited_by);
                     let when = created_at_epoch_ms(&m.edited_at)
-                        .map(|ms| format!(" {} ago", age_slot(now, ms, false)))
+                        .map(|ms| format!(" {} ago", age_slot(now, ms, false).trim()))
                         .unwrap_or_default();
-                    ctx_spans.push(Span::styled("NOTE".to_string(), dim2));
-                    ctx_spans.push(Span::styled(format!(" ∙ edited by {who}{when}"), dim2));
                     let first = app
                         .board
                         .ticket(*ticket)
                         .and_then(|t| t.description())
                         .is_some_and(|d| d.id == m.id);
-                    if first {
-                        ctx_spans.push(Span::styled(" ∙ the description".to_string(), dim2));
-                    }
+                    let what = if first { "the description" } else { "a note" };
+                    ctx_spans.push(Span::styled(what.to_string(), dim1));
+                    ctx_spans.push(Span::styled(format!(" ∙ edited by {who}{when}"), dim2));
                 }
                 None => {
                     let first =
                         app.board.ticket(*ticket).is_some_and(|t| t.description().is_none());
-                    let what =
-                        if first { "NEW NOTE ∙ becomes the description" } else { "NEW NOTE" };
-                    ctx_spans.push(Span::styled(what.to_string(), dim2));
+                    ctx_spans.push(Span::styled("new note".to_string(), dim1));
+                    if first {
+                        ctx_spans.push(Span::styled(" ∙ becomes the description".to_string(), dim2));
+                    }
                 }
             }
         }

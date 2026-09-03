@@ -773,3 +773,25 @@ mod tests {
         assert_eq!(state_word(&SessionState::Sleeping), "sleeping");
     }
 }
+
+/// The six cells a dialog's frame is drawn from. The ONE place the L1 law
+/// admits box drawing (author 2026-09-03, T-158): a floating dialog's own
+/// perimeter, and nothing else — `test_no_drawn_structure` checks every
+/// box-drawing cell on screen against the frames the draw recorded. The
+/// ascii tier (mono) spells the same frame with `+ - |`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct FrameGlyphs {
+    pub tl: char,
+    pub tr: char,
+    pub bl: char,
+    pub br: char,
+    pub h: char,
+    pub v: char,
+}
+
+pub(crate) fn frame_set(tier: Tier) -> FrameGlyphs {
+    match tier {
+        Tier::Unicode => FrameGlyphs { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│' },
+        Tier::Ascii => FrameGlyphs { tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|' },
+    }
+}

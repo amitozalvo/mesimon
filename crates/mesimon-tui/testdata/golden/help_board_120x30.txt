@@ -1,30 +1,30 @@
- mesimon > kanban-tui  !1    7 tickets
-                                  board — everything you can press here
-   TODO                     2                                                           2    DONE                    1
-                                  MOVE AROUND
-   Decay treatments       >1y       hjkl        move around                            1y    z Painted accent bar  >1y
-                                    g           top of column
-   Keymap validator       >1y       G           bottom of column                       1y
-                                    enter       go to the agent
-                                    space       ticket page, even past a live agent
-                                    tab         needs you
-                                    shift+tab   previous needs you
+ BOARD   mesimon > kanban-tui  !1    7 tickets
 
-                                  TICKETS
-                                    o           open ticket
-                                    > <         move card, aiming
-                                    option+hjkl move card
-                                    r           rename
-                                    n           describe
-                                    ^t          tags
-                                    a           archive
-                                    d           delete
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-                                  SESSIONS
-                                    c           claude
-                                    s           shell
-                                    x           sleep sessions
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+      ╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮
+   Key│ MOVE AROUND                                           SESSIONS                                           │
+      │   hjkl        move around                               c           claude                               │
+      │   g           top of column                             s           shell                                │
+      │   G           bottom of column                          x           sleep sessions                       │
+      │   enter       go to the agent                                                                            │
+      │   space       ticket page, even past a live agent     VIEW                                               │
+      │   tab         needs you                                 p           show replies                         │
+      │   shift+tab   previous needs you                                                                         │
+      │                                                       APP                                                │
+      │ TICKETS                                                 esc         menu                                 │
+      │   o           new ticket                                q           quit                                 │
+      │   > <         move card, aiming                         ?           keys                                 │
+      │   option+hjkl move card                                 ^L          redraw                               │
+      │   r           rename                                    ^Z          suspend mesimon                      │
+      │   n           describe                                                                                   │
+      │   ^t          tags                                                                                       │
+      │   a           archive                                                                                    │
+      │   d           delete                                                                                     │
+      ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
-                                  VIEW
-                                    p           show replies
- BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ option+hjkl move card ∙ r rename ∙ ? keys
+
+
+
+ enter go to the agent ∙ tab needs you ∙ o new ticket ∙ option+hjkl move card ∙ r rename              esc menu ∙ ? keys

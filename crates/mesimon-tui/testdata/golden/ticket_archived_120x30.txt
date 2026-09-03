@@ -1,10 +1,13 @@
- mesimon > kanban-tui > Painted accent bar
+ TICKET   mesimon > kanban-tui
 
- DONE ∙ created by you >1y ago ∙ archived
+ Painted accent bar
+ DONE ∙ >1y here ∙ created >1y ago ∙ archived
 
                                                                                            SESSIONS                  1
 
                                                                                           z $ bash                 >1y
+                                                                                           c start claude ∙ s shell
+                                                                                           x wake
 
 
 
@@ -24,7 +27,4 @@
 
 
 
-
-
-
- TICKET  jk select session ∙ enter wake ∙ c start claude ∙ s shell ∙ x wake ∙ r rename ∙ d delete ∙ q board ∙ ? keys
+ jk select session ∙ enter wake ∙ r rename ∙ d delete ∙ n describe ∙ q board                                     ? keys

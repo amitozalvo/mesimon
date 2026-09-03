@@ -1,4 +1,4 @@
- mesimon > kanban-tui   7 tickets
+ BOARD   mesimon > kanban-tui   7 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
@@ -27,4 +27,4 @@
 
 
 
- BOARD  enter go to the agent ∙ o open ticket ∙ option+hjkl move card ∙ r rename ∙ ? keys
+ enter go to the agent ∙ o new ticket ∙ option+hjkl move card ∙ r rename                              esc menu ∙ ? keys

@@ -1,6 +1,7 @@
- mesimon > kanban-tui > Fix OSC-11 detection
+ TICKET   mesimon > kanban-tui
 
- IN PROGRESS ∙ created by you >1y ago
+ Fix OSC-11 detection
+ IN PROGRESS ∙ >1y here ∙ created >1y ago
 
  What changed
 
@@ -15,16 +16,15 @@
 
     Repro steps                                                                           ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
-    1. open the board
-    2. press p                                                                             NOTES                     2
-    3. watch the peek
+    1. open the board                                                                      c claude ∙ s shell
+    2. press p
+    3. watch the peek                                                                      NOTES                     2
+
                                                                                            ≡ What changed      you >1y
                                                                                            ≡ Repro steps    claude >1y
+                                                                                           N new note
 
 
 
 
-
-
-
- TICKET  jk select session ∙ enter edit note ∙ c claude ∙ s shell ∙ r rename ∙ d delete ∙ n edit note ∙ ? keys
+ jk select session ∙ enter edit note ∙ r rename ∙ d delete ∙ n edit note ∙ q board                               ? keys

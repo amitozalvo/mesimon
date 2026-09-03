@@ -1,30 +1,30 @@
- mesimon > kanban-tui   7 tickets
+ BOARD   mesimon > kanban-tui   7 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+                              ╭─ NEW TICKET ──────────────────────────────────────────────╮
+   Decay treatments       >1y │  Ship the diff viewer                                     │  z Painted accent bar  >1y
+                              │  TODO column ∙ ⎇ worktree ∙  BUG                          │
+   Keymap validator       >1y │                                                           │
+                              │  ## Why                                                   │
+                              │                                                           │
+                              │  The diff viewer is read-only and the `v` key is free.    │
+                              │                                                           │
+                              │  - one pane under 107 cols                                │
+                              │  - `z` cycles the density                                 │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              ╰───────────────────────────────────── esc close ∙ ^t tags ─╯
 
-   Decay treatments       >1y    Ship the diff viewer                                        z Painted accent bar  >1y
-                                 NEW TICKET ∙ TODO column ∙ ⎇ worktree ∙  BUG
-   Keymap validator       >1y
-                                 ## Why
 
-                                 The diff viewer is read-only and the `v` key is free.
-
-                                 - one pane under 107 cols
-                                 - `z` cycles the density
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
- NEW  shift+enter save + ask claude ∙ esc close ∙ ^t tags ∙ shift+tab shared checkout / own worktree ∙ ? keys
+ NEW

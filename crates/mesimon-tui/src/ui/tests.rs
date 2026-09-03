@@ -108,13 +108,15 @@ fn press(app: &mut App, c: char) {
 }
 
 fn render(app: &App, w: u16, h: u16) -> Vec<String> {
-    let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
-    terminal.draw(|f| super::draw(f, app)).expect("draw");
-    let buffer = terminal.backend().buffer().clone();
+    lines_of(&cells(app, w, h))
+}
+
+fn lines_of(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
+    let area = buffer.area();
     let mut lines = Vec::new();
-    for y in 0..h {
+    for y in 0..area.height {
         let mut line = String::new();
-        for x in 0..w {
+        for x in 0..area.width {
             line.push_str(buffer[(x, y)].symbol());
         }
         lines.push(line.trim_end().to_string());
@@ -126,6 +128,12 @@ fn cells(app: &App, w: u16, h: u16) -> ratatui::buffer::Buffer {
     let mut terminal = Terminal::new(TestBackend::new(w, h)).expect("test terminal");
     terminal.draw(|f| super::draw(f, app)).expect("draw");
     terminal.backend().buffer().clone()
+}
+
+/// A dialog row without its frame's left edge and the pad after it — what
+/// the row itself begins with.
+fn unframed(line: &str) -> &str {
+    line.trim_start_matches([' ', '│', '|'])
 }
 
 fn golden(name: &str, lines: &[String]) {
@@ -536,7 +544,7 @@ fn test_a_sub_floor_sleep_offer_still_outranks_archive() {
     app.mode = Mode::Menu { idx: 0 };
     let lines = render(&app, 120, 30);
     let top = lines.iter().find(|l| l.contains("Sleep 2 agents")).expect("the sleep row leads");
-    assert!(top.trim_start().starts_with('◦'), "the chip's row is marked: {top:?}");
+    assert!(unframed(top).starts_with('◦'), "the chip's row is marked: {top:?}");
     let detail = lines.iter().find(|l| l.contains("wake where they left off")).expect("detail");
     assert!(!detail.contains("GiB"), "a payoff that rounds to nothing is spelled: {detail:?}");
 }
@@ -565,7 +573,7 @@ fn test_suggested_rows_lead_the_menu_and_wear_the_mark() {
     let first_plain =
         lines.iter().position(|l| l.contains("External sessions")).expect("the plain rows follow");
     let last_marked =
-        lines.iter().rposition(|l| l.trim_start().starts_with('◦')).expect("marked rows");
+        lines.iter().rposition(|l| unframed(l).starts_with('◦')).expect("marked rows");
     assert!(last_marked < first_plain, "offers must lead the menu");
     // And the mark is the header's mark, nowhere else on the screen.
     let board = render(&app_graphite(fixture(false)), 120, 30);
@@ -591,7 +599,7 @@ fn golden_help_empty_column_120() {
             "{absent:?} offered with an empty column selected"
         );
     }
-    assert!(lines.iter().any(|l| l.contains("open ticket")), "creating must always be offered");
+    assert!(lines.iter().any(|l| l.contains("new ticket")), "creating must always be offered");
     golden("help_empty_column_120x30", &lines);
 }
 
@@ -752,11 +760,17 @@ fn test_preview_pages_a_long_reply() {
     let mut app = app_graphite(b);
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let shows = |app: &App, row: &str| render(app, 120, 30).iter().any(|l| l.contains(row));
+    // The page keys sit on the PREVIEW heading, beside the zone they page
+    // (T-158), and the footer does not repeat them.
+    let heading = |app: &App| {
+        render(app, 120, 30).iter().find(|l| l.contains("PREVIEW")).cloned().unwrap_or_default()
+    };
     let footer = |app: &App| render(app, 120, 30).last().cloned().unwrap_or_default();
 
     assert!(shows(&app, "row 01"), "a fresh page starts at the top");
     assert!(!shows(&app, "row 60"));
-    assert!(footer(&app).contains("{ }"), "an overflowing preview offers the page keys");
+    assert!(heading(&app).contains("{ } page"), "an overflowing preview offers the page keys");
+    assert!(!footer(&app).contains("{ }"), "and the footer does not repeat them");
     let v = app.preview_view.get();
     assert!(v.max > 0 && v.page > 1 && !v.follows_tail, "{v:?}");
 
@@ -1571,11 +1585,13 @@ fn test_the_picker_reaches_the_ticket_screen() {
     assert!(joined.contains(" TAGS "), "the picker panel never drew:\n{joined}");
     assert!(joined.contains("STAGING"), "the grid drew no vocabulary:\n{joined}");
     // The panel is anchored to the bottom and covers the footer row, so the
-    // footer is redrawn over it — the chord's keys have to stay named.
+    // footer is redrawn over it — the chord's mode word has to stay, and the
+    // chord's keys are in the panel's own bottom edge (T-158).
     assert!(
-        lines.last().is_some_and(|l| l.contains("TAG ") && l.contains("hjkl move")),
-        "the footer lost the chord's hints:\n{joined}"
+        lines.last().is_some_and(|l| l.contains("TAG")),
+        "the footer lost the chord's word:\n{joined}"
     );
+    assert!(joined.contains("hjkl move"), "the panel lost the chord's hints:\n{joined}");
 }
 
 /// A FULL axis is wider than an 80-column row — ten tags at eleven cells
@@ -2111,7 +2127,10 @@ fn the_composer_dialog_grows_out_of_its_card() {
         after[4].find("Ship the diff viewer").expect("the title on the dialog's first row");
     let dialog_x = after[4][..title_at].chars().count() - 2;
     assert_eq!(dialog_x, 31, "the second column's own bar cell: {:?}", after[4]);
-    assert!(after[5].contains("NEW TICKET ∙ TODO column"), "{:?}", after[5]);
+    // The frame's top edge names the dialog on the breathing row over the
+    // cards; the context row under the title starts at the column.
+    assert!(after[3].contains("NEW TICKET"), "{:?}", after[3]);
+    assert!(after[5].contains("TODO column ∙ ⎇"), "{:?}", after[5]);
     assert!(after[7].contains("describe it"), "{:?}", after[7]);
     for covered in ["Fix OSC-11 detection", "Grapheme truncation"] {
         assert!(!after.iter().any(|l| l.contains(covered)), "{covered} is under the dialog");
@@ -2122,11 +2141,10 @@ fn the_composer_dialog_grows_out_of_its_card() {
         "whole cards on both sides, never a sliver: {:?}",
         after[4]
     );
-    assert!(
-        after[29].contains("esc close"),
-        "the board's footer speaks for the editor: {:?}",
-        after[29]
-    );
+    // The dialog's keys are in its own bottom edge; the footer under it
+    // says only which mode is on (`?` is text in the editor, so no tail).
+    assert!(after.iter().any(|l| l.contains("esc close")), "the frame names the editor's keys");
+    assert_eq!(after[29].trim(), "NEW", "the footer under a dialog is its chip: {:?}", after[29]);
 }
 
 #[test]
@@ -2212,7 +2230,7 @@ fn test_description_block_yields_to_the_zones() {
     let without = render(&plain, 120, 30);
     let sessions_at = |lines: &[String]| lines.iter().position(|l| l.contains("SESSIONS")).unwrap();
     assert!(sessions_at(&with) > sessions_at(&without), "the block pushes the zones down");
-    assert!(with[29].trim_start().starts_with("TICKET"), "the footer stays put: {}", with[29]);
+    assert!(with[29].contains("? keys"), "the footer stays put: {}", with[29]);
     assert!(with[29].contains("n describe"), "{}", with[29]);
 }
 
@@ -2336,6 +2354,17 @@ fn test_no_banned_sgr() {
 /// anywhere (the accent bar is a painted space).
 #[test]
 fn test_no_drawn_structure() {
+    // Every screen swept is kept as its cell grid AND the dialog frames its
+    // draw recorded: a box glyph is legal on a frame's perimeter and nowhere
+    // else (T-158, the one allowlisted role), and the perimeter is a fact of
+    // the frame the draw itself reported — the test transcribes nothing.
+    let swept: std::cell::RefCell<Vec<(ratatui::buffer::Buffer, Vec<ratatui::layout::Rect>)>> =
+        std::cell::RefCell::new(Vec::new());
+    let sweep = |app: &App| -> Vec<String> {
+        let buf = cells(app, 120, 30);
+        swept.borrow_mut().push((buf.clone(), app.frames.borrow().clone()));
+        lines_of(&buf)
+    };
     let path = write_transcript("drawn-law", &reply_record(RICH_REPLY));
     let mut app = app_graphite(fixture(true));
     // Markdown is full of rules and boxes; none of them may reach a cell.
@@ -2346,12 +2375,12 @@ fn test_no_drawn_structure() {
     let mut picker = app_graphite(fixture(false));
     picker.mode = Mode::Theme { idx: 2 };
     let screens: Vec<Vec<String>> = vec![
-        render(&app, 120, 30),
-        render(&arch, 120, 30),
-        render(&picker, 120, 30),
+        sweep(&app),
+        sweep(&arch),
+        sweep(&picker),
         {
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-            let lines = render(&app, 120, 30);
+            let lines = sweep(&app);
             assert!(
                 lines.iter().any(|l| l.contains("What changed")),
                 "the rich transcript must be ON SCREEN, or this law does not bite"
@@ -2363,7 +2392,7 @@ fn test_no_drawn_structure() {
             // the preview zone draws pane bytes: it has to be swept too.
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
             app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), dirty_tail()));
-            let lines = render(&app, 120, 30);
+            let lines = sweep(&app);
             assert!(
                 lines.iter().any(|l| l.contains("in 2.4s")),
                 "the whole shell tail must be ON SCREEN, or this law does not bite"
@@ -2372,7 +2401,7 @@ fn test_no_drawn_structure() {
         },
         {
             install_diff(&mut app);
-            render(&app, 120, 30)
+            sweep(&app)
         },
         // The tag picker, open and mid-rename. It was NOT covered here, and
         // that is exactly how a U+2588 cursor got shipped into it.
@@ -2385,7 +2414,7 @@ fn test_no_drawn_structure() {
                 naming: None,
                 forget_armed: false,
             });
-            render(&t, 120, 30)
+            sweep(&t)
         },
         {
             let mut t = app_graphite(fixture_tagged());
@@ -2400,7 +2429,7 @@ fn test_no_drawn_structure() {
                 naming: Some((crate::app::Naming::Rename, buf)),
                 forget_armed: false,
             });
-            render(&t, 120, 30)
+            sweep(&t)
         },
         {
             // The prompt field: a caret glyph the board did not have before,
@@ -2416,7 +2445,7 @@ fn test_no_drawn_structure() {
                 purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
                 buffer: buf,
             };
-            let lines = render(&p, 120, 30);
+            let lines = sweep(&p);
             assert!(
                 lines.iter().any(|l| l.contains("rebase onto main")),
                 "the field must be ON SCREEN, or this law does not bite"
@@ -2434,7 +2463,7 @@ fn test_no_drawn_structure() {
             );
             ed.body.paste(&dirty_tail().join("\n"));
             e.mode = Mode::Editor(ed);
-            let lines = render(&e, 120, 30);
+            let lines = sweep(&e);
             assert!(
                 lines.iter().any(|l| l.contains("in 2.4s")),
                 "the note body must be ON SCREEN, or this law does not bite"
@@ -2446,7 +2475,7 @@ fn test_no_drawn_structure() {
                 naming: None,
                 forget_armed: false,
             });
-            lines.into_iter().chain(render(&e, 120, 30)).collect()
+            lines.into_iter().chain(sweep(&e)).collect()
         },
         {
             let mut n = app_noted();
@@ -2455,30 +2484,50 @@ fn test_no_drawn_structure() {
             }
             n.remember_note(ulid_n(92), 1, Some(crate::peek::sanitize(&dirty_tail().join("\n"))));
             n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 4 };
-            let lines = render(&n, 120, 30);
+            let lines = sweep(&n);
             assert!(lines.iter().any(|l| l.contains("What changed")), "description on screen");
             assert!(lines.iter().any(|l| l.contains("in 2.4s")), "note on screen");
             lines
         },
     ];
-    for lines in screens {
-        for l in &lines {
-            for ch in l.chars() {
-                let cp = ch as u32;
-                // `▀` U+2580 is the ONE admitted codepoint in the range, on
-                // an explicit exception from the author (2026-09-01): it
-                // carries the second tag inside a resting card's single bar
-                // cell, which no attribute can do — an underline is a pixel
-                // at the bottom of a painted cell and cannot be seen. `▌`
-                // U+258C went back to being banned with the home that spent
-                // it; `▔` and `█` were never admitted, nor was the rest.
-                assert!(
-                    !(0x2500..=0x259F).contains(&cp) || ch == '▀',
-                    "drawn-structure codepoint {ch:?} in {l:?}"
-                );
+    assert_eq!(swept.borrow().len(), screens.len() + 1, "one grid per swept screen");
+    let on_perimeter = |frames: &[ratatui::layout::Rect], x: u16, y: u16| {
+        frames.iter().any(|r| {
+            let inside = x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;
+            let edge = x == r.x || x == r.x + r.width - 1 || y == r.y || y == r.y + r.height - 1;
+            inside && edge
+        })
+    };
+    let mut framed = 0usize;
+    for (buf, frames) in swept.borrow().iter() {
+        framed += frames.len();
+        let area = buf.area();
+        for y in 0..area.height {
+            for x in 0..area.width {
+                for ch in buf[(x, y)].symbol().chars() {
+                    let cp = ch as u32;
+                    if !(0x2500..=0x259F).contains(&cp) {
+                        continue;
+                    }
+                    // `▀` U+2580 is the ONE admitted codepoint off a frame,
+                    // on an explicit exception from the author (2026-09-01):
+                    // it carries the second tag inside a resting card's
+                    // single bar cell, which no attribute can do — an
+                    // underline is a pixel at the bottom of a painted cell
+                    // and cannot be seen. `▌` U+258C went back to being
+                    // banned with the home that spent it; `▔` and `█` were
+                    // never admitted, nor was the rest. A frame's own six
+                    // glyphs (`glyphs::frame_set`) are legal exactly on the
+                    // perimeter the draw recorded (T-158).
+                    assert!(
+                        ch == '▀' || on_perimeter(frames, x, y),
+                        "drawn-structure codepoint {ch:?} at {x},{y} off any dialog frame"
+                    );
+                }
             }
         }
     }
+    assert!(framed >= 5, "the sweep must cover framed dialogs, or this law does not bite");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 

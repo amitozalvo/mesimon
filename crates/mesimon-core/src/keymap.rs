@@ -566,7 +566,7 @@ pub struct Ctx {
     /// The note editor is up. Every editor binding is gated on it.
     pub editing: bool,
     /// The editor is composing a NEW ticket (title + description), so the
-    /// composer's keys — workspace, tags, save + ask — are live in it.
+    /// composer's keys — workspace, tags — are live in it.
     pub editor_composing: bool,
     /// The cursor is in the body, not the title line.
     pub editor_body: bool,
@@ -655,7 +655,10 @@ static GLOBAL: &[Binding] = &[
         class: Class::Plain,
         group: Group::App,
         mutates: false,
-        prio: 0,
+        // The right cluster's last word on every screen where `?` resolves
+        // (`footer_split`); a barrier scope inherits nothing and so says
+        // nothing — there `?` is text or a cancel.
+        prio: 255,
     },
     Binding {
         keys: &[Key::Tab],
@@ -835,7 +838,9 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('o')],
         verb: Verb::OpenTicket,
         show: "o",
-        hint: |_| "open ticket",
+        // "new", not "open": it mints a card. "open ticket" read as opening
+        // the one under the cursor (T-158).
+        hint: |_| "new ticket",
         avail: always,
         class: Class::Plain,
         group: Group::Ticket,
@@ -1135,7 +1140,10 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::App,
         mutates: false,
-        prio: 0,
+        // In the footer's RIGHT cluster beside `? keys` (T-158): the app
+        // keys stand apart from the card's, so the board's one door to the
+        // board-wide actions is named without competing with the selection.
+        prio: 254,
     },
     Binding {
         // Overlay-only, last of the pass. `q` and `^c` are the two spellings
@@ -1180,7 +1188,8 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 15,
+        // On the PREVIEW heading (T-158), beside the zone it pages.
+        prio: 0,
     },
     Binding {
         keys: &[Key::Enter],
@@ -1222,7 +1231,8 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 30,
+        // Under the rail (T-158): the sessions' keys sit under the sessions.
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('s')],
@@ -1233,7 +1243,8 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 40,
+        // Under the rail (T-158).
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('S')],
@@ -1267,7 +1278,8 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
-        prio: 50,
+        // Under the rail (T-158): the row it acts on is right above it.
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('P')],
@@ -2473,21 +2485,6 @@ static EDITOR: &[Binding] = &[
         prio: 10,
     },
     Binding {
-        // The composer's Shift+Enter, in the bigger room: mint, start claude
-        // on the title, stay. Composing only — a note has nothing to mint,
-        // and telling claude about one is `^s`'s second press, so the atom
-        // is not spent a fourth time (`shift_enter_asks_claude_at_every_stage`).
-        keys: &[Key::ShiftEnter],
-        verb: Verb::SaveStart,
-        show: "shift+enter",
-        hint: |_| "save + ask claude",
-        avail: |c| c.editing && c.editor_composing && c.rich_keys,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
-        prio: 15,
-    },
-    Binding {
         // Two presses when there is something to lose; the first says so.
         keys: &[Key::Esc],
         verb: Verb::Cancel,
@@ -2534,6 +2531,28 @@ static EDITOR: &[Binding] = &[
         group: Group::Navigate,
         mutates: false,
         prio: 35,
+    },
+    Binding {
+        // Shift+Enter is the SAME newline (2026-09-03, user request). The
+        // editor is a body, and every chat-shaped box the user types into —
+        // claude's own included — has taught the finger that Shift+Enter
+        // breaks a line; here it briefly meant "save + ask claude" while
+        // composing, and the press that wanted a blank line minted a ticket
+        // and started an agent. That sentence still has its board home a
+        // press after `^s` (an empty seat's Shift+Enter asks the title), so
+        // nothing is lost and the atom stays on one idea. Gated on
+        // `rich_keys` like every ShiftEnter binding; on the legacy floor the
+        // key ARRIVES as `Enter`, which is the same verb — the one place the
+        // degradation is exact. Unhinted: `enter` beside it already says it.
+        keys: &[Key::ShiftEnter],
+        verb: Verb::EditorNewline,
+        show: "shift+enter",
+        hint: |_| "",
+        avail: |c| c.editing && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
     },
     Binding {
         keys: &[Key::Up, Key::Down],
@@ -2743,16 +2762,30 @@ pub fn footer_items(scope: Scope, ctx: &Ctx) -> Vec<&'static Binding> {
     out
 }
 
-/// The footer line for this scope and state, filled to `width` in priority
-/// order. `? keys` is always the tail — the one hint that is never crowded
-/// out, because it is how everything else is found.
+/// The footer's two clusters: what this screen does (left, in priority
+/// order) and the app-level keys (right — `Group::App`: `esc menu`,
+/// `? keys`). The right cluster is reserved first and never crowded out,
+/// because it is how everything else is found; a dialog's frame carries its
+/// own left cluster and leaves the right one to the footer under it.
+pub fn footer_split(scope: Scope, ctx: &Ctx) -> (Vec<&'static Binding>, Vec<&'static Binding>) {
+    footer_items(scope, ctx).into_iter().partition(|b| b.group != Group::App)
+}
+
+/// The footer line for this scope and state, filled to `width`: the left
+/// cluster in priority order, skipping what does not fit, then the right
+/// cluster. `? keys` closes the line wherever `?` resolves — and only there:
+/// inside a text field or a chord tail `?` is text or a cancel, and a hint
+/// that names a key must be a key that works.
 pub fn footer(scope: Scope, ctx: &Ctx, width: usize) -> String {
     const SEP: &str = " ∙ ";
-    const TAIL: &str = "? keys";
-    let budget = width.saturating_sub(TAIL.len() + SEP.len());
+    let (own, app) = footer_split(scope, ctx);
+    let word = |b: &Binding| format!("{} {}", b.show, (b.hint)(ctx));
+    let right = app.iter().map(|b| word(b)).collect::<Vec<_>>().join(SEP);
+    let reserved = if right.is_empty() { 0 } else { right.chars().count() + 3 };
+    let budget = width.saturating_sub(reserved);
     let mut line = String::new();
-    for b in footer_items(scope, ctx) {
-        let item = format!("{} {}", b.show, (b.hint)(ctx));
+    for b in own {
+        let item = word(b);
         let add = if line.is_empty() { item.chars().count() } else { item.chars().count() + 3 };
         if line.chars().count() + add > budget {
             continue;
@@ -2762,10 +2795,11 @@ pub fn footer(scope: Scope, ctx: &Ctx, width: usize) -> String {
         }
         line.push_str(&item);
     }
-    if line.is_empty() {
-        return TAIL.to_string();
+    match (line.is_empty(), right.is_empty()) {
+        (true, _) => right,
+        (false, true) => line,
+        (false, false) => format!("{line}{SEP}{right}"),
     }
-    format!("{line}{SEP}{TAIL}")
 }
 
 /// One binding's spelling and word, for the places that name a single key in
@@ -2773,14 +2807,20 @@ pub fn footer(scope: Scope, ctx: &Ctx, width: usize) -> String {
 /// Returns `None` when the verb does not apply here — the caller then says
 /// nothing rather than naming a key that would do nothing.
 pub fn hint_for(scope: Scope, verb: Verb, ctx: &Ctx) -> Option<(&'static str, &'static str)> {
+    binding_for(scope, verb, ctx).map(|b| (b.show, (b.hint)(ctx)))
+}
+
+/// The binding behind `hint_for`, for a surface that spells several keys
+/// through one span builder (the ticket rail's trailer rows). Same rule:
+/// `None` when the verb does not apply here or has nothing to say.
+pub fn binding_for(scope: Scope, verb: Verb, ctx: &Ctx) -> Option<&'static Binding> {
     for s in chain(scope) {
         for b in bindings(s) {
             if b.verb == verb && (b.avail)(ctx) {
-                let hint = (b.hint)(ctx);
-                if hint.is_empty() {
+                if (b.hint)(ctx).is_empty() {
                     return None;
                 }
-                return Some((b.show, hint));
+                return Some(b);
             }
         }
     }
@@ -2948,19 +2988,32 @@ mod tests {
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &composing), Some(Verb::SaveStart));
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &onboard), Some(Verb::Prompt));
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &prompting), Some(Verb::SaveStart));
-        // The first moment has two rooms: the one-line composer and the
-        // editor it grows into. Same verb, same effect — it is not a fourth
-        // home. A note editor on a ticket that exists is NOT a composition
-        // (nothing to mint), and "tell claude" there is `^s`'s second press,
-        // so the atom is not spent again.
+        // The editor the composer grows into is NOT a fourth home: there
+        // Shift+Enter is a newline, composing or noting alike (2026-09-03),
+        // because a body is where the finger expects it to break a line.
+        // "Ask claude" from the editor is `^s` and then the board's press on
+        // the minted card; "tell claude" about a note is `^s`'s second press.
         let composing_full =
             Ctx { editing: true, editor_composing: true, rich_keys: true, ..Default::default() };
         let noting = Ctx { editing: true, rich_keys: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Editor, Key::ShiftEnter, &composing_full), Some(Verb::SaveStart));
-        assert_eq!(resolve(Scope::Editor, Key::ShiftEnter, &noting), None);
         assert_eq!(
-            hint_for(Scope::Editor, Verb::SaveStart, &composing_full),
-            Some(("shift+enter", "save + ask claude"))
+            resolve(Scope::Editor, Key::ShiftEnter, &composing_full),
+            Some(Verb::EditorNewline)
+        );
+        assert_eq!(resolve(Scope::Editor, Key::ShiftEnter, &noting), Some(Verb::EditorNewline));
+        assert_eq!(
+            resolve(Scope::Editor, Key::ShiftEnter, &composing_full),
+            resolve(Scope::Editor, Key::Enter, &composing_full)
+        );
+        assert_eq!(hint_for(Scope::Editor, Verb::SaveStart, &composing_full), None);
+        // And it is unhinted: `enter` beside it already teaches the verb.
+        assert_eq!(
+            hint_for(
+                Scope::Editor,
+                Verb::EditorNewline,
+                &Ctx { editor_body: true, ..noting.clone() }
+            ),
+            None
         );
         // The board's press is hinted where it works…
         assert_eq!(
@@ -3425,17 +3478,20 @@ mod tests {
             assert!(!shown.contains(&absent), "{absent} hinted with no ticket selected: {shown:?}");
         }
         assert!(shown.contains(&"o"), "open-ticket must always be offered: {shown:?}");
-        // The menu and the quit left the FOOTER, not the board: both still
-        // resolve and the overlay still names both, so the invariants these
-        // lines used to guard are asserted where they now live. `?` is what
-        // finds them, and `footer_always_keeps_the_help_tail` guards that.
+        // The quit left the FOOTER, not the board: it still resolves and the
+        // overlay still names it. The menu's `esc` is back, in the footer's
+        // RIGHT cluster beside `? keys` (T-158) — the app keys, apart from
+        // the card's, so the board's one door is named without competing
+        // with the selection.
         let named = |k: &str| {
             overlay(Scope::Board, &ctx).iter().any(|(_, ks)| ks.iter().any(|(s, _)| *s == k))
         };
-        for gone in ["esc", "q"] {
-            assert!(!shown.contains(&gone), "{gone} is overlay-only now: {shown:?}");
-            assert!(named(gone), "the overlay is the complete answer and must name {gone}");
-        }
+        assert!(!shown.contains(&"q"), "q is overlay-only: {shown:?}");
+        assert!(named("q"), "the overlay is the complete answer and must name q");
+        let (own, app) = footer_split(Scope::Board, &ctx);
+        let right: Vec<&str> = app.iter().map(|b| b.show).collect();
+        assert_eq!(right, vec!["esc", "?"], "the right cluster is the app's keys, in order");
+        assert!(own.iter().all(|b| b.group != Group::App), "no app key in the left cluster");
         assert_eq!(resolve(Scope::Board, Key::Esc, &ctx), Some(Verb::Menu));
         assert_eq!(resolve(Scope::Board, Key::Char('q'), &ctx), Some(Verb::Quit));
         assert_eq!(resolve(Scope::Board, Key::Ctrl('c'), &ctx), Some(Verb::Quit));
@@ -3924,12 +3980,28 @@ mod tests {
             bulk_sleep: 3,
             bulk_archive: 3,
             any_attention: true,
+            composing: true,
+            editing: true,
+            rich_keys: true,
             ..Default::default()
         };
         for width in [40usize, 60, 80, 100, 140, 200] {
             let line = footer(Scope::Board, &ctx, width);
             assert!(line.ends_with("? keys"), "width {width}: {line}");
             assert!(line.chars().count() <= width, "width {width} overflowed: {line}");
+        }
+        // And ONLY where `?` resolves (T-158): every scope that inherits
+        // Global ends on the tail; a barrier — a text field, a chord tail —
+        // never promises a key that would type a `?` or cancel the chord.
+        for scope in Scope::ALL {
+            let line = footer(scope, &ctx, 200);
+            let works = resolve(scope, Key::Char('?'), &ctx) == Some(Verb::Help);
+            assert_eq!(
+                line.ends_with("? keys"),
+                works,
+                "{scope:?}: `? keys` promised iff `?` works — {line}"
+            );
+            assert!(line.chars().count() <= 200);
         }
     }
 

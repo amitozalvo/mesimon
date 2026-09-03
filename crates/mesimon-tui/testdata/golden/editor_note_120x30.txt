@@ -1,6 +1,6 @@
- mesimon > kanban-tui > Fix OSC-11 detection
+ NOTE   mesimon > kanban-tui > Fix OSC-11 detection
 
- NOTE ∙ edited by you >1y ago ∙ the description
+ the description ∙ edited by you >1y ago
 
  line 1 of the note
  line 2 of the note
@@ -27,4 +27,4 @@
  line 23 of the note
  line 24 of the note
  line 25 of the note
- NOTE  ^s tell claude ∙ esc close ∙ ? keys
+ ^s tell claude ∙ esc close

@@ -1,4 +1,4 @@
- mesimon > kanban-tui   6 tickets
+ BOARD   mesimon > kanban-tui   6 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
@@ -10,12 +10,10 @@
 
 
 
-                             archived — 1
 
-                             T-7  Painted accent bar ∙ done ∙ >1y
-                             jk select ∙ enter open ∙ a restore ∙ esc close ∙ ? keys
-
-
+                           ╭─ ARCHIVED ∙ 1 ─────────────────────────────────────────────────╮
+                           │ T-7  Painted accent bar ∙ done ∙ >1y                           │
+                           ╰─────────────── jk select ∙ enter open ∙ a restore ∙ esc close ─╯
 
 
 
@@ -27,4 +25,6 @@
 
 
 
- ARCHIVED  jk select ∙ enter open ∙ a restore ∙ esc close ∙ ? keys
+
+
+ ARCHIVED                                                                                                        ? keys

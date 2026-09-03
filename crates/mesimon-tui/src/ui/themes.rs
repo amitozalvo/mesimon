@@ -6,18 +6,19 @@
 //! name, one line about it, and which slot each pick is saved in. Words,
 //! never a mark: `◦` belongs to the suggestion chip and nothing else.
 
-use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap;
+use mesimon_core::keymap::Scope;
 
 use crate::app::App;
 use crate::text::truncate;
 use crate::theme::{Flavor, Ground};
+
+use super::dialog;
 
 fn word(g: Ground) -> &'static str {
     match g {
@@ -31,35 +32,33 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let ctx = app.ctx();
     let idx = idx.min(Flavor::ALL.len() - 1);
 
-    let w = 62.min(f.area().width.saturating_sub(4));
-    let h = ((Flavor::ALL.len() as u16 * 2) + 4).min(f.area().height.saturating_sub(2));
-    let area = Rect {
-        x: (f.area().width.saturating_sub(w)) / 2,
-        y: (f.area().height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
-    f.render_widget(ratatui::widgets::Clear, area);
-    if let Some(bg) = theme.bg {
-        f.render_widget(ratatui::widgets::Block::default().style(Style::default().bg(bg)), area);
-    }
+    let area = dialog::centred(f.area(), Flavor::ALL.len() as u16 * 2, dialog::MAX_W);
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner = dialog::frame(
+        f,
+        app,
+        area,
+        None,
+        &theme.rest,
+        dialog::Edges {
+            title: dialog::title(
+                &theme.rest,
+                format!("THEME ∙ for a {} terminal", ctx.theme_slot_word),
+            ),
+            tail: dialog::keys(app, Scope::Theme, &theme.rest, inner_w.saturating_sub(4)),
+        },
+    );
 
-    let inner = w as usize;
-    let mut lines: Vec<Line<'static>> = vec![
-        Line::from(Span::styled(
-            format!(" theme — for a {} terminal", ctx.theme_slot_word),
-            theme.dim1().add_modifier(Modifier::BOLD),
-        )),
-        Line::default(),
-    ];
+    let mut lines: Vec<Line<'static>> = Vec::new();
     for (i, flavor) in Flavor::ALL.into_iter().enumerate() {
         let selected = i == idx;
         // The flavor's own ground sits where the menu puts a key: it is the
         // one fact a preview cannot show while the popup covers the board.
         let tag = word(flavor.ground());
         let lead = "   ";
-        let text = truncate(flavor.name(), inner.saturating_sub(tag.width() + lead.width() + 1));
-        let pad = inner.saturating_sub(lead.width() + text.width() + tag.width() + 1);
+        let text =
+            truncate(flavor.name(), inner_w.saturating_sub(tag.width() + lead.width() + 1));
+        let pad = inner_w.saturating_sub(lead.width() + text.width() + tag.width() + 1);
         let style = if selected {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {
@@ -82,16 +81,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
                 detail.push_str(&format!(" ∙ your pick for a {} terminal", word(g)));
             }
         }
-        let text = format!("     {}", truncate(&detail, inner.saturating_sub(6)));
-        let pad = inner.saturating_sub(text.width());
+        let text = format!("     {}", truncate(&detail, inner_w.saturating_sub(6)));
+        let pad = inner_w.saturating_sub(text.width());
         lines.push(
             Line::from(vec![Span::styled(text, theme.dim3()), Span::raw(" ".repeat(pad))])
                 .style(row_style),
         );
     }
-    lines.push(Line::from(Span::styled(
-        format!(" {}", keymap::footer(keymap::Scope::Theme, &ctx, inner.saturating_sub(2))),
-        theme.dim2(),
-    )));
-    f.render_widget(Paragraph::new(lines), area);
+    f.render_widget(Paragraph::new(lines), inner);
 }

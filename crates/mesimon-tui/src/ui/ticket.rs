@@ -52,46 +52,47 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
-    // ---- line 0: breadcrumb (the shared component + the ticket leaf) ------
-    let mut head = chrome::breadcrumb(app);
-    head.push(Span::styled(" > ".to_string(), Style::default().fg(theme.rest.dim3)));
-    let prefix_w: usize = head.iter().map(|s| s.content.width()).sum();
-    let title_budget = (area.width as usize).saturating_sub(prefix_w + 1);
-
-    // `r` edits the title right here (hardware cursor, tail kept visible).
+    // ---- row 0: the header (chip + breadcrumb, `chrome::draw_header`);
+    // row 2: the TITLE, the page's own headline (T-158 — it lived only in
+    // the breadcrumb before). `r` edits it right here (hardware cursor,
+    // tail kept visible).
+    chrome::draw_header(f, Rect { x: area.x, y: area.y, width: area.width, height: 1 }, app, None);
+    let title_budget = (area.width as usize).saturating_sub(2);
     let editing = match &app.mode {
         Mode::Input { purpose: InputPurpose::Rename { id }, buffer } if *id == ticket_id => {
             Some(buffer)
         }
         _ => None,
     };
-    match editing {
+    let title_style = Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD);
+    let title_row = match editing {
         Some(buf) => {
             let budget = title_budget.saturating_sub(1);
             let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-            let x = prefix_w as u16 + cx;
-            // Plain base: the breadcrumb's bold belongs to the project.
-            head.push(Span::styled(shown, Style::default().fg(theme.rest.base)));
-            f.set_cursor_position((area.x + x.min(area.width - 1), area.y));
+            f.set_cursor_position((area.x + (1 + cx).min(area.width - 1), area.y + 2));
+            Line::from(vec![Span::raw(" "), Span::styled(shown, title_style)])
         }
-        None => {
-            head.push(Span::styled(
-                truncate(&ticket.title, title_budget),
-                Style::default().fg(theme.rest.base),
-            ));
-        }
-    }
+        None => Line::from(vec![
+            Span::raw(" "),
+            Span::styled(truncate(&ticket.title, title_budget), title_style),
+        ]),
+    };
 
-    // ---- line 1: identity — column ∙ created (short keys are hidden from
-    // the UI for now, author 2026-08-30). Single-user v0.1: creator is you.
+    // ---- row 3: the STATE line — column, time in that column (the card's
+    // own age, `Ticket::column_since`), created age (short keys are hidden
+    // from the UI for now, author 2026-08-30; "created by you" went with
+    // T-158 — single-user v0.1 says nothing by it). M4: the workspace joins
+    // the line — the strategy word until a binding exists, then the branch
+    // and its state (short keys resurface through the branch name).
+    let here = created_at_epoch_ms(ticket.column_since())
+        .map(|ms| format!(" ∙ {} here", age_slot(now, ms, false).trim()))
+        .unwrap_or_default();
     let created = created_at_epoch_ms(&ticket.created_at)
-        .map(|ms| format!(" ∙ created by you {} ago", age_slot(now, ms, false)))
-        .unwrap_or_else(|| " ∙ created by you".to_string());
-    // M4: the workspace joins the identity line — the strategy word until a
-    // binding exists, then the branch and its state (short keys resurface
-    // through the branch name, which embeds them).
+        .map(|ms| format!(" ∙ created {} ago", age_slot(now, ms, false).trim()))
+        .unwrap_or_default();
     let mut ident_spans = vec![
         Span::styled(format!(" {}", ticket.column.to_uppercase()), theme.dim2()),
+        Span::styled(here, theme.dim2()),
         Span::styled(created, theme.dim2()),
     ];
     // The m flow's live reply (armed prompt, outcome, refusal) replaces the
@@ -191,15 +192,16 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     ident_spans.extend(wt_spans);
     let ident = Line::from(ident_spans);
 
-    // Breathing row between the breadcrumb and the identity line too — the
-    // title never touches its metadata (06 §5.5). No band under the identity
-    // line: the ticket header ends with its metadata (author 2026-08-30).
-    let mut top = vec![Line::from(head), Line::default(), ident];
-    // The description — the ticket's first note — under the identity line,
+    // Breathing row between the header and the title (06 §5.5); the state
+    // line sits directly under the title, the way a card's meta row does.
+    // No band under it: the ticket header ends with its metadata (author
+    // 2026-08-30).
+    let mut top = vec![Line::default(), title_row, ident];
+    // The description — the ticket's first note — under the state line,
     // as rich text, capped: what the ticket IS reads before what its
     // sessions are doing. No heading over it; it is the ticket's own words.
     // Nothing when there is none, so the geometry below is untouched then.
-    let body_rows = (area.height as usize).saturating_sub(5);
+    let body_rows = (area.height as usize).saturating_sub(6);
     let desc: Vec<Line<'static>> = ticket
         .description()
         .and_then(|m| app.note_text(m))
@@ -219,13 +221,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
     f.render_widget(
         Paragraph::new(top),
-        Rect { x: area.x, y: area.y, width: area.width, height: (3 + extra).min(area.height) },
+        Rect {
+            x: area.x,
+            y: area.y + 1,
+            width: area.width,
+            height: (3 + extra).min(area.height.saturating_sub(1)),
+        },
     );
 
     // ---- body zones -------------------------------------------------------
-    // One breathing row under the identity line (06 §5.5) before the zones.
-    let body_y = area.y + 4 + extra;
-    let body_h = area.height.saturating_sub(5 + extra); // top 3 + breathing 1 + footer 1
+    // One breathing row under the state line (06 §5.5) before the zones.
+    let body_y = area.y + 5 + extra;
+    let body_h = area.height.saturating_sub(6 + extra); // header 1 + top 3 + breathing 1 + footer 1
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant
@@ -319,6 +326,22 @@ fn draw_preview(
 ) {
     let theme = &app.theme;
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // The heading carries the paging keys on its right while the zone
+    // overflows (T-158: the hint beside the thing it pages, off the footer)
+    // — read from the LAST frame's measurement, before this one resets it.
+    let ctx = app.ctx();
+    let heading = || -> Line<'static> {
+        let mut spans = vec![Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))];
+        let keys = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::PageDown, &ctx)
+            .map(|b| chrome::hint_spans(&[b], &ctx, &theme.rest, (area.width as usize) / 2))
+            .unwrap_or_default();
+        let keys_w: usize = keys.iter().map(|s| s.content.width()).sum();
+        if keys_w > 0 {
+            spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(8 + keys_w + 1))));
+            spans.extend(keys);
+        }
+        Line::from(spans)
+    };
     // Until something below measures a document, there is nothing to page.
     app.preview_view.set(PreviewView::default());
 
@@ -333,7 +356,7 @@ fn draw_preview(
     // side is the record, both are the last of it, and the rail row beside it
     // already says which session the cursor is on (author 2026-09-01).
     if let Some(tail) = shell {
-        lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
+        lines.push(heading());
         lines.push(Line::default());
         if tail.is_empty() {
             lines.push(Line::from(Span::styled("   nothing on screen yet", theme.dim3())));
@@ -367,7 +390,7 @@ fn draw_preview(
         // A note, whole: the same rich text as a reply, paged the same way,
         // keyed to the note and its revision so an agent's rewrite starts
         // the page at the top.
-        lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
+        lines.push(heading());
         lines.push(Line::default());
         match text {
             None => lines.push(Line::from(Span::styled("   fetching", theme.dim3()))),
@@ -384,7 +407,7 @@ fn draw_preview(
             }
         }
     } else if reply.is_some() || working {
-        lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
+        lines.push(heading());
         lines.push(Line::default());
         if let Some(text) = reply {
             // Reserve the indicator's rows so a long reply never pushes it off.
@@ -519,17 +542,46 @@ fn draw_rail(
     head.push(Span::styled(right, theme.dim2()));
     let mut lines: Vec<Line<'static>> = vec![Line::from(head), Line::default()];
 
-    if rail.is_empty() {
-        // 07 §16.2: the empty state names the two spawn verbs and nothing
-        // else — in the keymap's words, so it cannot drift from the keys.
-        let ctx = app.ctx();
-        let nudge = [keymap::Verb::Claude, keymap::Verb::Shell]
+    // The sessions' keys sit under the sessions (T-158): the empty state
+    // names the two spawn verbs (07 §16.2) and a populated rail adds the
+    // one that acts on the selected row — in the keymap's words, through
+    // the footer's own span builder, so nothing here can drift from the
+    // keys. The footer no longer carries them.
+    let ctx = app.ctx();
+    // Packed into as many rows as the rail's width needs — a key that does
+    // not fit is wrapped, never dropped, because these ARE the hints now.
+    let trailer = |verbs: &[keymap::Verb]| -> Vec<Line<'static>> {
+        let bound: Vec<&keymap::Binding> = verbs
             .iter()
-            .filter_map(|v| keymap::hint_for(keymap::Scope::Ticket, *v, &ctx))
-            .map(|(show, hint)| format!("{show} {hint}"))
-            .collect::<Vec<_>>()
-            .join(" ∙ ");
-        lines.push(Line::from(Span::styled(format!(" {nudge}"), theme.dim3())));
+            .filter_map(|v| keymap::binding_for(keymap::Scope::Ticket, *v, &ctx))
+            .collect();
+        let budget = w.saturating_sub(1);
+        let mut rows: Vec<Vec<&keymap::Binding>> = Vec::new();
+        let mut used = 0usize;
+        for b in bound {
+            let need = b.show.width() + 1 + (b.hint)(&ctx).width();
+            let add = if used == 0 { need } else { need + 3 };
+            match rows.last_mut() {
+                Some(row) if used + add <= budget => {
+                    row.push(b);
+                    used += add;
+                }
+                _ => {
+                    rows.push(vec![b]);
+                    used = need;
+                }
+            }
+        }
+        rows.into_iter()
+            .map(|row| {
+                let mut spans = vec![Span::raw(" ")];
+                spans.extend(chrome::hint_spans(&row, &ctx, &theme.rest, budget));
+                Line::from(spans)
+            })
+            .collect()
+    };
+    if rail.is_empty() {
+        lines.extend(trailer(&[keymap::Verb::Claude, keymap::Verb::Shell]));
     }
 
     for (i, s) in rail.iter().enumerate() {
@@ -626,6 +678,10 @@ fn draw_rail(
         }
     }
 
+    if !rail.is_empty() {
+        lines.extend(trailer(&[keymap::Verb::Claude, keymap::Verb::Shell, keymap::Verb::Sleep]));
+    }
+
     // ---- the notes, under the sessions ------------------------------------
     // Same shape as the sessions: a heading with the count, one row each —
     // mark, name (the note's first line), then who last wrote it and when.
@@ -664,6 +720,7 @@ fn draw_rail(
             let row_style = if selected { theme.selected_row() } else { Style::default() };
             lines.push(Line::from(spans).style(row_style));
         }
+        lines.extend(trailer(&[keymap::Verb::NoteNew]));
     }
 
     f.render_widget(Paragraph::new(lines), area);

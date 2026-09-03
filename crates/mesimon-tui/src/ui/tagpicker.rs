@@ -21,7 +21,7 @@ use std::ops::Range;
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, Paragraph};
+use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
@@ -65,7 +65,7 @@ pub(crate) fn row_len(app: &App, group: u8) -> usize {
     }
 }
 
-/// How tall the panel wants to be, including its border row and hint row.
+/// How tall the panel wants to be: one row per visible group inside the frame.
 pub(crate) fn height(app: &App) -> u16 {
     visible_groups(app).len() as u16 + 2
 }
@@ -147,27 +147,46 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     let worn = app.tag_subject().unwrap_or(&[]);
     let groups = visible_groups(app);
 
-    let h = height(app).min(area.height);
-    let panel =
-        Rect { x: area.x, y: area.y + area.height.saturating_sub(h), width: area.width, height: h };
-    f.render_widget(Clear, panel);
+    // Above the footer row, not over it: the footer keeps saying which mode
+    // is on while the sheet's own bottom edge names the chord's keys.
+    let h = height(app).min(area.height.saturating_sub(1));
+    let panel = Rect {
+        x: area.x,
+        y: area.y + area.height.saturating_sub(h + 1),
+        width: area.width,
+        height: h,
+    };
+    // A bottom sheet, framed: the subject in its top edge — so the panel is
+    // never ambiguous about what is being tagged, especially in the composer,
+    // where the ticket has no name on the board yet — and its keys in the
+    // bottom one.
+    let subject = match arm.ticket.and_then(|id| app.board.ticket(id)) {
+        Some(t) => crate::text::truncate(&t.title, area.width.saturating_sub(14) as usize),
+        None => "new ticket".to_string(),
+    };
+    let inner = super::dialog::frame(
+        f,
+        app,
+        panel,
+        None,
+        &theme.rest,
+        super::dialog::Edges {
+            title: super::dialog::title(&theme.rest, format!("TAGS ∙ {subject}")),
+            tail: super::dialog::keys(
+                app,
+                mesimon_core::keymap::Scope::TagChord,
+                &theme.rest,
+                (panel.width as usize).saturating_sub(6),
+            ),
+        },
+    );
+    let area = inner;
 
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Where the hardware cursor goes while a name is being typed — the real
     // cursor, not a glyph. The block character that stood in for it was
     // inside the range the L1 law bans, and Ambiguous-width besides.
     let mut cursor: Option<usize> = None;
-    // Title row: what is being tagged, so the panel is never ambiguous about
-    // its subject — especially in the composer, where the ticket has no name
-    // on the board yet.
-    let subject = match arm.ticket.and_then(|id| app.board.ticket(id)) {
-        Some(t) => crate::text::truncate(&t.title, area.width.saturating_sub(10) as usize),
-        None => "new ticket".to_string(),
-    };
-    lines.push(Line::from(vec![
-        Span::styled(" TAGS ".to_string(), theme.dim1().add_modifier(Modifier::BOLD)),
-        Span::styled(subject, theme.dim2()),
-    ]));
 
     for (row, g) in groups.iter().enumerate() {
         let entries = app.board.group_entries(*g);
@@ -267,12 +286,12 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
     }
 
     let rows = lines.len();
-    f.render_widget(Paragraph::new(lines), panel);
+    f.render_widget(Paragraph::new(lines), area);
     if let Some(x) = cursor {
-        // The naming row is the group row at `arm.row`, one below the title.
-        let y = panel.y + 1 + arm.row as u16;
-        if (arm.row + 1) < rows {
-            f.set_cursor_position((panel.x + (x as u16).min(panel.width.saturating_sub(1)), y));
+        // The naming row is the group row at `arm.row`, inside the frame.
+        let y = area.y + arm.row as u16;
+        if arm.row < rows {
+            f.set_cursor_position((area.x + (x as u16).min(area.width.saturating_sub(1)), y));
         }
     }
 }

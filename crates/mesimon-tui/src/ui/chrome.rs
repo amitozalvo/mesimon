@@ -1,7 +1,13 @@
-//! Header, footer, grace row, and the External drawer. Footer copy follows
-//! the author's dogfood direction: suggestions over an exhaustive shortcut
-//! dump. Separator is `∙` U+2219 everywhere — `·` U+00B7 is EAW-Ambiguous
-//! and banned (06 §4.1).
+//! Header, footer and the advisory row. Footer copy follows the author's
+//! dogfood direction: suggestions over an exhaustive shortcut dump. Separator
+//! is `∙` U+2219 everywhere — `·` U+00B7 is EAW-Ambiguous and banned (06 §4.1).
+//!
+//! T-158 (2026-09-03): the header opens with a CHIP naming the screen
+//! (`BOARD`, `TICKET`, `DIFF`, `NOTE`) and the footer is a painted band whose
+//! keys are set apart from their words, with the app-level keys (`esc menu`,
+//! `? keys`) in a right-hand cluster of their own. A hint lives in ONE place:
+//! a dialog's keys are in its frame, so the footer under an open dialog
+//! carries only its mode chip and the right cluster.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -11,24 +17,25 @@ use ratatui::Frame;
 
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap::{self, Scope};
+use mesimon_core::keymap::{self, Binding, Ctx, Scope};
 
-use crate::app::{App, InputPurpose, Mode};
+use crate::app::{App, InputPurpose, Mode, Screen};
 use crate::text::truncate;
+use crate::theme::Ramp;
 
 /// The breadcrumb — one component on every screen (author 2026-08-30):
-/// ` mesimon > project` with the project bold, and the needs-you `!N`
-/// beside the project when anything waits. Leading cell is the 1-cell page
-/// padding (06 §5.5), aligned with the accent-bar column.
-pub(super) fn breadcrumb(app: &App) -> Vec<Span<'static>> {
+/// `mesimon > project` with the project bold, and the needs-you `!N` beside
+/// the project when anything waits. In `ink`'s ramp, so it reads on the
+/// page ground and on a band alike.
+pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
     let theme = &app.theme;
     let repo =
         app.repo_root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let needs_you = mesimon_core::attention::attention_queue(&app.board).len();
     let mut spans = vec![
-        Span::styled(" mesimon".to_string(), theme.dim2()),
-        Span::styled(" > ".to_string(), Style::default().fg(app.theme.rest.dim3)),
-        Span::styled(repo, theme.base().add_modifier(Modifier::BOLD)),
+        Span::styled("mesimon".to_string(), Style::default().fg(ink.dim2)),
+        Span::styled(" > ".to_string(), Style::default().fg(ink.dim3)),
+        Span::styled(repo, Style::default().fg(ink.base).add_modifier(Modifier::BOLD)),
     ];
     if needs_you > 0 {
         // Inverted chip (06 §2.4b treatment): attn ground, attn_ink text.
@@ -42,48 +49,90 @@ pub(super) fn breadcrumb(app: &App) -> Vec<Span<'static>> {
     spans
 }
 
-pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App) {
+/// The word for the screen the frame is drawn on — the header's chip.
+fn screen_word(app: &App) -> &'static str {
+    match (&app.screen, &app.mode) {
+        // The note editor covers its screen whole; the composer's editor is
+        // a dialog over the board and the board is still the room.
+        (_, Mode::Editor(ed)) if !ed.composing() => "NOTE",
+        (Screen::Board, _) => "BOARD",
+        (Screen::Ticket { .. }, _) => "TICKET",
+        (Screen::Diff { .. }, _) => "DIFF",
+    }
+}
+
+/// The chip: one bold word on the elevated surface, ` WORD `. The header's
+/// is the only painted cell run on its row, which is what makes it read as
+/// a label rather than a band.
+fn chip(app: &App, word: &str) -> Span<'static> {
     let theme = &app.theme;
-    // D33e: session count, RSS aggregate, PTY headroom — all grey. The one
-    // saturated colour stays reserved for `needs you`.
-    let r = &app.resources;
-    // Board contents, not process stats (author 2026-08-30): the count is
-    // tickets on the board. Grace-band deletions are already out of
-    // `board.tickets`; archived tickets stay in it but are off the board.
-    let n_tickets = app.board.tickets.iter().filter(|t| !t.is_archived()).count();
-    let noun = if n_tickets == 1 { "ticket" } else { "tickets" };
-    let mut spans = breadcrumb(app);
-    spans.push(Span::styled(format!("   {n_tickets} {noun}"), theme.dim2()));
-    // Asleep count cut from the header (author 2026-08-30): sleeping is the
-    // quiet, correct condition — the card's own state word carries it; the
-    // header only speaks when something is spendable (the offer) or scarce.
-    // PTY headroom is machine-wide noise until it isn't: surface it only past
-    // 80% of the OS cap, as a warning (author 2026-08-30: suggestions over
-    // dashboards). Grey ramp, not the accent — attn stays needs-you-only (L3).
-    if r.pty_total > 0 && r.pty_used * 5 >= r.pty_total * 4 {
-        // Full-value text, no bold — 06 §5.1's bold allowlist doesn't
-        // include the header, and the value step is the warning.
-        spans.push(Span::styled(
-            format!("   ptys {}/{} ∙ close to the limit", r.pty_used, r.pty_total),
-            theme.base(),
-        ));
+    let mut style = theme.selected_row().add_modifier(Modifier::BOLD);
+    if theme.selected_bg.is_some() {
+        style = style.fg(theme.sel.base);
     }
-    if r.rss_measured > 0 {
-        let gib = r.rss_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
-        spans.push(Span::styled(format!(" ∙ {gib:.1}GiB"), theme.dim2()));
+    Span::styled(format!(" {word} "), style)
+}
+
+/// THE header, for every screen: the screen chip, the breadcrumb, an
+/// optional leaf (the ticket a diff or a note belongs to — context, not the
+/// subject), and on the board the ticket count on the left and the standing
+/// offer on the right. One row, on the page ground.
+pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&str>) {
+    let theme = &app.theme;
+    let ink = &theme.rest;
+    let word = screen_word(app);
+    let mut spans = vec![chip(app, word), Span::raw("  ".to_string())];
+    spans.extend(breadcrumb(app, ink));
+    if let Some(leaf) = leaf {
+        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        spans.push(Span::styled(" > ".to_string(), Style::default().fg(ink.dim3)));
+        let budget = (area.width as usize).saturating_sub(used + 4);
+        spans.push(Span::styled(truncate(leaf, budget), Style::default().fg(ink.base)));
     }
-    // What the board is, on the left. What it offers, on the right.
-    let used: usize = spans.iter().map(|s| s.content.width()).sum();
-    // One cell of page padding at the right edge (06 §5.5), and never less
-    // than a three-cell gap — a chip touching the state text reads as part of
-    // it. Whatever is left is the chip's budget.
-    let budget = (area.width as usize).saturating_sub(used + 4);
-    let chip = suggestion_chip(app, budget);
-    let chip_w: usize = chip.iter().map(|s| s.content.width()).sum();
-    if chip_w > 0 {
-        let pad = (area.width as usize).saturating_sub(used + chip_w + 1);
-        spans.push(Span::raw(" ".repeat(pad)));
-        spans.extend(chip);
+    // The board's own facts and offer — on the board, not on a note editor
+    // that happens to have been opened from it.
+    if word == "BOARD" {
+        // D33e: session count, RSS aggregate, PTY headroom — all grey. The one
+        // saturated colour stays reserved for `needs you`.
+        let r = &app.resources;
+        // Board contents, not process stats (author 2026-08-30): the count is
+        // tickets on the board. Grace-band deletions are already out of
+        // `board.tickets`; archived tickets stay in it but are off the board.
+        let n_tickets = app.board.tickets.iter().filter(|t| !t.is_archived()).count();
+        let noun = if n_tickets == 1 { "ticket" } else { "tickets" };
+        spans.push(Span::styled(format!("   {n_tickets} {noun}"), theme.dim2()));
+        // Asleep count cut from the header (author 2026-08-30): sleeping is
+        // the quiet, correct condition — the card's own state word carries
+        // it; the header only speaks when something is spendable (the offer)
+        // or scarce. PTY headroom is machine-wide noise until it isn't:
+        // surface it only past 80% of the OS cap, as a warning (author
+        // 2026-08-30: suggestions over dashboards). Grey ramp, not the
+        // accent — attn stays needs-you-only (L3).
+        if r.pty_total > 0 && r.pty_used * 5 >= r.pty_total * 4 {
+            // Full-value text, no bold — 06 §5.1's bold allowlist doesn't
+            // include the header, and the value step is the warning.
+            spans.push(Span::styled(
+                format!("   ptys {}/{} ∙ close to the limit", r.pty_used, r.pty_total),
+                theme.base(),
+            ));
+        }
+        if r.rss_measured > 0 {
+            let gib = r.rss_bytes as f64 / (1024.0 * 1024.0 * 1024.0);
+            spans.push(Span::styled(format!(" ∙ {gib:.1}GiB"), theme.dim2()));
+        }
+        // What the board is, on the left. What it offers, on the right.
+        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        // One cell of page padding at the right edge (06 §5.5), and never
+        // less than a three-cell gap — a chip touching the state text reads
+        // as part of it. Whatever is left is the chip's budget.
+        let budget = (area.width as usize).saturating_sub(used + 4);
+        let offer = suggestion_chip(app, budget);
+        let offer_w: usize = offer.iter().map(|s| s.content.width()).sum();
+        if offer_w > 0 {
+            let pad = (area.width as usize).saturating_sub(used + offer_w + 1);
+            spans.push(Span::raw(" ".repeat(pad)));
+            spans.extend(offer);
+        }
     }
     // Needs-you lives in the breadcrumb's `!N` (07 §2.2's separate
     // `needs you N` word form superseded by the shared component).
@@ -160,30 +209,58 @@ pub(super) fn draw_advisory(f: &mut Frame, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(line), area);
 }
 
-/// A footer mode line: bold mode word, quiet suggestions.
-pub(super) fn mode_line(app: &App, word: &str, hint: &str) -> Line<'static> {
-    Line::from(vec![
-        Span::styled(format!(" {word}"), app.theme.dim1().add_modifier(Modifier::BOLD)),
-        Span::styled(format!("  {hint}"), app.theme.dim2()),
-    ])
-}
-
-/// THE footer, for every screen. A pending status outranks the hints — it is
-/// the answer to the key just pressed — and otherwise the line is rendered
-/// from the keymap, filtered to what this screen can actually do right now.
-/// There are no hint literals anywhere in `ui/`: a key that is hinted works,
-/// and a key that works is hinted, because one table decides both.
-pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
-    f.render_widget(Paragraph::new(footer_line(app, area.width)), area);
-}
-
-pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
-    if !app.status.is_empty() {
-        return Line::from(Span::styled(
-            format!(" {}", crate::text::one_line(&app.status)),
-            app.theme.base(),
-        ));
+/// Bindings as hint spans — `key` in `ink.base` + bold (06 §5.1 clause 3:
+/// bold is sanctioned on the footer's key names), its word in `ink.dim2`,
+/// `∙` between in `ink.dim3` — filled greedily to `budget` cells in the
+/// order given: an item that does not fit is skipped, never cut, and a
+/// shorter one after it may still land. The footer, a dialog's bottom edge
+/// and the rail's trailer rows all spell their keys through this.
+pub(super) fn hint_spans(
+    items: &[&Binding],
+    ctx: &Ctx,
+    ink: &Ramp,
+    budget: usize,
+) -> Vec<Span<'static>> {
+    let key = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
+    let word = Style::default().fg(ink.dim2);
+    let sep = Style::default().fg(ink.dim3);
+    let mut out: Vec<Span<'static>> = Vec::new();
+    let mut used = 0usize;
+    for b in items {
+        let hint = (b.hint)(ctx);
+        let w = b.show.width() + 1 + hint.width();
+        let add = if out.is_empty() { w } else { w + 3 };
+        if used + add > budget {
+            continue;
+        }
+        if !out.is_empty() {
+            out.push(Span::styled(" ∙ ".to_string(), sep));
+        }
+        out.push(Span::styled(b.show.to_string(), key));
+        out.push(Span::styled(format!(" {hint}"), word));
+        used += add;
     }
+    out
+}
+
+/// Is a framed dialog open? Its keys are in its frame; the footer under it
+/// then carries only the mode chip and the right cluster.
+fn dialog_open(app: &App) -> bool {
+    app.tag_armed.is_some()
+        || matches!(
+            app.mode,
+            Mode::Menu { .. } | Mode::Theme { .. } | Mode::Archived { .. } | Mode::External { .. }
+        )
+        || (matches!(app.screen, Screen::Board)
+            && matches!(&app.mode, Mode::Editor(ed) if ed.composing()))
+}
+
+/// The footer's mode chip, or `None` while the screen is at rest — the
+/// header already names the screen, and BOARD twice on one frame said
+/// nothing the second time. A mode that has taken the keys over (a chord
+/// tail, a text field, a move, a dialog) is named here, where the hints
+/// it changed are.
+fn mode_word(app: &App) -> Option<&'static str> {
     let scope = app.scope();
     // A text field says which field it is; "INPUT" would be true and useless.
     let word = match &app.mode {
@@ -196,129 +273,74 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         // other field here saves something to the board. This one leaves
         // mesimon entirely.
         Mode::Input { purpose: InputPurpose::Prompt { .. }, .. } => "ASK",
-        // The editor is the composer in a bigger room, or a note.
+        // The editor is the composer in a bigger room, or a note — and the
+        // note's editor is a screen of its own, named by the header.
         Mode::Editor(e) if e.composing() => "NEW",
-        Mode::Editor(_) => "NOTE",
+        Mode::Editor(_) => return None,
         _ => scope.word(),
     };
-    // The mode word plus its two-space gutter and the leading pad.
-    let budget = (width as usize).saturating_sub(word.len() + 4);
-    mode_line(app, word, &keymap::footer(scope, &app.ctx(), budget))
+    let resting = matches!(
+        (&app.screen, scope),
+        (Screen::Board, Scope::Board) | (Screen::Ticket { .. }, Scope::Ticket) | (Screen::Diff { .. }, Scope::Diff)
+    );
+    (!resting).then_some(word)
 }
 
-/// The External drawer (19 §4): discovered foreign sessions, observe/resume.
-pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
-    let theme = &app.theme;
-    if app.external.is_empty() {
-        return;
-    }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let w = 64.min(f.area().width.saturating_sub(4));
-    let h = ((app.external.len() as u16 * 2) + 4).min(f.area().height.saturating_sub(2));
-    let area = Rect {
-        x: (f.area().width.saturating_sub(w)) / 2,
-        y: (f.area().height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
-    };
-    f.render_widget(ratatui::widgets::Clear, area);
-    if let Some(bg) = theme.bg {
-        f.render_widget(ratatui::widgets::Block::default().style(Style::default().bg(bg)), area);
-    }
-
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!(" external sessions — {}", app.external.len()),
-        theme.dim1().add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::default());
-    for (i, item) in app.external.iter().enumerate() {
-        let name = item
-            .name
-            .clone()
-            .unwrap_or_else(|| item.claude_session_id.to_string()[..8].to_string());
-        let mut badges = String::new();
-        if item.running_elsewhere {
-            badges.push_str("  ∙ running elsewhere");
-        }
-        let head = format!(
-            " {}  {}{badges}",
-            truncate(&name, 24),
-            crate::text::age_slot(now, item.mtime_ms, false)
-        );
-        let style = if i == idx {
-            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-        } else {
-            theme.base()
-        };
-        lines.push(Line::from(Span::styled(head, style)));
-        let preview = item.preview.as_deref().unwrap_or("");
-        lines.push(Line::from(Span::styled(
-            format!("     {}", truncate(preview, w as usize - 6)),
-            theme.dim2(),
-        )));
-    }
-    lines.push(Line::from(Span::styled(
-        format!(" {}", keymap::footer(keymap::Scope::Drawer, &app.ctx(), w as usize - 2)),
-        theme.dim2(),
-    )));
-    f.render_widget(Paragraph::new(lines), area);
+/// THE footer, for every screen. A pending status outranks the hints — it is
+/// the answer to the key just pressed — and otherwise the line is rendered
+/// from the keymap, filtered to what this screen can actually do right now.
+/// There are no hint literals anywhere in `ui/`: a key that is hinted works,
+/// and a key that works is hinted, because one table decides both.
+pub(super) fn draw_footer(f: &mut Frame, area: Rect, app: &App) {
+    f.render_widget(Paragraph::new(footer_line(app, area.width)), area);
 }
 
-/// The archived-tickets dialog (V): restore or open. Same popup treatment as
-/// the External drawer — no drawn structure, grey ramp only.
-pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
+/// The footer as a painted band: the mode chip (when a mode is on), the
+/// screen's own keys filling left, the app keys right-aligned, every cell
+/// of the row on the elevated surface where the profile paints one.
+pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     let theme = &app.theme;
-    let archived = app.board.archived_tickets();
-    if archived.is_empty() {
-        return;
-    }
-    let idx = idx.min(archived.len() - 1);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
-    let w = 64.min(f.area().width.saturating_sub(4));
-    let h = ((archived.len() as u16) + 4).min(f.area().height.saturating_sub(2));
-    let area = Rect {
-        x: (f.area().width.saturating_sub(w)) / 2,
-        y: (f.area().height.saturating_sub(h)) / 2,
-        width: w,
-        height: h,
+    let (band, ink) = match theme.selected_bg {
+        Some(bg) => (Style::default().bg(bg), &theme.sel),
+        None => (Style::default(), &theme.rest),
     };
-    f.render_widget(ratatui::widgets::Clear, area);
-    if let Some(bg) = theme.bg {
-        f.render_widget(ratatui::widgets::Block::default().style(Style::default().bg(bg)), area);
+    let width = width as usize;
+    let pad_to = |spans: &mut Vec<Span<'static>>| {
+        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
+    };
+    if !app.status.is_empty() {
+        let mut spans = vec![Span::styled(
+            format!(" {}", crate::text::one_line(&app.status)),
+            Style::default().fg(ink.base),
+        )];
+        pad_to(&mut spans);
+        return Line::from(spans).style(band);
     }
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(Span::styled(
-        format!(" archived — {}", archived.len()),
-        theme.dim1().add_modifier(Modifier::BOLD),
-    )));
-    lines.push(Line::default());
-    for (i, t) in archived.iter().enumerate() {
-        // Archive age from the `@<secs>` stamp; unparsable stamps show no age.
-        let age = t
-            .archived
-            .as_ref()
-            .and_then(|a| a.at.strip_prefix('@'))
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(|secs| crate::text::age_slot(now, secs * 1000, false))
-            .unwrap_or_default();
-        let head = format!(" {}  {} ∙ {} ∙ {}", t.short_key, truncate(&t.title, 28), t.column, age);
-        let style = if i == idx {
-            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
-        } else {
-            theme.base()
-        };
-        lines.push(Line::from(Span::styled(head, style)));
+    let scope = app.scope();
+    let ctx = app.ctx();
+    let (own, right) = keymap::footer_split(scope, &ctx);
+    let own: Vec<&Binding> = if dialog_open(app) { Vec::new() } else { own };
+
+    let mut spans: Vec<Span<'static>> = vec![Span::raw(" ".to_string())];
+    if let Some(word) = mode_word(app) {
+        spans.push(Span::styled(
+            word.to_string(),
+            Style::default().fg(ink.base).add_modifier(Modifier::BOLD),
+        ));
+        spans.push(Span::raw("  ".to_string()));
     }
-    lines.push(Line::from(Span::styled(
-        format!(" {}", keymap::footer(keymap::Scope::Archived, &app.ctx(), w as usize - 2)),
-        theme.dim2(),
-    )));
-    f.render_widget(Paragraph::new(lines), area);
+    let lead: usize = spans.iter().map(|s| s.content.width()).sum();
+    // The right cluster is reserved first: it is how everything else is found.
+    let right = hint_spans(&right, &ctx, ink, width.saturating_sub(lead + 1));
+    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
+    let reserved = if right_w == 0 { 1 } else { right_w + 4 };
+    spans.extend(hint_spans(&own, &ctx, ink, width.saturating_sub(lead + reserved)));
+    if right_w > 0 {
+        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        spans.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w + 1))));
+        spans.extend(right);
+    }
+    pad_to(&mut spans);
+    Line::from(spans).style(band)
 }

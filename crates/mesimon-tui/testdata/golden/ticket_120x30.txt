@@ -1,11 +1,13 @@
- mesimon > kanban-tui  !1  > Fix OSC-11 detection
+ TICKET   mesimon > kanban-tui  !1
 
- IN PROGRESS ∙ created by you >1y ago
+ Fix OSC-11 detection
+ IN PROGRESS ∙ >1y here ∙ created >1y ago
 
   PREVIEW                                                                                  SESSIONS                  2
 
     ● working                                                                             ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
+                                                                                           c claude ∙ s shell ∙ x sleep
 
 
 
@@ -25,6 +27,4 @@
 
 
 
-
-
- TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ q board ∙ ? keys
+ jk select session ∙ enter focus ∙ tab needs you ∙ r rename ∙ d delete ∙ n describe ∙ q board                    ? keys
