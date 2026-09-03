@@ -4267,6 +4267,35 @@ frame, since the taller menu put the sleep row beside a board card.
 `g`/`G`; the notes are not scrubbed through `text.rs` because they are the repo's own file, not
 user or agent text.
 
+## A page turn glides (2026-09-04, author: "`{ }` in ticket page should scroll smoothly")
+
+**What was wrong:** `{ }` on the ticket page's PREVIEW zone jumped a whole window a press. A page
+with one row of overlap is the right DISTANCE (a page is a page, as in the diff), but a jump loses
+the eye: the row it was reading is somewhere else, or gone, with no motion to say which way.
+
+**Built:** the press still moves the RECORD at once — `App::preview_page` writes the next offset
+into `preview_view` and `preview_scroll` exactly as before, so the footer, the clamp, the tail
+release and a held key's queued presses see the same numbers they did — and arms
+`App::preview_glide: Cell<Option<Glide>>` (`Glide { key, from, at }`, `app.rs`): the document,
+where the window WAS, and when. `ui/ticket.rs::window` draws the rows at `Glide::offset(target)`
+— eased out, the composer dialog's curve — and retires the glide once it has landed or when the
+document under it changes, so a new reply opens at its top with no motion. `App::animating` now
+counts a live glide on the ticket screen, which is what makes the event loop poll at 16 ms for
+the duration. **`GLIDE` is `GROW`** (180 ms): a screen gets one speed of motion, the dialog's,
+not a second one for scrolling. A second press mid-turn starts from where the eye is
+(`Glide::offset` of the current target), never from where the first press started, so a held key
+is one continuous scroll rather than a stutter of restarts.
+
+**Tests:** `test_preview_pages_a_long_reply` now pins frame zero (the glide dated into the future,
+as the grow test does), a midway frame between the two pages, the record not moving with the
+frame, the landed frame, the retire, and the mid-turn restart; `page()` in the test module presses
+and settles. The shell-tail test pages through the same helper. No golden moved: a golden renders
+a resting board.
+
+**Not done:** `j`/`k` on the diff and the release notes still jump — they move one row, which is
+its own smoothness; the diff's and the releases' page keys still jump a page, and could take the
+same `Glide` if the author asks.
+
 ## Two hints go quiet: the sleeper's `x` and the editor's Shift+Tab (2026-09-04)
 
 **Ask:** "remove hint `x wake` in ticket page and `shift+tab shared checkout / own worktree`

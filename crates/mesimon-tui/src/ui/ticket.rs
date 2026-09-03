@@ -567,7 +567,10 @@ fn note_key(meta: &NoteMeta) -> u64 {
 /// it the way the diff pane does and writes the clamp back, and records what
 /// was shown (`App::preview_view`) so the next press and the footer know
 /// the page size and whether there is a further one. A window that stops
-/// short of the last row ends in the `~` cut mark.
+/// short of the last row ends in the `~` cut mark. While a page turn is in
+/// motion (`App::preview_glide`) the rows drawn are the glide's frame, on
+/// the way to the offset recorded — the record is where the reader is
+/// going, the glide is where the eye is.
 fn window(
     app: &App,
     key: Option<u64>,
@@ -599,8 +602,18 @@ fn window(
         page: budget.saturating_sub(1).max(1),
         follows_tail,
     });
-    let mut shown: Vec<Line<'static>> = rows.into_iter().skip(offset).take(budget).collect();
-    if offset + shown.len() < total {
+    // A glide on another document, or one that has landed, is retired here
+    // so `App::animating` stops asking for fast frames the moment it can.
+    let at = match app.preview_glide.get() {
+        Some(g) if Some(g.key) == key && g.progress().is_some() => g.offset(offset).min(max),
+        Some(_) => {
+            app.preview_glide.set(None);
+            offset
+        }
+        None => offset,
+    };
+    let mut shown: Vec<Line<'static>> = rows.into_iter().skip(at).take(budget).collect();
+    if at + shown.len() < total {
         crate::rich::mark_cut(&mut shown, width, &app.theme);
     }
     shown

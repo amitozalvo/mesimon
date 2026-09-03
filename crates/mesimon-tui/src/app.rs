@@ -238,6 +238,47 @@ pub struct Editor {
 /// different place.
 pub const GROW: Duration = Duration::from_millis(180);
 
+/// A page turn in motion on the ticket page's preview zone: the document
+/// it is on, where the window was when `{ }` was pressed, and when. The
+/// draw carries the window from there to the offset asked for over
+/// `GLIDE`, so the eye follows the text to its new place instead of losing
+/// it in a jump (author 2026-09-04: "should scroll smoothly"). Keyed to the
+/// document like the request itself: a reply that changes under a glide
+/// opens at its top with no motion at all.
+#[derive(Clone, Copy, Debug)]
+pub struct Glide {
+    pub key: u64,
+    pub from: usize,
+    pub at: Instant,
+}
+
+/// How long a page turn takes to land — the dialog's clock, because a
+/// screen gets one speed of motion, not a second one for scrolling.
+pub const GLIDE: Duration = GROW;
+
+impl Glide {
+    /// How far along the turn is, 0.0 at `from` and 1.0 at rest; `None`
+    /// once landed. Eased out, so the text leaves fast and settles gently.
+    pub fn progress(&self) -> Option<f32> {
+        let t = self.at.elapsed().as_secs_f32() / GLIDE.as_secs_f32();
+        if t >= 1.0 {
+            return None;
+        }
+        Some(1.0 - (1.0 - t) * (1.0 - t))
+    }
+
+    /// The offset to show this frame, on the way from `from` to `to`.
+    pub fn offset(&self, to: usize) -> usize {
+        match self.progress() {
+            None => to,
+            Some(p) => {
+                let from = self.from as f32;
+                (from + (to as f32 - from) * p).round().max(0.0) as usize
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum EditorPurpose {
     /// A new ticket: title + description, with the mini composer's picks
@@ -574,6 +615,9 @@ pub struct App {
     pub preview_scroll: Cell<Option<(u64, usize)>>,
     /// What the last draw of that zone measured (see `PreviewView`).
     pub preview_view: Cell<PreviewView>,
+    /// The page turn in motion, if one is (see `Glide`). Armed by the
+    /// press, read and retired by the draw.
+    pub preview_glide: Cell<Option<Glide>>,
     /// Where the board last drew the cursor card — the composer's phantom
     /// card, or the ticket under the cursor — which is the rectangle Tab's
     /// dialog grows out of. Draw-side, like `preview_view`: the card's place
@@ -731,6 +775,7 @@ impl App {
             notes: std::collections::HashMap::new(),
             preview_scroll: Cell::new(None),
             preview_view: Cell::new(PreviewView::default()),
+            preview_glide: Cell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
             spin_epoch: Cell::new(None),
@@ -777,9 +822,12 @@ impl App {
     }
 
     /// Whether something on screen is mid-motion and wants the next frame
-    /// sooner than the spinner's cadence: the composer dialog growing.
+    /// sooner than the spinner's cadence: the composer dialog growing, or
+    /// the preview zone turning a page.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
+            || (matches!(self.screen, Screen::Ticket { .. })
+                && self.preview_glide.get().is_some_and(|g| g.progress().is_some()))
     }
 
     /// The working-spinner frame for this draw. The event loop redraws at
@@ -2764,6 +2812,9 @@ impl App {
     /// last draw measured. Clamped here AND at draw, so a press past the end
     /// sits on the last full window rather than a blank one; a shell tail
     /// scrolled back to its bottom is released to follow the pane again.
+    /// The move is a glide, not a jump: it starts where the window IS this
+    /// frame — mid-turn, that is partway to the last target — so a held key
+    /// reads as one continuous scroll rather than a stutter of restarts.
     fn preview_page(&mut self, dir: isize) {
         let v = self.preview_view.get();
         let Some(key) = v.key else { return };
@@ -2772,6 +2823,13 @@ impl App {
             self.preview_scroll.set(None);
         } else {
             self.preview_scroll.set(Some((key, next)));
+        }
+        let from = match self.preview_glide.get() {
+            Some(g) if g.key == key => g.offset(v.offset),
+            _ => v.offset,
+        };
+        if from != next {
+            self.preview_glide.set(Some(Glide { key, from, at: Instant::now() }));
         }
         // The next press may land before the next frame (a held key queues
         // several), so the measurement moves with the request instead of

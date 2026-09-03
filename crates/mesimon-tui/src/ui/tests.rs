@@ -112,6 +112,24 @@ fn render(app: &App, w: u16, h: u16) -> Vec<String> {
     lines_of(&cells(app, w, h))
 }
 
+/// `{ }` on the ticket page, LANDED: a page turn is a glide, so the frame
+/// after the press still shows the old rows. This dates the glide a full
+/// `GLIDE` into the past, the way the composer's grow test pins its frames,
+/// so a test reads the page the press asked for.
+fn page(app: &mut App, c: char) {
+    press(app, c);
+    settle_preview(app);
+}
+
+fn settle_preview(app: &mut App) {
+    if let Some(g) = app.preview_glide.get() {
+        app.preview_glide.set(Some(crate::app::Glide {
+            at: std::time::Instant::now() - crate::app::GLIDE,
+            ..g
+        }));
+    }
+}
+
 fn lines_of(buffer: &ratatui::buffer::Buffer) -> Vec<String> {
     let area = buffer.area();
     let mut lines = Vec::new();
@@ -836,13 +854,36 @@ fn test_preview_pages_a_long_reply() {
     let v = app.preview_view.get();
     assert!(v.max > 0 && v.page > 1 && !v.follows_tail, "{v:?}");
 
+    // A press is a GLIDE: the record moves to the next page at once, the
+    // rows follow it over `GLIDE`. Frame zero (the glide dated into the
+    // future, so `elapsed` saturates at zero on a loaded box) still shows
+    // the first row; halfway through, the window is between the two pages;
+    // landed, the first row is gone.
     press(&mut app, '}');
-    assert!(!shows(&app, "row 01"), "one page down and the first row is gone");
     let first = app.preview_view.get().offset;
-    assert_eq!(first, v.page);
+    assert_eq!(first, v.page, "the record is already on the next page");
+    let g = app.preview_glide.get().expect("the press arms a glide");
+    assert_eq!((g.key, g.from), (v.key.expect("a document"), 0));
+    assert!(app.animating(), "the frame after the press is in motion");
+    let future = std::time::Instant::now() + std::time::Duration::from_secs(1);
+    app.preview_glide.set(Some(crate::app::Glide { at: future, ..g }));
+    assert!(shows(&app, "row 01"), "frame zero: the old page is still on screen");
+    assert_eq!(app.preview_view.get().offset, first, "the record does not move with the frame");
+    let half = std::time::Instant::now() - crate::app::GLIDE / 2;
+    app.preview_glide.set(Some(crate::app::Glide { at: half, ..g }));
+    let mid = render(&app, 120, 30);
+    let top_row = mid
+        .iter()
+        .find_map(|l| l.find("row ").map(|i| l[i + 4..i + 6].parse::<usize>().unwrap_or(0)))
+        .expect("a reply row on screen");
+    assert!(top_row > 1 && top_row <= first, "midway, between the pages: {top_row}");
+    settle_preview(&mut app);
+    assert!(!app.animating(), "landed");
+    assert!(!shows(&app, "row 01"), "one page down and the first row is gone");
+    assert!(app.preview_glide.get().is_none(), "the draw retires a landed glide");
     // Past the end: the last window is a FULL one, marked nowhere.
     for _ in 0..20 {
-        press(&mut app, '}');
+        page(&mut app, '}');
     }
     assert!(shows(&app, "row 60"));
     assert_eq!(app.preview_view.get().offset, v.max);
@@ -850,16 +891,32 @@ fn test_preview_pages_a_long_reply() {
         !render(&app, 120, 30).iter().any(|l| l.contains("row 60 of the reply~")),
         "the last row is not a cut"
     );
-    press(&mut app, '{');
+    page(&mut app, '{');
     assert!(!shows(&app, "row 60"));
     for _ in 0..20 {
-        press(&mut app, '{');
+        page(&mut app, '{');
     }
     assert!(shows(&app, "row 01"));
     assert_eq!(app.preview_view.get().offset, 0);
 
-    // Scrolled halfway, then the reply changes: the new one opens at its top.
+    // A second press mid-glide starts from where the eye IS, not from where
+    // the first press started: one continuous scroll, no restart.
     press(&mut app, '}');
+    let g = app.preview_glide.get().expect("glide");
+    let g = crate::app::Glide { at: std::time::Instant::now() - crate::app::GLIDE / 2, ..g };
+    app.preview_glide.set(Some(g));
+    let eye = g.offset(first);
+    assert!(eye > 0 && eye < first, "{eye}");
+    press(&mut app, '}');
+    let g2 = app.preview_glide.get().expect("glide");
+    assert_eq!(g2.from, eye, "the second turn begins where the first had got to");
+    assert_eq!(app.preview_view.get().offset, 2 * v.page);
+    for _ in 0..20 {
+        page(&mut app, '{');
+    }
+
+    // Scrolled halfway, then the reply changes: the new one opens at its top.
+    page(&mut app, '}');
     assert!(!shows(&app, "row 01"));
     std::fs::write(&path, reply_record(&long.replace("of the reply", "of the next reply")))
         .expect("rewrite");
@@ -867,6 +924,7 @@ fn test_preview_pages_a_long_reply() {
     // The peek cache keys on (len, mtime); the length differs, which is enough.
     assert_ne!(meta.len(), 0);
     assert!(shows(&app, "row 01 of the next reply"), "a new reply starts at its top");
+    assert!(app.preview_glide.get().is_none(), "and a glide on the old one is dropped");
 
     // A reply that fits offers nothing to turn: keys inert, hint gone.
     std::fs::write(&path, reply_record("short")).expect("rewrite");
@@ -893,7 +951,7 @@ fn test_preview_pages_a_shell_tail() {
     assert!(v.follows_tail && v.offset == v.max && v.max > 0, "{v:?}");
     assert!(app.preview_scroll.get().is_none(), "following is the absence of a request");
 
-    press(&mut app, '{');
+    page(&mut app, '{');
     assert!(!shows(&app, "line 60"));
     assert!(shows(&app, "line 60~") || render(&app, 120, 30).iter().any(|l| l.ends_with('~')));
     // New output while scrolled up: the reader's window holds still.
@@ -909,10 +967,10 @@ fn test_preview_pages_a_shell_tail() {
     // meanwhile, so the window stops one short, says so, and stays pinned
     // (a page is a page, as in the diff). The next press reaches the end
     // and releases it — the new line arrives with it.
-    press(&mut app, '}');
+    page(&mut app, '}');
     assert!(shows(&app, "line 60~") && !shows(&app, "line 61"));
     assert!(app.preview_scroll.get().is_some());
-    press(&mut app, '}');
+    page(&mut app, '}');
     assert!(shows(&app, "line 61"), "back at the bottom, and the new line is there");
     assert!(app.preview_scroll.get().is_none(), "at the bottom the tail is released");
 }

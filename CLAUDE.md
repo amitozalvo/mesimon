@@ -681,7 +681,11 @@ transcript zone reads markdown".)
 `App::preview_view`, which the DRAW writes (the zone's height is a fact of the frame), and the
 request `App::preview_scroll` is keyed to the document (session + reply text, `ticket::doc_key`),
 so a rail move or a new reply starts at the top. A shell tail defaults to its bottom and is
-released back to following when `}` reaches it. (STALE-MAP "The preview zone pages".)
+released back to following when `}` reaches it. **A press GLIDES** (2026-09-04): the record moves
+at once, the rows follow over `GLIDE` (= `GROW`, one speed of motion on a screen) through
+`App::preview_glide` / `Glide::offset`, keyed to the document and retired by the draw; a press
+mid-turn starts where the eye is. Tests page through `page()`, which presses and settles.
+(STALE-MAP "The preview zone pages" + "A page turn glides".)
 
 **The same zone previews a SHELL's pane, and it is the one thing the TUI polls.** A shell keeps no
 transcript — tmux is its only record — so a live-shell selection on the ticket page draws the
