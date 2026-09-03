@@ -9,6 +9,59 @@ into the binary and shown by the Esc menu's "Release notes" row (`core/src/relno
 parses it; `cargo ut` checks every heading), and `ci/release.sh` lifts the tag's
 section out of it for the GitHub release body.
 
+## v0.1.0-alpha.12 — 2026-09-04
+
+- **Release notes, in the board.** The Esc menu has a `Release notes` row that opens this file
+  on a screen of its own: one band per release, the running build marked, the notes as rich
+  text under each. `j`/`k` and `{ }` read, `n`/`N` step between releases, `q` returns. The
+  notes ship inside the binary, so what a build shows is what it is.
+
+- **`^s` saves and leaves; `^S` saves and hands the words to claude.** In the note editor `^s`
+  writes the note and closes it (it used to need a second press). In the grown composer `^s`
+  keeps the description and folds back into the one-line composer, where Enter mints. `^S`
+  (ctrl+shift+s) is the bigger room's Shift+Enter: composing, it mints the ticket, writes the
+  description and starts claude on the title; on a note it tells the ticket's running claude
+  the note changed, or starts one if the seat is empty. A sleeping claude leaves it inert —
+  `c` wakes it. `^S` needs a terminal that can spell it; a legacy terminal sends `^s`.
+
+- **`^g` opens the note in your own editor.** `$VISUAL`, else `$EDITOR`, else `vi`, on the
+  terminal mesimon hands back for the duration. What comes back is saved at once on a note, or
+  dropped into the draft while composing. The hint names the program; `mesimon doctor` prints
+  an `editor` line.
+
+- **A finished agent's mark says whether you have read the reply.** The card wears the heavy
+  `✔` in the calm register while its agent's last reply is one you have not been on the card
+  for, and the thin grey `✓` the moment the cursor lands or the ticket page opens. No cell is
+  spent: the signal is the glyph. A fresh board finds every reply unread.
+
+- **Esc lands in seconds, and an interrupted turn wears `⊘`.** Interrupting claude used to
+  leave the ticket at `running` for up to two minutes, or forever when the interrupt wrote no
+  transcript record at all. Both spellings of the record are read now, and the recordless Esc
+  is caught off Claude Code's own session file within about two seconds. The state the card
+  lands in finally has a mark and a word: `⊘ interrupted`.
+
+- **Your ask outranks your own park.** `<<` a card to TODO and then Shift+Enter, and it lands
+  in IN PROGRESS. Automove refused that move as ping-pong against your drag; a prompt from the
+  same hand is the newer intent and now supersedes it. An agent's move and the flap fuse keep
+  their protection.
+
+- **Two phosphors with white ink, a red delete flash, and Solarized light.** Amber and green
+  stop painting body text in the glow: green is a hued ground and accent under white ink, amber
+  its original ladder with a white base step. Arming a delete flashes the card red (the title
+  row on the ticket page too), on every theme. Solarized light joins as the sixth theme, picked
+  from the same menu row.
+
+- **An approved plan lands as a note on Claude Code 2.1.259.** That build moved the plan from
+  the tool's input to its response, and the note stopped being written. Both shapes are read.
+
+- **`{ }` on the ticket page glides.** A page turn scrolls the preview over the same 180 ms the
+  composer takes to grow, and a press mid-glide continues from where the eye is, so a held key
+  is one continuous scroll.
+
+- **Smaller.** Shift+Tab in the tag picker walks the tint ramp back, wrapping. The ticket rail
+  no longer says `x wake` under a sleeper whose other keys already say it; `x` still wakes. The
+  grown composer names Shift+Tab beside the workspace word rather than spelling it in the frame.
+
 ## v0.1.0-alpha.11 — 2026-09-03
 
 - **An approved plan becomes a note on the ticket.** When you approve an agent's plan, mesimon
