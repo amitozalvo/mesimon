@@ -183,10 +183,15 @@ pub(super) fn render(
     open: bool,
     peek: Option<&crate::peek::Peek>,
     tags: &[crate::tags::Painted],
+    doomed: bool,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
     let tier = theme.glyph_tier();
+    // The `d` chord is armed on this card: it flashes as a deletion — the
+    // diff's del tint under an `err` title — until the second `d` or the
+    // cancel, on the MOVE ghost's cadence (`Theme::delete_lit`).
+    let doomed = doomed && theme.delete_lit(ctx.spin);
     // The launch window starts at the keypress, not at the session record.
     // A worktree ticket's first spawn is PARKED while the worktree is cut
     // (~2 s of git, sometimes more), and provisioning is lazy — a queued or
@@ -274,7 +279,9 @@ pub(super) fn render(
 
     // Row surface: the inverted needs-you title row beats the cursor surface
     // (06 §2.4b — one row only, `err` never gets a band).
-    let row_style = if attn_card {
+    let row_style = if doomed {
+        theme.delete_row()
+    } else if attn_card {
         theme.attn_row()
     } else if cursorish {
         theme.selected_row()
@@ -282,7 +289,9 @@ pub(super) fn render(
         Style::default()
     };
 
-    let title_style = if trail {
+    let title_style = if doomed {
+        theme.err_text().add_modifier(Modifier::BOLD)
+    } else if trail {
         // The original spot of a pending move: semi-transparent.
         theme.dim3()
     } else if attn_card {
@@ -350,7 +359,7 @@ pub(super) fn render(
     // about the AGENT, and the commonest tagged card could never show it.
     let tag_row = open && !tags.is_empty();
     if selected && (!sessions.is_empty() || tag_row) {
-        let acc_style = theme.selected_row();
+        let acc_style = if doomed { theme.delete_row() } else { theme.selected_row() };
         let dim = Style::default().fg(theme.sel.dim1);
         let quiet = Style::default().fg(theme.sel.dim2);
         let mut push = |spans: Vec<Span<'static>>| {

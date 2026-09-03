@@ -174,6 +174,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             open,
             peek.as_ref(),
             &painted,
+            app.doomed(t.id),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are

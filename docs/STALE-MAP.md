@@ -3807,3 +3807,149 @@ so both builds land, and refuses a response whose `isAgent` is true (the `agent_
 The unit test carries both shapes. The lesson is the one the docs ladder already teaches about
 version numbers: a hook payload captured on one build is a measurement of that build, and the
 frame a feature rests on wants its shape pinned in a test that names the build it came from.
+
+## The armed delete flashes the card (2026-09-03, user request)
+
+"Before deleting (when clicking `d` the first time) indicate on the ticket — flash with a red
+tinted colour until either delete or cancel." Before this the first `d` was a status line only
+(`d again deletes`), and the card it was armed on looked like every other cursor card.
+
+Now, from the first `d` until the second (`d`/`D`) or the stray key that cancels, the card is
+drawn as the diff draws a deleted line — `diff_del_bg` as its ground, `err` bold on the title,
+the accordion rows on the same ground — square-waving with the ordinary cursor surface on the
+MOVE ghost's cadence (400 ms a phase; `Theme::delete_lit` is the phase, `Theme::delete_row` the
+lit ground). Same clause as that blink: fg/bg repainting on the 100 ms redraw clock for one card
+awaiting a second gesture, never SGR 5. Both colours are ones the diff view already spends, so
+the one-saturated-colour law (`attn_is_its_own_colour`, `test_attn_provenance*`) is untouched.
+Where the profile has no tint (256 and below) the ground falls back to the cursor surface and
+the `err` title carries the flash alone; mono holds steady (its `err` is Reset). The phosphors
+tinted nothing when this shipped and their `err` was the phosphor itself, so there the flash was
+amber on amber — the next block is the fix.
+
+The ticket page arms the same chord on its subject, so its title row — that page's card — takes
+the same treatment (`ui/ticket.rs`; the state row and description keep the band). `App::doomed`
+is the one seam (`delete_armed == Some(ticket)`); `card::render` takes it as a parameter and
+`ui/board.rs` is its only board caller. `test_delete_armed_flashes_the_card` and
+`test_delete_armed_flashes_the_ticket_title` are the spec: lit phase, dark phase, bystanders
+still, and the cancel puts the cursor surface back.
+
+## A delivered merge ask is not offered again for a minute (2026-09-03, user report)
+
+"`main moved ∙ m ask the agent to rebase` hint while agent was already notified (maybe need a
+minute cooldown)." The m flow's stage is derived from git state and never stored, which is right
+for what the NEXT press should do — but the only memory of a delivery was `merge_note`, and any
+keypress clears that, so one `j` later the identity line offered the same ask it had just sent.
+
+Now `App::merge_sent` remembers the last delivery (ticket, stage, instant), set on the daemon's
+`Ok` for a rebase request or a merged notice, and `App::merge_outstanding` is the seam: `Some`
+while the ticket is STILL at that stage and either `MERGE_ASK_COOLDOWN` (60 s) has not passed or
+the agent is working (`ticket_busy` — a rebase + test outlasts a minute, and the git probe is
+what says it landed). While it holds, `merge_stage_word` is `None` (no `m` hint), the identity
+line reads `main moved ∙ rebase requested` / `merged ∙ agent notified` in the calm style, and `m`
+itself stays live as it always has — the armed note says `rebase already requested — m asks
+again`, so a second delivery is the user's choice and never a hint's. Main moving again lands on
+the same stage, which is why a cooldown and not a latch: after a minute idle the offer is back.
+The rebase landing changes the stage, so the record stops matching at once. In memory, TUI-side,
+like `merge_armed`: a debounce beside the arm state, not a fact for the daemon to persist.
+`a_delivered_ask_is_not_offered_again_for_a_minute` is the spec.
+
+## The phosphors are a glow, not a screen (2026-09-03, user request)
+
+"Fix amber and green themes: make it more beautiful and white text. Also red flash before delete
+not visible there." The first phosphors (the block above, "Five themes") painted EVERY token on
+the one hue — body text included — which is what a P3 monitor does and what nobody wants to read
+a board in. And since `err` was the phosphor at full beam, the armed-delete flash on amber was
+amber bold on the amber cursor surface: the register was there, the colour was not.
+
+Now the ground and the accent share the hue and the ink is white. `Kind::Phosphor` is restated,
+not retired (a fourth clause would have been two ways of saying "the accent's hue is the
+ground's"): the ground, its cursor surface, `calm` and the cursor bar sit within 15° of `attn`,
+which IS the phosphor at full beam — C* ≥ 60 and the most chromatic token, so the one saturated
+colour finally lives where the law puts it; both ramps are neutral (C* ≤ 8.2, base L* ≥ 90 —
+graphite's ramp warmed or cooled onto the hue: cream on amber, a cool white on green); `err` is
+a red ≥ 45° off the phosphor (`#F26D78`, hue 20°: 57° off amber, 124° off green), so it is its
+own colour on both; `calm` is the hue gone pale (C* ≤ 35, dE ≥ 20 from every ramp step);
+the diff tints are back (`#501519` / `#4A171A` as the del grounds, a red step up from the
+ground and ≥ 45° off the phosphor — the law names the del tint because the delete flash is what
+it is for); the register budget holds; the fade target is still the neutral `#161616`. The tag
+rings are unchanged — the 70° band they skip is now the accent's alone — and the pip law's
+phosphor arm went back to the chroma clause (attn C* 83 over a C* 30 ring) plus the 35° hue
+clearance, now measured from `attn` rather than from a ramp base that has no hue to measure.
+The cursor bar is gold / mint (L* 80 / 84, C* 51 / 35): the accent's hue without the beam.
+Measured: amber ring worst pair dE 14.8, green 14.3; every text role ≥ 4.5 on its surfaces;
+`err` 5.9 on amber's ground, 6.0 on green's. Amber was warmed once more the same evening ("a
+little more amber": ground C* 12, cursor surface C* 19.5, bar C* 51) and then, an hour later,
+taken back to its LADDER — "same as before (originally), less bright with white text" — while
+green keeps the glow ("green leave as is, it was good"). That is the fourth `Kind`, `Ladder`:
+the glow's clauses with the three dim steps, the bars and both surfaces moved onto the hue and
+held UNDER the beam (within 15° of `attn`, ≥ 8 L* below it, less chromatic), only the base step
+of each ramp white (C* ≤ 8.2, L* ≥ 90), `calm` held by dE ≥ 20 from every ramp step and the
+register budget rather than a chroma cap. One clause could not say "the dims are grey" for green
+and "the dims are amber" for amber, and a `Kind` is exactly the thing that says which. Amber's
+numbers: the original ground `#1B1201`, cursor surface `#322205` (a step up by 8.6 L*), dims
+`#C08B1E` / `#A0751C` / `#664A14` (L* 61 / 52 / 34 — the original's rungs a step less bright;
+6.1 / 4.5 / 2.25 on the ground), base `#F3ECDE`, bar `#D59B2C` (L* 68, a rung under the beam),
+`calm` back to the original `#DEAE65`, del tint `#4E1717`. Its 256 form is the original's
+172 / 136 / 94 rungs under a 230 cream base on the grey ground; at 16 colours its dims sit on 8
+again, so the cursor card is structural there (`ladder_16_never_paints_selected`, which
+`every_flavor_paints_selected_at_16` became). Picker blurb: `amber ladder on black, white ink`.
+
+Below truecolor: 256 takes graphite's grey ground (233/236) with a cream (230) or white (255)
+ramp, the beam on 214 / 41, `err` on 203 (a bright red — the flash has to be seen), `calm` 179 /
+114, the bar 222 / 157; 16 colours takes graphite's whole form (the cursor card paints on 8 now
+that the ramp is white — `phosphor_16_never_paints_selected` became
+`every_flavor_paints_selected_at_16`), `attn` 11 / 10, `err` 9, `calm` 3 / 2.
+`test_delete_armed_flashes_the_card` sweeps `Flavor::ALL` and asserts the lit ground is not the
+cursor surface and the lit title is not the cursor title, which is the sentence the user wrote.
+Goldens are colourless; the picker's two blurbs changed (`warm black, cream ink, an amber glow`
+/ `green-black, white ink, a green glow`).
+
+## A sixth theme, Solarized light, and the law's fifth kind (2026-09-03, user request)
+
+"How easy would it be to add solarized light as well?" — then "go ahead, add it". The recipe
+held (one `Palette`, one `Flavor`, the picker and the prefs slot need nothing; `Flavor::ALL` is
+six), and the laws said what the earlier assessment said they would: canonical Solarized is
+low-contrast by design, so what ships is Solarized where the numbers allow and darkened where
+they do not. The ground, the cursor surface and the four rest rungs ARE the canonical values
+(base3 `#FDF6E3`, base2 `#EEE8D5`, base02 / base01 / base00 / base1 — 12.1 / 5.0 / 4.1 / 2.5 on
+the cream, which is the ramp's own floor to the digit). Base01 and base00 fall to 4.39 / 3.64 on
+base2, so the `sel` dims are a step darker (`#4E646B`, `#5C717A`), chalk's move. None of the
+eight accents clears 4.5 on the cream (yellow 2.98, red 4.29, cyan 2.93, the best of them
+orange 4.27), so the three registers keep Solarized's hues and are darkened: `attn` `#8A6600`
+(yellow at L* 45, 4.9 on the paper, white ink 5.3 on it), `err` `#9A4247` (red quieted to C* 40
+so the register budget holds), `calm` `#1E6F6A` (cyan at L* 42). The ring is chalk's — measured
+on this cream ≥ 6.4 on bg, ≥ 5.3 on base2 — and it fades into the cream itself, since the
+measured drift stays under 20° (a neutral shadow was ready and not needed). The bars are
+base1 / base01 / base02: base00 as `dormant` sat at exactly 15.0 L* under base1 and
+`test_bar_ladder` said so. 256 is Solarized's own cube mapping for the greys (230 / 235 / 240 /
+241 / 245) with chalk's darker accent indices, because 136 / 160 / 37 fail on 230 the way the
+truecolor accents do; light-256 paints no `selected` (06 §2.6) and 16 is chalk's form.
+
+`Kind::TintedPaper` is the fifth clause: the paper and its surface carry a chroma between 5 and
+16 on one hue (the surface a step DOWN — a light ground), every ink rung is under C* 16 and
+≥ 90° of hue from the paper (cool ink on warm paper is the whole design; measured 104–135°),
+the register budget, both diff tints a step down from the paper, and `shadow == bg`. Paper's
+8.2 would have refused the cream (C* 10.0) and the blue-greys (9.2–9.3), and a chromatic
+ground's floor of 40 is four times what the cream has — the shape is its own. Picker blurb:
+`solarized light, cream and blue-grey`; `MESIMON_THEME=solarized`.
+
+Same message, the amber blurb went from `amber ladder on black, white ink` to `amber on black`
+and the table's doc comment lost its narrative ("tone down the description for amber, it's not
+an advertisement").
+
+## The description bar is a quarter cell (2026-09-03, user request)
+
+"Reduce thickness of description indicator on ticket page." The description block inside the
+ticket page's header band carried the card's neutral cursor-weight bar — `Theme::bar(Cursor)`, a
+painted cell, one full column wide beside every row. A painted cell has exactly one width, so
+"thinner" is a glyph or nothing: `Theme::desc_bar` now draws `▎` U+258E (left one-quarter block)
+in `bar_cursor`'s colour as FOREGROUND over the band, and the ladder tiers (mono, ansi8) draw
+`|`. A quarter, not an eighth: at one eighth the stroke is a pixel on a laptop panel, the same
+"cannot be seen" that refused the SGR-58 underline on the card. The frame is unchanged —
+`[pad 1][bar 1][pad 1][text]` — so the text does not move, and the goldens now show the glyph.
+
+That makes `▎` the SECOND codepoint `test_no_drawn_structure` admits off a dialog frame, beside
+`▀` (the second tag). Same clause as the first: a thing the design needs, that no attribute and
+no painted cell can say, from one named producer. `test_ticket_header_section_is_a_band` pins the
+glyph, its colour and the band under it.
+

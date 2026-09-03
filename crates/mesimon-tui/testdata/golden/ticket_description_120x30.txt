@@ -3,12 +3,12 @@
  Fix OSC-11 detection
  IN PROGRESS for >1y ∙ created >1y ago
 
-   What changed
-
-   The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
-
-   • detect.rs asks the terminal, then hands the flavor to Theme::new
-   • the goldens moved with it~
+ ▎ What changed
+ ▎
+ ▎ The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
+ ▎
+ ▎ • detect.rs asks the terminal, then hands the flavor to Theme::new
+ ▎ • the goldens moved with it~
 
 
   PREVIEW                                                                                  SESSIONS                  2

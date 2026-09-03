@@ -290,19 +290,27 @@ heading carries `{ } page` — those bindings are prio 0 on `Scope::Ticket` and 
 state row (`IN PROGRESS ∙ 3d here ∙ created 2w ago ∙ tags ∙ branch`); the note editor's header
 names its ticket. (STALE-MAP "The UI overhaul".)
 
-**Five themes, picked from the Esc menu, saved in two slots (2026-09-02, user request).** A
+**Six themes, picked from the Esc menu, saved in two slots (2026-09-02, user request; solarized 2026-09-03).** A
 theme is a `Palette` TABLE in `theme.rs` (truecolor hexes plus hand-authored 256/16/8 forms, the
 diff tints, the tag ring, and `shadow`, the colour `faded()` blends toward) and
 `Flavor::palette()` is the exhaustive gate — a sixth flavor does not compile until `palette`,
 `name`, `blurb` and `from_name` classify it; the law tests read the table, never a
-transcription. The law has three `Kind`s, matched exhaustively in `test_chroma_law`: `Paper`
+transcription. The law has five `Kind`s, matched exhaustively in `test_chroma_law`: `Paper`
 (graphite, chalk: greys C* ≤ 8.2 plus three registers), `ChromaticGround` (blue: the navy IS a
 colour, both ramps stay grey, every register ≥ 60° of hue from the ground, and the fade target
 is a NEUTRAL at the ground's lightness — a tint blended into navy takes the navy's hue and ten
-tags become one), and `Phosphor` (amber, green: one hue within ±6° everywhere, loudness is
-lightness, `attn` is the white-hot top by ≥ 8 L* and the LEAST chromatic bright token, and the
-tag ring's "register below the accent" is a LIGHTNESS gap of 15 plus ≥ 35° of hue from the
-phosphor — it shipped ringless for an hour and the author wanted the colours back). Wherever the
+tags become one), `Phosphor` (green — restated 2026-09-03, "white text": the ground,
+cursor surface, `calm` and cursor bar sit within 15° of `attn`, which IS the phosphor at full
+beam, C* ≥ 60; both ramps are neutral and the base is L* ≥ 90; `err` is a red ≥ 45° off the
+phosphor so the armed-delete flash is red there; the diff tints exist and the del tint is red;
+the tag ring keeps ≥ 35° of hue from `attn` under the ordinary 2x chroma clause — it shipped
+ringless for an hour and the author wanted the colours back), and `Ladder` (amber, the same
+evening: the glow's clauses with the three dim steps, the bars and both surfaces on the hue too,
+each ≥ 8 L* under the beam and less chromatic; only the base step of each ramp is white — the
+original monitor toned down, with white titles, which the author asked for after seeing the glow
+on amber and kept on green), and `TintedPaper` (solarized, the sixth flavor, same day: canonical
+Solarized-light greys and ground, accents darkened to clear 4.5 — paper C* 5–16, ink ≤ 16 and
+≥ 90° off the paper's hue, `shadow == bg`; STALE-MAP "A sixth theme, Solarized light"). Wherever the
 ground has a hue the fade target `shadow` is a neutral at its lightness, never the ground.
 Nvim's `#005faf` cursor line was refused as blue's cursor surface (2.7:1 under a mid-ramp grey;
 it is `#2C3590`). `attn_is_its_own_colour` is what keeps `test_attn_provenance*` meaningful on
@@ -537,7 +545,8 @@ card on the half-block instead of calling a 1/1 split "70/30". The repaint touch
 line and nothing else, so no text moves. Two rival homes were built and CUT (author 2026-09-01):
 `▌` side-by-side, and the card's right-edge pad — with them went `w`, `MESIMON_TAG_SECOND` and
 `tags::Second`, and the picker footer cell `w` held is what `HJKL move tag` now sits in.
-**`▀` U+2580 is the ONE admitted exception** — inside the `0x2500-0x259F` range the L1 law bans
+**`▀` U+2580 is the FIRST admitted exception** (the second, `▎` U+258E, is the ticket page's
+description bar — `Theme::desc_bar`, 2026-09-03, its only producer) — inside the `0x2500-0x259F` range the L1 law bans
 AND East Asian Width *Ambiguous* — granted because the channel it replaced (an SGR-58 underline
 across the bar) was built, shipped, and could not be seen: one pixel at the bottom of a fully
 painted cell. `▌` went back to being banned with the home that spent it: an exception nothing

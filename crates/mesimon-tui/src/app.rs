@@ -280,6 +280,13 @@ pub struct HistoryWalk {
 /// a recall aid, not a record — the transcript is the record.
 const PROMPT_HISTORY_MAX: usize = 50;
 
+/// How long a delivered rebase request or merged notice keeps the m flow
+/// from offering the same ask again (user 2026-09-03: "main moved ∙ m ask the
+/// agent to rebase" came straight back on the next keypress, after the agent
+/// had been asked). A working agent extends it: a rebase + test takes longer
+/// than a minute, and the git state is what says when it landed.
+const MERGE_ASK_COOLDOWN: Duration = Duration::from_secs(60);
+
 /// The m key's staged progression (author 2026-08-30): each press shows what
 /// the next press does. Stage is derived from git state, never stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -437,6 +444,10 @@ pub struct App {
     /// The m flow's armed stage: a first `m` names what the next `m` does;
     /// the second performs it. Any other key disarms.
     merge_armed: Option<(ulid::Ulid, MergeStage)>,
+    /// The m flow's last delivery to the agent (rebase request or merged
+    /// notice) — what keeps the identity line from offering the same ask
+    /// again the moment `merge_note` clears. See `merge_outstanding`.
+    merge_sent: Option<(ulid::Ulid, MergeStage, Instant)>,
     /// The m flow's reply — rendered on the ticket screen's identity line
     /// (next to the branch state it acts on), never the footer. Cleared with
     /// `status` on the next keypress.
@@ -612,6 +623,7 @@ impl App {
             theme,
             resume_refused: None,
             merge_armed: None,
+            merge_sent: None,
             merge_note: String::new(),
             screen: Screen::Board,
             cursor_col: 0,
@@ -664,6 +676,12 @@ impl App {
             daemon_down: false,
             last_reconnect: None,
         })
+    }
+
+    /// Is the `d` chord armed on this ticket? The card (and the ticket page's
+    /// title row) flash as a deletion while it is.
+    pub fn doomed(&self, ticket: ulid::Ulid) -> bool {
+        self.delete_armed == Some(ticket)
     }
 
     /// Whether something on screen is mid-motion and wants the next frame
@@ -1429,14 +1447,49 @@ impl App {
         if w.branch.is_empty() || w.status != "attached" {
             return None;
         }
+        if self.merge_outstanding(ticket).is_some() {
+            return None;
+        }
+        match Self::merge_stage(w)? {
+            MergeStage::Notify => Some("tell the agent it merged"),
+            MergeStage::Rebase => Some("ask the agent to rebase"),
+            MergeStage::Merge if !self.ticket_busy(ticket) => Some("merge"),
+            MergeStage::Merge => None,
+        }
+    }
+
+    /// The m stage a binding's git state puts it at — the one derivation
+    /// `merge_key`, `merge_stage_word` and `merge_outstanding` all read.
+    fn merge_stage(w: &WorktreeItem) -> Option<MergeStage> {
         if w.merged {
-            Some("tell the agent it merged")
+            Some(MergeStage::Notify)
         } else if w.needs_rebase {
-            Some("ask the agent to rebase")
-        } else if w.ahead > 0 && !self.ticket_busy(ticket) {
-            Some("merge")
+            Some(MergeStage::Rebase)
+        } else if w.ahead > 0 {
+            Some(MergeStage::Merge)
         } else {
             None
+        }
+    }
+
+    /// The ask the agent already has, as the identity line's word — `Some`
+    /// while the last delivery was for the stage the ticket is STILL at and
+    /// either `MERGE_ASK_COOLDOWN` has not passed or the agent is working on
+    /// it. Main moving again lands on the same stage, so the cooldown is what
+    /// lets a second ask through; the agent rebasing changes the stage, so a
+    /// landed request stops holding at once.
+    pub(crate) fn merge_outstanding(&self, ticket: ulid::Ulid) -> Option<&'static str> {
+        let (t, stage, at) = self.merge_sent?;
+        if t != ticket || Self::merge_stage(self.wt_item(ticket)?) != Some(stage) {
+            return None;
+        }
+        if at.elapsed() >= MERGE_ASK_COOLDOWN && !self.ticket_busy(ticket) {
+            return None;
+        }
+        match stage {
+            MergeStage::Rebase => Some("rebase requested"),
+            MergeStage::Notify => Some("agent notified"),
+            MergeStage::Merge => None,
         }
     }
 
@@ -3428,13 +3481,7 @@ impl App {
             return Ok(());
         };
         let (branch, ahead) = (w.branch.clone(), w.ahead);
-        let stage = if w.merged {
-            MergeStage::Notify
-        } else if w.needs_rebase {
-            MergeStage::Rebase
-        } else if w.ahead > 0 {
-            MergeStage::Merge
-        } else {
+        let Some(stage) = Self::merge_stage(w) else {
             self.merge_note = "no commits on the branch yet — nothing to merge".into();
             return Ok(());
         };
@@ -3448,9 +3495,19 @@ impl App {
         }
         if self.merge_armed != Some((ticket, stage)) {
             self.merge_armed = Some((ticket, stage));
+            // The key stays live while the ask is outstanding (muscle memory
+            // gets an answer, never silence), but the answer says so: a
+            // second delivery is the user's choice, not a hint's.
+            let outstanding = self.merge_outstanding(ticket).is_some();
             self.merge_note = match stage {
                 MergeStage::Merge => format!("merge {ahead} commit(s) of {branch}? m confirms"),
+                MergeStage::Rebase if outstanding => {
+                    "rebase already requested — m asks again".into()
+                }
                 MergeStage::Rebase => "main moved — m asks the agent to rebase + test".into(),
+                MergeStage::Notify if outstanding => {
+                    "agent already notified — m tells it again".into()
+                }
                 MergeStage::Notify => "merged ∙ m tells the agent".into(),
             };
             return Ok(());
@@ -3484,6 +3541,7 @@ impl App {
                     request: mesimon_core::command::MergeRequest::Rebase,
                 }) {
                     Response::Ok => {
+                        self.merge_sent = Some((ticket, MergeStage::Rebase, Instant::now()));
                         self.merge_note = "rebase request sent — m merges once it lands".into()
                     }
                     Response::Err { message } => self.merge_note = message,
@@ -3495,7 +3553,10 @@ impl App {
                     id: ticket,
                     request: mesimon_core::command::MergeRequest::MergedNotice,
                 }) {
-                    Response::Ok => self.merge_note = "agent notified".into(),
+                    Response::Ok => {
+                        self.merge_sent = Some((ticket, MergeStage::Notify, Instant::now()));
+                        self.merge_note = "agent notified".into()
+                    }
                     Response::Err { message } => self.merge_note = message,
                     _ => {}
                 }
@@ -5705,6 +5766,62 @@ mod tests {
         press(&mut app, 'm');
         assert!(sent_contains(&sent, "MergedNotice"), "one m after the merge notifies");
         assert_eq!(app.merge_note, "agent notified");
+    }
+
+    #[test]
+    fn a_delivered_ask_is_not_offered_again_for_a_minute() {
+        // "main moved ∙ m ask the agent to rebase" came straight back on the
+        // next keypress after the agent had been asked (user 2026-09-03): the
+        // note cleared and nothing else remembered the send. Now the delivery
+        // holds the offer off for MERGE_ASK_COOLDOWN, longer while the agent
+        // works, and lets go the moment the git state moves on.
+        let (mut app, sent, _sid) = app_with_claude(
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+            false,
+        );
+        let wt = || WorktreeItem {
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1-work".into(),
+            status: "attached".into(),
+            merged: false,
+            conflict: false,
+            ahead: 2,
+            needs_rebase: true,
+            detail: None,
+            path: None,
+        };
+        app.worktrees.push(wt());
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        assert_eq!(app.ctx().merge_word, "ask the agent to rebase");
+        press(&mut app, 'm');
+        press(&mut app, 'm');
+        assert!(sent_contains(&sent, "Rebase"));
+        assert_eq!(app.merge_note, "rebase request sent — m merges once it lands");
+        // The send's refresh took a snapshot the fake transport leaves empty;
+        // main is still moved, so put the binding back.
+        app.worktrees.push(wt());
+        // The next keypress clears the note (`on_key`); the line says what
+        // stands instead.
+        app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+        assert!(app.merge_note.is_empty());
+        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("rebase requested"));
+        assert!(!app.ctx().merge_actionable, "no offer while the ask is outstanding");
+        // The key itself stays live, and says so instead of re-arming blind.
+        press(&mut app, 'm');
+        assert_eq!(app.merge_note, "rebase already requested — m asks again");
+        // A minute later, idle: offered again (main may have moved again).
+        let (t, stage, _) = app.merge_sent.unwrap();
+        app.merge_sent = Some((t, stage, Instant::now() - MERGE_ASK_COOLDOWN));
+        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), None);
+        assert!(app.ctx().merge_actionable);
+        // A minute later, still working on it: held.
+        app.board.sessions[0].state = SessionState::Running;
+        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), Some("rebase requested"));
+        // The rebase landed: the stage moved on, so the record stops matching
+        // at once, however fresh it is.
+        app.merge_sent = Some((t, stage, Instant::now()));
+        app.worktrees[0].needs_rebase = false;
+        assert_eq!(app.merge_outstanding(ulid::Ulid(1)), None);
     }
 
     #[test]

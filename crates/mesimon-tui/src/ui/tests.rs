@@ -367,7 +367,7 @@ fn golden_menu_120() {
     golden("menu_120x30", &render(&app, 120, 30));
 }
 
-/// The theme picker over the board: five rows, the flavor's ground at the
+/// The theme picker over the board: six rows, the flavor's ground at the
 /// right edge, and the saved slots named in words on their rows.
 #[test]
 fn golden_theme_picker_120() {
@@ -1785,8 +1785,9 @@ fn diff_registers_hold(flavor: Flavor) {
             assert_ne!(text, add_bg, "{flavor:?} ctx stays on the page ground");
             assert_ne!(text, del_bg, "{flavor:?} ctx stays on the page ground");
         }
-        // A phosphor has no second hue to tint a row with: the register on
-        // the text and the glyph carry it, and every row keeps the ground.
+        // A palette declaring no `diff` keeps every row on the ground. No
+        // shipped flavor does since the phosphors took a red `err`
+        // (2026-09-03), but the seam is real and the arm says what it means.
         (None, None) => {
             for needle in ["metrics.increment", "const t = await exchange(code)"] {
                 let (text, tail) = bg_row(needle).expect(needle);
@@ -1989,8 +1990,9 @@ fn test_layout_arithmetic() {
 const ATTN_GRAPHITE: Color = Color::Rgb(0xF0, 0xA9, 0x3A);
 
 /// L3: on a calm board not one cell renders the saturated colour — on any
-/// flavor. On a phosphor every token shares a hue, so this and
-/// `attn_is_its_own_colour` are what keep "the one bright thing" true there.
+/// flavor. On a phosphor the ground, the bar and `calm` share the accent's
+/// hue, so this and `attn_is_its_own_colour` are what keep "the one bright
+/// thing" true there.
 #[test]
 fn test_attn_provenance_calm() {
     for flavor in Flavor::ALL {
@@ -2380,17 +2382,21 @@ fn test_ticket_header_section_is_a_band() {
     }
     // The description is the card's body inside the band: one blank row
     // under the state line, then rows carrying the NEUTRAL cursor-weight bar
-    // in column 1 and their text from column 3.
+    // in column 1 — a quarter-cell glyph in the bar's colour on the band, not
+    // a painted cell (author 2026-09-03: "reduce thickness") — and their text
+    // from column 3.
     let first = lines.iter().position(|l| l.contains("What changed")).expect("description");
     let last = lines.iter().position(|l| l.contains("the goldens moved")).expect("last row");
     assert_eq!(first, 5, "one blank row between the state line and the body");
-    let (bar_ch, bar_style) = app.theme.bar(crate::theme::BarWeight::Cursor);
+    let (bar_ch, bar_style) = app.theme.desc_bar();
+    assert_eq!(bar_ch, '▎', "the thin bar is the quarter block");
     for y in first..=last {
         assert_eq!(buf[(1, y as u16)].symbol(), bar_ch.to_string(), "row {y} has the bar");
-        assert_eq!(Some(buf[(1, y as u16)].bg), bar_style.bg, "row {y}'s bar is the neutral bar");
+        assert_eq!(Some(buf[(1, y as u16)].fg), bar_style.fg, "row {y}'s bar is the neutral bar");
+        assert_eq!(buf[(1, y as u16)].bg, elevated, "row {y}'s bar sits on the band");
     }
-    assert_eq!(buf[(1, 4)].bg, elevated, "the blank row over the body carries no bar");
-    assert!(lines[first].starts_with("   What changed"), "{:?}", lines[first]);
+    assert_eq!(buf[(1, 4)].symbol(), " ", "the blank row over the body carries no bar");
+    assert!(lines[first].starts_with(" ▎ What changed"), "{:?}", lines[first]);
     // A code span sinks to the page ground rather than vanishing into the band.
     let code_y = lines.iter().position(|l| l.contains("detect.rs")).expect("a code row");
     let code_x = lines[code_y].find("detect").map(|b| lines[code_y][..b].chars().count()).unwrap();
@@ -2697,9 +2703,13 @@ fn test_no_drawn_structure() {
                     // banned with the home that spent it; `▔` and `█` were
                     // never admitted, nor was the rest. A frame's own six
                     // glyphs (`glyphs::frame_set`) are legal exactly on the
-                    // perimeter the draw recorded (T-158).
+                    // perimeter the draw recorded (T-158). `▎` U+258E is the
+                    // second admission (author 2026-09-03, "reduce thickness"
+                    // of the ticket page's description bar): a painted cell
+                    // has one width, so a thinner bar is a glyph or nothing.
+                    // `Theme::desc_bar` is its only producer.
                     assert!(
-                        ch == '▀' || on_perimeter(frames, x, y),
+                        ch == '▀' || ch == '▎' || on_perimeter(frames, x, y),
                         "drawn-structure codepoint {ch:?} at {x},{y} off any dialog frame"
                     );
                 }
@@ -2858,6 +2868,78 @@ fn test_move_ghost_blinks() {
     // The blink belongs to the held card alone.
     let calm4 = title_fg(&cells(&app, 120, 30), "Grapheme").expect("bystander title");
     assert_eq!(calm0, calm4, "bystander cards hold still");
+}
+
+/// The first `d` arms a delete, and the card says so until the second `d`
+/// or the cancel (author 2026-09-03): it flashes as a deletion — the diff's
+/// del tint under an `err` title — on the MOVE ghost's cadence, and a cancel
+/// puts the ordinary cursor surface back. Swept over every flavor, because
+/// the first amber had no red to flash ("red flash before delete not
+/// visible there"): the del tint must be a red the flavor's `err` is not.
+#[test]
+fn test_delete_armed_flashes_the_card() {
+    for flavor in Flavor::ALL {
+        delete_flash_holds(flavor);
+    }
+}
+
+fn delete_flash_holds(flavor: Flavor) {
+    let theme = Theme::new(flavor, Profile::TrueColor);
+    let cell_at = |buf: &ratatui::buffer::Buffer, needle: &str| {
+        for y in 0..30u16 {
+            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect::<String>();
+            if let Some(ix) = row.find(needle) {
+                let x = row[..ix].chars().count() as u16;
+                let c = &buf[(x, y)];
+                return Some((c.fg, c.bg));
+            }
+        }
+        None
+    };
+    let del_bg = theme.diff_del_bg().expect("every flavor tints");
+    let sel_bg = theme.selected_bg.expect("truecolor paints selected");
+    assert_ne!(del_bg, sel_bg, "{flavor:?}: the lit ground is not the cursor surface");
+    assert_ne!(theme.err, theme.sel.base, "{flavor:?}: the lit title is not the cursor title");
+    let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
+    app.cursor_col = 0;
+    let (_, resting_bg) = cell_at(&cells(&app, 120, 30), "Decay").expect("cursor title");
+    assert_eq!(resting_bg, sel_bg, "{flavor:?}: the cursor card rests on the cursor surface");
+    press(&mut app, 'd');
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    let (fg, bg) = cell_at(&cells(&app, 120, 30), "Decay").expect("armed title, frame 0");
+    assert_eq!((fg, bg), (theme.err, del_bg), "{flavor:?}: lit phase draws the card as a deletion");
+    let bystander0 = cell_at(&cells(&app, 120, 30), "Grapheme").expect("bystander title");
+    // 410 ms back → frame 4 (or 5 under scheduler slop) — both the dark phase.
+    app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+    let (fg, bg) = cell_at(&cells(&app, 120, 30), "Decay").expect("armed title, frame 4");
+    assert_eq!((fg, bg), (theme.sel.base, sel_bg), "dark phase is the cursor surface");
+    let bystander4 = cell_at(&cells(&app, 120, 30), "Grapheme").expect("bystander title");
+    assert_eq!(bystander0, bystander4, "bystander cards hold still");
+    // A stray key cancels, and the flash goes with the arming.
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    press(&mut app, 'x');
+    assert_eq!(app.status, "delete cancelled");
+    let (fg, bg) = cell_at(&cells(&app, 120, 30), "Decay").expect("title after cancel");
+    assert_eq!((fg, bg), (theme.sel.base, sel_bg), "cancel puts the cursor surface back");
+}
+
+/// The ticket page's title row is that page's card: `d` there flashes it the
+/// same way.
+#[test]
+fn test_delete_armed_flashes_the_ticket_title() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let del_bg = theme.diff_del_bg().expect("graphite tints");
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    press(&mut app, 'd');
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    let buf = cells(&app, 120, 30);
+    let row: String = (0..120u16).map(|x| buf[(x, 2u16)].symbol()).collect();
+    let x = row.find("Decay").expect("title row") as u16;
+    assert_eq!((buf[(x, 2u16)].fg, buf[(x, 2u16)].bg), (theme.err, del_bg));
+    assert_eq!(buf[(118u16, 2u16)].bg, del_bg, "the tint spans the row");
+    assert_ne!(buf[(118u16, 3u16)].bg, del_bg, "the state row keeps the band");
 }
 
 /// Requirement 2 of the pending-move gesture: while the ghost blinks in its

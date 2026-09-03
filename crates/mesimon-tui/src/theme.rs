@@ -39,10 +39,12 @@ pub(crate) enum Flavor {
     /// Navy and gold — the Borland / Norton Commander look, from the
     /// author's Neovim `blue` scheme.
     Blue,
-    /// One amber phosphor: a P3 monitor.
+    /// Amber on black, white base text.
     Amber,
-    /// One green phosphor: a P1 monitor.
+    /// White ink on green-black, the green spent on the accent.
     Green,
+    /// Solarized light: cream paper, blue-grey ink.
+    Solarized,
 }
 
 /// Which of the terminal's two answers a theme sits on. The OSC 11 query
@@ -53,23 +55,41 @@ pub(crate) enum Ground {
     Light,
 }
 
-/// What the colour law asks of a palette. Three kinds because three shapes of
+/// What the colour law asks of a palette. Four kinds because four shapes of
 /// screen exist: ink on paper (greys plus three registers), neutral ink on a
-/// COLOURED paper (the ground is a hue, the ink is not), and a single phosphor
-/// (there is one hue, and loudness is lightness). The law tests match on this
-/// exhaustively, so a fourth shape needs a fourth clause, argued.
+/// COLOURED paper (the ground is a hue, the ink is not), a phosphor glow
+/// (the ground and the accent share one hue, the ink is white, and `err` is
+/// a red off that hue), and a phosphor LADDER (the glow plus the three dim
+/// steps and the bars on the hue too, under the beam — only the base step
+/// is white). The fourth was argued 2026-09-03: amber's author wanted the
+/// original monitor back with white titles, and green's author wanted the
+/// glow kept, and one clause cannot say "the dims are grey" and "the dims are
+/// amber" at once. The fifth is TINTED paper (Solarized light): the paper
+/// is warm and the ink is cool, both carrying a chroma Paper forbids
+/// (C* 10 on the cream, 9 on the blue-grey) and nowhere near a chromatic
+/// ground's 40 — so the clause holds both under 16 and ≥ 90° apart, which
+/// is what keeps the ink from reading as a tint of the paper. The law tests
+/// match on this exhaustively, so a sixth shape needs a sixth clause, argued.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Kind {
     Paper,
     ChromaticGround,
     Phosphor,
+    Ladder,
+    TintedPaper,
 }
 
 impl Flavor {
     /// Every flavor, in picker order. The paper pair first because they are
     /// the defaults; the rest in the order they were built.
-    pub const ALL: [Flavor; 5] =
-        [Flavor::Graphite, Flavor::Chalk, Flavor::Blue, Flavor::Amber, Flavor::Green];
+    pub const ALL: [Flavor; 6] = [
+        Flavor::Graphite,
+        Flavor::Chalk,
+        Flavor::Blue,
+        Flavor::Amber,
+        Flavor::Green,
+        Flavor::Solarized,
+    ];
 
     /// The stable id: what `prefs.json` stores and `MESIMON_THEME` accepts.
     pub fn name(self) -> &'static str {
@@ -79,6 +99,7 @@ impl Flavor {
             Flavor::Blue => "blue",
             Flavor::Amber => "amber",
             Flavor::Green => "green",
+            Flavor::Solarized => "solarized",
         }
     }
 
@@ -99,8 +120,9 @@ impl Flavor {
             Flavor::Graphite => "dark, the default",
             Flavor::Chalk => "light, paper",
             Flavor::Blue => "navy and gold, the Borland look",
-            Flavor::Amber => "one amber phosphor, a P3 monitor",
-            Flavor::Green => "one green phosphor, a P1 monitor",
+            Flavor::Amber => "amber on black",
+            Flavor::Green => "green-black, white ink, a green glow",
+            Flavor::Solarized => "solarized light, cream and blue-grey",
         }
     }
 
@@ -114,7 +136,7 @@ impl Flavor {
         self.palette().kind
     }
 
-    /// THE exhaustive gate: five arms, no `_`.
+    /// THE exhaustive gate: six arms, no `_`.
     pub(crate) fn palette(self) -> &'static Palette {
         match self {
             Flavor::Graphite => &GRAPHITE,
@@ -122,6 +144,7 @@ impl Flavor {
             Flavor::Blue => &BLUE,
             Flavor::Amber => &AMBER,
             Flavor::Green => &GREEN,
+            Flavor::Solarized => &SOLARIZED,
         }
     }
 }
@@ -452,35 +475,46 @@ static BLUE: Palette = Palette {
     ansi8: &DARK_ANSI8,
 };
 
-/// A phosphor has one hue, so everything it can say is lightness: the theme
-/// is a ladder (L* 6 / 13 / 36 / 52 / 62 / 74 / 82 / 92) and the three
-/// registers are named rungs above the body. `calm` is pale — chroma is the
-/// second phosphor dimension, "bloom"; `err` is the full beam, brighter than
-/// any body text; `attn` is the overdriven white-hot top, 10 L* above
-/// everything and LOWER in chroma, so it parts from `err` on both axes, and
-/// the inverted title row carries the alert. Which register is which is the
-/// glyph's job, which is what a P3 monitor can honestly do.
+/// Amber on black with white base text (2026-09-03). The ground, the cursor
+/// surface, the three dim steps, the bars and `calm` are amber, a step less
+/// bright than the first cut; the base step of each ramp is cream-white;
+/// `attn` is the amber at full beam, above every other amber token by ≥ 8
+/// L*; `err` is red so the armed-delete flash is red; the diff has tints.
+/// It shipped first with every token amber (body text included) and then
+/// for an hour as a glow with grey dims; the author asked for this shape.
 static AMBER: Palette = Palette {
     ground: Ground::Dark,
-    kind: Kind::Phosphor,
+    kind: Kind::Ladder,
     truecolor: TrueColor {
+        // The original ground and one step up on it (L* 6 / 14.6).
         bg: 0x1B1201,
-        selected: 0x2E1F01,
-        rest: [0xF1A802, 0xC78A01, 0xA67200, 0x724E01],
-        sel: [0xFCB004, 0xD19202, 0xB07900, 0x855B00],
-        attn: 0xFFE4C2,
-        err: 0xFFC15D,
+        selected: 0x322205,
+        // Base cream-white (C* 7.6); the dims are the original ladder's
+        // rungs a step less bright — L* 61 / 52 / 34, contrast 6.1 / 4.5 /
+        // 2.25 on the ground.
+        rest: [0xF3ECDE, 0xC08B1E, 0xA0751C, 0x664A14],
+        sel: [0xF9F3E7, 0xC9931F, 0xAA7D1F, 0x70521A],
+        // The beam: L* 77.5, C* 82.7, hue 77°.
+        attn: 0xFFB000,
+        // Red, 57° off the phosphor: L* 62.7, C* 55.5, 6.4 on the ground.
+        err: 0xF26D78,
+        // The original pale rung: C* 45, dE ≥ 20 from every ramp step.
         calm: 0xDEAE65,
         attn_ink: 0x1B1201,
-        ghost: 0x724E01,
-        dormant: 0xA67200,
-        cursor: 0xFCB004,
-        diff: None,
+        ghost: 0x664A14,
+        dormant: 0xA0751C,
+        // L* 68: a rung under the beam, above dim1.
+        cursor: 0xD59B2C,
+        // The ground one step toward calm and toward err; the del tint is
+        // 49° off the phosphor and dE 22 from the cursor surface, which is
+        // what makes the delete flash a RED flash here.
+        diff: Some((0x33280A, 0x4E1717)),
         tints: Some(Tints {
             // Graphite's L* 62 / C* 30, on hues 127.5 + 29k: the 70° band
-            // around the phosphor (78°) is skipped, since every token of the
-            // theme is on that hue. Measured: worst pair dE 14.8, >= 6.2 on
-            // bg, >= 5.4 on the selected surface, >= 49° from the phosphor.
+            // around the phosphor (77°) is skipped, since the ladder and
+            // the accent are on that hue. Measured: worst pair dE 14.8,
+            // >= 6.2 on bg, >= 5.4 on the selected surface, >= 49° from the
+            // phosphor.
             ring: [
                 0x849E6B, 0x66A380, 0x48A49A, 0x39A3B3, 0x4E9FC5, 0x7598CB, 0x9B8EC3, 0xB886B0,
                 0xC88297, 0xCA847E,
@@ -488,56 +522,69 @@ static AMBER: Palette = Palette {
             ceiling: 30.5,
             fade: 0.70,
         }),
-        shadow: 0x151515,
+        shadow: 0x161616,
     },
     ansi256: Ansi256 {
-        // The cube has no dark amber, so the ground is the grey ramp's.
+        // The cube has no dark amber, so the ground is the grey ramp's; the
+        // base is 230 (`#ffffd7`), the cube's cream, over the original
+        // 172 / 136 / 94 rungs.
         bg: Some(232),
         selected: Some(234),
-        ramp: [214, 172, 136, 94],
-        attn: 230,
-        err: 220,
+        ramp: [230, 172, 136, 94],
+        attn: 214,
+        err: 203,
         calm: 179,
         attn_ink: 232,
         ghost: 94,
         dormant: 136,
-        cursor: 214,
+        cursor: 178,
     },
     ansi16: Ansi16 {
         bg: None,
         // With the dims on 8 nothing survives a surface of 8, and 7 is lighter
         // than 3: the cursor card is structural, the chalk-256 road.
         selected: None,
-        ramp: [Color::Indexed(3), Color::Indexed(3), I8, I8],
+        ramp: [Color::Reset, Color::Indexed(3), I8, I8],
         attn: 11,
-        err: 1,
+        // Bright red: the dark one is what the flash has to be seen against.
+        err: 9,
         calm: 6,
         attn_ink: 0,
     },
     ansi8: &DARK_ANSI8,
 };
 
-/// The P1 monitor: the same ladder as amber on hue 143. The naive `#001a10`
-/// ground was 21° off the phosphor; this one is on it.
+/// A phosphor GLOW (author 2026-09-03, "make it more beautiful and white
+/// text"): the ground and the accent share the hue and the INK is white —
+/// both ramps a cool white leaned onto the phosphor's hue (C* ≤ 8.2, like
+/// paper's), `attn` the phosphor at full beam, `calm` mint, `err` a red 124°
+/// off the hue so the armed-delete flash is red, and the diff tinted. The
+/// first green painted every token green (a P1 monitor) and was a screen
+/// you squint at; the author kept this shape ("green leave as is, it was
+/// good") when amber went back to its ladder.
 static GREEN: Palette = Palette {
     ground: Ground::Dark,
     kind: Kind::Phosphor,
     truecolor: TrueColor {
-        bg: 0x051704,
-        selected: 0x0E2710,
-        rest: [0x06D24D, 0x02AD3D, 0x039032, 0x016320],
-        sel: [0x0DDB51, 0x01B641, 0x039935, 0x017326],
-        attn: 0xC5F4C5,
-        err: 0x32EA5E,
-        calm: 0x80C683,
-        attn_ink: 0x051704,
-        ghost: 0x016320,
-        dormant: 0x039032,
-        cursor: 0x0DDB51,
-        diff: None,
+        // L* 7.4, hue 149°.
+        bg: 0x081A0C,
+        selected: 0x18301E,
+        rest: [0xE8F1E6, 0xB9C3B7, 0x8D968B, 0x5F675E],
+        sel: [0xF0F8EE, 0xC1CBBF, 0x949D92, 0x6A736A],
+        // L* 81.2, C* 81.7, hue 144°.
+        attn: 0x45E66B,
+        err: 0xF26D78,
+        // Mint: C* 28.
+        calm: 0xA3D6AE,
+        attn_ink: 0x081A0C,
+        ghost: 0x5F675E,
+        dormant: 0x8D968B,
+        // L* 84, C* 35.
+        cursor: 0x9FE0AF,
+        diff: Some((0x123A20, 0x4A171A)),
         tints: Some(Tints {
             // The same ring on hues 192.5 + 29k, skipping 108-178 around the
-            // phosphor (143°). Measured: worst pair dE 14.3, >= 6.2 on bg,
+            // phosphor (144°). Measured: worst pair dE 14.3, >= 6.2 on bg,
             // >= 5.3 on the selected surface, >= 49° from the phosphor.
             ring: [
                 0x42A4A0, 0x3BA2B8, 0x579DC7, 0x7F95CA, 0xA38CBF, 0xBD85AB, 0xCA8291, 0xC88578,
@@ -546,32 +593,103 @@ static GREEN: Palette = Palette {
             ceiling: 30.5,
             fade: 0.70,
         }),
-        shadow: 0x151515,
+        shadow: 0x161616,
     },
     ansi256: Ansi256 {
-        bg: Some(232),
-        selected: Some(234),
-        // 40/34/28/22 is truer to the truecolor ladder, but 28 is 3.6 on 234
-        // — the same failure §2.6 fixed with 248.
-        ramp: [46, 40, 34, 28],
-        attn: 194,
-        err: 120,
-        calm: 77,
-        attn_ink: 232,
-        ghost: 28,
-        dormant: 34,
-        cursor: 46,
+        bg: Some(233),
+        selected: Some(236),
+        ramp: [255, 250, 248, 241],
+        attn: 41,
+        err: 203,
+        calm: 114,
+        attn_ink: 233,
+        ghost: 241,
+        dormant: 246,
+        cursor: 157,
     },
     ansi16: Ansi16 {
         bg: None,
-        selected: None,
-        ramp: [Color::Indexed(2), Color::Indexed(2), I8, I8],
+        selected: Some(8),
+        ramp: [Color::Reset, I7, I8, I8],
         attn: 10,
-        err: 1,
-        calm: 6,
+        err: 9,
+        calm: 2,
         attn_ink: 0,
     },
     ansi8: &DARK_ANSI8,
+};
+
+/// Solarized light (Ethan Schoonover), as far as the laws let it be: the
+/// ground, the cursor surface and the four grey rungs are the canonical
+/// values (base3, base2, base02 / base01 / base00 / base1), and that is the
+/// look — warm cream paper, cool blue-grey ink. Two things did not survive
+/// the numbers. Solarized's accents all sit at L* 49–60, so none of them
+/// clears 4.5 on the cream (yellow is 2.98, red 4.29, cyan 2.93): the three
+/// registers keep Solarized's hues and are darkened until they do. And
+/// base01 / base00 fall to 4.39 / 3.64 on base2, so the `sel` dims are a
+/// step darker than the canonical greys, the way chalk's are. The ring is
+/// chalk's (measured on this cream: ≥ 6.4 on bg, ≥ 5.3 on base2) and it
+/// fades into the cream itself — measured drift ≤ 20°, so no neutral
+/// shadow is needed.
+static SOLARIZED: Palette = Palette {
+    ground: Ground::Light,
+    kind: Kind::TintedPaper,
+    truecolor: TrueColor {
+        bg: 0xFDF6E3,
+        selected: 0xEEE8D5,
+        rest: [0x073642, 0x586E75, 0x657B83, 0x93A1A1],
+        sel: [0x073642, 0x4E646B, 0x5C717A, 0x8A9898],
+        // Solarized yellow (hue 84°) at L* 45: 4.9 on the cream, white ink
+        // 5.3 on it.
+        attn: 0x8A6600,
+        // Solarized red darkened and quieted to C* 40, a register under attn.
+        err: 0x9A4247,
+        // Solarized cyan at L* 42, C* 25.
+        calm: 0x1E6F6A,
+        attn_ink: 0xFFFFFF,
+        // base1 / base01 / base02: L* 65 / 45 / 20 (base00 sat exactly 15
+        // L* under base1, on the bar ladder's line).
+        ghost: 0x93A1A1,
+        dormant: 0x586E75,
+        cursor: 0x073642,
+        // The cream a step toward green and toward red.
+        diff: Some((0xE9EBCB, 0xF6DDD3)),
+        tints: Some(Tints {
+            ring: [
+                0x824A49, 0x605A2F, 0x486039, 0x2D644B, 0x006562, 0x006274, 0x2D5D83, 0x535680,
+                0x6F4E73, 0x7E495F,
+            ],
+            ceiling: 30.5,
+            fade: 0.76,
+        }),
+        shadow: 0xFDF6E3,
+    },
+    ansi256: Ansi256 {
+        // Solarized's own cube mapping: base3 230, base02 235, base01 240,
+        // base00 241, base1 245. Light-256 never paints `selected` (06 §2.6).
+        bg: Some(230),
+        selected: None,
+        ramp: [235, 240, 241, 245],
+        // The canonical accents (136 / 160 / 37) fail on 230 the same way
+        // the truecolor ones do; these are chalk's darker indices.
+        attn: 94,
+        err: 124,
+        calm: 30,
+        attn_ink: 255,
+        ghost: 245,
+        dormant: 241,
+        cursor: 235,
+    },
+    ansi16: Ansi16 {
+        bg: None,
+        selected: Some(7),
+        ramp: [Color::Reset, I0, I8, I8],
+        attn: 3,
+        err: 1,
+        calm: 6,
+        attn_ink: 15,
+    },
+    ansi8: &LIGHT_ANSI8,
 };
 
 pub(crate) struct Theme {
@@ -719,8 +837,10 @@ impl Theme {
     /// every diff viewer): the page bg one step toward the calm/err
     /// registers — quiet by construction, so the one-saturated-colour law
     /// stands. TrueColor only; the indexed cube has no tint this quiet, so
-    /// 256/16/8/mono keep the fg-register + glyph encoding alone. `None` on
-    /// a phosphor too: there is no second hue to blend toward.
+    /// 256/16/8/mono keep the fg-register + glyph encoding alone. Every
+    /// shipped flavor tints (the phosphors since 2026-09-03: a red `err`
+    /// gave them a second hue); `None` stays for a palette that declares
+    /// no `diff`.
     pub fn diff_add_bg(&self) -> Option<Color> {
         self.diff_tints().map(|(add, _)| add)
     }
@@ -945,6 +1065,31 @@ impl Theme {
         Style::default().fg(fg).add_modifier(Modifier::BOLD)
     }
 
+    /// The pending-delete card (author 2026-09-03, "flash with a red tint
+    /// until either delete or cancel"): from the first `d` to the second, or
+    /// the stray key that cancels, the card square-waves between the diff's
+    /// deleted-line treatment — `diff_del_bg` ground, `err` title — and its
+    /// ordinary cursor surface, on the MOVE ghost's cadence (400 ms a phase).
+    /// Same clause as that blink: fg/bg repainting on the redraw clock, never
+    /// SGR 5, for a card awaiting a second gesture. Both colours are ones the
+    /// diff already spends, so the one-saturated-colour law is untouched.
+    /// `delete_lit` is the phase; `delete_row` is the lit ground, which falls
+    /// back to the cursor surface where the profile has no tint (256 and
+    /// below) — there the `err` title carries the flash alone. Every flavor
+    /// tints in truecolor, the phosphors since they took a white ramp and a
+    /// red `err` (2026-09-03): on the first amber the flash was amber.
+    pub fn delete_lit(&self, frame: usize) -> bool {
+        const PHASE_FRAMES: usize = 4; // 4 × 100 ms redraw-clock frames
+        !self.has_colour() || (frame / PHASE_FRAMES) % 2 == 0
+    }
+
+    pub fn delete_row(&self) -> Style {
+        match self.diff_del_bg() {
+            Some(bg) => Style::default().bg(bg),
+            None => self.selected_row(),
+        }
+    }
+
     /// The inverted needs-you title row (06 §2.4b): `attn` ground, `attn_ink`
     /// text. In mono this is one of the three sanctioned SGR-7 uses.
     pub fn attn_row(&self) -> Style {
@@ -1002,6 +1147,18 @@ impl Theme {
             BarWeight::Live(Register::Dormant) => self.bar_dormant,
         };
         (' ', Style::default().bg(colour))
+    }
+
+    /// The ticket page's description bar: the card's neutral cursor bar at a
+    /// quarter of the width (author 2026-09-03, "reduce thickness"). A
+    /// painted cell has one width, so thinner means a glyph — `▎` U+258E in
+    /// the bar's colour, drawn over whatever surface the row is on. The
+    /// ladder tiers draw `|`, their thin stroke.
+    pub fn desc_bar(&self) -> (char, Style) {
+        if self.profile == Profile::Mono || self.profile == Profile::Ansi8 {
+            return ('|', Style::default());
+        }
+        ('▎', Style::default().fg(self.bar_cursor))
     }
 }
 
@@ -1108,11 +1265,26 @@ mod tests {
     /// GROUND is a colour and the ink is not — both ramps stay grey, the two
     /// surfaces share a hue, every register sits ≥ 60° of hue away from the
     /// ground so nothing chromatic can be mistaken for it, and the fade
-    /// target is a neutral at the ground's lightness. A phosphor: ONE hue
-    /// everywhere within ±6°, loudness is lightness — `attn` is the top by
-    /// ≥ 8 L* and the least chromatic of the bright tokens (white-hot),
-    /// `err` sits above the body, `calm` is the pale rung — and there is no
-    /// second hue for a diff tint or a tag ring to be made of.
+    /// target is a neutral at the ground's lightness. A phosphor glow: the
+    /// ground, its cursor surface, `calm` and the cursor bar all sit within
+    /// 15° of `attn`, which IS the phosphor at full beam (C* ≥ 60, and the
+    /// most chromatic token); the ink is white — both ramps neutral, base
+    /// L* ≥ 90; `err` is ≥ 45° of hue off the phosphor so it reads as its
+    /// own colour (the armed-delete flash was invisible on the first amber,
+    /// whose `err` was amber); `calm` is the hue gone pale (C* ≤ 35, dE ≥ 20
+    /// from every ramp step); the diff tints exist, and the del tint is red
+    /// (≥ 45° off the phosphor, a step up from the ground); the fade target
+    /// is a neutral at the ground's lightness. A ladder: the glow's clauses
+    /// with the dims moved onto the hue — the base step of each ramp is
+    /// white, every other amber token (dims, bars, surfaces) sits within 15°
+    /// of `attn` AND under it by ≥ 8 L* and in chroma, so the beam is the
+    /// top of the ladder; `calm` is held by distance (dE ≥ 20 from every
+    /// ramp step) and the register budget, not by a chroma cap. Tinted paper:
+    /// the ground and its cursor surface carry a chroma between 5 and 16 on
+    /// one hue (the surface a step DOWN, it is a light ground), every ink
+    /// rung is under C* 16 and ≥ 90° of hue from the paper, the register
+    /// budget holds, the diff tints are a step down from the paper, and the
+    /// fade target is the paper itself (measured: the ring drifts ≤ 20°).
     #[test]
     fn test_chroma_law() {
         for f in Flavor::ALL {
@@ -1151,65 +1323,166 @@ mod tests {
                     assert!((lsh - lb).abs() <= 3.0, "{f:?}: shadow L* {lsh:.1} vs ground {lb:.1}");
                 }
                 Kind::Phosphor => {
-                    let phosphor = hue(t.rest[0]);
-                    let tokens = [
+                    let (la, ca) = lch(t.attn);
+                    assert!(ca >= 60.0, "{f:?}: attn is not the beam, C* {ca:.1}");
+                    let phosphor = hue(t.attn);
+                    for (name, c) in [
                         ("bg", t.bg),
                         ("selected", t.selected),
-                        ("attn", t.attn),
-                        ("err", t.err),
                         ("calm", t.calm),
-                        ("ghost", t.ghost),
-                        ("dormant", t.dormant),
                         ("cursor", t.cursor),
-                    ];
-                    let ramp_tokens = t.rest.iter().chain(t.sel.iter()).map(|c| ("ramp", *c));
-                    for (name, c) in tokens.into_iter().chain(ramp_tokens) {
-                        let gap = hue_gap(c, t.rest[0]);
+                    ] {
+                        let gap = hue_gap(c, t.attn);
                         assert!(
-                            gap <= 6.0,
+                            gap <= 15.0,
                             "{f:?}: {name} {c:06X} is {gap:.1}° off {phosphor:.0}°"
                         );
                     }
-                    let (_, cb) = lch(t.bg);
+                    let (lb, cb) = lch(t.bg);
                     assert!(cb >= 5.0, "{f:?}: the ground is untinted, C* {cb:.1}");
-                    let (la, ca) = lch(t.attn);
-                    let top = tokens
-                        .iter()
-                        .filter(|(n, _)| *n != "attn")
-                        .map(|(_, c)| lch(*c).0)
-                        .chain(t.rest.iter().chain(t.sel.iter()).map(|c| lch(*c).0))
-                        .fold(0.0_f64, f64::max);
+                    let (ls, _) = lch(t.selected);
                     assert!(
-                        la >= top + 8.0,
-                        "{f:?}: attn L* {la:.1} is not the top by 8 ({top:.1})"
+                        ls - lb >= 8.0,
+                        "{f:?}: selected is not a step up ({ls:.1} vs {lb:.1})"
                     );
-                    assert!(ca <= 35.0, "{f:?}: attn is not white-hot, C* {ca:.1}");
-                    let (le, _) = lch(t.err);
-                    let (lsb, csb) = lch(t.sel[0]);
-                    assert!(
-                        le >= lsb + 4.0,
-                        "{f:?}: err L* {le:.1} is not above sel.base {lsb:.1}"
-                    );
+                    for ink in greys {
+                        let (_, c) = lch(*ink);
+                        assert!(c <= 8.2, "{f:?}: ink {ink:06X} has C* {c:.1} > 8.2");
+                    }
+                    let (lr, _) = lch(t.rest[0]);
+                    assert!(lr >= 90.0, "{f:?}: the ink is not white, L* {lr:.1}");
+                    let gap = hue_gap(t.err, t.attn);
+                    assert!(gap >= 45.0, "{f:?}: err is only {gap:.1}° off the phosphor");
                     let (_, cc) = lch(t.calm);
-                    let (_, crb) = lch(t.rest[0]);
-                    assert!(
-                        cc <= crb - 25.0,
-                        "{f:?}: calm C* {cc:.1} is not pale next to {crb:.1}"
-                    );
-                    let _ = csb;
+                    assert!(cc <= 35.0, "{f:?}: calm is not pale, C* {cc:.1}");
                     for step in t.rest.iter().chain(t.sel.iter()) {
                         let d = delta_e(t.calm, *step);
                         assert!(d >= 20.0, "{f:?}: calm is dE {d:.1} from ramp step {step:06X}");
                     }
-                    assert_eq!(t.attn_ink, t.bg, "{f:?}: the ink on white-hot is the ground");
-                    assert!(t.diff.is_none(), "{f:?}: a phosphor has no second hue for a diff");
+                    assert_register_budget(f);
+                    // The tokens the accent must out-shout: every other
+                    // chromatic thing on the board sits under it in chroma.
+                    for (name, c) in [("cursor", t.cursor), ("calm", t.calm), ("err", t.err)] {
+                        let (_, cx) = lch(c);
+                        assert!(cx < ca, "{f:?}: {name} C* {cx:.1} rivals attn C* {ca:.1}");
+                    }
+                    let _ = la;
+                    assert_eq!(t.attn_ink, t.bg, "{f:?}: the ink on the beam is the ground");
+                    let (add, del) = t.diff.expect("a glow has two tints to blend toward");
+                    let (ld, _) = lch(del);
+                    assert!(ld - lb >= 6.0, "{f:?}: the del tint is not a step up from the ground");
+                    let gap = hue_gap(del, t.attn);
+                    assert!(gap >= 45.0, "{f:?}: the del tint is only {gap:.1}° off the phosphor");
+                    let (ladd, _) = lch(add);
+                    assert!(
+                        ladd - lb >= 6.0,
+                        "{f:?}: the add tint is not a step up from the ground"
+                    );
                     // The ground is tinted, so a fade into it would drain a
                     // tint of the opposite hue through grey (47° of drift,
                     // C* 4.7 at the sleeping level): the shadow is neutral.
                     let (lsh, csh) = lch(t.shadow);
-                    let (lb, _) = lch(t.bg);
                     assert!(csh <= 8.2, "{f:?}: the shadow is not neutral, C* {csh:.1}");
                     assert!((lsh - lb).abs() <= 3.0, "{f:?}: shadow L* {lsh:.1} vs ground {lb:.1}");
+                }
+                Kind::Ladder => {
+                    let (la, ca) = lch(t.attn);
+                    assert!(ca >= 60.0, "{f:?}: attn is not the beam, C* {ca:.1}");
+                    let phosphor = hue(t.attn);
+                    let (lb, cb) = lch(t.bg);
+                    assert!(cb >= 5.0, "{f:?}: the ground is untinted, C* {cb:.1}");
+                    let (ls, _) = lch(t.selected);
+                    assert!(
+                        ls - lb >= 8.0,
+                        "{f:?}: selected is not a step up ({ls:.1} vs {lb:.1})"
+                    );
+                    for base in [t.rest[0], t.sel[0]] {
+                        let (l, c) = lch(base);
+                        assert!(c <= 8.2, "{f:?}: base {base:06X} has C* {c:.1} > 8.2");
+                        assert!(l >= 90.0, "{f:?}: base {base:06X} is not white, L* {l:.1}");
+                    }
+                    // Every rung is on the hue and under the beam.
+                    let rungs = [
+                        ("bg", t.bg),
+                        ("selected", t.selected),
+                        ("ghost", t.ghost),
+                        ("dormant", t.dormant),
+                        ("cursor", t.cursor),
+                        ("calm", t.calm),
+                        ("dim1", t.rest[1]),
+                        ("dim2", t.rest[2]),
+                        ("dim3", t.rest[3]),
+                        ("sel dim1", t.sel[1]),
+                        ("sel dim2", t.sel[2]),
+                        ("sel dim3", t.sel[3]),
+                    ];
+                    for (name, c) in rungs {
+                        let gap = hue_gap(c, t.attn);
+                        assert!(
+                            gap <= 15.0,
+                            "{f:?}: {name} {c:06X} is {gap:.1}° off {phosphor:.0}°"
+                        );
+                        let (l, cx) = lch(c);
+                        assert!(cx < ca, "{f:?}: {name} C* {cx:.1} rivals attn C* {ca:.1}");
+                        if name != "calm" {
+                            assert!(
+                                l <= la - 8.0,
+                                "{f:?}: {name} L* {l:.1} is not under the beam L* {la:.1}"
+                            );
+                        }
+                    }
+                    for step in t.rest.iter().chain(t.sel.iter()) {
+                        let d = delta_e(t.calm, *step);
+                        assert!(d >= 20.0, "{f:?}: calm is dE {d:.1} from ramp step {step:06X}");
+                    }
+                    assert_register_budget(f);
+                    let gap = hue_gap(t.err, t.attn);
+                    assert!(gap >= 45.0, "{f:?}: err is only {gap:.1}° off the phosphor");
+                    assert_eq!(t.attn_ink, t.bg, "{f:?}: the ink on the beam is the ground");
+                    let (add, del) = t.diff.expect("a ladder has two tints to blend toward");
+                    let (ld, _) = lch(del);
+                    assert!(ld - lb >= 6.0, "{f:?}: the del tint is not a step up from the ground");
+                    let gap = hue_gap(del, t.attn);
+                    assert!(gap >= 45.0, "{f:?}: the del tint is only {gap:.1}° off the phosphor");
+                    let (ladd, _) = lch(add);
+                    assert!(
+                        ladd - lb >= 6.0,
+                        "{f:?}: the add tint is not a step up from the ground"
+                    );
+                    let (lsh, csh) = lch(t.shadow);
+                    assert!(csh <= 8.2, "{f:?}: the shadow is not neutral, C* {csh:.1}");
+                    assert!((lsh - lb).abs() <= 3.0, "{f:?}: shadow L* {lsh:.1} vs ground {lb:.1}");
+                }
+                Kind::TintedPaper => {
+                    let (lb, cb) = lch(t.bg);
+                    assert!((5.0..=16.0).contains(&cb), "{f:?}: paper C* {cb:.1} is not a tint");
+                    let (ls, cs) = lch(t.selected);
+                    assert!((5.0..=16.0).contains(&cs), "{f:?}: surface C* {cs:.1} is not a tint");
+                    let gap = hue_gap(t.bg, t.selected);
+                    assert!(gap <= 15.0, "{f:?}: selected is {gap:.1}° off the paper's hue");
+                    assert!(
+                        lb - ls >= 4.0,
+                        "{f:?}: selected is not a step down ({ls:.1} vs {lb:.1})"
+                    );
+                    for ink in greys {
+                        let (_, c) = lch(*ink);
+                        assert!(c <= 16.0, "{f:?}: ink {ink:06X} has C* {c:.1} > 16");
+                        let gap = hue_gap(*ink, t.bg);
+                        assert!(
+                            gap >= 90.0,
+                            "{f:?}: ink {ink:06X} is only {gap:.1}° off the paper"
+                        );
+                    }
+                    assert_register_budget(f);
+                    let (add, del) = t.diff.expect("tinted paper has two tints");
+                    for (name, tint) in [("add", add), ("del", del)] {
+                        let (l, _) = lch(tint);
+                        assert!(
+                            (2.0..=10.0).contains(&(lb - l)),
+                            "{f:?}: the {name} tint is not a step down from the paper ({l:.1})"
+                        );
+                    }
+                    assert_eq!(t.shadow, t.bg, "{f:?}: tinted paper fades into its own ground");
                 }
             }
         }
@@ -1230,11 +1503,9 @@ mod tests {
     /// still have become a different colour.
     ///
     /// A flavor with no ring is held to the opposite promise: every pip is
-    /// the one grey, at every level. On a phosphor the "register below the
-    /// accent" clause is stated in LIGHTNESS, because there the accent is
-    /// white-hot — the least chromatic bright token by design — and a tint
-    /// cannot sit under a chroma it does not have; and the ring must keep
-    /// clear of the phosphor's own hue, which every other token wears.
+    /// the one grey, at every level. On a phosphor the accent is the beam,
+    /// so the chroma clause holds as on paper — and the ring must also keep
+    /// clear of the phosphor's own hue, which the ground and the accent wear.
     #[test]
     fn test_pip_ramp_is_low_chroma_and_legible() {
         for flavor in Flavor::ALL {
@@ -1258,19 +1529,14 @@ mod tests {
                     tints.ceiling
                 );
                 // A register below the accent, and it must stay there.
+                assert!(
+                    c_attn >= c * 2.0,
+                    "{flavor:?} pip {n} C* {c:.1} is not a register below attn C* {c_attn:.1}"
+                );
                 match flavor.kind() {
-                    Kind::Paper | Kind::ChromaticGround => assert!(
-                        c_attn >= c * 2.0,
-                        "{flavor:?} pip {n} C* {c:.1} is not a register below attn C* {c_attn:.1}"
-                    ),
-                    Kind::Phosphor => {
-                        let (l_attn, _) = lch(tab.attn);
-                        let (l, _) = lch(full);
-                        assert!(
-                            l_attn >= l + 15.0,
-                            "{flavor:?} pip {n} L* {l:.1} is not a register below attn L* {l_attn:.1}"
-                        );
-                        let gap = hue_gap(full, tab.rest[0]);
+                    Kind::Paper | Kind::ChromaticGround | Kind::TintedPaper => {}
+                    Kind::Phosphor | Kind::Ladder => {
+                        let gap = hue_gap(full, tab.attn);
                         assert!(gap >= 35.0, "{flavor:?} pip {n} is {gap:.1}° from the phosphor");
                     }
                 }
@@ -1389,9 +1655,10 @@ mod tests {
     /// The one saturated colour is its OWN colour at every profile that has
     /// colour: never a ramp step, never another register, never a surface, a
     /// bar or a tint. On paper this is redundant with the chroma law; on a
-    /// phosphor, where every token shares a hue, it is what keeps
-    /// `test_attn_provenance*` meaningful — and it is what forbids the
-    /// tempting `{3,3,3,3}` eight-colour ramp, whose base IS the accent.
+    /// phosphor, where the ground, the bar and `calm` share the accent's hue,
+    /// it is what keeps `test_attn_provenance*` meaningful — and it is what
+    /// forbids the tempting `{3,3,3,3}` eight-colour ramp, whose base IS the
+    /// accent.
     #[test]
     fn attn_is_its_own_colour() {
         for f in Flavor::ALL {
@@ -1457,14 +1724,15 @@ mod tests {
         }
     }
 
-    /// At sixteen colours a phosphor has nothing to paint its cursor card
+    /// At sixteen colours a ladder has nothing to paint its cursor card
     /// with (the dims sit on 8, and 7 is lighter than the phosphor's own
-    /// index), so the card is structural — and everything else paints one.
+    /// index), so the card is structural — and everything else paints one,
+    /// the glow included since its ramp went white.
     #[test]
-    fn phosphor_16_never_paints_selected() {
+    fn ladder_16_never_paints_selected() {
         for f in Flavor::ALL {
             let painted = Theme::new(f, Profile::Ansi16).selected_bg.is_some();
-            assert_eq!(painted, f.kind() != Kind::Phosphor, "{f:?}");
+            assert_eq!(painted, f.kind() != Kind::Ladder, "{f:?}");
         }
     }
 

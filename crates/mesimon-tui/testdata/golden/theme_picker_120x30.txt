@@ -6,7 +6,6 @@
 
    Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
-
                            ╭─ THEME ∙ for a dark terminal ──────────────────────────────────╮
                            │   graphite                                                dark │
                            │     dark, the default ∙ your pick for a dark terminal          │
@@ -15,11 +14,12 @@
                            │   blue                                                    dark │
                            │     navy and gold, the Borland look                            │
                            │   amber                                                   dark │
-                           │     one amber phosphor, a P3 monitor                           │
+                           │     amber on black                                             │
                            │   green                                                   dark │
-                           │     one green phosphor, a P1 monitor                           │
+                           │     green-black, white ink, a green glow                       │
+                           │   solarized                                              light │
+                           │     solarized light, cream and blue-grey                       │
                            ╰──────────────────── jk preview ∙ enter keep ∙ esc put it back ─╯
-
 
 
 

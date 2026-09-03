@@ -80,7 +80,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         }
         _ => None,
     };
-    let title_style = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
+    // `d` arms here too, and the title row is the page's card: it flashes
+    // as a deletion on the same clock the board card does.
+    let doomed = app.doomed(ticket_id) && theme.delete_lit(app.spin_frame());
+    let title_style = if doomed {
+        theme.err_text().add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(ink.base).add_modifier(Modifier::BOLD)
+    };
     let title_row = match editing {
         Some(buf) => {
             let budget = title_budget.saturating_sub(1);
@@ -134,8 +141,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // What `m` would do next, in the keymap's own words — or nothing at
         // all when `m` is inert here, so the line never names a dead key.
         let ctx = app.ctx();
+        // The ask the agent already has takes the offer's place: "main moved
+        // ∙ rebase requested" until it lands or the cooldown passes
+        // (`App::merge_outstanding`), never the same ask offered twice.
         let offer = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Merge, &ctx)
             .map(|(show, word)| format!(" ∙ {show} {word}"))
+            .or_else(|| app.merge_outstanding(ticket.id).map(|w| format!(" ∙ {w}")))
             .unwrap_or_default();
         let state = if let Some(n) = &note {
             format!(" ∙ {n}")
@@ -156,8 +167,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         };
         wt_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), d1));
         if !state.is_empty() {
-            let actionable =
-                !w.merged && w.status == "attached" && (w.needs_rebase || (w.ahead > 0 && !busy));
+            let actionable = !w.merged
+                && w.status == "attached"
+                && (w.needs_rebase || (w.ahead > 0 && !busy))
+                && app.merge_outstanding(ticket.id).is_none();
             let style = if note.is_some() {
                 theme.calm_text()
             } else if w.conflict {
@@ -242,7 +255,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // row painted edge to edge with real space cells, because an empty
     // `Line` paints nothing. The description is the card's body inside it:
     // `[pad 1][bar 1][pad 1][text]`, the bar the card's NEUTRAL cursor-weight
-    // bar (no tag tints — the state line already names the tags), the text in
+    // bar thinned to a quarter cell (`Theme::desc_bar`; no tag tints — the
+    // state line already names the tags), the text in
     // the `sel` ramp with code sunk to the page ground (`Surface::Elevated`).
     // Rich text, capped: what the ticket IS reads before what its sessions
     // are doing. No heading over it; it is the ticket's own words.
@@ -266,7 +280,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 1 };
     let mut rows = vec![Line::default(), title_row, ident, Line::default()];
     if !desc.is_empty() {
-        let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
+        let (bar_ch, bar_style) = theme.desc_bar();
         for row in desc {
             let mut spans =
                 vec![Span::raw(" "), Span::styled(bar_ch.to_string(), bar_style), Span::raw(" ")];
@@ -277,10 +291,16 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     }
     let head: Vec<Line<'static>> = rows
         .into_iter()
-        .map(|mut l| {
+        .enumerate()
+        .map(|(i, mut l)| {
             let used: usize = l.spans.iter().map(|s| s.content.width()).sum();
             l.spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
-            l.style(band)
+            // Row 1 is the title row; lit, it takes the deletion ground.
+            if doomed && i == 1 {
+                l.style(theme.delete_row())
+            } else {
+                l.style(band)
+            }
         })
         .collect();
     f.render_widget(
