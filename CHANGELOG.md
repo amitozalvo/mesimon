@@ -4,6 +4,38 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.11
+
+- **An approved plan becomes a note on the ticket.** When you approve an agent's plan, mesimon
+  writes it as a note under the ticket, authored by that agent. Re-planning revises the same
+  note rather than adding another; a ticket that had no description gets the plan as one.
+
+- **An agent can tag its ticket.** `tag_ticket` is the seventh tool: it wears one of the board's
+  existing tags on the agent's own ticket, or takes it off. An agent never coins a tag — a name
+  the picker has not seen is refused with a pointer at the list `get_ticket` now carries, and a
+  name that lives on two axes is refused until the agent says which. `create_ticket` takes tags
+  the same way, so a filed card can land already sorted.
+
+- **`Tab` on a card opens its description.** The same dialog the composer grows into now opens
+  out of any card on the board, holding that ticket's description; `Shift+Tab` in it still
+  chooses the workspace while nothing has locked it. (`Tab` used to walk the needs-you cards; it
+  was hinted and never pressed.)
+
+- **The ticket page's head is a band.** Title, state line and description sit together on the
+  elevated surface, edge to edge, with the tag chips and the rail under them. The state line reads
+  as a sentence at every age, a long branch name is cut rather than clipped, and the rail no longer
+  offers `c` beside a claude it already lists.
+
+- **Shift+Enter in the editor is a newline.** In a description or a note it used to save and ask
+  claude, so the press that wanted a blank line minted a ticket and started an agent. `^s` saves;
+  the board's Shift+Enter on the card still asks. `^]` closes the editor too, as it does everywhere
+  else.
+
+- **Smaller.** A worktree's branch and directory are named by a handful of words from the title,
+  not half a sentence cut mid-word. The board hints `space` for the ticket page where `enter` goes
+  to the agent. A note survives delete + undo. The footer keeps the screen's keys on the left and
+  `esc menu` / `? keys` on the right, and each floating dialog carries its own keys in its frame.
+
 ## v0.1.0-alpha.10
 
 - **The bigger composer is a dialog on the board, not a panel across it.** `Tab` from the
