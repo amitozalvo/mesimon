@@ -1,7 +1,7 @@
  TICKET   mesimon > kanban-tui
 
  Painted accent bar
- DONE ∙ >1y here ∙ created >1y ago ∙ archived
+ DONE for >1y ∙ created >1y ago ∙ archived
 
                                                                                            SESSIONS                  1
 

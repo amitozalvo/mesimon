@@ -1,7 +1,7 @@
  TICKET   mesimon > kanban-tui  !1
 
  Adopt drawer import
- IN PROGRESS ∙ >1y here ∙ created >1y ago
+ IN PROGRESS for >1y ∙ created >1y ago
 
   SESSIONS                                                                                       1
 

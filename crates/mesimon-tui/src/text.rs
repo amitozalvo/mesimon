@@ -63,6 +63,27 @@ pub(crate) fn age_slot(now_ms: u64, then_ms: u64, ticking: bool) -> String {
     }
 }
 
+/// The ticket page's "time in column" clause, from the same slot the card
+/// wears, spoken right after the column word: `IN PROGRESS for 3d`. It was
+/// `3d here`, and "here" never read as "in this column"; a slot of `now`
+/// takes no preposition at all, so a fresh arrival is `just now` (author
+/// 2026-09-03).
+pub(crate) fn age_in_column(now_ms: u64, then_ms: u64) -> String {
+    match age_slot(now_ms, then_ms, false).as_str() {
+        "now" => "just now".into(),
+        age => format!("for {age}"),
+    }
+}
+
+/// The ticket page's "created …" clause. `created now ago` was the slot
+/// read literally; `just now` is what a person says.
+pub(crate) fn age_created(now_ms: u64, then_ms: u64) -> String {
+    match age_slot(now_ms, then_ms, false).as_str() {
+        "now" => "created just now".into(),
+        age => format!("created {age} ago"),
+    }
+}
+
 /// A marquee window into `s`: skip `offset` display cells (whole grapheme
 /// clusters), then hard-clip to `max` cells with no truncation marker — the
 /// motion itself says "there is more". `offset == 0` with an overflowing
@@ -897,6 +918,19 @@ mod tests {
         let s = 1000u64;
         assert_eq!(age_slot(45 * s, 0, false), "now");
         assert_eq!(age_slot(99 * s, 0, false), "now");
+    }
+
+    #[test]
+    fn ticket_page_age_phrases_read_as_sentences() {
+        let s = 1000;
+        // A slot of "now" never lands next to "for" or "ago".
+        assert_eq!(age_in_column(5 * s, 0), "just now");
+        assert_eq!(age_created(5 * s, 0), "created just now");
+        assert_eq!(age_in_column(45 * s, 0), "just now");
+        assert_eq!(age_created(45 * s, 0), "created just now");
+        // Past the "now" band the slot is the number the card wears.
+        assert_eq!(age_in_column(3 * 86_400 * s, 0), "for 3d");
+        assert_eq!(age_created(2 * 604_800 * s, 0), "created 2w ago");
         // The minute band and up is identical either way.
         assert_eq!(age_slot(180 * s, 0, false), "3m");
         assert_eq!(age_slot(400 * 86_400 * s, 0, false), ">1y");

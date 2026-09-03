@@ -1,7 +1,7 @@
  TICKET   mesimon > kanban-tui  !1
                                  ╭─ KEYS ∙ ticket ────────────────────────────────────╮
  Fix OSC-11 detection            │ MOVE AROUND                                        │
- IN PROGRESS ∙ >1y here ∙ created│   jk        select session                         │
+ IN PROGRESS for >1y ∙ created >1│   jk        select session                         │
                                  │   q         board                                  │
   PREVIEW                        │   tab       needs you                              │    SESSIONS                  2
                                  │   shift+tab previous needs you                     │

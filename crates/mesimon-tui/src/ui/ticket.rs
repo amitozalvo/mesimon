@@ -19,7 +19,8 @@ use mesimon_core::keymap;
 use crate::app::{App, InputPurpose, Mode, PreviewView, RailRow};
 use crate::glyphs;
 use crate::text::{
-    age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
+    age_created, age_in_column, age_slot, created_at_epoch_ms, edit_window, marquee_offset,
+    marquee_window, truncate,
 };
 
 use super::chrome;
@@ -85,10 +86,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // the line — the strategy word until a binding exists, then the branch
     // and its state (short keys resurface through the branch name).
     let here = created_at_epoch_ms(ticket.column_since())
-        .map(|ms| format!(" ∙ {} here", age_slot(now, ms, false).trim()))
+        .map(|ms| format!(" {}", age_in_column(now, ms)))
         .unwrap_or_default();
     let created = created_at_epoch_ms(&ticket.created_at)
-        .map(|ms| format!(" ∙ created {} ago", age_slot(now, ms, false).trim()))
+        .map(|ms| format!(" ∙ {}", age_created(now, ms)))
         .unwrap_or_default();
     let mut ident_spans = vec![
         Span::styled(format!(" {}", ticket.column.to_uppercase()), theme.dim2()),
