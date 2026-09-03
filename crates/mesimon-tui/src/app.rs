@@ -55,12 +55,11 @@ impl ShellTail {
 }
 
 /// What a ticket's agent last said against what the user last saw of it
-/// (T-173, the spoke mark). `key` names the newest reply on the transcript
+/// (T-173). `key` names the newest reply on the transcript
 /// (`peek::Peek::reply_key`) and `seen` the one the cursor was on the card
-/// for; they differ exactly while the card owes the user a mark. `session`
-/// and `path` say WHICH transcript that is: a different one re-baselines
-/// instead of marking, because a fresh spawn's first words are not news
-/// that arrived while you were away.
+/// for; they differ exactly while the card's done mark stays calm
+/// (`card.rs` greys it once seen). `session` and `path` say WHICH
+/// transcript that is: a different one starts a fresh entry.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Spoke {
     pub(crate) session: uuid::Uuid,
@@ -504,11 +503,12 @@ pub struct App {
     /// this comes over the wire, and only while a shell is being looked at.
     pub shell_tail: Option<ShellTail>,
     /// Per ticket, what its agent last said against what the cursor has
-    /// seen of it (`Spoke`): a card whose entry disagrees wears the spoke
-    /// mark. Kept by `poll_spoke` — a 1 s scan of every paned claude's
-    /// transcript, and an ack of the subject ticket every tick. TUI-local
-    /// on purpose: a restart baselines every card as seen, which is the
-    /// right answer for a board you have just opened.
+    /// seen of it (`Spoke`): a card whose entry disagrees keeps its done
+    /// mark in the calm register; one that agrees wears it grey. Kept by
+    /// `poll_spoke` — a 1 s scan of every paned claude's transcript, and an
+    /// ack of the subject ticket every tick. TUI-local on purpose: a
+    /// restart finds every reply unread, which is how the board always
+    /// looked, and greys each as the cursor reaches it.
     pub spoke: std::collections::HashMap<ulid::Ulid, Spoke>,
     /// The scan's clock.
     spoke_polled: Option<Instant>,
@@ -1164,11 +1164,14 @@ impl App {
             }
             _ => {
                 // First sight of this transcript — on launch, or after a
-                // spawn, a wake, a `/resume` that relearned the path. What is
-                // there now is the baseline, and "no words yet" is a key of
-                // its own so the first reply ever still counts as news.
+                // spawn, a wake, a `/resume` that relearned the path. A reply
+                // already there is UNSEEN: the signal is the done mark keeping
+                // the calm register it always had, so a fresh board looks as
+                // it always did and each `✓` greys as the cursor reaches it.
+                // "No words yet" is 0, which `seen` matches, so an agent that
+                // has not spoken owes nothing.
                 let key = peek.reply_key.unwrap_or(0);
-                self.spoke.insert(ticket, Spoke { session, path, key, seen: key });
+                self.spoke.insert(ticket, Spoke { session, path, key, seen: 0 });
             }
         }
         self.spoke_unseen(ticket) != before
@@ -5081,12 +5084,19 @@ mod tests {
     fn a_reply_while_away_marks_the_card_and_the_cursor_clears_it() {
         let (mut app, path) = app_with_speaker("mark");
         let t3 = ulid::Ulid(3);
-        assert!(!app.poll_spoke(), "the first scan is a baseline, not news");
+        assert!(app.poll_spoke(), "a reply already there on first sight is unread");
+        assert!(app.spoke_unseen(t3));
+        assert!(!app.spoke_unseen(ulid::Ulid(1)));
+        // The cursor reads it, then leaves; a further reply is news again.
+        app.cursor_col = 2;
+        app.cursor_row = 0;
+        assert!(app.poll_spoke());
         assert!(!app.spoke_unseen(t3));
+        app.cursor_col = 0;
+        assert!(!app.poll_spoke());
         append(&path, &reply_line("a2", "done the thing"));
         assert!(app.scan_spoke(), "a reply the cursor was not there for is news");
         assert!(app.spoke_unseen(t3));
-        assert!(!app.spoke_unseen(ulid::Ulid(1)));
         // Ticks with the cursor elsewhere leave it marked.
         assert!(!app.poll_spoke());
         assert!(app.spoke_unseen(t3));
@@ -5108,8 +5118,6 @@ mod tests {
         let (mut app, path) = app_with_speaker("page");
         let t3 = ulid::Ulid(3);
         app.poll_spoke();
-        append(&path, &reply_line("a2", "look here"));
-        assert!(app.scan_spoke());
         assert!(app.spoke_unseen(t3));
         app.screen = Screen::Ticket { ticket: t3, rail_idx: 0 };
         assert!(app.poll_spoke());
@@ -5121,7 +5129,11 @@ mod tests {
     fn a_prompt_alone_is_not_the_agent_speaking() {
         let (mut app, path) = app_with_speaker("prompt");
         let t3 = ulid::Ulid(3);
+        app.cursor_col = 2;
+        app.poll_spoke(); // read the seed reply
+        app.cursor_col = 0;
         app.poll_spoke();
+        assert!(!app.spoke_unseen(t3));
         append(&path, &prompt_line("p1", "and the other thing?"));
         assert!(!app.scan_spoke(), "the user's own words are not news from the agent");
         assert!(!app.spoke_unseen(t3));
@@ -5136,19 +5148,15 @@ mod tests {
         let (mut app, path) = app_with_speaker("park");
         let t3 = ulid::Ulid(3);
         app.poll_spoke();
-        append(&path, &reply_line("a2", "finished"));
-        assert!(app.scan_spoke());
         assert!(app.spoke_unseen(t3));
         app.board.sessions[0].state = SessionState::Sleeping;
         assert!(app.scan_spoke(), "the mark going is a redraw");
         assert!(!app.spoke_unseen(t3));
         assert!(!app.spoke.contains_key(&t3), "a parked card holds no entry at all");
-        // Waking finds the same file with the reply the user never saw —
-        // and baselines it: what is there on a wake is where you start.
+        // Waking finds the same file with the reply the user never read:
+        // still unread. (A woken agent wears no done mark until its next
+        // turn ends, so nothing shows for it until then.)
         app.board.sessions[0].state = SessionState::Running;
-        assert!(!app.scan_spoke());
-        assert!(!app.spoke_unseen(t3));
-        append(&path, &reply_line("a3", "and more"));
         assert!(app.scan_spoke());
         assert!(app.spoke_unseen(t3));
         let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
@@ -5172,20 +5180,21 @@ mod tests {
     }
 
     #[test]
-    fn a_fresh_session_on_the_same_ticket_rebaselines() {
+    fn a_fresh_session_on_the_same_ticket_starts_its_own_entry() {
         let (mut app, path) = app_with_speaker("fresh");
         let t3 = ulid::Ulid(3);
+        app.cursor_col = 2;
         app.poll_spoke();
-        // A new spawn: another record, and its first words are not news
-        // that arrived while the user was away.
+        app.cursor_col = 0;
+        app.poll_spoke();
+        assert!(!app.spoke_unseen(t3));
+        // A new spawn on the ticket: its reply is unread under its own
+        // record, and the entry names the new session.
         app.board.sessions[0].id = uuid::Uuid::from_u128(8);
         append(&path, &reply_line("a2", "hello again"));
-        assert!(!app.scan_spoke());
-        assert!(!app.spoke_unseen(t3));
-        assert_eq!(app.spoke[&t3].session, uuid::Uuid::from_u128(8));
-        append(&path, &reply_line("a3", "and now this"));
         assert!(app.scan_spoke());
         assert!(app.spoke_unseen(t3));
+        assert_eq!(app.spoke[&t3].session, uuid::Uuid::from_u128(8));
         let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
     }
 
@@ -5207,8 +5216,8 @@ mod tests {
         s.transcript_path = Some(path.to_string_lossy().into_owned());
         b.sessions.push(s);
         let mut app = App::for_test(b, theme());
-        app.poll_spoke();
-        assert!(!app.spoke_unseen(ulid::Ulid(3)));
+        assert!(!app.poll_spoke());
+        assert!(!app.spoke_unseen(ulid::Ulid(3)), "no reply yet owes nothing");
         append(&path, &reply_line("a1", "fixed"));
         assert!(app.scan_spoke());
         assert!(app.spoke_unseen(ulid::Ulid(3)));

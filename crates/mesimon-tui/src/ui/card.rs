@@ -184,7 +184,7 @@ pub(super) fn render(
     peek: Option<&crate::peek::Peek>,
     tags: &[crate::tags::Painted],
     doomed: bool,
-    spoke: bool,
+    unseen: bool,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
@@ -203,6 +203,20 @@ pub(super) fn render(
         let launching = wt.is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"));
         launching.then(|| (glyphs::launching(tier, ctx.spin), Register::Grey))
     });
+    // The done mark decays once seen (T-173, the D19 decay 06 §3.6 parked
+    // for M6): `✓` rides the calm register while the reply it stands for is
+    // one the cursor has not been on the card for, and drops to the grey
+    // ramp the moment it has. `Calm` was always defined as "done-UNSEEN";
+    // this is the half that makes the word true. Same glyph either way —
+    // the state is what it was, only the loudness moves — and no cell is
+    // spent: a `◊` beside the title shipped for an hour and was cut (author
+    // 2026-09-04: "too big, and with the worktree mark it takes too much
+    // space"). The caller passes `unseen` false for the cursor card and the
+    // move ghost, whose ticket is being acked as it is drawn.
+    let glyph = match glyph {
+        Some((g, Register::Calm)) if !unseen => Some((g, Register::Grey)),
+        other => other,
+    };
     // A pending move's trail is semi-transparent everything — even an attn
     // card demotes while its ghost is in hand (the ghost carries the weight).
     let attn_card = !trail && matches!(glyph, Some((_, Register::Attn)));
@@ -257,23 +271,14 @@ pub(super) fn render(
         crate::tags::bar_cell(theme, ladder_ch, bar_base, tags, level)
     };
 
-    // ---- line 1: [glyph sp?][title][fill][spoke][wt][age] -----------------
+    // ---- line 1: [glyph sp?][title][fill][wt][age] ------------------------
     let wt_mark = worktree_mark(wt, tier == crate::glyphs::Tier::Ascii);
-    // The spoke mark (T-173): the agent said something new while this card
-    // was not under the cursor. Right of the title with the other news
-    // (`⎇↑` is "commits waiting", this is "words waiting"), and NEVER on a
-    // needs-you card — the inverted row is already the loudest thing on the
-    // board, and the title gets its two cells back on the row that matters
-    // most. The caller withholds it from the cursor card and the move
-    // ghost, whose ticket is being acked as it is drawn.
-    let spoke_mark = (spoke && !attn_card).then(|| glyphs::spoke_mark(tier));
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
-    let spoke_cells = if spoke_mark.is_some() { 2 } else { 0 };
     // Tags cost the title NOTHING: they are bands under the block, not a zone
     // on this line. That is the point of moving them off it.
-    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells + spoke_cells);
+    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells);
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
     let scroll = match (marquee_ms, overflow) {
@@ -339,11 +344,6 @@ pub(super) fn render(
     }
     spans.push(Span::styled(title, title_style));
     spans.push(Span::raw(" ".repeat(fill)));
-    if let Some(m) = spoke_mark {
-        // The title's own weight: the mark is the news, not a footnote to
-        // it, and `title_style` already goes ghost with a move trail.
-        spans.push(Span::styled(format!(" {m}"), title_style));
-    }
     if let Some((m, tone)) = &wt_mark {
         // Trail/attn contexts demote the mark to the quiet tone with the row.
         let style = match tone {

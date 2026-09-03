@@ -162,10 +162,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             None
         };
         let wt = app.wt_item(t.id);
-        // The spoke mark: withheld from the cursor card and the move ghost
-        // (both `cursorish`, and their ticket is the subject being acked),
-        // so the frame between a cursor move and the ack never shows it.
-        let spoke = !(selected || held) && app.spoke_unseen(t.id);
+        // Has the agent said something the cursor has not been here for?
+        // The done mark decays on it. Never for the cursor card or the move
+        // ghost (both `cursorish`, and their ticket is the subject being
+        // acked), so the frame between a cursor move and the ack agrees.
+        let unseen = !(selected || held) && app.spoke_unseen(t.id);
         let mut lines = card::render(
             &ctx,
             t,
@@ -179,7 +180,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             peek.as_ref(),
             &painted,
             app.doomed(t.id),
-            spoke,
+            unseen,
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
