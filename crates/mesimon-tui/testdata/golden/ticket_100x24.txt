@@ -3,12 +3,12 @@
  Adopt drawer import
  IN PROGRESS for >1y ∙ created >1y ago
 
+
   SESSIONS                                                                                       1
 
  ! ✻ claude                                                                                    >1y
      Bash(rm -rf node_modules)
   c claude ∙ s shell ∙ x sleep
-
 
 
 

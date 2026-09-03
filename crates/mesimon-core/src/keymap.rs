@@ -1435,6 +1435,8 @@ static TICKET: &[Binding] = &[
         prio: 90,
     },
     Binding {
+        // Overlay-only: the BOARD chip in the header already says where `q`
+        // goes, and the footer has better uses for the cell.
         keys: &[Key::Char('q'), Key::Esc, Key::Ctrl(']'), Key::Ctrl('5')],
         verb: Verb::Back,
         show: "q",
@@ -1443,7 +1445,7 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 250,
+        prio: 0,
     },
 ];
 

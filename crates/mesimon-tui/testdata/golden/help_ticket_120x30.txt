@@ -3,12 +3,12 @@
  Fix OSC-11 detection            │ MOVE AROUND                                        │
  IN PROGRESS for >1y ∙ created >1│   jk        select session                         │
                                  │   q         board                                  │
-  PREVIEW                        │   tab       needs you                              │    SESSIONS                  2
-                                 │   shift+tab previous needs you                     │
-    ● working                    │                                                    │   ⠋ ✻ claude               >1y
-                                 │ TICKETS                                            │   ◦ $ bash                 >1y
-                                 │   r         rename                                 │    c claude ∙ s shell ∙ x sleep
-                                 │   n         describe                               │
+                                 │   tab       needs you                              │
+  PREVIEW                        │   shift+tab previous needs you                     │    SESSIONS                  2
+                                 │                                                    │
+    ● working                    │ TICKETS                                            │   ⠋ ✻ claude               >1y
+                                 │   r         rename                                 │   ◦ $ bash                 >1y
+                                 │   n         describe                               │    c claude ∙ s shell ∙ x sleep
                                  │   N         new note                               │
                                  │   ^t        tags                                   │
                                  │   a         archive                                │
@@ -27,4 +27,4 @@
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
- jk select session ∙ enter focus ∙ tab needs you ∙ r rename ∙ d delete ∙ n describe ∙ q board                    ? keys
+ jk select session ∙ enter focus ∙ tab needs you ∙ r rename ∙ d delete ∙ n describe                              ? keys

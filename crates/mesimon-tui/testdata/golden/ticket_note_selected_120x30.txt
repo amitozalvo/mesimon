@@ -8,9 +8,8 @@
  The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
 
  • detect.rs asks the terminal, then hands the flavor to Theme::new
- • the goldens moved with it
+ • the goldens moved with it~
 
-   cargo test -p mesimon-tui ~
 
   PREVIEW                                                                                  SESSIONS                  2
 
@@ -27,4 +26,5 @@
 
 
 
- jk select session ∙ enter edit note ∙ r rename ∙ d delete ∙ n edit note ∙ q board                               ? keys
+
+ jk select session ∙ enter edit note ∙ r rename ∙ d delete ∙ n edit note                                         ? keys

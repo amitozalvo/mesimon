@@ -3,12 +3,12 @@
  Fix OSC-11 detection
  IN PROGRESS for >1y ∙ created >1y ago ∙  BUG   STAGING
 
+
   PREVIEW                                                                                  SESSIONS                  2
 
     ● working                                                                             ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
                                                                                            c claude ∙ s shell ∙ x sleep
-
 
 
 

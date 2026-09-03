@@ -3,6 +3,7 @@
  Fix OSC-11 detection
  IN PROGRESS for >1y ∙ created >1y ago
 
+
                                                                                            SESSIONS                  3
 
                                                                                           ⠋ ✻ claude               >1y
@@ -26,5 +27,4 @@
 
 
 
-
- jk select session ∙ enter resume ∙ r rename ∙ d delete ∙ n describe ∙ q board                                   ? keys
+ jk select session ∙ enter resume ∙ r rename ∙ d delete ∙ n describe                                             ? keys

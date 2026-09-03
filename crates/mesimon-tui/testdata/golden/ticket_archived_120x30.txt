@@ -3,6 +3,7 @@
  Painted accent bar
  DONE for >1y ∙ created >1y ago ∙ archived
 
+
                                                                                            SESSIONS                  1
 
                                                                                           z $ bash                 >1y
@@ -26,5 +27,4 @@
 
 
 
-
- jk select session ∙ enter wake ∙ r rename ∙ d delete ∙ n describe ∙ q board                                     ? keys
+ jk select session ∙ enter wake ∙ r rename ∙ d delete ∙ n describe                                               ? keys
