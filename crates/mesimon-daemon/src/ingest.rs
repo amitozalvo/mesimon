@@ -184,6 +184,25 @@ pub fn transcript_of(frame: &HookFrame) -> Option<String> {
     frame.payload.get("transcript_path").and_then(Value::as_str).map(str::to_string)
 }
 
+/// The plan an approved `ExitPlanMode` carries, whole (2026-09-03).
+///
+/// `PostToolUse` fires once the tool has RETURNED, and for this tool that is
+/// once the user approved the plan — a rejection is a tool error and fires
+/// nothing mesimon hooks — so the frame is the approval. `tool_input.plan`
+/// is the markdown Claude also saves under `~/.claude/plans/`; the response
+/// is Claude's sentence to the agent ("User has approved your plan…") and is
+/// not read. A subagent's plan (`agent_id` set) is not the session's.
+pub fn plan_of(frame: &HookFrame) -> Option<String> {
+    if frame.event != "PostToolUse" || has_agent_id(frame) {
+        return None;
+    }
+    if frame.payload.get("tool_name").and_then(Value::as_str) != Some("ExitPlanMode") {
+        return None;
+    }
+    let plan = frame.payload.get("tool_input")?.get("plan")?.as_str()?;
+    (!plan.trim().is_empty()).then(|| plan.to_string())
+}
+
 /// The card excerpt for this event, if it carries one worth showing.
 pub fn detail_of(frame: &HookFrame) -> Option<String> {
     let text = match frame.event.as_str() {
@@ -493,5 +512,25 @@ mod tests {
         let d = detail_of(&f).unwrap();
         assert!(d.chars().count() <= 200);
         assert!(!d.contains('\u{1b}'));
+    }
+
+    /// The plan rides `tool_input.plan` on the PostToolUse frame — the shape
+    /// captured on 2.1.251 through 2.1.258 — and only there: the approval
+    /// dialog's frames come before the approval, another tool's `plan` key is
+    /// not a plan, and a subagent's is not the session's.
+    #[test]
+    fn an_approved_plan_is_read_off_post_tool_use_only() {
+        let approved = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# A\n\n1. look"},"tool_response":"User has approved your plan."}"##;
+        assert_eq!(plan_of(&frame("PostToolUse", None, approved)), Some("# A\n\n1. look".into()));
+        assert_eq!(plan_of(&frame("PreToolUse", None, approved)), None);
+        assert_eq!(plan_of(&frame("PermissionRequest", None, approved)), None);
+        let bash = r##"{"tool_name":"Bash","tool_input":{"plan":"# A"}}"##;
+        assert_eq!(plan_of(&frame("PostToolUse", None, bash)), None);
+        let nested =
+            r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# A"},"agent_id":"a1"}"##;
+        assert_eq!(plan_of(&frame("PostToolUse", None, nested)), None);
+        let blank = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"  \n"}}"##;
+        assert_eq!(plan_of(&frame("PostToolUse", None, blank)), None);
+        assert_eq!(plan_of(&frame("PostToolUse", None, "{truncated")), None);
     }
 }

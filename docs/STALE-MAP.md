@@ -3719,3 +3719,42 @@ toggle round-trip and the lock hold.
 (at 120 columns it stands where `r rename` did on a card with an agent; `r` is still hinted on the
 others and in the overlay). The board's help overlay lost two Navigate rows and gained one Ticket
 row; `help_ticket` lost the two walk rows and nothing else.
+
+## An approved plan is the agent's note on the ticket (2026-09-03, user request)
+
+Plan mode writes its plan to `~/.claude/plans/<slug>.md`, off the board, and the ticket learned
+nothing of it: the card said `plan ready for review`, the user approved it in the pane, and the
+document the rest of the work would follow lived in a directory nothing on the board could reach.
+The `PostToolUse` frame `ExitPlanMode` fires carries the whole plan in `tool_input.plan`
+(captured on 2.1.251 through 2.1.258; the response is Claude's "User has approved your plan…
+saved to: …" sentence and is not read), and since `PostToolUse` fires only once a tool RETURNS
+— a rejected plan is a tool error and fires nothing mesimon hooks — that frame IS the approval.
+The broad PostToolUse observer was already registered (the permission-accept clear path), so no
+hook entry moved.
+
+What holds now:
+
+- `ingest::plan_of` reads the plan off a `PostToolUse` frame whose `tool_name` is
+  `ExitPlanMode` and whose `agent_id` is unset (a subagent's plan is not the session's), blank
+  or truncated payloads read as no plan, and `on_hook` hands it to `Daemon::record_plan`.
+- `record_plan` writes it through the SAME `write_note` the agent's tool uses — sanitized,
+  capped at 32 KiB, stamped `agent:<uuid>`, authorized as the agent on `Resource::Ticket` — and
+  the feed line is `plan_note` with actor `agent`, never the text. The daemon does the writing on
+  the agent's behalf; the agent asked for nothing and its context receives nothing (promise 3).
+- **One plan note per session, replaced on every approval**, the way the plan file itself is
+  replaced on a re-plan: `SessionRecord.plan_note` (`#[serde(default)]`, persisted, so a daemon
+  restart cannot turn the next re-plan into a second note) names the note, a re-plan bumps its
+  `rev` and renames it after the new first line, and a note the user has deleted since is not
+  resurrected under its old id — the next approval mints a fresh one.
+- On a ticket with no description the plan becomes `notes[0]` and so IS the description — that
+  is what the first note on any ticket is (the notes block above), and most tickets are filed as a
+  title alone. The ticket page then shows the plan's head under the identity line and `n` edits
+  it; a re-plan overwrites that edit, the known last-write-wins gap. No separate slot was made:
+  `notes[0]` is the description by position, and a plan that lands on a ticket with a description
+  is an ordinary second note in the rail.
+- Adopted (observe-only) sessions get nothing: the transcript tail sees the `ExitPlanMode` call
+  before the approval and never the approval itself. Hooks are the only road.
+
+E2e: `notes_e2e::an_approved_plan_is_the_agents_note_on_the_ticket` (the real hook binary, the
+three frames before and at approval, a re-plan, a delete-then-re-plan, and the feed). Unit:
+`ingest::an_approved_plan_is_read_off_post_tool_use_only`.

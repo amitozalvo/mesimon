@@ -1609,10 +1609,55 @@ impl Daemon {
                 dirty |= self.ack_pending_submit(id);
             }
         }
+        // An approved plan is the agent's note on the ticket.
+        if let Some(plan) = ingest::plan_of(&frame) {
+            dirty |= self.record_plan(id, plan);
+        }
         if dirty {
             self.persist_sessions();
             self.broadcast();
         }
+    }
+
+    /// Write the plan an approved `ExitPlanMode` carried as a note on the
+    /// session's ticket, authored by the agent (2026-09-03). The plan file
+    /// Claude keeps under `~/.claude/plans/` is off the board; this is the
+    /// same document on it, and the note is fetched exactly the way the
+    /// agent's own `write_note` would be — sanitized, capped and stamped by
+    /// `write_note`, authorized as the agent on the ticket, named in the feed
+    /// and never quoted there. ONE note per session, replaced on every
+    /// approval the way the plan file is, so a re-plan is a revision and not
+    /// a second note; a note the user deleted since is not resurrected, the
+    /// next approval mints a fresh one. On a ticket with no description it
+    /// becomes `notes[0]`, which is what any first note does. Returns
+    /// whether the record changed.
+    fn record_plan(&mut self, session: uuid::Uuid, plan: String) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
+            return false;
+        };
+        let ticket = rec.ticket;
+        let existing = rec
+            .plan_note
+            .filter(|n| self.board.ticket(ticket).is_some_and(|t| t.note(*n).is_some()));
+        let by = Principal::Agent { session };
+        if let Decision::Deny { .. } =
+            authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket })
+        {
+            return false;
+        }
+        let Response::NoteWritten { note: Some(id) } = self.write_note(ticket, existing, plan, &by)
+        else {
+            return false;
+        };
+        self.feed.board(by.actor(), "plan_note", Some(ticket));
+        let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == session) else {
+            return false;
+        };
+        if rec.plan_note == Some(id) {
+            return false;
+        }
+        rec.plan_note = Some(id);
+        true
     }
 
     /// Press Enter on a session whose prefilled title is still sitting

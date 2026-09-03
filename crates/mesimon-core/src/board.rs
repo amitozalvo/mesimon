@@ -218,6 +218,16 @@ pub struct SessionRecord {
     /// next finished turn for good. Sorted, deduplicated.
     #[serde(default)]
     pub idle_teammates: Vec<String>,
+    /// The note this session's approved plan lives in (2026-09-03). Every
+    /// `ExitPlanMode` the user approves writes its plan here, replacing the
+    /// last, so a session has ONE plan note the way it has one plan file
+    /// under `~/.claude/plans/` — a re-plan is a new revision, never a second
+    /// note. Persisted so a daemon restart cannot turn the next re-plan into
+    /// a second note; `None` until the first approval, and a note the user
+    /// deleted since is not resurrected under its old id — the next approval
+    /// mints a fresh one.
+    #[serde(default)]
+    pub plan_note: Option<ulid::Ulid>,
 }
 
 impl SessionRecord {
@@ -260,6 +270,7 @@ impl SessionRecord {
             pinned_awake: false,
             pending_submit: false,
             idle_teammates: Vec::new(),
+            plan_note: None,
         }
     }
 

@@ -268,3 +268,104 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         "not available",
     );
 }
+
+/// An approved plan is the agent's note on the ticket (2026-09-03). The
+/// `PostToolUse` frame `ExitPlanMode` fires once the user approves carries the
+/// plan whole, through the real hook binary, and the daemon writes it as a
+/// note stamped with the session — one per session, replaced on a re-plan,
+/// minted afresh after the user deletes it. The frames before the approval,
+/// and another tool's `plan` key, write nothing.
+#[test]
+fn an_approved_plan_is_the_agents_note_on_the_ticket() {
+    const STUB: &str = "#!/bin/sh\nexec sleep 60\n";
+    let Some(h) = Harness::boot("plan-note", Some(STUB)) else { return };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("plan-note");
+
+    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "planned".into() });
+    let ticket = c.board().tickets[0].id;
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let session = sid.to_string();
+    let frame = |plan: &str| {
+        json!({
+            "tool_name": "ExitPlanMode",
+            "tool_input": { "plan": plan },
+            "tool_response": "User has approved your plan. You can now start coding.",
+        })
+        .to_string()
+    };
+    let plan_a = "# Plan A\n\n1. look\n2. leap\n";
+
+    // The approval dialog's frames come BEFORE the approval: nothing yet.
+    hook_send(&hook_sock, &session, "PreToolUse", &frame(plan_a));
+    hook_send(&hook_sock, &session, "PermissionRequest", &frame(plan_a));
+    // ...and the approval itself is the note.
+    hook_send(&hook_sock, &session, "PostToolUse", &frame(plan_a));
+    wait_until(Duration::from_secs(10), "the plan to land as a note", || {
+        c.board().tickets[0].notes.len() == 1
+    });
+    let notes = c.board().tickets[0].notes.clone();
+    let first = notes[0].clone();
+    assert_eq!(first.name, "Plan A");
+    assert_eq!(first.created_by, format!("agent:{sid}"));
+    assert_eq!(first.rev, 1);
+    match c.request(Command::ReadNote { ticket, note: first.id }) {
+        Response::Note { text, .. } => assert_eq!(text, plan_a),
+        other => panic!("{other:?}"),
+    }
+    // The record remembers which note is the plan's, and it is persisted.
+    let sessions = h.paths.state_dir.join("sessions.json");
+    wait_until(Duration::from_secs(5), "the plan note id to persist", || {
+        std::fs::read_to_string(&sessions).unwrap_or_default().contains(&first.id.to_string())
+    });
+
+    // A re-plan is a revision of the same note, not a second note; another
+    // tool carrying a `plan` key is not a plan.
+    hook_send(
+        &hook_sock,
+        &session,
+        "PostToolUse",
+        &json!({"tool_name": "Bash", "tool_input": {"plan": "# Not a plan"}}).to_string(),
+    );
+    hook_send(&hook_sock, &session, "PostToolUse", &frame("# Plan B\n\nagain\n"));
+    wait_until(Duration::from_secs(10), "the re-plan to revise the note", || {
+        c.board().tickets[0].notes.first().is_some_and(|n| n.rev == 2)
+    });
+    let notes = c.board().tickets[0].notes.clone();
+    assert_eq!(notes.len(), 1, "{notes:?}");
+    assert_eq!(notes[0].id, first.id);
+    assert_eq!(notes[0].name, "Plan B");
+    assert_eq!(notes[0].edited_by, format!("agent:{sid}"));
+
+    // The user deletes the note; the next approval mints a fresh one rather
+    // than resurrecting the old id.
+    assert!(matches!(
+        c.request(Command::WriteNote { ticket, note: Some(first.id), text: String::new() }),
+        Response::NoteWritten { note: None }
+    ));
+    assert!(c.board().tickets[0].notes.is_empty());
+    hook_send(&hook_sock, &session, "PostToolUse", &frame("# Plan C\n"));
+    wait_until(Duration::from_secs(10), "the third plan to land", || {
+        c.board().tickets[0].notes.len() == 1
+    });
+    let notes = c.board().tickets[0].notes.clone();
+    assert_ne!(notes[0].id, first.id);
+    assert_eq!(notes[0].name, "Plan C");
+    assert_eq!(notes[0].rev, 1);
+
+    // The feed names the write with the agent as actor, never the plan.
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    wait_until(Duration::from_secs(5), "the feed to name the plan note", || {
+        let feed = std::fs::read_to_string(&feed_path).unwrap_or_default();
+        feed.lines().any(|l| l.contains("\"actor\":\"agent\"") && l.contains("plan_note"))
+    });
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(!feed.contains("Plan A") && !feed.contains("leap"), "never the text: {feed}");
+}
