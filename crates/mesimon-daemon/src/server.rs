@@ -96,6 +96,11 @@ struct GraceEntry {
     /// The delete-gate's red "remove": the user confirmed losing unmerged
     /// work, so teardown may `branch -D` (M4).
     discard_worktree: bool,
+    /// The note bodies, read off the disk before the ticket directory went:
+    /// `delete_ticket_dir` is eager (a crash inside the band must not
+    /// resurrect a deleted ticket on the next load), so undo has nowhere
+    /// else to get them back from. Bounded — `NOTE_MAX_BYTES` a note.
+    notes: Vec<(ulid::Ulid, String)>,
 }
 
 /// Raised by the SIGTERM handler, honoured on the next wheel tick.
@@ -2658,6 +2663,17 @@ impl Daemon {
         let sessions: Vec<SessionRecord> =
             self.board.sessions.iter().filter(|s| s.ticket == id).cloned().collect();
         self.board.sessions.retain(|s| s.ticket != id);
+        // Bodies first, then the directory: what undo will need is in memory
+        // before the only copy is removed (dogfood 2026-09-03, T-71: a note
+        // written, the ticket deleted and restored, and the editor could only
+        // say "note file missing" from then on).
+        let notes = ticket
+            .notes
+            .iter()
+            .filter_map(|n| {
+                store::read_note(&self.paths, &ticket.short_key, n.id).ok().map(|text| (n.id, text))
+            })
+            .collect();
         let _ = store::delete_ticket_dir(&self.paths, &ticket.short_key);
         self.grace.insert(
             id,
@@ -2666,6 +2682,7 @@ impl Daemon {
                 sessions,
                 expires: Instant::now() + Duration::from_secs(GRACE_SECS),
                 discard_worktree,
+                notes,
             },
         );
         self.persist_and_notify();
@@ -3108,9 +3125,19 @@ impl Daemon {
     }
 
     fn restore_ticket(&mut self, id: ulid::Ulid) -> Response {
-        let Some(g) = self.grace.remove(&id) else {
+        let Some(mut g) = self.grace.remove(&id) else {
             return Response::Err { message: "grace window expired".into() };
         };
+        // Bodies back before the metadata that lists them, the same order
+        // `write_note` keeps: an orphan file is harmless, a listed note with
+        // no file is the editor's dead end. One whose body could not be read
+        // at delete time is dropped from the list rather than restored as
+        // exactly that.
+        for (nid, text) in &g.notes {
+            let _ = store::save_note(&self.paths, &g.ticket.short_key, *nid, text);
+        }
+        let carried: Vec<ulid::Ulid> = g.notes.iter().map(|(nid, _)| *nid).collect();
+        g.ticket.notes.retain(|n| carried.contains(&n.id));
         let _ = store::save_ticket(&self.paths, &g.ticket);
         self.board.tickets.push(g.ticket);
         self.board.sessions.extend(g.sessions);

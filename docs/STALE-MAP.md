@@ -3383,3 +3383,25 @@ its title stand in the card's cells and nothing jumps. Pinned by
 title row with the context row under it and the other columns showing through; settled at the
 second column's x with both covered columns' cards gone and both outer columns' cards whole) and
 the two compose goldens, which now show whole cards on either side of the dialog.
+
+## A note survives delete + undo (2026-09-03, dogfood)
+
+**Refuted:** the grace band (D21) carried the ticket and its sessions in memory and nothing
+else, on the assumption that a ticket was its `ticket.toml`. Since 2026-09-02 a ticket's notes
+are FILES under its directory, and `delete_ticket` removes that directory eagerly (deliberately:
+a crash inside the band must not resurrect a deleted ticket on the next load). `restore_ticket`
+wrote `ticket.toml` back — with the `[[notes]]` list — and nothing wrote the bodies, so the
+restored ticket listed notes whose files were gone. The editor then had exactly one thing to
+say, "note file missing", and no road out: it opens by re-reading the daemon, so an orphan can
+neither be edited nor blanked-and-deleted. Seen on T-71 within 25 s of the feature being used
+(feed: `write_note`, `delete_ticket`, `restore_ticket`).
+
+**Built:** `GraceEntry.notes: Vec<(Ulid, String)>` — `delete_ticket` reads every listed body
+BEFORE `delete_ticket_dir`, and `restore_ticket` writes them back with `save_note` before it
+saves the metadata, the same body-then-list order `write_note` keeps. A note whose body could
+not be read at delete time is dropped from the restored list rather than restored as the orphan
+this block is about. The eager directory removal stays: memory, not a trash directory, so a
+daemon restart inside the band still means gone. The tui e2e (`m1_acceptance_headless`) writes
+a note before the delete and reads it after the undo. Deferred: a repair road for an orphan
+that already exists (the editor could open it empty so a save re-creates the body) — the one
+on the author's board was healed by hand through `WriteNote`.

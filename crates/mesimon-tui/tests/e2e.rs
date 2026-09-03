@@ -131,6 +131,14 @@ fn m1_acceptance_headless() {
     let r = c.request(Command::GateStatus);
     assert!(matches!(r, Response::Gate { passed: true, .. }), "{r:?}");
 
+    // A note rides the ticket through delete + undo: the body is a file
+    // under the ticket directory, which delete removes eagerly.
+    let r =
+        c.request(Command::WriteNote { ticket: t.id, note: None, text: "kept across undo".into() });
+    let Response::NoteWritten { note: Some(note) } = r else {
+        panic!("expected NoteWritten, got {r:?}")
+    };
+
     // Delete → grace band with the detached session; restore resurrects both.
     c.request(Command::DeleteTicket { id: t.id, discard_worktree: false });
     let (board, grace) = board_of(c.request(Command::Snapshot));
@@ -143,6 +151,9 @@ fn m1_acceptance_headless() {
     assert_eq!(board.tickets.len(), 1);
     assert!(grace.is_empty());
     assert_eq!(board.sessions.len(), 1);
+    let r = c.request(Command::ReadNote { ticket: t.id, note });
+    let Response::Note { text, .. } = r else { panic!("note lost across undo: {r:?}") };
+    assert_eq!(text, "kept across undo");
 
     // Daemon-restart persistence + reconcile: kill daemon, restart, session still linked.
     c.request(Command::KillSession { id: s.id });
