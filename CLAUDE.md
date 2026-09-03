@@ -787,7 +787,12 @@ and the description written through `write_note` so the note carries `agent:<uui
 The receipt is a KEY (`T-9`), never an id, and nothing takes a key back; the new card has no
 session and no tool starts one. The replay map is now `AgentReplay::{Moved, Created}`, keyed by
 tool as well as by idempotency key. Feed line `create_ticket` with the agent as actor.
-(STALE-MAP "An agent can file a ticket".)
+(STALE-MAP "An agent can file a ticket".) **Tags cross the tier read-mostly**: `get_ticket`
+carries `tags` (worn) and `allowed_tags` (the registry, `allowed_columns`' twin) as
+`AgentTagView {name, group}`, and `create_ticket` takes `tags`, an array of NAMES resolved by
+`Daemon::resolve_agent_tags` before the mint — exact then unique case-insensitive, unknown /
+ambiguous / two-on-one-group refused, the registry never written (STALE-MAP "An agent sees
+tags").
 
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
 command will not compile until someone decides whether an agent may send it. That is the

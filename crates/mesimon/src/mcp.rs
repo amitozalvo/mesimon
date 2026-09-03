@@ -115,11 +115,12 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         }
         ToolCall::ReadNote { note } => Command::AgentReadNote { note },
         ToolCall::WriteNote { note, text } => Command::AgentWriteNote { note, text },
-        ToolCall::CreateTicket { title, column, description, idempotency_key } => {
+        ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {
                 title,
                 column,
                 description,
+                tags,
                 idempotency_key: idempotency_key.or(tool_use_id),
             }
         }

@@ -126,7 +126,8 @@ pub fn tools() -> Vec<Value> {
             "name": "get_ticket",
             "description": "Returns the mesimon ticket this session is attached to: key, \
                             title, current column, workspace mode, branch, merge state, \
-                            the column names move_ticket accepts, the description (its \
+                            the column names move_ticket accepts, the tags it wears, \
+                            every tag the board knows (allowed_tags), the description (its \
                             first note) and the id, name and author of every note.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         }),
@@ -194,27 +195,34 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "create_ticket",
-            "description": "Creates a new ticket on the mesimon board and returns its key. \
-                            The new ticket has no session; this session stays on its own \
-                            ticket. Meant for work found outside this ticket's scope.",
+            "description": "Creates a ticket on the mesimon board and returns its key. It \
+                            has no session; this session stays on its own. For work found \
+                            outside this ticket's scope.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "One line, as shown on the card." },
+                    "title": { "type": "string", "description": "One line, the card's text." },
                     // A plain string, NOT an enum: see the module header.
                     "column": {
                         "type": "string",
-                        "description": "Optional. A column name as listed by list_board; \
-                                        omitted means the board's first column.",
+                        "description": "Optional. A column name from list_board; omitted \
+                                        means the first column.",
                     },
                     "description": {
                         "type": "string",
-                        "description": "Optional markdown, saved as the ticket's first note.",
+                        "description": "Optional markdown, the first note.",
+                    },
+                    // Names, NOT the registry: see the module header on enums.
+                    "tags": {
+                        "type": "array",
+                        "items": { "type": "string" },
+                        "description": "Optional. Names from allowed_tags (get_ticket), one \
+                                        per group.",
                     },
                     "idempotency_key": {
                         "type": "string",
                         "description": "Optional. Repeating a call with the same key replays \
-                                        the first result instead of creating twice.",
+                                        the first result.",
                     },
                 },
                 "required": ["title"],
@@ -265,6 +273,9 @@ pub enum ToolCall {
         title: String,
         column: Option<String>,
         description: Option<String>,
+        /// Tag NAMES, resolved against the registry by the daemon. Empty when
+        /// the argument was absent.
+        tags: Vec<String>,
         idempotency_key: Option<String>,
     },
 }
@@ -319,6 +330,22 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             let word = |k: &str| {
                 args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
             };
+            // Absent is no tags; present must be an array of strings, so a
+            // model that sends `"tags": "BUG"` reads why nothing was worn
+            // instead of getting a bare card.
+            let tags = match args.get("tags") {
+                None | Some(Value::Null) => Vec::new(),
+                Some(Value::Array(items)) => items
+                    .iter()
+                    .map(|v| v.as_str().ok_or("tags must be an array of strings"))
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into_iter()
+                    .map(str::trim)
+                    .filter(|s| !s.is_empty())
+                    .map(str::to_string)
+                    .collect(),
+                Some(_) => return Err("tags must be an array of strings".into()),
+            };
             Ok(ToolCall::CreateTicket {
                 title,
                 column: word("column").map(str::to_string),
@@ -328,6 +355,7 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                     .and_then(Value::as_str)
                     .filter(|s| !s.trim().is_empty())
                     .map(str::to_string),
+                tags,
                 idempotency_key: word("idempotency_key").map(str::to_string),
             })
         }
@@ -475,6 +503,7 @@ mod tests {
                 title: "fix the thing".into(),
                 column: None,
                 description: None,
+                tags: vec![],
                 idempotency_key: None,
             })
         );
@@ -482,12 +511,13 @@ mod tests {
             parse_tool_call(
                 "create_ticket",
                 &json!({ "title": "t", "column": " REVIEW ", "description": "  # why\n\nbecause",
-                         "idempotency_key": "k" })
+                         "tags": [" BUG ", "", "P1"], "idempotency_key": "k" })
             ),
             Ok(ToolCall::CreateTicket {
                 title: "t".into(),
                 column: Some("REVIEW".into()),
                 description: Some("  # why\n\nbecause".into()),
+                tags: vec!["BUG".into(), "P1".into()],
                 idempotency_key: Some("k".into()),
             })
         );
@@ -495,17 +525,21 @@ mod tests {
         assert_eq!(
             parse_tool_call(
                 "create_ticket",
-                &json!({ "title": "t", "column": "", "description": " \n " })
+                &json!({ "title": "t", "column": "", "description": " \n ", "tags": [] })
             ),
             Ok(ToolCall::CreateTicket {
                 title: "t".into(),
                 column: None,
                 description: None,
+                tags: vec![],
                 idempotency_key: None,
             })
         );
         assert!(parse_tool_call("create_ticket", &json!({})).is_err());
         assert!(parse_tool_call("create_ticket", &json!({ "title": "   " })).is_err());
+        // A wrongly shaped `tags` is an answer, never a silently bare card.
+        assert!(parse_tool_call("create_ticket", &json!({ "title": "t", "tags": "BUG" })).is_err());
+        assert!(parse_tool_call("create_ticket", &json!({ "title": "t", "tags": [1] })).is_err());
     }
 
     #[test]
@@ -644,6 +678,7 @@ mod tests {
                 title: "x".into(),
                 column: None,
                 description: None,
+                tags: vec![],
                 idempotency_key: None,
             },
         ];

@@ -376,6 +376,13 @@ pub enum Command {
         /// Becomes the ticket's first note, its description.
         #[serde(default)]
         description: Option<String>,
+        /// Tag NAMES, resolved against the board's registry server-side and
+        /// worn by the new ticket. A name the registry does not hold is
+        /// refused, never registered: the vocabulary stays the human's
+        /// (`RegisterTag` is never-tier), and the tool only puts a card
+        /// under a word somebody already chose.
+        #[serde(default)]
+        tags: Vec<String>,
         /// Same role as `AgentMoveTicket`'s: a retry after a dropped
         /// connection replays the first receipt instead of minting twice.
         #[serde(default)]
@@ -704,6 +711,14 @@ pub struct AgentTicketView {
     /// result data instead of permanent context.
     #[serde(default)]
     pub allowed_columns: Vec<String>,
+    /// The tags this ticket wears, one per group at most, in group order.
+    #[serde(default)]
+    pub tags: Vec<AgentTagView>,
+    /// The board's whole tag vocabulary, so `create_ticket` has names to
+    /// use. Same reasoning as `allowed_columns`: transient result data, not
+    /// a schema enum that would put the user's words into every request.
+    #[serde(default)]
+    pub allowed_tags: Vec<AgentTagView>,
     #[serde(default)]
     pub board_version: u64,
     /// The first note's body — the ticket's description — capped; the whole
@@ -713,6 +728,15 @@ pub struct AgentTicketView {
     /// Every note, in order, so `read_note`/`write_note` have an id to name.
     #[serde(default)]
     pub notes: Vec<AgentNoteView>,
+}
+
+/// One tag as an agent sees it: the name, and the axis it lives on (the
+/// digit that reaches it in the picker; 1–9, 0 = 10). No colour — a tint is
+/// how a card paints it, not what it means.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentTagView {
+    pub name: String,
+    pub group: u8,
 }
 
 /// One note as an agent lists it. No body: that is `read_note`'s answer.

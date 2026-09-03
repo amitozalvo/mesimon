@@ -3295,6 +3295,44 @@ What holds now:
   card, the caller's binding unmoved, a `toolUseId` retry replayed rather than minted twice, a
   named column honoured, an unknown column refused legibly). README says six tools.
 
+## An agent sees tags, and files a ticket under them (2026-09-03, user request)
+
+`create_ticket` shipped with a title, a column and a description, and a card an agent filed
+landed untagged on a board whose whole triage vocabulary is tags — the human had to open every
+agent-filed card and `^t` it. `get_ticket` said nothing about tags either, so an agent could not
+even tell what its own ticket was filed under.
+
+What holds now:
+
+- **`get_ticket` carries `tags` and `allowed_tags`** (`AgentTicketView`, two `Vec<AgentTagView
+  {name, group}>` fields): the tags the ticket wears in group order, and the board's whole
+  registry. `allowed_tags` is `allowed_columns`' twin — the vocabulary travels as transient
+  result data, never as a schema enum that would put the user's words into every request.
+  `AgentTagView` is hand-written, not `TagRef` reused, for the same reason the view is not
+  `Ticket`: a projection that is its own type cannot grow a field when the model does. No colour:
+  a tint is how a card paints a tag, not what it means.
+- **`create_ticket` takes `tags`, an array of NAMES.** `parse_tool_call` accepts absent/null as
+  none and refuses any other shape legibly (`tags must be an array of strings`), so `"tags":
+  "BUG"` is an answer rather than a silently bare card. `Command::AgentCreateTicket.tags` is
+  `#[serde(default)]`.
+- **Names resolve against the registry, and the registry is never touched**
+  (`Daemon::resolve_agent_tags`): exact spelling first, then a unique case-insensitive match
+  (models read `BUG` off `allowed_tags` and send back `bug`); a name the board does not know is
+  refused and the refusal names `allowed_tags`; a name on more than one group is refused rather
+  than guessed; two names on one group are refused (`one tag per group`) because picking the
+  survivor would be inventing the agent's intent; a repeat is one tag. `RegisterTag` stays
+  never-tier — the tool puts a card under a word somebody already chose, it does not coin one.
+- **Resolution runs BEFORE the mint**, so a refusal leaves no half-filed card; the tags are set
+  on the ticket and its file saved before `persist_and_notify` broadcasts, so the first frame a
+  TUI draws already has the bar painted.
+- `create_ticket`'s text was trimmed to stay under `MAX_TOOL_BYTES` (916 → 811 bytes with the
+  new property); the sentences it lost were restatements of `get_ticket`'s.
+- Pinned by `create_ticket_parses_and_refuses` (shape cases), `every_tool_fits_the_budget`,
+  and `mcp_e2e` (empty `tags`/`allowed_tags` on a bare board; a `SetTag` and two `RegisterTag`s
+  by a person then visible to the agent with groups; a create wearing `["bug", "P1", "BUG"]`
+  landing as `BUG@1, P1@2` with the registry still three entries; unknown name, same-group
+  clash and a wrongly shaped argument each refused with nothing minted).
+
 ## The composer's editor is a panel over the board, and it grows out of its card (2026-09-03)
 
 The note editor shipped 2026-09-02 as one full-screen surface for both purposes, and composing

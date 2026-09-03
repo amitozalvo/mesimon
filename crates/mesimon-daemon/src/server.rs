@@ -16,11 +16,12 @@ use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool};
 use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
 use mesimon_core::board::{
     sanitize_tag, Archived, Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord,
-    SessionState, Ticket, UnknownReason, WorkspaceStrategy,
+    SessionState, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    AgentBoardView, AgentTicketRow, AgentTicketView, Command, Envelope, Event, ExternalItem,
-    GraceItem, MergeOutcome, Notice, Resources, Response, WorktreeItem, PROTOCOL_VERSION,
+    AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, Envelope, Event,
+    ExternalItem, GraceItem, MergeOutcome, Notice, Resources, Response, WorktreeItem,
+    PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
@@ -1894,7 +1895,7 @@ impl Daemon {
                 }
                 resp
             }
-            Command::AgentCreateTicket { title, column, description, idempotency_key } => {
+            Command::AgentCreateTicket { title, column, description, tags, idempotency_key } => {
                 // Replay first, for the same reason as a move: a retry after
                 // `Connection closed` must not file the same work twice.
                 if let Some(key) = &idempotency_key {
@@ -1910,7 +1911,7 @@ impl Daemon {
                     }
                 }
                 let by = Principal::Agent { session };
-                let resp = self.agent_create_ticket(&by, title, column, description);
+                let resp = self.agent_create_ticket(&by, title, column, description, tags);
                 if let (Some(key), Response::AgentCreated { key: short_key, column, .. }) =
                     (idempotency_key, &resp)
                 {
@@ -1934,13 +1935,16 @@ impl Daemon {
     /// `next_key` that cannot be persisted would regress into an existing
     /// ticket's directory on the next start. The description, when there is
     /// one, is written as the first note by `write_note`, so it carries the
-    /// agent as its author the way any note an agent writes does.
+    /// agent as its author the way any note an agent writes does. Tags are
+    /// resolved BEFORE the mint (`resolve_agent_tags`): a bad name refuses
+    /// the whole call and leaves no half-filed card behind.
     fn agent_create_ticket(
         &mut self,
         by: &Principal,
         title: String,
         column: Option<String>,
         description: Option<String>,
+        tags: Vec<String>,
     ) -> Response {
         let Some(column) = column.or_else(|| self.board.columns.first().map(|c| c.name.clone()))
         else {
@@ -1961,7 +1965,20 @@ impl Daemon {
         if title.trim().is_empty() {
             return Response::Err { message: "title is empty".into() };
         }
+        let tags = match self.resolve_agent_tags(&tags) {
+            Ok(refs) => refs,
+            Err(message) => return Response::Err { message },
+        };
         let id = self.mint_ticket(column.clone(), title);
+        if !tags.is_empty() {
+            if let Some(t) = self.board.ticket_mut(id) {
+                for r in tags {
+                    t.set_tag(r.group, Some(r.name));
+                }
+                let t = t.clone();
+                let _ = store::save_ticket(&self.paths, &t);
+            }
+        }
         self.persist_and_notify();
         self.feed.board(by.actor(), "create_ticket", Some(id));
         let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
@@ -1976,6 +1993,56 @@ impl Daemon {
             }
         }
         Response::AgentCreated { key, column, board_version: self.board_version, replayed: false }
+    }
+
+    /// Tag NAMES from an agent, as registry references — or the reason one
+    /// of them is not. The registry is the human's vocabulary and an agent
+    /// may not add to it (`RegisterTag` is never-tier), so an unknown name
+    /// is refused rather than minted; a name that lives on more than one
+    /// axis is refused rather than guessed; and two names on one axis are
+    /// refused because a ticket wears one tag per group and picking the
+    /// survivor would be inventing the agent's intent. Exact spelling first,
+    /// then a unique case-insensitive match, since the model reads the names
+    /// off `allowed_tags` and sometimes lowercases them on the way back.
+    fn resolve_agent_tags(&self, names: &[String]) -> Result<Vec<TagRef>, String> {
+        let mut refs: Vec<TagRef> = Vec::new();
+        for raw in names {
+            let Some(name) = sanitize_tag(raw) else {
+                return Err("empty tag name".into());
+            };
+            let exact: Vec<&Tag> = self.board.tags.iter().filter(|t| t.name == name).collect();
+            let found = if exact.is_empty() {
+                self.board.tags.iter().filter(|t| t.name.eq_ignore_ascii_case(&name)).collect()
+            } else {
+                exact
+            };
+            let def = match found.as_slice() {
+                [] => {
+                    return Err(format!(
+                        "no such tag: {name} (get_ticket lists the board's tags as allowed_tags)"
+                    ))
+                }
+                [one] => *one,
+                many => {
+                    let groups: Vec<String> = many.iter().map(|t| t.group.to_string()).collect();
+                    return Err(format!(
+                        "tag {name} is on more than one group ({}); spell it as the board does",
+                        groups.join(", ")
+                    ));
+                }
+            };
+            if refs.iter().any(|r| r.group == def.group && r.name == def.name) {
+                continue;
+            }
+            if let Some(other) = refs.iter().find(|r| r.group == def.group) {
+                return Err(format!(
+                    "one tag per group: {} and {} are both on group {}",
+                    other.name, def.name, def.group
+                ));
+            }
+            refs.push(TagRef { name: def.name.clone(), group: def.group });
+        }
+        Ok(refs)
     }
 
     /// Remember a mutating tool call's result so a retry replays it.
@@ -2048,6 +2115,17 @@ impl Daemon {
             branch: self.worktrees.get(&id).map(|b| b.branch.clone()).filter(|b| !b.is_empty()),
             merge_state: self.merge_state_word(id).map(str::to_string),
             allowed_columns: self.agent_allowed_columns(id),
+            tags: t
+                .tags
+                .iter()
+                .map(|r| AgentTagView { name: r.name.clone(), group: r.group })
+                .collect(),
+            allowed_tags: self
+                .board
+                .tags
+                .iter()
+                .map(|d| AgentTagView { name: d.name.clone(), group: d.group })
+                .collect(),
             board_version: self.board_version,
             description: t.description().and_then(|n| {
                 store::read_note(&self.paths, &t.short_key, n.id).ok().map(|text| {

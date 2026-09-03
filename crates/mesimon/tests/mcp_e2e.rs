@@ -266,6 +266,30 @@ fn agent_board_tools_tier_and_collisions() {
         t["allowed_columns"].as_array().unwrap().iter().map(|v| v.as_str().unwrap()).collect();
     assert!(!allowed.contains(&t["column"].as_str().unwrap()), "current column is not a move");
     assert!(allowed.contains(&"REVIEW"));
+    assert_eq!(t["tags"], json!([]), "nothing worn yet");
+    assert_eq!(t["allowed_tags"], json!([]), "nothing in the registry yet");
+
+    // ---- tags: worn ones on get_ticket, the registry as allowed_tags -----
+    // A person tags the caller's ticket and registers two more names; the
+    // agent sees what it wears and every word the board knows, group and all.
+    assert!(matches!(
+        c.request(Command::SetTag { id: ticket, group: 1, name: Some("BUG".into()) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::RegisterTag { group: 1, name: "FEAT".into() }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::RegisterTag { group: 2, name: "P1".into() }),
+        Response::Ok
+    ));
+    let t = shim.call_ok("get_ticket", json!({}));
+    assert_eq!(t["tags"], json!([{"name": "BUG", "group": 1}]));
+    assert_eq!(
+        t["allowed_tags"],
+        json!([{"name": "BUG", "group": 1}, {"name": "FEAT", "group": 1}, {"name": "P1", "group": 2}])
+    );
 
     // ---- no tool reads a session, at any tier ---------------------------
     let listed = shim.call_ok("list_board", json!({}));
@@ -311,6 +335,28 @@ fn agent_board_tools_tier_and_collisions() {
     let refused = shim.call_err("create_ticket", json!({"title": "third", "column": "NOPE"}));
     assert!(refused.contains("no such column"), "{refused}");
     assert!(shim.call_err("create_ticket", json!({})).contains("title"));
+
+    // ---- create_ticket wears tags, by name, from the registry -----------
+    // Names resolve case-insensitively when that is unambiguous, land on
+    // their registry group, and a repeat is one tag, not a refusal.
+    let tagged =
+        shim.call_ok("create_ticket", json!({"title": "tagged", "tags": ["bug", "P1", "BUG"]}));
+    let board = board_of(c.request(Command::Snapshot));
+    let made = board.tickets.iter().find(|t| t.short_key == tagged["key"]).expect("minted");
+    let worn: Vec<(u8, &str)> = made.tags.iter().map(|r| (r.group, r.name.as_str())).collect();
+    assert_eq!(worn, [(1, "BUG"), (2, "P1")]);
+    assert_eq!(board.tags.len(), 3, "the registry is the human's; nothing was added to it");
+    // A name the board does not know is refused, not minted, and the refusal
+    // says where the real names are. Two names on one group are refused too.
+    // Either way no card is left behind.
+    let before = board.tickets.len();
+    let unknown = shim.call_err("create_ticket", json!({"title": "x", "tags": ["NOPE"]}));
+    assert!(unknown.contains("no such tag") && unknown.contains("allowed_tags"), "{unknown}");
+    let clash = shim.call_err("create_ticket", json!({"title": "x", "tags": ["BUG", "FEAT"]}));
+    assert!(clash.contains("one tag per group"), "{clash}");
+    let shaped = shim.call_err("create_ticket", json!({"title": "x", "tags": "BUG"}));
+    assert!(shaped.contains("array"), "{shaped}");
+    assert_eq!(board_of(c.request(Command::Snapshot)).tickets.len(), before, "nothing minted");
 
     // ---- the never-tier, on the wire ------------------------------------
     // Not "there is no tool for it" — the daemon refuses the command even when
