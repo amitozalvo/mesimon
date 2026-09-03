@@ -305,6 +305,12 @@ pub struct Ticket {
     /// so it sits between `workspace` (a scalar) and `[archived]`.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub tags: Vec<TagRef>,
+    /// The ticket's notes, creation order; `notes[0]` IS the description.
+    /// Metadata only — the body is a file, `notes/<ULID>.md` beside
+    /// `ticket.toml`, and never rides the snapshot. Another array of tables,
+    /// so it sits after `tags` and before `[archived]`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub notes: Vec<NoteMeta>,
     /// Archival is a field, not a directory move (13 §data-model) — the ticket
     /// keeps its column and order, so restore is exact. Must stay last: a TOML
     /// table; any scalar serialized after it errors.
@@ -327,6 +333,34 @@ pub struct TagRef {
     pub name: String,
     /// The axis this tag belongs to — the digit that reaches it. 1–9, 0 = 10.
     pub group: u8,
+}
+
+/// One note on a ticket: who wrote it and when, and what to call it. The
+/// body is the file; this is everything a rail row, an agent listing or a
+/// status line needs WITHOUT reading it.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct NoteMeta {
+    /// Minted by the daemon; the file is `notes/<id>.md`. Never chosen by
+    /// the user or the agent (docs/15 §4.7: a name is a traversal primitive).
+    pub id: ulid::Ulid,
+    /// The body's first non-blank line, `#`s stripped, capped — computed by
+    /// the daemon on every write ([`note_name`]).
+    #[serde(default)]
+    pub name: String,
+    /// Bumped on every write. `edited_at` is `@<secs>`, and two writes in one
+    /// second look identical; readers key their caches on `(id, rev)`.
+    #[serde(default)]
+    pub rev: u64,
+    /// Same clock as `created_at` on the ticket (`@<unix secs>`).
+    pub created_at: String,
+    /// `local` for a person at the TUI, `agent:<session-uuid>` for an agent
+    /// ([`crate::Principal::note_author`]).
+    #[serde(default)]
+    pub created_by: String,
+    #[serde(default)]
+    pub edited_at: String,
+    #[serde(default)]
+    pub edited_by: String,
 }
 
 /// A REGISTRY entry: the vocabulary, and what each name looks like.
@@ -396,6 +430,41 @@ pub const TITLE_MAX_BYTES: usize = 2048;
 pub fn sanitize_title(raw: &str) -> String {
     use crate::text::{cap_bytes, scrub_cells};
     cap_bytes(&scrub_cells(raw, false), TITLE_MAX_BYTES).to_string()
+}
+
+/// The longest a note may be, in bytes. A note is a markdown file the
+/// ticket page renders and an agent reads whole through one tool call; a
+/// document past this belongs in the repo, not on a card. Bounded here and
+/// enforced by `sanitize_note` at the daemon boundary so no client lifts it.
+pub const NOTE_MAX_BYTES: usize = 32 * 1024;
+
+/// The longest a note's NAME (its first line) may be, in bytes.
+pub const NOTE_NAME_MAX_BYTES: usize = 80;
+
+/// The daemon-side boundary for a note body: user or agent text headed for
+/// cells (the ticket page) and for another process (an agent's `read_note`).
+/// `scrub_cells` with newlines KEPT — block structure is nothing else — so
+/// what survives is a subsequence of what was written: control characters
+/// and the drawn-structure range go, `\t` becomes a space (fenced code with
+/// tabs is the known cost), and the tail past [`NOTE_MAX_BYTES`] is cut on a
+/// character boundary.
+pub fn sanitize_note(raw: &str) -> String {
+    use crate::text::{cap_bytes, scrub_cells};
+    cap_bytes(&scrub_cells(raw, true), NOTE_MAX_BYTES).to_string()
+}
+
+/// What a note is called: its first non-blank line with any leading `#`
+/// heading marks stripped, capped at [`NOTE_NAME_MAX_BYTES`]. A note has no
+/// separate title field on purpose — the file is the whole record, and the
+/// name is derived from it on every write so it cannot drift.
+pub fn note_name(text: &str) -> String {
+    use crate::text::cap_bytes;
+    let line = text
+        .lines()
+        .map(|l| l.trim().trim_start_matches('#').trim())
+        .find(|l| !l.is_empty())
+        .unwrap_or("(empty)");
+    cap_bytes(line, NOTE_NAME_MAX_BYTES).trim_end().to_string()
 }
 
 /// Strip what a card row must never carry, then bound the length.
@@ -493,6 +562,16 @@ impl Ticket {
 
     pub fn wears(&self, group: u8, name: &str) -> bool {
         self.tag_in(group).is_some_and(|t| t.name == name)
+    }
+
+    /// `notes[0]`: the description, when the ticket has one.
+    pub fn description(&self) -> Option<&NoteMeta> {
+        self.notes.first()
+    }
+
+    /// One note by id, on this ticket only.
+    pub fn note(&self, id: ulid::Ulid) -> Option<&NoteMeta> {
+        self.notes.iter().find(|n| n.id == id)
     }
 
     /// Set (or with `None`, clear) this ticket's tag on axis `group`.
@@ -869,6 +948,7 @@ mod tests {
             entered_at: None,
             workspace: None,
             tags: Vec::new(),
+            notes: Vec::new(),
             archived: None,
         }
     }

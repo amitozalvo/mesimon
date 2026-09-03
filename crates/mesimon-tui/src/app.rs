@@ -9,7 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mesimon_core::board::{
-    Board, ExitReason, Provenance, SessionKind, SessionState, TagRef, Ticket, WorkspaceStrategy,
+    Board, ExitReason, NoteMeta, Provenance, SessionKind, SessionState, TagRef, Ticket,
+    WorkspaceStrategy,
 };
 use mesimon_core::command::{
     Command, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
@@ -18,7 +19,7 @@ use mesimon_core::keymap::{self, Ctx, Key, Scope, Verb};
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::client::Transport;
-use crate::text::EditBuffer;
+use crate::text::{EditBuffer, TextArea};
 use crate::theme::{Flavor, Ground, Theme};
 
 /// Which screen owns the keymap and the frame (07 §1). `Mode` remains the
@@ -142,6 +143,127 @@ pub enum Mode {
     Theme {
         idx: usize,
     },
+    /// The note editor. A mode and not a second slot: it REPLACES the
+    /// one-line composer (Tab carries the title over) and never coexists
+    /// with a move, a menu or a picker, so `Mode` is where it belongs.
+    /// `Screen` is untouched underneath, so Esc returns wherever the editor
+    /// was opened from. Composing, it is a panel OVER the board (the header,
+    /// the column headers and the footer stay in view, and it grows out of
+    /// the phantom card it replaced — `Editor::grow`); on a note it takes
+    /// the whole screen.
+    Editor(Editor),
+}
+
+/// The note editor's state: a one-line title over a multi-line body.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Editor {
+    pub purpose: EditorPurpose,
+    /// Composing: the new ticket's title, editable. On a note: the ticket's
+    /// title, shown read-only on the same row so both purposes share a shape.
+    pub title: EditBuffer,
+    pub body: TextArea,
+    pub focus: Field,
+    /// (title, body) as opened or last saved; `dirty()` compares against it.
+    baseline: (String, String),
+    /// A first Esc on a dirty editor arms this; any other key clears it.
+    pub esc_armed: bool,
+    /// `^s` on an EMPTIED existing note is a delete, and takes two presses.
+    pub delete_armed: bool,
+    /// First visible body line; the draw follows the cursor and writes back.
+    pub top: Cell<usize>,
+    /// Where the composer panel is growing FROM — the phantom card's own
+    /// rectangle on the board, and when Tab was pressed. The panel draws
+    /// itself between that rectangle and its resting one for `GROW`, so the
+    /// eye is carried from the one-line composer to the bigger room instead
+    /// of being dropped into it. `None` on a note, and once settled.
+    pub grow: Option<(ratatui::layout::Rect, Instant)>,
+}
+
+/// How long the composer panel takes to grow out of its card. One gesture,
+/// one short motion, never a loop — the author asked for the transition
+/// (2026-09-03) so the editor reads as the composer opened up, not as a
+/// different place.
+pub const GROW: Duration = Duration::from_millis(180);
+
+#[derive(Debug, Clone, PartialEq)]
+pub enum EditorPurpose {
+    /// A new ticket: title + description, with the mini composer's picks
+    /// riding along so Shift+Tab and `^t` keep working in the bigger room.
+    Compose { workspace: Option<WorkspaceStrategy>, tags: Vec<TagRef> },
+    /// A note on a ticket that exists. `note: None` until the first save
+    /// mints it.
+    Note { ticket: ulid::Ulid, note: Option<ulid::Ulid> },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Field {
+    Title,
+    Body,
+}
+
+impl Editor {
+    pub(crate) fn new(
+        purpose: EditorPurpose,
+        title: EditBuffer,
+        body: TextArea,
+        focus: Field,
+    ) -> Self {
+        let baseline = (title.as_str().to_string(), body.as_str().to_string());
+        Self {
+            purpose,
+            title,
+            body,
+            focus,
+            baseline,
+            esc_armed: false,
+            delete_armed: false,
+            top: Cell::new(0),
+            grow: None,
+        }
+    }
+
+    /// How far the panel has grown, 0.0 at the card and 1.0 at rest; `None`
+    /// once the motion is over (or never started). Eased out, so the panel
+    /// leaves the card fast and settles gently.
+    pub fn grow_progress(&self) -> Option<f32> {
+        let (_, at) = self.grow?;
+        let t = at.elapsed().as_secs_f32() / GROW.as_secs_f32();
+        if t >= 1.0 {
+            return None;
+        }
+        Some(1.0 - (1.0 - t) * (1.0 - t))
+    }
+
+    pub fn dirty(&self) -> bool {
+        self.title.as_str() != self.baseline.0 || self.body.as_str() != self.baseline.1
+    }
+
+    pub fn composing(&self) -> bool {
+        matches!(self.purpose, EditorPurpose::Compose { .. })
+    }
+
+    fn saved(&mut self) {
+        self.baseline = (self.title.as_str().to_string(), self.body.as_str().to_string());
+    }
+}
+
+/// One row of the ticket page's rail: the sessions first, in spawn order,
+/// then every note of the ticket. Sessions-first is an invariant
+/// `board_enter` and the focus return lean on — a position in
+/// `rail_sessions` IS a `rail_idx`.
+#[derive(Debug, Clone, Copy)]
+pub enum RailRow<'a> {
+    Session(&'a mesimon_core::board::SessionRecord),
+    Note(&'a NoteMeta),
+}
+
+/// One note's body as last fetched (`Command::ReadNote`). Keyed on the
+/// note's `rev`, so a snapshot carrying a newer one reads as stale.
+pub struct NoteText {
+    pub rev: u64,
+    /// `None` = the last attempt failed; retried after `NOTE_RETRY`.
+    pub text: Option<String>,
+    tried: Instant,
 }
 
 /// A prompt field's position in the ask history while `↑`/`↓` walk it.
@@ -264,6 +386,13 @@ const DIFF_PAGE: usize = 20;
 /// purpose: it is a fork per beat, and a terminal a person is reading rather
 /// than driving does not need to be a live mirror.
 const SHELL_TAIL_EVERY: Duration = Duration::from_millis(1000);
+/// One `pgup`/`pgdn` in the editor body, in lines. The handler cannot see
+/// the rendered height; a screenful is approximated.
+const EDITOR_PAGE: usize = 20;
+/// A note read that failed is asked again after this, not every tick.
+const NOTE_RETRY: Duration = Duration::from_secs(2);
+/// How many note bodies the TUI keeps; past it the oldest attempt goes.
+const NOTE_CACHE_MAX: usize = 64;
 /// How many lines to ask for — more than the zone can hold at any sane
 /// height, so the draw does the trimming and a resize needs no refetch.
 const SHELL_TAIL_LINES: u16 = 60;
@@ -344,6 +473,10 @@ pub struct App {
     /// transcript file to read the way `peek_cache` reads an agent's, so
     /// this comes over the wire, and only while a shell is being looked at.
     pub shell_tail: Option<ShellTail>,
+    /// Note bodies the ticket page has asked for, by note id. Bodies never
+    /// ride the snapshot; `poll_notes` fetches the ones on screen, once per
+    /// `(id, rev)`, and a save seeds it from our own text.
+    pub notes: std::collections::HashMap<ulid::Ulid, NoteText>,
     /// Where `{ }` asked the preview zone to be: rows hidden above, and the
     /// document (`PreviewView::key`) that was asked for. Another document
     /// under the cursor — the rail moved, or a new reply landed — reads it
@@ -352,6 +485,10 @@ pub struct App {
     pub preview_scroll: Cell<Option<(u64, usize)>>,
     /// What the last draw of that zone measured (see `PreviewView`).
     pub preview_view: Cell<PreviewView>,
+    /// Where the board last drew the composer's phantom card — the
+    /// rectangle Tab's panel grows out of. Draw-side, like `preview_view`:
+    /// the card's place on screen is a fact of the frame, not of the board.
+    pub compose_card: Cell<Option<ratatui::layout::Rect>>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
@@ -483,8 +620,10 @@ impl App {
             peek_cache: crate::peek::PeekCache::default(),
             tag_flash: None,
             shell_tail: None,
+            notes: std::collections::HashMap::new(),
             preview_scroll: Cell::new(None),
             preview_view: Cell::new(PreviewView::default()),
+            compose_card: Cell::new(None),
             spin_epoch: Cell::new(None),
             diff: None,
             pending_attach: None,
@@ -517,6 +656,12 @@ impl App {
             daemon_down: false,
             last_reconnect: None,
         })
+    }
+
+    /// Whether something on screen is mid-motion and wants the next frame
+    /// sooner than the spinner's cadence: the composer panel growing.
+    pub fn animating(&self) -> bool {
+        matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
     }
 
     /// The working-spinner frame for this draw. The event loop redraws at
@@ -706,12 +851,20 @@ impl App {
                 self.mode = Mode::Menu { idx: n - 1 };
             }
         }
+        // A note editor on a ticket that vanished has nowhere to save to.
+        if let Mode::Editor(Editor { purpose: EditorPurpose::Note { ticket, .. }, .. }) = &self.mode
+        {
+            if self.board.ticket(*ticket).is_none() {
+                self.mode = Mode::Normal;
+                self.status = "ticket gone ∙ note discarded".into();
+            }
+        }
         match &self.screen {
             Screen::Ticket { ticket, rail_idx } => {
                 if self.board.ticket(*ticket).is_none() {
                     self.to_board();
                 } else {
-                    let n = self.rail_sessions(*ticket).len();
+                    let n = self.rail_rows(*ticket).len();
                     let idx = (*rail_idx).min(n.saturating_sub(1));
                     self.screen = Screen::Ticket { ticket: *ticket, rail_idx: idx };
                 }
@@ -777,7 +930,12 @@ impl App {
         // The ticket page's preview zone, on its own slow cadence — it is
         // the one thing on screen the daemon does not push.
         dirty |= self.poll_shell_tail();
-        if !event::poll(Duration::from_millis(100))? {
+        dirty |= self.poll_notes();
+        // The loop redraws once per tick, so the poll timeout is the frame
+        // rate: 100 ms paces the spinner, and a panel in motion gets a
+        // shorter one for the few frames it takes to settle.
+        let frame = if self.animating() { 16 } else { 100 };
+        if !event::poll(Duration::from_millis(frame))? {
             return Ok(dirty);
         }
         let key = match event::read()? {
@@ -839,6 +997,15 @@ impl App {
                 InputPurpose::Prompt { .. } => "an ask",
             };
             (what, buffer.paste(text), buffer.limit())
+        } else if let Mode::Editor(ed) = &mut self.mode {
+            ed.esc_armed = false;
+            ed.delete_armed = false;
+            match ed.focus {
+                // The body keeps the paste's newlines: a note is the one
+                // field that reads block structure.
+                Field::Body => ("a note", ed.body.paste(text), ed.body.limit()),
+                Field::Title => ("a title", ed.title.paste(text), ed.title.limit()),
+            }
         } else {
             return Ok(false);
         };
@@ -887,16 +1054,84 @@ impl App {
         !same
     }
 
+    /// The note bodies the ticket page is showing — the description and the
+    /// selected note row — fetched once per `(id, rev)`. Edge-triggered,
+    /// never a clock: the steady state sends nothing. A refusal is stamped
+    /// so it is retried on `NOTE_RETRY`, not every 100 ms.
+    fn poll_notes(&mut self) -> bool {
+        let Screen::Ticket { ticket, .. } = self.screen else {
+            return false;
+        };
+        let mut wanted: Vec<(ulid::Ulid, u64)> = Vec::new();
+        if let Some(t) = self.board.ticket(ticket) {
+            if let Some(d) = t.description() {
+                wanted.push((d.id, d.rev));
+            }
+        }
+        if let Some(RailRow::Note(n)) = self.rail_row() {
+            if !wanted.iter().any(|(id, _)| *id == n.id) {
+                wanted.push((n.id, n.rev));
+            }
+        }
+        let mut changed = false;
+        for (id, rev) in wanted {
+            let fresh = self.notes.get(&id).is_some_and(|n| {
+                n.rev == rev && (n.text.is_some() || n.tried.elapsed() < NOTE_RETRY)
+            });
+            if fresh {
+                continue;
+            }
+            let text = match self.req(Command::ReadNote { ticket, note: id }) {
+                Response::Note { text, .. } => Some(crate::peek::sanitize(&text)),
+                _ => None,
+            };
+            self.remember_note(id, rev, text);
+            changed = true;
+        }
+        changed
+    }
+
+    pub(crate) fn remember_note(&mut self, id: ulid::Ulid, rev: u64, text: Option<String>) {
+        if self.notes.len() >= NOTE_CACHE_MAX && !self.notes.contains_key(&id) {
+            if let Some(oldest) = self.notes.iter().min_by_key(|(_, n)| n.tried).map(|(k, _)| *k) {
+                self.notes.remove(&oldest);
+            }
+        }
+        self.notes.insert(id, NoteText { rev, text, tried: Instant::now() });
+    }
+
+    /// A note's body, if it has been fetched and is not stale.
+    pub fn note_text(&self, meta: &NoteMeta) -> Option<&str> {
+        self.notes.get(&meta.id).filter(|n| n.rev == meta.rev).and_then(|n| n.text.as_deref())
+    }
+
     /// The ticket page's selected rail session, when it is a shell with a
     /// live pane — the only session kind whose story is on a pane and not in
     /// a transcript.
     fn selected_shell(&self) -> Option<uuid::Uuid> {
+        match self.rail_row()? {
+            RailRow::Session(s) => {
+                (s.kind == SessionKind::Bash && s.state.has_pane()).then_some(s.id)
+            }
+            RailRow::Note(_) => None,
+        }
+    }
+
+    /// The rail row under the ticket page's cursor.
+    pub fn rail_row(&self) -> Option<RailRow<'_>> {
         let Screen::Ticket { ticket, rail_idx } = &self.screen else {
             return None;
         };
-        let rail = self.rail_sessions(*ticket);
-        let s = rail.get((*rail_idx).min(rail.len().saturating_sub(1)))?;
-        (s.kind == SessionKind::Bash && s.state.has_pane()).then_some(s.id)
+        let rows = self.rail_rows(*ticket);
+        rows.get((*rail_idx).min(rows.len().saturating_sub(1))).copied()
+    }
+
+    /// The selected rail note, if the cursor is on one.
+    fn selected_note(&self) -> Option<ulid::Ulid> {
+        match self.rail_row()? {
+            RailRow::Note(n) => Some(n.id),
+            RailRow::Session(_) => None,
+        }
     }
 
     /// The OS flipped appearance (or the user flipped the terminal's theme)
@@ -983,7 +1218,7 @@ impl App {
 
     /// A text field owns the keyboard: the composer, a rename, or a tag name.
     fn typing(&self) -> bool {
-        matches!(self.mode, Mode::Input { .. })
+        matches!(self.mode, Mode::Input { .. } | Mode::Editor(_))
             || self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some())
     }
 
@@ -1001,6 +1236,9 @@ impl App {
         }
         if matches!(self.mode, Mode::Input { .. }) {
             return Scope::Input;
+        }
+        if matches!(self.mode, Mode::Editor(_)) {
+            return Scope::Editor;
         }
         if self.delete_armed.is_some() {
             return Scope::DeleteChord;
@@ -1040,11 +1278,18 @@ impl App {
         };
         let sessions: Vec<&mesimon_core::board::SessionRecord> =
             subject.map(|t| self.rail_sessions(t)).unwrap_or_default();
-        let rail_idx = match &self.screen {
-            Screen::Ticket { rail_idx, .. } => *rail_idx,
-            _ => usize::MAX,
+        // The rail row under the cursor: a session, a note, or nothing. Every
+        // `sel_*` session fact reads off `selected`, so on a note row they
+        // are all false without a second thought.
+        let row = self.rail_row();
+        let selected = match row {
+            Some(RailRow::Session(s)) => Some(s),
+            _ => None,
         };
-        let selected = sessions.get(rail_idx.min(sessions.len().saturating_sub(1)));
+        let editor = match &self.mode {
+            Mode::Editor(e) => Some(e),
+            _ => None,
+        };
         let wt = subject.and_then(|t| self.wt_item(t));
         let merge = subject.map(|t| self.merge_stage_word(t)).unwrap_or(None);
         Ctx {
@@ -1105,7 +1350,11 @@ impl App {
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
             any_attention: !mesimon_core::attention::attention_queue(&self.board).is_empty(),
-            sel_session: !sessions.is_empty() && rail_idx != usize::MAX,
+            sel_session: selected.is_some(),
+            sel_note: matches!(row, Some(RailRow::Note(_))),
+            ticket_described: subject
+                .and_then(|t| self.board.ticket(t))
+                .is_some_and(|t| t.description().is_some()),
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
             sel_pinned: selected.is_some_and(|s| s.pinned_awake),
@@ -1138,6 +1387,18 @@ impl App {
             // never sees which one was pressed. A digit whose own group is
             // empty says so in the status line instead.
             tags_exist: !self.board.tags.is_empty(),
+            editing: editor.is_some(),
+            editor_composing: editor.is_some_and(|e| e.composing()),
+            editor_body: editor.is_some_and(|e| e.focus == Field::Body),
+            editor_dirty: editor.is_some_and(|e| e.dirty()),
+            editor_can_tell: editor.is_some_and(|e| {
+                !e.dirty()
+                    && matches!(
+                        e.purpose,
+                        EditorPurpose::Note { ticket, note: Some(_) }
+                            if self.board.pane_target(ticket).is_some()
+                    )
+            }),
             rich_keys: self.rich_keys,
         }
     }
@@ -1176,6 +1437,9 @@ impl App {
         // an atom it does not bind is a character to type.
         if let Mode::Input { .. } = self.mode {
             return self.key_input(code, mods);
+        }
+        if let Mode::Editor(_) = self.mode {
+            return self.key_editor(code, mods);
         }
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
@@ -1301,6 +1565,19 @@ impl App {
                             mesimon_core::board::TITLE_MAX_BYTES,
                         ),
                     };
+                }
+            }
+            Verb::NoteEdit => {
+                if let Some(ticket) = self.subject() {
+                    let note = self.selected_note().or_else(|| {
+                        self.board.ticket(ticket).and_then(|t| t.description()).map(|n| n.id)
+                    });
+                    self.open_note_editor(ticket, note)?;
+                }
+            }
+            Verb::NoteNew => {
+                if let Some(ticket) = self.subject() {
+                    self.open_note_editor(ticket, None)?;
                 }
             }
             // `d` only arms. The second press is what deletes.
@@ -1525,13 +1802,19 @@ impl App {
             }
             // Open the field on the card and get out of the way. Nothing is
             // sent here — the press that opens a prompt must not also be the
-            // press that delivers one.
+            // press that delivers one. The exception is an EMPTY seat, where
+            // the title IS the prompt: that is the composer's Shift+Enter a
+            // press late, and it starts claude on the title without a field.
             Verb::Prompt => {
                 if let Some(id) = self.subject() {
-                    self.mode = Mode::Input {
-                        purpose: InputPurpose::Prompt { ticket: id, walk: None },
-                        buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
-                    };
+                    if ctx.ticket_has_claude {
+                        self.mode = Mode::Input {
+                            purpose: InputPurpose::Prompt { ticket: id, walk: None },
+                            buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
+                        };
+                    } else {
+                        self.start_composed(id);
+                    }
                 }
             }
             Verb::Sleep => self.sleep_verb(scope, ctx)?,
@@ -1686,7 +1969,13 @@ impl App {
             | Verb::EditDeleteWord
             | Verb::EditKillToStart
             | Verb::HistoryPrev
-            | Verb::HistoryNext => {}
+            | Verb::HistoryNext
+            | Verb::Describe
+            // ---- editor (handled in key_editor; unreachable here) ----------
+            | Verb::EditorSave
+            | Verb::EditorNewline
+            | Verb::EditorUp
+            | Verb::EditorDown => {}
         }
         Ok(())
     }
@@ -1718,11 +2007,10 @@ impl App {
     }
 
     fn selected_session(&self) -> Option<uuid::Uuid> {
-        let Screen::Ticket { ticket, rail_idx } = &self.screen else {
-            return None;
-        };
-        let rail = self.rail_sessions(*ticket);
-        rail.get((*rail_idx).min(rail.len().saturating_sub(1))).map(|s| s.id)
+        match self.rail_row()? {
+            RailRow::Session(s) => Some(s.id),
+            RailRow::Note(_) => None,
+        }
     }
 
     /// One motion verb, four surfaces. The target is resolved here; the verb
@@ -1750,7 +2038,7 @@ impl App {
                 let Screen::Ticket { ticket, rail_idx } = self.screen else {
                     return;
                 };
-                let n = self.rail_sessions(ticket).len();
+                let n = self.rail_rows(ticket).len();
                 let idx = if down {
                     (rail_idx + 1).min(n.saturating_sub(1))
                 } else if up {
@@ -1836,6 +2124,11 @@ impl App {
         match scope {
             Scope::Board => self.board_enter(),
             Scope::Ticket => {
+                if let Screen::Ticket { ticket, .. } = self.screen {
+                    if let Some(note) = self.selected_note() {
+                        return self.open_note_editor(ticket, Some(note));
+                    }
+                }
                 if let Some(sid) = self.selected_session() {
                     self.focus_session(sid)?;
                 }
@@ -2211,6 +2504,24 @@ impl App {
                 self.commit_input(purpose, buffer.into_text(), true)?;
                 return Ok(());
             }
+            // The composer grows into the editor: title carried over, cursor
+            // in the description, the picks riding along.
+            Some(Verb::Describe) => {
+                if let InputPurpose::Create { workspace, tags } = purpose {
+                    let mut ed = Editor::new(
+                        EditorPurpose::Compose { workspace, tags },
+                        buffer,
+                        TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
+                        Field::Body,
+                    );
+                    // The panel grows out of the card the last frame drew.
+                    ed.grow = self.compose_card.get().map(|r| (r, Instant::now()));
+                    self.mode = Mode::Editor(ed);
+                } else {
+                    self.mode = Mode::Input { purpose, buffer };
+                }
+                return Ok(());
+            }
             Some(Verb::TagPrefix) => {
                 // Arm the tail and hand the following keys to it. The mode
                 // stays `Input`, so the half-typed title is untouched
@@ -2302,6 +2613,281 @@ impl App {
         Ok(())
     }
 
+    /// The editor. A barrier like `key_input`; the mode is TAKEN rather than
+    /// cloned, because a 32 KiB body copied per keystroke is silly.
+    fn key_editor(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        let Mode::Editor(ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        let word = crate::keys::word_wise(mods);
+        let key = crate::keys::to_key_text(code, mods);
+        // The ctx reads the editor off `self.mode`; put it back for the
+        // duration of the lookup.
+        self.mode = Mode::Editor(ed);
+        let ctx = self.ctx();
+        let verb = key.and_then(|k| keymap::resolve(Scope::Editor, k, &ctx));
+        let Mode::Editor(mut ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        // The two armed second-presses survive only their own key.
+        if verb != Some(Verb::Cancel) {
+            ed.esc_armed = false;
+        }
+        if verb != Some(Verb::EditorSave) {
+            ed.delete_armed = false;
+        }
+        match verb {
+            Some(Verb::Cancel) => return self.editor_cancel(ed),
+            Some(Verb::EditorSave) => return self.editor_save(ed, false),
+            Some(Verb::SaveStart) => return self.editor_save(ed, true),
+            Some(Verb::TagPrefix) => {
+                self.mode = Mode::Editor(ed);
+                self.tag_armed = Some(TagArm {
+                    ticket: None,
+                    row: 0,
+                    col: 0,
+                    naming: None,
+                    forget_armed: false,
+                });
+                self.status = "1-9 pick a group ∙ esc done".into();
+                return Ok(());
+            }
+            Some(Verb::CycleWorkspace) => {
+                if let EditorPurpose::Compose { workspace, .. } = &mut ed.purpose {
+                    *workspace = match workspace {
+                        None => Some(WorkspaceStrategy::Worktree),
+                        Some(_) => None,
+                    };
+                }
+            }
+            Some(Verb::EditorNewline) => match ed.focus {
+                Field::Title => ed.focus = Field::Body,
+                Field::Body => ed.body.newline(),
+            },
+            Some(Verb::EditorUp) => match ed.focus {
+                // Off the top of the body is the title — when it is ours to
+                // edit. A note's title belongs to the ticket.
+                Field::Body if ed.body.cursor_line() == 0 && ed.composing() => {
+                    ed.focus = Field::Title
+                }
+                Field::Body => ed.body.up(),
+                Field::Title => {}
+            },
+            Some(Verb::EditorDown) => match ed.focus {
+                Field::Title => ed.focus = Field::Body,
+                Field::Body => ed.body.down(),
+            },
+            Some(Verb::PageUp) => ed.body.page(-(EDITOR_PAGE as isize)),
+            Some(Verb::PageDown) => ed.body.page(EDITOR_PAGE as isize),
+            Some(Verb::EditBackspace) if word => match ed.focus {
+                Field::Title => ed.title.delete_word_back(),
+                Field::Body => ed.body.delete_word_back(),
+            },
+            Some(Verb::EditBackspace) => match ed.focus {
+                Field::Title => ed.title.backspace(),
+                Field::Body => ed.body.backspace(),
+            },
+            Some(Verb::EditDeleteWord) => match ed.focus {
+                Field::Title => ed.title.delete_word_back(),
+                Field::Body => ed.body.delete_word_back(),
+            },
+            Some(Verb::EditKillToStart) => match ed.focus {
+                Field::Title => ed.title.kill_to_start(),
+                Field::Body => ed.body.kill_to_start(),
+            },
+            Some(Verb::EditDelete) => match ed.focus {
+                Field::Title => ed.title.delete(),
+                Field::Body => ed.body.delete(),
+            },
+            Some(Verb::EditLeft) => match (ed.focus, word) {
+                (Field::Title, true) => ed.title.word_left(),
+                (Field::Title, false) => ed.title.left(),
+                (Field::Body, true) => ed.body.word_left(),
+                (Field::Body, false) => ed.body.left(),
+            },
+            Some(Verb::EditRight) => match (ed.focus, word) {
+                (Field::Title, true) => ed.title.word_right(),
+                (Field::Title, false) => ed.title.right(),
+                (Field::Body, true) => ed.body.word_right(),
+                (Field::Body, false) => ed.body.right(),
+            },
+            Some(Verb::EditHome) => match ed.focus {
+                Field::Title => ed.title.home(),
+                Field::Body => ed.body.home(),
+            },
+            Some(Verb::EditEnd) => match ed.focus {
+                Field::Title => ed.title.end(),
+                Field::Body => ed.body.end(),
+            },
+            _ => match code {
+                // An unhandled chord must never type its letter.
+                KeyCode::Char(_) if word => {}
+                // A note's title is the ticket's, not the editor's to type in.
+                KeyCode::Char(c) if ed.focus == Field::Title && ed.composing() => {
+                    ed.title.insert(c)
+                }
+                KeyCode::Char(c) if ed.focus == Field::Body => ed.body.insert(c),
+                _ => {}
+            },
+        }
+        self.mode = Mode::Editor(ed);
+        Ok(())
+    }
+
+    /// Esc: two presses when there is something to lose. A clean composer
+    /// goes back to the one-line field it grew out of, title and all —
+    /// symmetric with Tab.
+    fn editor_cancel(&mut self, mut ed: Editor) -> Result<()> {
+        if ed.dirty() && !ed.esc_armed {
+            ed.esc_armed = true;
+            self.status = "unsaved ∙ esc again discards".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
+        if !ed.dirty() {
+            if let EditorPurpose::Compose { workspace, tags } = ed.purpose {
+                self.mode = Mode::Input {
+                    purpose: InputPurpose::Create { workspace, tags },
+                    buffer: ed.title,
+                };
+                return Ok(());
+            }
+        }
+        self.mode = Mode::Normal;
+        Ok(())
+    }
+
+    /// `^s` (and, composing, Shift+Enter with `start`). Composing mints the
+    /// ticket and closes. A note is written and the editor STAYS — it is a
+    /// document being kept, not a field being submitted — and the same key
+    /// on a saved note tells the ticket's claude to go read it.
+    fn editor_save(&mut self, mut ed: Editor, start: bool) -> Result<()> {
+        match ed.purpose.clone() {
+            EditorPurpose::Compose { workspace, tags } => {
+                let title = ed.title.as_str().trim().to_string();
+                if title.is_empty() {
+                    self.status = "a ticket needs a title".into();
+                    self.mode = Mode::Editor(ed);
+                    return Ok(());
+                }
+                let body = if ed.body.as_str().trim().is_empty() {
+                    None
+                } else {
+                    Some(ed.body.as_str().to_string())
+                };
+                self.mode = Mode::Normal;
+                self.mint_ticket(title, workspace, tags, body, start)
+            }
+            EditorPurpose::Note { ticket, note } => {
+                let body = ed.body.as_str().to_string();
+                let blank = body.trim().is_empty();
+                if !ed.dirty() {
+                    // Nothing to save: the second press tells claude, if
+                    // there is one to tell.
+                    if let Some(note) = note {
+                        if self.board.pane_target(ticket).is_some() {
+                            self.status = match self.req(Command::NoteToAgent { ticket, note }) {
+                                Response::Ok => "asked".into(),
+                                Response::Err { message } => message,
+                                _ => String::new(),
+                            };
+                        }
+                    }
+                    self.mode = Mode::Editor(ed);
+                    return Ok(());
+                }
+                if blank {
+                    let Some(note) = note else {
+                        self.status = "nothing to save".into();
+                        self.mode = Mode::Editor(ed);
+                        return Ok(());
+                    };
+                    if !ed.delete_armed {
+                        ed.delete_armed = true;
+                        self.status = "empty ∙ ^s again deletes the note".into();
+                        self.mode = Mode::Editor(ed);
+                        return Ok(());
+                    }
+                    match self.req(Command::WriteNote {
+                        ticket,
+                        note: Some(note),
+                        text: String::new(),
+                    }) {
+                        Response::NoteWritten { .. } => {
+                            self.notes.remove(&note);
+                            self.status = "note deleted".into();
+                            self.mode = Mode::Normal;
+                        }
+                        Response::Err { message } => {
+                            self.status = message;
+                            self.mode = Mode::Editor(ed);
+                        }
+                        _ => self.mode = Mode::Editor(ed),
+                    }
+                    return self.refresh();
+                }
+                let created = note.is_none();
+                match self.req(Command::WriteNote { ticket, note, text: body.clone() }) {
+                    Response::NoteWritten { note: Some(id) } => {
+                        ed.purpose = EditorPurpose::Note { ticket, note: Some(id) };
+                        ed.saved();
+                        self.refresh()?;
+                        // A fresh note that landed first IS the description
+                        // now, and the status says so once.
+                        let (rev, first) = self
+                            .board
+                            .ticket(ticket)
+                            .and_then(|t| {
+                                t.note(id).map(|n| (n.rev, created && t.notes[0].id == id))
+                            })
+                            .unwrap_or((0, false));
+                        self.remember_note(id, rev, Some(crate::peek::sanitize(&body)));
+                        let what = if first { "saved as the description" } else { "saved" };
+                        self.status = if self.board.pane_target(ticket).is_some() {
+                            format!("{what} ∙ ^s again tells claude")
+                        } else {
+                            what.into()
+                        };
+                    }
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
+                self.mode = Mode::Editor(ed);
+                Ok(())
+            }
+        }
+    }
+
+    /// Open the editor on a ticket's note — an existing one re-read from the
+    /// daemon first (never the cache: an edit must start from the truth), or
+    /// a fresh one that the first save mints.
+    fn open_note_editor(&mut self, ticket: ulid::Ulid, note: Option<ulid::Ulid>) -> Result<()> {
+        let Some(t) = self.board.ticket(ticket) else {
+            return Ok(());
+        };
+        let title = EditBuffer::from_text(t.title.clone(), mesimon_core::board::TITLE_MAX_BYTES);
+        let body = match note {
+            Some(id) => match self.req(Command::ReadNote { ticket, note: id }) {
+                Response::Note { text, .. } => {
+                    TextArea::from_text(&text, mesimon_core::board::NOTE_MAX_BYTES)
+                }
+                Response::Err { message } => {
+                    self.status = message;
+                    return Ok(());
+                }
+                _ => return Ok(()),
+            },
+            None => TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
+        };
+        self.mode = Mode::Editor(Editor::new(
+            EditorPurpose::Note { ticket, note },
+            title,
+            body,
+            Field::Body,
+        ));
+        Ok(())
+    }
+
     /// The picker. Owns every key while it is open, exactly as the input
     /// barrier does — including the digits and `hjkl`, which is why the whole
     /// table stands down while a name is being typed.
@@ -2383,10 +2969,25 @@ impl App {
         let arm = self.tag_armed.as_ref()?;
         match arm.ticket {
             Some(id) => self.board.ticket(id).map(|t| t.tags.as_slice()),
-            None => match &self.mode {
-                Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } => Some(tags),
-                _ => None,
-            },
+            None => self.compose_tags().map(Vec::as_slice),
+        }
+    }
+
+    /// The composer's buffered picks, whichever composer is open — the
+    /// one-line field or the editor it grew into.
+    fn compose_tags(&self) -> Option<&Vec<TagRef>> {
+        match &self.mode {
+            Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } => Some(tags),
+            Mode::Editor(Editor { purpose: EditorPurpose::Compose { tags, .. }, .. }) => Some(tags),
+            _ => None,
+        }
+    }
+
+    fn compose_tags_mut(&mut self) -> Option<&mut Vec<TagRef>> {
+        match &mut self.mode {
+            Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } => Some(tags),
+            Mode::Editor(Editor { purpose: EditorPurpose::Compose { tags, .. }, .. }) => Some(tags),
+            _ => None,
         }
     }
 
@@ -2468,13 +3069,11 @@ impl App {
         };
         // The composer's picks are on no ticket yet, so the daemon's refusal
         // cannot see them. Mirror it here, and carry them on the way back.
-        let composing_wearer = matches!(
-            &self.mode,
-            Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. }
-                if tags.iter().any(|t| t.group == group && t.name == name)
-        );
+        let composing_wearer = self
+            .compose_tags()
+            .is_some_and(|tags| tags.iter().any(|t| t.group == group && t.name == name));
         if to_group != group && composing_wearer {
-            if let Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } = &self.mode {
+            if let Some(tags) = self.compose_tags() {
                 if tags.iter().any(|t| t.group == to_group) {
                     self.status = format!("this ticket already wears a tag on axis {to_group}");
                     return Ok(());
@@ -2488,7 +3087,7 @@ impl App {
             return Ok(());
         }
         if to_group != group && composing_wearer {
-            if let Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } = &mut self.mode {
+            if let Some(tags) = self.compose_tags_mut() {
                 for t in tags.iter_mut() {
                     if t.group == group && t.name == name {
                         t.group = to_group;
@@ -2526,9 +3125,7 @@ impl App {
                 }
             }
             None => {
-                if let Mode::Input { purpose: InputPurpose::Create { tags, .. }, .. } =
-                    &mut self.mode
-                {
+                if let Some(tags) = self.compose_tags_mut() {
                     tags.retain(|t| t.group != group);
                     if let Some(name) = name {
                         tags.push(TagRef { name, group });
@@ -3050,40 +3647,7 @@ impl App {
         }
         match purpose {
             InputPurpose::Create { workspace, tags } => {
-                let cols = self.columns();
-                let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
-                match self.req(Command::CreateTicket { column, title }) {
-                    Response::Created { id } => {
-                        if workspace.is_some() {
-                            let _ = self.req(Command::SetWorkspace { id, workspace });
-                        }
-                        // Tags picked with `^t` while the ticket was still
-                        // being named, replayed now that it has an id.
-                        for tag in tags {
-                            let _ = self.req(Command::SetTag {
-                                id,
-                                group: tag.group,
-                                name: Some(tag.name),
-                            });
-                        }
-                        self.refresh()?;
-                        self.select_ticket(id);
-                        if start {
-                            self.start_composed(id);
-                            return Ok(());
-                        }
-                        // Enter-Enter: the next plain Enter starts claude on
-                        // the fresh ticket (board_enter's fast path).
-                        self.just_created = Some(id);
-                        self.status = "enter starts claude ∙ space opens the ticket".into();
-                    }
-                    Response::Err { message } => {
-                        self.status = message;
-                        self.refresh()?;
-                    }
-                    // Pre-Created daemon (rebuild trap): plain Ok, no id to select.
-                    _ => self.refresh()?,
-                }
+                self.mint_ticket(title, workspace, tags, None, start)?;
             }
             InputPurpose::Rename { id } => {
                 self.send(Command::RenameTicket { id, title })?;
@@ -3110,6 +3674,59 @@ impl App {
         Ok(())
     }
 
+    /// Mint the composed ticket in the cursor column and replay everything
+    /// picked before it had an id: the workspace, the tags, and — from the
+    /// editor — the description as its first note. `start` is Shift+Enter's
+    /// half: claude on the title, submitted.
+    fn mint_ticket(
+        &mut self,
+        title: String,
+        workspace: Option<WorkspaceStrategy>,
+        tags: Vec<TagRef>,
+        description: Option<String>,
+        start: bool,
+    ) -> Result<()> {
+        let cols = self.columns();
+        let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
+        match self.req(Command::CreateTicket { column, title }) {
+            Response::Created { id } => {
+                if workspace.is_some() {
+                    let _ = self.req(Command::SetWorkspace { id, workspace });
+                }
+                // Tags picked with `^t` while the ticket was still
+                // being named, replayed now that it has an id.
+                for tag in tags {
+                    let _ =
+                        self.req(Command::SetTag { id, group: tag.group, name: Some(tag.name) });
+                }
+                if let Some(text) = description {
+                    if let Response::Err { message } =
+                        self.req(Command::WriteNote { ticket: id, note: None, text })
+                    {
+                        self.status = message;
+                    }
+                }
+                self.refresh()?;
+                self.select_ticket(id);
+                if start {
+                    self.start_composed(id);
+                    return Ok(());
+                }
+                // Enter-Enter: the next plain Enter starts claude on
+                // the fresh ticket (board_enter's fast path).
+                self.just_created = Some(id);
+                self.status = "enter starts claude ∙ space opens the ticket".into();
+            }
+            Response::Err { message } => {
+                self.status = message;
+                self.refresh()?;
+            }
+            // Pre-Created daemon (rebuild trap): plain Ok, no id to select.
+            _ => self.refresh()?,
+        }
+        Ok(())
+    }
+
     /// One copy of each ask, newest last: a repeat moves to the end rather
     /// than appearing twice on the walk, and the oldest falls off at the cap.
     fn remember_prompt(&mut self, text: &str) {
@@ -3120,8 +3737,9 @@ impl App {
     }
 
     /// Shift+Enter's second half: start claude on the ticket the composer just
-    /// minted, with its title submitted as the first prompt, and STAY on the
-    /// board. No `focus_session` — the whole point of the key is to queue work
+    /// minted — or, from the board, on a ticket whose claude seat is empty —
+    /// with its title submitted as the first prompt, and STAY on the board.
+    /// No `focus_session` — the whole point of the key is to queue work
     /// without leaving; the card's own state is how the user watches it land.
     /// The fresh-ticket Enter window is not armed either: the agent is already
     /// running, so the next Enter should mean what it always means.
@@ -3169,6 +3787,20 @@ impl App {
             .iter()
             .filter(|s| s.ticket == ticket && (s.state.is_live() || Some(s.id) == corpse))
             .collect()
+    }
+
+    /// The ticket page's rail: `rail_sessions` first, then every note of the
+    /// ticket in creation order — the description included, so a long one
+    /// can be paged in the preview zone. Sessions-first is what keeps a
+    /// position in `rail_sessions` a valid `rail_idx` (`board_enter`, the
+    /// focus return).
+    pub fn rail_rows(&self, ticket: ulid::Ulid) -> Vec<RailRow<'_>> {
+        let mut rows: Vec<RailRow<'_>> =
+            self.rail_sessions(ticket).into_iter().map(RailRow::Session).collect();
+        if let Some(t) = self.board.ticket(ticket) {
+            rows.extend(t.notes.iter().map(RailRow::Note));
+        }
+        rows
     }
 
     fn spawn_and_focus(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
@@ -3386,6 +4018,8 @@ pub(crate) mod test_support {
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         /// Make FocusStart answer Err (the daemon refusing a focus).
         pub refuse_focus: bool,
+        /// Note bodies by id, the daemon's files stood in for.
+        pub notes: std::collections::HashMap<ulid::Ulid, String>,
     }
 
     impl Transport for FakeTransport {
@@ -3404,6 +4038,7 @@ pub(crate) mod test_support {
                         entered_at: None,
                         workspace: None,
                         tags: Vec::new(),
+                        notes: Vec::new(),
                         archived: None,
                     });
                     return Ok(Response::Created { id });
@@ -3423,6 +4058,52 @@ pub(crate) mod test_support {
                         outcome: MergeOutcome::Merged,
                         detail: "merged 2 commit(s)".into(),
                     });
+                }
+                Command::ReadNote { ticket, note } => {
+                    let known = self.board.ticket(ticket).and_then(|t| t.note(note)).cloned();
+                    return Ok(match (known, self.notes.get(&note)) {
+                        (Some(meta), Some(text)) => Response::Note { text: text.clone(), meta },
+                        _ => Response::Err { message: "no such note".into() },
+                    });
+                }
+                Command::WriteNote { ticket, note, text } => {
+                    let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == ticket) else {
+                        return Ok(Response::Err { message: "no such ticket".into() });
+                    };
+                    if text.trim().is_empty() {
+                        let Some(id) = note else {
+                            return Ok(Response::Err { message: "nothing to save".into() });
+                        };
+                        t.notes.retain(|n| n.id != id);
+                        self.notes.remove(&id);
+                        return Ok(Response::NoteWritten { note: None });
+                    }
+                    let name = mesimon_core::board::note_name(&text);
+                    let id = match note {
+                        Some(id) => {
+                            let Some(n) = t.notes.iter_mut().find(|n| n.id == id) else {
+                                return Ok(Response::Err { message: "no such note".into() });
+                            };
+                            n.rev += 1;
+                            n.name = name;
+                            id
+                        }
+                        None => {
+                            let id = ulid::Ulid(900 + t.notes.len() as u128);
+                            t.notes.push(mesimon_core::board::NoteMeta {
+                                id,
+                                name,
+                                rev: 1,
+                                created_at: "@1000".into(),
+                                created_by: "local".into(),
+                                edited_at: "@1000".into(),
+                                edited_by: "local".into(),
+                            });
+                            id
+                        }
+                    };
+                    self.notes.insert(id, text);
+                    return Ok(Response::NoteWritten { note: Some(id) });
                 }
                 Command::SpawnSession { ticket, kind, submit_prompt } => {
                     let mut rec = mesimon_core::board::SessionRecord::new(
@@ -3544,6 +4225,7 @@ pub(crate) mod test_support {
                 shell_env: Default::default(),
                 sent: sent.clone(),
                 refuse_focus,
+                notes: std::collections::HashMap::new(),
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot");
@@ -3569,6 +4251,7 @@ mod tests {
             entered_at: None,
             workspace: None,
             tags: Vec::new(),
+            notes: Vec::new(),
             archived: None,
         }
     }
@@ -3597,18 +4280,322 @@ mod tests {
         state: SessionState,
         refuse_focus: bool,
     ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>, uuid::Uuid) {
+        app_with_session(SessionKind::Claude, state, refuse_focus)
+    }
+
+    fn app_with_shell(
+        state: SessionState,
+    ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>, uuid::Uuid) {
+        app_with_session(SessionKind::Bash, state, false)
+    }
+
+    fn app_with_session(
+        kind: SessionKind,
+        state: SessionState,
+        refuse_focus: bool,
+    ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>, uuid::Uuid) {
         let mut b = board_three_columns();
         let sid = uuid::Uuid::from_u128(7);
         b.sessions.push(mesimon_core::board::SessionRecord::new(
             sid,
-            SessionKind::Claude,
+            kind,
             ulid::Ulid(1),
-            vec!["claude".into()],
+            vec![if kind == SessionKind::Claude { "claude" } else { "zsh" }.into()],
             "/repo".into(),
             state,
         ));
         let (app, sent) = App::for_test_logged(b, theme(), refuse_focus);
         (app, sent, sid)
+    }
+
+    fn note_meta(n: u128, rev: u64, by: &str) -> mesimon_core::board::NoteMeta {
+        mesimon_core::board::NoteMeta {
+            id: ulid::Ulid(n),
+            name: format!("note {n}"),
+            rev,
+            created_at: "@1000".into(),
+            created_by: by.into(),
+            edited_at: "@1000".into(),
+            edited_by: by.into(),
+        }
+    }
+
+    /// Three columns, ticket 1 with one note (id 90, body in the fake's
+    /// files), request log out.
+    fn app_with_note() -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        app_with_note_and(false)
+    }
+
+    /// …and, when asked, a running claude on ticket 1 — in the FAKE's board,
+    /// since every save refreshes from it.
+    fn app_with_note_and(claude: bool) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        let mut b = board_three_columns();
+        b.tickets[0].notes.push(note_meta(90, 1, "local"));
+        if claude {
+            b.sessions.push(mesimon_core::board::SessionRecord::new(
+                uuid::Uuid::from_u128(7),
+                SessionKind::Claude,
+                ulid::Ulid(1),
+                vec!["claude".into()],
+                "/repo".into(),
+                SessionState::Running,
+            ));
+        }
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut notes = std::collections::HashMap::new();
+        notes.insert(ulid::Ulid(90), "# Why\n\nbecause".to_string());
+        let fake = super::test_support::FakeTransport {
+            board: b,
+            grace: vec![],
+            external: vec![],
+            resources: Resources::default(),
+            shell_env: Default::default(),
+            sent: sent.clone(),
+            refuse_focus: false,
+            notes,
+        };
+        let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
+            .expect("fake transport snapshot");
+        (app, sent)
+    }
+
+    fn editor(app: &App) -> &Editor {
+        match &app.mode {
+            Mode::Editor(e) => e,
+            other => panic!("not in the editor: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn tab_carries_the_title_into_the_editor() {
+        let mut app = app_three_columns();
+        press(&mut app, 'o');
+        for c in "Ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        let ed = editor(&app);
+        assert_eq!(ed.title.as_str(), "Ship it");
+        assert_eq!(ed.focus, Field::Body);
+        assert!(matches!(
+            ed.purpose,
+            EditorPurpose::Compose { workspace: Some(WorkspaceStrategy::Worktree), .. }
+        ));
+        assert!(!ed.dirty(), "opening is not a change");
+        // Esc on a clean editor goes back to the one-line field, title intact.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Create { workspace, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "Ship it");
+                assert_eq!(*workspace, Some(WorkspaceStrategy::Worktree));
+            }
+            other => panic!("{other:?}"),
+        }
+    }
+
+    #[test]
+    fn editor_save_mints_then_writes_the_description() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        press(&mut app, 'o');
+        for c in "Ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        for c in "why".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "and how".chars() {
+            press(&mut app, c);
+        }
+        assert!(editor(&app).dirty());
+        ctrl(&mut app, 's');
+        assert_eq!(app.mode, Mode::Normal);
+        let log = sent.borrow().join("\n");
+        let create = log.find("CreateTicket").expect("minted");
+        let note = log.find("WriteNote").expect("described");
+        assert!(create < note, "the ticket before its note: {log}");
+        assert!(log.contains("why\\nand how"), "newlines survive: {log}");
+        assert!(app.status.contains("enter starts claude"), "{}", app.status);
+    }
+
+    #[test]
+    fn shift_enter_in_the_editor_mints_and_starts() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        press(&mut app, 'o');
+        for c in "Ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        for c in "why".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "WriteNote"), "{:?}", sent.borrow());
+    }
+
+    #[test]
+    fn a_blank_title_cannot_mint() {
+        let mut app = app_three_columns();
+        press(&mut app, 'o');
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        for c in "why".chars() {
+            press(&mut app, c);
+        }
+        ctrl(&mut app, 's');
+        assert!(matches!(app.mode, Mode::Editor(_)));
+        assert_eq!(app.status, "a ticket needs a title");
+    }
+
+    #[test]
+    fn n_rereads_the_note_before_opening_and_edits_it() {
+        let (mut app, sent) = app_with_note();
+        app.remember_note(ulid::Ulid(90), 1, Some("stale".into()));
+        press(&mut app, 'n');
+        assert!(sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
+        let ed = editor(&app);
+        assert_eq!(ed.body.as_str(), "# Why\n\nbecause", "the daemon's text, not the cache");
+        assert_eq!(ed.title.as_str(), "ticket 1");
+        assert!(matches!(ed.purpose, EditorPurpose::Note { note: Some(_), .. }));
+        // The title is the ticket's: typing goes nowhere there.
+        assert_eq!(ed.focus, Field::Body);
+    }
+
+    #[test]
+    fn a_note_save_stays_open_and_the_second_ctrl_s_tells_claude() {
+        let (mut app, sent) = app_with_note();
+        // No claude: the save says so and the second press is inert.
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        press(&mut app, '!');
+        ctrl(&mut app, 's');
+        assert!(matches!(app.mode, Mode::Editor(_)), "stays open");
+        assert_eq!(app.status, "saved");
+        assert!(!editor(&app).dirty());
+        let before = sent.borrow().len();
+        ctrl(&mut app, 's');
+        assert_eq!(sent.borrow().len(), before, "nothing to tell");
+        // With a live claude the save offers the second press, and it asks.
+        let (mut app, sent) = app_with_note_and(true);
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        press(&mut app, '?');
+        ctrl(&mut app, 's');
+        assert_eq!(app.status, "saved ∙ ^s again tells claude");
+        ctrl(&mut app, 's');
+        assert_eq!(app.status, "asked");
+        assert!(sent_contains(&sent, "NoteToAgent"), "{:?}", sent.borrow());
+    }
+
+    #[test]
+    fn esc_is_two_press_only_when_dirty() {
+        let (mut app, _) = app_with_note();
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal, "clean: one press");
+        press(&mut app, 'n');
+        press(&mut app, 'x');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Editor(_)));
+        assert_eq!(app.status, "unsaved ∙ esc again discards");
+        // Any other key disarms it.
+        press(&mut app, 'y');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Editor(_)), "disarmed by the letter");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn emptying_a_note_takes_two_presses_and_deletes() {
+        let (mut app, sent) = app_with_note();
+        press(&mut app, 'n');
+        // Wipe the body: to the end of each line, kill it, eat the break.
+        for _ in 0..8 {
+            app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+            ctrl(&mut app, 'u');
+            app.handle_key(KeyCode::Delete, KeyModifiers::NONE).unwrap();
+        }
+        assert!(editor(&app).body.as_str().is_empty(), "{:?}", editor(&app).body.as_str());
+        ctrl(&mut app, 's');
+        assert!(matches!(app.mode, Mode::Editor(_)));
+        assert_eq!(app.status, "empty ∙ ^s again deletes the note");
+        ctrl(&mut app, 's');
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.status, "note deleted");
+        assert!(sent_contains(&sent, "text: \"\""), "{:?}", sent.borrow());
+        assert!(app.board.tickets[0].notes.is_empty());
+    }
+
+    #[test]
+    fn big_n_always_opens_a_fresh_note() {
+        let (mut app, sent) = app_with_note();
+        press(&mut app, 'N');
+        assert!(!sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
+        assert!(matches!(editor(&app).purpose, EditorPurpose::Note { note: None, .. }));
+        for c in "second".chars() {
+            press(&mut app, c);
+        }
+        ctrl(&mut app, 's');
+        assert_eq!(app.board.tickets[0].notes.len(), 2);
+        assert!(matches!(editor(&app).purpose, EditorPurpose::Note { note: Some(_), .. }));
+        assert_eq!(app.status, "saved");
+    }
+
+    #[test]
+    fn poll_notes_fetches_once_per_rev() {
+        let (mut app, sent) = app_with_note();
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        assert!(app.poll_notes());
+        let n = sent.borrow().iter().filter(|c| c.contains("ReadNote")).count();
+        assert_eq!(n, 1);
+        assert!(!app.poll_notes(), "steady state asks nothing");
+        assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 1);
+        // A new revision on the snapshot is the edge.
+        app.board.tickets[0].notes[0].rev = 2;
+        assert!(app.poll_notes());
+        assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
+    }
+
+    #[test]
+    fn a_note_row_is_not_a_session() {
+        let (mut app, _) = app_with_note();
+        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
+            uuid::Uuid::from_u128(7),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Sleeping,
+        ));
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 1 };
+        let ctx = app.ctx();
+        assert!(ctx.sel_note);
+        assert!(!ctx.sel_session);
+        assert!(!ctx.sel_sleeping);
+        assert!(!ctx.sel_dead);
+        assert!(ctx.ticket_described);
+        // `x` has nothing to sleep here; Enter opens the note.
+        press(&mut app, 'x');
+        assert_eq!(app.mode, Mode::Normal);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(editor(&app).purpose, EditorPurpose::Note { note: Some(_), .. }));
+    }
+
+    #[test]
+    fn paste_into_the_body_keeps_newlines_and_is_trimmed_at_the_limit() {
+        let (mut app, _) = app_with_note();
+        press(&mut app, 'N');
+        app.on_paste("one\r\ntwo\n").unwrap();
+        assert_eq!(editor(&app).body.as_str(), "one\ntwo\n");
+        let big = "x".repeat(mesimon_core::board::NOTE_MAX_BYTES + 10);
+        app.on_paste(&big).unwrap();
+        assert!(app.status.starts_with("paste trimmed ∙ a note holds at most"), "{}", app.status);
+        assert_eq!(editor(&app).body.as_str().len(), mesimon_core::board::NOTE_MAX_BYTES);
     }
 
     fn press(app: &mut App, c: char) {
@@ -3982,6 +4969,32 @@ mod tests {
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+    }
+
+    /// A ticket saved with plain Enter is one press behind a Shift+Enter one:
+    /// on the board, Shift+Enter over an empty claude seat starts claude on
+    /// the title, submitted, and stays — no field opens, and nothing is
+    /// attached. A shell on the ticket is not a claude, so the seat is still
+    /// empty and the press still starts one.
+    #[test]
+    fn shift_enter_on_a_ticket_without_claude_starts_it_on_the_title() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.rich_keys = true;
+        assert!(app.ctx().has_ticket);
+        assert!(!app.ctx().ticket_has_claude);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, Mode::Normal, "no field: the title is the prompt");
+        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "CreateTicket"), "nothing minted: {:?}", sent.borrow());
+        assert_eq!(app.screen, Screen::Board, "the board never leaves");
+        assert!(app.pending_attach.is_none(), "no handover");
+
+        let (mut app, sent, _) = app_with_shell(SessionState::Running);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
     }
 
     /// A parked agent has no box to type into. `Sleeping` is LIVE — that is

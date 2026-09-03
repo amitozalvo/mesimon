@@ -196,6 +196,9 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         // other field here saves something to the board. This one leaves
         // mesimon entirely.
         Mode::Input { purpose: InputPurpose::Prompt { .. }, .. } => "ASK",
+        // The editor is the composer in a bigger room, or a note.
+        Mode::Editor(e) if e.composing() => "NEW",
+        Mode::Editor(_) => "NOTE",
         _ => scope.word(),
     };
     // The mode word plus its two-space gutter and the leading pad.

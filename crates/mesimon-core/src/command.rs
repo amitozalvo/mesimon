@@ -180,6 +180,31 @@ pub enum Command {
         ticket: ulid::Ulid,
         text: String,
     },
+    /// One note's body, read whole. Bodies never ride the snapshot (a note
+    /// can be 32 KiB and the board is cloned on every event), so the ticket
+    /// page asks for the one it is showing.
+    ReadNote {
+        ticket: ulid::Ulid,
+        note: ulid::Ulid,
+    },
+    /// Create (`note: None`) or replace (`Some`) a note on a ticket — the
+    /// whole file, never a section (docs/13 §13.3: prose is an opaque blob).
+    /// Blank text on an existing note deletes it. The daemon mints the id,
+    /// derives the name and stamps who and when; `sanitize_note` only ever
+    /// removes.
+    WriteNote {
+        ticket: ulid::Ulid,
+        #[serde(default)]
+        note: Option<ulid::Ulid>,
+        text: String,
+    },
+    /// Tell the ticket's live claude that a note changed: mesimon's own
+    /// sentence, pasted and submitted like `MergeToAgent`. A human gesture
+    /// (the editor's second `^s`); `mcp::agent_allows` denies it.
+    NoteToAgent {
+        ticket: ulid::Ulid,
+        note: ulid::Ulid,
+    },
     /// Undo within the grace band.
     RestoreTicket {
         id: ulid::Ulid,
@@ -294,7 +319,7 @@ pub enum Command {
     },
 
     // ------------------------------------------------------------------
-    // The agent tier (T-84). Three commands, reachable only by
+    // The agent tier (T-84). Six commands now, reachable only by
     // `Principal::Agent`, and gated by `mcp::agent_allows` — which is an
     // exhaustive match, so a command added below this line will not compile
     // until someone decides whether an agent may send it.
@@ -302,6 +327,8 @@ pub enum Command {
     // No agent command takes a ticket id. The ticket comes from the session
     // the connection is bound to, so an agent cannot address another ticket
     // even by guessing an id, and there is no ownership check to get wrong.
+    // (`AgentCreateTicket` mints one and returns its KEY, never an id, and
+    // nothing here accepts a key back.)
     // ------------------------------------------------------------------
     /// The caller's own ticket, as `get_ticket` renders it.
     AgentGetTicket,
@@ -317,6 +344,40 @@ pub enum Command {
         /// `Connection closed` AFTER the move has already been persisted —
         /// the mutation happened and the agent believes it failed. Replaying
         /// the stored result is what stops the retry moving the card twice.
+        #[serde(default)]
+        idempotency_key: Option<String>,
+    },
+    /// One of the caller's own ticket's notes, whole. A `note` id off the
+    /// ticket reads as "no such note" — the binding, not the id, is the
+    /// authority.
+    AgentReadNote {
+        note: ulid::Ulid,
+    },
+    /// Create or replace a note on the caller's own ticket (D10 T1 ANNOTATE,
+    /// the tier tags never had a home in). Same shape as `WriteNote` minus
+    /// the ticket.
+    AgentWriteNote {
+        #[serde(default)]
+        note: Option<ulid::Ulid>,
+        text: String,
+    },
+    /// Mint a NEW ticket (`create_ticket`). The one agent command that is
+    /// not about the caller's own ticket, and the one place the tier makes a
+    /// second card: an agent that finds work outside its ticket's scope
+    /// files it instead of doing it or losing it. `column` is a plain string
+    /// validated against the board's real columns; absent means the board's
+    /// first column, which is where a human's new ticket lands too. The
+    /// caller's session stays bound to ITS ticket — a created ticket has no
+    /// session, and no tool can give it one.
+    AgentCreateTicket {
+        title: String,
+        #[serde(default)]
+        column: Option<String>,
+        /// Becomes the ticket's first note, its description.
+        #[serde(default)]
+        description: Option<String>,
+        /// Same role as `AgentMoveTicket`'s: a retry after a dropped
+        /// connection replays the first receipt instead of minting twice.
         #[serde(default)]
         idempotency_key: Option<String>,
     },
@@ -387,7 +448,9 @@ impl Command {
             | DiffList { .. }
             | DiffFile { .. }
             | PaneTail { .. }
+            | ReadNote { .. }
             | AgentGetTicket
+            | AgentReadNote { .. }
             | AgentListBoard => m(Read, false, None),
             CreateTicket { .. } => m(Mutate, true, None),
             RenameTicket { id, .. }
@@ -401,9 +464,10 @@ impl Command {
             | UnarchiveTicket { id } => m(Mutate, true, Some(*id)),
             // The ticket, never the text: the feed records that the user
             // asked, not what they asked.
-            PromptSession { ticket, .. } | SpawnSession { ticket, .. } => {
-                m(Mutate, true, Some(*ticket))
-            }
+            PromptSession { ticket, .. }
+            | SpawnSession { ticket, .. }
+            | WriteNote { ticket, .. }
+            | NoteToAgent { ticket, .. } => m(Mutate, true, Some(*ticket)),
             AttachExternal { ticket, .. } | ResumeExternal { ticket, .. } => {
                 m(Mutate, true, *ticket)
             }
@@ -427,7 +491,10 @@ impl Command {
             | FocusEnd { .. }
             | GatePassed
             | Shutdown
-            | AgentMoveTicket { .. } => m(Mutate, false, None),
+            | AgentMoveTicket { .. }
+            // Logged by `handle_agent` with the agent as actor.
+            | AgentWriteNote { .. }
+            | AgentCreateTicket { .. } => m(Mutate, false, None),
         }
     }
 }
@@ -577,6 +644,17 @@ pub enum Response {
     AgentBoard {
         board: AgentBoardView,
     },
+    /// ReadNote / AgentReadNote's answer: the body and its metadata.
+    Note {
+        text: String,
+        meta: crate::board::NoteMeta,
+    },
+    /// WriteNote / AgentWriteNote's receipt: the note's id (minted on a
+    /// create), or `None` when blank text deleted it.
+    NoteWritten {
+        #[serde(default)]
+        note: Option<ulid::Ulid>,
+    },
     /// AgentMoveTicket's receipt: where the ticket actually ended up.
     AgentMoved {
         column: String,
@@ -584,6 +662,18 @@ pub enum Response {
         board_version: u64,
         /// True when the key had already been used and the stored result was
         /// replayed instead of moving again.
+        #[serde(default)]
+        replayed: bool,
+    },
+    /// AgentCreateTicket's receipt: the new ticket's key (what an agent
+    /// addresses a ticket by) and where it landed.
+    AgentCreated {
+        key: String,
+        column: String,
+        #[serde(default)]
+        board_version: u64,
+        /// True when the key had already been used and the first receipt
+        /// was replayed instead of minting a second ticket.
         #[serde(default)]
         replayed: bool,
     },
@@ -616,6 +706,23 @@ pub struct AgentTicketView {
     pub allowed_columns: Vec<String>,
     #[serde(default)]
     pub board_version: u64,
+    /// The first note's body — the ticket's description — capped; the whole
+    /// of it comes from `read_note`.
+    #[serde(default)]
+    pub description: Option<String>,
+    /// Every note, in order, so `read_note`/`write_note` have an id to name.
+    #[serde(default)]
+    pub notes: Vec<AgentNoteView>,
+}
+
+/// One note as an agent lists it. No body: that is `read_note`'s answer.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AgentNoteView {
+    pub id: ulid::Ulid,
+    pub name: String,
+    /// `local` | `agent:<session-uuid>`.
+    pub by: String,
+    pub edited_at: String,
 }
 
 /// One row of `list_board`. Three fields, and no fourth is coming: a ticket's

@@ -1,0 +1,30 @@
+ mesimon > kanban-tui > Fix OSC-11 detection
+
+ IN PROGRESS ∙ created by you >1y ago
+
+ What changed
+
+ The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
+
+ • detect.rs asks the terminal, then hands the flavor to Theme::new
+ • the goldens moved with it
+
+   cargo test -p mesimon-tui ~
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+    ● working                                                                             ⠋ ✻ claude               >1y
+                                                                                          ◦ $ bash                 >1y
+
+                                                                                           NOTES                     2
+
+                                                                                           ≡ What changed      you >1y
+                                                                                           ≡ Repro steps    claude >1y
+
+
+
+
+
+
+
+ TICKET  jk select session ∙ enter focus ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ d delete ∙ n describe ∙ ? keys

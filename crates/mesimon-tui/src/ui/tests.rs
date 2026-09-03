@@ -49,6 +49,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         entered_at: None,
         workspace: None,
         tags: Vec::new(),
+        notes: Vec::new(),
         archived: None,
     }
 }
@@ -1994,6 +1995,215 @@ fn attn_stays_on_the_waiting_card(flavor: Flavor) {
 /// bar, an SGR escape that survived `capture-pane`, and an invisible width
 /// hazard. The preview zone renders pane bytes, so the two laws below have
 /// to see them or they do not cover the zone at all.
+/// T-3 with two notes: the description (a rich markdown reply's worth) and
+/// a short second one — the bodies seeded into the app's cache the way a
+/// fetch would land them.
+fn note_meta(n: u128, name: &str, by: &str) -> mesimon_core::board::NoteMeta {
+    mesimon_core::board::NoteMeta {
+        id: ulid_n(n),
+        name: name.into(),
+        rev: 1,
+        created_at: "@100".into(),
+        created_by: by.into(),
+        edited_at: "@100".into(),
+        edited_by: by.into(),
+    }
+}
+
+const SECOND_NOTE: &str = "Repro steps\n\n1. open the board\n2. press `p`\n3. watch the peek";
+
+fn app_noted() -> App {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+        t.notes.push(note_meta(91, "Repro steps", "agent:00000000-0000-0000-0000-000000000000"));
+    }
+    let mut app = app_graphite(b);
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
+    app.remember_note(ulid_n(91), 1, Some(crate::peek::sanitize(SECOND_NOTE)));
+    app
+}
+
+fn editor_on(purpose: crate::app::EditorPurpose, title: &str, body: &str) -> crate::app::Editor {
+    crate::app::Editor::new(
+        purpose,
+        crate::text::EditBuffer::from_text(title.to_string(), mesimon_core::board::TITLE_MAX_BYTES),
+        crate::text::TextArea::from_text(body, mesimon_core::board::NOTE_MAX_BYTES),
+        crate::app::Field::Body,
+    )
+}
+
+const COMPOSE_BODY: &str = "## Why\n\nThe diff viewer is read-only and the `v` key is free.\n\n- one pane under 107 cols\n- `z` cycles the density";
+
+#[test]
+fn golden_editor_compose_120() {
+    let mut app = app_graphite(fixture_tagged());
+    app.rich_keys = true;
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Compose {
+            workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+            tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
+        },
+        "Ship the diff viewer",
+        COMPOSE_BODY,
+    );
+    ed.body.page(2);
+    ed.body.end();
+    app.mode = Mode::Editor(ed);
+    golden("editor_compose_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn the_composer_panel_grows_out_of_its_card() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    // The one-line composer, in the first column: the board records where
+    // its phantom card landed.
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "Ship the diff viewer".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Create { workspace: None, tags: Vec::new() },
+        buffer,
+    };
+    let before = render(&app, 120, 30);
+    let card_row = before
+        .iter()
+        .position(|l| l.contains("Ship the diff viewer"))
+        .expect("the phantom card is on the board");
+    let card = app.compose_card.get().expect("the draw records the phantom card");
+    assert_eq!(card.y as usize, card_row);
+    assert_eq!(card.x, 0, "the first column, with its left pad");
+    assert_eq!(card.height, 2, "title row + workspace selector");
+    assert!(card.width < 60, "one column, not the board: {card:?}");
+
+    // Tab grows it: the editor carries the card's rectangle as its origin.
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor") };
+    assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
+    assert!(app.animating(), "the frame after Tab is in motion");
+
+    // Frame zero: the panel IS the card's rectangle — the title sits on the
+    // card's row and the rest of the board is still on screen around it.
+    let first = render(&app, 120, 30);
+    assert!(first[card_row].starts_with("   Ship the diff viewer"), "{:?}", first[card_row]);
+    assert!(
+        first.iter().any(|l| l.contains("Fix OSC-11 detection")),
+        "the other columns show through while the panel is small"
+    );
+    assert!(!first.iter().any(|l| l.contains("describe it")), "no body at the card's size");
+
+    // Settled: the panel covers the card rows edge to edge, the column
+    // headers stay above it, the body hint and the column name are in it.
+    if let Mode::Editor(ed) = &mut app.mode {
+        ed.grow = Some((card, std::time::Instant::now() - crate::app::GROW));
+    }
+    assert!(!app.animating());
+    let after = render(&app, 120, 30);
+    assert!(after[2].contains("TODO") && after[2].contains("IN PROGRESS"), "{:?}", after[2]);
+    assert!(after[4].starts_with("   Ship the diff viewer"), "{:?}", after[4]);
+    assert!(after[6].contains("NEW TICKET ∙ TODO column"), "{:?}", after[6]);
+    assert!(after[8].contains("describe it"), "{:?}", after[8]);
+    assert!(
+        !after.iter().any(|l| l.contains("Fix OSC-11 detection")),
+        "the cards are under the panel"
+    );
+    assert!(
+        after[29].contains("esc close"),
+        "the board's footer speaks for the editor: {:?}",
+        after[29]
+    );
+}
+
+#[test]
+fn golden_editor_compose_tags_120() {
+    let mut app = app_graphite(fixture_tagged());
+    let ed = editor_on(
+        crate::app::EditorPurpose::Compose { workspace: None, tags: Vec::new() },
+        "Ship the diff viewer",
+        "why",
+    );
+    app.mode = Mode::Editor(ed);
+    app.tag_armed = Some(crate::app::TagArm {
+        ticket: None,
+        row: 0,
+        col: 0,
+        naming: None,
+        forget_armed: false,
+    });
+    golden("editor_compose_tags_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_editor_note_120() {
+    let mut app = app_noted();
+    let body: String =
+        (1..=30).map(|i| format!("line {i} of the note")).collect::<Vec<_>>().join("\n");
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: Some(ulid_n(90)) },
+        "Fix OSC-11 detection",
+        &body,
+    );
+    ed.body.page(12);
+    app.mode = Mode::Editor(ed);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("line 13 of the note")), "{lines:?}");
+    golden("editor_note_120x30", &lines);
+}
+
+#[test]
+fn golden_editor_note_100() {
+    let mut app = app_noted();
+    let long = "a line long enough to need the window to scroll under the cursor, which is what the narrow golden is for, and then some more";
+    let body = format!("{long}\nshort\n{long}");
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: None },
+        "Fix OSC-11 detection",
+        &body,
+    );
+    ed.body.end();
+    app.mode = Mode::Editor(ed);
+    golden("editor_note_100x24", &render(&app, 100, 24));
+}
+
+#[test]
+fn golden_ticket_description_120() {
+    let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("What changed")), "the description block: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("NOTES")), "the rail's notes: {lines:?}");
+    golden("ticket_description_120x30", &lines);
+}
+
+#[test]
+fn golden_ticket_note_selected_120() {
+    let mut app = app_noted();
+    // Sessions 31 and 32 first, then the two notes: the second note.
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("open the board")), "the note in the zone: {lines:?}");
+    golden("ticket_note_selected_120x30", &lines);
+}
+
+/// A description block eats rows from the zones below, never from the
+/// footer, and a ticket with no description keeps its old geometry.
+#[test]
+fn test_description_block_yields_to_the_zones() {
+    let mut noted = app_noted();
+    let mut plain = app_graphite(fixture(false));
+    noted.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    plain.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let with = render(&noted, 120, 30);
+    let without = render(&plain, 120, 30);
+    let sessions_at = |lines: &[String]| lines.iter().position(|l| l.contains("SESSIONS")).unwrap();
+    assert!(sessions_at(&with) > sessions_at(&without), "the block pushes the zones down");
+    assert!(with[29].trim_start().starts_with("TICKET"), "the footer stays put: {}", with[29]);
+    assert!(with[29].contains("n describe"), "{}", with[29]);
+}
+
 fn dirty_tail() -> Vec<String> {
     vec![
         "$ tree -L 1 crates".to_string(),
@@ -2057,6 +2267,42 @@ fn test_no_banned_sgr() {
                     buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
                 cells(&p, 120, 30)
+            },
+            {
+                // The note editor, holding pane-grade dirt pasted in.
+                let mut e = App::for_test(fixture(false), Theme::new(flavor, profile));
+                let mut ed = editor_on(
+                    crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: None },
+                    "Fix OSC-11 detection",
+                    "",
+                );
+                ed.body.paste(&dirty_tail().join("\n"));
+                e.mode = Mode::Editor(ed);
+                assert!(
+                    render(&e, 120, 30).iter().any(|l| l.contains("in 2.4s")),
+                    "the note body must be ON SCREEN, or this law does not bite"
+                );
+                cells(&e, 120, 30)
+            },
+            {
+                // The ticket page with a description block and a note in the
+                // zone: two more surfaces that render markdown.
+                let mut n = App::for_test(fixture(false), Theme::new(flavor, profile));
+                if let Some(t) = n.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+                    t.notes.push(note_meta(90, "What changed", "local"));
+                    t.notes.push(note_meta(91, "tree", "local"));
+                }
+                n.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
+                n.remember_note(
+                    ulid_n(91),
+                    1,
+                    Some(crate::peek::sanitize(&dirty_tail().join("\n"))),
+                );
+                n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 };
+                let lines = render(&n, 120, 30);
+                assert!(lines.iter().any(|l| l.contains("What changed")), "description on screen");
+                assert!(lines.iter().any(|l| l.contains("in 2.4s")), "note on screen");
+                cells(&n, 120, 30)
             },
         ] {
             for y in 0..30 {
@@ -2163,6 +2409,43 @@ fn test_no_drawn_structure() {
                 lines.iter().any(|l| l.contains("rebase onto main")),
                 "the field must be ON SCREEN, or this law does not bite"
             );
+            lines
+        },
+        {
+            // The note editor: a body pasted from a pane, through the scrub
+            // path, and the composer's picker open over it.
+            let mut e = app_graphite(fixture_tagged());
+            let mut ed = editor_on(
+                crate::app::EditorPurpose::Compose { workspace: None, tags: Vec::new() },
+                "Ship it",
+                "",
+            );
+            ed.body.paste(&dirty_tail().join("\n"));
+            e.mode = Mode::Editor(ed);
+            let lines = render(&e, 120, 30);
+            assert!(
+                lines.iter().any(|l| l.contains("in 2.4s")),
+                "the note body must be ON SCREEN, or this law does not bite"
+            );
+            e.tag_armed = Some(crate::app::TagArm {
+                ticket: None,
+                row: 0,
+                col: 0,
+                naming: None,
+                forget_armed: false,
+            });
+            lines.into_iter().chain(render(&e, 120, 30)).collect()
+        },
+        {
+            let mut n = app_noted();
+            if let Some(t) = n.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+                t.notes.push(note_meta(92, "tree", "local"));
+            }
+            n.remember_note(ulid_n(92), 1, Some(crate::peek::sanitize(&dirty_tail().join("\n"))));
+            n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 4 };
+            let lines = render(&n, 120, 30);
+            assert!(lines.iter().any(|l| l.contains("What changed")), "description on screen");
+            assert!(lines.iter().any(|l| l.contains("in 2.4s")), "note on screen");
             lines
         },
     ];

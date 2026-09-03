@@ -15,6 +15,7 @@
                                     > <         move card, aiming
                                     option+hjkl move card
                                     r           rename
+                                    n           describe
                                     ^t          tags
                                     a           archive
                                     d           delete
@@ -26,5 +27,4 @@
 
                                   VIEW
                                     p           show replies
-
  BOARD  enter go to the agent ∙ tab needs you ∙ o open ticket ∙ option+hjkl move card ∙ r rename ∙ ? keys

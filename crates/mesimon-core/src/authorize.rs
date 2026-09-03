@@ -46,8 +46,10 @@ impl Decision {
 ///   when a second principal exists (D32h), "teammates see tickets and
 ///   outcomes, never sessions" is already enforced here.
 /// * **No agent mutates the board as a whole.** It may move its own ticket
-///   between columns; it may not create, delete or reorder columns, and there
-///   is no command that would let it try (`mcp::agent_allows`).
+///   between columns and append a new ticket to a column (`create_ticket`,
+///   a `Mutate` on `Resource::Column`); it may not create, delete or reorder
+///   columns, and there is no command that would let it try
+///   (`mcp::agent_allows`).
 ///
 /// Ticket ownership is enforced by construction, not here: no agent command
 /// carries a ticket id, so the daemon can only ever pass the agent's own.

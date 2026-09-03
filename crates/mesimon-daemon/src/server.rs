@@ -226,7 +226,7 @@ pub struct Daemon {
     /// mutating tool call the agent believes failed. A mid-call transport drop
     /// hands the model the literal string `Connection closed` AFTER the move
     /// has been persisted; without this the retry moves the card twice.
-    agent_replay: HashMap<(uuid::Uuid, String), String>,
+    agent_replay: HashMap<(uuid::Uuid, String), AgentReplay>,
     /// The user's own shell environment, as their login shell last reported
     /// it. Every spawn hands this to the pane, because a Claude pane is exec'd
     /// directly by tmux and so reads no rc file of its own.
@@ -839,6 +839,16 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
     }
 }
 
+/// What a mutating agent tool call left behind, kept under its idempotency
+/// key so a retry gets the first receipt. Keyed by tool as well as by key:
+/// a `move_ticket` retry must never be answered with a `create_ticket`
+/// receipt that happened to share a client-minted id.
+#[derive(Debug, Clone)]
+enum AgentReplay {
+    Moved { column: String },
+    Created { key: String, column: String },
+}
+
 impl Daemon {
     fn handle(&mut self, env: Envelope, stream: &Arc<Mutex<UnixStream>>) -> Response {
         // The agent tier is a separate path, deliberately (T-84). Sharing the
@@ -876,6 +886,11 @@ impl Daemon {
                 Some(id) => Resource::Session { id },
                 None => Resource::Board,
             },
+            // A note is the ticket's: the first local commands to name the
+            // precise resource, which is what `authorize` was built to hear.
+            Command::ReadNote { ticket, .. }
+            | Command::WriteNote { ticket, .. }
+            | Command::NoteToAgent { ticket, .. } => Resource::Ticket { id: *ticket },
             _ => Resource::Board,
         };
         if let Decision::Deny { reason } = authorize(&env.principal, &meta.action, &resource) {
@@ -948,6 +963,11 @@ impl Daemon {
             Command::MergeTicket { id } => self.merge_ticket(id),
             Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
             Command::PromptSession { ticket, text } => self.prompt_session(ticket, text),
+            Command::ReadNote { ticket, note } => self.read_note(ticket, note),
+            Command::WriteNote { ticket, note, text } => {
+                self.write_note(ticket, note, text, &Principal::Local)
+            }
+            Command::NoteToAgent { ticket, note } => self.note_to_agent(ticket, note),
             Command::RestoreTicket { id } => self.restore_ticket(id),
             Command::ArchiveTicket { id } => self.archive_ticket(id),
             Command::UnarchiveTicket { id } => self.unarchive_ticket(id),
@@ -1061,16 +1081,22 @@ impl Daemon {
             // The agent tier, reached only via `handle_agent`. A local client
             // sending one of these is either confused or probing; either way
             // the answer is no, not "acts as the agent whose id you guessed".
-            Command::AgentGetTicket | Command::AgentListBoard | Command::AgentMoveTicket { .. } => {
+            Command::AgentGetTicket
+            | Command::AgentListBoard
+            | Command::AgentMoveTicket { .. }
+            | Command::AgentReadNote { .. }
+            | Command::AgentWriteNote { .. }
+            | Command::AgentCreateTicket { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
         };
         if let Some((cmd, ticket)) = feed_cmd {
             let cmd = cmd.as_str();
             match &resp {
-                Response::Ok | Response::Spawned { .. } | Response::Provisioning => {
-                    self.feed.board("local", cmd, ticket)
-                }
+                Response::Ok
+                | Response::Spawned { .. }
+                | Response::Provisioning
+                | Response::NoteWritten { .. } => self.feed.board("local", cmd, ticket),
                 Response::Created { id } => self.feed.board("local", cmd, ticket.or(Some(*id))),
                 Response::Merge {
                     outcome: MergeOutcome::Merged | MergeOutcome::AlreadyMerged,
@@ -1807,7 +1833,9 @@ impl Daemon {
                 // has been persisted, so the honest answer to a repeat is the
                 // first answer — not a second move.
                 if let Some(key) = &idempotency_key {
-                    if let Some(column) = self.agent_replay.get(&(session, key.clone())) {
+                    if let Some(AgentReplay::Moved { column }) =
+                        self.agent_replay.get(&(session, key.clone()))
+                    {
                         return Response::AgentMoved {
                             column: column.clone(),
                             board_version: self.board_version,
@@ -1819,7 +1847,11 @@ impl Daemon {
                 match self.place_ticket(ticket, &to_column, Position::Top, &by, "agent_move") {
                     Ok(column) => {
                         if let Some(key) = idempotency_key {
-                            self.remember_agent_result(session, key, &column);
+                            self.remember_agent_result(
+                                session,
+                                key,
+                                AgentReplay::Moved { column: column.clone() },
+                            );
                         }
                         // `place_ticket` already saved the ticket file and
                         // broadcast. A move touches no session and no column,
@@ -1833,9 +1865,112 @@ impl Daemon {
                     Err(message) => Response::Err { message },
                 }
             }
-            // Unreachable: `agent_allows` above admits exactly three commands.
+            // The note tools: the ticket is the binding's, and a note id off
+            // it reads as "no such note" inside the handlers.
+            Command::AgentReadNote { note } => {
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Read, &Resource::Ticket { id: ticket })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                self.read_note(ticket, note)
+            }
+            Command::AgentWriteNote { note, text } => {
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: ticket })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                let resp = self.write_note(ticket, note, text, &by);
+                if matches!(resp, Response::NoteWritten { .. }) {
+                    self.feed.board(by.actor(), "write_note", Some(ticket));
+                }
+                resp
+            }
+            Command::AgentCreateTicket { title, column, description, idempotency_key } => {
+                // Replay first, for the same reason as a move: a retry after
+                // `Connection closed` must not file the same work twice.
+                if let Some(key) = &idempotency_key {
+                    if let Some(AgentReplay::Created { key: short_key, column }) =
+                        self.agent_replay.get(&(session, key.clone()))
+                    {
+                        return Response::AgentCreated {
+                            key: short_key.clone(),
+                            column: column.clone(),
+                            board_version: self.board_version,
+                            replayed: true,
+                        };
+                    }
+                }
+                let by = Principal::Agent { session };
+                let resp = self.agent_create_ticket(&by, title, column, description);
+                if let (Some(key), Response::AgentCreated { key: short_key, column, .. }) =
+                    (idempotency_key, &resp)
+                {
+                    self.remember_agent_result(
+                        session,
+                        key,
+                        AgentReplay::Created { key: short_key.clone(), column: column.clone() },
+                    );
+                }
+                resp
+            }
+            // Unreachable: `agent_allows` above admits exactly six commands.
             _ => Response::Err { message: "not available to an agent session".into() },
         }
+    }
+
+    /// `create_ticket`, for an agent: the same mint a human's composer gets
+    /// (`mint_ticket`, `sanitize_title`), authorized as a MUTATE on the
+    /// destination COLUMN — one card appended, the board itself untouched —
+    /// and refused under the same columns bar the local arm honours, since a
+    /// `next_key` that cannot be persisted would regress into an existing
+    /// ticket's directory on the next start. The description, when there is
+    /// one, is written as the first note by `write_note`, so it carries the
+    /// agent as its author the way any note an agent writes does.
+    fn agent_create_ticket(
+        &mut self,
+        by: &Principal,
+        title: String,
+        column: Option<String>,
+        description: Option<String>,
+    ) -> Response {
+        let Some(column) = column.or_else(|| self.board.columns.first().map(|c| c.name.clone()))
+        else {
+            return Response::Err { message: "the board has no columns".into() };
+        };
+        if !self.board.columns.iter().any(|c| c.name == column) {
+            return Response::Err { message: format!("no such column: {column}") };
+        }
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::Mutate, &Resource::Column { name: column.clone() })
+        {
+            return Response::Err { message: format!("denied: {reason}") };
+        }
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        let title = mesimon_core::board::sanitize_title(&title);
+        if title.trim().is_empty() {
+            return Response::Err { message: "title is empty".into() };
+        }
+        let id = self.mint_ticket(column.clone(), title);
+        self.persist_and_notify();
+        self.feed.board(by.actor(), "create_ticket", Some(id));
+        let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
+        if let Some(text) = description {
+            if let Response::Err { message } = self.write_note(id, None, text, by) {
+                // The ticket exists either way; the honest receipt says both.
+                return Response::Err {
+                    message: format!(
+                        "ticket {key} created, but its description was not: {message}"
+                    ),
+                };
+            }
+        }
+        Response::AgentCreated { key, column, board_version: self.board_version, replayed: false }
     }
 
     /// Remember a mutating tool call's result so a retry replays it.
@@ -1843,12 +1978,12 @@ impl Daemon {
     /// Bounded rather than pruned per session: the map is a safety net for a
     /// dropped connection, not a log, and an unbounded one on a daemon that
     /// runs for weeks is a slow leak nobody would ever look for.
-    fn remember_agent_result(&mut self, session: uuid::Uuid, key: String, column: &str) {
+    fn remember_agent_result(&mut self, session: uuid::Uuid, key: String, result: AgentReplay) {
         const MAX_REPLAY_ENTRIES: usize = 512;
         if self.agent_replay.len() >= MAX_REPLAY_ENTRIES {
             self.agent_replay.clear();
         }
-        self.agent_replay.insert((session, key), column.to_string());
+        self.agent_replay.insert((session, key), result);
     }
 
     /// Where `move_ticket` would actually accept a move to, right now.
@@ -1909,6 +2044,26 @@ impl Daemon {
             merge_state: self.merge_state_word(id).map(str::to_string),
             allowed_columns: self.agent_allowed_columns(id),
             board_version: self.board_version,
+            description: t.description().and_then(|n| {
+                store::read_note(&self.paths, &t.short_key, n.id).ok().map(|text| {
+                    let cut = mesimon_core::text::cap_bytes(&text, AGENT_DESCRIPTION_MAX_BYTES);
+                    if cut.len() < text.len() {
+                        format!("{cut}…")
+                    } else {
+                        text
+                    }
+                })
+            }),
+            notes: t
+                .notes
+                .iter()
+                .map(|n| mesimon_core::command::AgentNoteView {
+                    id: n.id,
+                    name: n.name.clone(),
+                    by: n.edited_by.clone(),
+                    edited_at: n.edited_at.clone(),
+                })
+                .collect(),
         })
     }
 
@@ -2472,6 +2627,7 @@ impl Daemon {
             entered_at: Some(now_iso()),
             workspace: None,
             tags: Vec::new(),
+            notes: Vec::new(),
             archived: None,
         };
         let id = t.id;
@@ -2789,6 +2945,116 @@ impl Daemon {
                  contains this work."
             ),
         };
+        match self.backend.paste_text(&rec.sid16(), &text) {
+            Ok(()) => Response::Ok,
+            Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+        }
+    }
+
+    // ------------------------------------------------------------ notes
+
+    /// One note's body, whole, for the ticket page or an agent. The file is
+    /// read on the writer thread: it is bounded at `NOTE_MAX_BYTES` and the
+    /// diff service's off-thread road exists for git, not for one small read.
+    fn read_note(&self, ticket: ulid::Ulid, note: ulid::Ulid) -> Response {
+        let Some(t) = self.board.ticket(ticket) else {
+            return Response::Err { message: "no such ticket".into() };
+        };
+        let Some(meta) = t.note(note) else {
+            return Response::Err { message: "no such note".into() };
+        };
+        match store::read_note(&self.paths, &t.short_key, note) {
+            Ok(text) => Response::Note { text, meta: meta.clone() },
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+                Response::Err { message: "note file missing".into() }
+            }
+            Err(e) => Response::Err { message: format!("could not read the note: {e}") },
+        }
+    }
+
+    /// Create, replace or (blank text on an existing note) delete a note.
+    /// The body is written BEFORE the metadata so a crash between the two
+    /// leaves an orphan file, never a listed note with no file. `by` is who
+    /// is asking — the stamp on the meta, never trusted from the wire.
+    fn write_note(
+        &mut self,
+        ticket: ulid::Ulid,
+        note: Option<ulid::Ulid>,
+        text: String,
+        by: &Principal,
+    ) -> Response {
+        use mesimon_core::board::{note_name, sanitize_note, NoteMeta};
+        let text = sanitize_note(&text);
+        let blank = text.trim().is_empty();
+        let Some(t) = self.board.ticket(ticket) else {
+            return Response::Err { message: "no such ticket".into() };
+        };
+        if let Some(id) = note {
+            if t.note(id).is_none() {
+                return Response::Err { message: "no such note".into() };
+            }
+        }
+        let key = t.short_key.clone();
+        let now = now_iso();
+        let author = by.note_author();
+        match (note, blank) {
+            (None, true) => Response::Err { message: "nothing to save".into() },
+            (Some(id), true) => {
+                if let Err(e) = store::delete_note(&self.paths, &key, id) {
+                    return Response::Err { message: format!("could not delete the note: {e}") };
+                }
+                self.with_ticket(ticket, |t| t.notes.retain(|n| n.id != id));
+                Response::NoteWritten { note: None }
+            }
+            (existing, false) => {
+                let id = existing.unwrap_or_else(ulid::Ulid::new);
+                if let Err(e) = store::save_note(&self.paths, &key, id, &text) {
+                    return Response::Err { message: format!("could not write the note: {e}") };
+                }
+                let name = note_name(&text);
+                self.with_ticket(ticket, |t| match t.notes.iter_mut().find(|n| n.id == id) {
+                    Some(n) => {
+                        n.name = name;
+                        n.rev += 1;
+                        n.edited_at = now.clone();
+                        n.edited_by = author.clone();
+                    }
+                    None => t.notes.push(NoteMeta {
+                        id,
+                        name,
+                        rev: 1,
+                        created_at: now.clone(),
+                        created_by: author.clone(),
+                        edited_at: now.clone(),
+                        edited_by: author.clone(),
+                    }),
+                });
+                Response::NoteWritten { note: Some(id) }
+            }
+        }
+    }
+
+    /// Tell the ticket's live claude a note changed — `merge_to_agent`'s
+    /// twin: mesimon's own sentence, pasted and submitted, on a human's
+    /// gesture only. The note's name is user text headed for another
+    /// process, so it crosses `scrub_text`.
+    fn note_to_agent(&mut self, ticket: ulid::Ulid, note: ulid::Ulid) -> Response {
+        let Some(t) = self.board.ticket(ticket) else {
+            return Response::Err { message: "no such ticket".into() };
+        };
+        let Some(meta) = t.note(note) else {
+            return Response::Err { message: "no such note".into() };
+        };
+        let name = mesimon_core::text::scrub_text(&meta.name);
+        let Some(rec) = self.board.pane_target(ticket) else {
+            return Response::Err {
+                message: "no live claude session on this ticket — start or wake one first".into(),
+            };
+        };
+        let text = format!(
+            "Note \"{name}\" on this ticket was just updated; read_note with id {note} \
+             returns the new text."
+        );
         match self.backend.paste_text(&rec.sid16(), &text) {
             Ok(()) => Response::Ok,
             Err(e) => Response::Err { message: format!("could not deliver: {e}") },
@@ -4149,6 +4415,10 @@ fn transcript_has_conversation(path: &std::path::Path) -> bool {
 fn created_at_ms(created_at: &str) -> Option<u64> {
     created_at.strip_prefix('@').and_then(|s| s.parse::<u64>().ok()).map(|s| s * 1000)
 }
+
+/// How much of the description rides `get_ticket`. The whole of it is one
+/// `read_note` away; this keeps a routine call from carrying 32 KiB.
+const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
 
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.

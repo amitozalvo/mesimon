@@ -145,13 +145,17 @@ pub enum Scope {
     Theme,
     /// Scope barrier: owns every key, inherits nothing.
     Input,
+    /// The full-screen note editor (a title line over a multi-line markdown
+    /// body): a second text barrier. Reached by `Tab` from the composer,
+    /// where it keeps the composer's keys, and by `n`/`N` on a ticket.
+    Editor,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 14] = [
+    pub const ALL: [Scope; 15] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -166,6 +170,7 @@ impl Scope {
         Scope::Archived,
         Scope::Theme,
         Scope::Input,
+        Scope::Editor,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -184,7 +189,8 @@ impl Scope {
             | Scope::DeleteChord
             | Scope::ArchiveChord
             | Scope::TagChord
-            | Scope::Input => None,
+            | Scope::Input
+            | Scope::Editor => None,
         }
     }
 
@@ -204,6 +210,7 @@ impl Scope {
             Scope::Archived => "ARCHIVED",
             Scope::Theme => "THEME",
             Scope::Input => "INPUT",
+            Scope::Editor => "EDIT",
         }
     }
 }
@@ -272,7 +279,11 @@ pub enum Verb {
     /// submitted, without leaving the board. The composer's
     /// [`Verb::SaveStart`] is the same gesture one step earlier — there the
     /// ticket and the agent do not exist yet, so the press mints both and
-    /// asks the title; here they do, so it only asks.
+    /// asks the title; here they do, so it only asks. On a ticket whose
+    /// claude seat is EMPTY the press is the composer's second half over
+    /// again (2026-09-03): start claude with the title as its first prompt,
+    /// submitted, and stay — a ticket saved with plain Enter gets the same
+    /// key later instead of a different one.
     Prompt,
     /// `S` on the ticket page: a second shell beside whatever is there.
     /// There is no Claude twin: a ticket holds ONE claude (2026-09-02), and a
@@ -343,6 +354,12 @@ pub enum Verb {
     DropColumn,
     // ---- drawer ----
     AdoptObserve,
+    /// `n`: open the note the cursor means in the editor — the selected
+    /// rail note, else the ticket's description, else a fresh one that
+    /// becomes the description on save.
+    NoteEdit,
+    /// `N`: always a fresh note. Same axis as `n`, one step harder.
+    NoteNew,
     // ---- input ----
     Save,
     /// Shift+Enter in the composer: save AND start claude on the new ticket
@@ -368,6 +385,17 @@ pub enum Verb {
     /// `↓` walks the other way, and one step past the newest ask puts the
     /// kept draft back — the field returns to what was being written.
     HistoryNext,
+    /// `Tab` in the composer: grow it into the editor, title carried over,
+    /// cursor in the description.
+    Describe,
+    // ---- editor ----
+    /// `^s`: save. In a note editor it stays open, and a second press on a
+    /// saved note tells the ticket's claude the note changed.
+    EditorSave,
+    /// `enter`: in the title, move to the body; in the body, a newline.
+    EditorNewline,
+    EditorUp,
+    EditorDown,
 }
 
 /// 04 §2.0's legend. `Grace` actions land in the undo band; `Arm` actions name
@@ -487,6 +515,10 @@ pub struct Ctx {
     /// Offered on the same row, because "ask again" is the same act.
     pub shell_env_failed: bool,
     pub any_attention: bool,
+    /// The rail cursor is on a NOTE row, not a session.
+    pub sel_note: bool,
+    /// The subject ticket has a description (`notes[0]`).
+    pub ticket_described: bool,
     // ---- ticket screen ----
     /// The rail has a selected session.
     pub sel_session: bool,
@@ -530,6 +562,19 @@ pub struct Ctx {
     pub tags_exist: bool,
     /// `d` is armed: the next `d` deletes that tag board-wide.
     pub tag_forget_armed: bool,
+    // ---- editor ----
+    /// The note editor is up. Every editor binding is gated on it.
+    pub editing: bool,
+    /// The editor is composing a NEW ticket (title + description), so the
+    /// composer's keys — workspace, tags, save + ask — are live in it.
+    pub editor_composing: bool,
+    /// The cursor is in the body, not the title line.
+    pub editor_body: bool,
+    /// The editor holds changes not yet saved.
+    pub editor_dirty: bool,
+    /// The editor shows a SAVED note and the ticket has a claude with a
+    /// pane: `^s` would tell it the note changed.
+    pub editor_can_tell: bool,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -759,12 +804,17 @@ static BOARD: &[Binding] = &[
         keys: &[Key::ShiftEnter],
         verb: Verb::Prompt,
         show: "shift+enter",
-        hint: |_| "ask claude",
-        // A parked agent has no box to type into, and `rich_keys` is the
-        // ShiftEnter clause: where the terminal spells this as a plain Enter
-        // the key must be inert AND unhinted, or the press would focus the
-        // pane instead of opening a field.
-        avail: |c| c.ticket_promptable && c.rich_keys,
+        // An empty seat gets the composer's sentence: the press starts
+        // claude on the title, submitted, and stays. A ticket saved with
+        // plain Enter is one press behind a Shift+Enter one, and this is
+        // that press.
+        hint: |c| if c.ticket_has_claude { "ask claude" } else { "ask claude the title" },
+        // A parked agent has no box to type into and no empty seat either —
+        // `c` wakes it — so a Sleeping claude leaves the key inert. And
+        // `rich_keys` is the ShiftEnter clause: where the terminal spells
+        // this as a plain Enter the key must be inert AND unhinted, or the
+        // press would focus the pane instead of opening a field.
+        avail: |c| (c.ticket_promptable || (c.has_ticket && !c.ticket_has_claude)) && c.rich_keys,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -901,6 +951,42 @@ static BOARD: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 70,
+    },
+    Binding {
+        // `n` opens the note the cursor means: the selected rail note on the
+        // ticket page, else the description, else a fresh note that becomes
+        // the description. Overlay-only here: the board's footer is for
+        // moving and opening, the argument `a` and `d` make.
+        keys: &[Key::Char('n')],
+        verb: Verb::NoteEdit,
+        show: "n",
+        // One word whether the description exists or not: at 120 columns
+        // anything longer than `describe` is what the footer drops, and a
+        // described ticket is the common case once this exists. `describe`
+        // is true either way — the editor opens on what is there.
+        hint: |c| if c.sel_note { "edit note" } else { "describe" },
+        avail: |c| c.has_ticket,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
+        // Shift on the note axis: the same target, harder — always a NEW
+        // note, never the one under the cursor. Overlay-only; `n` teaches
+        // the axis.
+        keys: &[Key::Char('N')],
+        verb: Verb::NoteNew,
+        show: "N",
+        // Silent on the board (the shape `space` and `> <` use): the ticket
+        // page's overlay teaches it, and the board's overlay at 30 rows had
+        // exactly one row to spare — spending two pushed `p` off the end.
+        hint: |_| "",
+        avail: |c| c.has_ticket,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
     },
     Binding {
         // Overlay-only, with `c` and `s` above: the whole session group is
@@ -1101,7 +1187,9 @@ static TICKET: &[Binding] = &[
         verb: Verb::Act,
         show: "enter",
         hint: |c| {
-            if c.sel_dead {
+            if c.sel_note {
+                "edit note"
+            } else if c.sel_dead {
                 "resume"
             } else if c.sel_sleeping {
                 "wake"
@@ -1109,7 +1197,7 @@ static TICKET: &[Binding] = &[
                 "focus"
             }
         },
-        avail: |c| c.sel_session,
+        avail: |c| c.sel_session || c.sel_note,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -1239,6 +1327,41 @@ static TICKET: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 70,
+    },
+    Binding {
+        // `n` opens the note the cursor means: the selected rail note on the
+        // ticket page, else the description, else a fresh note that becomes
+        // the description.
+        keys: &[Key::Char('n')],
+        verb: Verb::NoteEdit,
+        show: "n",
+        // One word whether the description exists or not: at 120 columns
+        // anything longer than `describe` is what the footer drops, and a
+        // described ticket is the common case once this exists. `describe`
+        // is true either way — the editor opens on what is there.
+        hint: |c| if c.sel_note { "edit note" } else { "describe" },
+        // After `d` (90) and before `q`: at 120 columns something has to
+        // give, and it is the pop — every screen teaches `q` — never the
+        // destructive key the page is where you are meant to find.
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 95,
+    },
+    Binding {
+        // Shift on the note axis: the same target, harder — always a NEW
+        // note, never the one under the cursor. Overlay-only; `n` teaches
+        // the axis.
+        keys: &[Key::Char('N')],
+        verb: Verb::NoteNew,
+        show: "N",
+        hint: |_| "new note",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
     },
     Binding {
         // Overlay-only; the composer is where the footer teaches this. See the
@@ -2166,6 +2289,23 @@ static INPUT: &[Binding] = &[
         prio: 25,
     },
     Binding {
+        // The composer grows: `Tab` opens the full editor with the title
+        // carried over and the cursor in the description. Composer-only —
+        // a rename has no description and a prompt is not a ticket. Behind
+        // `^t` (25) on purpose: that key was moved ahead of `shift+tab` to
+        // survive the 120-column cut, and a longer item ahead of it would
+        // push it off again.
+        keys: &[Key::Tab],
+        verb: Verb::Describe,
+        show: "tab",
+        hint: |_| "describe",
+        avail: |c| c.composing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 28,
+    },
+    Binding {
         keys: &[Key::Esc],
         verb: Verb::Cancel,
         show: "esc",
@@ -2310,6 +2450,203 @@ static INPUT: &[Binding] = &[
     },
 ];
 
+/// The note editor: a text barrier like `Input`, with the composer's keys
+/// alive only while it is composing a ticket. `Tab` is deliberately unbound
+/// (a tab is not a body character; `sanitize_note` turns one into a space),
+/// and `{ }` are text here — paging is `pgup`/`pgdn`.
+static EDITOR: &[Binding] = &[
+    Binding {
+        // Save. On a note it STAYS open — a note is a document being kept,
+        // not a field being submitted — and once it is saved the same key,
+        // with nothing changed, tells the ticket's claude to go read it.
+        // Two presses is the merge key's idiom: the first says what the
+        // second will do. `^s` is a legacy-floor atom; raw mode clears IXON,
+        // so the terminal does not eat it as flow control.
+        keys: &[Key::Ctrl('s')],
+        verb: Verb::EditorSave,
+        show: "^s",
+        hint: |c| if c.editor_dirty { "save" } else { "tell claude" },
+        avail: |c| c.editing && (c.editor_dirty || c.editor_can_tell),
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 10,
+    },
+    Binding {
+        // The composer's Shift+Enter, in the bigger room: mint, start claude
+        // on the title, stay. Composing only — a note has nothing to mint,
+        // and telling claude about one is `^s`'s second press, so the atom
+        // is not spent a fourth time (`shift_enter_asks_claude_at_every_stage`).
+        keys: &[Key::ShiftEnter],
+        verb: Verb::SaveStart,
+        show: "shift+enter",
+        hint: |_| "save + ask claude",
+        avail: |c| c.editing && c.editor_composing && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 15,
+    },
+    Binding {
+        // Two presses when there is something to lose; the first says so.
+        keys: &[Key::Esc],
+        verb: Verb::Cancel,
+        show: "esc",
+        hint: |c| if c.editor_dirty { "discard" } else { "close" },
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Ctrl('t')],
+        verb: Verb::TagPrefix,
+        show: "^t",
+        hint: |_| "tags",
+        avail: |c| c.editing && c.editor_composing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 25,
+    },
+    Binding {
+        keys: &[Key::BackTab],
+        verb: Verb::CycleWorkspace,
+        show: "shift+tab",
+        hint: |_| "shared checkout / own worktree",
+        avail: |c| c.editing && c.editor_composing,
+        class: Class::Plain,
+        group: Group::Worktree,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        // In the title, Enter is the way down to the body (a title is one
+        // line); in the body it is a newline, and says nothing — every
+        // editor the user has ever used already taught it.
+        keys: &[Key::Enter],
+        verb: Verb::EditorNewline,
+        show: "enter",
+        hint: |c| if c.editor_body { "" } else { "to body" },
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 35,
+    },
+    Binding {
+        keys: &[Key::Up, Key::Down],
+        verb: Verb::EditorDown,
+        show: "↑↓",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::PageUp, Key::PageDown],
+        verb: Verb::PageDown,
+        show: "pgup pgdn",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Left],
+        verb: Verb::EditLeft,
+        show: "←",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Right],
+        verb: Verb::EditRight,
+        show: "→",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Home, Key::Ctrl('a')],
+        verb: Verb::EditHome,
+        show: "^A",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::End, Key::Ctrl('e')],
+        verb: Verb::EditEnd,
+        show: "^E",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Backspace],
+        verb: Verb::EditBackspace,
+        show: "backspace",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Delete],
+        verb: Verb::EditDelete,
+        show: "delete",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Ctrl('w'), Key::Ctrl('h')],
+        verb: Verb::EditDeleteWord,
+        show: "^W",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Ctrl('u')],
+        verb: Verb::EditKillToStart,
+        show: "^U",
+        hint: |_| "",
+        avail: |c| c.editing,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+];
+
 /// Every binding declared directly in `scope` (not its parent).
 pub fn bindings(scope: Scope) -> &'static [Binding] {
     match scope {
@@ -2327,6 +2664,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Archived => ARCHIVED,
         Scope::Theme => THEME,
         Scope::Input => INPUT,
+        Scope::Editor => EDITOR,
     }
 }
 
@@ -2383,6 +2721,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
             }
         }
         (Verb::ScrollDown, Key::Char('k') | Key::Up) => Verb::ScrollUp,
+        (Verb::EditorDown, Key::Up) => Verb::EditorUp,
         (Verb::PageDown, Key::Char('{') | Key::PageUp) => Verb::PageUp,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
         (v, _) => v,
@@ -2500,6 +2839,7 @@ mod tests {
                 Scope::Archived => 11,
                 Scope::Theme => 12,
                 Scope::Input => 13,
+                Scope::Editor => 14,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -2608,6 +2948,20 @@ mod tests {
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &composing), Some(Verb::SaveStart));
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &onboard), Some(Verb::Prompt));
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &prompting), Some(Verb::SaveStart));
+        // The first moment has two rooms: the one-line composer and the
+        // editor it grows into. Same verb, same effect — it is not a fourth
+        // home. A note editor on a ticket that exists is NOT a composition
+        // (nothing to mint), and "tell claude" there is `^s`'s second press,
+        // so the atom is not spent again.
+        let composing_full =
+            Ctx { editing: true, editor_composing: true, rich_keys: true, ..Default::default() };
+        let noting = Ctx { editing: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::ShiftEnter, &composing_full), Some(Verb::SaveStart));
+        assert_eq!(resolve(Scope::Editor, Key::ShiftEnter, &noting), None);
+        assert_eq!(
+            hint_for(Scope::Editor, Verb::SaveStart, &composing_full),
+            Some(("shift+enter", "save + ask claude"))
+        );
         // The board's press is hinted where it works…
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &onboard),
@@ -2668,6 +3022,27 @@ mod tests {
         // And plain Enter is untouched either way: the two live side by side
         // in the footer, and only one of them spends the terminal.
         assert_eq!(resolve(Scope::Board, Key::Enter, &rich(true)), Some(Verb::Act));
+    }
+
+    /// An EMPTY seat is the composer's moment come round again: the ticket
+    /// exists but no claude does, so Shift+Enter starts one on the title —
+    /// same verb, and the hint says which sentence it is about to say. A
+    /// parked claude is not an empty seat (`c` wakes it), an empty column has
+    /// no title to ask, and the legacy floor still gets nothing.
+    #[test]
+    fn shift_enter_on_an_empty_seat_starts_claude_on_the_title() {
+        let empty = Ctx { has_ticket: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &empty), Some(Verb::Prompt));
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &empty),
+            Some(("shift+enter", "ask claude the title"))
+        );
+        let parked = Ctx { ticket_has_claude: true, ..empty.clone() };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &parked), None);
+        let no_card = Ctx { has_ticket: false, ..empty.clone() };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &no_card), None);
+        let legacy = Ctx { rich_keys: false, ..empty };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &legacy), None);
     }
 
     /// Shift+Enter hardens Enter on the same target rather than switching
@@ -2847,6 +3222,9 @@ mod tests {
         assert_eq!(resolve(Scope::Diff, Key::Char('1'), &ctx), None);
         let composing = Ctx { composing: true, tags_exist: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::Char('1'), &composing), None);
+        let editing =
+            Ctx { editing: true, editor_composing: true, tags_exist: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Char('1'), &editing), None);
         // The shifted spellings reach none of it, and `!` still opens a shell.
         for sym in "!@#$%^&*()".chars() {
             assert_ne!(resolve(Scope::Board, Key::Char(sym), &ctx), Some(Verb::TagCycle), "{sym}");
@@ -2947,6 +3325,71 @@ mod tests {
         assert_eq!(resolve(Scope::Input, Key::Ctrl('t'), &renaming), None);
         // And the bare letter stays free for the field to type.
         assert_eq!(resolve(Scope::Input, Key::Char('t'), &composing), None);
+        // The editor is the composer's second room: same key while composing,
+        // and none while a note is being written on a ticket that exists.
+        let editing = Ctx { editing: true, editor_composing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('t'), &editing), Some(Verb::TagPrefix));
+        let noting = Ctx { editing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('t'), &noting), None);
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &noting), None);
+    }
+
+    /// `Tab` grows the one-line composer into the editor, and only there: a
+    /// rename has no description and a prompt is not a ticket.
+    #[test]
+    fn tab_opens_the_editor_from_the_composer_only() {
+        let composing = Ctx { composing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Tab, &composing), Some(Verb::Describe));
+        assert_eq!(hint_for(Scope::Input, Verb::Describe, &composing), Some(("tab", "describe")));
+        let prompting = Ctx { prompting: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Tab, &prompting), None);
+        assert_eq!(resolve(Scope::Input, Key::Tab, &Ctx::default()), None);
+        // Inside the editor Tab is nothing: not a character (a note holds no
+        // tabs) and not a verb.
+        let editing = Ctx { editing: true, editor_composing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Tab, &editing), None);
+    }
+
+    /// The editor owns its keys the way the composer does: the screen keys
+    /// under it are letters to type, and its own verbs answer.
+    #[test]
+    fn the_editor_is_a_barrier() {
+        let ctx = Ctx { editing: true, editor_dirty: true, ..Default::default() };
+        for k in [Key::Char('q'), Key::Char('?'), Key::Char('u'), Key::Char('j'), Key::Char('n')] {
+            assert_eq!(resolve(Scope::Editor, k, &ctx), None, "{k:?} must type, not act");
+        }
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &ctx), Some(Verb::EditorSave));
+        assert_eq!(resolve(Scope::Editor, Key::Esc, &ctx), Some(Verb::Cancel));
+        assert_eq!(resolve(Scope::Editor, Key::Enter, &ctx), Some(Verb::EditorNewline));
+        assert_eq!(resolve(Scope::Editor, Key::Up, &ctx), Some(Verb::EditorUp));
+        assert_eq!(resolve(Scope::Editor, Key::Down, &ctx), Some(Verb::EditorDown));
+        assert_eq!(resolve(Scope::Editor, Key::PageUp, &ctx), Some(Verb::PageUp));
+        assert_eq!(resolve(Scope::Editor, Key::PageDown, &ctx), Some(Verb::PageDown));
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('u'), &ctx), Some(Verb::EditKillToStart));
+        // And with the editor down, its scope answers nothing at all.
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &Ctx::default()), None);
+    }
+
+    /// `^s` says what it will do, and is inert when it would do nothing:
+    /// `save` while there are changes, `tell claude` on a saved note whose
+    /// ticket has a claude with a pane, nothing otherwise.
+    #[test]
+    fn ctrl_s_says_save_then_tell() {
+        let dirty = Ctx { editing: true, editor_dirty: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &dirty), Some(("^s", "save")));
+        let saved = Ctx { editing: true, editor_can_tell: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &saved), Some(("^s", "tell claude")));
+        let clean = Ctx { editing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &clean), None);
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &clean), None);
+        // Enter's word is the title's: it is the way down. In the body it is
+        // silent — a newline needs no teaching.
+        assert_eq!(
+            hint_for(Scope::Editor, Verb::EditorNewline, &clean),
+            Some(("enter", "to body"))
+        );
+        let body = Ctx { editing: true, editor_body: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorNewline, &body), None);
     }
 
     /// Every binding is spelled and (unless deliberately silent) described.
@@ -2978,7 +3421,7 @@ mod tests {
         let ctx = Ctx { multi_column: true, ..Default::default() };
         let items = footer_items(Scope::Board, &ctx);
         let shown: Vec<&str> = items.iter().map(|b| b.show).collect();
-        for absent in ["> <", "r", "d", "a", "c", "s", "x", "enter"] {
+        for absent in ["> <", "r", "d", "a", "c", "s", "x", "n", "N", "enter"] {
             assert!(!shown.contains(&absent), "{absent} hinted with no ticket selected: {shown:?}");
         }
         assert!(shown.contains(&"o"), "open-ticket must always be offered: {shown:?}");
@@ -3002,7 +3445,7 @@ mod tests {
     #[test]
     fn unavailable_keys_do_nothing() {
         let empty = Ctx { multi_column: true, ..Default::default() };
-        for k in [Key::Char('>'), Key::Char('r'), Key::Char('d'), Key::Char('c')] {
+        for k in [Key::Char('>'), Key::Char('r'), Key::Char('d'), Key::Char('c'), Key::Char('n')] {
             assert_eq!(resolve(Scope::Board, k, &empty), None, "{k:?} acted with no ticket");
         }
         let selected = Ctx { has_ticket: true, multi_column: true, ..Default::default() };
@@ -3052,6 +3495,7 @@ mod tests {
             (Key::Char('d'), Verb::DeletePrefix),
             (Key::Char('a'), Verb::ArchivePrefix),
             (Key::Char('x'), Verb::Sleep),
+            (Key::Char('n'), Verb::NoteEdit),
         ] {
             assert_eq!(resolve(Scope::Board, key, &ctx), Some(verb), "board {key:?}");
             assert_eq!(resolve(Scope::Ticket, key, &ctx), Some(verb), "ticket {key:?}");
@@ -3192,6 +3636,12 @@ mod tests {
         };
         for retired in [Key::Char('X'), Key::Char('A'), Key::Char('V'), Key::Char('e')] {
             assert_eq!(resolve(Scope::Board, retired, &full), None, "{retired:?} is retired");
+        }
+        // `n` edits the note the cursor means, `N` forces a fresh one: same
+        // target, harder — on both screens.
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::Char('n'), &full), Some(Verb::NoteEdit), "{scope:?}");
+            assert_eq!(resolve(scope, Key::Char('N'), &full), Some(Verb::NoteNew), "{scope:?}");
         }
         // The bulk sleep is the exception, and it is one the header teaches:
         // its own key, gated on the same predicate as the row and the chip,
@@ -3409,7 +3859,7 @@ mod tests {
         };
         let mut checked = 0;
         for scope in Scope::ALL {
-            if scope == Scope::Input {
+            if matches!(scope, Scope::Input | Scope::Editor) {
                 continue; // a text field's arrows move the cursor, not a list
             }
             for (letter, arrow) in
@@ -3451,12 +3901,13 @@ mod tests {
             if matches!(
                 s,
                 Scope::Input
+                    | Scope::Editor
                     | Scope::DiffView
                     | Scope::DeleteChord
                     | Scope::ArchiveChord
                     | Scope::TagChord
             ) {
-                continue; // barrier scopes: four chord tails and a text field
+                continue; // barrier scopes: four chord tails and two text fields
             }
             assert_eq!(resolve(s, Key::Char('?'), &ctx), Some(Verb::Help), "{s:?}");
         }

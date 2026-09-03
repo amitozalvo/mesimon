@@ -24,7 +24,11 @@ use crate::paths::Paths;
 /// writes instead — 16 §6.2's rule that a newer file is left untouched rather
 /// than silently downgraded.
 pub const COLUMNS_SCHEMA: u32 = 2;
-pub const TICKET_SCHEMA: u32 = 1;
+/// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
+/// build would read the ticket, ignore the array, and on its next
+/// `save_ticket` drop every note's metadata while the files stayed behind
+/// as orphans.
+pub const TICKET_SCHEMA: u32 = 2;
 pub const SESSIONS_SCHEMA: u32 = 1;
 
 fn schema_v1() -> u32 {
@@ -462,6 +466,35 @@ pub fn save_ticket(paths: &Paths, t: &Ticket) -> Result<()> {
     write_atomic(&dir.join("ticket.toml"), &toml::to_string_pretty(&tf)?, SHARED)
 }
 
+/// Where a ticket's note bodies live: `notes/<ULID>.md` beside `ticket.toml`.
+/// The id is minted by the daemon, so the path is never built from a name
+/// anybody chose (docs/15 §4.7).
+fn note_path(paths: &Paths, short_key: &str, id: ulid::Ulid) -> std::path::PathBuf {
+    paths.board_dir.join("board/tickets").join(short_key).join("notes").join(format!("{id}.md"))
+}
+
+/// Write one note body, whole. Not bar-gated, like `save_ticket`: a ticket
+/// that could not be read is absent from the board and so self-bars.
+pub fn save_note(paths: &Paths, short_key: &str, id: ulid::Ulid, text: &str) -> Result<()> {
+    let path = note_path(paths, short_key, id);
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    write_atomic(&path, text, SHARED)
+}
+
+pub fn read_note(paths: &Paths, short_key: &str, id: ulid::Ulid) -> std::io::Result<String> {
+    std::fs::read_to_string(note_path(paths, short_key, id))
+}
+
+pub fn delete_note(paths: &Paths, short_key: &str, id: ulid::Ulid) -> Result<()> {
+    match std::fs::remove_file(note_path(paths, short_key, id)) {
+        Ok(()) => Ok(()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(e) => Err(e.into()),
+    }
+}
+
 pub fn delete_ticket_dir(paths: &Paths, short_key: &str) -> Result<()> {
     let dir = paths.board_dir.join("board/tickets").join(short_key);
     if dir.is_dir() {
@@ -754,6 +787,82 @@ workspace = "worktree"
         let t: Ticket = toml::from_str(m4).unwrap();
         assert!(t.tags.is_empty());
         assert!(t.archived.is_none());
+        assert!(t.notes.is_empty());
+    }
+
+    /// A pre-notes ticket (v1 with tags) still parses, and a note's own
+    /// optional fields default: `name`/`rev`/`*_by` were all born together,
+    /// but the fixture is cheap and the failure mode is a quarantined file.
+    #[test]
+    fn pre_notes_ticket_toml_parses() {
+        let alpha8 = r#"
+schema_version = 1
+id = "01J8ZQ7VJ00000000000000000"
+short_key = "T-4"
+title = "tagged"
+column = "TODO"
+order = "a0"
+created_at = "@1788046350"
+
+[[tags]]
+name = "BUG"
+group = 1
+"#;
+        let f: TicketFile = toml::from_str(alpha8).unwrap();
+        assert_eq!(f.ticket.tags.len(), 1);
+        assert!(f.ticket.notes.is_empty());
+        let sparse = r#"
+id = "01J8ZQ7VJ00000000000000000"
+short_key = "T-4"
+title = "t"
+column = "TODO"
+order = "a0"
+created_at = "@1"
+
+[[notes]]
+id = "01J8ZQ7VJ00000000000000001"
+created_at = "@2"
+"#;
+        let t: Ticket = toml::from_str(sparse).unwrap();
+        assert_eq!(t.notes.len(), 1);
+        assert_eq!(t.notes[0].rev, 0);
+        assert_eq!(t.notes[0].name, "");
+    }
+
+    /// `[[notes]]` is another array of tables: after `[[tags]]`, before
+    /// `[archived]`. The serializer that writes the file is the judge.
+    #[test]
+    fn notes_serialize_after_tags_and_before_archived() {
+        let mut t = Ticket {
+            id: ulid::Ulid(9),
+            short_key: "T-9".into(),
+            title: "noted".into(),
+            column: "DONE".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            entered_at: None,
+            workspace: None,
+            tags: Vec::new(),
+            notes: vec![mesimon_core::board::NoteMeta {
+                id: ulid::Ulid(10),
+                name: "Why".into(),
+                rev: 3,
+                created_at: "@1".into(),
+                created_by: "local".into(),
+                edited_at: "@2".into(),
+                edited_by: "agent:00000000-0000-0000-0000-000000000000".into(),
+            }],
+            archived: Some(mesimon_core::board::Archived { at: "@3".into(), by: "local".into() }),
+        };
+        t.set_tag(1, Some("BUG".into()));
+        let f = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
+        let s = toml::to_string_pretty(&f).unwrap();
+        let back: TicketFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.ticket.notes, t.notes);
+        assert_eq!(back.ticket.tags, t.tags);
+        assert_eq!(back.ticket.archived, t.archived);
+        assert!(s.find("[[tags]]").unwrap() < s.find("[[notes]]").unwrap());
+        assert!(s.find("[[notes]]").unwrap() < s.find("[archived]").unwrap());
     }
 
     /// Tags AND archived together, round-tripped through the serializer that
@@ -773,6 +882,7 @@ workspace = "worktree"
             entered_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
+            notes: Vec::new(),
             archived: Some(mesimon_core::board::Archived {
                 at: "@1788046350".into(),
                 by: "local".into(),
@@ -808,6 +918,7 @@ workspace = "worktree"
             entered_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
+            notes: Vec::new(),
             archived: Some(mesimon_core::board::Archived {
                 at: "@1788046350".into(),
                 by: "local".into(),
@@ -857,6 +968,7 @@ by = "local"
                 entered_at: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
+                notes: Vec::new(),
                 archived: Some(mesimon_core::board::Archived {
                     at: "@1788050000".into(),
                     by: "local".into(),
@@ -961,6 +1073,7 @@ by = "local"
             entered_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
+            notes: Vec::new(),
             archived: None,
         };
         let s = toml::to_string_pretty(&t).unwrap();

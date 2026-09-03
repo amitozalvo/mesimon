@@ -27,4 +27,4 @@
 
 
 
- NEW  enter save ∙ shift+enter save + ask claude ∙ esc cancel ∙ ^t tags ∙ ? keys
+ NEW  enter save ∙ shift+enter save + ask claude ∙ esc cancel ∙ ^t tags ∙ tab describe ∙ ? keys

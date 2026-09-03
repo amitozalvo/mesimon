@@ -179,12 +179,31 @@ tmux socket, which is what lets nextest run them in parallel. `prompt_e2e.rs` is
 boundary it crosses — `scrub_cells` before it is drawn, `scrub_text` before it leaves for
 another process. The hazard lists live there and nowhere else; do not write a sanitizer.
 
+**Notes are markdown files under the ticket, and `notes[0]` is the description** (2026-09-02).
+`Ticket.notes: Vec<NoteMeta>` (`[[notes]]` after `[[tags]]`, before `[archived]`; `TICKET_SCHEMA`
+2) is the metadata — id, `name` (the body's first line, recomputed on every write), `rev`, who and
+when as `local` / `agent:<uuid>` — and the body is `notes/<ULID>.md`, read by `Command::ReadNote`
+(never in the snapshot) and written whole by `WriteNote { note: None | Some }` (blank on an
+existing note deletes). `sanitize_note` keeps newlines and caps at 32 KiB. The TUI's `Mode::Editor`
+is the one multi-line field (`text.rs::TextArea`): `Tab` grows the composer into it — composing,
+it is a PANEL over the board's cards that grows out of the phantom card for 180 ms
+(`Editor::grow`, `App::compose_card`, `editor::draw_panel`) and names the column on its context
+line; a note takes the whole screen — `n`/`N` open a note, `^s` saves and stays, a second `^s` on a saved note sends `NoteToAgent` (mesimon's own
+sentence, human gesture only). The ticket page draws the description under the identity line and
+lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. Agents
+get `read_note`/`write_note` (six tools now, with `create_ticket`) and `get_ticket` carries the
+description. Adding a
+field to `NoteMeta` is `#[serde(default)]` like everything else. (STALE-MAP "Notes: files under
+the ticket".)
+
 **A paste is ONE event, and only a text field takes it.** `init_terminal` arms bracketed paste,
 `App::tick` routes `Event::Paste` to `App::on_paste`, and `EditBuffer::paste` flattens it to one
 line (newlines are spaces, never Enters) under the field's byte `limit` — the same number the
 daemon caps the text at (`board::TITLE_MAX_BYTES` 2 KB via `sanitize_title`, `TAG_MAX_BYTES`,
 `command::PROMPT_MAX_BYTES`); a cut says `paste trimmed ∙ … holds at most …` in the status. A
-new text field passes its limit to `EditBuffer::new`. (STALE-MAP "A paste is one event".)
+new text field passes its limit to `EditBuffer::new`. `TextArea::paste` is the multi-line
+counterpart (the note editor's body): newlines kept, CRLF normalised, same byte limit. (STALE-MAP
+"A paste is one event".)
 
 **Git, in the daemon,** is `crate::git::git(repo)`, never `Command::new("git")`: it scrubs the
 `GIT_*` targeting variables a dogfooding daemon inherits.
@@ -407,7 +426,12 @@ startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026
 — *ask claude, and stay on the board* — at three stages: before the ticket exists it mints, spawns
 and submits the title (`Verb::SaveStart`); on a ticket with a live claude PANE it opens a one-line
 field on the card (`Verb::Prompt` → `InputPurpose::Prompt`); inside that field Enter sends and so
-does a second Shift+Enter (the finger is still holding shift). `shift_enter_asks_claude_at_every_stage`
+does a second Shift+Enter (the finger is still holding shift). **On a ticket whose claude seat is
+EMPTY the board's press is the composer's second half a press late** (2026-09-03): the same
+`Verb::Prompt` binding, and `dispatch` routes on `Ctx::ticket_has_claude` to `start_composed` —
+claude spawns with the title submitted, no field, no attach, hint `ask claude the title`. A
+`Sleeping` claude is not an empty seat (`c` wakes it) and the key stays inert there; a shell on the
+ticket does not fill the seat. `shift_enter_asks_claude_at_every_stage`
 is what keeps that one idea; a fourth home makes it two, and the atom is off the legacy floor
 precisely because it buys ONE. The gate is `Ctx::ticket_promptable` — `has_pane()`, NOT
 `ticket_has_claude`'s `is_live()`, which counts a `Sleeping` session that has no process to type
@@ -714,7 +738,7 @@ sessions_write_barred }`, and every save goes through `persist_columns`/`persist
 `state.is_live()` for working-set membership and `state.has_pane()` for pane existence —
 `Sleeping` is live-but-parked (no pane, no process; the attention machine latches until wake).
 
-**The agent tier (T-84): three board tools, and three named movers.** Every Claude session
+**The agent tier (T-84): six tools, and three named movers.** Every Claude session
 mesimon spawns also carries `--mcp-config '<inline JSON>'` naming `mesimon mcp` — a stdio shim
 that forwards each `tools/call` to `orch.sock` as `Envelope { principal: Agent { session } }`.
 The config is written to NO file (no `.mcp.json`, no `~/.claude.json`, no `settings.local.json`,
@@ -725,11 +749,22 @@ from every other pane, so the boundary is the 0700 runtime dir — the same one 
 already relies on. The shim is untrusted (it runs in the agent's process tree) and holds no
 policy.
 
-Tools: `get_ticket`, `list_board`, `move_ticket`. **No tool takes a ticket id** — the ticket
-comes from the session binding, so there is no ownership check to get wrong. `to_column` is a
-plain string validated server-side, never an `enum`, because column names are the user's words
-and an enum would inject them into every request forever. `core/src/mcp.rs` holds the tool
-definitions, the description lint (no second person, no imperatives) and the ≤820-byte cap.
+Tools: `get_ticket`, `list_board`, `move_ticket`, `read_note`, `write_note`, `create_ticket`.
+**No tool takes a ticket id** — the ticket comes from the session binding, so there is no
+ownership check to get wrong. `to_column` is a plain string validated server-side, never an
+`enum`, because column names are the user's words and an enum would inject them into every
+request forever. `core/src/mcp.rs` holds the tool definitions, the description lint (no second
+person, no imperatives) and the ≤820-byte cap. **`create_ticket` (2026-09-03) is the one tool
+that touches a ticket other than the caller's, by minting it**: `Command::AgentCreateTicket {
+title, column?, description?, idempotency_key? }` → `Daemon::agent_create_ticket`, the same
+`mint_ticket` + `sanitize_title` a human's composer gets, authorized as `Mutate` on
+`Resource::Column` (one card appended, the board itself untouched — `authorize` still denies
+`Mutate` on `Board`), refused under the columns bar, `column` absent = the board's first column,
+and the description written through `write_note` so the note carries `agent:<uuid>` as author.
+The receipt is a KEY (`T-9`), never an id, and nothing takes a key back; the new card has no
+session and no tool starts one. The replay map is now `AgentReplay::{Moved, Created}`, keyed by
+tool as well as by idempotency key. Feed line `create_ticket` with the agent as actor.
+(STALE-MAP "An agent can file a ticket".)
 
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
 command will not compile until someone decides whether an agent may send it. That is the

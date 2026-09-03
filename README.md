@@ -20,8 +20,9 @@ report.
    conversation. It never prepends a system prompt, never appends a reminder, never rewrites what
    you typed.
 
-   It does give the sessions it spawns three read/move board tools, so an agent can see which
-   ticket it is on. `mesimon doctor --mcp` prints them verbatim, and they are the only thing
+   It does give the sessions it spawns six board tools — read and move its ticket, read and
+   write its notes, and file a new ticket — so an agent can see which ticket it is on and what
+   it is about. `mesimon doctor --mcp` prints them verbatim, and they are the only thing
    mesimon adds to model input.
 
 ## Requirements
@@ -101,18 +102,23 @@ The footer always names the keys for whatever you are looking at.
 
 ## What your agents can see
 
-A Claude session mesimon starts gets three tools — `get_ticket`, `list_board`, `move_ticket` —
-so it knows which ticket it is on and can move its own card. They arrive on the command line and
-are installed nowhere: no `.mcp.json`, no `~/.claude.json`, no `settings.local.json`, no plugin.
-A session you start yourself never sees them, and your own MCP servers still load alongside.
+A Claude session mesimon starts gets six tools — `get_ticket`, `list_board`, `move_ticket`,
+`read_note`, `write_note`, `create_ticket` — so it knows which ticket it is on, can read the
+ticket's description and notes, write notes of its own, move its own card, and file a new ticket
+for work it found outside its scope (the new card has no session; you decide what happens to it).
+They arrive on the command line and are installed nowhere: no `.mcp.json`, no `~/.claude.json`,
+no `settings.local.json`, no plugin. A session you start yourself never sees them, and your own
+MCP servers still load alongside.
 
 There is no tool, at any tier, to spawn or kill a session, delete or archive or rename a ticket,
 merge a branch, or read a session, a transcript or a cost. Those commands are refused by the
 daemon, not merely absent from the tool list.
 
-An agent's `Edit` and `Write` into `.mesimon/` and mesimon's state directory are refused too.
-Its shell is not: `sed -i` into those paths still works, because matching on command strings is
-security theatre and hooking every `Bash` call would tax the one thing agents do constantly.
+An agent's `Edit` and `Write` into `.mesimon/` and mesimon's state directory are refused too —
+which is why a note, a markdown file under `.mesimon/`, reaches an agent through a tool and not
+through `Write`; the tool stamps who wrote it. Its shell is not: `sed -i` into those paths still
+works, because matching on command strings is security theatre and hooking every `Bash` call
+would tax the one thing agents do constantly.
 
 `mesimon doctor --mcp` prints all of it — the exact flag, every tool description, the token cost,
 and what mesimon deliberately does not send.

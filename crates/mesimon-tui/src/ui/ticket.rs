@@ -6,7 +6,7 @@
 //! from the body but a breathing row — no band, no rule (L1); the zone
 //! divider is a 2-cell gap.
 
-use mesimon_core::board::{Provenance, SessionKind, SessionState};
+use mesimon_core::board::{NoteMeta, Provenance, SessionKind, SessionState};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -16,7 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap;
 
-use crate::app::{App, InputPurpose, Mode, PreviewView};
+use crate::app::{App, InputPurpose, Mode, PreviewView, RailRow};
 use crate::glyphs;
 use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
@@ -28,6 +28,19 @@ use super::chrome;
 /// M3.5 has no PTY pane on this screen yet, so the left zone is what yields).
 const TWO_ZONE_MIN_W: u16 = 107;
 const RAIL_W: u16 = 30;
+/// The description block's ceiling in rows; the zone below still has to
+/// read. A third of the body, and never more than this.
+const DESC_MAX_ROWS: usize = 8;
+
+/// Who a note's author string names, in the page's own words: a person at
+/// this board is `you`, an agent session is `claude`.
+pub(super) fn author_word(by: &str) -> &'static str {
+    if by.starts_with("agent:") {
+        "claude"
+    } else {
+        "you"
+    }
+}
 
 pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: usize) {
     let theme = &app.theme;
@@ -181,23 +194,54 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // Breathing row between the breadcrumb and the identity line too — the
     // title never touches its metadata (06 §5.5). No band under the identity
     // line: the ticket header ends with its metadata (author 2026-08-30).
-    let top = vec![Line::from(head), Line::default(), ident];
+    let mut top = vec![Line::from(head), Line::default(), ident];
+    // The description — the ticket's first note — under the identity line,
+    // as rich text, capped: what the ticket IS reads before what its
+    // sessions are doing. No heading over it; it is the ticket's own words.
+    // Nothing when there is none, so the geometry below is untouched then.
+    let body_rows = (area.height as usize).saturating_sub(5);
+    let desc: Vec<Line<'static>> = ticket
+        .description()
+        .and_then(|m| app.note_text(m))
+        .map(|text| {
+            let cap = DESC_MAX_ROWS.min(body_rows / 3).max(1);
+            crate::rich::render(text, (area.width as usize).saturating_sub(2), cap, theme)
+        })
+        .unwrap_or_default();
+    let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 1 };
+    if !desc.is_empty() {
+        top.push(Line::default());
+        for row in desc {
+            let mut spans = vec![Span::raw(" ")];
+            spans.extend(row.spans);
+            top.push(Line::from(spans));
+        }
+    }
     f.render_widget(
         Paragraph::new(top),
-        Rect { x: area.x, y: area.y, width: area.width, height: 3.min(area.height) },
+        Rect { x: area.x, y: area.y, width: area.width, height: (3 + extra).min(area.height) },
     );
 
     // ---- body zones -------------------------------------------------------
     // One breathing row under the identity line (06 §5.5) before the zones.
-    let body_y = area.y + 4;
-    let body_h = area.height.saturating_sub(5); // top 3 + breathing 1 + footer 1
+    let body_y = area.y + 4 + extra;
+    let body_h = area.height.saturating_sub(5 + extra); // top 3 + breathing 1 + footer 1
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant
         // reply, read through the same draw cache as the board's `p` peek
         // (one slot is still enough — board and ticket never draw the same
         // frame). Bash sessions have no transcript and preview nothing.
-        let sel = app.rail_sessions(ticket_id).into_iter().nth(rail_idx);
+        let row = app.rail_rows(ticket_id).get(rail_idx).copied();
+        let sel = match row {
+            Some(RailRow::Session(s)) => Some(s),
+            _ => None,
+        };
+        // A note row: the note itself, whole, once it has been fetched.
+        let note = match row {
+            Some(RailRow::Note(n)) => Some((n, app.note_text(n))),
+            _ => None,
+        };
         let peek =
             sel.and_then(|s| s.transcript_path.as_deref()).and_then(|p| app.peek_cache.peek(p));
         // A mid-turn agent keeps composing past whatever the preview shows,
@@ -223,6 +267,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             peek.as_ref(),
             working,
             shell,
+            note,
         );
         draw_rail(
             f,
@@ -261,6 +306,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     );
 }
 
+#[allow(clippy::too_many_arguments)] // one call site; a params struct would just rename the args
 fn draw_preview(
     f: &mut Frame,
     area: Rect,
@@ -269,6 +315,7 @@ fn draw_preview(
     peek: Option<&crate::peek::Peek>,
     working: bool,
     shell: Option<&[String]>,
+    note: Option<(&NoteMeta, Option<&str>)>,
 ) {
     let theme = &app.theme;
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -315,6 +362,26 @@ fn draw_preview(
             let mut spans = vec![Span::raw("   ")];
             spans.extend(row.spans);
             lines.push(Line::from(spans));
+        }
+    } else if let Some((meta, text)) = note {
+        // A note, whole: the same rich text as a reply, paged the same way,
+        // keyed to the note and its revision so an agent's rewrite starts
+        // the page at the top.
+        lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
+        lines.push(Line::default());
+        match text {
+            None => lines.push(Line::from(Span::styled("   fetching", theme.dim3()))),
+            Some(text) => {
+                let budget = (area.height as usize).saturating_sub(lines.len());
+                let width = (area.width as usize).saturating_sub(4);
+                let rows = crate::rich::render_all(text, width, theme);
+                let shown = window(app, Some(note_key(meta)), rows, budget, width, false);
+                for row in shown {
+                    let mut spans = vec![Span::raw("   ")];
+                    spans.extend(row.spans);
+                    lines.push(Line::from(spans));
+                }
+            }
         }
     } else if reply.is_some() || working {
         lines.push(Line::from(Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))));
@@ -376,6 +443,17 @@ fn doc_key(session: uuid::Uuid, reply: Option<&str>) -> u64 {
     h.finish()
 }
 
+/// A note's document key: the note and its revision, with a discriminant
+/// so it can never collide with a session's.
+fn note_key(meta: &NoteMeta) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    1u8.hash(&mut h);
+    meta.id.hash(&mut h);
+    meta.rev.hash(&mut h);
+    h.finish()
+}
+
 /// The zone's window onto `rows`: honours the offset `{ }` asked for
 /// (`App::preview_scroll`, only if it was asked of THIS document), clamps
 /// it the way the diff pane does and writes the clamp back, and records what
@@ -431,6 +509,7 @@ fn draw_rail(
     let theme = &app.theme;
     let tier = theme.glyph_tier();
     let rail = app.rail_sessions(ticket_id);
+    let notes: &[NoteMeta] = app.board.ticket(ticket_id).map(|t| t.notes.as_slice()).unwrap_or(&[]);
     let w = area.width as usize;
 
     let mut head = vec![Span::styled(" SESSIONS", theme.dim1().add_modifier(Modifier::BOLD))];
@@ -451,8 +530,6 @@ fn draw_rail(
             .collect::<Vec<_>>()
             .join(" ∙ ");
         lines.push(Line::from(Span::styled(format!(" {nudge}"), theme.dim3())));
-        f.render_widget(Paragraph::new(lines), area);
-        return;
     }
 
     for (i, s) in rail.iter().enumerate() {
@@ -546,6 +623,46 @@ fn draw_rail(
                         .style(row_style),
                 );
             }
+        }
+    }
+
+    // ---- the notes, under the sessions ------------------------------------
+    // Same shape as the sessions: a heading with the count, one row each —
+    // mark, name (the note's first line), then who last wrote it and when.
+    // `n` opens the selected one; the preview zone reads it.
+    if !notes.is_empty() {
+        lines.push(Line::default());
+        let mut head = vec![Span::styled(" NOTES", theme.dim1().add_modifier(Modifier::BOLD))];
+        let right = notes.len().to_string();
+        let used: usize = 6 + right.width() + 1;
+        head.push(Span::raw(" ".repeat(w.saturating_sub(used))));
+        head.push(Span::styled(right, theme.dim2()));
+        lines.push(Line::from(head));
+        lines.push(Line::default());
+        for (j, n) in notes.iter().enumerate() {
+            let selected = rail.len() + j == rail_idx;
+            let who = author_word(&n.edited_by);
+            let age = created_at_epoch_ms(&n.edited_at)
+                .map(|ms| age_slot(now, ms, false))
+                .unwrap_or_default();
+            let tail = format!("{who} {age}");
+            let budget = w.saturating_sub(4 + tail.width() + 1);
+            let name = truncate(&n.name, budget);
+            let name_style = if selected {
+                Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+            } else {
+                theme.base()
+            };
+            let mark = glyphs::note_mark(tier);
+            let head = format!(" {mark} {name}");
+            let used: usize = head.width() + tail.width() + 1;
+            let spans = vec![
+                Span::styled(head, name_style),
+                Span::raw(" ".repeat(w.saturating_sub(used))),
+                Span::styled(tail, theme.dim2()),
+            ];
+            let row_style = if selected { theme.selected_row() } else { Style::default() };
+            lines.push(Line::from(spans).style(row_style));
         }
     }
 

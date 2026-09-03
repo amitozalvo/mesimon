@@ -27,4 +27,4 @@
 
 
 
- TICKET  jk select session ∙ enter focus ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ d delete ∙ q board ∙ ? keys
+ TICKET  jk select session ∙ enter focus ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ d delete ∙ n describe ∙ ? keys

@@ -105,6 +105,50 @@ pub(crate) fn marquee_offset(elapsed_ms: u64, overflow: usize) -> usize {
     (step.saturating_sub(HOLD_STEPS - 1) as usize).min(overflow)
 }
 
+/// The grapheme boundary before `cursor` in `text`; 0 at the start. Shared
+/// by both fields: a cursor that lands inside a cluster splits an accent
+/// from its base on the next keystroke, on one line or many.
+fn prev_boundary(text: &str, cursor: usize) -> usize {
+    text[..cursor].grapheme_indices(true).next_back().map(|(i, _)| i).unwrap_or(0)
+}
+
+/// The grapheme boundary after `cursor`; the text's end at the end.
+fn next_boundary(text: &str, cursor: usize) -> usize {
+    text[cursor..].graphemes(true).next().map(|g| cursor + g.len()).unwrap_or(text.len())
+}
+
+/// Backward over any whitespace, then over the word — its start.
+fn word_start_before(text: &str, cursor: usize) -> usize {
+    let mut idx = cursor;
+    let mut in_word = false;
+    for (i, ch) in text[..cursor].char_indices().rev() {
+        if ch.is_whitespace() {
+            if in_word {
+                break;
+            }
+        } else {
+            in_word = true;
+        }
+        idx = i;
+    }
+    idx
+}
+
+/// Forward over any whitespace, then over the word — just past its end.
+fn word_end_after(text: &str, cursor: usize) -> usize {
+    let mut in_word = false;
+    for (i, ch) in text[cursor..].char_indices() {
+        if ch.is_whitespace() {
+            if in_word {
+                return cursor + i;
+            }
+        } else {
+            in_word = true;
+        }
+    }
+    text.len()
+}
+
 /// In-place title editing: the text plus a byte cursor kept on grapheme
 /// boundaries. Word ops are whitespace-delimited (readline's unix-word):
 /// a title is prose, not code, so `-`/`_` stay inside a word.
@@ -184,50 +228,6 @@ impl EditBuffer {
         self.text[..self.cursor].width()
     }
 
-    fn prev_boundary(&self) -> usize {
-        self.text[..self.cursor].grapheme_indices(true).next_back().map(|(i, _)| i).unwrap_or(0)
-    }
-
-    fn next_boundary(&self) -> usize {
-        self.text[self.cursor..]
-            .graphemes(true)
-            .next()
-            .map(|g| self.cursor + g.len())
-            .unwrap_or(self.text.len())
-    }
-
-    /// Backward over any whitespace, then over the word — its start.
-    fn word_start_before(&self) -> usize {
-        let mut idx = self.cursor;
-        let mut in_word = false;
-        for (i, ch) in self.text[..self.cursor].char_indices().rev() {
-            if ch.is_whitespace() {
-                if in_word {
-                    break;
-                }
-            } else {
-                in_word = true;
-            }
-            idx = i;
-        }
-        idx
-    }
-
-    /// Forward over any whitespace, then over the word — just past its end.
-    fn word_end_after(&self) -> usize {
-        let mut in_word = false;
-        for (i, ch) in self.text[self.cursor..].char_indices() {
-            if ch.is_whitespace() {
-                if in_word {
-                    return self.cursor + i;
-                }
-            } else {
-                in_word = true;
-            }
-        }
-        self.text.len()
-    }
-
     /// One typed character. Past the limit the key is inert: the same bound
     /// the daemon applies, felt here rather than discovered on save.
     pub(crate) fn insert(&mut self, c: char) {
@@ -239,18 +239,18 @@ impl EditBuffer {
     }
 
     pub(crate) fn backspace(&mut self) {
-        let start = self.prev_boundary();
+        let start = prev_boundary(&self.text, self.cursor);
         self.text.drain(start..self.cursor);
         self.cursor = start;
     }
 
     pub(crate) fn delete(&mut self) {
-        let end = self.next_boundary();
+        let end = next_boundary(&self.text, self.cursor);
         self.text.drain(self.cursor..end);
     }
 
     pub(crate) fn delete_word_back(&mut self) {
-        let start = self.word_start_before();
+        let start = word_start_before(&self.text, self.cursor);
         self.text.drain(start..self.cursor);
         self.cursor = start;
     }
@@ -261,19 +261,19 @@ impl EditBuffer {
     }
 
     pub(crate) fn left(&mut self) {
-        self.cursor = self.prev_boundary();
+        self.cursor = prev_boundary(&self.text, self.cursor);
     }
 
     pub(crate) fn right(&mut self) {
-        self.cursor = self.next_boundary();
+        self.cursor = next_boundary(&self.text, self.cursor);
     }
 
     pub(crate) fn word_left(&mut self) {
-        self.cursor = self.word_start_before();
+        self.cursor = word_start_before(&self.text, self.cursor);
     }
 
     pub(crate) fn word_right(&mut self) {
-        self.cursor = self.word_end_after();
+        self.cursor = word_end_after(&self.text, self.cursor);
     }
 
     pub(crate) fn home(&mut self) {
@@ -296,6 +296,334 @@ pub(crate) fn edit_window(text: &str, w_before: usize, budget: usize) -> (String
         marquee_window(text, budget, skip)
     };
     (shown, w_before.saturating_sub(skip) as u16)
+}
+
+/// A multi-line field: a note, not a title. One `String` with `'\n'` inside
+/// it rather than a `Vec<String>` of lines, because the limit is a byte cap
+/// the daemon applies to the whole text (newlines count), `into_text` is
+/// free, and `'\n'` is its own grapheme cluster under UAX 29 — so the
+/// boundary routines the one-line field uses work unchanged, and a
+/// backspace at column 0 joins lines for nothing. (`"\r\n"` is ONE cluster,
+/// which is why `'\r'` is normalised away on every entry road.)
+///
+/// Clean by construction: nothing a renderer would scrub can get in.
+/// `insert` refuses controls, format hazards and cell hazards, `newline` is
+/// the only road for a `'\n'`, and `from_text`/`paste` run the same
+/// `scrub_cells` a zone runs before drawing. The renderer therefore never
+/// scrubs, and the cursor arithmetic can never desync from what is drawn —
+/// a scrubbed-out byte the cursor still counted is a cursor one cell off.
+#[derive(Debug, Clone, PartialEq)]
+pub(crate) struct TextArea {
+    /// `'\n'`-separated; never holds `'\r'`, `'\t'` or any hazard char.
+    text: String,
+    /// Byte offset, always on a grapheme boundary.
+    cursor: usize,
+    /// The sticky display column (cells) `up`/`down` aim for: set on the
+    /// first vertical move, kept while the walk continues, cleared by any
+    /// horizontal edit or motion — so a walk through a short line comes back
+    /// out at the column it went in on.
+    want_col: Option<usize>,
+    /// Byte cap over the WHOLE text, newlines included.
+    limit: usize,
+}
+
+impl TextArea {
+    pub(crate) fn new(limit: usize) -> Self {
+        Self { text: String::new(), cursor: 0, want_col: None, limit }
+    }
+
+    /// Start editing existing text, cursor at 0 — a note opens at its top.
+    /// Line endings are normalised and hazards scrubbed on the way in; text
+    /// already past the limit is kept whole, the field just refuses to grow
+    /// it (the same rule as `EditBuffer::from_text`).
+    pub(crate) fn from_text(text: &str, limit: usize) -> Self {
+        Self { text: Self::clean(text), cursor: 0, want_col: None, limit }
+    }
+
+    /// `"\r\n"` and a lone `'\r'` become `'\n'`, then `scrub_cells` keeps the
+    /// newlines and turns tabs into spaces. The order matters: scrubbing
+    /// first would drop the `'\r'` of a `"\r\n"` and the pair's newline would
+    /// survive, but a lone `'\r'` (an old Mac file) would vanish with its
+    /// line break.
+    fn clean(raw: &str) -> String {
+        let unified = raw.replace("\r\n", "\n").replace('\r', "\n");
+        mesimon_core::text::scrub_cells(&unified, true)
+    }
+
+    pub(crate) fn as_str(&self) -> &str {
+        &self.text
+    }
+
+    #[cfg(test)]
+    pub(crate) fn into_text(self) -> String {
+        self.text
+    }
+
+    pub(crate) fn limit(&self) -> usize {
+        self.limit
+    }
+
+    pub(crate) fn is_empty(&self) -> bool {
+        self.text.is_empty()
+    }
+
+    /// Bytes, the unit the limit is in.
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.text.len()
+    }
+
+    /// Byte offset of the cursor.
+    #[cfg(test)]
+    pub(crate) fn cursor(&self) -> usize {
+        self.cursor
+    }
+
+    /// Room left under the limit, in bytes.
+    fn room(&self) -> usize {
+        self.limit.saturating_sub(self.text.len())
+    }
+
+    /// Byte offset where the cursor's line starts.
+    fn line_start(&self) -> usize {
+        self.text[..self.cursor].rfind('\n').map_or(0, |i| i + 1)
+    }
+
+    /// Byte offset where the cursor's line ends (at its `'\n'`, or the
+    /// text's end).
+    fn line_end(&self) -> usize {
+        self.text[self.cursor..].find('\n').map_or(self.text.len(), |i| self.cursor + i)
+    }
+
+    /// Byte offset where line `n` starts; the text's end past the last line.
+    fn start_of_line(&self, n: usize) -> usize {
+        let mut start = 0;
+        for (i, line) in self.text.split('\n').enumerate() {
+            if i == n {
+                return start;
+            }
+            start += line.len() + 1;
+        }
+        self.text.len()
+    }
+
+    /// Zero-based line the cursor is on.
+    pub(crate) fn cursor_line(&self) -> usize {
+        self.text[..self.cursor].matches('\n').count()
+    }
+
+    /// Display cells before the cursor on its line — the column, in the
+    /// renderer's unit.
+    pub(crate) fn cursor_col_cells(&self) -> usize {
+        self.text[self.line_start()..self.cursor].width()
+    }
+
+    /// An empty text has one empty line; a trailing `'\n'` yields a trailing
+    /// empty line — what `lines()` yields, and what the window draws.
+    pub(crate) fn line_count(&self) -> usize {
+        self.text.split('\n').count()
+    }
+
+    pub(crate) fn lines(&self) -> impl Iterator<Item = &str> {
+        self.text.split('\n')
+    }
+
+    /// One typed character. Controls (a `'\n'` only ever arrives through
+    /// `newline`), format hazards and cell hazards are inert, and so is
+    /// anything past the limit.
+    pub(crate) fn insert(&mut self, c: char) {
+        use mesimon_core::text::{is_cell_hazard, is_format_hazard};
+        if c.is_control() || is_format_hazard(c) || is_cell_hazard(c) {
+            return;
+        }
+        if c.len_utf8() > self.room() {
+            return;
+        }
+        self.text.insert(self.cursor, c);
+        self.cursor += c.len_utf8();
+        self.want_col = None;
+    }
+
+    /// Enter. A newline is a byte under the limit like any other.
+    pub(crate) fn newline(&mut self) {
+        if self.room() == 0 {
+            return;
+        }
+        self.text.insert(self.cursor, '\n');
+        self.cursor += 1;
+        self.want_col = None;
+    }
+
+    /// A bracketed paste. Unlike `EditBuffer::paste` the newlines are KEPT —
+    /// this is a multi-line field, and a pasted note keeps its shape — but
+    /// the line endings are unified and the hazards scrubbed first, then the
+    /// text goes in grapheme by grapheme under the limit; the cut never
+    /// splits a cluster.
+    pub(crate) fn paste(&mut self, raw: &str) -> Pasted {
+        let clean = Self::clean(raw);
+        let mut trimmed = false;
+        for g in clean.graphemes(true) {
+            if g.len() > self.room() {
+                trimmed = true;
+                break;
+            }
+            self.text.insert_str(self.cursor, g);
+            self.cursor += g.len();
+        }
+        self.want_col = None;
+        Pasted { trimmed }
+    }
+
+    /// Grapheme-wise; at column 0 the `'\n'` before the cursor is the
+    /// cluster removed, which joins the line to the one above.
+    pub(crate) fn backspace(&mut self) {
+        let start = prev_boundary(&self.text, self.cursor);
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+        self.want_col = None;
+    }
+
+    /// Grapheme-wise; at a line's end it eats the `'\n'` and joins the next
+    /// line up.
+    pub(crate) fn delete(&mut self) {
+        let end = next_boundary(&self.text, self.cursor);
+        self.text.drain(self.cursor..end);
+        self.want_col = None;
+    }
+
+    /// Like the one-line field's, but never past the line start: a `^w` at
+    /// column 0 does nothing rather than eating the line above.
+    pub(crate) fn delete_word_back(&mut self) {
+        let start = self.line_start();
+        let start =
+            start + word_start_before(&self.text[start..self.line_end()], self.cursor - start);
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+        self.want_col = None;
+    }
+
+    /// `^u`: to the LINE start.
+    pub(crate) fn kill_to_start(&mut self) {
+        let start = self.line_start();
+        self.text.drain(start..self.cursor);
+        self.cursor = start;
+        self.want_col = None;
+    }
+
+    /// One cluster back, crossing a line break from column 0.
+    pub(crate) fn left(&mut self) {
+        self.cursor = prev_boundary(&self.text, self.cursor);
+        self.want_col = None;
+    }
+
+    /// One cluster forward, crossing a line break from a line's end.
+    pub(crate) fn right(&mut self) {
+        self.cursor = next_boundary(&self.text, self.cursor);
+        self.want_col = None;
+    }
+
+    /// Bounded by the current line: a word never crosses a break.
+    pub(crate) fn word_left(&mut self) {
+        let start = self.line_start();
+        self.cursor =
+            start + word_start_before(&self.text[start..self.line_end()], self.cursor - start);
+        self.want_col = None;
+    }
+
+    pub(crate) fn word_right(&mut self) {
+        let start = self.line_start();
+        self.cursor =
+            start + word_end_after(&self.text[start..self.line_end()], self.cursor - start);
+        self.want_col = None;
+    }
+
+    pub(crate) fn home(&mut self) {
+        self.cursor = self.line_start();
+        self.want_col = None;
+    }
+
+    pub(crate) fn end(&mut self) {
+        self.cursor = self.line_end();
+        self.want_col = None;
+    }
+
+    pub(crate) fn up(&mut self) {
+        self.vertical(-1);
+    }
+
+    pub(crate) fn down(&mut self) {
+        self.vertical(1);
+    }
+
+    /// `|delta|` lines up or down, clamped at the ends.
+    pub(crate) fn page(&mut self, delta: isize) {
+        self.vertical(delta);
+    }
+
+    /// The one vertical move. The wanted column is the display column the
+    /// cursor had when the walk began, and the landing is the LAST grapheme
+    /// boundary on the target line whose accumulated width is within it —
+    /// so a wide cluster straddling the column is stepped before, never
+    /// split. At the first or last line the move is a no-op that keeps the
+    /// wanted column, so the walk can turn around.
+    fn vertical(&mut self, delta: isize) {
+        let want = *self.want_col.get_or_insert(self.cursor_col_cells());
+        let cur = self.cursor_line();
+        let last = self.line_count() - 1;
+        let target = cur.saturating_add_signed(delta).min(last);
+        if target == cur {
+            return;
+        }
+        let start = self.start_of_line(target);
+        let line = self.text[start..].split('\n').next().unwrap_or("");
+        let mut cursor = start;
+        let mut width = 0usize;
+        for g in line.graphemes(true) {
+            let w = g.width();
+            if width + w > want {
+                break;
+            }
+            width += w;
+            cursor += g.len();
+        }
+        self.cursor = cursor;
+    }
+}
+
+/// The rows of a multi-line field that fit `rows` × `width` cells, with the
+/// cursor row kept inside the vertical window and the cursor kept inside its
+/// row horizontally. `top` is the first line shown last frame; it moves only
+/// as far as the cursor forces it, so a cursor walking inside the window
+/// never jitters the text. Returns the corrected top, the rows (the cursor
+/// row through `edit_window`, every other row truncated with a trailing `~`
+/// when cut), and the (row, col) of the hardware cursor within the window.
+/// `rows == 0` is an empty window with the cursor at (0, 0).
+pub(crate) fn area_window(
+    ta: &TextArea,
+    top: usize,
+    rows: usize,
+    width: usize,
+) -> (usize, Vec<String>, (u16, u16)) {
+    if rows == 0 {
+        return (0, Vec::new(), (0, 0));
+    }
+    let cur = ta.cursor_line();
+    let count = ta.line_count();
+    // Follow the cursor, then never start so far down that the window is
+    // emptier than the text makes it.
+    let top = top.min(cur).max((cur + 1).saturating_sub(rows)).min(count.saturating_sub(rows));
+    let mut out = Vec::with_capacity(rows);
+    let mut cursor_col = 0u16;
+    for (i, line) in ta.lines().enumerate().skip(top).take(rows) {
+        if i == cur {
+            let (shown, col) = edit_window(line, ta.cursor_col_cells(), width);
+            cursor_col = col;
+            out.push(shown);
+        } else {
+            out.push(truncate(line, width));
+        }
+    }
+    (top, out, ((cur - top) as u16, cursor_col))
 }
 
 /// `created_at` → epoch ms. The daemon writes `@<epoch-secs>` (server.rs
@@ -572,5 +900,265 @@ mod tests {
         // The minute band and up is identical either way.
         assert_eq!(age_slot(180 * s, 0, false), "3m");
         assert_eq!(age_slot(400 * 86_400 * s, 0, false), ">1y");
+    }
+
+    #[test]
+    fn area_newline_and_join() {
+        let mut t = TextArea::new(64);
+        for c in "ab".chars() {
+            t.insert(c);
+        }
+        t.newline();
+        t.insert('c');
+        t.newline();
+        t.insert('d');
+        assert_eq!(t.as_str(), "ab\nc\nd");
+        assert_eq!(t.line_count(), 3);
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (2, 1));
+        // Backspace at column 0 joins with the line above: the newline is
+        // the cluster removed.
+        t.home();
+        t.backspace();
+        assert_eq!(t.as_str(), "ab\ncd");
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 1));
+        // Delete at a line's end joins the line below.
+        t.up();
+        t.end();
+        t.delete();
+        assert_eq!(t.as_str(), "abcd");
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 2));
+        assert_eq!(t.lines().collect::<Vec<_>>(), vec!["abcd"]);
+        // An empty text is one empty line; a trailing newline is a trailing
+        // empty line.
+        assert_eq!(TextArea::new(8).lines().collect::<Vec<_>>(), vec![""]);
+        assert_eq!(TextArea::from_text("a\n", 8).lines().collect::<Vec<_>>(), vec!["a", ""]);
+    }
+
+    #[test]
+    fn area_up_down_keeps_a_sticky_column() {
+        let mut t = TextArea::from_text("abcdef\nab\nabcdef", 64);
+        for _ in 0..5 {
+            t.right();
+        }
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 5));
+        t.down(); // the short line clamps...
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 2));
+        t.down(); // ...and the walk comes back out at the column it went in on.
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (2, 5));
+        // Past the last line: no-op, column kept.
+        t.down();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (2, 5));
+        t.up();
+        t.up();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 5));
+        // A horizontal move clears the stickiness: the next walk starts
+        // from where the cursor now is.
+        t.left();
+        t.down();
+        t.down();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (2, 4));
+        // page() is up/down repeated, clamped.
+        t.page(-10);
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 4));
+        t.page(1);
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 2));
+    }
+
+    #[test]
+    fn area_up_down_never_lands_inside_a_wide_cluster() {
+        let mut t = TextArea::from_text("abcd\n你好", 64);
+        for _ in 0..3 {
+            t.right();
+        }
+        t.down();
+        // Column 3 falls inside 好 (cells 2-3); the landing is after 你.
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 2));
+        assert_eq!(t.cursor(), "abcd\n你".len());
+        t.up();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 3));
+    }
+
+    #[test]
+    fn area_combining_cluster_travels_whole() {
+        let mut t = TextArea::from_text("cafe\u{301}\nx", 64);
+        t.down();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 0));
+        t.left(); // crosses the break, lands after the accent
+        assert_eq!(t.cursor(), "cafe\u{301}".len());
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 4));
+        t.backspace();
+        assert_eq!(t.as_str(), "caf\nx");
+        // And right crosses the break the other way.
+        t.right();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 0));
+    }
+
+    #[test]
+    fn area_word_ops_stop_at_the_line() {
+        let mut t = TextArea::from_text("foo bar\nbaz qux", 64);
+        t.down();
+        // ^w at column 0 does nothing — the line above is not a word.
+        t.delete_word_back();
+        assert_eq!(t.as_str(), "foo bar\nbaz qux");
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 0));
+        // word_left at column 0 crosses nothing.
+        t.word_left();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 0));
+        // word_right at a line's end crosses nothing either.
+        t.up();
+        t.end();
+        t.word_right();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 7));
+        // Inside a line the words behave as on one line.
+        t.word_left();
+        assert_eq!(t.cursor_col_cells(), 4);
+        t.delete_word_back();
+        assert_eq!(t.as_str(), "bar\nbaz qux");
+        // ^u kills only the current line's prefix.
+        t.down();
+        t.end();
+        t.kill_to_start();
+        assert_eq!(t.as_str(), "bar\n");
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 0));
+    }
+
+    #[test]
+    fn area_home_end_are_line_wise() {
+        let mut t = TextArea::from_text("ab\ncde\nf", 64);
+        t.down();
+        t.end();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 3));
+        assert_eq!(t.cursor(), "ab\ncde".len());
+        t.home();
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 0));
+        assert_eq!(t.cursor(), "ab\n".len());
+        // The last line's end is the text's end.
+        t.down();
+        t.end();
+        assert_eq!(t.cursor(), t.len());
+    }
+
+    #[test]
+    fn area_paste_keeps_newlines_and_scrubs() {
+        let mut t = TextArea::new(64);
+        assert_eq!(t.paste("a\r\nb\u{202e}\tc\n"), Pasted { trimmed: false });
+        assert_eq!(t.as_str(), "a\nb c\n");
+        assert_eq!(t.line_count(), 3);
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (2, 0));
+        // Past the limit the cut is at a cluster boundary and says so.
+        let mut t = TextArea::new(4);
+        assert_eq!(t.paste("ab\ncd"), Pasted { trimmed: true });
+        assert_eq!(t.as_str(), "ab\nc");
+        let mut t = TextArea::new(5);
+        assert_eq!(t.paste("שלום"), Pasted { trimmed: true });
+        assert_eq!(t.as_str(), "של");
+        let mut t = TextArea::new(5);
+        t.paste("cafe\u{301}");
+        assert_eq!(t.as_str(), "caf");
+        // Mid-text, at the cursor, cursor rides to the end of the paste.
+        let mut t = TextArea::from_text("ab", 64);
+        t.right();
+        t.paste("x\ny");
+        assert_eq!(t.as_str(), "ax\nyb");
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (1, 1));
+    }
+
+    #[test]
+    fn area_limit_counts_the_newline() {
+        let mut t = TextArea::new(3);
+        t.insert('a');
+        t.insert('b');
+        t.newline();
+        t.insert('c');
+        assert_eq!(t.as_str(), "ab\n");
+        assert_eq!(t.len(), 3);
+        // Deleting makes room again; text loaded over the limit is kept.
+        t.backspace();
+        t.insert('z');
+        assert_eq!(t.as_str(), "abz");
+        let mut t = TextArea::from_text("abcdef", 3);
+        t.insert('x');
+        t.newline();
+        assert_eq!(t.as_str(), "abcdef");
+        assert_eq!(t.paste("y"), Pasted { trimmed: true });
+        assert_eq!(t.as_str(), "abcdef");
+        assert_eq!(t.limit(), 3);
+    }
+
+    #[test]
+    fn area_window_follows_the_cursor() {
+        let mut t = TextArea::from_text("0\n1\n2\n3\n4", 64);
+        t.page(4);
+        assert_eq!(t.cursor_line(), 4);
+        let (top, rows, cursor) = area_window(&t, 0, 3, 10);
+        assert_eq!(top, 2);
+        assert_eq!(rows, vec!["2", "3", "4"]);
+        assert_eq!(cursor, (2, 0));
+        t.page(-4);
+        let (top, rows, cursor) = area_window(&t, 2, 3, 10);
+        assert_eq!(top, 0);
+        assert_eq!(rows, vec!["0", "1", "2"]);
+        assert_eq!(cursor, (0, 0));
+        // Inside the window the top does not move: no jitter.
+        t.down();
+        t.down();
+        let (top, _, cursor) = area_window(&t, 2, 3, 10);
+        assert_eq!(top, 2);
+        assert_eq!(cursor, (0, 0));
+        let (top, _, cursor) = area_window(&t, 0, 3, 10);
+        assert_eq!(top, 0);
+        assert_eq!(cursor, (2, 0));
+        // A top past what the text fills is pulled back; a short text fits.
+        let (top, rows, _) = area_window(&t, 4, 3, 10);
+        assert_eq!((top, rows.len()), (2, 3));
+        let (top, rows, _) = area_window(&t, 3, 10, 10);
+        assert_eq!((top, rows.len()), (0, 5));
+        // No rows, no window.
+        assert_eq!(area_window(&t, 2, 0, 10), (0, Vec::new(), (0, 0)));
+        // An empty text is one empty row with the cursor on it.
+        assert_eq!(area_window(&TextArea::new(8), 0, 3, 10), (0, vec![String::new()], (0, 0)));
+    }
+
+    #[test]
+    fn area_window_scrolls_the_cursor_row_only() {
+        let mut t = TextArea::from_text("abcdefgh\nabcdefgh", 64);
+        t.end();
+        let (top, rows, cursor) = area_window(&t, 0, 2, 4);
+        assert_eq!(top, 0);
+        assert_eq!(rows, vec!["efgh", "abc~"]);
+        assert_eq!(cursor, (0, 4));
+        // The cursor row's scroll follows the cursor; the other row does not.
+        t.home();
+        let (_, rows, cursor) = area_window(&t, 0, 2, 4);
+        assert_eq!(rows, vec!["abcd", "abc~"]);
+        assert_eq!(cursor, (0, 0));
+    }
+
+    #[test]
+    fn area_insert_refuses_hazards() {
+        let mut t = TextArea::new(64);
+        t.insert('a');
+        t.insert('\u{202e}'); // bidi override
+        t.insert('\x07'); // bell
+        t.insert('█'); // block element
+        t.insert('\t');
+        t.insert('\n'); // only newline() adds one
+        t.insert('b');
+        assert_eq!(t.as_str(), "ab");
+        assert_eq!(t.cursor(), 2);
+        // from_text and paste scrub the same set.
+        assert_eq!(TextArea::from_text("a\u{202e}\x07█\tb", 64).as_str(), "a b");
+    }
+
+    #[test]
+    fn area_from_text_opens_at_the_top_and_normalises_crlf() {
+        let t = TextArea::from_text("a\r\nb\rc\n", 64);
+        assert_eq!(t.as_str(), "a\nb\nc\n");
+        assert_eq!(t.cursor(), 0);
+        assert_eq!((t.cursor_line(), t.cursor_col_cells()), (0, 0));
+        assert_eq!(t.line_count(), 4);
+        assert!(!t.is_empty());
+        assert!(TextArea::new(8).is_empty());
+        assert_eq!(t.clone().into_text(), "a\nb\nc\n");
     }
 }

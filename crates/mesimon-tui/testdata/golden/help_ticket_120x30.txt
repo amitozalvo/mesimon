@@ -9,6 +9,8 @@
 
                                   TICKETS
                                     r         rename
+                                    n         describe
+                                    N         new note
                                     ^t        tags
                                     a         archive
                                     d         delete
@@ -25,6 +27,4 @@
                                     ?         keys
                                     ^L        redraw
                                     ^Z        suspend mesimon
-
-
  TICKET  jk select session ∙ enter focus ∙ tab needs you ∙ c claude ∙ s shell ∙ x sleep ∙ r rename ∙ q board ∙ ? keys

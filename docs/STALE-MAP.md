@@ -3157,3 +3157,185 @@ two. The card-not-palette rule stands (an untagged block still steps with the cu
 changed is that "selected or not" is the whole ladder. The per-flavor constants and the 12% step
 floor recorded in "The simplify pass" and "Barely visible on light theme" still hold for the one
 step that remains.
+
+## Notes: files under the ticket, a full-screen editor, and two agent tools (2026-09-02, user request)
+
+The ticket-directory IA the corpus drew (`docs/13 §13.3`, `docs/07 §14.1`) and STALE-MAP's own
+"`add_note` (T1) is deferred until notes have any storage or surface at all" both land here, with
+deviations. A note is `notes/<ULID>.md` beside `ticket.toml`, an opaque blob written whole by
+`store::save_note` (`write_atomic`, `SHARED`) and never parsed; the daemon mints the id and
+neither a person nor an agent ever supplies a filename (docs/15 §4.7). The metadata is a new
+`[[notes]]` array of tables on `Ticket` — `NoteMeta { id, name, rev, created_at, created_by,
+edited_at, edited_by }` — after `[[tags]]` and before `[archived]`, and `TICKET_SCHEMA` is 2 on
+the columns file's reasoning: an older build would drop the array on its next write and orphan
+the files. **`notes[0]` IS the description**: there is no `spec.md`, no separate field, and no
+title on a note — its `name` is the body's first non-blank line, `#`s stripped, recomputed by
+the daemon on every write (`board::note_name`) so nothing that lists notes needs a body. `rev`
+exists because `edited_at` is `@<secs>` and two writes in one second look identical; the TUI's
+cache and the preview page key on `(id, rev)`. The author is `Principal::note_author()` —
+`local`, or `agent:<session-uuid>` (docs/13's `origin` vocabulary; the session id travels
+inside the word so the file outlives the session record) — and the page renders it as
+`you`/`claude`. `sanitize_note` is `scrub_cells(_, true)` capped at 32 KiB: newlines kept,
+tabs become spaces (fenced code with tabs is the known cost), and the body is a subsequence of
+what was written. Bodies never ride the snapshot (the board is cloned on every event);
+`Command::ReadNote` fetches one, on the writer thread, and `WriteNote { note: None | Some }`
+creates or replaces — blank text on an existing note deletes it. Docs/15 said `add_note`
+"appends only; never replaces"; the user asked for create/edit, so `write_note` replaces, and
+the file is written BEFORE the meta so a crash leaves an orphan file and never a listed note
+with no file.
+
+The agent tier is five: `read_note` (the body as the text block itself, not JSON around it) and
+`write_note` join, `get_ticket` grows `description` (capped at 4 KiB) and a `notes` list, and
+`agent_allows` admits `AgentReadNote`/`AgentWriteNote` — D10's T1 ANNOTATE, the home tags never
+had. The binding still supplies the ticket; a note id off it reads as "no such note". The feed
+gets `write_note` with actor `agent`, never the text. The write gate on `.mesimon/` is what makes
+the tool the agent's only road, and the README says so now.
+
+The TUI grew its first multi-line field. `Mode::Editor(Editor)` is a full-screen editor — a
+title row over a `TextArea` body (`tui/src/text.rs`, one `String` + byte cursor + sticky
+column, clean by construction: `insert` refuses control/format/cell hazards and `paste`
+normalises CRLF then `scrub_cells(_, true)`, so the draw never scrubs and the cursor never
+desyncs; no soft-wrap in v1, the cursor row scrolls under `edit_window`) — with two purposes.
+`Compose` is the one-line composer in a bigger room: `Tab` (`Verb::Describe`, composer-only)
+carries the title over, `^t` and Shift+Tab keep working (`compose_tags()` reads the picks off
+whichever composer is open), `^s` mints ticket + workspace + tags + description as `notes[0]`
+(`App::mint_ticket`, which the one-line composer now calls with no body), and Shift+Enter
+mints and starts claude on the TITLE ONLY — the agent reads the description through
+`get_ticket`, so the paste path is untouched. It is not a fourth Shift+Enter home: same verb,
+same moment, second surface, and `shift_enter_asks_claude_at_every_stage` now says so and
+asserts the Note purpose leaves the atom unbound. `Note` edits `n`'s target — the selected
+rail note, else the description, else a fresh note that becomes the description — always
+re-read from the daemon, never from the cache; `N` is always fresh (same axis, harder; silent
+on the board, where the `?` overlay at 30 rows had exactly one row to spare). `^s` on a note
+STAYS open, says `saved ∙ ^s again tells claude` when the ticket has a claude with a pane, and
+the second press with nothing changed sends `Command::NoteToAgent` — `MergeToAgent`'s twin,
+mesimon's own sentence naming the note and `read_note`, on a human gesture only (`agent_allows`
+denies it) — and says `asked`. Esc is two-press when dirty; emptying an existing note is
+two-press and deletes. `Scope::Editor` is a barrier like `Input`; `EDITOR` in `keymap.rs` is
+the table.
+
+On the ticket page the description renders under the identity line as rich text, capped at
+`min(8, body/3)` rows with `rich::render`'s own `~`, and eats rows from the zones below, never
+the footer; nothing moves when there is none. Notes are rows in the rail under the sessions
+(`RailRow::Session | Note`, sessions first — the invariant `board_enter` and the focus return
+lean on), `≡ <name>  <you|claude> <age>`, the description included so a long one can be paged;
+a note row renders whole in the PREVIEW zone through the same `window` as a reply, keyed to
+`(id, rev)`. `App::poll_notes` fetches the description and the selected note once per `(id,
+rev)` from `tick`, edge-triggered; a failed read retries after 2 s; the cache holds 64.
+`Ctx::sel_note` is what keeps every `sel_*` session fact false on a note row. Ticket `n` sits
+at prio 95 — after `d`, before `q` — so at 120 columns the pop yields, never the destructive
+key. Known gaps: no soft-wrap; last write wins between a person and an agent on one note; the
+description block is capped, the editor is where it is read whole. E2e:
+`crates/mesimon/tests/notes_e2e.rs`.
+
+## Shift+Enter on an empty seat starts claude on the title (2026-09-03, user request)
+
+A ticket saved with plain Enter was one press behind one saved with Shift+Enter, and there was no
+way to take that press later: on the board Shift+Enter was gated on `ticket_promptable` (a live
+claude PANE), so a ticket with no claude offered nothing on the key, and the only road to "start
+claude on the title, submitted" was to have chosen it in the composer.
+
+What holds now:
+
+- The board's `ShiftEnter` binding is still the ONE `Verb::Prompt` binding (an atom appears once
+  per scope), and its `avail` is `ticket_promptable || (has_ticket && !ticket_has_claude)`, under
+  `rich_keys` as before. The hint switches on `Ctx::ticket_has_claude`: `ask claude` over a pane,
+  `ask claude the title` over an empty seat.
+- `App::dispatch` routes `Verb::Prompt` on the same flag: a claude present opens the one-line field
+  as before; none present calls `start_composed(ticket)` — the composer's own second half — which
+  sends `SpawnSession { submit_prompt: true }`, stays on the board, attaches nothing, and arms no
+  fresh-ticket Enter window. The worktree `Provisioning` reply replays the parked spawn, submit
+  flag included, exactly as it does for the composer.
+- A `Sleeping` claude is NOT an empty seat: it holds the one-claude seat and has a conversation the
+  title would repeat into, so the key stays inert there and `c` remains the wake. A shell on the
+  ticket leaves the seat empty (`ticket_has_claude` counts claude only), so the press still starts
+  one beside it.
+- `shift_enter_asks_claude_at_every_stage` is unchanged: this is not a fourth home for the atom,
+  it is the first stage reached from the board instead of from the composer. Pinned by
+  `keymap::shift_enter_on_an_empty_seat_starts_claude_on_the_title` and
+  `app::shift_enter_on_a_ticket_without_claude_starts_it_on_the_title`.
+- No golden moves: the board goldens render without `rich_keys`, where the key is unhinted.
+
+## An agent can file a ticket (2026-09-03, user request)
+
+The tier had no way to record work an agent found and was not asked for: it could do it (scope
+creep on somebody's ticket), drop it, or mention it in a reply that scrolls away. `write_note`
+put it on the agent's OWN ticket, which is the wrong card — the finding is a new unit of work.
+
+What holds now:
+
+- **A sixth tool, `create_ticket`** (`core/src/mcp.rs`): `title` required; `column` optional and
+  a plain string validated server-side (absent means the board's FIRST column, where a human's new
+  ticket lands too); `description` optional, saved as the ticket's first note; `idempotency_key`
+  optional, defaulted by the shim to the client's `toolUseId` exactly as `move_ticket`'s is.
+  Description text passes the lint and the 820-byte cap.
+- **`Command::AgentCreateTicket`** → `Daemon::agent_create_ticket`: the same `mint_ticket` and
+  `sanitize_title` the composer's `CreateTicket` uses, refused under the same columns bar (a
+  `next_key` that cannot persist regresses into an existing ticket's directory on the next start),
+  and the description written through `write_note`, so the note is authored `agent:<uuid>` like
+  every note an agent writes. `persist_and_notify` before the note so a failed note still leaves
+  a consistent, visible ticket, and the receipt then says both ("ticket T-9 created, but its
+  description was not: …").
+- **Authorized as `Mutate` on `Resource::Column`, not `Board`.** `authorize` keeps denying an agent
+  `Mutate` on `Board`; appending one card to a column changes no registry, no column list and no
+  other card, which is the line that rule draws. The doc comment on `authorize` says so now.
+- **The receipt is a KEY, never an id** (`Response::AgentCreated { key, column, board_version,
+  replayed }`), and no agent command accepts a key or an id back — the caller's session stays
+  bound to its own ticket, the new card has no session, and no tool can give it one. Deleting,
+  renaming or archiving what was filed stays in the never-tier: nothing an agent files can be
+  unfiled by an agent.
+- **The replay map grew a shape**: `agent_replay` holds `AgentReplay::{Moved{column},
+  Created{key, column}}` so a `move_ticket` retry is never answered with a `create_ticket`
+  receipt that shared a client-minted id. Same 512-entry bound, same clear-on-overflow.
+- Feed line `create_ticket`, actor the agent, subject the new ticket. The local arm's refusal of
+  agent commands from a `Local` principal lists it too.
+- Pinned by `mcp::exactly_six_tools`, `create_ticket_parses_and_refuses`,
+  `the_tier_is_exactly_six_commands`, the shim's `a_create_result_names_the_new_key`, and
+  `mcp_e2e` (default column, trimmed title, note authored by the agent, no session on the new
+  card, the caller's binding unmoved, a `toolUseId` retry replayed rather than minted twice, a
+  named column honoured, an unknown column refused legibly). README says six tools.
+
+## The composer's editor is a panel over the board, and it grows out of its card (2026-09-03)
+
+The note editor shipped 2026-09-02 as one full-screen surface for both purposes, and composing
+in it lost the board: Tab from the one-line composer dropped the user into a page that shared
+nothing with where they had just been, and nothing on it said which column the ticket would
+land in. The author asked for three things — not full screen but on top of the board, a
+transition from the mini composer to the big one, and the column named.
+
+**The compose purpose draws as a PANEL over the cards** (`editor::draw_panel`, routed by
+`ui/mod.rs` when the editor is composing AND the screen under it is the board). At rest it
+covers the card rows of the columns zone edge to edge: the header, the column headers and their
+breathing row stay above it, the advisory row and the footer under it — and the footer already
+speaks for `Scope::Editor`, so the panel draws none. Edge to edge, not a centred box, because a
+narrower panel left slivers of cut cards on both sides (a bar cell here, `>1y` there) and a
+sliver is drawn structure by another name. The panel's text stands three cells in, where a
+card's text stands (`LPAD` + bar + pad) and where the column headers' names do, so the title
+row is on the same vertical as the column name above it. **The note purpose is untouched**: it
+still takes the whole screen under the breadcrumb, from whichever screen it was opened on.
+
+**The context line names the column**: `NEW TICKET ∙ TODO column ∙ ⎇ worktree ∙ <tags>`. The
+column is `App::cursor_col`, the same one `mint_ticket` sends, read at draw time — moving the
+cursor while composing is impossible, so there is nothing to keep in step. "TODO column" and
+not "in TODO" because "in IN PROGRESS" reads as a stutter.
+
+**The panel grows out of the phantom card.** The board draw records the phantom card's
+on-screen rectangle in `App::compose_card` (draw-side, the way `preview_view` is: where a card
+landed is a fact of the frame — and only a whole card counts, a card cut by the window's edge
+would put the origin off screen), and `Verb::Describe` copies it into `Editor::grow` with the
+instant. For `app::GROW` (180 ms, eased out) `draw_panel` interpolates every edge between that
+rectangle and the resting one, `Clear` + ground on the interim rectangle, the title and context
+inside it and the body once the rows exist — so frame zero is the card itself with its title in
+the same cells, and the board stays visible around the panel while it is small. `tick`'s poll
+timeout is the frame rate (the spinner's 100 ms), and `App::animating` shortens it to 16 ms for
+exactly those frames. The recorded origin is widened left by `LPAD` so the panel's own indent
+puts the title where the card's was, without a one-cell jump. `grow` is `None` on a note, on a
+test-built editor and once settled, so every golden renders the resting panel.
+
+This is the second bend in D19's motion ban after the working spinner, on a different clause:
+the spinner moves because something is moving; this moves ONCE, on a gesture, for a fifth of a
+second, never loops, and exists so the eye is carried from the composer to its bigger room
+instead of being dropped into it. It is not an animation vocabulary — a third motion needs its
+own argument, not this one. Pinned by `the_composer_panel_grows_out_of_its_card` (origin
+recorded, carried by Tab, frame zero on the card's row with the board showing through, settled
+panel with the column headers above and the column named) and the two compose goldens.

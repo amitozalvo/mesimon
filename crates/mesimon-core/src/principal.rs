@@ -40,6 +40,19 @@ impl Principal {
             Principal::Automation { .. } => "automation",
         }
     }
+
+    /// Who wrote a note (`NoteMeta::created_by` / `edited_by`): docs/13's
+    /// `origin` vocabulary — `local` for a person, `agent:<session-uuid>` for
+    /// an agent. The session id travels INSIDE the word so the file outlives
+    /// the session record it names, and a reader that only wants "a person
+    /// or an agent" still gets it from the prefix.
+    pub fn note_author(&self) -> String {
+        match self {
+            Principal::Local => "local".into(),
+            Principal::Agent { session } => format!("agent:{session}"),
+            Principal::Automation { rule } => format!("automation:{rule}"),
+        }
+    }
 }
 
 #[cfg(test)]
@@ -58,6 +71,15 @@ mod tests {
         assert_eq!(Principal::Local.actor(), "local");
         assert_eq!(Principal::Agent { session: uuid::Uuid::nil() }.actor(), "agent");
         assert_eq!(Principal::Automation { rule: "automove".into() }.actor(), "automation");
+    }
+
+    #[test]
+    fn note_authors_carry_the_session() {
+        assert_eq!(Principal::Local.note_author(), "local");
+        assert_eq!(
+            Principal::Agent { session: uuid::Uuid::nil() }.note_author(),
+            "agent:00000000-0000-0000-0000-000000000000"
+        );
     }
 
     #[test]

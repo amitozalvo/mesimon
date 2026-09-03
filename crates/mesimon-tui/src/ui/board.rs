@@ -436,14 +436,28 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 
     // The hardware cursor sits in the edited title (06 §5.7: visible bar in
     // any text input — never a drawn glyph).
+    let peek_rows = top.map(|_| 2usize).unwrap_or(0);
     if let Some((line, x)) = edit_at {
-        let peek_rows = top.map(|_| 2usize).unwrap_or(0);
         if line >= content_start && line < content_end {
             f.set_cursor_position((
                 area.x + x.min(area.width.saturating_sub(1)),
                 area.y + 2 + (peek_rows + line - content_start) as u16,
             ));
         }
+    }
+    // The composer's phantom card, where it landed on screen: Tab's panel
+    // grows out of this rectangle. Only the whole card counts — a card cut
+    // by the window's edge would put the panel's origin off screen. Widened
+    // left by the column's pad (a blank gutter cell), so the panel's own
+    // three-cell indent puts the title exactly where the card's was.
+    if let (Some((InputPurpose::Create { .. }, _)), Some((cs, ce))) = (editing, cursor_range) {
+        let rect = (cs >= content_start && ce <= content_end).then(|| Rect {
+            x: area.x.saturating_sub(layout::LPAD),
+            y: area.y + 2 + (peek_rows + cs - content_start) as u16,
+            width: area.width + layout::LPAD,
+            height: (ce - cs) as u16,
+        });
+        app.compose_card.set(rect);
     }
 }
 

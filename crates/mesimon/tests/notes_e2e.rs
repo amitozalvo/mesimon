@@ -1,0 +1,270 @@
+//! Notes end to end (2026-09-02): a markdown file under the ticket, its
+//! metadata in `ticket.toml`, the agent's two tools through the real shim,
+//! and the "tell claude" paste landing in a live pane.
+//!
+//! The stub is `prompt_e2e`'s read loop: a line in `got.txt` proves both
+//! delivery and the separate Enter.
+
+#![allow(clippy::unwrap_used)]
+
+mod common;
+
+use std::io::{BufRead, BufReader, Write};
+use std::path::Path;
+use std::process::{Child, Command as Proc, Stdio};
+use std::time::{Duration, Instant};
+
+use common::*;
+use mesimon_core::board::SessionKind;
+use mesimon_core::command::{Command, Response};
+use mesimon_core::Principal;
+use serde_json::{json, Value};
+
+/// The MCP shim, driven over its stdin the way Claude Code drives it.
+struct Shim {
+    child: Child,
+    stdin: std::process::ChildStdin,
+    stdout: BufReader<std::process::ChildStdout>,
+    next_id: u64,
+}
+
+impl Shim {
+    fn start(sock: &Path, session: uuid::Uuid) -> Self {
+        let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
+            .args(["mcp", "--sock"])
+            .arg(sock)
+            .args(["--session", &session.to_string()])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn mcp shim");
+        let stdin = child.stdin.take().unwrap();
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        Self { child, stdin, stdout, next_id: 1 }
+    }
+
+    fn rpc(&mut self, method: &str, params: Value) -> Value {
+        let id = self.next_id;
+        self.next_id += 1;
+        let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
+        writeln!(self.stdin, "{line}").unwrap();
+        self.stdin.flush().unwrap();
+        let mut reply = String::new();
+        self.stdout.read_line(&mut reply).unwrap();
+        let v: Value = serde_json::from_str(&reply).expect("json-rpc reply");
+        assert_eq!(v["id"], id);
+        v
+    }
+
+    fn call(&mut self, name: &str, args: Value) -> Value {
+        self.rpc("tools/call", json!({"name": name, "arguments": args}))["result"].clone()
+    }
+
+    fn call_ok(&mut self, name: &str, args: Value) -> String {
+        let r = self.call(name, args);
+        assert_eq!(r["isError"], false, "{name} refused: {r}");
+        r["content"][0]["text"].as_str().unwrap().to_string()
+    }
+
+    fn call_err(&mut self, name: &str, args: Value) -> String {
+        let r = self.call(name, args);
+        assert_eq!(r["isError"], true, "{name} should refuse: {r}");
+        r["content"][0]["text"].as_str().unwrap().to_string()
+    }
+}
+
+impl Drop for Shim {
+    fn drop(&mut self) {
+        let _ = self.child.kill();
+        let _ = self.child.wait();
+    }
+}
+
+#[test]
+fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
+    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" \
+                        >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) = Harness::boot("notes", Some(STUB)) else { return };
+    let got = h.dir.join("got.txt");
+    let sock = h.paths.orch_sock();
+    let mut c = h.client("notes");
+
+    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "noted".into() });
+    let board = c.board();
+    let ticket = board.tickets[0].id;
+    let key = board.tickets[0].short_key.clone();
+    let tdir = h.repo.join(".mesimon/board/tickets").join(&key);
+
+    // ---- a person writes the description ----------------------------------
+    let desc = match c.request(Command::WriteNote {
+        ticket,
+        note: None,
+        text: "# Why this\n\nBecause the peek\tlied.\u{202e}\n".into(),
+    }) {
+        Response::NoteWritten { note: Some(id) } => id,
+        other => panic!("write failed: {other:?}"),
+    };
+    let file = tdir.join("notes").join(format!("{desc}.md"));
+    let body = std::fs::read_to_string(&file).expect("the note is a file");
+    // Sanitized by subtraction: the tab became a space, the bidi mark went.
+    assert_eq!(body, "# Why this\n\nBecause the peek lied.\n");
+    let toml = std::fs::read_to_string(tdir.join("ticket.toml")).unwrap();
+    assert!(toml.contains("schema_version = 2"), "{toml}");
+    assert!(toml.contains("[[notes]]"), "{toml}");
+    assert!(toml.contains("created_by = \"local\""), "{toml}");
+    assert!(toml.contains("name = \"Why this\""), "{toml}");
+    let t = c.board();
+    let meta = t.tickets[0].description().expect("notes[0] is the description").clone();
+    assert_eq!(meta.id, desc);
+    assert_eq!(meta.rev, 1);
+    assert_eq!(meta.edited_by, "local");
+
+    // Reading it back over the wire, and a foreign id is nothing.
+    match c.request(Command::ReadNote { ticket, note: desc }) {
+        Response::Note { text, meta } => {
+            assert_eq!(text, body);
+            assert_eq!(meta.name, "Why this");
+        }
+        other => panic!("{other:?}"),
+    }
+    err_containing(
+        c.request(Command::ReadNote { ticket, note: ulid::Ulid::nil() }),
+        "no such note",
+    );
+    // Blank on a fresh note is nothing to save; the agent forms need an
+    // agent.
+    err_containing(
+        c.request(Command::WriteNote { ticket, note: None, text: "  \n".into() }),
+        "nothing to save",
+    );
+    err_containing(
+        c.request(Command::AgentWriteNote { note: None, text: "x".into() }),
+        "agent principal",
+    );
+
+    // ---- no agent yet: telling one is refused, not swallowed -------------
+    err_containing(c.request(Command::NoteToAgent { ticket, note: desc }), "no live claude");
+
+    // ---- the agent, through the real shim --------------------------------
+    let sid = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let mut shim = Shim::start(&sock, sid);
+    shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
+    let tools = shim.rpc("tools/list", json!({}));
+    let names: Vec<&str> = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| t["name"].as_str().unwrap())
+        .collect();
+    assert!(names.contains(&"read_note") && names.contains(&"write_note"), "{names:?}");
+
+    // get_ticket carries the description and lists the note.
+    let t: Value = serde_json::from_str(&shim.call_ok("get_ticket", json!({}))).unwrap();
+    assert_eq!(t["description"], body);
+    assert_eq!(t["notes"][0]["id"], desc.to_string());
+    assert_eq!(t["notes"][0]["name"], "Why this");
+    assert_eq!(t["notes"][0]["by"], "local");
+
+    // read_note is the body itself, not JSON around it.
+    assert_eq!(shim.call_ok("read_note", json!({"note": desc.to_string()})), body);
+    let refused = shim.call_err("read_note", json!({"note": ulid::Ulid::nil().to_string()}));
+    assert!(refused.contains("no such note"), "{refused}");
+
+    // write_note creates, stamped with the session.
+    let r: Value =
+        serde_json::from_str(&shim.call_ok("write_note", json!({"text": "## Plan\n\n1. look"})))
+            .unwrap();
+    let second: ulid::Ulid = r["note"].as_str().unwrap().parse().unwrap();
+    let b = c.board();
+    let notes = &b.tickets[0].notes;
+    assert_eq!(notes.len(), 2);
+    assert_eq!(notes[1].id, second);
+    assert_eq!(notes[1].name, "Plan");
+    assert_eq!(notes[1].created_by, format!("agent:{sid}"));
+    assert!(tdir.join("notes").join(format!("{second}.md")).is_file());
+
+    // …and replaces, bumping the revision and the author.
+    shim.call_ok(
+        "write_note",
+        json!({"note": desc.to_string(), "text": "# Why this, really\n\nnew"}),
+    );
+    let b = c.board();
+    let d = b.tickets[0].description().unwrap();
+    assert_eq!(d.id, desc, "the description keeps its id");
+    assert_eq!(d.rev, 2);
+    assert_eq!(d.name, "Why this, really");
+    assert_eq!(d.edited_by, format!("agent:{sid}"));
+    assert_eq!(d.created_by, "local", "creation is not rewritten");
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "# Why this, really\n\nnew");
+
+    // Empty text deletes; the file goes with the meta; the second note is
+    // now the description.
+    let r: Value = serde_json::from_str(
+        &shim.call_ok("write_note", json!({"note": desc.to_string(), "text": ""})),
+    )
+    .unwrap();
+    assert_eq!(r["deleted"], true);
+    assert!(!file.exists());
+    let b = c.board();
+    assert_eq!(b.tickets[0].notes.len(), 1);
+    assert_eq!(b.tickets[0].description().unwrap().id, second);
+    // A note the agent cannot see is refused by name, not found by id.
+    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "other".into() });
+    let other = c.board().tickets.iter().find(|t| t.title == "other").unwrap().id;
+    let foreign =
+        match c.request(Command::WriteNote { ticket: other, note: None, text: "mine".into() }) {
+            Response::NoteWritten { note: Some(id) } => id,
+            other => panic!("{other:?}"),
+        };
+    let refused =
+        shim.call_err("write_note", json!({"note": foreign.to_string(), "text": "stolen"}));
+    assert!(refused.contains("no such note"), "{refused}");
+    // The feed flushes on the 250 ms wheel; both writers are named, never
+    // their text.
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    wait_until(Duration::from_secs(5), "the feed to name the writes", || {
+        let feed = std::fs::read_to_string(&feed_path).unwrap_or_default();
+        feed.lines().any(|l| l.contains("\"actor\":\"agent\"") && l.contains("write_note"))
+            && feed.lines().any(|l| l.contains("\"actor\":\"local\"") && l.contains("write_note"))
+    });
+    let feed = std::fs::read_to_string(&feed_path).unwrap();
+    assert!(!feed.contains("Plan") && !feed.contains("Why"), "never the text: {feed}");
+
+    // ---- tell claude ------------------------------------------------------
+    // Wait for the stub to be reading before pasting.
+    let tmux_sock = h.paths.tmux_sock();
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let alive = tmux(&tmux_sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| !o.stdout.is_empty())
+            .unwrap_or(false);
+        if alive {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the stub agent never got a pane");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+    assert!(matches!(c.request(Command::NoteToAgent { ticket, note: second }), Response::Ok));
+    wait_until(Duration::from_secs(10), "the note sentence to land", || {
+        std::fs::read_to_string(&got).unwrap_or_default().contains(&second.to_string())
+    });
+    let line = std::fs::read_to_string(&got).unwrap();
+    assert!(line.contains("Note \"Plan\""), "{line}");
+    assert!(line.contains("read_note"), "{line}");
+    // An agent may not send it.
+    err_containing(
+        c.send(Principal::Agent { session: sid }, Command::NoteToAgent { ticket, note: second }),
+        "not available",
+    );
+}

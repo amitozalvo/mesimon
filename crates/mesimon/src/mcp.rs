@@ -113,6 +113,16 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::MoveTicket { to_column, idempotency_key } => {
             Command::AgentMoveTicket { to_column, idempotency_key: idempotency_key.or(tool_use_id) }
         }
+        ToolCall::ReadNote { note } => Command::AgentReadNote { note },
+        ToolCall::WriteNote { note, text } => Command::AgentWriteNote { note, text },
+        ToolCall::CreateTicket { title, column, description, idempotency_key } => {
+            Command::AgentCreateTicket {
+                title,
+                column,
+                description,
+                idempotency_key: idempotency_key.or(tool_use_id),
+            }
+        }
     };
     let env = Envelope { principal: Principal::Agent { session }, command };
     match ask(sock, &env) {
@@ -133,6 +143,17 @@ fn render(resp: Response) -> Value {
         Response::AgentBoard { board } => text(&board),
         Response::AgentMoved { column, board_version, replayed } => {
             text(&json!({ "column": column, "board_version": board_version, "replayed": replayed }))
+        }
+        Response::AgentCreated { key, column, board_version, replayed } => text(&json!({
+            "key": key, "column": column, "board_version": board_version, "replayed": replayed
+        })),
+        // The body as the text block itself: markdown inside a JSON string is
+        // a worse read, and the metadata already travels in `get_ticket`.
+        Response::Note { text: body, .. } => {
+            json!({ "content": [{ "type": "text", "text": body }], "isError": false })
+        }
+        Response::NoteWritten { note } => {
+            text(&json!({ "note": note.map(|n| n.to_string()), "deleted": note.is_none() }))
         }
         Response::Err { message } => tool_error(&message),
         other => tool_error(&format!(
@@ -203,9 +224,43 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_the_three() {
+    fn tools_list_returns_the_six() {
         let r = line(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 3);
+        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 6);
+    }
+
+    #[test]
+    fn a_create_result_names_the_new_key() {
+        let v = render(Response::AgentCreated {
+            key: "T-9".into(),
+            column: "TODO".into(),
+            board_version: 3,
+            replayed: false,
+        });
+        assert_eq!(v["isError"], false);
+        let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["key"], "T-9");
+        assert_eq!(body["column"], "TODO");
+        assert_eq!(body["replayed"], false);
+    }
+
+    /// A note body is the text block itself, not JSON with a string in it.
+    #[test]
+    fn a_note_renders_as_its_own_text() {
+        let meta = mesimon_core::board::NoteMeta {
+            id: ulid::Ulid::nil(),
+            name: "Why".into(),
+            rev: 1,
+            created_at: "@1".into(),
+            created_by: "local".into(),
+            edited_at: "@1".into(),
+            edited_by: "local".into(),
+        };
+        let r = render(Response::Note { text: "# Why\n\nbecause".into(), meta });
+        assert_eq!(r["content"][0]["text"], "# Why\n\nbecause");
+        assert_eq!(r["isError"], false);
+        let r = render(Response::NoteWritten { note: None });
+        assert!(r["content"][0]["text"].as_str().unwrap().contains("\"deleted\": true"));
     }
 
     /// Answering a notification is a protocol error. `notifications/initialized`

@@ -358,6 +358,15 @@ pub(crate) fn kind_mark(kind: mesimon_core::board::SessionKind, tier: Tier) -> c
     }
 }
 
+/// A note row's mark on the ticket rail: three lines of text, and its
+/// ASCII spelling.
+pub(crate) fn note_mark(tier: Tier) -> char {
+    match tier {
+        Tier::Unicode => '≡',
+        Tier::Ascii => '=',
+    }
+}
+
 /// The session's lowercase state word for the ticket rail (06 §3.2/§3.3:
 /// UPPERCASE ⟺ a human is required — those come from `reason_word`).
 pub(crate) fn state_word(state: &SessionState) -> &'static str {

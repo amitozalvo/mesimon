@@ -103,18 +103,31 @@ pub fn lint_tool_text(s: &str) -> Result<(), String> {
 
 // ------------------------------------------------------------------- tools
 
-/// The complete tool surface. Three tools, and there is deliberately no tool
+/// The complete tool surface. Six tools, and there is deliberately no tool
 /// to spawn a session, kill a session, delete a ticket, archive a ticket,
 /// rename a ticket, change a workspace, merge a branch, read a transcript, read
 /// a cost, or grant anything. A tool that does not exist cannot be granted by
 /// accident at 11pm, and cannot be talked into firing by injected ticket text.
+///
+/// The two note tools are D10's T1 ANNOTATE tier — the one tier that names a
+/// home for text an agent writes about its own ticket, which is the argument
+/// tags never had (see `agent_allows`). They cost what every tool costs, and
+/// they are what lets a description reach the agent without a single token
+/// being injected into its conversation.
+///
+/// `create_ticket` is the one tool that touches a ticket other than the
+/// caller's — by making it. It is what an agent does with work it found and
+/// was not asked for: file it where a human will see it, instead of doing it
+/// unasked or dropping it. The new card has no session and no tool starts
+/// one; the human decides what happens next, on the board.
 pub fn tools() -> Vec<Value> {
     vec![
         json!({
             "name": "get_ticket",
             "description": "Returns the mesimon ticket this session is attached to: key, \
-                            title, current column, workspace mode, branch, merge state, and \
-                            the column names move_ticket accepts.",
+                            title, current column, workspace mode, branch, merge state, \
+                            the column names move_ticket accepts, the description (its \
+                            first note) and the id, name and author of every note.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         }),
         json!({
@@ -147,6 +160,67 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        json!({
+            "name": "read_note",
+            "description": "Returns the full markdown text of one note on this session's \
+                            ticket. Note ids are listed by get_ticket.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "note": { "type": "string", "description": "A note id from get_ticket." },
+                },
+                "required": ["note"],
+                "additionalProperties": false,
+            },
+        }),
+        json!({
+            "name": "write_note",
+            "description": "Creates a markdown note on this session's ticket, or replaces \
+                            the whole text of an existing one. The first note is the \
+                            ticket's description. Empty text deletes an existing note.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "note": {
+                        "type": "string",
+                        "description": "Optional. The id of the note to replace; omitted \
+                                        creates a new note.",
+                    },
+                    "text": { "type": "string", "description": "The note's whole markdown text." },
+                },
+                "required": ["text"],
+                "additionalProperties": false,
+            },
+        }),
+        json!({
+            "name": "create_ticket",
+            "description": "Creates a new ticket on the mesimon board and returns its key. \
+                            The new ticket has no session; this session stays on its own \
+                            ticket. Meant for work found outside this ticket's scope.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "title": { "type": "string", "description": "One line, as shown on the card." },
+                    // A plain string, NOT an enum: see the module header.
+                    "column": {
+                        "type": "string",
+                        "description": "Optional. A column name as listed by list_board; \
+                                        omitted means the board's first column.",
+                    },
+                    "description": {
+                        "type": "string",
+                        "description": "Optional markdown, saved as the ticket's first note.",
+                    },
+                    "idempotency_key": {
+                        "type": "string",
+                        "description": "Optional. Repeating a call with the same key replays \
+                                        the first result instead of creating twice.",
+                    },
+                },
+                "required": ["title"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -176,7 +250,23 @@ pub fn initialize_result(client_protocol: Option<&str>) -> Value {
 pub enum ToolCall {
     GetTicket,
     ListBoard,
-    MoveTicket { to_column: String, idempotency_key: Option<String> },
+    MoveTicket {
+        to_column: String,
+        idempotency_key: Option<String>,
+    },
+    ReadNote {
+        note: ulid::Ulid,
+    },
+    WriteNote {
+        note: Option<ulid::Ulid>,
+        text: String,
+    },
+    CreateTicket {
+        title: String,
+        column: Option<String>,
+        description: Option<String>,
+        idempotency_key: Option<String>,
+    },
 }
 
 /// Parse a `tools/call` into a `ToolCall`, or produce the message the agent
@@ -205,7 +295,54 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                     .map(str::to_string),
             })
         }
+        "read_note" => Ok(ToolCall::ReadNote {
+            note: note_id(args, true)?.ok_or("read_note requires a note id")?,
+        }),
+        "write_note" => {
+            let text = args
+                .get("text")
+                .and_then(Value::as_str)
+                .ok_or("write_note requires a text string")?
+                .to_string();
+            Ok(ToolCall::WriteNote { note: note_id(args, false)?, text })
+        }
+        "create_ticket" => {
+            let title = args
+                .get("title")
+                .and_then(Value::as_str)
+                .ok_or("create_ticket requires a title string")?
+                .trim()
+                .to_string();
+            if title.is_empty() {
+                return Err("title is empty".into());
+            }
+            let word = |k: &str| {
+                args.get(k).and_then(Value::as_str).map(str::trim).filter(|s| !s.is_empty())
+            };
+            Ok(ToolCall::CreateTicket {
+                title,
+                column: word("column").map(str::to_string),
+                // Untrimmed: markdown's leading whitespace can mean something.
+                description: args
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .filter(|s| !s.trim().is_empty())
+                    .map(str::to_string),
+                idempotency_key: word("idempotency_key").map(str::to_string),
+            })
+        }
         other => Err(format!("unknown tool: {other}")),
+    }
+}
+
+/// The `note` argument as an id. A malformed id is an error the model can
+/// read, never a silent `None` that would turn "replace this note" into
+/// "create another".
+fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
+    match args.get("note").and_then(Value::as_str).map(str::trim) {
+        None | Some("") if !required => Ok(None),
+        None | Some("") => Err("note id is empty".into()),
+        Some(s) => s.parse::<ulid::Ulid>().map(Some).map_err(|_| format!("not a note id: {s}")),
     }
 }
 
@@ -220,8 +357,23 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Three tools, three commands.
-        Command::AgentGetTicket | Command::AgentListBoard | Command::AgentMoveTicket { .. } => true,
+        // The tier. Six tools, six commands.
+        Command::AgentGetTicket
+        | Command::AgentListBoard
+        | Command::AgentMoveTicket { .. }
+        // T1 ANNOTATE: notes on the caller's OWN ticket. Unlike a tag, a
+        // note is what D10 enumerated a tier for, and it is the one channel
+        // through which the ticket's description reaches the agent without
+        // a token entering its conversation.
+        | Command::AgentReadNote { .. }
+        | Command::AgentWriteNote { .. }
+        // Minting a ticket. It is a MUTATE on a column, not on the board
+        // (`authorize` draws that line): the registry, the column list and
+        // every existing card are untouched, one card is appended, and the
+        // human sees it where every new ticket lands. Deleting, renaming or
+        // archiving what was made stays out — nothing an agent files can be
+        // unfiled by an agent.
+        | Command::AgentCreateTicket { .. } => true,
 
         // Everything below is the never-tier. An agent may not spawn or kill a
         // session, delete or archive or rename a ticket, change a workspace,
@@ -260,6 +412,13 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // ticket id, so an agent could not even address its own without
         // guessing one — and it must not address its own either.
         | Command::PromptSession { .. }
+        // The same delivery with mesimon's words: still one session's turn
+        // being steered, still a human's gesture only.
+        | Command::NoteToAgent { .. }
+        // The local forms carry a ticket id; the agent forms above are the
+        // same operations bound to the session's own ticket.
+        | Command::ReadNote { .. }
+        | Command::WriteNote { .. }
         | Command::RestoreTicket { .. }
         | Command::ArchiveTicket { .. }
         | Command::UnarchiveTicket { .. }
@@ -298,11 +457,77 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exactly_three_tools() {
+    fn exactly_six_tools() {
         let t = tools();
-        assert_eq!(t.len(), 3);
+        assert_eq!(t.len(), 6);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
-        assert_eq!(names, ["get_ticket", "list_board", "move_ticket"]);
+        assert_eq!(
+            names,
+            ["get_ticket", "list_board", "move_ticket", "read_note", "write_note", "create_ticket"]
+        );
+    }
+
+    #[test]
+    fn create_ticket_parses_and_refuses() {
+        assert_eq!(
+            parse_tool_call("create_ticket", &json!({ "title": " fix the thing " })),
+            Ok(ToolCall::CreateTicket {
+                title: "fix the thing".into(),
+                column: None,
+                description: None,
+                idempotency_key: None,
+            })
+        );
+        assert_eq!(
+            parse_tool_call(
+                "create_ticket",
+                &json!({ "title": "t", "column": " REVIEW ", "description": "  # why\n\nbecause",
+                         "idempotency_key": "k" })
+            ),
+            Ok(ToolCall::CreateTicket {
+                title: "t".into(),
+                column: Some("REVIEW".into()),
+                description: Some("  # why\n\nbecause".into()),
+                idempotency_key: Some("k".into()),
+            })
+        );
+        // Blank optionals are absent, not empty strings the daemon must judge.
+        assert_eq!(
+            parse_tool_call(
+                "create_ticket",
+                &json!({ "title": "t", "column": "", "description": " \n " })
+            ),
+            Ok(ToolCall::CreateTicket {
+                title: "t".into(),
+                column: None,
+                description: None,
+                idempotency_key: None,
+            })
+        );
+        assert!(parse_tool_call("create_ticket", &json!({})).is_err());
+        assert!(parse_tool_call("create_ticket", &json!({ "title": "   " })).is_err());
+    }
+
+    #[test]
+    fn note_tools_parse_and_refuse() {
+        let id = ulid::Ulid::nil();
+        assert_eq!(
+            parse_tool_call("read_note", &json!({ "note": id.to_string() })),
+            Ok(ToolCall::ReadNote { note: id })
+        );
+        assert!(parse_tool_call("read_note", &json!({})).is_err());
+        assert!(parse_tool_call("read_note", &json!({ "note": "nope" })).is_err());
+        assert_eq!(
+            parse_tool_call("write_note", &json!({ "text": "hi" })),
+            Ok(ToolCall::WriteNote { note: None, text: "hi".into() })
+        );
+        assert_eq!(
+            parse_tool_call("write_note", &json!({ "note": id.to_string(), "text": "" })),
+            Ok(ToolCall::WriteNote { note: Some(id), text: String::new() })
+        );
+        // A malformed id must not silently become "create another".
+        assert!(parse_tool_call("write_note", &json!({ "note": "x", "text": "hi" })).is_err());
+        assert!(parse_tool_call("write_note", &json!({})).is_err());
     }
 
     /// The token bill, enforced. Every byte here is paid on every request of
@@ -408,11 +633,19 @@ mod tests {
     /// command an agent may send that no tool can reach would be a hole nobody
     /// is looking at.
     #[test]
-    fn the_tier_is_exactly_three_commands() {
+    fn the_tier_is_exactly_six_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentListBoard,
             Command::AgentMoveTicket { to_column: "X".into(), idempotency_key: None },
+            Command::AgentReadNote { note: ulid::Ulid::nil() },
+            Command::AgentWriteNote { note: None, text: "x".into() },
+            Command::AgentCreateTicket {
+                title: "x".into(),
+                column: None,
+                description: None,
+                idempotency_key: None,
+            },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
@@ -470,6 +703,10 @@ mod tests {
             // One agent steering another agent's turn is the sharpest thing
             // the never-tier exists to stop.
             Command::PromptSession { ticket: t, text: "do the thing".into() },
+            Command::NoteToAgent { ticket: t, note: t },
+            // The ticket-addressed forms; the agent forms are the tier.
+            Command::ReadNote { ticket: t, note: t },
+            Command::WriteNote { ticket: t, note: None, text: "x".into() },
         ];
         for c in &denied {
             assert!(!agent_allows(c), "{c:?} must stay out of the tier");

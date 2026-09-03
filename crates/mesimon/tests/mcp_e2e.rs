@@ -253,7 +253,10 @@ fn agent_board_tools_tier_and_collisions() {
         .iter()
         .map(|t| t["name"].as_str().unwrap())
         .collect();
-    assert_eq!(names, ["get_ticket", "list_board", "move_ticket"]);
+    assert_eq!(
+        names,
+        ["get_ticket", "list_board", "move_ticket", "read_note", "write_note", "create_ticket"]
+    );
 
     let t = shim.call_ok("get_ticket", json!({}));
     assert_eq!(t["key"], key.as_str());
@@ -271,6 +274,43 @@ fn agent_board_tools_tier_and_collisions() {
         assert!(!raw.contains(leak), "list_board leaked {leak:?}: {raw}");
     }
     assert!(raw.contains("decoy"), "the board is genuinely visible");
+
+    // ---- create_ticket: a new card, no session, the agent as its author ---
+    let made = shim.call_with_meta(
+        "create_ticket",
+        json!({"title": "  found: flaky test  ", "description": "# Seen\n\nwhile on the work"}),
+        "toolu_create_1",
+    );
+    assert_eq!(made["column"], "TODO", "no column named means the first column");
+    assert_eq!(made["replayed"], false);
+    let new_key = made["key"].as_str().unwrap().to_string();
+    assert!(new_key.starts_with("T-"), "a key, not an id: {new_key}");
+    let board = board_of(c.request(Command::Snapshot));
+    let new = board.tickets.iter().find(|t| t.short_key == new_key).expect("the ticket exists");
+    assert_eq!(new.title, "found: flaky test", "trimmed, as typed");
+    assert_eq!(new.column, "TODO");
+    assert_eq!(new.notes.len(), 1, "the description is the first note");
+    assert_eq!(new.notes[0].created_by, format!("agent:{sid}"));
+    assert!(board.sessions.iter().all(|s| s.ticket != new.id), "a created ticket has no session");
+    // The caller's own binding did not move.
+    assert_eq!(shim.call_ok("get_ticket", json!({}))["key"], key.as_str());
+    // A retry under the same tool-use id is the first receipt, not a second card.
+    let again = shim.call_with_meta(
+        "create_ticket",
+        json!({"title": "  found: flaky test  "}),
+        "toolu_create_1",
+    );
+    assert_eq!(again["key"], new_key.as_str());
+    assert_eq!(again["replayed"], true);
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.tickets.iter().filter(|t| t.title == "found: flaky test").count(), 1);
+    // A named column is honoured; a column that is not there is refused, and
+    // the refusal is an answer the model can read rather than a transport error.
+    let in_review = shim.call_ok("create_ticket", json!({"title": "second", "column": "REVIEW"}));
+    assert_eq!(in_review["column"], "REVIEW");
+    let refused = shim.call_err("create_ticket", json!({"title": "third", "column": "NOPE"}));
+    assert!(refused.contains("no such column"), "{refused}");
+    assert!(shim.call_err("create_ticket", json!({})).contains("title"));
 
     // ---- the never-tier, on the wire ------------------------------------
     // Not "there is no tool for it" — the daemon refuses the command even when
