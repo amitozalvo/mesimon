@@ -147,10 +147,10 @@ pub enum Mode {
     /// one-line composer (Tab carries the title over) and never coexists
     /// with a move, a menu or a picker, so `Mode` is where it belongs.
     /// `Screen` is untouched underneath, so Esc returns wherever the editor
-    /// was opened from. Composing, it is a panel OVER the board (the header,
-    /// the column headers and the footer stay in view, and it grows out of
-    /// the phantom card it replaced — `Editor::grow`); on a note it takes
-    /// the whole screen.
+    /// was opened from. Composing, it is a dialog OVER the board (the cursor
+    /// card grown: the header, the column headers and a margin of board stay
+    /// in view, and it grows out of the phantom card it replaced —
+    /// `Editor::grow`); on a note it takes the whole screen.
     Editor(Editor),
 }
 
@@ -171,15 +171,15 @@ pub struct Editor {
     pub delete_armed: bool,
     /// First visible body line; the draw follows the cursor and writes back.
     pub top: Cell<usize>,
-    /// Where the composer panel is growing FROM — the phantom card's own
-    /// rectangle on the board, and when Tab was pressed. The panel draws
+    /// Where the composer dialog is growing FROM — the phantom card's own
+    /// rectangle on the board, and when Tab was pressed. The dialog draws
     /// itself between that rectangle and its resting one for `GROW`, so the
     /// eye is carried from the one-line composer to the bigger room instead
     /// of being dropped into it. `None` on a note, and once settled.
     pub grow: Option<(ratatui::layout::Rect, Instant)>,
 }
 
-/// How long the composer panel takes to grow out of its card. One gesture,
+/// How long the composer dialog takes to grow out of its card. One gesture,
 /// one short motion, never a loop — the author asked for the transition
 /// (2026-09-03) so the editor reads as the composer opened up, not as a
 /// different place.
@@ -486,7 +486,7 @@ pub struct App {
     /// What the last draw of that zone measured (see `PreviewView`).
     pub preview_view: Cell<PreviewView>,
     /// Where the board last drew the composer's phantom card — the
-    /// rectangle Tab's panel grows out of. Draw-side, like `preview_view`:
+    /// rectangle Tab's dialog grows out of. Draw-side, like `preview_view`:
     /// the card's place on screen is a fact of the frame, not of the board.
     pub compose_card: Cell<Option<ratatui::layout::Rect>>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
@@ -659,7 +659,7 @@ impl App {
     }
 
     /// Whether something on screen is mid-motion and wants the next frame
-    /// sooner than the spinner's cadence: the composer panel growing.
+    /// sooner than the spinner's cadence: the composer dialog growing.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
     }
@@ -2514,7 +2514,7 @@ impl App {
                         TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
                         Field::Body,
                     );
-                    // The panel grows out of the card the last frame drew.
+                    // The dialog grows out of the card the last frame drew.
                     ed.grow = self.compose_card.get().map(|r| (r, Instant::now()));
                     self.mode = Mode::Editor(ed);
                 } else {

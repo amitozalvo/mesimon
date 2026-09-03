@@ -186,9 +186,11 @@ when as `local` / `agent:<uuid>` — and the body is `notes/<ULID>.md`, read by 
 (never in the snapshot) and written whole by `WriteNote { note: None | Some }` (blank on an
 existing note deletes). `sanitize_note` keeps newlines and caps at 32 KiB. The TUI's `Mode::Editor`
 is the one multi-line field (`text.rs::TextArea`): `Tab` grows the composer into it — composing,
-it is a PANEL over the board's cards that grows out of the phantom card for 180 ms
-(`Editor::grow`, `App::compose_card`, `editor::draw_panel`) and names the column on its context
-line; a note takes the whole screen — `n`/`N` open a note, `^s` saves and stays, a second `^s` on a saved note sends `NoteToAgent` (mesimon's own
+it is a DIALOG over the board (the cursor card grown: same surface, same tag-painted bar down its
+left edge, snapped to a run of WHOLE columns so the cards beside it never show as slivers —
+`editor::dialog_rect`/`snap_to_columns`) that grows out of the phantom card for 180 ms
+(`Editor::grow`, `App::compose_card`, `editor::draw_dialog`) and names the column on its context
+row; a note takes the whole screen — `n`/`N` open a note, `^s` saves and stays, a second `^s` on a saved note sends `NoteToAgent` (mesimon's own
 sentence, human gesture only). The ticket page draws the description under the identity line and
 lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. Agents
 get `read_note`/`write_note` (six tools now, with `create_ticket`) and `get_ticket` carries the

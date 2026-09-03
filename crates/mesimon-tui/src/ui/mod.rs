@@ -48,7 +48,7 @@ pub fn draw(f: &mut Frame, app: &App) {
 
     // The note editor covers whatever screen it was opened from; the picker
     // reaches it the way it reaches the composer. The COMPOSER's editor is
-    // a panel over the board instead, drawn with the board below.
+    // a dialog over the board instead, drawn with the board below.
     let composing = matches!(&app.mode, Mode::Editor(ed) if ed.composing())
         && matches!(app.screen, Screen::Board);
     if let (Mode::Editor(ed), false) = (&app.mode, composing) {
@@ -119,10 +119,11 @@ pub fn draw(f: &mut Frame, app: &App) {
     board::draw_columns(f, outer[2], app);
     chrome::draw_advisory(f, outer[3], app);
     chrome::draw_footer(f, outer[4], app);
-    // The composer, grown: a panel over the cards. The column headers stay
-    // above it and the footer under it, so the board is still the room.
+    // The composer, grown: a dialog over the cards. The column headers stay
+    // above it, a margin of board around it and the footer under it, so the
+    // board is still the room.
     if let Mode::Editor(ed) = &app.mode {
-        editor::draw_panel(f, app, ed, outer[2]);
+        editor::draw_dialog(f, app, ed, outer[2]);
     }
     // Over the board, above the footer: the picker is a panel because the
     // vocabulary is the user's own and a one-line hint cannot show it.

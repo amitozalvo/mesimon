@@ -2054,7 +2054,7 @@ fn golden_editor_compose_120() {
 }
 
 #[test]
-fn the_composer_panel_grows_out_of_its_card() {
+fn the_composer_dialog_grows_out_of_its_card() {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     // The one-line composer, in the first column: the board records where
     // its phantom card landed.
@@ -2075,7 +2075,7 @@ fn the_composer_panel_grows_out_of_its_card() {
         .expect("the phantom card is on the board");
     let card = app.compose_card.get().expect("the draw records the phantom card");
     assert_eq!(card.y as usize, card_row);
-    assert_eq!(card.x, 0, "the first column, with its left pad");
+    assert_eq!(card.x, crate::layout::LPAD, "the first column's bar cell");
     assert_eq!(card.height, 2, "title row + workspace selector");
     assert!(card.width < 60, "one column, not the board: {card:?}");
 
@@ -2085,30 +2085,42 @@ fn the_composer_panel_grows_out_of_its_card() {
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
     assert!(app.animating(), "the frame after Tab is in motion");
 
-    // Frame zero: the panel IS the card's rectangle — the title sits on the
-    // card's row and the rest of the board is still on screen around it.
+    // Frame zero: the dialog IS the card's rectangle — the title sits in the
+    // card's cells, the meta row under it where the card's was, and the rest
+    // of the board is still on screen around it.
     let first = render(&app, 120, 30);
     assert!(first[card_row].starts_with("   Ship the diff viewer"), "{:?}", first[card_row]);
+    assert!(first[card_row + 1].starts_with("   NEW TICKET"), "{:?}", first[card_row + 1]);
     assert!(
         first.iter().any(|l| l.contains("Fix OSC-11 detection")),
-        "the other columns show through while the panel is small"
+        "the other columns show through while the dialog is small"
     );
     assert!(!first.iter().any(|l| l.contains("describe it")), "no body at the card's size");
 
-    // Settled: the panel covers the card rows edge to edge, the column
-    // headers stay above it, the body hint and the column name are in it.
+    // Settled: the dialog covers the two middle columns whole, two rows
+    // under the column headers — the title on its first row, the column
+    // named on its second, the body hint under them — and the outer columns
+    // show their cards complete on both sides of it.
     if let Mode::Editor(ed) = &mut app.mode {
         ed.grow = Some((card, std::time::Instant::now() - crate::app::GROW));
     }
     assert!(!app.animating());
     let after = render(&app, 120, 30);
     assert!(after[2].contains("TODO") && after[2].contains("IN PROGRESS"), "{:?}", after[2]);
-    assert!(after[4].starts_with("   Ship the diff viewer"), "{:?}", after[4]);
-    assert!(after[6].contains("NEW TICKET ∙ TODO column"), "{:?}", after[6]);
-    assert!(after[8].contains("describe it"), "{:?}", after[8]);
+    let title_at =
+        after[4].find("Ship the diff viewer").expect("the title on the dialog's first row");
+    let dialog_x = after[4][..title_at].chars().count() - 2;
+    assert_eq!(dialog_x, 31, "the second column's own bar cell: {:?}", after[4]);
+    assert!(after[5].contains("NEW TICKET ∙ TODO column"), "{:?}", after[5]);
+    assert!(after[7].contains("describe it"), "{:?}", after[7]);
+    for covered in ["Fix OSC-11 detection", "Grapheme truncation"] {
+        assert!(!after.iter().any(|l| l.contains(covered)), "{covered} is under the dialog");
+    }
     assert!(
-        !after.iter().any(|l| l.contains("Fix OSC-11 detection")),
-        "the cards are under the panel"
+        after[4].starts_with("   Decay treatments       >1y")
+            && after[4].contains("z Painted accent bar  >1y"),
+        "whole cards on both sides, never a sliver: {:?}",
+        after[4]
     );
     assert!(
         after[29].contains("esc close"),

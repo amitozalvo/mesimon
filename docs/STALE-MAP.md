@@ -3339,3 +3339,47 @@ instead of being dropped into it. It is not an animation vocabulary — a third 
 own argument, not this one. Pinned by `the_composer_panel_grows_out_of_its_card` (origin
 recorded, carried by Tab, frame zero on the card's row with the board showing through, settled
 panel with the column headers above and the column named) and the two compose goldens.
+
+## The composer's editor is a dialog over the board, snapped to whole columns (2026-09-03, user request)
+
+The panel above lasted a day. "Not full screen but on top of the board" had been met with a
+panel that took the columns zone edge to edge, and the author asked for what they had meant: a
+DIALOG on top of the board, and one that is "beautiful and structured nicely". The block above
+is superseded in its geometry and stands in everything else (the routing in `ui/mod.rs`, the
+context row naming the column, `Editor::grow` and its argument under D19).
+
+**The dialog IS the cursor card, grown** (`editor::draw_dialog`). Its anatomy is a card's, not a
+popup's: the frame is `[bar 1][pad 1][content][pad 1]`, the surface is `selected_bg` with the
+`sel` ink (the page ground with the `rest` ink where the profile paints no cursor surface — a
+whole dialog in reverse video would be a fourth SGR-7 use), the accent bar runs down its whole
+left edge wearing the composer's picked tags exactly as `render_edit` paints the phantom card's
+(`tags::bar_cell`, and `tags::stack_full` splits a tall stripe 70/30 for two tags, so a tagged
+composer is the one place the stack is ever twenty rows tall), the title is the first row in
+bold and the context row sits DIRECTLY under it where a card's meta rows do — no blank between,
+which is what lets frame zero of the grow be the card itself, row for row. The head is three
+rows (title, context, breathing) against the full-screen note editor's four; one breathing row
+closes the bottom. No heading row of its own: a card does not announce itself, and "NEW TICKET"
+on the context row already says what the dialog is. The board's footer still speaks for it.
+
+**Its edges fall on the board's gutters.** A centred 80-cell box was built first and the golden
+showed the DONE column cut to `ed accent bar  >1y` — the very sliver the panel block had refused
+a narrower panel over, and a painted surface does not make a cut card whole. So `dialog_rect`
+re-derives the geometry the board just drew (`layout::board_geometry` on `App::col_window`, read
+and not written back) and `snap_to_columns` picks a RUN of whole expanded columns: at least
+`DIALOG_MIN_W` (two columns at `MIN_COL` plus the gutter, 53), the runs within `DIALOG_MAX_W`
+(96) before any wider one, then the run whose centre is nearest the zone's, then the narrowest.
+At 120 columns with four columns that is the two middle ones (x 31, 59 wide); the outer two show
+their cards complete on both sides, which is what makes the board around it read as the board.
+Five columns at `MAX_COL` would centre on three (122 wide) and the cap hands it two instead:
+prose in a 120-cell line is no kindness. Every column when no run reaches the floor (a
+one-column board), and a centred box only in the no-columns case that cannot compose anyway.
+Vertically it keeps the panel's inset: two rows under the column headers, so its top edge is the
+cards' top edge, two rows above the advisory row.
+
+**The recorded origin is the card's own rectangle now**, bar cell included (`ui/board.rs` no
+longer widens it left by `LPAD`): the dialog's lead is the card's, so at frame zero its bar and
+its title stand in the card's cells and nothing jumps. Pinned by
+`the_composer_dialog_grows_out_of_its_card` (origin at the column's bar cell; frame zero is the
+title row with the context row under it and the other columns showing through; settled at the
+second column's x with both covered columns' cards gone and both outer columns' cards whole) and
+the two compose goldens, which now show whole cards on either side of the dialog.

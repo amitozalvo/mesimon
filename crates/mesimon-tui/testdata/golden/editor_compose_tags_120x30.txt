@@ -2,11 +2,11 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-   Ship the diff viewer
+   Decay treatments       >1y    Ship the diff viewer                                        z Painted accent bar  >1y
+                                 NEW TICKET ∙ TODO column ∙ ⎇ shared
+   Keymap validator       >1y
+                                 why
 
-   NEW TICKET ∙ TODO column ∙ ⎇ shared
-
-   why
 
 
 
