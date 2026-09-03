@@ -389,7 +389,8 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                         app.board.ticket(*ticket).is_some_and(|t| t.description().is_none());
                     ctx_spans.push(Span::styled("new note".to_string(), dim1));
                     if first {
-                        ctx_spans.push(Span::styled(" ∙ becomes the description".to_string(), dim2));
+                        ctx_spans
+                            .push(Span::styled(" ∙ becomes the description".to_string(), dim2));
                     }
                 }
             }

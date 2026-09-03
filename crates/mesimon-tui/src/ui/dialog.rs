@@ -202,7 +202,8 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
         };
         let row_style = if i == idx { theme.selected_row() } else { Style::default() };
         lines.push(
-            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))]).style(row_style),
+            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))])
+                .style(row_style),
         );
     }
     f.render_widget(Paragraph::new(lines), inner);
@@ -255,7 +256,8 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
         let row_style = if selected { theme.selected_row() } else { Style::default() };
         let pad = inner_w.saturating_sub(head.width());
         lines.push(
-            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))]).style(row_style),
+            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))])
+                .style(row_style),
         );
         let preview = item.preview.as_deref().unwrap_or("");
         let text = format!("     {}", truncate(preview, inner_w.saturating_sub(6)));

@@ -281,7 +281,9 @@ fn mode_word(app: &App) -> Option<&'static str> {
     };
     let resting = matches!(
         (&app.screen, scope),
-        (Screen::Board, Scope::Board) | (Screen::Ticket { .. }, Scope::Ticket) | (Screen::Diff { .. }, Scope::Diff)
+        (Screen::Board, Scope::Board)
+            | (Screen::Ticket { .. }, Scope::Ticket)
+            | (Screen::Diff { .. }, Scope::Diff)
     );
     (!resting).then_some(word)
 }

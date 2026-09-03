@@ -3426,3 +3426,82 @@ to mint and then the board's Shift+Enter on the minted card, which starts claude
 `shift_enter_asks_claude_at_every_stage` now asserts the editor resolves to the newline, and
 `shift_enter_in_the_editor_is_a_newline` (app tests) types through it in both editors. Golden
 `editor_compose_120x30` drops the hint from the footer.
+
+## The UI overhaul: framed dialogs, painted footer, one place per hint (2026-09-03, T-158)
+
+The author asked for a UI overhaul with Bagels (github.com/EnhancedJax/Bagels) as the reference,
+naming five things: the dialogs, titles "not indicated correctly", hints that were not intuitive
+and sat far from what they operate, the ticket page's title and subtitle, and a more modern
+layout. Decided in plan-mode Q&A: **boxes for dialogs only** (board, cards and ticket page stay
+painted), the whole thing in one ticket. Recorded here because each of these was a law or an
+author decision before.
+
+**L1 gains its one allowlisted role: a dialog's frame.** `ui/dialog.rs` is the primitive every
+floating surface draws through — `frame()` clears, paints, draws `╭─ TITLE ───╮ … ╰─ keys ─╯`
+(ascii tier `+ - |`, `glyphs::frame_set`) in `dim3`, records the rectangle on `App::frames`
+(draw-side, `RefCell<Vec<Rect>>`, cleared at the top of `ui::draw`) and returns the inner rect.
+`test_no_drawn_structure` no longer sweeps strings: it renders each screen to a `Buffer`, reads
+the frames that draw reported, and admits a codepoint in `0x2500..=0x259F` only on a recorded
+perimeter (or as `▀`, the 2026-09-01 exception). User text is already stripped of the range by
+`scrub_cells`, so a frame glyph can only be chrome's, and the test asserts the sweep covered at
+least five frames so it cannot pass by covering none. The doc's L1 row (06 §0) is amended in
+place. Frame in `dim3`, title `dim1` + bold, one width for every centred dialog
+(`dialog::MAX_W` 64 inner; the menu, picker, archived list and drawer were 54/62/64).
+
+**Every dialog names itself in its top edge and teaches itself in its bottom edge**, and the
+in-body title row and in-body hint row are gone: `MENU`, `THEME ∙ for a dark terminal`,
+`ARCHIVED ∙ 3`, `EXTERNAL ∙ 2`, `KEYS ∙ board`, `TAGS ∙ <ticket>`, `NEW TICKET`. The bottom edge
+is the LEFT cluster of the dialog scope's footer (`dialog::keys` → `keymap::footer_split`), so
+the keys are still the keymap's. The tag picker stays a full-width bottom sheet, framed, and now
+sits one row ABOVE the footer instead of under a footer redraw. The composer dialog's frame
+stands one cell outside the snapped column run on every side — the gutters and the two
+breathing rows `DIALOG_INSET_Y` kept clear — so the stripe still sits on the column's own bar
+cell and the cards beside it stay whole; below three rows `frame()` draws nothing and hands the
+area back, which is what keeps frame zero of the grow the card itself. Framed, the context row
+starts at the column (`TODO column ∙ ⎇ shared ∙ tags`) because the edge says NEW TICKET;
+unframed it says it itself. The `?` overlay goes to TWO columns of groups when one would not fit
+the terminal's height (the APP group fell off a 30-row terminal without a word) and marks a cut
+with `~`.
+
+**The header opens with a chip naming the screen** — `BOARD`, `TICKET`, `DIFF`, `NOTE` — on the
+elevated surface, bold, before the breadcrumb (`chrome::draw_header`, one function for every
+screen now; ticket, diff and the note editor stopped drawing their own row 0). The breadcrumb
+ends at the repo on the ticket page; the diff and the note editor carry the ticket as a leaf
+(context, not subject). The board's count and offer show only under the BOARD chip. The footer's
+mode word is gone AT REST — the chip already says where you are — and appears only when a mode
+has taken the keys over (`DELETE`, `TAG`, `NEW`, `ASK`, `MENU`…), which is also when the hints
+beside it changed.
+
+**The footer is a painted band on `selected_bg` with `key word` pairs** (key `base` + bold — 06
+§5.1 clause 3 always sanctioned bold on the footer's key names and the code never used it — word
+`dim2`, `∙` `dim3`; `chrome::hint_spans` is the one builder, shared with the frame edges and the
+rail trailers). `keymap::footer_split` partitions a scope's items into the screen's own keys
+(left, prio order, skip-not-cut as before) and `Group::App` (right cluster, reserved first):
+`esc menu` (Board, prio 254 — back in the footer, repaying the cost the 2026-09-01 footer pass
+recorded, "nothing on the board says esc") and `? keys` (Global, prio 255). **`? keys` is
+emitted only where `?` resolves**: the tail was a literal before and was promised inside text
+fields, where `?` types a question mark, and in chord tails, where it cancels.
+`footer_always_keeps_the_help_tail` now asserts the tail iff `resolve(scope, '?')` is `Help`,
+over every scope. **A hint lives in one place**: under an open dialog the footer carries only the
+mode chip and the right cluster (`chrome::dialog_open`).
+
+**The ticket page has a title row and a state row.** Row 0 the header, row 2 the title (bold
+`base`, the page's own headline — it lived only in the breadcrumb; `r` edits it there), row 3
+the state line: `IN PROGRESS ∙ 3d here ∙ created 2w ago ∙ tags ∙ ⎇ branch ∙ merge state ∙ m
+merge`. "here" is `Ticket::column_since`, the card's own age; "created by you" went (single-user
+v0.1 says nothing by it). Body zones move down one row. The sessions' keys moved off the footer
+and under the rail: a `dim3` trailer row `c claude ∙ s shell ∙ x sleep` under the sessions
+(the empty rail's nudge, generalised; wrapped onto a second row when the rail is narrow, never
+dropped) and `N new note` under the notes; `{ } page` sits on the PREVIEW heading's right while
+the zone overflows (read from the last frame's measurement). Board `o` reads `new ticket`, not
+`open ticket` — it mints a card. Ticket `c s x { }` carry prio 0 now.
+
+**The note editor names its ticket**: header `NOTE  mesimon > repo > <ticket>`, and the context
+row says which note this is — `the description ∙ edited by you 3d ago`, `a note ∙ …`, `new note ∙
+becomes the description` — instead of `NOTE ∙ edited by you`.
+
+Not done, deliberately: the header is NOT a painted band (the plan said header + footer; a
+band on row 0 two rows above the cursor column's painted header band fought it, so the header
+keeps the page ground and only its chip is painted); no accent-coloured focus frame (L2/L3 hold:
+`attn` stays needs-you only); no per-panel hue. Every golden changed (header chip, footer);
+regenerated once and reviewed by eye.

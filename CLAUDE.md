@@ -259,6 +259,26 @@ flavor/profile. Remaining polish (decay, animation, banners, density ladder, key
 stays in M6. One hard visual rule: exactly ONE saturated colour on the board, reserved for
 needs-you (`Theme::attn`; `test_attn_provenance*` enforces it), nothing else ever.
 
+**The chrome after T-158 (2026-09-03): framed dialogs, a screen chip, a painted footer, one
+place per hint.** Every floating surface (menu, theme picker, archived, external drawer, `?`,
+tag picker, the composer dialog) draws through `tui/src/ui/dialog.rs::frame` — `╭─ TITLE ─╮ …
+╰─ its keys ─╯` in `dim3`, ascii `+-|` — which records the rectangle on `App::frames`;
+`test_no_drawn_structure` admits a box glyph ONLY on a recorded perimeter (plus `▀`), so L1's
+"no drawn structure" has exactly one allowlisted role and the board, cards and pages stay
+painted. A dialog's keys are its scope's LEFT footer cluster (`keymap::footer_split`) set into
+its bottom edge; the footer under it shows only the mode chip and the right cluster. The header
+(`chrome::draw_header`, one function for every screen) opens with a chip naming the screen —
+`BOARD` / `TICKET` / `DIFF` / `NOTE` — and the footer's mode word appears only when a mode has
+taken the keys (`DELETE`, `TAG`, `NEW`, `ASK`, `MENU`). The footer is a band on `selected_bg`
+with `key word` pairs (`chrome::hint_spans`, key bold — 06 §5.1 clause 3); `Group::App` items
+(`esc menu` prio 254, `? keys` prio 255) form a right-aligned cluster, and `? keys` appears only
+where `?` resolves (never in a text field or chord tail; `footer_always_keeps_the_help_tail`).
+Hints sit where they operate: the ticket rail's trailer rows carry `c s x` and `N`, the PREVIEW
+heading carries `{ } page` — those bindings are prio 0 on `Scope::Ticket` and reached by
+`keymap::binding_for`. The ticket page has its own title row (bold; `r` edits it there) and a
+state row (`IN PROGRESS ∙ 3d here ∙ created 2w ago ∙ tags ∙ branch`); the note editor's header
+names its ticket. (STALE-MAP "The UI overhaul".)
+
 **Five themes, picked from the Esc menu, saved in two slots (2026-09-02, user request).** A
 theme is a `Palette` TABLE in `theme.rs` (truecolor hexes plus hand-authored 256/16/8 forms, the
 diff tints, the tag ring, and `shadow`, the colour `faded()` blends toward) and
@@ -714,7 +734,8 @@ Board-wide actions (external drawer, archived list, sleep-all, archive-all) deli
 NO key, bar the two the header itself teaches (`U` reloads, `Z` sleeps the done agents — both
 overlay-only, so the footer stays the selection's) — they live in the Esc menu (`ui/menu.rs`,
 rows from `keymap::menu_items`), because they are rare, are not about the selection, and a menu
-row has room to say what it will do.
+row has room to say what it will do. The board's footer names the door — `esc menu`, in the
+right cluster beside `? keys` (T-158).
 
 **Suggestions are pointers at menu rows, never their own surface.** `keymap::SUGGESTIONS` is a
 priority-ordered list (update ready > sleep N agents > archive N tickets); each entry's

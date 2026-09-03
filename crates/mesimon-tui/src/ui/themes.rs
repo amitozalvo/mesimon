@@ -56,8 +56,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         // one fact a preview cannot show while the popup covers the board.
         let tag = word(flavor.ground());
         let lead = "   ";
-        let text =
-            truncate(flavor.name(), inner_w.saturating_sub(tag.width() + lead.width() + 1));
+        let text = truncate(flavor.name(), inner_w.saturating_sub(tag.width() + lead.width() + 1));
         let pad = inner_w.saturating_sub(lead.width() + text.width() + tag.width() + 1);
         let style = if selected {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)

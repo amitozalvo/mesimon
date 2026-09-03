@@ -791,7 +791,9 @@ pub(crate) struct FrameGlyphs {
 
 pub(crate) fn frame_set(tier: Tier) -> FrameGlyphs {
     match tier {
-        Tier::Unicode => FrameGlyphs { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│' },
+        Tier::Unicode => {
+            FrameGlyphs { tl: '╭', tr: '╮', bl: '╰', br: '╯', h: '─', v: '│' }
+        }
         Tier::Ascii => FrameGlyphs { tl: '+', tr: '+', bl: '+', br: '+', h: '-', v: '|' },
     }
 }
