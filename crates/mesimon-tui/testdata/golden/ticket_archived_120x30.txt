@@ -8,7 +8,7 @@
 
                                                                                           z $ bash                 >1y
                                                                                            c start claude ∙ s shell
-                                                                                           x wake
+
 
 
 

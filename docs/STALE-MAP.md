@@ -4266,3 +4266,33 @@ frame, since the taller menu put the sleep row beside a board card.
 `prefs.json` and a `Suggestion` pointing at the row would do it; the author has not asked); no
 `g`/`G`; the notes are not scrubbed through `text.rs` because they are the repo's own file, not
 user or agent text.
+
+## Two hints go quiet: the sleeper's `x` and the editor's Shift+Tab (2026-09-04)
+
+**Ask:** "remove hint `x wake` in ticket page and `shift+tab shared checkout / own worktree`
+in bottom (already hinted composer)"; then, on the second: "shift+tab should stay in small
+composer (and actually be introduced in big composer), but removed from bottom hints".
+
+**`x` on a sleeper is bound, not hinted** (`keymap.rs`, `Scope::Ticket`): the rail's trailer
+said `x wake` under a row whose `enter` already reads "wake" and whose `c` reads "wake claude"
+— a third spelling of one act. The hint closure returns `""` on `sel_sleeping` (the `c`
+precedent: `binding_for` and the footer drop an empty hint, the key still resolves), so the
+verb keeps its two words, `sleep` and `dismiss`. `x_says_what_it_will_do_to_the_row_under_it`
+pins the silence and that `enter` still says "wake" on the same row. Golden
+`ticket_archived_120x30` lost the trailer word.
+
+**Shift+Tab is spelled beside the pick it cycles, never in the edge.** The one-line composer's
+card already carried `⎇ shared  shift+tab` (`card::render_workspace_selector`); the grown
+dialog's context row named the workspace but not the key, and its bottom edge (or the footer,
+where the edge had no room) said `shift+tab shared checkout / own worktree` in full. Now
+`editor::context_line` puts the same `  shift+tab` (dim2) after the workspace word — composing
+always, and on a description while `Ctx::workspace_open` (the choice locks with the first
+session or worktree, and a key spelled beside a setting it cannot change is a lie) — and the
+`Scope::Editor` binding's hint is `""` at `prio: 0`: bound, silent, one place per hint (T-158's
+rule). `tags_reach_the_composer` now asserts `hint_for` is `None` there. Goldens
+`editor_compose_120x30` and `editor_compose_tags_120x30` moved by the one word;
+`editor_describe_120x30` did not, its ticket has a session. The one-line composer's own
+`Scope::Input` binding is untouched (the card's spelling is the hint).
+
+**Cost:** `?` on the editor no longer lists Shift+Tab, and on a sleeper's row does not list
+`x` — the same trade `c` on a paned claude already makes.

@@ -359,6 +359,10 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 ctx_spans.push(Span::styled(" column".to_string(), dim2));
             }
             ctx_spans.push(Span::styled(format!(" ∙ ⎇ {word}"), dim1));
+            // The key beside the pick it cycles, the way the one-line
+            // composer's card spells it (`card::render_workspace_selector`)
+            // — the dialog's bottom edge does not repeat it.
+            ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));
             if !tags.is_empty() {
                 ctx_spans.push(Span::styled(" ∙".to_string(), dim2));
                 for t in tags {
@@ -392,6 +396,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             let mut parts: Vec<Span<'static>> = Vec::new();
             if let Some(t) = t {
                 parts.push(Span::styled(format!("⎇ {}", workspace_word(t.workspace)), dim1));
+                // Spelled only while Shift+Tab can still change it — the
+                // choice locks with the first session or worktree.
+                if app.ctx().workspace_open {
+                    parts.push(Span::styled("shift+tab".to_string(), dim2));
+                }
             }
             if let Some(m) = meta {
                 let who = super::ticket::author_word(&m.edited_by);

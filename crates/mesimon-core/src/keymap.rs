@@ -1309,15 +1309,18 @@ static TICKET: &[Binding] = &[
         keys: &[Key::Char('x')],
         verb: Verb::Sleep,
         show: "x",
-        // Three words, one verb: a corpse cannot be slept and a sleeper
+        // Two words, one verb: a corpse cannot be slept and a sleeper
         // cannot be dismissed, so the same key means the only thing it
         // could mean for the row under the cursor. `Enter` next door
-        // switches on `sel_dead` the same way ("resume").
+        // switches on `sel_dead` the same way ("resume"). On a SLEEPER the
+        // key still wakes but says nothing (author 2026-09-04): `enter` on
+        // the same row already reads "wake" and `c` under the rail "wake
+        // claude", so a third spelling of one act was noise in the trailer.
         hint: |c| {
             if c.sel_dead {
                 "dismiss"
             } else if c.sel_sleeping {
-                "wake"
+                ""
             } else {
                 "sleep"
             }
@@ -2689,15 +2692,20 @@ static EDITOR: &[Binding] = &[
         // it is set on the daemon at once (`SetWorkspace`), and only while
         // nothing has locked it — the choice closes the moment a session or
         // a worktree exists, the same rule `set_workspace` refuses by.
+        // SILENT in the edge (author 2026-09-04): the key is spelled on the
+        // context row beside the pick it cycles (`editor::context_line`),
+        // the way the one-line composer's card spells it, so the bottom
+        // edge said it a second time. Bound, not hinted — the `c` precedent
+        // on the ticket page.
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
-        hint: |_| "shared checkout / own worktree",
+        hint: |_| "",
         avail: |c| c.editing && (c.editor_composing || c.workspace_open),
         class: Class::Plain,
         group: Group::Worktree,
         mutates: true,
-        prio: 30,
+        prio: 0,
     },
     Binding {
         // In the title, Enter is the way down to the body (a title is one
@@ -3637,7 +3645,9 @@ mod tests {
         // moment work starts on the ticket.
         let open = Ctx { editing: true, workspace_open: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::BackTab, &open), Some(Verb::CycleWorkspace));
-        assert!(hint_for(Scope::Editor, Verb::CycleWorkspace, &open).is_some());
+        // Bound but unhinted: the key is spelled on the context row beside
+        // the pick, never in the dialog's edge.
+        assert!(hint_for(Scope::Editor, Verb::CycleWorkspace, &open).is_none());
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('t'), &open), None, "tags stay the picker's");
     }
 
@@ -3875,8 +3885,8 @@ mod tests {
             .any(|b| b.class == Class::Arm && b.verb == Verb::Sleep));
     }
 
-    /// `x` is one verb wearing three words, and the word has to be the one
-    /// the row under the cursor can actually do. The dismiss case is the one
+    /// `x` is one verb wearing two words (and silence on a sleeper), and the
+    /// word has to be the one the row under the cursor can actually do. The dismiss case is the one
     /// that was missing: `x` on a corpse resolved to `Verb::Sleep`, hinted
     /// "sleep", and came back "only idle sessions sleep".
     #[test]
@@ -3888,7 +3898,10 @@ mod tests {
             assert_eq!(resolve(Scope::Ticket, Key::Char('x'), c), Some(Verb::Sleep));
         }
         assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &live), Some(("x", "sleep")));
-        assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &asleep), Some(("x", "wake")));
+        // A sleeper's `x` wakes but is not hinted: `enter` on the row says
+        // "wake" already.
+        assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &asleep), None);
+        assert_eq!(hint_for(Scope::Ticket, Verb::Act, &asleep), Some(("enter", "wake")));
         assert_eq!(hint_for(Scope::Ticket, Verb::Sleep, &corpse), Some(("x", "dismiss")));
         // `Enter` next door reads the same flag, so the two keys never
         // disagree about what the selected row is.

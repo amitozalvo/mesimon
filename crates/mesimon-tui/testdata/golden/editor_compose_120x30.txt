@@ -3,7 +3,7 @@
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
                               ╭─ NEW TICKET ──────────────────────────────────────────────╮
    Decay treatments       >1y │  Ship the diff viewer                                     │  z Painted accent bar  >1y
-                              │  TODO column ∙ ⎇ worktree ∙  BUG                          │
+                              │  TODO column ∙ ⎇ worktree  shift+tab ∙  BUG               │
    Keymap validator       >1y │                                                           │
                               │  ## Why                                                   │
                               │                                                           │
