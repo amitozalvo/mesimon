@@ -27,4 +27,4 @@
  line 23 of the note
  line 24 of the note
  line 25 of the note
- ^s tell claude ∙ esc close
+ ^s save ∙ esc close

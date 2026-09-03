@@ -226,7 +226,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // New-ticket entry: a phantom card at the column tail, edited in place.
     // The second line is the M4 workspace selector (Shift+Tab cycles it).
     if is_cursor_col {
-        if let Some((InputPurpose::Create { workspace, tags }, buf)) = editing {
+        if let Some((InputPurpose::Create { workspace, tags, .. }, buf)) = editing {
             // The tags picked with `^t` stripe the phantom card exactly as
             // they will stripe the real one — otherwise you are picking
             // blind until the ticket exists.

@@ -23,6 +23,15 @@ pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
         KeyCode::Char('l') | KeyCode::Right if alt => Key::AltRight,
         KeyCode::Char('k') | KeyCode::Up if alt => Key::AltUp,
         KeyCode::Char('j') | KeyCode::Down if alt => Key::AltDown,
+        // Shift held on a ctrl+letter is its own atom, uppercase — only the
+        // kitty tier reports it (a legacy terminal sends the bare control
+        // byte, no modifier), and the keymap gates every such binding on
+        // `Ctx::rich_keys`, so the press degrades to the lowercase atom.
+        KeyCode::Char(c)
+            if ctrl && c.is_ascii_alphabetic() && mods.contains(KeyModifiers::SHIFT) =>
+        {
+            Key::Ctrl(c.to_ascii_uppercase())
+        }
         // `to_ascii_lowercase` leaves `]` and `5` alone, which is what makes
         // the two spellings of ctrl+] (kitty's true `C-]`, and the `C-5` that
         // legacy terminals send for 0x1D) land on the same atom.
@@ -86,6 +95,13 @@ mod tests {
         assert_eq!(to_key(KeyCode::Char('b'), a), Some(Key::Char('b')));
         // Ctrl wins the letter it already owns.
         assert_eq!(to_key(KeyCode::Char('t'), a | KeyModifiers::CONTROL), Some(Key::Ctrl('t')));
+        // ctrl+shift+letter is the uppercase atom, whichever case the
+        // terminal reports the letter in; without Shift, lowercase always.
+        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        assert_eq!(to_key(KeyCode::Char('s'), cs), Some(Key::Ctrl('S')));
+        assert_eq!(to_key(KeyCode::Char('S'), cs), Some(Key::Ctrl('S')));
+        assert_eq!(to_key(KeyCode::Char('S'), KeyModifiers::CONTROL), Some(Key::Ctrl('s')));
+        assert_eq!(to_key(KeyCode::Char(']'), cs), Some(Key::Ctrl(']')));
         // Unmodified, they are the plain atoms they always were.
         assert_eq!(to_key(KeyCode::Char('h'), KeyModifiers::NONE), Some(Key::Char('h')));
         assert_eq!(to_key(KeyCode::Left, KeyModifiers::NONE), Some(Key::Left));

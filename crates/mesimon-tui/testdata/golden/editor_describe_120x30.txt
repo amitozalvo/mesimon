@@ -24,7 +24,7 @@
                               │                                                           │
                               │                                                           │
                               │                                                           │
-                              ╰────────────────────────────── ^s tell claude ∙ esc close ─╯
+                              ╰───────────────────────────────────── ^s save ∙ esc close ─╯
 
 
- ^s tell claude ∙ esc close
+ ^s save ∙ esc close

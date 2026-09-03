@@ -328,6 +328,23 @@ fn golden_waiting_board_120() {
     golden("board_waiting_120x30", &render(&app, 120, 30));
 }
 
+/// An Esc-interrupted agent on an otherwise sessionless card: the card
+/// carries `⊘` where it used to carry nothing (2026-09-04).
+#[test]
+fn golden_interrupted_board_120() {
+    let mut b = fixture(false);
+    b.sessions.push(session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::Interrupted },
+    ));
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    golden("board_interrupted_120x30", &render(&app, 120, 30));
+}
+
 #[test]
 fn golden_move_ghost_120() {
     let mut app = app_graphite(fixture(false));
@@ -368,23 +385,6 @@ fn golden_help_overlay_120() {
     app.cursor_col = 1;
     app.help = true;
     golden("help_board_120x30", &render(&app, 120, 30));
-}
-
-/// An Esc-interrupted agent on an otherwise sessionless card: the card
-/// carries `⊘` where it used to carry nothing (2026-09-04).
-#[test]
-fn golden_interrupted_board_120() {
-    let mut b = fixture(false);
-    b.sessions.push(session(
-        21,
-        ulid_n(2),
-        SessionKind::Claude,
-        SessionState::Idle { stop_reason: StopReason::Interrupted },
-    ));
-    let mut app = app_graphite(b);
-    app.cursor_col = 1;
-    app.cursor_row = 0;
-    golden("board_interrupted_120x30", &render(&app, 120, 30));
 }
 
 /// The same overlay on the ticket screen lists a different set — the proof
@@ -1625,6 +1625,7 @@ fn golden_compose_tags_120() {
         purpose: crate::app::InputPurpose::Create {
             workspace: None,
             tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
+            description: None,
         },
         buffer,
     };
@@ -1896,6 +1897,7 @@ fn golden_composer_selector_120() {
         purpose: crate::app::InputPurpose::Create {
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
+            description: None,
         },
         buffer,
     };
@@ -2306,7 +2308,11 @@ fn the_composer_dialog_grows_out_of_its_card() {
         buffer.insert(c);
     }
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Create { workspace: None, tags: Vec::new() },
+        purpose: crate::app::InputPurpose::Create {
+            workspace: None,
+            tags: Vec::new(),
+            description: None,
+        },
         buffer,
     };
     let before = render(&app, 120, 30);
@@ -2656,12 +2662,6 @@ fn test_no_banned_sgr() {
                 cells(&app, 120, 30)
             },
             {
-                // The board's prompt field, on its card. New vocabulary is
-                // exactly what these sweeps exist to catch.
-                let mut p = App::for_test(fixture(false), Theme::new(flavor, profile));
-                p.rich_keys = true;
-                p.cursor_col = 1;
-            {
                 // The release notes: rendered markdown on painted bands, and
                 // the one bold allowed there is the tag.
                 install_releases(&mut app);
@@ -2671,6 +2671,12 @@ fn test_no_banned_sgr() {
                 );
                 cells(&app, 120, 30)
             },
+            {
+                // The board's prompt field, on its card. New vocabulary is
+                // exactly what these sweeps exist to catch.
+                let mut p = App::for_test(fixture(false), Theme::new(flavor, profile));
+                p.rich_keys = true;
+                p.cursor_col = 1;
                 p.mode = Mode::Input {
                     purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
                     buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
@@ -2791,12 +2797,6 @@ fn test_no_drawn_structure() {
             install_diff(&mut app);
             sweep(&app)
         },
-        // The tag picker, open and mid-rename. It was NOT covered here, and
-        // that is exactly how a U+2588 cursor got shipped into it.
-        {
-            let mut t = app_graphite(fixture_tagged());
-            t.tag_armed = Some(crate::app::TagArm {
-                ticket: Some(ulid_n(3)),
         {
             install_releases(&mut app);
             let lines = sweep(&app);
@@ -2806,6 +2806,12 @@ fn test_no_drawn_structure() {
             );
             lines
         },
+        // The tag picker, open and mid-rename. It was NOT covered here, and
+        // that is exactly how a U+2588 cursor got shipped into it.
+        {
+            let mut t = app_graphite(fixture_tagged());
+            t.tag_armed = Some(crate::app::TagArm {
+                ticket: Some(ulid_n(3)),
                 row: 0,
                 col: 0,
                 naming: None,

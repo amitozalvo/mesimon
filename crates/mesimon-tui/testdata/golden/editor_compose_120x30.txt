@@ -24,7 +24,7 @@
                               │                                                           │
                               │                                                           │
                               │                                                           │
-                              ╰───────────────────────────────────── esc close ∙ ^t tags ─╯
+                              ╰──── ^s save ∙ ^S save + ask claude ∙ esc close ∙ ^t tags ─╯
 
 
  NEW

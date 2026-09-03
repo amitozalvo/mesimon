@@ -21,4 +21,4 @@
 
 
 
- esc close
+ ^s save ∙ esc close
