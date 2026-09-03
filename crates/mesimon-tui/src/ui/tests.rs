@@ -2441,12 +2441,21 @@ fn test_no_banned_sgr() {
         // markdown, so it is where a banned attribute would sneak in.
         attach_transcript(&mut app.board, &path);
         app.cursor_col = 1;
+        // A card wearing the spoke mark — new card vocabulary is what these
+        // sweeps exist to catch.
+        seed_spoke(&mut app, ulid_n(5));
         let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, profile));
         arch.mode = Mode::Archived { idx: 0 };
         let mut picker = App::for_test(fixture(false), Theme::new(flavor, profile));
         picker.mode = Mode::Theme { idx: 2 };
         for buf in [
-            cells(&app, 120, 30),
+            {
+                assert!(
+                    render(&app, 120, 30).iter().any(|l| l.contains(SPOKE)),
+                    "the spoke mark must be ON SCREEN, or this law does not bite"
+                );
+                cells(&app, 120, 30)
+            },
             cells(&arch, 120, 30),
             cells(&picker, 120, 30),
             {
@@ -2555,12 +2564,21 @@ fn test_no_drawn_structure() {
     // Markdown is full of rules and boxes; none of them may reach a cell.
     attach_transcript(&mut app.board, &path);
     app.cursor_col = 1;
+    // The spoke mark is a geometric shape a cell away from the banned range.
+    seed_spoke(&mut app, ulid_n(5));
     let mut arch = app_graphite(fixture_archived());
     arch.mode = Mode::Archived { idx: 0 };
     let mut picker = app_graphite(fixture(false));
     picker.mode = Mode::Theme { idx: 2 };
     let screens: Vec<Vec<String>> = vec![
-        sweep(&app),
+        {
+            let lines = sweep(&app);
+            assert!(
+                lines.iter().any(|l| l.contains(SPOKE)),
+                "the spoke mark must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
         sweep(&arch),
         sweep(&picker),
         {
@@ -2766,6 +2784,74 @@ fn test_sleeping_mark_is_dormant() {
     let y = lines.iter().position(|l| l.contains("$ bash")).expect("rail row") as u16;
     let x = (0..120u16).find(|&x| buf[(x, y)].symbol() == "z").expect("rail wears z");
     assert_eq!(buf[(x, y)].fg, dim3, "the rail's sleeping mark is dormant too");
+}
+
+/// The spoke mark as a card row spells it.
+const SPOKE: &str = "◊";
+
+/// Mark `ticket` as having spoken since the cursor was on it — the entry the
+/// scan would hold after a reply landed on a card the cursor was not on.
+fn seed_spoke(app: &mut App, ticket: ulid::Ulid) {
+    app.spoke.insert(
+        ticket,
+        crate::app::Spoke { session: uuid_n(0), path: String::new(), key: 1, seen: 0 },
+    );
+}
+
+#[test]
+fn golden_spoke_board_120() {
+    // T-173: a card whose agent said something new while the cursor was
+    // elsewhere wears `◊` right of its title, with the worktree mark and the
+    // age. The cursor card never wears it, even with an entry that says so:
+    // it is being acked as it is drawn.
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    seed_spoke(&mut app, ulid_n(3));
+    seed_spoke(&mut app, ulid_n(5));
+    let lines = render(&app, 120, 30);
+    // T-3 and T-5 share a row (columns 1 and 2): the one mark on it sits
+    // past T-5's title, so it is T-5's and T-3 — the cursor card — has none.
+    let row = lines.iter().find(|l| l.contains("Grapheme")).expect("T-5 rendered");
+    assert!(row.contains("Fix OSC-11"), "T-3 shares the row: {row:?}");
+    assert_eq!(row.matches(SPOKE).count(), 1, "one mark on the row: {row:?}");
+    assert!(
+        row.find(SPOKE) > row.find("Grapheme"),
+        "the mark is right of the title that spoke, not on the cursor card: {row:?}"
+    );
+    golden("board_spoke_120x30", &lines);
+}
+
+/// The mark is the title's own weight and nothing louder: the grey ramp's
+/// base on a resting card, never the accent — and a needs-you card, whose
+/// inverted row is already the loudest thing on the board, does not wear
+/// it at all. Mono spells it `*`.
+#[test]
+fn test_spoke_mark_is_the_titles_weight() {
+    let mut app = app_graphite(fixture(true));
+    app.cursor_col = 1;
+    seed_spoke(&mut app, ulid_n(5));
+    seed_spoke(&mut app, ulid_n(4));
+    let buf = cells(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("Grapheme")).expect("T-5") as u16;
+    let x = (0..120u16).find(|&x| buf[(x, y)].symbol() == SPOKE).expect("T-5 wears the mark");
+    assert_eq!(buf[(x, y)].fg, app.theme.rest.base, "the mark rides the title's weight");
+    assert_ne!(buf[(x, y)].fg, app.theme.attn);
+    assert!(!buf[(x, y)].modifier.contains(ratatui::style::Modifier::BOLD));
+    let y4 = lines.iter().position(|l| l.contains("Adopt drawer")).expect("T-4") as u16;
+    assert!(
+        (0..120u16).all(|x| buf[(x, y4)].symbol() != SPOKE),
+        "a needs-you card wears no spoke mark: {:?}",
+        lines[y4 as usize]
+    );
+    let mut mono = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
+    mono.cursor_col = 1;
+    seed_spoke(&mut mono, ulid_n(5));
+    let lines = render(&mono, 120, 30);
+    let t5 = lines.iter().find(|l| l.contains("Grapheme")).expect("T-5 mono");
+    assert!(t5.contains(" * "), "the ascii tier spells it `*`: {t5:?}");
+    assert!(!t5.contains(SPOKE));
 }
 
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.

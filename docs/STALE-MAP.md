@@ -458,8 +458,9 @@ artifacts. **M4's worktree spawn needs no trust gate and no config writes.**
 - **Mechanism**: zero daemon/wire changes. The snapshot already carries `transcript_path`
   per session record; the TUI reads the file's last 64 KiB at draw time (census-style
   reverse scan for the last assistant text block, `core::adopt::classify_tail_record`)
-  behind a one-entry (len, mtime) cache (`tui/src/peek.rs`) — steady cost is one `stat`
-  per frame for the single peeking card. Text is sanitized before render: control chars and
+  behind a (len, mtime) cache (`tui/src/peek.rs`; one entry then, one per path since the spoke
+  mark below) — steady cost is one `stat` per frame for the single peeking card. Text is
+  sanitized before render: control chars and
   the drawn-structure range 0x2500–0x259F stripped (the L1 no-drawn-structure law holds for
   transcript content too). Highest-precedence session with a transcript wins (bash rows
   never have one).
@@ -4000,3 +4001,62 @@ Unit: `external::tests` (the ladder, the word, the newline, a real child through
 changed / unchanged / failed), `app::tests::ctrl_g_edits_the_note_outside_and_the_return_saves`,
 `ctrl_g_while_composing_fills_the_draft_and_mints_nothing`,
 `keymap::tests::ctrl_g_hands_the_body_to_the_users_editor`.
+
+## A card wears a mark when its agent spoke while you were away (2026-09-04, T-173)
+
+The board had no answer to "what changed while I was away": the glyph says what an agent IS,
+the `p` peek shows the cursor card's reply, and an agent that printed on a card you were not on
+left no trace once its turn ended in `✓`. The T-161 research shortlisted process-compose's
+unfocused-output mark; this is it, on a card. Nothing in the corpus has the concept — 08 §337's
+`↺ changed since you accepted` is the nearest phrase, and it is about review dispositions.
+
+- **What it says**: `◊` right of the title, before the worktree mark (`⎇↑` is "commits
+  waiting", this is "words waiting"), on a card whose paned claude has a NEW REPLY on its
+  transcript since the cursor was last on the card. Clears the moment the cursor lands, or the
+  ticket page opens. Never on the cursor card, the move ghost, or a needs-you card (the inverted
+  row is already the loudest thing on the board, and the title gets its cells back there).
+  Title weight (`rest.base`), no bold, no chromatic token; `*` at the ASCII tier.
+- **The source is the transcript's assistant RECORD, not pane bytes and not the words.** The
+  ticket's open question was tail vs `#{window_activity}`; the tail is quieter (a working
+  agent's tool traffic never marks, and neither does the user's own prompt) and it is exactly
+  what the peek row shows, so the mark means "this card's peek row changed" and nothing vaguer.
+  `peek::Peek::reply_key` hashes the record's `uuid`: two "Done." replies to two prompts are two
+  replies, and a prompt on top (`text` falls to `> …`) leaves the key `None`, which the scan
+  reads as "nothing new", not as a change.
+- **State is TUI-local** (`App::spoke: HashMap<Ulid, Spoke { session, path, key, seen }>`; the
+  description said a restart may forget, and it does: a fresh board baselines every card as
+  seen). `scan_ticket` reads `Board::pane_target` — the one paned claude, the same predicate the
+  daemon's prompt delivery and `board_enter` use — and re-baselines rather than marks when the
+  session or the path differs from the entry's (a spawn, a wake, a `/resume` that relearned the
+  path): a fresh session's first words are not news that arrived while you were away. "No reply
+  yet" is a key of its own (0), so the first reply ever still counts. No qualifying session drops
+  the entry, which is the description's "a parked card never carries a stale new".
+- **The beat is `poll_spoke` in `App::tick`**, after the refresh block, beside the shell-tail
+  and note polls: the departing card is scanned and acked the tick the cursor leaves it (a reply
+  that landed under the cursor between two clock beats was seen, not missed), the board is
+  scanned on `SPOKE_EVERY` (1 s), and the subject is acked every tick. A verdict change is a
+  redraw, never a snapshot: nothing on the wire knows what an agent said. The ack is positional
+  — a card that slides under the cursor on a snapshot counts as looked at, so does one under a
+  dialog — accepted.
+- **`PeekCache` went from one slot to one entry per path** (`retain` prunes against EVERY
+  session's transcript, not only the paned claudes': the ticket page previews a corpse through
+  the same cache). Cost, stated: one `stat` per paned claude per second at rest; a Running
+  session's file moves on every tool result, so each busy session costs a 64 KiB reverse scan
+  (256 KiB when the window holds neither reply nor prompt) a second — ten busy agents ≈ 10–20
+  ms/s on the draw thread.
+- **`◊` U+25CA, not `◆` U+25C6** (process-compose's own) and not `●`: both are East Asian Width
+  *Ambiguous*, which 05 §7 and 07 §18 rule 2 ban on a width-critical row, and `unicode-width`
+  counts Ambiguous as one so a width test on either passes and proves nothing. `◊` is EAW=N, on
+  05's safe list, a sibling in weight to the `⎇` and `✓` beside it; it was refused only as the
+  CHROME's suggestion chip. `glyphs::spoke_mark` pins the literal.
+- **This is the TUI's first "seen" ack, and it is instantaneous by design.** 06 §3.6 / 07 §577's
+  D19 decay (`seen_at` when the cursor RESTS ≥ 1 s, `✓` fading to `dim2`) is about state, is
+  still M6, and should reuse `Spoke.seen` when it lands rather than mint a second notion of seen.
+- No key, no `Ctx` field: the mark needs no binding. A "next unseen" jump beside next-needs-you
+  would be the first thing to earn one.
+- Tests: `peek.rs` (`reply_key` names the record, the cache holds every path and prunes);
+  `app.rs` (baseline, marked while away, cleared on landing, the ticket page counts, a prompt
+  alone is not the agent, a parked card holds no entry and a wake starts over, a reply under the
+  cursor is seen when the cursor leaves, a fresh session re-baselines, a first reply is news);
+  golden `board_spoke_120x30`; `test_spoke_mark_is_the_titles_weight` (ramp base, never attn, no
+  mark on a needs-you card, `*` in mono); the mark seeded into both L1 sweeps.

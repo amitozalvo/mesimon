@@ -152,6 +152,27 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
     }
 }
 
+/// The spoke mark (T-173): the card's agent said something new while the
+/// card was not under the cursor. It rides line 1 of a card, right of the
+/// title beside the worktree mark, which is the most width-critical row on
+/// the board — so the codepoint is chosen by East Asian Width first. `◆`
+/// U+25C6 (process-compose's own unfocused-output mark, where the idea came
+/// from) and `●` U+25CF are both *Ambiguous*: a terminal set to render
+/// ambiguous glyphs wide shifts every cell after them, and `unicode-width`
+/// counts Ambiguous as one, so a width assertion on either would pass and
+/// prove nothing. `◊` U+25CA is EAW=N (05 §7's safe list), a sibling in
+/// weight to the `⎇` and `✓` it sits beside, and was refused only as the
+/// CHROME's suggestion chip, where it was too loud for an offer; on a card
+/// it is the news. Not `›`: that reads as "you are here". The ASCII tier
+/// falls back to `*`, as the suggestion mark does.
+pub(crate) fn spoke_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '*'
+    } else {
+        '◊'
+    }
+}
+
 /// Which colour family a glyph rides (06 §2.1: exactly three chromatic tokens;
 /// everything else is the grey ramp).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -762,6 +783,21 @@ mod tests {
         assert_eq!(suggest_mark(Tier::Unicode), '◦');
         assert_eq!(suggest_mark(Tier::Ascii), '*');
         assert_eq!('◦'.width(), Some(1));
+    }
+
+    /// The spoke mark pins its literal: the width crate would also call `◆`
+    /// one cell, and the point of `◊` is that it IS one on every terminal
+    /// (EAW=N). Outside the drawn-structure range the L1 law bans, too.
+    #[test]
+    fn spoke_mark_is_one_narrow_cell_at_both_tiers() {
+        use unicode_width::UnicodeWidthChar;
+        assert_eq!(spoke_mark(Tier::Unicode), '◊');
+        assert_eq!(spoke_mark(Tier::Ascii), '*');
+        assert_eq!('◊'.width(), Some(1));
+        assert!(!(0x2500..=0x259F).contains(&('◊' as u32)));
+        // Its own thing: no other mark on a card row spells it.
+        assert_ne!(spoke_mark(Tier::Unicode), suggest_mark(Tier::Unicode));
+        assert_ne!(spoke_mark(Tier::Unicode), pulse(Tier::Unicode));
     }
 
     #[test]

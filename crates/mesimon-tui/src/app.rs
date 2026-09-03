@@ -54,6 +54,21 @@ impl ShellTail {
     }
 }
 
+/// What a ticket's agent last said against what the user last saw of it
+/// (T-173, the spoke mark). `key` names the newest reply on the transcript
+/// (`peek::Peek::reply_key`) and `seen` the one the cursor was on the card
+/// for; they differ exactly while the card owes the user a mark. `session`
+/// and `path` say WHICH transcript that is: a different one re-baselines
+/// instead of marking, because a fresh spawn's first words are not news
+/// that arrived while you were away.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct Spoke {
+    pub(crate) session: uuid::Uuid,
+    pub(crate) path: String,
+    pub(crate) key: u64,
+    pub(crate) seen: u64,
+}
+
 /// What the last draw of the ticket page's preview zone measured: which
 /// document it showed, where it was scrolled to, and how far it could go.
 /// Draw-side state, written by `ui/ticket.rs` and read by the `{ }` press
@@ -393,6 +408,10 @@ const DIFF_PAGE: usize = 20;
 /// purpose: it is a fork per beat, and a terminal a person is reading rather
 /// than driving does not need to be a live mirror.
 const SHELL_TAIL_EVERY: Duration = Duration::from_millis(1000);
+/// How often every paned claude's transcript is asked whether it spoke
+/// (`scan_spoke`). One `stat` per card a second at rest; peek.rs's module
+/// doc has the busy-session number.
+const SPOKE_EVERY: Duration = Duration::from_secs(1);
 /// One `pgup`/`pgdn` in the editor body, in lines. The handler cannot see
 /// the rendered height; a screenful is approximated.
 const EDITOR_PAGE: usize = 20;
@@ -484,6 +503,19 @@ pub struct App {
     /// transcript file to read the way `peek_cache` reads an agent's, so
     /// this comes over the wire, and only while a shell is being looked at.
     pub shell_tail: Option<ShellTail>,
+    /// Per ticket, what its agent last said against what the cursor has
+    /// seen of it (`Spoke`): a card whose entry disagrees wears the spoke
+    /// mark. Kept by `poll_spoke` — a 1 s scan of every paned claude's
+    /// transcript, and an ack of the subject ticket every tick. TUI-local
+    /// on purpose: a restart baselines every card as seen, which is the
+    /// right answer for a board you have just opened.
+    pub spoke: std::collections::HashMap<ulid::Ulid, Spoke>,
+    /// The scan's clock.
+    spoke_polled: Option<Instant>,
+    /// The ticket acked last tick, so the tick the cursor leaves a card can
+    /// scan THAT card once more before it goes: a reply that landed under
+    /// the cursor between two clock beats was seen, not missed.
+    spoke_subject: Option<ulid::Ulid>,
     /// Note bodies the ticket page has asked for, by note id. Bodies never
     /// ride the snapshot; `poll_notes` fetches the ones on screen, once per
     /// `(id, rev)`, and a save seeds it from our own text.
@@ -645,6 +677,9 @@ impl App {
             peek_cache: crate::peek::PeekCache::default(),
             tag_flash: None,
             shell_tail: None,
+            spoke: std::collections::HashMap::new(),
+            spoke_polled: None,
+            spoke_subject: None,
             notes: std::collections::HashMap::new(),
             preview_scroll: Cell::new(None),
             preview_view: Cell::new(PreviewView::default()),
@@ -965,6 +1000,9 @@ impl App {
         // the one thing on screen the daemon does not push.
         dirty |= self.poll_shell_tail();
         dirty |= self.poll_notes();
+        // The spoke marks: a redraw, never a snapshot — nothing on the wire
+        // knows what an agent said, only its transcript does.
+        dirty |= self.poll_spoke();
         // The loop redraws once per tick, so the poll timeout is the frame
         // rate: 100 ms paces the spinner, and a panel in motion gets a
         // shorter one for the few frames it takes to settle.
@@ -1086,6 +1124,112 @@ impl App {
             self.shell_tail.as_ref().is_some_and(|t| t.session == session && t.lines == lines);
         self.shell_tail = Some(ShellTail::new(session, lines));
         !same
+    }
+
+    /// Does this card owe the user a mark — did its agent say something the
+    /// cursor has not been on the card for? The one draw-side reader.
+    pub(crate) fn spoke_unseen(&self, ticket: ulid::Ulid) -> bool {
+        self.spoke.get(&ticket).is_some_and(|e| e.key != e.seen)
+    }
+
+    /// One card's half of the spoke scan: read what its paned claude has
+    /// said and settle the ticket's entry against it. The session is
+    /// `Board::pane_target`'s — the one the daemon's prompt delivery and
+    /// `board_enter` pick, so the mark, the peek row and the Enter key agree
+    /// on who speaks for a ticket. No such session (parked, exited, none)
+    /// drops the entry: a sleeping card never carries a stale "new", and a
+    /// wake starts over from what it finds. Returns whether the card's
+    /// verdict moved.
+    fn scan_ticket(&mut self, ticket: ulid::Ulid) -> bool {
+        let before = self.spoke_unseen(ticket);
+        let target =
+            self.board.pane_target(ticket).and_then(|s| Some((s.id, s.transcript_path.clone()?)));
+        let Some((session, path)) = target else {
+            self.spoke.remove(&ticket);
+            return before;
+        };
+        // An unreadable transcript (not written yet, gone) teaches nothing:
+        // keep whatever was known rather than re-baselining on every beat.
+        let Some(peek) = self.peek_cache.peek(&path) else {
+            return false;
+        };
+        match self.spoke.get_mut(&ticket) {
+            Some(e) if e.session == session && e.path == path => {
+                // `None` is the user's own prompt on top: the agent has not
+                // spoken since, and what it said before is still what it
+                // last said.
+                if let Some(k) = peek.reply_key {
+                    e.key = k;
+                }
+            }
+            _ => {
+                // First sight of this transcript — on launch, or after a
+                // spawn, a wake, a `/resume` that relearned the path. What is
+                // there now is the baseline, and "no words yet" is a key of
+                // its own so the first reply ever still counts as news.
+                let key = peek.reply_key.unwrap_or(0);
+                self.spoke.insert(ticket, Spoke { session, path, key, seen: key });
+            }
+        }
+        self.spoke_unseen(ticket) != before
+    }
+
+    /// Every card, then the prunes: entries for tickets that left the board,
+    /// and cached tails for transcripts no session names any more — EVERY
+    /// session's, not only the paned claudes', since the ticket page previews
+    /// a corpse's transcript through the same cache and pruning it would
+    /// re-read 64 KiB a second under the cursor. Returns whether any card's
+    /// verdict moved.
+    pub(crate) fn scan_spoke(&mut self) -> bool {
+        let tickets: std::collections::HashSet<ulid::Ulid> =
+            self.board.tickets.iter().map(|t| t.id).collect();
+        let mut changed = false;
+        for &t in &tickets {
+            changed |= self.scan_ticket(t);
+        }
+        self.spoke.retain(|id, _| tickets.contains(id));
+        let named: std::collections::HashSet<&str> =
+            self.board.sessions.iter().filter_map(|s| s.transcript_path.as_deref()).collect();
+        self.peek_cache.retain(|p| named.contains(p));
+        changed
+    }
+
+    /// The cursor is on `ticket` (or its page is open): whatever its agent
+    /// has said is seen. Returns whether that cleared a mark.
+    fn ack_spoke(&mut self, ticket: ulid::Ulid) -> bool {
+        match self.spoke.get_mut(&ticket) {
+            Some(e) if e.key != e.seen => {
+                e.seen = e.key;
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// The spoke marks' beat, from `tick`: the departing card is scanned and
+    /// acked the tick the cursor leaves it, the whole board is scanned on
+    /// `SPOKE_EVERY`, and the subject — cursor card, or the ticket whose page
+    /// is open — is acked every tick. The ack is positional: a card that
+    /// slides under the cursor on a snapshot counts as looked at, and so does
+    /// one under a dialog. Returns whether a redraw is owed.
+    fn poll_spoke(&mut self) -> bool {
+        let mut changed = false;
+        let subject = self.subject();
+        if subject != self.spoke_subject {
+            if let Some(left) = self.spoke_subject {
+                self.scan_ticket(left);
+                self.ack_spoke(left);
+            }
+            self.spoke_subject = subject;
+        }
+        if self.spoke_polled.is_none_or(|t| t.elapsed() >= SPOKE_EVERY) {
+            self.spoke_polled = Some(Instant::now());
+            changed |= self.scan_spoke();
+        }
+        if let Some(t) = subject {
+            changed |= self.ack_spoke(t);
+        }
+        changed
     }
 
     /// The note bodies the ticket page is showing — the description and the
@@ -4883,6 +5027,192 @@ mod tests {
         app.board.tickets[0].notes[0].rev = 2;
         assert!(app.poll_notes());
         assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
+    }
+
+    // ---- the spoke mark (T-173) -------------------------------------------
+
+    fn spoke_transcript(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("msmn-spoke-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        std::fs::create_dir_all(&d).expect("spoke dir");
+        d.join("t.jsonl")
+    }
+
+    fn reply_line(uuid: &str, text: &str) -> String {
+        format!(
+            "{{\"uuid\":\"{uuid}\",\"type\":\"assistant\",\"message\":{{\"content\":[{{\"type\":\"text\",\"text\":\"{text}\"}}]}}}}\n"
+        )
+    }
+
+    fn prompt_line(uuid: &str, text: &str) -> String {
+        format!(
+            "{{\"uuid\":\"{uuid}\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"{text}\"}}}}\n"
+        )
+    }
+
+    fn append(path: &std::path::Path, line: &str) {
+        use std::io::Write;
+        let mut f = std::fs::OpenOptions::new().append(true).open(path).expect("append");
+        f.write_all(line.as_bytes()).expect("write");
+        f.flush().expect("flush");
+    }
+
+    /// Three columns; a Running claude (uuid 7) on ticket 3 in `done`, its
+    /// transcript holding one reply. The cursor starts on ticket 1 in
+    /// `todo`, so ticket 3 is not the subject.
+    fn app_with_speaker(name: &str) -> (App, PathBuf) {
+        let path = spoke_transcript(name);
+        std::fs::write(&path, reply_line("a1", "hello")).expect("seed");
+        let mut b = board_three_columns();
+        let mut s = mesimon_core::board::SessionRecord::new(
+            uuid::Uuid::from_u128(7),
+            SessionKind::Claude,
+            ulid::Ulid(3),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Running,
+        );
+        s.transcript_path = Some(path.to_string_lossy().into_owned());
+        b.sessions.push(s);
+        (App::for_test(b, theme()), path)
+    }
+
+    #[test]
+    fn a_reply_while_away_marks_the_card_and_the_cursor_clears_it() {
+        let (mut app, path) = app_with_speaker("mark");
+        let t3 = ulid::Ulid(3);
+        assert!(!app.poll_spoke(), "the first scan is a baseline, not news");
+        assert!(!app.spoke_unseen(t3));
+        append(&path, &reply_line("a2", "done the thing"));
+        assert!(app.scan_spoke(), "a reply the cursor was not there for is news");
+        assert!(app.spoke_unseen(t3));
+        assert!(!app.spoke_unseen(ulid::Ulid(1)));
+        // Ticks with the cursor elsewhere leave it marked.
+        assert!(!app.poll_spoke());
+        assert!(app.spoke_unseen(t3));
+        // The cursor lands: cleared on that very tick.
+        app.cursor_col = 2;
+        app.cursor_row = 0;
+        assert!(app.poll_spoke(), "the ack is a redraw");
+        assert!(!app.spoke_unseen(t3));
+        // And it stays clear once the cursor leaves — nothing new was said.
+        app.cursor_col = 0;
+        assert!(!app.poll_spoke());
+        assert!(!app.scan_spoke());
+        assert!(!app.spoke_unseen(t3));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn the_ticket_page_counts_as_looking() {
+        let (mut app, path) = app_with_speaker("page");
+        let t3 = ulid::Ulid(3);
+        app.poll_spoke();
+        append(&path, &reply_line("a2", "look here"));
+        assert!(app.scan_spoke());
+        assert!(app.spoke_unseen(t3));
+        app.screen = Screen::Ticket { ticket: t3, rail_idx: 0 };
+        assert!(app.poll_spoke());
+        assert!(!app.spoke_unseen(t3));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn a_prompt_alone_is_not_the_agent_speaking() {
+        let (mut app, path) = app_with_speaker("prompt");
+        let t3 = ulid::Ulid(3);
+        app.poll_spoke();
+        append(&path, &prompt_line("p1", "and the other thing?"));
+        assert!(!app.scan_spoke(), "the user's own words are not news from the agent");
+        assert!(!app.spoke_unseen(t3));
+        append(&path, &reply_line("a2", "on it"));
+        assert!(app.scan_spoke());
+        assert!(app.spoke_unseen(t3));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn a_parked_agent_carries_no_mark_and_a_wake_starts_over() {
+        let (mut app, path) = app_with_speaker("park");
+        let t3 = ulid::Ulid(3);
+        app.poll_spoke();
+        append(&path, &reply_line("a2", "finished"));
+        assert!(app.scan_spoke());
+        assert!(app.spoke_unseen(t3));
+        app.board.sessions[0].state = SessionState::Sleeping;
+        assert!(app.scan_spoke(), "the mark going is a redraw");
+        assert!(!app.spoke_unseen(t3));
+        assert!(!app.spoke.contains_key(&t3), "a parked card holds no entry at all");
+        // Waking finds the same file with the reply the user never saw —
+        // and baselines it: what is there on a wake is where you start.
+        app.board.sessions[0].state = SessionState::Running;
+        assert!(!app.scan_spoke());
+        assert!(!app.spoke_unseen(t3));
+        append(&path, &reply_line("a3", "and more"));
+        assert!(app.scan_spoke());
+        assert!(app.spoke_unseen(t3));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn a_reply_under_the_cursor_is_seen_when_the_cursor_leaves() {
+        let (mut app, path) = app_with_speaker("depart");
+        let t3 = ulid::Ulid(3);
+        app.cursor_col = 2;
+        app.cursor_row = 0;
+        app.poll_spoke();
+        // The reply lands while the cursor sits on the card, between two
+        // clock beats; the cursor leaves before the next one.
+        append(&path, &reply_line("a2", "while you watched"));
+        app.cursor_col = 0;
+        assert!(!app.poll_spoke(), "the departing card is scanned and acked in one tick");
+        assert!(!app.scan_spoke());
+        assert!(!app.spoke_unseen(t3));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn a_fresh_session_on_the_same_ticket_rebaselines() {
+        let (mut app, path) = app_with_speaker("fresh");
+        let t3 = ulid::Ulid(3);
+        app.poll_spoke();
+        // A new spawn: another record, and its first words are not news
+        // that arrived while the user was away.
+        app.board.sessions[0].id = uuid::Uuid::from_u128(8);
+        append(&path, &reply_line("a2", "hello again"));
+        assert!(!app.scan_spoke());
+        assert!(!app.spoke_unseen(t3));
+        assert_eq!(app.spoke[&t3].session, uuid::Uuid::from_u128(8));
+        append(&path, &reply_line("a3", "and now this"));
+        assert!(app.scan_spoke());
+        assert!(app.spoke_unseen(t3));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+    }
+
+    #[test]
+    fn a_first_reply_ever_is_news() {
+        // The transcript starts with the user's words alone: "no reply yet"
+        // is a key of its own, so the first reply changes it.
+        let path = spoke_transcript("first");
+        std::fs::write(&path, prompt_line("p1", "fix the thing")).expect("seed");
+        let mut b = board_three_columns();
+        let mut s = mesimon_core::board::SessionRecord::new(
+            uuid::Uuid::from_u128(7),
+            SessionKind::Claude,
+            ulid::Ulid(3),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Running,
+        );
+        s.transcript_path = Some(path.to_string_lossy().into_owned());
+        b.sessions.push(s);
+        let mut app = App::for_test(b, theme());
+        app.poll_spoke();
+        assert!(!app.spoke_unseen(ulid::Ulid(3)));
+        append(&path, &reply_line("a1", "fixed"));
+        assert!(app.scan_spoke());
+        assert!(app.spoke_unseen(ulid::Ulid(3)));
+        let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
     }
 
     #[test]

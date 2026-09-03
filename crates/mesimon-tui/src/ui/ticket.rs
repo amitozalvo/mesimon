@@ -322,8 +322,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant
         // reply, read through the same draw cache as the board's `p` peek
-        // (one slot is still enough — board and ticket never draw the same
-        // frame). Bash sessions have no transcript and preview nothing.
+        // and the spoke scan (one entry per path since T-173). Bash sessions
+        // have no transcript and preview nothing.
         let row = app.rail_rows(ticket_id).get(rail_idx).copied();
         let sel = match row {
             Some(RailRow::Session(s)) => Some(s),

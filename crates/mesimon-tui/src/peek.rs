@@ -4,12 +4,20 @@
 //! tier and read-only, so the single-writer rule (D22) is untouched.
 //!
 //! Cost model: the board redraws ~10/s and only ONE card can peek, so the
-//! steady cost is a `metadata()` call; the 64 KiB tail re-reads only when
-//! the file's (len, mtime) moves.
+//! draw's steady cost is a `metadata()` call; the 64 KiB tail re-reads only
+//! when the file's (len, mtime) moves. Since T-173 the cache is per PATH,
+//! because `App::scan_spoke` reads every paned claude's transcript once a
+//! second to learn whether it spoke (`Peek::reply_key`): one `metadata()`
+//! per card per second at rest, and for a Running session — whose file
+//! moves on every tool result — one reverse scan per second, 64 KiB (256 KiB
+//! when the window holds neither reply nor prompt) plus a `serde_json`
+//! parse per line walked. Ten busy agents cost the draw thread ~10–20 ms a
+//! second. Entries for paths no session names any more are pruned there.
 
 use std::cell::RefCell;
+use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use mesimon_core::adopt::{classify_tail_record, tool_activity, user_prompt, TailEvent};
 use unicode_segmentation::UnicodeSegmentation;
@@ -39,6 +47,13 @@ pub(crate) struct Peek {
     /// spoken with nothing after it — the reply is then the whole story, and
     /// a stale step under it would lie.
     pub(crate) activity: Option<Doing>,
+    /// WHICH reply `text` is, when it is the agent's: a hash of the assistant
+    /// record's `uuid`, so two "Done." replies to two prompts are two replies
+    /// and a `/resume` that re-reads the same record is still one. `None`
+    /// while `text` is the user's own words — a prompt is not the agent
+    /// speaking, and the board's spoke mark (`App::scan_spoke`) keys on this
+    /// and nothing else.
+    pub(crate) reply_key: Option<u64>,
 }
 
 /// What the transcript says the agent is up to, for a session the board
@@ -71,12 +86,15 @@ pub(crate) fn latest_preview(path: &Path) -> Option<Peek> {
             None => words.map(|p| format!("> {p}")),
         },
         activity: tail.activity,
+        reply_key: tail.assistant_key,
     })
 }
 
 #[derive(Default)]
 struct Tail {
     assistant: Option<String>,
+    /// The record `assistant` came from, hashed (see `Peek::reply_key`).
+    assistant_key: Option<u64>,
     /// The user's newest message, when it is newer than any reply.
     prompt: Option<String>,
     /// The `last-prompt` latch — a turn stale, so only ever a last resort.
@@ -133,18 +151,29 @@ fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
         }
         if let TailEvent::AssistantText { text } = classify_tail_record(&v) {
             tail.assistant = Some(text);
+            tail.assistant_key = v.get("uuid").and_then(serde_json::Value::as_str).map(record_key);
             return Some(tail);
         }
     }
     Some(tail)
 }
 
-/// One-entry read cache: only the cursor card peeks, so one slot suffices.
+/// A record's identity as a number the board can compare and keep.
+fn record_key(uuid: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    uuid.hash(&mut h);
+    h.finish()
+}
+
+/// Read cache, one entry per transcript path. It was one slot — only the
+/// cursor card peeked — until the spoke mark (T-173) made every paned
+/// claude's transcript a once-a-second read; see the module doc for what
+/// that costs.
 #[derive(Default)]
-pub(crate) struct PeekCache(RefCell<Option<Entry>>);
+pub(crate) struct PeekCache(RefCell<HashMap<String, Entry>>);
 
 struct Entry {
-    path: PathBuf,
     len: u64,
     mtime_ms: u64,
     peek: Peek,
@@ -162,12 +191,9 @@ impl PeekCache {
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_millis() as u64)
             .unwrap_or(0);
-        let mut slot = self.0.borrow_mut();
-        if let Some(e) = slot.as_ref() {
-            if e.path.as_os_str() == std::ffi::OsStr::new(path)
-                && e.len == len
-                && e.mtime_ms == mtime_ms
-            {
+        let mut map = self.0.borrow_mut();
+        if let Some(e) = map.get(path) {
+            if e.len == len && e.mtime_ms == mtime_ms {
                 return Some(e.peek.clone());
             }
         }
@@ -179,10 +205,23 @@ impl PeekCache {
                 Doing::Tool(t) => Doing::Tool(crate::text::one_line(&sanitize(&t))),
                 Doing::Thinking => Doing::Thinking,
             }),
+            reply_key: raw.reply_key,
         };
         let out = peek.clone();
-        *slot = Some(Entry { path: PathBuf::from(path), len, mtime_ms, peek });
+        map.insert(path.to_string(), Entry { len, mtime_ms, peek });
         Some(out)
+    }
+
+    /// Drop every entry whose path `keep` refuses — the scan calls it with
+    /// the set of transcripts the snapshot still names, so a session that
+    /// left the board takes its 64 KiB of cached tail with it.
+    pub(crate) fn retain(&self, keep: impl Fn(&str) -> bool) {
+        self.0.borrow_mut().retain(|p, _| keep(p));
+    }
+
+    #[cfg(test)]
+    fn len(&self) -> usize {
+        self.0.borrow().len()
     }
 }
 
@@ -286,6 +325,7 @@ pub(crate) fn wrap(s: &str, width: usize, max_lines: usize) -> Vec<String> {
 mod tests {
     use super::*;
     use std::io::Write;
+    use std::path::PathBuf;
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("msmn-peek-{name}-{}", std::process::id()));
@@ -478,6 +518,61 @@ mod tests {
         f.flush().unwrap();
         assert_eq!(txt(&cache).as_deref(), Some("two"));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// The reply's identity is the RECORD, not its words: the same sentence
+    /// after a second prompt is a second reply, and the user's own prompt is
+    /// no reply at all.
+    #[test]
+    fn reply_key_names_the_record_and_never_the_prompt() {
+        let p = tmp("key");
+        std::fs::write(&p, reply("u1", "Done.")).unwrap();
+        let first = latest_preview(&p).unwrap();
+        assert_eq!(first.text.as_deref(), Some("Done."));
+        let k1 = first.reply_key.expect("an assistant record has a key");
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        writeln!(
+            f,
+            "{{\"uuid\":\"p1\",\"type\":\"user\",\"message\":{{\"role\":\"user\",\"content\":\"and now?\"}}}}"
+        )
+        .unwrap();
+        f.flush().unwrap();
+        let asked = latest_preview(&p).unwrap();
+        assert_eq!(asked.text.as_deref(), Some("> and now?"));
+        assert_eq!(asked.reply_key, None, "a prompt is the user's, not a reply");
+        write!(f, "{}", reply("u2", "Done.")).unwrap();
+        f.flush().unwrap();
+        let second = latest_preview(&p).unwrap();
+        assert_eq!(second.text.as_deref(), Some("Done."));
+        assert_ne!(second.reply_key, Some(k1), "same words, second record, second key");
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// One entry per path: two transcripts are cached side by side, each
+    /// invalidated by its own file, and `retain` drops one without the other.
+    #[test]
+    fn cache_holds_every_path_and_prunes_on_request() {
+        let a = tmp("cache-a");
+        let b = tmp("cache-b");
+        std::fs::write(&a, reply("a1", "alpha")).unwrap();
+        std::fs::write(&b, reply("b1", "beta")).unwrap();
+        let cache = PeekCache::default();
+        let (pa, pb) = (a.to_string_lossy().to_string(), b.to_string_lossy().to_string());
+        assert_eq!(cache.peek(&pa).unwrap().text.as_deref(), Some("alpha"));
+        assert_eq!(cache.peek(&pb).unwrap().text.as_deref(), Some("beta"));
+        assert_eq!(cache.len(), 2, "reading b must not evict a");
+        // A's growth is visible through len alone, whatever the filesystem's
+        // mtime granularity.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&a).unwrap();
+        write!(f, "{}", reply("a2", "alpha two")).unwrap();
+        f.flush().unwrap();
+        assert_eq!(cache.peek(&pa).unwrap().text.as_deref(), Some("alpha two"));
+        assert_eq!(cache.peek(&pb).unwrap().text.as_deref(), Some("beta"));
+        cache.retain(|p| p == pb);
+        assert_eq!(cache.len(), 1);
+        assert_eq!(cache.peek(&pa).unwrap().text.as_deref(), Some("alpha two"), "a re-reads");
+        std::fs::remove_dir_all(a.parent().unwrap()).ok();
+        std::fs::remove_dir_all(b.parent().unwrap()).ok();
     }
 
     #[test]

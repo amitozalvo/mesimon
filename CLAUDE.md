@@ -622,6 +622,23 @@ nothing. `Ctx::peek_on` stays the PREFERENCE — `p` keeps hinting `show replies
 because the footer describes the toggle and a flash is not a state anyone toggled. (STALE-MAP
 "A quick tag opens the card it tagged".)
 
+**And a card whose agent spoke while you were away wears `◊` (T-173, 2026-09-04).** Right of
+the title, before the worktree mark, title weight, `*` in mono; never on the cursor card, the
+move ghost or a needs-you card. The source is the transcript's assistant RECORD
+(`peek::Peek::reply_key`, a hash of its `uuid`) — not pane bytes, not the words, and never the
+user's own prompt, which leaves the key `None` and reads as "nothing new". State is TUI-local:
+`App::spoke` holds a `Spoke { session, path, key, seen }` per ticket, `scan_ticket` reads
+`Board::pane_target` (the one paned claude) and RE-BASELINES when the session or path differs
+(a spawn, a wake, a `/resume`), drops the entry when there is no such session (a parked card
+never carries a stale "new"), and `poll_spoke` in `App::tick` scans the departing card the tick
+the cursor leaves it, the board every `SPOKE_EVERY` (1 s), and acks the subject every tick — a
+redraw, never a snapshot. `PeekCache` is one entry per path for this (pruned against every
+session's transcript; the cost is in peek.rs's module doc). `glyphs::spoke_mark` pins `◊`
+U+25CA: `◆` and `●` are East Asian Width *Ambiguous*, banned on a width-critical row, and
+`unicode-width` calls them one cell so a width test proves nothing. No key, no `Ctx` field.
+This is the TUI's first "seen" ack; M6's D19 decay should reuse `Spoke.seen`. (STALE-MAP "A
+card wears a mark when its agent spoke while you were away".)
+
 **The ticket page's PREVIEW zone reads markdown (`tui/src/rich.rs`).** An agent reply is
 markdown, so the zone draws it instead of showing its source — but 06 §5.1 bans SGR 2/3/5/9 and
 reserves SGR 4, so the whole vocabulary is value, weight, paint and space: body `dim1`, emphasis
