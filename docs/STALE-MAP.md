@@ -4012,11 +4012,17 @@ card — and it ended up being the D19 decay the corpus had already written (06 
 `seen_at`, `✓` fading once seen; "decay is M6" on `Register::Calm`), built on a seen-tracker
 instead of a rest timer.
 
-- **What shows**: a finished agent's `✓` keeps the calm register while the reply it stands for
-  is one the cursor has not been on the card for, and drops to the grey ramp (`dim2`, the
-  `Grey` register) the moment the cursor lands or the ticket page opens. Same glyph, no cell
-  spent, and the state (`Idle{EndTurn}`) is what it was — only the loudness moves, which is the
-  phosphor law's own rule. The cursor card and the move ghost are always drawn seen. The rail
+- **What shows**: a finished agent's done mark is the HEAVY check `✔` U+2714 in the calm
+  register while the reply it stands for is one the cursor has not been on the card for, and
+  the thin `✓` U+2713 on the grey ramp (`dim2`, the `Grey` register) the moment the cursor lands
+  or the ticket page opens. No cell spent, and the state (`Idle{EndTurn}`) is what it was —
+  shape and loudness step down together. The colour step alone shipped first (an hour); the
+  author wanted "to play with the glyph itself, not colour", and of the narrow one-cell pairs
+  (`✔`/`✓`, bold `✓`/`✓`, `☑`/`✓`, `✓`/blank) picked the heavy check with the colour kept under
+  it. `✔` carries the Emoji property (text-default), which 07 §18 rule 2 refuses on principle;
+  it is a narrow text glyph on iTerm2, and `glyphs::done_unread` is the one place to swap it for
+  a bold `✓` if a terminal draws it wide. Mono has no heavier `+`, so there the mark reads `+`
+  read or unread. The cursor card and the move ghost are always drawn seen. The rail
   keeps `✓` calm: the ticket page is the looking. `Register::Calm` was always documented as
   "done-UNSEEN"; this is the half that made the word true.
 - **A `◊` beside the title shipped first and was cut the same day** (author, on the live board:
@@ -4063,8 +4069,9 @@ instead of a rest timer.
   `app.rs` (a reply already there is unread on first sight, cleared on landing, the ticket page
   counts, a prompt alone is not the agent, a parked card holds no entry, a reply under the cursor
   is seen when the cursor leaves, a fresh session starts its own entry, a first reply is news);
-  `test_done_mark_decays_once_seen` (grey at rest, calm when unread, grey on the cursor card,
-  a visible step on every flavor); the unread `✓` seeded into both L1 sweeps.
+  `test_done_mark_decays_once_seen` (thin grey at rest, heavy calm when unread, thin on the
+  cursor card, a visible step on every flavor, `+` in mono); the unread `✔` seeded into both L1
+  sweeps.
 
 ## A person's ask supersedes the person's own park (2026-09-04, T-186)
 

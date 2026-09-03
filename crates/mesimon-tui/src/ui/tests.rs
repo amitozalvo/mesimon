@@ -2623,7 +2623,7 @@ fn test_no_banned_sgr() {
         // markdown, so it is where a banned attribute would sneak in.
         attach_transcript(&mut app.board, &path);
         app.cursor_col = 1;
-        // A card with an unread reply: its done mark in the calm register.
+        // A card with an unread reply: the heavy done mark, calm.
         seed_spoke(&mut app, ulid_n(5));
         let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, profile));
         arch.mode = Mode::Archived { idx: 0 };
@@ -2632,8 +2632,8 @@ fn test_no_banned_sgr() {
         for buf in [
             {
                 assert!(
-                    render(&app, 120, 30).iter().any(|l| l.contains(DONE)),
-                    "the calm done mark must be ON SCREEN, or this law does not bite"
+                    render(&app, 120, 30).iter().any(|l| l.contains(DONE_UNREAD)),
+                    "the unread done mark must be ON SCREEN, or this law does not bite"
                 );
                 cells(&app, 120, 30)
             },
@@ -2755,7 +2755,7 @@ fn test_no_drawn_structure() {
     // Markdown is full of rules and boxes; none of them may reach a cell.
     attach_transcript(&mut app.board, &path);
     app.cursor_col = 1;
-    // A card with an unread reply: its done mark in the calm register.
+    // A card with an unread reply: the heavy done mark, calm.
     seed_spoke(&mut app, ulid_n(5));
     let mut arch = app_graphite(fixture_archived());
     arch.mode = Mode::Archived { idx: 0 };
@@ -2765,8 +2765,8 @@ fn test_no_drawn_structure() {
         {
             let lines = sweep(&app);
             assert!(
-                lines.iter().any(|l| l.contains(DONE)),
-                "the calm done mark must be ON SCREEN, or this law does not bite"
+                lines.iter().any(|l| l.contains(DONE_UNREAD)),
+                "the unread done mark must be ON SCREEN, or this law does not bite"
             );
             lines
         },
@@ -2986,8 +2986,9 @@ fn test_sleeping_mark_is_dormant() {
     assert_eq!(buf[(x, y)].fg, dim3, "the rail's sleeping mark is dormant too");
 }
 
-/// The done mark as a card row spells it.
+/// The done mark as a card row spells it, read and unread.
 const DONE: &str = "✓";
+const DONE_UNREAD: &str = "✔";
 
 /// Mark `ticket` as having spoken since the cursor was on it — the entry the
 /// scan would hold after a reply landed on a card the cursor was not on.
@@ -2998,21 +2999,25 @@ fn seed_spoke(app: &mut App, ticket: ulid::Ulid) {
     );
 }
 
-/// The `✓`'s colour on T-5's row, the finished agent in `review`.
-fn done_mark_fg(app: &App) -> ratatui::style::Color {
+/// The done mark on T-5's row (the finished agent in `review`): its glyph
+/// and its colour.
+fn done_mark(app: &App) -> (String, ratatui::style::Color) {
     let buf = cells(app, 120, 30);
     let lines = render(app, 120, 30);
     let y = lines.iter().position(|l| l.contains("Grapheme")).expect("T-5") as u16;
     let x0 = lines[y as usize].find("Grapheme").expect("title") as u16;
     // The glyph is two cells left of the title, in T-5's own column.
-    let x = (0..x0).rev().find(|&x| buf[(x, y)].symbol() == DONE).expect("T-5 wears ✓");
-    buf[(x, y)].fg
+    let x = (0..x0)
+        .rev()
+        .find(|&x| matches!(buf[(x, y)].symbol(), DONE | DONE_UNREAD))
+        .expect("T-5 wears a done mark");
+    (buf[(x, y)].symbol().to_string(), buf[(x, y)].fg)
 }
 
-/// T-173: the done mark decays once seen. `✓` keeps the calm register while
-/// the reply it stands for is one the cursor has not been on the card for,
-/// and drops to the grey ramp once it has — the same glyph, no cell spent.
-/// The cursor card is always seen.
+/// T-173: the done mark decays once seen. While the reply it stands for is
+/// one the cursor has not been on the card for it is the heavy `✔` in the
+/// calm register; once it has, the thin `✓` on the grey ramp — shape and
+/// loudness both step, no cell spent. The cursor card is always seen.
 #[test]
 fn test_done_mark_decays_once_seen() {
     let mut app = app_graphite(fixture(false));
@@ -3020,20 +3025,26 @@ fn test_done_mark_decays_once_seen() {
     let calm = app.theme.calm;
     let grey = app.theme.rest.dim2;
     assert_ne!(calm, grey, "or the decay is no step at all");
-    assert_eq!(done_mark_fg(&app), grey, "nothing unread: the mark rests on the grey ramp");
+    assert_eq!(done_mark(&app), (DONE.into(), grey), "nothing unread: thin, on the grey ramp");
     seed_spoke(&mut app, ulid_n(5));
-    assert_eq!(done_mark_fg(&app), calm, "an unread reply keeps the mark calm");
+    assert_eq!(done_mark(&app), (DONE_UNREAD.into(), calm), "unread: heavy, calm");
     app.cursor_col = 2;
     app.cursor_row = 0;
-    assert_eq!(done_mark_fg(&app), grey, "the cursor card is seen as it is drawn");
-    // Every flavor keeps the step: the two are different tokens by law.
+    assert_eq!(done_mark(&app).0, DONE, "the cursor card is seen as it is drawn");
+    // Every flavor keeps the colour step: the two are different tokens by law.
     for flavor in Flavor::ALL {
         let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
         app.cursor_col = 1;
-        let before = done_mark_fg(&app);
+        let before = done_mark(&app).1;
         seed_spoke(&mut app, ulid_n(5));
-        assert_ne!(done_mark_fg(&app), before, "{flavor:?}: unread must look different");
+        assert_ne!(done_mark(&app).1, before, "{flavor:?}: unread must look different");
     }
+    // Mono has no colour and no heavier `+`: the mark reads `+` either way.
+    let mut mono = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
+    mono.cursor_col = 1;
+    seed_spoke(&mut mono, ulid_n(5));
+    let row = render(&mono, 120, 30).into_iter().find(|l| l.contains("Grapheme")).expect("T-5");
+    assert!(row.contains("+ Grapheme"), "{row:?}");
 }
 
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.

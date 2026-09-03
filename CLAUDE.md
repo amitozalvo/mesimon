@@ -641,11 +641,13 @@ nothing. `Ctx::peek_on` stays the PREFERENCE — `p` keeps hinting `show replies
 because the footer describes the toggle and a flash is not a state anyone toggled. (STALE-MAP
 "A quick tag opens the card it tagged".)
 
-**And the done mark decays once seen (T-173, 2026-09-04).** A finished agent's `✓` keeps the
-calm register while the reply it stands for is one the cursor has not been on the card for,
-and drops to the grey ramp the moment the cursor lands or the ticket page opens — `card.rs`
-demotes `Register::Calm` to `Grey` on `App::spoke_unseen`; the cursor card and the move ghost
-are always drawn seen, the rail stays calm. Same glyph, no cell spent: a `◊` beside the title
+**And the done mark decays once seen (T-173, 2026-09-04).** A finished agent's mark is the
+heavy `✔` (`glyphs::done_unread`) in the calm register while the reply it stands for is one the
+cursor has not been on the card for, and the thin `✓` on the grey ramp the moment the cursor
+lands or the ticket page opens — `card.rs` swaps the glyph and demotes `Register::Calm` to
+`Grey` on `App::spoke_unseen`; the cursor card and the move ghost are always drawn seen, the
+rail stays calm, mono reads `+` either way. `✔` carries the Emoji property (narrow text on
+iTerm2; `done_unread` is the one place to fall back to a bold `✓`). No cell spent: a `◊` beside the title
 shipped first and was cut the same day (author: "too big, and with the worktree mark it takes
 too much space"); line 1 has no room for a second right-hand mark. The trade is that only an
 end-of-turn reply shows — a sentence under a spinner has no channel. The source is the

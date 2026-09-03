@@ -204,17 +204,19 @@ pub(super) fn render(
         launching.then(|| (glyphs::launching(tier, ctx.spin), Register::Grey))
     });
     // The done mark decays once seen (T-173, the D19 decay 06 §3.6 parked
-    // for M6): `✓` rides the calm register while the reply it stands for is
-    // one the cursor has not been on the card for, and drops to the grey
-    // ramp the moment it has. `Calm` was always defined as "done-UNSEEN";
-    // this is the half that makes the word true. Same glyph either way —
-    // the state is what it was, only the loudness moves — and no cell is
-    // spent: a `◊` beside the title shipped for an hour and was cut (author
-    // 2026-09-04: "too big, and with the worktree mark it takes too much
-    // space"). The caller passes `unseen` false for the cursor card and the
-    // move ghost, whose ticket is being acked as it is drawn.
+    // for M6): while the reply it stands for is one the cursor has not been
+    // on the card for it is the HEAVY check in the calm register, and the
+    // moment it has it is the thin check on the grey ramp — shape and
+    // loudness both step down (author 2026-09-04: "play with the glyph
+    // itself"). `Calm` was always defined as "done-UNSEEN"; this is the half
+    // that makes the word true. No cell is spent: a `◊` beside the title
+    // shipped for an hour and was cut ("too big, and with the worktree mark
+    // it takes too much space"). The caller passes `unseen` false for the
+    // cursor card and the move ghost, whose ticket is being acked as it is
+    // drawn.
     let glyph = match glyph {
-        Some((g, Register::Calm)) if !unseen => Some((g, Register::Grey)),
+        Some((_, Register::Calm)) if unseen => Some((glyphs::done_unread(tier), Register::Calm)),
+        Some((g, Register::Calm)) => Some((g, Register::Grey)),
         other => other,
     };
     // A pending move's trail is semi-transparent everything — even an attn

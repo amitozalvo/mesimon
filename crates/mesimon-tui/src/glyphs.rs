@@ -175,6 +175,25 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
     }
 }
 
+/// The done mark while its reply is UNREAD (T-173): `✔` U+2714, the heavy
+/// check, against the thin `✓` U+2713 `card_glyph` gives a finished agent
+/// once the cursor has been on the card. Same idea, thicker stroke — the
+/// unread state is the same state, louder. EAW=N and one cell in
+/// `unicode-width`; it does carry the Emoji property (text-default
+/// presentation), which 07 §18 rule 2 refuses on principle — a terminal
+/// that prefers emoji presentation draws it two cells wide and in colour.
+/// The author chose it on iTerm2, where it is a narrow text glyph, over the
+/// safer bold-`✓` (author 2026-09-04); if it misbehaves somewhere, that is
+/// the fallback, and this is the one function to change. The ASCII tier
+/// has no thicker `+`, so there the colour step alone says unread.
+pub(crate) fn done_unread(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '+'
+    } else {
+        '✔'
+    }
+}
+
 /// Which colour family a glyph rides (06 §2.1: exactly three chromatic tokens;
 /// everything else is the grey ramp).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -839,6 +858,28 @@ mod tests {
         assert_eq!(suggest_mark(Tier::Unicode), '◦');
         assert_eq!(suggest_mark(Tier::Ascii), '*');
         assert_eq!('◦'.width(), Some(1));
+    }
+
+    /// The unread done mark pins its literal and its width, and is not the
+    /// read one: the pair is the whole signal at the glyph level.
+    #[test]
+    fn done_unread_is_the_heavy_check_one_cell_wide() {
+        use unicode_width::UnicodeWidthChar;
+        assert_eq!(done_unread(Tier::Unicode), '✔');
+        assert_eq!(done_unread(Tier::Ascii), '+');
+        assert_eq!('✔'.width(), Some(1));
+        assert!(!(0x2500..=0x259F).contains(&('✔' as u32)));
+        let done = SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            SessionKind::Claude,
+            ulid::Ulid(1),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        let (read, reg) = card_glyph(&[&done], Tier::Unicode, 0).expect("a done glyph");
+        assert_eq!(reg, Register::Calm);
+        assert_ne!(read, done_unread(Tier::Unicode), "read and unread differ in shape");
     }
 
     #[test]
