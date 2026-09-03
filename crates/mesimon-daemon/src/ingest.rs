@@ -188,10 +188,16 @@ pub fn transcript_of(frame: &HookFrame) -> Option<String> {
 ///
 /// `PostToolUse` fires once the tool has RETURNED, and for this tool that is
 /// once the user approved the plan — a rejection is a tool error and fires
-/// nothing mesimon hooks — so the frame is the approval. `tool_input.plan`
-/// is the markdown Claude also saves under `~/.claude/plans/`; the response
-/// is Claude's sentence to the agent ("User has approved your plan…") and is
-/// not read. A subagent's plan (`agent_id` set) is not the session's.
+/// nothing mesimon hooks — so the frame is the approval. WHERE the plan rides
+/// moved under us: 2.1.251–2.1.258 put the markdown in `tool_input.plan`;
+/// 2.1.259 injects `plan`/`planFilePath` into the input from the plan file,
+/// strips both again right before the call, and hands the plan back in the
+/// RESULT — `tool_response: {plan, isAgent, filePath, hasTaskTool}` — so the
+/// approval frame sees `tool_input: {}` and only the frames BEFORE approval
+/// (`PreToolUse`, `PermissionRequest`) still carry the input form. The
+/// response is read first and the input second, so both builds land. A
+/// subagent's plan (`agent_id` set, or the response saying `isAgent`) is not
+/// the session's.
 pub fn plan_of(frame: &HookFrame) -> Option<String> {
     if frame.event != "PostToolUse" || has_agent_id(frame) {
         return None;
@@ -199,7 +205,14 @@ pub fn plan_of(frame: &HookFrame) -> Option<String> {
     if frame.payload.get("tool_name").and_then(Value::as_str) != Some("ExitPlanMode") {
         return None;
     }
-    let plan = frame.payload.get("tool_input")?.get("plan")?.as_str()?;
+    let response = frame.payload.get("tool_response");
+    if response.and_then(|r| r.get("isAgent")).and_then(Value::as_bool) == Some(true) {
+        return None;
+    }
+    let plan = response
+        .and_then(|r| r.get("plan"))
+        .and_then(Value::as_str)
+        .or_else(|| frame.payload.get("tool_input")?.get("plan")?.as_str())?;
     (!plan.trim().is_empty()).then(|| plan.to_string())
 }
 
@@ -514,16 +527,28 @@ mod tests {
         assert!(!d.contains('\u{1b}'));
     }
 
-    /// The plan rides `tool_input.plan` on the PostToolUse frame — the shape
-    /// captured on 2.1.251 through 2.1.258 — and only there: the approval
+    /// The plan rides the PostToolUse frame and only there: the approval
     /// dialog's frames come before the approval, another tool's `plan` key is
-    /// not a plan, and a subagent's is not the session's.
+    /// not a plan, and a subagent's is not the session's. WHERE on the frame
+    /// moved: 2.1.251–2.1.258 carried it in `tool_input.plan` beside a
+    /// one-sentence response; 2.1.259 strips the input before the call and
+    /// returns `{plan, isAgent, filePath, hasTaskTool}` (captured live
+    /// 2026-09-03 — the shape on which a day of approvals landed nothing).
     #[test]
     fn an_approved_plan_is_read_off_post_tool_use_only() {
         let approved = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"# A\n\n1. look"},"tool_response":"User has approved your plan."}"##;
         assert_eq!(plan_of(&frame("PostToolUse", None, approved)), Some("# A\n\n1. look".into()));
         assert_eq!(plan_of(&frame("PreToolUse", None, approved)), None);
         assert_eq!(plan_of(&frame("PermissionRequest", None, approved)), None);
+        let v259 = r##"{"tool_name":"ExitPlanMode","tool_input":{},"tool_response":{"plan":"# Repro plan\n- touch nothing\n","isAgent":false,"filePath":"/h/.claude/plans/x.md","hasTaskTool":true}}"##;
+        assert_eq!(
+            plan_of(&frame("PostToolUse", None, v259)),
+            Some("# Repro plan\n- touch nothing\n".into())
+        );
+        let both = r##"{"tool_name":"ExitPlanMode","tool_input":{"plan":"old"},"tool_response":{"plan":"new"}}"##;
+        assert_eq!(plan_of(&frame("PostToolUse", None, both)), Some("new".into()));
+        let sub = r##"{"tool_name":"ExitPlanMode","tool_input":{},"tool_response":{"plan":"# A","isAgent":true}}"##;
+        assert_eq!(plan_of(&frame("PostToolUse", None, sub)), None);
         let bash = r##"{"tool_name":"Bash","tool_input":{"plan":"# A"}}"##;
         assert_eq!(plan_of(&frame("PostToolUse", None, bash)), None);
         let nested =

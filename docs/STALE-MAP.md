@@ -3782,3 +3782,28 @@ three frames before and at approval, a re-plan, a delete-then-re-plan, and the f
   timing seams, not of this one.
 - The notes test names the refusal it gets instead of `assert!(matches!(..))`, which is how the
   cause became visible.
+
+## The approved plan moved from the input to the response (2026-09-03, found by dogfood on 2.1.259)
+
+The block above measured 2.1.251–2.1.258. Claude Code 2.1.259 landed on the author's machine at
+02:19 the same day, and the first approval on it (T-176, a throwaway plan filed to test exactly
+this) wrote no note: the daemon was fresh, the frame arrived (the card had said `plan ready for
+review` off the same dialog), and `plan_note` stayed `None`. Captured live — a settings file whose
+`PreToolUse` / `PermissionRequest` / `PostToolUse` hooks `cat` their stdin to a file, driven in a
+scratch tmux on its own socket, because `-p` sessions have no plan-mode tools at all:
+
+- `PreToolUse` and `PermissionRequest`: `tool_input: {plan, planFilePath}` — but those fire
+  BEFORE the approval.
+- `PostToolUse`: `tool_input: {}` and `tool_response: {plan, isAgent, filePath, hasTaskTool}`.
+
+In the binary: `normalizeToolInput` injects `plan` and `planFilePath` into the tool's input from
+the plan file (its schema says so — "injected by normalizeToolInput from disk"), a strip step
+removes exactly those two keys after the permission decision and before the call, and the
+transcript's `tool_use` block keeps the injected form. That last part is why the transcript looked
+right and the hook did not, and why "read the transcript" would have hidden the change again.
+
+What holds now: `ingest::plan_of` reads `tool_response.plan` first and `tool_input.plan` second,
+so both builds land, and refuses a response whose `isAgent` is true (the `agent_id` check stays).
+The unit test carries both shapes. The lesson is the one the docs ladder already teaches about
+version numbers: a hook payload captured on one build is a measurement of that build, and the
+frame a feature rests on wants its shape pinned in a test that names the build it came from.

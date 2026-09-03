@@ -202,7 +202,8 @@ get `read_note`/`write_note` (seven tools now, with `create_ticket` and `tag_tic
 `get_ticket` carries the description. Adding a
 field to `NoteMeta` is `#[serde(default)]` like everything else. (STALE-MAP "Notes: files under
 the ticket".) **An approved plan is the agent's note** (2026-09-03): the `PostToolUse` frame
-`ExitPlanMode` fires carries the plan in `tool_input.plan` and only fires once the user approved
+`ExitPlanMode` fires carries the plan (`tool_response.plan` since Claude Code 2.1.259,
+`tool_input.plan` on 2.1.251–2.1.258 — `plan_of` reads both) and only fires once the user approved
 it, so `ingest::plan_of` → `Daemon::record_plan` writes it through `write_note` as `agent:<uuid>`
 — one note per session (`SessionRecord.plan_note`), revised on a re-plan, minted afresh after a
 delete, `notes[0]` (so the description) on a ticket that had none. (STALE-MAP "An approved plan
