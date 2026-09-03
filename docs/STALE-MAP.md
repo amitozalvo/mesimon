@@ -3592,3 +3592,11 @@ is the `Ground` form and every other caller is unchanged. Where the profile pain
 (mono, light-256) the section keeps its rows on the ground in `rest`. Pinned by
 `test_ticket_header_section_is_a_band` (edges painted, header row and zones not, a code span on
 the page ground, its bullet on the band).
+
+**Two bands, not one (same day).** The author then asked for "a clear separation between title +
+subtitle and the description": the header section is now the identity band — pad, title, state
+line, pad — and, one page-ground row below it, the description's own band with the same pads.
+Both on `selected_bg`; the ground row between them is the separation, since a rule cannot be
+drawn. The body zones start after a breathing row under whichever band is last; the description
+cap follows (`body_rows = height - 9`). `test_ticket_header_section_is_a_band` asserts rows 1-4
+and the description rows painted, row 5 and the breathing row not.

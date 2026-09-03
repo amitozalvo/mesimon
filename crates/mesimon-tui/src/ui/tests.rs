@@ -2289,13 +2289,17 @@ fn test_ticket_header_section_is_a_band() {
     let title_y = lines.iter().position(|l| l.contains("Fix OSC-11 detection")).expect("title");
     assert_eq!(title_y, 2, "the title is the band's first written row");
     let sessions_y = lines.iter().position(|l| l.contains("SESSIONS")).expect("zones");
-    // Every row from the breathing row under the header to the row under the
-    // description is painted edge to edge.
-    for y in 1..sessions_y - 1 {
+    // Two bands: the identity band (rows 1-4) and the description's (row 6
+    // to the row before the breathing row), each painted edge to edge, one
+    // ground row between them.
+    let painted = |y: usize| {
         for x in [0u16, 119] {
             assert_eq!(buf[(x, y as u16)].bg, elevated, "band row {y} cell {x} unpainted");
         }
-    }
+    };
+    (1..=4).for_each(painted);
+    (6..sessions_y - 1).for_each(painted);
+    assert_ne!(buf[(40, 5)].bg, elevated, "a ground row separates the two bands");
     // Prose on the band wears the band: the title and the state line.
     assert_eq!(buf[(3, 2)].bg, elevated);
     assert_eq!(buf[(3, 3)].bg, elevated);
