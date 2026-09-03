@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter focus ∙ tab needs you ∙ r rename ∙ d delete ∙ n describe                              ? keys
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

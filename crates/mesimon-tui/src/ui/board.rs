@@ -445,19 +445,20 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             ));
         }
     }
-    // The composer's phantom card, where it landed on screen: Tab's dialog
-    // grows out of this rectangle. Only the whole card counts — a card cut
-    // by the window's edge would put the dialog's origin off screen. The
-    // card's own rectangle, bar cell included: the dialog's frame is the
-    // card's, so at frame zero its bar and title stand in the card's cells.
-    if let (Some((InputPurpose::Create { .. }, _)), Some((cs, ce))) = (editing, cursor_range) {
+    // The cursor card, where it landed on screen — the composer's phantom
+    // card or the ticket under the cursor: Tab's dialog grows out of this
+    // rectangle. Only the whole card counts — a card cut by the window's
+    // edge would put the dialog's origin off screen. The card's own
+    // rectangle, bar cell included: the dialog's frame is the card's, so at
+    // frame zero its bar and title stand in the card's cells.
+    if let Some((cs, ce)) = cursor_range {
         let rect = (cs >= content_start && ce <= content_end).then(|| Rect {
             x: area.x,
             y: area.y + 2 + (peek_rows + cs - content_start) as u16,
             width: area.width,
             height: (ce - cs) as u16,
         });
-        app.compose_card.set(rect);
+        app.cursor_card.set(rect);
     }
 }
 

@@ -221,8 +221,6 @@ impl Scope {
 pub enum Verb {
     // ---- global ----
     Help,
-    NextAttention,
-    PrevAttention,
     Reload,
     /// A newer release is published: fetch it, verify it, and put it at our
     /// own path. The restart afterwards is still [`Verb::Reload`] — this
@@ -386,7 +384,8 @@ pub enum Verb {
     /// kept draft back — the field returns to what was being written.
     HistoryNext,
     /// `Tab` in the composer: grow it into the editor, title carried over,
-    /// cursor in the description.
+    /// cursor in the description. On a board card: the same dialog, on the
+    /// ticket's description.
     Describe,
     // ---- editor ----
     /// `^s`: save. In a note editor it stays open, and a second press on a
@@ -514,7 +513,6 @@ pub struct Ctx {
     /// Reading the shell environment failed, so panes are getting the fallback.
     /// Offered on the same row, because "ask again" is the same act.
     pub shell_env_failed: bool,
-    pub any_attention: bool,
     /// The rail cursor is on a NOTE row, not a session.
     pub sel_note: bool,
     /// The subject ticket has a description (`notes[0]`).
@@ -572,6 +570,11 @@ pub struct Ctx {
     pub editor_body: bool,
     /// The editor holds changes not yet saved.
     pub editor_dirty: bool,
+    /// The editor is on a ticket whose workspace is still open to change:
+    /// no session and no worktree yet (the daemon's `set_workspace` lock,
+    /// mirrored). Shift+Tab in the description editor sets it then — the
+    /// composer's choice, a press late.
+    pub workspace_open: bool,
     /// The editor shows a SAVED note and the ticket has a claude with a
     /// pane: `^s` would tell it the note changed.
     pub editor_can_tell: bool,
@@ -659,28 +662,6 @@ static GLOBAL: &[Binding] = &[
         // (`footer_split`); a barrier scope inherits nothing and so says
         // nothing — there `?` is text or a cancel.
         prio: 255,
-    },
-    Binding {
-        keys: &[Key::Tab],
-        verb: Verb::NextAttention,
-        show: "tab",
-        hint: |_| "needs you",
-        avail: |c| c.any_attention,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: false,
-        prio: 20,
-    },
-    Binding {
-        keys: &[Key::BackTab],
-        verb: Verb::PrevAttention,
-        show: "shift+tab",
-        hint: |_| "previous needs you",
-        avail: |c| c.any_attention,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: false,
-        prio: 0,
     },
     Binding {
         keys: &[Key::Char('U')],
@@ -963,18 +944,33 @@ static BOARD: &[Binding] = &[
         prio: 70,
     },
     Binding {
+        // `Tab` on a card is the composer's `Tab` a ticket late: the card
+        // grows into the description editor, the same dialog over the board
+        // (2026-09-03, T-163). It took `needs you`'s key — the attention
+        // walk had one hint in the footer and was never once pressed, and
+        // the description is what the board's cursor most often wants next.
+        // Hinted, unlike `n` under it: this is the gesture the footer
+        // teaches, and `n` is the note axis the overlay keeps.
+        keys: &[Key::Tab],
+        verb: Verb::Describe,
+        show: "tab",
+        hint: |_| "describe",
+        avail: |c| c.has_ticket,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 65,
+    },
+    Binding {
         // `n` opens the note the cursor means: the selected rail note on the
         // ticket page, else the description, else a fresh note that becomes
         // the description. Overlay-only here: the board's footer is for
-        // moving and opening, the argument `a` and `d` make.
+        // moving and opening, the argument `a` and `d` make — and `tab`,
+        // above, is the description's own hinted key.
         keys: &[Key::Char('n')],
         verb: Verb::NoteEdit,
         show: "n",
-        // One word whether the description exists or not: at 120 columns
-        // anything longer than `describe` is what the footer drops, and a
-        // described ticket is the common case once this exists. `describe`
-        // is true either way — the editor opens on what is there.
-        hint: |c| if c.sel_note { "edit note" } else { "describe" },
+        hint: |c| if c.sel_note { "edit note" } else { "note" },
         avail: |c| c.has_ticket,
         class: Class::Plain,
         group: Group::Ticket,
@@ -2525,14 +2521,18 @@ static EDITOR: &[Binding] = &[
         prio: 25,
     },
     Binding {
+        // Composing, the pick rides with the draft; on a ticket that exists
+        // it is set on the daemon at once (`SetWorkspace`), and only while
+        // nothing has locked it — the choice closes the moment a session or
+        // a worktree exists, the same rule `set_workspace` refuses by.
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
         hint: |_| "shared checkout / own worktree",
-        avail: |c| c.editing && c.editor_composing,
+        avail: |c| c.editing && (c.editor_composing || c.workspace_open),
         class: Class::Plain,
         group: Group::Worktree,
-        mutates: false,
+        mutates: true,
         prio: 30,
     },
     Binding {
@@ -3402,18 +3402,36 @@ mod tests {
         let noting = Ctx { editing: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('t'), &noting), None);
         assert_eq!(resolve(Scope::Editor, Key::BackTab, &noting), None);
+        // …until the ticket's workspace is open to change: then Shift+Tab
+        // is the composer's pick, a press late — and it closes again the
+        // moment work starts on the ticket.
+        let open = Ctx { editing: true, workspace_open: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &open), Some(Verb::CycleWorkspace));
+        assert!(hint_for(Scope::Editor, Verb::CycleWorkspace, &open).is_some());
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('t'), &open), None, "tags stay the picker's");
     }
 
     /// `Tab` grows the one-line composer into the editor, and only there: a
-    /// rename has no description and a prompt is not a ticket.
+    /// rename has no description and a prompt is not a ticket. On the board
+    /// the same key on a card opens the same dialog on the ticket's own
+    /// description (T-163), and nowhere else is `tab` a verb: the ticket
+    /// page and the diff keep it inert, and `needs you` no longer has it.
     #[test]
-    fn tab_opens_the_editor_from_the_composer_only() {
+    fn tab_opens_the_editor_from_the_composer_and_the_card() {
         let composing = Ctx { composing: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::Tab, &composing), Some(Verb::Describe));
         assert_eq!(hint_for(Scope::Input, Verb::Describe, &composing), Some(("tab", "describe")));
         let prompting = Ctx { prompting: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::Tab, &prompting), None);
         assert_eq!(resolve(Scope::Input, Key::Tab, &Ctx::default()), None);
+        let card = Ctx { has_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Tab, &card), Some(Verb::Describe));
+        assert_eq!(hint_for(Scope::Board, Verb::Describe, &card), Some(("tab", "describe")));
+        assert_eq!(resolve(Scope::Board, Key::Tab, &Ctx::default()), None, "no card, no tab");
+        for scope in [Scope::Ticket, Scope::Diff, Scope::Global] {
+            assert_eq!(resolve(scope, Key::Tab, &card), None, "{scope:?}");
+            assert_eq!(resolve(scope, Key::BackTab, &card), None, "{scope:?}");
+        }
         // Inside the editor Tab is nothing: not a character (a note holds no
         // tabs) and not a verb.
         let editing = Ctx { editing: true, editor_composing: true, ..Default::default() };
@@ -3999,7 +4017,6 @@ mod tests {
             can_undo: true,
             bulk_sleep: 3,
             bulk_archive: 3,
-            any_attention: true,
             composing: true,
             editing: true,
             rich_keys: true,

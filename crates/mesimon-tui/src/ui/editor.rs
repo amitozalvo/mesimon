@@ -1,18 +1,22 @@
 //! The note editor (2026-09-02): a title row, one quiet line of context,
-//! then the body. Two purposes share the shape, on two surfaces. Composing
-//! a new ticket (the title is editable and the mini composer's workspace and
-//! tags ride along) it is a DIALOG over the board — the cursor card, grown:
-//! a centred room on the card's own surface, the card's accent bar down its
-//! left edge wearing the picked tags, the header, the column headers and a
-//! margin of the board still in view around it — and it grows out of the
-//! phantom card it replaced (`Editor::grow`, 2026-09-03: the author wanted
-//! the bigger room to read as the composer opening up, not as a different
-//! place, and then wanted it a dialog on top of the board rather than a
-//! panel taking the columns zone edge to edge). Writing a note on a ticket
-//! that exists (the title is the ticket's, read-only) it takes the whole
-//! screen under a breadcrumb. No rules, no boxes (L1): the body is text on
-//! its surface, the hardware cursor is the only cursor, and the footer is
-//! the keymap's.
+//! then the body. Two purposes share the shape, on two surfaces — and the
+//! surface is the SCREEN's. Over the board it is a DIALOG: the cursor card,
+//! grown — a room on the card's own surface, the card's accent bar down its
+//! left edge wearing the tags (the picked ones composing, the ticket's own
+//! on a description), the header, the column headers and a margin of the
+//! board still in view around it — and it grows out of the card it stands
+//! for (`Editor::grow`, 2026-09-03: the author wanted the bigger room to
+//! read as the composer opening up, not as a different place, then wanted
+//! it a dialog on top of the board rather than a panel taking the columns
+//! zone edge to edge, and then — T-163 — wanted `Tab` on a card to open the
+//! ticket's description the same way). Composing, the title is editable
+//! and the mini composer's workspace and tags ride along; on a ticket that
+//! exists the title is the ticket's, read-only, and the context row names
+//! the ticket's workspace, which Shift+Tab still sets while nothing has
+//! locked it. From the ticket page the same editor takes the whole screen
+//! under a breadcrumb. No rules, no boxes (L1): the body is text on its
+//! surface, the hardware cursor is the only cursor, and the footer is the
+//! keymap's.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -109,7 +113,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
         width: area.width,
         height: area.height.saturating_sub(HEAD_ROWS + 1),
     };
-    if let Some(c) = draw_body(f, ed, body, PAGE_PAD, &theme.rest) {
+    if let Some(c) = draw_body(f, ed, body, PAGE_PAD, &theme.rest, body_hint(app, ed)) {
         cursor = Some(c);
     }
     if let Some((x, y)) = cursor {
@@ -160,7 +164,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         surface,
         ink,
         dialog::Edges {
-            title: dialog::title(ink, "NEW TICKET"),
+            title: dialog::title(ink, heading(app, ed)),
             tail: dialog::keys(app, Scope::Editor, ink, (area.width as usize).saturating_sub(6)),
         },
     );
@@ -171,9 +175,15 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     // ---- the stripe: the card's bar, one cell per row, wearing the tags
     // exactly as the real card will (`render_edit` paints the phantom card's
     // the same way) --------------------------------------------------------
+    // The picked tags composing; the ticket's own on a description, so the
+    // dialog's stripe is the card's stripe at frame zero and after.
     let worn = match &ed.purpose {
         EditorPurpose::Compose { tags, .. } => tags::painted(&app.board, tags),
-        EditorPurpose::Note { .. } => Vec::new(),
+        EditorPurpose::Note { ticket, .. } => app
+            .board
+            .ticket(*ticket)
+            .map(|t| tags::painted(&app.board, &t.tags))
+            .unwrap_or_default(),
     };
     let (plain_ch, plain_style) = theme.bar(BarWeight::Cursor);
     let (bar_ch, bar_style) =
@@ -210,7 +220,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         width: inner.width,
         height: inner.height.saturating_sub(DIALOG_HEAD_ROWS + 1),
     };
-    if let Some(c) = draw_body(f, ed, body, 0, ink) {
+    if let Some(c) = draw_body(f, ed, body, 0, ink, body_hint(app, ed)) {
         cursor = Some(c);
     }
     if let Some((x, y)) = cursor {
@@ -329,18 +339,20 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         .map(|d| d.as_millis() as u64)
         .unwrap_or(0);
     let mut ctx_spans: Vec<Span<'static>> = Vec::new();
+    let workspace_word = |workspace: Option<mesimon_core::board::WorkspaceStrategy>| match workspace
+    {
+        Some(mesimon_core::board::WorkspaceStrategy::Worktree) => "worktree",
+        Some(mesimon_core::board::WorkspaceStrategy::AdoptExisting) => "adopt",
+        Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
+    };
     match &ed.purpose {
         EditorPurpose::Compose { workspace, tags } => {
-            let word = match workspace {
-                Some(mesimon_core::board::WorkspaceStrategy::Worktree) => "worktree",
-                Some(mesimon_core::board::WorkspaceStrategy::AdoptExisting) => "adopt",
-                Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
-            };
+            let word = workspace_word(*workspace);
             // Framed, the top edge already says NEW TICKET; the row starts
             // at the column. (Unframed — frame zero of the grow, a terminal
             // too short for a frame — it says it here.)
             if !framed {
-                ctx_spans.push(Span::styled("NEW TICKET ∙ ".to_string(), dim2));
+                ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
             }
             if let Some(col) = app.columns().get(app.cursor_col) {
                 ctx_spans.push(Span::styled(col.to_uppercase(), dim1));
@@ -365,34 +377,37 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             }
         }
         EditorPurpose::Note { ticket, note } => {
-            let meta = note.and_then(|id| app.board.ticket(*ticket).and_then(|t| t.note(id)));
-            // The header's chip says NOTE and its leaf names the ticket;
-            // this row says WHICH note — the description or another — and
-            // who last wrote it (T-158).
-            match meta {
-                Some(m) => {
-                    let who = super::ticket::author_word(&m.edited_by);
-                    let when = created_at_epoch_ms(&m.edited_at)
-                        .map(|ms| format!(" {} ago", age_slot(now, ms, false).trim()))
-                        .unwrap_or_default();
-                    let first = app
-                        .board
-                        .ticket(*ticket)
-                        .and_then(|t| t.description())
-                        .is_some_and(|d| d.id == m.id);
-                    let what = if first { "the description" } else { "a note" };
-                    ctx_spans.push(Span::styled(what.to_string(), dim1));
-                    ctx_spans.push(Span::styled(format!(" ∙ edited by {who}{when}"), dim2));
+            // WHICH note this is — the description or another, existing or
+            // new — is the heading: the frame's top edge says it on the
+            // dialog, and the row says it itself where there is no edge
+            // (frame zero of the grow, the full-screen editor under its NOTE
+            // chip). Then the ticket's workspace, where the composer shows
+            // its pick — Shift+Tab sets it here too while nothing has locked
+            // it, and a toggle with no readout is a coin flip — then who last
+            // wrote it (T-158). The heading leads so the row fits a
+            // two-column dialog: "∙ the description" on the end was what the
+            // dialog's width cut first.
+            let t = app.board.ticket(*ticket);
+            let meta = note.and_then(|id| t.and_then(|t| t.note(id)));
+            let mut parts: Vec<Span<'static>> = Vec::new();
+            if let Some(t) = t {
+                parts.push(Span::styled(format!("⎇ {}", workspace_word(t.workspace)), dim1));
+            }
+            if let Some(m) = meta {
+                let who = super::ticket::author_word(&m.edited_by);
+                let when = created_at_epoch_ms(&m.edited_at)
+                    .map(|ms| format!(" {} ago", age_slot(now, ms, false).trim()))
+                    .unwrap_or_default();
+                parts.push(Span::styled(format!("edited by {who}{when}"), dim2));
+            }
+            if !framed {
+                parts.insert(0, Span::styled(heading(app, ed).to_string(), dim2));
+            }
+            for (i, part) in parts.into_iter().enumerate() {
+                if i > 0 {
+                    ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
                 }
-                None => {
-                    let first =
-                        app.board.ticket(*ticket).is_some_and(|t| t.description().is_none());
-                    ctx_spans.push(Span::styled("new note".to_string(), dim1));
-                    if first {
-                        ctx_spans
-                            .push(Span::styled(" ∙ becomes the description".to_string(), dim2));
-                    }
-                }
+                ctx_spans.push(part);
             }
         }
     }
@@ -402,10 +417,55 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
     Line::from(ctx_spans)
 }
 
+/// The dialog's name, set into its frame's top edge (and said on the
+/// context row where there is no edge): what the text IS — a new ticket,
+/// the description (`notes[0]`, or the fresh note that becomes it), or
+/// another note.
+fn heading(app: &App, ed: &Editor) -> &'static str {
+    match &ed.purpose {
+        EditorPurpose::Compose { .. } => "NEW TICKET",
+        EditorPurpose::Note { ticket, note } => {
+            let t = app.board.ticket(*ticket);
+            let exists = note.is_some_and(|id| t.is_some_and(|t| t.note(id).is_some()));
+            let first = t.is_some_and(|t| t.description().map(|d| d.id) == *note);
+            match (exists, first) {
+                (true, true) => "DESCRIPTION",
+                (true, false) => "NOTE",
+                (false, true) => "NEW DESCRIPTION",
+                (false, false) => "NEW NOTE",
+            }
+        }
+    }
+}
+
+/// What an empty body is for, in the footer's own word: `describe it` when
+/// the text will be the ticket's description — composing, or a note that
+/// is (or would become) `notes[0]` — and `write the note` otherwise.
+fn body_hint(app: &App, ed: &Editor) -> &'static str {
+    let describes = match &ed.purpose {
+        EditorPurpose::Compose { .. } => true,
+        EditorPurpose::Note { ticket, note } => {
+            app.board.ticket(*ticket).is_some_and(|t| t.description().map(|d| d.id) == *note)
+        }
+    };
+    if describes {
+        "describe it"
+    } else {
+        "write the note"
+    }
+}
+
 /// The body in `area`, `pad` cells in from its left edge: the text (or,
-/// empty, what it is for), scrolled under the cursor, in `ink`. Returns the
-/// cursor cell when the body is the focused field.
-fn draw_body(f: &mut Frame, ed: &Editor, area: Rect, pad: u16, ink: &Ramp) -> Option<(u16, u16)> {
+/// empty, `hint`), scrolled under the cursor, in `ink`. Returns the cursor
+/// cell when the body is the focused field.
+fn draw_body(
+    f: &mut Frame,
+    ed: &Editor,
+    area: Rect,
+    pad: u16,
+    ink: &Ramp,
+    hint: &str,
+) -> Option<(u16, u16)> {
     let body_h = area.height as usize;
     if body_h == 0 {
         return None;
@@ -416,8 +476,6 @@ fn draw_body(f: &mut Frame, ed: &Editor, area: Rect, pad: u16, ink: &Ramp) -> Op
     ed.top.set(top_line);
     let mut lines: Vec<Line<'static>> = Vec::new();
     if ed.body.is_empty() {
-        // An empty body says what it is for, in the footer's own word.
-        let hint = if ed.composing() { "describe it" } else { "write the note" };
         lines.push(Line::from(Span::styled(
             format!("{pad_s}{hint}"),
             Style::default().fg(ink.dim3),

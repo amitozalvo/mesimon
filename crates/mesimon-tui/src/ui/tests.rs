@@ -2136,7 +2136,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
         .iter()
         .position(|l| l.contains("Ship the diff viewer"))
         .expect("the phantom card is on the board");
-    let card = app.compose_card.get().expect("the draw records the phantom card");
+    let card = app.cursor_card.get().expect("the draw records the phantom card");
     assert_eq!(card.y as usize, card_row);
     assert_eq!(card.x, crate::layout::LPAD, "the first column's bar cell");
     assert_eq!(card.height, 2, "title row + workspace selector");
@@ -2222,9 +2222,12 @@ fn golden_editor_compose_tags_120() {
     golden("editor_compose_tags_120x30", &render(&app, 120, 30));
 }
 
+/// The note editor from the TICKET PAGE takes the screen; over the board
+/// it is the dialog (`golden_editor_describe_120`).
 #[test]
 fn golden_editor_note_120() {
     let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let body: String =
         (1..=30).map(|i| format!("line {i} of the note")).collect::<Vec<_>>().join("\n");
     let mut ed = editor_on(
@@ -2242,6 +2245,7 @@ fn golden_editor_note_120() {
 #[test]
 fn golden_editor_note_100() {
     let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let long = "a line long enough to need the window to scroll under the cursor, which is what the narrow golden is for, and then some more";
     let body = format!("{long}\nshort\n{long}");
     let mut ed = editor_on(
@@ -2252,6 +2256,81 @@ fn golden_editor_note_100() {
     ed.body.end();
     app.mode = Mode::Editor(ed);
     golden("editor_note_100x24", &render(&app, 100, 24));
+}
+
+/// `Tab` on a card: the description in the composer's dialog over the
+/// board, the stripe wearing the ticket's own tags, the context row naming
+/// the note and the ticket's workspace.
+#[test]
+fn golden_editor_describe_120() {
+    let mut b = fixture_tagged();
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+        t.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
+    }
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: Some(ulid_n(90)) },
+        "Fix OSC-11 detection",
+        COMPOSE_BODY,
+    );
+    ed.body.end();
+    app.mode = Mode::Editor(ed);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("DESCRIPTION")), "the frame names it: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("⎇ worktree ∙ edited by")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("Decay treatments")), "the board shows through");
+    golden("editor_describe_120x30", &lines);
+}
+
+/// `Tab` on a card grows the ticket's description out of that card, the
+/// composer's own motion on a ticket that exists; a card with no
+/// description gets the fresh note that becomes it.
+#[test]
+fn the_description_dialog_grows_out_of_the_card() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.cursor_row = 0;
+    let before = render(&app, 120, 30);
+    let card_row =
+        before.iter().position(|l| l.contains("Decay treatments")).expect("T-1 is on the board");
+    let card = app.cursor_card.get().expect("the draw records the cursor card");
+    assert_eq!(card.y as usize, card_row);
+    assert_eq!(card.x, crate::layout::LPAD, "the first column's bar cell");
+    assert!(card.width < 60, "one column, not the board: {card:?}");
+
+    app.handle_key(KeyCode::Tab, KeyModifiers::NONE).expect("tab");
+    let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor: {:?}", app.mode) };
+    assert!(matches!(ed.purpose, crate::app::EditorPurpose::Note { note: None, .. }));
+    assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
+    assert!(app.animating());
+    // Pin frame zero (see `the_composer_dialog_grows_out_of_its_card`).
+    if let Mode::Editor(ed) = &mut app.mode {
+        ed.grow = Some((card, std::time::Instant::now() + std::time::Duration::from_secs(1)));
+    }
+
+    // Frame zero is the card: the title in the card's cells, and with no
+    // frame edge to carry it the context row says what the text is.
+    let first = render(&app, 120, 30);
+    assert!(first[card_row].starts_with("   Decay treatments"), "{:?}", first[card_row]);
+    assert!(first.iter().any(|l| l.contains("Fix OSC-11 detection")), "the board shows through");
+
+    // Settled: the dialog over the middle columns, its frame's top edge
+    // naming the note, the ticket's workspace on the context row, and the
+    // body asking to be written.
+    if let Mode::Editor(ed) = &mut app.mode {
+        ed.grow = Some((card, std::time::Instant::now() - crate::app::GROW));
+    }
+    let after = render(&app, 120, 30);
+    assert!(after[2].contains("TODO") && after[2].contains("IN PROGRESS"), "{:?}", after[2]);
+    assert!(after[3].contains("NEW DESCRIPTION"), "{:?}", after[3]);
+    assert!(after[4].contains("Decay treatments"), "{:?}", after[4]);
+    assert!(after[5].contains("⎇ shared"), "{:?}", after[5]);
+    assert!(after[7].contains("describe it"), "{:?}", after[7]);
+    assert!(after.iter().any(|l| l.contains("Keymap validator")), "the first column is whole");
+    assert!(!after.iter().any(|l| l.contains("tab needs you")), "the attention walk is gone");
 }
 
 #[test]

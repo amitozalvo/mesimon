@@ -49,12 +49,11 @@ pub fn draw(f: &mut Frame, app: &App) {
         return;
     }
 
-    // The note editor covers whatever screen it was opened from; the picker
-    // reaches it the way it reaches the composer. The COMPOSER's editor is
-    // a dialog over the board instead, drawn with the board below.
-    let composing = matches!(&app.mode, Mode::Editor(ed) if ed.composing())
-        && matches!(app.screen, Screen::Board);
-    if let (Mode::Editor(ed), false) = (&app.mode, composing) {
+    // The editor's surface is the screen's: over the board it is a dialog,
+    // drawn with the board below (the composer's, and since T-163 the
+    // description's too — `Tab` on a card); from the ticket page it takes
+    // the screen. The picker reaches it either way.
+    if let (Mode::Editor(ed), false) = (&app.mode, matches!(app.screen, Screen::Board)) {
         editor::draw(f, app, ed);
         if app.tag_armed.is_some() {
             let area = f.area();

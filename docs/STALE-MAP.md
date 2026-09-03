@@ -3607,3 +3607,69 @@ profile paints no elevation the section keeps its rows on the ground in `rest`. 
 `test_ticket_header_section_is_a_band` (every band row painted, row 0 / the breathing row / the
 zones on the ground, exactly one blank between the state line and the body, the bar cell on every
 description row and none on the blank, text at column 3, a code span in the page ground).
+## `Tab` on a card opens its description in the composer's dialog, and the attention walk is gone (2026-09-03, T-163, user request)
+
+`Tab` on the board was `needs you` — jump to the next card waiting on you, `Shift+Tab` the
+previous — one hint in the footer, and never once pressed in dogfood: the waiting card already
+shouts (the inverted title row, the `!` in the spine and the column header, the header's own
+count) and the cursor goes to it by `hjkl`. The author asked for the key to open the ticket's
+DESCRIPTION the way the composer's `Tab` grows into the editor, and for the attention walk to go.
+`Verb::NextAttention` / `PrevAttention`, `Ctx::any_attention` and `App::cycle_attention` are
+deleted, not parked; `attention_queue` keeps its other callers.
+
+**The board's `tab` is `Verb::Describe`** — the composer's own verb, so `tab` is one verb across
+the two scopes that bind it — gated on `has_ticket`, hinted `describe` at prio 65 (the room the
+walk freed; at 120 columns it lands between `move card` and `rename`). `App::dispatch` opens the
+description (`notes[0]`, or the fresh note that becomes it) through `open_note_editor`, which is
+what `n` already did on the board; `n` keeps the note axis in the overlay and its board hint is
+now the one word `note`, so the overlay does not list two keys under `describe`. The ticket page
+and the diff keep `tab` inert — `n` is the description's key where there is no card to grow — and
+`Shift+Tab` on a screen is bound nowhere now, which resolves what was a `BackTab` split between
+the walk and the composer's workspace toggle.
+
+**The editor's surface is the screen's, not the purpose's.** `ui/mod.rs` drew the dialog only
+for a COMPOSING editor and gave every note the full screen; now every editor over the board is
+the dialog and every editor from the ticket page takes the screen. So `n`/`N` on the board are
+dialogs too — two keys to one document on two surfaces would have been a third place to learn.
+`open_note_editor` sets `Editor::grow` from the cursor card when the screen is the board, and the
+board records the CURSOR card's rectangle every frame (`App::cursor_card`, renamed from
+`compose_card`: the composer's phantom card IS the cursor card, since a text field drops the
+selection, so one field serves both and the phantom path lost nothing). The description dialog
+therefore grows out of the card that was under the cursor, exactly as the composer's grows out of
+its phantom card — `the_description_dialog_grows_out_of_the_card` pins the origin, frame zero
+(the title in the card's cells, the board showing through) and the settled dialog. On the dialog
+the stripe wears the TICKET's own tags (`tags::painted` on `t.tags`, where the composer's wears
+the picks), so frame zero is the card, stripe and all.
+
+**The dialog's frame names the note, and the context row names the workspace.** Rebased over
+T-158's framed dialogs: the frame's top edge carries the heading — `NEW TICKET` composing,
+`DESCRIPTION` / `NOTE` / `NEW DESCRIPTION` / `NEW NOTE` on a ticket that exists
+(`editor::heading`) — and the context row under the title carries what rides along: composing,
+the column, the workspace and the tags as before; on a note, `⎇ shared|worktree|adopt` then
+`edited by you >1y ago`. Where there is no edge to say it (frame zero of the grow, the full-screen
+editor under its NOTE chip) the row leads with the heading itself, the same rule the composer's
+row already followed. It was `the description ∙ edited by …` with no workspace, and a
+two-column dialog cut `∙ ⎇ workt` the moment the workspace joined the end of it. The full-screen
+`editor_note_*` goldens moved with the row and now pin the ticket-page surface explicitly with
+`Screen::Ticket`; `editor_describe_120x30` is the dialog. The body's empty-state word is
+`describe it` whenever the text will be the description (`body_hint`), not only when composing.
+
+**`Shift+Tab` in the description editor is the composer's workspace pick, a press late.** The
+author asked for the "big composer" on a ticket to switch between the shared checkout and its own
+worktree "if no claude created yet". The EDITOR scope's `BackTab` binding is one binding (an atom
+may not appear twice in a scope) whose `avail` is `editor_composing || workspace_open`, where
+`Ctx::workspace_open` is the daemon's `set_workspace` lock mirrored for the editor's ticket — no
+session on it and no worktree binding (`wt_item` is `None`); the lock is any session, not only a
+claude, because a shell in a worktree is just as relocated. Composing, the pick rides with the
+draft as before; on a ticket that exists the key sends `Command::SetWorkspace` at once — a
+workspace is the ticket's, not the note's, so it is not held for `^s` and leaves the editor
+clean — toggling `Some(Worktree)` ↔ `None` exactly as the composer does, and the daemon's refusal
+lands in the status. The binding is `mutates: true` now, since it is. `mesimon doctor` and the
+wire are untouched: `SetWorkspace` existed for the composer's mint, and the `FakeTransport` grew
+an arm for it so `shift_tab_in_the_description_sets_the_workspace_until_work_starts` can see the
+toggle round-trip and the lock hold.
+
+**Footer fallout, accepted.** `tab describe` takes the room the walk freed in the board's footer
+(at 120 columns it stands where `r rename` did on a card with an agent; `r` is still hinted on the
+others and in the overlay). The board's help overlay lost two Navigate rows and gained one Ticket
+row; `help_ticket` lost the two walk rows and nothing else.

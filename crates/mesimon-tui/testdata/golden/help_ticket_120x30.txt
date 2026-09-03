@@ -1,15 +1,14 @@
  TICKET   mesimon > kanban-tui  !1
-                                 ╭─ KEYS ∙ ticket ────────────────────────────────────╮
- Fix OSC-11 detection            │ MOVE AROUND                                        │
- IN PROGRESS for >1y ∙ created >1│   jk        select session                         │
+
+ Fix OSC-11 detection            ╭─ KEYS ∙ ticket ────────────────────────────────────╮
+ IN PROGRESS for >1y ∙ created >1│ MOVE AROUND                                        │
+                                 │   jk        select session                         │
                                  │   q         board                                  │
-                                 │   tab       needs you                              │
-  PREVIEW                        │   shift+tab previous needs you                     │    SESSIONS                  2
-                                 │                                                    │
-    ● working                    │ TICKETS                                            │   ⠋ ✻ claude               >1y
-                                 │   r         rename                                 │   ◦ $ bash                 >1y
-                                 │   n         describe                               │    s shell ∙ x sleep
-                                 │   N         new note                               │
+  PREVIEW                        │                                                    │    SESSIONS                  2
+                                 │ TICKETS                                            │
+    ● working                    │   r         rename                                 │   ⠋ ✻ claude               >1y
+                                 │   n         describe                               │   ◦ $ bash                 >1y
+                                 │   N         new note                               │    s shell ∙ x sleep
                                  │   ^t        tags                                   │
                                  │   a         archive                                │
                                  │   d         delete                                 │
@@ -27,4 +26,5 @@
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
 
- jk select session ∙ enter focus ∙ tab needs you ∙ r rename ∙ d delete ∙ n describe                              ? keys
+
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

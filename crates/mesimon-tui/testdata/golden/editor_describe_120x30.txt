@@ -1,0 +1,30 @@
+ NOTE   mesimon > kanban-tui
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+                              ╭─ DESCRIPTION ─────────────────────────────────────────────╮
+   Decay treatments       >1y │  Fix OSC-11 detection                                     │  z Painted accent bar  >1y
+                              │  ⎇ worktree ∙ edited by you >1y ago                       │
+   Keymap validator       >1y │                                                           │
+                              │  ## Why                                                   │
+                              │                                                           │
+                              │  The diff viewer is read-only and the `v` key is free.    │
+                              │                                                           │
+                              │  - one pane under 107 cols                                │
+                              │  - `z` cycles the density                                 │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              ╰────────────────────────────── ^s tell claude ∙ esc close ─╯
+
+
+ ^s tell claude ∙ esc close

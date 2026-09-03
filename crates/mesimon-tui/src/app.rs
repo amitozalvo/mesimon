@@ -485,12 +485,14 @@ pub struct App {
     pub preview_scroll: Cell<Option<(u64, usize)>>,
     /// What the last draw of that zone measured (see `PreviewView`).
     pub preview_view: Cell<PreviewView>,
-    /// Where the board last drew the composer's phantom card — the
-    /// rectangle Tab's dialog grows out of. Draw-side, like `preview_view`:
-    /// the card's place on screen is a fact of the frame, not of the board.
-    pub compose_card: Cell<Option<ratatui::layout::Rect>>,
+    /// Where the board last drew the cursor card — the composer's phantom
+    /// card, or the ticket under the cursor — which is the rectangle Tab's
+    /// dialog grows out of. Draw-side, like `preview_view`: the card's place
+    /// on screen is a fact of the frame, not of the board. `None` when the
+    /// card is cut by the window's edge (an origin off screen is no origin).
+    pub cursor_card: Cell<Option<ratatui::layout::Rect>>,
     /// Every dialog frame the last draw put on screen (`ui::dialog::frame`
-    /// records, `ui::draw` clears). Draw-side, like `compose_card`: it is
+    /// records, `ui::draw` clears). Draw-side, like `cursor_card`: it is
     /// how `test_no_drawn_structure` tells a frame's box glyph, which the L1
     /// law admits, from one that leaked in anywhere else, which it bans.
     pub frames: std::cell::RefCell<Vec<ratatui::layout::Rect>>,
@@ -628,7 +630,7 @@ impl App {
             notes: std::collections::HashMap::new(),
             preview_scroll: Cell::new(None),
             preview_view: Cell::new(PreviewView::default()),
-            compose_card: Cell::new(None),
+            cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
             spin_epoch: Cell::new(None),
             diff: None,
@@ -1355,7 +1357,6 @@ impl App {
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
-            any_attention: !mesimon_core::attention::attention_queue(&self.board).is_empty(),
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
             ticket_described: subject
@@ -1397,6 +1398,16 @@ impl App {
             editor_composing: editor.is_some_and(|e| e.composing()),
             editor_body: editor.is_some_and(|e| e.focus == Field::Body),
             editor_dirty: editor.is_some_and(|e| e.dirty()),
+            // The daemon's `set_workspace` lock, mirrored: a session or a
+            // worktree binding on the ticket closes the choice.
+            workspace_open: editor
+                .and_then(|e| match e.purpose {
+                    EditorPurpose::Note { ticket, .. } => Some(ticket),
+                    EditorPurpose::Compose { .. } => None,
+                })
+                .is_some_and(|t| {
+                    !self.board.sessions.iter().any(|s| s.ticket == t) && self.wt_item(t).is_none()
+                }),
             editor_can_tell: editor.is_some_and(|e| {
                 !e.dirty()
                     && matches!(
@@ -1504,8 +1515,6 @@ impl App {
         match verb {
             // ---- global ----------------------------------------------------
             Verb::Help => self.help = true,
-            Verb::NextAttention => self.cycle_attention(false),
-            Verb::PrevAttention => self.cycle_attention(true),
             Verb::Reload => {
                 let _ = self.client.request(Command::Shutdown);
                 self.pending_reexec = true;
@@ -1584,6 +1593,14 @@ impl App {
             Verb::NoteNew => {
                 if let Some(ticket) = self.subject() {
                     self.open_note_editor(ticket, None)?;
+                }
+            }
+            // `Tab` on a card: the description, in the composer's dialog. The
+            // composer's own `Tab` is the same verb and lands in `key_input`.
+            Verb::Describe => {
+                if let Some(ticket) = self.subject() {
+                    let note = self.board.ticket(ticket).and_then(|t| t.description()).map(|n| n.id);
+                    self.open_note_editor(ticket, note)?;
                 }
             }
             // `d` only arms. The second press is what deletes.
@@ -1976,7 +1993,6 @@ impl App {
             | Verb::EditKillToStart
             | Verb::HistoryPrev
             | Verb::HistoryNext
-            | Verb::Describe
             // ---- editor (handled in key_editor; unreachable here) ----------
             | Verb::EditorSave
             | Verb::EditorNewline
@@ -2521,7 +2537,7 @@ impl App {
                         Field::Body,
                     );
                     // The dialog grows out of the card the last frame drew.
-                    ed.grow = self.compose_card.get().map(|r| (r, Instant::now()));
+                    ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
                     self.mode = Mode::Editor(ed);
                 } else {
                     self.mode = Mode::Input { purpose, buffer };
@@ -2657,14 +2673,29 @@ impl App {
                 self.status = "1-9 pick a group ∙ esc done".into();
                 return Ok(());
             }
-            Some(Verb::CycleWorkspace) => {
-                if let EditorPurpose::Compose { workspace, .. } = &mut ed.purpose {
+            Some(Verb::CycleWorkspace) => match &mut ed.purpose {
+                EditorPurpose::Compose { workspace, .. } => {
                     *workspace = match workspace {
                         None => Some(WorkspaceStrategy::Worktree),
                         Some(_) => None,
                     };
                 }
-            }
+                // A ticket that exists: the same toggle, set on the daemon at
+                // once (a workspace is the ticket's, not the note's, so it is
+                // not held for `^s`). The keymap only offers it while the
+                // choice is open; the daemon's lock is the authority and its
+                // refusal lands in the status.
+                EditorPurpose::Note { ticket, .. } => {
+                    let ticket = *ticket;
+                    let current = self.board.ticket(ticket).and_then(|t| t.workspace);
+                    let workspace = match current {
+                        Some(WorkspaceStrategy::Worktree) => None,
+                        _ => Some(WorkspaceStrategy::Worktree),
+                    };
+                    self.mode = Mode::Editor(ed);
+                    return self.send(Command::SetWorkspace { id: ticket, workspace });
+                }
+            },
             Some(Verb::EditorNewline) => match ed.focus {
                 Field::Title => ed.focus = Field::Body,
                 Field::Body => ed.body.newline(),
@@ -2885,12 +2916,14 @@ impl App {
             },
             None => TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
         };
-        self.mode = Mode::Editor(Editor::new(
-            EditorPurpose::Note { ticket, note },
-            title,
-            body,
-            Field::Body,
-        ));
+        let mut ed = Editor::new(EditorPurpose::Note { ticket, note }, title, body, Field::Body);
+        // Over the board the editor is a dialog, and it grows out of the
+        // cursor card the last frame drew — the composer's motion, on a
+        // ticket that exists. From the ticket page it takes the screen.
+        if matches!(self.screen, Screen::Board) {
+            ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
+        }
+        self.mode = Mode::Editor(ed);
         Ok(())
     }
 
@@ -3940,34 +3973,6 @@ impl App {
         self.refresh()
     }
 
-    /// Jump the cursor to the next (or previous) card needing attention.
-    /// Queue order: precedence rank, then longest-waiting (daemon-minted
-    /// `waiting_since`), wrapping. Inert when nothing waits. Pops back to the
-    /// board — attention is a board-level gesture.
-    fn cycle_attention(&mut self, reverse: bool) {
-        let queue = mesimon_core::attention::attention_queue(&self.board);
-        let mut tickets: Vec<ulid::Ulid> = Vec::new();
-        for s in queue {
-            if !tickets.contains(&s.ticket) {
-                tickets.push(s.ticket);
-            }
-        }
-        if tickets.is_empty() {
-            self.status = "nothing needs you".into();
-            return;
-        }
-        self.to_board();
-        self.mode = Mode::Normal;
-        let current = self.selected_ticket().map(|t| t.id);
-        let pos = current.and_then(|id| tickets.iter().position(|t| *t == id));
-        let next = match (pos, reverse) {
-            (Some(i), false) => tickets[(i + 1) % tickets.len()],
-            (Some(i), true) => tickets[(i + tickets.len() - 1) % tickets.len()],
-            (None, _) => tickets[0],
-        };
-        self.select_ticket(next);
-    }
-
     /// Point the board cursor at a ticket (so Esc from the ticket screen lands on it).
     fn select_ticket(&mut self, ticket: ulid::Ulid) {
         let cols = self.columns();
@@ -4064,6 +4069,19 @@ pub(crate) mod test_support {
                         outcome: MergeOutcome::Merged,
                         detail: "merged 2 commit(s)".into(),
                     });
+                }
+                // The daemon's lock, mirrored, so a test can see it refuse.
+                Command::SetWorkspace { id, workspace } => {
+                    if self.board.sessions.iter().any(|s| s.ticket == id) {
+                        return Ok(Response::Err {
+                            message: "workspace locked — ticket has sessions".into(),
+                        });
+                    }
+                    let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == id) else {
+                        return Ok(Response::Err { message: "no such ticket".into() });
+                    };
+                    t.workspace = workspace;
+                    return Ok(Response::Ok);
                 }
                 Command::ReadNote { ticket, note } => {
                     let known = self.board.ticket(ticket).and_then(|t| t.note(note)).cloned();
@@ -4495,6 +4513,54 @@ mod tests {
         assert!(matches!(ed.purpose, EditorPurpose::Note { note: Some(_), .. }));
         // The title is the ticket's: typing goes nowhere there.
         assert_eq!(ed.focus, Field::Body);
+    }
+
+    /// `Tab` on a card is the composer's `Tab` a ticket late: the
+    /// description opens in the editor, re-read from the daemon, cursor in
+    /// the body, the title the ticket's.
+    #[test]
+    fn tab_on_a_card_opens_its_description() {
+        let (mut app, sent) = app_with_note();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "ReadNote"), "{:?}", sent.borrow());
+        let ed = editor(&app);
+        assert_eq!(ed.body.as_str(), "# Why\n\nbecause");
+        assert_eq!(ed.focus, Field::Body);
+        assert!(matches!(
+            ed.purpose,
+            EditorPurpose::Note { ticket: ulid::Ulid(1), note: Some(ulid::Ulid(90)) }
+        ));
+        assert!(!ed.composing(), "the title is the ticket's");
+        // A ticket with no description gets the fresh note that becomes it.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        app.cursor_row = 1;
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(matches!(editor(&app).purpose, EditorPurpose::Note { note: None, .. }));
+    }
+
+    /// Shift+Tab in the description editor is the composer's workspace
+    /// pick, a press late: it sets the ticket's workspace on the daemon
+    /// while nothing has locked it, and stops being a key once work starts.
+    #[test]
+    fn shift_tab_in_the_description_sets_the_workspace_until_work_starts() {
+        let (mut app, sent) = app_with_note();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert_eq!(app.board.tickets[0].workspace, Some(WorkspaceStrategy::Worktree));
+        assert!(matches!(app.mode, Mode::Editor(_)), "the editor stays open");
+        assert!(!editor(&app).dirty(), "a workspace is the ticket's, not the note's");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.board.tickets[0].workspace, None, "and back");
+
+        // With a session on the ticket the key is inert: nothing is sent.
+        let (mut app, sent) = app_with_note_and(true);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        sent.borrow_mut().clear();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert_eq!(app.board.tickets[0].workspace, None);
     }
 
     #[test]
