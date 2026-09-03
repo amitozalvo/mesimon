@@ -2147,6 +2147,15 @@ fn the_composer_dialog_grows_out_of_its_card() {
     let Mode::Editor(ed) = &app.mode else { panic!("tab opens the editor") };
     assert_eq!(ed.grow.map(|(r, _)| r), Some(card));
     assert!(app.animating(), "the frame after Tab is in motion");
+    // Pin frame zero: date the grow a second into the future, so `elapsed`
+    // saturates at zero however long a loaded machine takes to get to the
+    // render below. Without this the test raced the 180 ms animation and
+    // lost under a parallel `cargo test` (another session's build stalling
+    // this process for tens of ms was enough for the dialog to have grown
+    // past the card and put its frame on).
+    if let Mode::Editor(ed) = &mut app.mode {
+        ed.grow = Some((card, std::time::Instant::now() + std::time::Duration::from_secs(1)));
+    }
 
     // Frame zero: the dialog IS the card's rectangle — the title sits in the
     // card's cells, the meta row under it where the card's was, and the rest
