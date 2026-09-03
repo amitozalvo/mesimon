@@ -153,6 +153,13 @@ pub struct Daemon {
     /// Set only when `spawn_detached` started us. A human's foreground
     /// `mesimon daemon --repo` is never restarted under them.
     detached: bool,
+    /// What a Claude spawn execs: `MESIMON_CLAUDE_BIN` (the e2e stub seam)
+    /// or a bare `claude`. Read ONCE, here, like every other seam — an e2e
+    /// binary runs its tests as threads of one process, so a spawn that
+    /// read the variable late could exec the stub a sibling test had just
+    /// installed, or one its teardown had already removed (notes_e2e,
+    /// 2026-09-03: ~40% of runs under `cargo test`).
+    claude_bin: String,
     /// A state file we could not read (or that a newer mesimon wrote) is
     /// still on disk. Writing over it would destroy the only copy, so these
     /// bar the corresponding save. Enforced at the `persist_*` chokepoints.
@@ -426,6 +433,7 @@ pub fn run(paths: Paths) -> Result<()> {
         notices,
         exe_stamp,
         detached: std::env::var_os("MESIMON_DETACHED").is_some(),
+        claude_bin: std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into()),
         columns_barred: columns_write_barred,
         sessions_barred: sessions_write_barred,
         worktrees_barred,
@@ -3962,9 +3970,8 @@ impl Daemon {
         // Never --bare / --safe-mode — both silently clear them (S-D).
         let settings = crate::hook_settings::write_settings(&self.paths, id, &mesimon_bin())
             .map_err(|e| format!("hook settings: {e}"))?;
-        let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
         let mut argv = vec![
-            claude,
+            self.claude_bin.clone(),
             "--settings".into(),
             settings.display().to_string(),
             "--mcp-config".into(),

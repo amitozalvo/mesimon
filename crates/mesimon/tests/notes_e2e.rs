@@ -255,7 +255,10 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
         std::thread::sleep(Duration::from_millis(100));
     }
     std::thread::sleep(Duration::from_millis(500));
-    assert!(matches!(c.request(Command::NoteToAgent { ticket, note: second }), Response::Ok));
+    match c.request(Command::NoteToAgent { ticket, note: second }) {
+        Response::Ok => {}
+        other => panic!("tell claude failed: {other:?}"),
+    }
     wait_until(Duration::from_secs(10), "the note sentence to land", || {
         std::fs::read_to_string(&got).unwrap_or_default().contains(&second.to_string())
     });

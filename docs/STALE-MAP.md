@@ -3758,3 +3758,27 @@ What holds now:
 E2e: `notes_e2e::an_approved_plan_is_the_agents_note_on_the_ticket` (the real hook binary, the
 three frames before and at approval, a re-plan, a delete-then-re-plan, and the feed). Unit:
 `ingest::an_approved_plan_is_read_off_post_tool_use_only`.
+
+## The e2e seams are process environment, so one harness at a time (2026-09-03, found by the alpha.11 gate)
+
+`ci/release.sh` failed `notes_e2e` on the first alpha.11 attempt, and a loop reproduced it in
+~40% of runs under `cargo test` while `cargo nextest` (the inner loop) never saw it once.
+
+- The seams (`MESIMON_CLAUDE_BIN`, `MESIMON_HOOK_BIN`, `MESIMON_CLAUDE_HOME`) are variables of the
+  TEST PROCESS, and `cargo test` runs a binary's tests as threads of one process; nextest runs one
+  process per test. `notes_e2e` was the first file to boot two harnesses with two DIFFERENT stubs
+  (a read loop and an `exec sleep 60`), and its two daemons raced on the variable: the notes test
+  spawned the plan test's stub (which never reads the paste — "timed out waiting for the note
+  sentence"), or a stub path the plan test's teardown had already swept (pane died at once — "no
+  live claude session"). Every other e2e file boots one harness, which is why it never bit.
+- `Harness` now holds a process-wide `SEAMS` mutex for its whole life, released after the
+  teardown (last field, drops last; a poisoned lock is taken over, not propagated). Harnesses in
+  one binary run one after another; the suite's parallelism is nextest's, across processes, and
+  is untouched.
+- The daemon reads `MESIMON_CLAUDE_BIN` ONCE, at construction, into `Daemon::claude_bin` — the
+  contract the CLAUDE.md recipe already stated ("the daemon reads them once") and the one seam
+  that was read at every spawn instead. On its own it did not close the race (the two boots set
+  the variable in the same instant); with the lock it means a seam can never change under a
+  running daemon.
+- The notes test names the refusal it gets instead of `assert!(matches!(..))`, which is how the
+  cause became visible.

@@ -260,7 +260,19 @@ pub struct Harness {
     /// The agent stub `MESIMON_CLAUDE_BIN` names, when one was given.
     pub stub: Option<PathBuf>,
     daemon: Option<std::thread::JoinHandle<()>>,
+    /// Held for the harness's whole life, released after the teardown (the
+    /// last field drops last). The seams are process ENVIRONMENT variables
+    /// and `cargo test` runs a binary's tests as threads of one process, so
+    /// two harnesses booting at once raced on `MESIMON_CLAUDE_BIN`: one
+    /// daemon exec'd the stub the other test had just installed, or a path
+    /// its teardown had already swept (notes_e2e, 2026-09-03, ~40% of runs).
+    /// Nextest never sees it — one process per test — which is why the
+    /// release gate's `cargo test` found it and the inner loop did not.
+    _seams: std::sync::MutexGuard<'static, ()>,
 }
+
+/// One harness at a time per test process; see `Harness::_seams`.
+static SEAMS: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
 impl Harness {
     /// `None` means tmux is missing and the test should return (a hard
@@ -272,6 +284,9 @@ impl Harness {
         if !require_tmux() {
             return None;
         }
+        // A sibling test that panicked while holding it poisons the lock;
+        // the seams it guards are still ours to set.
+        let seams = SEAMS.lock().unwrap_or_else(|e| e.into_inner());
         let dir = PathBuf::from(format!("/tmp/msmn-e2e-{name}-{}", std::process::id()));
         let _ = std::fs::remove_dir_all(&dir);
         let repo = dir.join("repo");
@@ -298,7 +313,7 @@ impl Harness {
         });
         let sock = paths.orch_sock();
         wait_until(Duration::from_secs(5), "the daemon socket", || sock.exists());
-        Some(Self { dir, repo, paths, stub, daemon: Some(daemon) })
+        Some(Self { dir, repo, paths, stub, daemon: Some(daemon), _seams: seams })
     }
 
     /// A connected client with the `Hello` done.
