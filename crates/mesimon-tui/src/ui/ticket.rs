@@ -62,6 +62,17 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // the breadcrumb before). `r` edits it right here (hardware cursor,
     // tail kept visible).
     chrome::draw_header(f, Rect { x: area.x, y: area.y, width: area.width, height: 1 }, app, None);
+    // The header SECTION — title, state line, description — is a band on the
+    // elevated surface (author 2026-09-03: "more distinctive"), read in the
+    // `sel` ramp; the chip row above and the zones below stay on the page
+    // ground. Where the profile paints no elevation the section keeps its
+    // shape on the ground in the `rest` ramp.
+    let (band, ink) = match theme.selected_bg {
+        Some(bg) => (Style::default().bg(bg), &theme.sel),
+        None => (Style::default(), &theme.rest),
+    };
+    let d1 = Style::default().fg(ink.dim1);
+    let d2 = Style::default().fg(ink.dim2);
     let title_budget = (area.width as usize).saturating_sub(2);
     let editing = match &app.mode {
         Mode::Input { purpose: InputPurpose::Rename { id }, buffer } if *id == ticket_id => {
@@ -69,7 +80,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         }
         _ => None,
     };
-    let title_style = Style::default().fg(theme.rest.base).add_modifier(Modifier::BOLD);
+    let title_style = Style::default().fg(ink.base).add_modifier(Modifier::BOLD);
     let title_row = match editing {
         Some(buf) => {
             let budget = title_budget.saturating_sub(1);
@@ -96,9 +107,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         .map(|ms| format!(" ∙ {}", age_created(now, ms)))
         .unwrap_or_default();
     let mut ident_spans = vec![
-        Span::styled(format!(" {}", ticket.column.to_uppercase()), theme.dim2()),
-        Span::styled(here, theme.dim2()),
-        Span::styled(created, theme.dim2()),
+        Span::styled(format!(" {}", ticket.column.to_uppercase()), d2),
+        Span::styled(here, d2),
+        Span::styled(created, d2),
     ];
     // The m flow's live reply (armed prompt, outcome, refusal) replaces the
     // resting branch-state hint for a beat — same spot, so the conversation
@@ -111,7 +122,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         let how = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Archive, &app.ctx())
             .map(|(show, hint)| format!(" ∙ {show} {hint}s"))
             .unwrap_or_default();
-        ident_spans.push(Span::styled(format!(" ∙ archived{how}"), theme.dim1()));
+        ident_spans.push(Span::styled(format!(" ∙ archived{how}"), d1));
     }
     // The worktree clause is built aside so the tags can sit in front of it:
     // what a ticket IS reads before where its code lives (author 2026-09-01).
@@ -143,31 +154,31 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         } else {
             String::new()
         };
-        wt_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), theme.dim1()));
+        wt_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), d1));
         if !state.is_empty() {
             let actionable =
                 !w.merged && w.status == "attached" && (w.needs_rebase || (w.ahead > 0 && !busy));
             let style = if note.is_some() {
                 theme.calm_text()
             } else if w.conflict {
-                theme.base().add_modifier(ratatui::style::Modifier::BOLD)
+                Style::default().fg(ink.base).add_modifier(ratatui::style::Modifier::BOLD)
             } else if actionable {
                 theme.calm_text()
             } else {
-                theme.dim2()
+                d2
             };
             wt_spans.push(Span::styled(state, style));
         }
         if note.is_none() {
             if let Some(d) = &w.detail {
-                wt_spans.push(Span::styled(format!(" ∙ {d}"), theme.dim2()));
+                wt_spans.push(Span::styled(format!(" ∙ {d}"), d2));
             }
         }
     } else if let Some(n) = &note {
         // A merge reply with no binding ("no worktree on this ticket").
         wt_spans.push(Span::styled(format!(" ∙ {n}"), theme.calm_text()));
     } else if ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree {
-        wt_spans.push(Span::styled(" ∙ ⎇ worktree", theme.dim2()));
+        wt_spans.push(Span::styled(" ∙ ⎇ worktree", d2));
     }
     // Tags, spelled out: the ticket page is where you came to read, so there
     // is no reason to make you decode a pip here. Budgeted against the width
@@ -199,12 +210,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             if theme.paints_tags() {
                 chips.push(Span::styled(text, Style::default().bg(tint).fg(theme.tag_ink())));
             } else {
-                chips.push(Span::styled(text, Style::default().fg(theme.rest.dim1)));
+                chips.push(Span::styled(text, d1));
             }
         }
         // The separator belongs to the chips: none fitting means no bullet.
         if !chips.is_empty() {
-            ident_spans.push(Span::styled(" ∙", theme.dim2()));
+            ident_spans.push(Span::styled(" ∙", d2));
             ident_spans.extend(chips);
         }
     }
@@ -231,13 +242,19 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // as rich text, capped: what the ticket IS reads before what its
     // sessions are doing. No heading over it; it is the ticket's own words.
     // Nothing when there is none, so the geometry below is untouched then.
-    let body_rows = (area.height as usize).saturating_sub(6);
+    let body_rows = (area.height as usize).saturating_sub(7);
     let desc: Vec<Line<'static>> = ticket
         .description()
         .and_then(|m| app.note_text(m))
         .map(|text| {
             let cap = DESC_MAX_ROWS.min(body_rows / 3).max(1);
-            crate::rich::render(text, (area.width as usize).saturating_sub(2), cap, theme)
+            let surface = if theme.selected_bg.is_some() {
+                crate::rich::Surface::Elevated
+            } else {
+                crate::rich::Surface::Ground
+            };
+            let width = (area.width as usize).saturating_sub(2);
+            crate::rich::render_on(text, width, cap, theme, surface)
         })
         .unwrap_or_default();
     let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 1 };
@@ -249,20 +266,31 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             top.push(Line::from(spans));
         }
     }
+    // The band's bottom padding, then every row painted edge to edge: real
+    // space cells, because an empty `Line` paints nothing.
+    top.push(Line::default());
+    let top: Vec<Line<'static>> = top
+        .into_iter()
+        .map(|mut l| {
+            let used: usize = l.spans.iter().map(|s| s.content.width()).sum();
+            l.spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
+            l.style(band)
+        })
+        .collect();
     f.render_widget(
         Paragraph::new(top),
         Rect {
             x: area.x,
             y: area.y + 1,
             width: area.width,
-            height: (3 + extra).min(area.height.saturating_sub(1)),
+            height: (4 + extra).min(area.height.saturating_sub(1)),
         },
     );
 
     // ---- body zones -------------------------------------------------------
-    // One breathing row under the state line (06 §5.5) before the zones.
-    let body_y = area.y + 5 + extra;
-    let body_h = area.height.saturating_sub(6 + extra); // header 1 + top 3 + breathing 1 + footer 1
+    // One breathing row under the band (06 §5.5) before the zones.
+    let body_y = area.y + 6 + extra;
+    let body_h = area.height.saturating_sub(7 + extra); // header 1 + band 4 + breathing 1 + footer 1
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant

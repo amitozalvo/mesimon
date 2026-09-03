@@ -3538,3 +3538,19 @@ ticket wearing ten tags still says where it lives; and the branch name is cut wi
 the line being clipped. `the_state_row_never_shows_an_empty_tag_bullet` renders the case at
 four widths. The short slugger (above) shrinks future branches; this is what fixes the row for
 the bindings that already hold a long one.
+
+## The ticket page's header section is a band (2026-09-03, T-158 follow-up)
+
+The author asked for the description area to be "more distinctive — maybe the ticket title +
+description should be with a different background to indicate header section". Rows 1 through
+the row under the description (breathing row, title, state line, breathing row, description, a
+bottom pad) are painted `selected_bg` edge to edge and read in the `sel` ramp; the chip row
+above and the zones below stay on the page ground with one breathing row between. The body
+zones move down one row for the pad (`body_y = 6 + extra`), and the description cap follows.
+**Markdown on the band inverts its paint**: `rich::render_on(…, Surface::Elevated)` reads the
+`sel` ramp and paints a code span or slab in the PAGE ground (`Paint::of`), because the only
+other surface is the one paint there is and a slab in the band's own colour vanished. `render`
+is the `Ground` form and every other caller is unchanged. Where the profile paints no elevation
+(mono, light-256) the section keeps its rows on the ground in `rest`. Pinned by
+`test_ticket_header_section_is_a_band` (edges painted, header row and zones not, a code span on
+the page ground, its bullet on the band).
