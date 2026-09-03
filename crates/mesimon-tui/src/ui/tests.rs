@@ -9,6 +9,7 @@ use mesimon_core::board::{
 use ratatui::backend::TestBackend;
 use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
+use unicode_width::UnicodeWidthStr;
 
 use crate::app::{App, Mode, Screen};
 use crate::theme::{Flavor, Profile, Theme};
@@ -1564,6 +1565,52 @@ fn golden_ticket_tags_120() {
     let mut app = app_graphite(fixture_tagged());
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     golden("ticket_tags_120x30", &render(&app, 120, 30));
+}
+
+/// A 60-byte slug used to budget the tags out of the state row, and the
+/// ` ∙` separator went in before any chip was tried: T-163's page read
+/// `created 19m ago ∙ ∙ ⎇ msmn/…` (dogfood 2026-09-03). Chips claim the row
+/// first, a bullet appears only with a chip behind it, and the branch clause
+/// is cut with the marker instead of running off the right edge.
+#[test]
+fn the_state_row_never_shows_an_empty_tag_bullet() {
+    let mut app = app_graphite(fixture_tagged());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(3),
+        branch: "msmn/T-3-tab-to-open-description-editing-like-ticket-composer-drop-ta".into(),
+        status: "attached".into(),
+        merged: false,
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-3".into()),
+    }];
+    for width in [120u16, 100, 80, 60] {
+        let lines = render(&app, width, 30);
+        let row = lines.iter().find(|l| l.contains("IN PROGRESS")).expect("state row");
+        assert!(!row.contains("∙ ∙"), "{width}: empty bullet in {row:?}");
+        assert!(!row.contains("∙  ∙"), "{width}: empty bullet in {row:?}");
+        // The branch keeps its floor whatever the chips take, and a chip only
+        // ever sits in front of it.
+        assert!(row.contains("⎇ msmn/T-3"), "{width}: branch lost in {row:?}");
+        if let Some(bug) = row.find(" BUG ") {
+            let branch = row.find("⎇").unwrap_or(0);
+            assert!(bug < branch, "{width}: branch before tags in {row:?}");
+        }
+        // Wide enough for the ages, the floor and the merge state: the chips
+        // give way and the row ends inside the frame, the name cut with the
+        // marker rather than clipped.
+        if width >= 80 {
+            assert!(row.trim_end().width() < width as usize, "{width}: off the edge: {row:?}");
+            assert!(row.contains("~ ∙ 2 to merge"), "{width}: not cut with the marker: {row:?}");
+        }
+    }
+    // At 120 every chip fits and the branch is the one that gives.
+    let row = render(&app, 120, 30).into_iter().find(|l| l.contains("IN PROGRESS")).unwrap();
+    assert!(row.contains(" BUG ") && row.contains(" STAGING "), "{row:?}");
+    assert!(row.contains("~ ∙ 2 to merge"), "branch not cut with the marker: {row:?}");
 }
 
 /// `^t` is bound on the ticket screen, and the screen's early return in

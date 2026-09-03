@@ -3520,3 +3520,21 @@ board" does not bite: a `Binding` persists its `path` and `branch` at provision 
 existing worktree keeps its name and only tickets provisioned after this build get the short
 one. Tests in `workspace.rs` pin the cap, the word cut, the fallback, and the no-trailing-`-`/`.`
 rule at the new cut.
+
+## The state row's tag bullet belongs to its chips (2026-09-03, dogfood, T-167)
+
+T-163's ticket page read `REVIEW ∙ 7m here ∙ created 19m ago ∙ ∙ ⎇ msmn/T-163-…`: a bullet
+with nothing behind it. The tag clause budgeted its chips against the width MINUS the whole
+worktree clause (which draws after it), and a 60-byte slug plus the merge state left no room
+for ` IMPROVEMENT ` — but the ` ∙` separator was pushed before the first chip was tried, so
+the tag vanished and its bullet stayed. The branch was never budgeted either, so the row ran
+off the right edge and the terminal clipped the name.
+
+Now (`ui/ticket.rs`): the chips are built aside and the separator goes in only with a chip
+behind it; the chips have first claim on the row, with the merge state and detail reserved in
+full and the branch name reserved to `WT_BRANCH_FLOOR` (16 cells, ` ∙ ⎇ msmn/T-163~`), so a
+ticket wearing ten tags still says where it lives; and the branch name is cut with
+`text::truncate`'s `~` marker to the room the row leaves, never below the floor, instead of
+the line being clipped. `the_state_row_never_shows_an_empty_tag_bullet` renders the case at
+four widths. The short slugger (above) shrinks future branches; this is what fixes the row for
+the bindings that already hold a long one.

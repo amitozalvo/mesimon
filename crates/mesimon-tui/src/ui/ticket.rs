@@ -29,6 +29,10 @@ use super::chrome;
 /// M3.5 has no PTY pane on this screen yet, so the left zone is what yields).
 const TWO_ZONE_MIN_W: u16 = 107;
 const RAIL_W: u16 = 30;
+/// The state row's branch name keeps at least this many cells against the
+/// tag chips: enough for ` ∙ ⎇ msmn/T-163~`, so a heavily tagged ticket
+/// still names where its code lives.
+const WT_BRANCH_FLOOR: usize = 16;
 /// The description block's ceiling in rows; the zone below still has to
 /// read. A third of the body, and never more than this.
 const DESC_MAX_ROWS: usize = 8;
@@ -168,26 +172,51 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // Tags, spelled out: the ticket page is where you came to read, so there
     // is no reason to make you decode a pip here. Budgeted against the width
     // so a long vocabulary truncates the clause instead of wrapping the row.
+    // The chips have first claim on the row and the branch clause takes what
+    // is left (a 60-byte slug used to budget the tags out entirely — and the
+    // ` ∙` separator was pushed before any chip was tried, so T-163's page
+    // read `created 19m ago ∙ ∙ ⎇ msmn/…`, dogfood 2026-09-03). The clause
+    // keeps a floor so a ticket wearing ten tags still says where it lives.
+    let wt_width: usize = wt_spans.iter().map(|s| s.content.width()).sum();
+    // What the clause holds besides its first span (the branch name): the
+    // merge state and detail, which are never cut — only the name gives.
+    let wt_rest = wt_width.saturating_sub(wt_spans.first().map_or(0, |s| s.content.width()));
+    let wt_reserve = wt_width.min(wt_rest + WT_BRANCH_FLOOR);
     if !ticket.tags.is_empty() {
-        let used: usize =
-            ident_spans.iter().chain(wt_spans.iter()).map(|s| s.content.width()).sum();
-        let mut budget = (area.width as usize).saturating_sub(used + 4);
-        ident_spans.push(Span::styled(" ∙", theme.dim2()));
+        let used: usize = ident_spans.iter().map(|s| s.content.width()).sum();
+        let mut budget = (area.width as usize).saturating_sub(used + wt_reserve + 4);
         // Each tag as a short painted chip carrying its name — the same paint
         // the card band uses, so the two surfaces agree at a glance.
+        let mut chips = Vec::new();
         for t in &ticket.tags {
             let text = format!(" {} ", t.name);
             if text.width() + 1 > budget {
                 break;
             }
             budget -= text.width() + 1;
-            ident_spans.push(Span::raw(" "));
+            chips.push(Span::raw(" "));
             let tint = theme.pip(app.board.tint_of(t) as usize);
             if theme.paints_tags() {
-                ident_spans.push(Span::styled(text, Style::default().bg(tint).fg(theme.tag_ink())));
+                chips.push(Span::styled(text, Style::default().bg(tint).fg(theme.tag_ink())));
             } else {
-                ident_spans.push(Span::styled(text, Style::default().fg(theme.rest.dim1)));
+                chips.push(Span::styled(text, Style::default().fg(theme.rest.dim1)));
             }
+        }
+        // The separator belongs to the chips: none fitting means no bullet.
+        if !chips.is_empty() {
+            ident_spans.push(Span::styled(" ∙", theme.dim2()));
+            ident_spans.extend(chips);
+        }
+    }
+    // The branch name fits the room the rest of the row leaves, cut with the
+    // `~` marker (never below its floor) rather than the line running off the
+    // right edge — `truncate` never marks what fits.
+    let used: usize = ident_spans.iter().map(|s| s.content.width()).sum();
+    let room = (area.width as usize).saturating_sub(used + 1);
+    if wt_width > room {
+        if let Some(first) = wt_spans.first_mut() {
+            let cut = truncate(&first.content, room.saturating_sub(wt_rest).max(WT_BRANCH_FLOOR));
+            *first = Span::styled(cut, first.style);
         }
     }
     ident_spans.extend(wt_spans);
