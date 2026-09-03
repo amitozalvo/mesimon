@@ -2486,7 +2486,13 @@ static EDITOR: &[Binding] = &[
     },
     Binding {
         // Two presses when there is something to lose; the first says so.
-        keys: &[Key::Esc],
+        // `^]` (both spellings) is the same verb (2026-09-03, user request):
+        // it is the pop-outward key everywhere else — tmux's detach, the
+        // ticket page's way back to the board — and a note is the deepest
+        // the board goes. On a Hebrew layout ctrl+physical-`]` sends a bare
+        // Esc, which is THIS binding's other key, so the mirrored bracket
+        // lands on the same verb rather than on nothing. Shown as `esc`.
+        keys: &[Key::Esc, Key::Ctrl(']'), Key::Ctrl('5')],
         verb: Verb::Cancel,
         show: "esc",
         hint: |c| if c.editor_dirty { "discard" } else { "close" },
@@ -3413,6 +3419,9 @@ mod tests {
         }
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &ctx), Some(Verb::EditorSave));
         assert_eq!(resolve(Scope::Editor, Key::Esc, &ctx), Some(Verb::Cancel));
+        // `^]` closes too, in both of its spellings.
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl(']'), &ctx), Some(Verb::Cancel));
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('5'), &ctx), Some(Verb::Cancel));
         assert_eq!(resolve(Scope::Editor, Key::Enter, &ctx), Some(Verb::EditorNewline));
         assert_eq!(resolve(Scope::Editor, Key::Up, &ctx), Some(Verb::EditorUp));
         assert_eq!(resolve(Scope::Editor, Key::Down, &ctx), Some(Verb::EditorDown));

@@ -4543,6 +4543,26 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_bracket_closes_the_note_editor_like_esc() {
+        // Both encodings: kitty (']') and legacy 0x1D ('5'). Clean closes in
+        // one press; dirty arms the same second press esc does, and the two
+        // keys interchange because they are one binding.
+        for key in [']', '5'] {
+            let (mut app, _) = app_with_note();
+            press(&mut app, 'n');
+            app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
+            assert_eq!(app.mode, Mode::Normal, "clean: one press of ^{key}");
+            press(&mut app, 'n');
+            press(&mut app, 'x');
+            app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
+            assert!(matches!(app.mode, Mode::Editor(_)), "dirty: ^{key} arms");
+            assert_eq!(app.status, "unsaved ∙ esc again discards");
+            app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.mode, Mode::Normal, "esc finishes what ^{key} armed");
+        }
+    }
+
+    #[test]
     fn emptying_a_note_takes_two_presses_and_deletes() {
         let (mut app, sent) = app_with_note();
         press(&mut app, 'n');
