@@ -395,6 +395,12 @@ pub enum Verb {
     EditorNewline,
     EditorUp,
     EditorDown,
+    /// `^g`: hand the body to the user's own editor (`$VISUAL`, `$EDITOR`,
+    /// `vi`) in the terminal, and take back what it wrote — saved at once
+    /// on a note, the way a `git commit` message is committed by the
+    /// editor's write. The key is the one Claude Code teaches for exactly
+    /// this ("open in external editor").
+    EditorExternal,
 }
 
 /// 04 §2.0's legend. `Grace` actions land in the undo band; `Arm` actions name
@@ -578,6 +584,12 @@ pub struct Ctx {
     /// The editor shows a SAVED note and the ticket has a claude with a
     /// pane: `^s` would tell it the note changed.
     pub editor_can_tell: bool,
+    /// The program `^g` hands the note's body to — the basename of
+    /// `$VISUAL`, else `$EDITOR`, else `vi` — as the footer's word for it
+    /// (`^g nvim`). Empty means no external editor is wired up (every test
+    /// app, so a developer's own `$EDITOR` never reaches a golden), and the
+    /// key is inert and unhinted.
+    pub editor_word: &'static str,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -2510,6 +2522,29 @@ static EDITOR: &[Binding] = &[
         prio: 20,
     },
     Binding {
+        // The body in the user's own editor (T-181, 2026-09-03: "vim editing
+        // in notes / description"). `$VISUAL`, then `$EDITOR`, then `vi` —
+        // git's ladder — and the hint names the program that will open, so
+        // the footer reads `^g nvim`. On a note the text that comes back is
+        // SAVED at once: leaving the editor is the commit, as it is for a
+        // commit message, and a `^s` owed afterwards would be the one step
+        // every `$EDITOR` integration the user knows does not ask for.
+        // Composing, the body comes back into the draft and `^s` still
+        // mints. `^g` is Claude Code's own key for "open in external
+        // editor", so the finger already knows it, and it is a ctrl-letter,
+        // which is the only floor atom a text field cannot swallow. Inert
+        // where no editor word is set (every test app).
+        keys: &[Key::Ctrl('g')],
+        verb: Verb::EditorExternal,
+        show: "^g",
+        hint: |c| c.editor_word,
+        avail: |c| c.editing && !c.editor_word.is_empty(),
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 22,
+    },
+    Binding {
         keys: &[Key::Ctrl('t')],
         verb: Verb::TagPrefix,
         show: "^t",
@@ -3459,6 +3494,29 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('u'), &ctx), Some(Verb::EditKillToStart));
         // And with the editor down, its scope answers nothing at all.
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &Ctx::default()), None);
+    }
+
+    /// `^g` opens the user's own editor on the body, and the footer names
+    /// which one. With no editor word (every test app) the key is inert and
+    /// unhinted, so a developer's `$EDITOR` never reaches a golden; and it
+    /// is the editor's key, not the one-line composer's.
+    #[test]
+    fn ctrl_g_hands_the_body_to_the_users_editor() {
+        let wired = Ctx { editing: true, editor_word: "nvim", ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('g'), &wired), Some(Verb::EditorExternal));
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorExternal, &wired), Some(("^g", "nvim")));
+        let composing = Ctx { editor_composing: true, ..wired };
+        assert_eq!(
+            resolve(Scope::Editor, Key::Ctrl('g'), &composing),
+            Some(Verb::EditorExternal),
+            "the composer's description takes the same road"
+        );
+        let unwired = Ctx { editing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('g'), &unwired), None);
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorExternal, &unwired), None);
+        let one_line = Ctx { composing: true, editor_word: "nvim", ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('g'), &one_line), None);
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('g'), &Ctx::default()), None);
     }
 
     /// `^s` says what it will do, and is inert when it would do nothing:

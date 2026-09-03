@@ -7,6 +7,7 @@ mod keys;
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
 pub mod client;
 mod detect;
+mod external;
 mod glyphs;
 mod handover;
 mod layout;
@@ -36,6 +37,9 @@ use ratatui::crossterm::terminal::{
 use app::App;
 use client::Client;
 
+/// What `mesimon doctor` says about the note editor's `^g`: which program
+/// opens, and which variable named it.
+pub use external::doctor_line as editor_status;
 /// What `mesimon doctor` says about the theme picks (`prefs.rs`).
 pub use prefs::doctor_line as theme_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
@@ -91,6 +95,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // asking before raw mode is on gets a false negative. This is the single
     // gate on every `Key::ShiftEnter` binding.
     app.rich_keys = kitty_keyboard_supported();
+    // The word the note editor's `^g` hint wears — set here and never in
+    // `App::new`, so no test app ever reads the developer's `$EDITOR`.
+    app.editor_word = external::word();
     let result = event_loop(&mut terminal, &mut app);
     restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
@@ -168,6 +175,19 @@ fn event_loop(
                 break;
             }
             app.after_handover()?; // may queue the post-GATE attach
+        }
+
+        // ^g in the note editor: the body goes to the user's own editor on
+        // the terminal we give back for the duration (T-181) — the focus
+        // handover's road, and the same blank-then-drain around it, since
+        // vim leaves the alt screen the way tmux does.
+        if let Some(req) = app.pending_external_edit.take() {
+            restore_terminal()?;
+            blank_primary_screen()?;
+            let out = external::edit_dir(&app.repo_root).and_then(|d| external::run(&req, &d));
+            *terminal = init_terminal()?;
+            handover::drain_stdin();
+            app.external_edit_done(out)?;
         }
 
         if app.quit {

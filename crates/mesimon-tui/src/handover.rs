@@ -8,7 +8,9 @@ use anyhow::{bail, Context, Result};
 
 /// Run outside raw mode / alt screen — the caller restores the terminal first
 /// and re-initializes after. Returns when the user detaches (Ctrl+]).
-/// `cwd` is for the `!` shell-in-worktree handover (M4b); attach argvs pass None.
+/// `cwd` is for the `!` shell-in-worktree handover (M4b); attach argvs pass None,
+/// and so does the note editor's `^g` (`external.rs`), which rides the same
+/// road and wants the exit status judged.
 ///
 /// Returns as soon as the child exits — the caller must re-enter the alt
 /// screen immediately (the primary screen shows stale shell output) and then
@@ -42,7 +44,7 @@ pub fn run(argv: &[String], cwd: Option<&std::path::Path>) -> Result<()> {
     // An interactive shell exits with its LAST command's status — meaningless
     // here, never an attach failure. Only the attach path reports non-zero.
     if !shell && !status.success() {
-        bail!("attach exited with {status}");
+        bail!("exited with {status}");
     }
     Ok(())
 }

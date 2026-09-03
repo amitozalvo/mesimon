@@ -517,6 +517,12 @@ pub struct App {
     pub pending_attach: Option<Vec<String>>,
     /// cwd for the pending handover child (`!` shell in the worktree).
     pub pending_attach_cwd: Option<PathBuf>,
+    /// `^g` in the note editor: the body, parked for the main loop to hand
+    /// to the user's own editor once the terminal is given back (T-181).
+    pub pending_external_edit: Option<crate::external::ExternalEdit>,
+    /// That editor's name for the `^g` hint — `lib.rs` sets it from the
+    /// environment; empty (every test app) leaves the key inert.
+    pub editor_word: &'static str,
     pending_gate_then: Option<(uuid::Uuid, FocusOrigin)>,
     /// M4: `c` on an unprovisioned worktree ticket parks the spawn daemon-side
     /// (`Response::Provisioning`); this parks the focus half of that keypress.
@@ -648,6 +654,8 @@ impl App {
             diff: None,
             pending_attach: None,
             pending_attach_cwd: None,
+            pending_external_edit: None,
+            editor_word: "",
             pending_gate_then: None,
             pending_spawn_focus: None,
             focused_session_hint: None,
@@ -1434,6 +1442,7 @@ impl App {
                             if self.board.pane_target(ticket).is_some()
                     )
             }),
+            editor_word: self.editor_word,
             rich_keys: self.rich_keys,
         }
     }
@@ -2050,7 +2059,8 @@ impl App {
             | Verb::EditorSave
             | Verb::EditorNewline
             | Verb::EditorUp
-            | Verb::EditorDown => {}
+            | Verb::EditorDown
+            | Verb::EditorExternal => {}
         }
         Ok(())
     }
@@ -2714,6 +2724,17 @@ impl App {
         match verb {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
             Some(Verb::EditorSave) => return self.editor_save(ed),
+            Some(Verb::EditorExternal) => {
+                // Parked for the main loop, which owns the terminal; the
+                // editor stays open underneath and `external_edit_done`
+                // takes the text back.
+                self.pending_external_edit = Some(crate::external::ExternalEdit {
+                    text: ed.body.as_str().to_string(),
+                    file_name: self.edit_file_name(&ed),
+                });
+                self.mode = Mode::Editor(ed);
+                return Ok(());
+            }
             Some(Verb::TagPrefix) => {
                 self.mode = Mode::Editor(ed);
                 self.tag_armed = Some(TagArm {
@@ -2818,6 +2839,64 @@ impl App {
                 KeyCode::Char(c) if ed.focus == Field::Body => ed.body.insert(c),
                 _ => {}
             },
+        }
+        self.mode = Mode::Editor(ed);
+        Ok(())
+    }
+
+    /// The name the external editor sees: the ticket's key for its
+    /// description, the key and the note's id for another note, and a word
+    /// for what does not exist yet. `.md`, so the editor reads markdown.
+    fn edit_file_name(&self, ed: &Editor) -> String {
+        match &ed.purpose {
+            EditorPurpose::Compose { .. } => "new-ticket.md".into(),
+            EditorPurpose::Note { ticket, note } => {
+                let t = self.board.ticket(*ticket);
+                let key = t.map(|t| t.short_key.as_str()).unwrap_or("ticket");
+                match note {
+                    Some(id) if t.and_then(|t| t.description()).map(|d| d.id) == Some(*id) => {
+                        format!("{key}.md")
+                    }
+                    Some(id) => format!("{key}-{id}.md"),
+                    None => format!("{key}-new.md"),
+                }
+            }
+        }
+    }
+
+    /// Back from the user's editor (`lib.rs`, once the terminal is ours
+    /// again). What it wrote becomes the body, the cursor keeps its line,
+    /// and on a note it is SAVED at once — the editor's write was the
+    /// commit — through the same road `^s` takes, so an emptied note still
+    /// asks twice before it is deleted. Composing, the draft takes the text
+    /// and `^s` still mints. A failed editor changes nothing but the status.
+    pub fn external_edit_done(&mut self, outcome: Result<crate::external::Outcome>) -> Result<()> {
+        use crate::external::Outcome;
+        let Mode::Editor(mut ed) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        match outcome {
+            Err(e) => self.status = format!("{}: {e}", self.editor_word),
+            Ok(Outcome::Unchanged) => self.status = "unchanged".into(),
+            Ok(Outcome::Changed(text)) => {
+                let line = ed.body.cursor_line();
+                ed.body = TextArea::from_text(&text, mesimon_core::board::NOTE_MAX_BYTES);
+                ed.body.page(line as isize);
+                ed.top.set(0);
+                ed.esc_armed = false;
+                ed.delete_armed = false;
+                match ed.purpose {
+                    // Changed against what went out, which is not always
+                    // changed against what was saved: a `^g` after typing,
+                    // then the typing undone in vim, is back at the
+                    // baseline — and `^s`'s clean road would tell claude.
+                    EditorPurpose::Note { .. } if ed.dirty() => return self.editor_save(ed),
+                    EditorPurpose::Note { .. } => self.status = "unchanged".into(),
+                    EditorPurpose::Compose { .. } => {
+                        self.status = format!("edited in {} ∙ ^s saves", self.editor_word)
+                    }
+                }
+            }
         }
         self.mode = Mode::Editor(ed);
         Ok(())
@@ -4648,6 +4727,72 @@ mod tests {
         ctrl(&mut app, 's');
         assert_eq!(app.status, "asked");
         assert!(sent_contains(&sent, "NoteToAgent"), "{:?}", sent.borrow());
+    }
+
+    /// `^g` parks the body for the main loop (which owns the terminal) and
+    /// the editor stays open; what comes back is saved at once on a note,
+    /// cursor line kept, and a round trip that changed nothing sends
+    /// nothing. Inert with no editor word — which is every test app but
+    /// this one, so a developer's `$EDITOR` never reaches a golden.
+    #[test]
+    fn ctrl_g_edits_the_note_outside_and_the_return_saves() {
+        use crate::external::{ExternalEdit, Outcome};
+        let (mut app, sent) = app_with_note();
+        press(&mut app, 'n');
+        ctrl(&mut app, 'g');
+        assert_eq!(app.pending_external_edit, None, "no editor word: inert");
+        app.editor_word = "nvim";
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        ctrl(&mut app, 'g');
+        assert_eq!(
+            app.pending_external_edit,
+            Some(ExternalEdit { text: "# Why\n\nbecause".into(), file_name: "T-1.md".into() })
+        );
+        assert!(matches!(app.mode, Mode::Editor(_)), "stays open underneath");
+        let before = sent.borrow().len();
+        app.external_edit_done(Ok(Outcome::Unchanged)).unwrap();
+        assert_eq!(app.status, "unchanged");
+        assert_eq!(sent.borrow().len(), before, "nothing to save");
+        app.external_edit_done(Ok(Outcome::Changed("# Why\n\nbecause not".into()))).unwrap();
+        let ed = editor(&app);
+        assert_eq!(ed.body.as_str(), "# Why\n\nbecause not");
+        assert_eq!(ed.body.cursor_line(), 2, "the cursor keeps its line");
+        assert!(!ed.dirty(), "the editor's write was the commit");
+        assert_eq!(app.status, "saved");
+        assert!(sent_contains(&sent, "WriteNote"), "{:?}", sent.borrow());
+        // A failed editor is a status line and nothing else.
+        let before = sent.borrow().len();
+        app.external_edit_done(Err(anyhow::anyhow!("exited with 1"))).unwrap();
+        assert_eq!(app.status, "nvim: exited with 1");
+        assert_eq!(sent.borrow().len(), before);
+        assert_eq!(editor(&app).body.as_str(), "# Why\n\nbecause not");
+    }
+
+    /// Composing, the text comes back into the draft and nothing is minted:
+    /// the ticket does not exist yet, and `^s` is still its birth.
+    #[test]
+    fn ctrl_g_while_composing_fills_the_draft_and_mints_nothing() {
+        use crate::external::{ExternalEdit, Outcome};
+        let (mut app, sent) = app_with_note();
+        app.editor_word = "vim";
+        press(&mut app, 'o');
+        for c in "Ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        ctrl(&mut app, 'g');
+        assert_eq!(
+            app.pending_external_edit,
+            Some(ExternalEdit { text: String::new(), file_name: "new-ticket.md".into() })
+        );
+        app.external_edit_done(Ok(Outcome::Changed("the plan".into()))).unwrap();
+        let ed = editor(&app);
+        assert_eq!(ed.body.as_str(), "the plan");
+        assert!(ed.dirty());
+        assert_eq!(ed.title.as_str(), "Ship it");
+        assert_eq!(app.status, "edited in vim ∙ ^s saves");
+        assert!(!sent_contains(&sent, "CreateTicket"), "{:?}", sent.borrow());
     }
 
     #[test]

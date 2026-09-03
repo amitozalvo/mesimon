@@ -196,7 +196,16 @@ and there `Shift+Tab` still sets the ticket's workspace (`SetWorkspace`, at once
 or worktree has locked it (`Ctx::workspace_open` mirrors the daemon's `set_workspace` lock). The
 editor's surface is the SCREEN's: over the board it is the dialog whatever it holds (`n`/`N` too),
 from the ticket page it takes the whole screen. `n`/`N` open a note, `^s` saves and stays, a second
-`^s` on a saved note sends `NoteToAgent` (mesimon's own sentence, human gesture only). The ticket page draws the description under the identity line and
+`^s` on a saved note sends `NoteToAgent` (mesimon's own sentence, human gesture only). **`^g`
+hands the body to the user's own editor** (T-181, 2026-09-03): `$VISUAL`, else `$EDITOR`, else
+`vi`, run through the shell on the terminal the TUI gives back for the duration — the focus
+handover's road (`tui/src/external.rs`, `lib.rs::event_loop`) — on a 0600 file under
+`<state>/edit/`, gone after. What comes back is SAVED at once on a note (the editor's write is the
+commit, as for a commit message; through `editor_save`, so an emptied note still asks twice) and
+dropped into the draft composing (`^s` still mints). The hint names the program (`^g nvim`);
+`App::editor_word` is set in `lib.rs`, never `App::new`, so no test or golden sees a developer's
+`$EDITOR` and the key is inert there. `mesimon doctor` prints an `editor` line. (STALE-MAP "A note
+opens in the user's own editor".) The ticket page draws the description under the identity line and
 lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. Agents
 get `read_note`/`write_note` (seven tools now, with `create_ticket` and `tag_ticket`) and
 `get_ticket` carries the description. Adding a

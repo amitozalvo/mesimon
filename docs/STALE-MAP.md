@@ -3953,3 +3953,50 @@ That makes `▎` the SECOND codepoint `test_no_drawn_structure` admits off a dia
 no painted cell can say, from one named producer. `test_ticket_header_section_is_a_band` pins the
 glyph, its colour and the band under it.
 
+## A note opens in the user's own editor (2026-09-03, T-181, user request)
+
+The ticket said "vim editing in notes / description". Two readings: vim's modal keys inside the
+TUI's `TextArea`, or the note handed to vim itself. The corpus had already settled the second for
+notes before there was a note editor at all (D12: "a note is `$EDITOR` on a file"; 04's `e`), the
+author uses Neovim and says they are not an expert vim user (00-DECISIONS on D20), and a partial
+vim — the only kind a TUI ever ships — is worse than none: every missing motion is a key that types
+a letter into the note. So the note editor keeps its own keys and gains one door.
+
+- `^g` in the note editor (`Verb::EditorExternal`, `Scope::Editor`, prio 22) hands the body to
+  `$VISUAL`, else `$EDITOR`, else `vi` — git's ladder, and git's shell form (`sh -c '<cmd> "$@"'
+  <cmd> <file>`), so `code --wait` and a path with a space both run. `^g` because it is the key
+  Claude Code teaches for "open in external editor", so the finger already has it, and because a
+  ctrl-letter is the one floor atom a text field cannot swallow (`^e` was taken by end-of-line).
+- The road is the focus handover's (`lib.rs::event_loop`: restore the terminal, blank the
+  primary screen, run, re-init, drain stdin) — vim leaves the alt screen the way a tmux detach
+  does, and the same flash wants the same blank. `handover::run` judges the exit status on this
+  path (cwd `None`), and its message lost the word "attach".
+- The file is `<state>/edit/<KEY>.md` for a description, `<KEY>-<note ulid>.md` for another note,
+  `<KEY>-new.md` / `new-ticket.md` for one that does not exist yet: inside the README's write
+  allowlist, out of `.mesimon/` (a swap file would be a stranger there), 0600, removed after,
+  `.md` so the editor reads markdown. Written with a trailing newline, and `back_to_body` takes
+  exactly that newline back — vim's `fixeol` would otherwise make every round trip a change and
+  dirty every save after it.
+- **What comes back is saved at once on a note.** Leaving the editor IS the commit, as it is for a
+  commit message and in every `$EDITOR` integration the user knows; an owed `^s` afterwards would
+  be the one step none of them ask for. The save goes through `editor_save`, so an emptied note
+  still takes the second press to delete, the status still says `saved ∙ ^s again tells claude`,
+  and a refusal leaves the text in the editor, dirty, nothing lost. "Changed against what went
+  out" is not "changed against the baseline" (type, `^g`, undo the typing in vim): that case says
+  `unchanged` rather than letting `^s`'s clean road tell claude. Composing, the draft takes the
+  text and `^s` still mints — the ticket does not exist yet.
+- The cursor keeps its LINE across the trip (`TextArea::from_text` then `page(line)`), not its
+  byte: the line is what the eye had.
+- The hint names the program (`^g nvim`): `Ctx::editor_word` is the command's first token as a
+  file name, one line, ≤ 16 cells, read once per process and leaked once. `App::editor_word` is
+  set in `lib.rs::run` and never in `App::new`, the prefs rule again: no test app reads the
+  developer's `$EDITOR`, and with the word empty the binding is inert and unhinted, so no golden
+  moved. `mesimon doctor` prints `editor: nvim ($VISUAL) — ^g in a note`.
+- Not built: a key on the board or the ticket page that opens vim without the dialog first
+  (`n` then `^g` is two keys), and any cwd for the editor (it inherits the TUI's; a worktree
+  ticket's would be an argument for `%:h`-style relative opens that nobody has made yet).
+
+Unit: `external::tests` (the ladder, the word, the newline, a real child through the shell for
+changed / unchanged / failed), `app::tests::ctrl_g_edits_the_note_outside_and_the_return_saves`,
+`ctrl_g_while_composing_fills_the_draft_and_mints_nothing`,
+`keymap::tests::ctrl_g_hands_the_body_to_the_users_editor`.
