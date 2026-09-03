@@ -3332,6 +3332,52 @@ What holds now:
   by a person then visible to the agent with groups; a create wearing `["bug", "P1", "BUG"]`
   landing as `BUG@1, P1@2` with the registry still three entries; unknown name, same-group
   clash and a wrongly shaped argument each refused with nothing minted).
+## An agent wears the user's tags (2026-09-03, T-164, user request)
+
+The tier denied every tag command, and `agent_allows` said why: the six human commands are
+registry writes (five of them outright, and `SetTag` because using a name is what creates it), and
+"tagging is a human curation act". The user asked for a tool that helps without interfering, and
+the line that satisfies both is the one `authorize` already draws for columns: an agent may change
+its own card, never the board's vocabulary.
+
+What holds now:
+
+- **A seventh tool, `tag_ticket`** (`core/src/mcp.rs`): `name` required; `group` optional (1-10,
+  refused outside that range rather than widened to "any"); `remove` optional boolean. It wears
+  one of the board's EXISTING tags on the caller's ticket or takes it off. No idempotency key:
+  wearing what is worn and removing what is absent both succeed and change nothing, so a retry
+  after a dropped connection is already safe.
+- **The registry is read and never written** (`Daemon::agent_tag_ticket`). A name the picker never
+  saw is refused — "no such tag: … (get_ticket lists the board's tags as allowed_tags)" — and on an empty registry
+  the refusal says where tags come from. What is stored is the registry's OWN spelling: a name in
+  another case that resolves to exactly one entry lands as the user spelled it, so `sanitize_tag`
+  has nothing to do and `columns.toml` is never touched (no write bar applies). This is the whole
+  of "not interfere": ten agents on ten tickets still speak the user's one language, no axis fills
+  with words nobody chose, nothing lands on an axis whose meaning the agent cannot know, and the
+  picker never grows a row the user did not type. An agent that wants a word the board lacks has
+  `write_note`.
+- **The names it accepts are `get_ticket`'s `allowed_tags`** — the field the block above added
+  for `create_ticket`, now serving both — and the two tools share one registry lookup,
+  `Daemon::lookup_agent_tag` (exact, then unique case-insensitive, optionally narrowed to an
+  axis), so they cannot drift on what a name means. The receipt's `tags` are `AgentTagView`s
+  too. Landed by rebase onto the block above: the branch had minted its own `available_tags`
+  and reused `TagRef`; main's names won.
+- **A name on two axes is refused until `group` says which** ("tag … is on more than one group (3, 4);
+  pass group to say which"),
+  never guessed. One per group is what lets a digit address an axis, so the groupmate comes off and
+  the receipt names it: `Response::AgentTagged { tags, replaced, board_version }` is the ticket's
+  whole tag list after the call, so the model sees what it did without a second round-trip.
+- **Authorized as `Mutate` on `Resource::Ticket`** — one card's own metadata, like a note; the
+  board itself untouched, so `authorize` needed no change. Feed line `tag_ticket`, actor the agent,
+  only when something changed. The human's six tag commands stay in the never-tier
+  (`the_never_tier_holds` now lists `MoveTag` too, which it had missed), and the wire test hands
+  `SetTag` and `RegisterTag` to an agent principal and watches them refused.
+- Pinned by `mcp::exactly_seven_tools`, `tag_ticket_parses_and_refuses`,
+  `the_tier_is_exactly_seven_commands`, the shim's `a_tag_result_names_what_is_worn_and_what_came_off`,
+  and `mcp_e2e` (empty registry refused legibly, wear, replace-with-receipt, case resolved to the
+  registry's spelling, ambiguity refused then resolved by `group`, an invented name refused and the
+  registry unchanged, remove twice, the registry identical before and after). README says seven
+  tools.
 
 ## The composer's editor is a panel over the board, and it grows out of its card (2026-09-03)
 

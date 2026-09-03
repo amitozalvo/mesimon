@@ -103,7 +103,7 @@ pub fn lint_tool_text(s: &str) -> Result<(), String> {
 
 // ------------------------------------------------------------------- tools
 
-/// The complete tool surface. Six tools, and there is deliberately no tool
+/// The complete tool surface. Seven tools, and there is deliberately no tool
 /// to spawn a session, kill a session, delete a ticket, archive a ticket,
 /// rename a ticket, change a workspace, merge a branch, read a transcript, read
 /// a cost, or grant anything. A tool that does not exist cannot be granted by
@@ -120,6 +120,14 @@ pub fn lint_tool_text(s: &str) -> Result<(), String> {
 /// was not asked for: file it where a human will see it, instead of doing it
 /// unasked or dropping it. The new card has no session and no tool starts
 /// one; the human decides what happens next, on the board.
+///
+/// `tag_ticket` (T-164) puts one of the board's EXISTING tags on the caller's
+/// ticket, or takes it off. The vocabulary stays the human's: an agent may
+/// pick from the registry and may not add to it — a name it invents is
+/// refused, not registered — so ten tickets tagged by ten agents still speak
+/// one language, and nothing an agent does fills an axis or lands on the
+/// wrong one. Which names exist, what each axis means and what colour each
+/// wears are the user's, through the picker.
 pub fn tools() -> Vec<Value> {
     vec![
         json!({
@@ -229,6 +237,36 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        json!({
+            "name": "tag_ticket",
+            "description": "Puts one of the board's existing tags on this session's ticket, \
+                            or takes one off. Tags come in groups and a ticket wears at most \
+                            one per group, so a tag replaces its groupmate. The names \
+                            accepted are listed by get_ticket as allowed_tags; new tags \
+                            are created on the board, not here.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    // A plain string, NOT an enum: see the module header. A tag
+                    // name is the user's word exactly as a column name is.
+                    "name": {
+                        "type": "string",
+                        "description": "A tag name, as spelled in allowed_tags.",
+                    },
+                    "group": {
+                        "type": "integer",
+                        "description": "Optional, 1-10. Needed only when the same name exists \
+                                        in more than one group.",
+                    },
+                    "remove": {
+                        "type": "boolean",
+                        "description": "Optional. True takes the tag off instead of putting it on.",
+                    },
+                },
+                "required": ["name"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -277,6 +315,11 @@ pub enum ToolCall {
         /// the argument was absent.
         tags: Vec<String>,
         idempotency_key: Option<String>,
+    },
+    TagTicket {
+        name: String,
+        group: Option<u8>,
+        remove: bool,
     },
 }
 
@@ -359,6 +402,35 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                 idempotency_key: word("idempotency_key").map(str::to_string),
             })
         }
+        "tag_ticket" => {
+            let name = args
+                .get("name")
+                .and_then(Value::as_str)
+                .ok_or("tag_ticket requires a name string")?
+                .trim()
+                .to_string();
+            if name.is_empty() {
+                return Err("name is empty".into());
+            }
+            // An out-of-range group is an error the model can read, not a
+            // silent `None` that would turn "the one on axis 3" into "any".
+            let group = match args.get("group") {
+                None | Some(Value::Null) => None,
+                Some(v) => Some(
+                    v.as_u64()
+                        .filter(|g| (1..=10).contains(g))
+                        .map(|g| g as u8)
+                        .ok_or_else(|| format!("group must be 1-10, not {v}"))?,
+                ),
+            };
+            let remove = match args.get("remove") {
+                None | Some(Value::Null) => false,
+                Some(v) => {
+                    v.as_bool().ok_or_else(|| format!("remove must be a boolean, not {v}"))?
+                }
+            };
+            Ok(ToolCall::TagTicket { name, group, remove })
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -385,7 +457,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Six tools, six commands.
+        // The tier. Seven tools, seven commands.
         Command::AgentGetTicket
         | Command::AgentListBoard
         | Command::AgentMoveTicket { .. }
@@ -401,24 +473,29 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // human sees it where every new ticket lands. Deleting, renaming or
         // archiving what was made stays out — nothing an agent files can be
         // unfiled by an agent.
-        | Command::AgentCreateTicket { .. } => true,
+        | Command::AgentCreateTicket { .. }
+        // Wearing a tag the board already has. A MUTATE on the caller's own
+        // ticket and on nothing else: the registry — the vocabulary, the axes,
+        // the colours — is never written on this path, which is what keeps
+        // `SetTag` below in the never-tier while this is in. See there.
+        | Command::AgentTagTicket { .. } => true,
 
         // Everything below is the never-tier. An agent may not spawn or kill a
         // session, delete or archive or rename a ticket, change a workspace,
         // merge a branch, read a diff, take the focus token, or stop the
         // daemon — and there is no tool that would let it try.
         //
-        // Tags (T-83) join it, all six. Five of them mutate the REGISTRY,
-        // which is board-wide state: `ForgetTag` strips a tag from every
-        // ticket wearing it, `RenameTag` rewrites it everywhere, and both
-        // are precisely the "an agent cannot change the board itself" rule
-        // `authorize` already states. `SetTag` touches only the caller's own
-        // ticket and is the arguable one, but it stays out for the reason
-        // docs/15 §1.4 gave before tags existed: D10 defines its tiers by
-        // enumeration and none of them has a home for structured non-column
-        // state, tagging is a human curation act with a one-key path (`^t`),
-        // and a tool nobody asked for still costs ~223 tokens on every
-        // request of every session, forever.
+        // The six human tag commands (T-83) stay out, even now that
+        // `AgentTagTicket` is in. Five of them mutate the REGISTRY, which is
+        // board-wide state: `ForgetTag` strips a tag from every ticket
+        // wearing it, `RenameTag` rewrites it everywhere, `MoveTag` changes
+        // what an axis means, and all of that is precisely the "an agent
+        // cannot change the board itself" rule `authorize` states. `SetTag`
+        // carries a ticket id AND registers on the fly — using a name is what
+        // creates it — so an agent holding it could put a word of its own in
+        // the user's picker forever. The agent form above is the same wear/
+        // unwear bound to the caller's ticket, with the registry read and
+        // never written.
         Command::SetTag { .. }
         | Command::ForgetTag { .. }
         | Command::RegisterTag { .. }
@@ -485,14 +562,47 @@ mod tests {
     use super::*;
 
     #[test]
-    fn exactly_six_tools() {
+    fn exactly_seven_tools() {
         let t = tools();
-        assert_eq!(t.len(), 6);
+        assert_eq!(t.len(), 7);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
-            ["get_ticket", "list_board", "move_ticket", "read_note", "write_note", "create_ticket"]
+            [
+                "get_ticket",
+                "list_board",
+                "move_ticket",
+                "read_note",
+                "write_note",
+                "create_ticket",
+                "tag_ticket"
+            ]
         );
+    }
+
+    #[test]
+    fn tag_ticket_parses_and_refuses() {
+        assert_eq!(
+            parse_tool_call("tag_ticket", &json!({ "name": " bug " })),
+            Ok(ToolCall::TagTicket { name: "bug".into(), group: None, remove: false })
+        );
+        assert_eq!(
+            parse_tool_call("tag_ticket", &json!({ "name": "bug", "group": 3, "remove": true })),
+            Ok(ToolCall::TagTicket { name: "bug".into(), group: Some(3), remove: true })
+        );
+        // Null optionals are absent, not errors.
+        assert_eq!(
+            parse_tool_call("tag_ticket", &json!({ "name": "bug", "group": null, "remove": null })),
+            Ok(ToolCall::TagTicket { name: "bug".into(), group: None, remove: false })
+        );
+        assert!(parse_tool_call("tag_ticket", &json!({})).is_err());
+        assert!(parse_tool_call("tag_ticket", &json!({ "name": "  " })).is_err());
+        // A group outside the axes, or a non-boolean remove, is a legible
+        // refusal — never silently widened to "any group" or "put on".
+        assert!(parse_tool_call("tag_ticket", &json!({ "name": "bug", "group": 0 })).is_err());
+        assert!(parse_tool_call("tag_ticket", &json!({ "name": "bug", "group": 11 })).is_err());
+        assert!(parse_tool_call("tag_ticket", &json!({ "name": "bug", "group": "3" })).is_err());
+        assert!(parse_tool_call("tag_ticket", &json!({ "name": "bug", "remove": "yes" })).is_err());
     }
 
     #[test]
@@ -667,7 +777,7 @@ mod tests {
     /// command an agent may send that no tool can reach would be a hole nobody
     /// is looking at.
     #[test]
-    fn the_tier_is_exactly_six_commands() {
+    fn the_tier_is_exactly_seven_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentListBoard,
@@ -681,6 +791,7 @@ mod tests {
                 tags: vec![],
                 idempotency_key: None,
             },
+            Command::AgentTagTicket { name: "x".into(), group: None, remove: false },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");
@@ -707,6 +818,7 @@ mod tests {
             Command::RegisterTag { group: 1, name: "urgent".into() },
             Command::RenameTag { group: 1, from: "a".into(), to: "b".into() },
             Command::SetTagColor { group: 1, name: "urgent".into(), color: 2 },
+            Command::MoveTag { group: 1, name: "urgent".into(), to_group: 2, to_index: 0 },
             Command::MergeTicket { id: t },
             Command::RestoreTicket { id: t },
             Command::ArchiveTicket { id: t },

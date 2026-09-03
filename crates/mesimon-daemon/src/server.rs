@@ -1092,7 +1092,8 @@ impl Daemon {
             | Command::AgentMoveTicket { .. }
             | Command::AgentReadNote { .. }
             | Command::AgentWriteNote { .. }
-            | Command::AgentCreateTicket { .. } => {
+            | Command::AgentCreateTicket { .. }
+            | Command::AgentTagTicket { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
         };
@@ -1923,7 +1924,11 @@ impl Daemon {
                 }
                 resp
             }
-            // Unreachable: `agent_allows` above admits exactly six commands.
+            Command::AgentTagTicket { name, group, remove } => {
+                let by = Principal::Agent { session };
+                self.agent_tag_ticket(&by, ticket, &name, group, remove)
+            }
+            // Unreachable: `agent_allows` above admits exactly seven commands.
             _ => Response::Err { message: "not available to an agent session".into() },
         }
     }
@@ -2001,30 +2006,22 @@ impl Daemon {
     /// is refused rather than minted; a name that lives on more than one
     /// axis is refused rather than guessed; and two names on one axis are
     /// refused because a ticket wears one tag per group and picking the
-    /// survivor would be inventing the agent's intent. Exact spelling first,
-    /// then a unique case-insensitive match, since the model reads the names
-    /// off `allowed_tags` and sometimes lowercases them on the way back.
+    /// survivor would be inventing the agent's intent.
     fn resolve_agent_tags(&self, names: &[String]) -> Result<Vec<TagRef>, String> {
         let mut refs: Vec<TagRef> = Vec::new();
         for raw in names {
             let Some(name) = sanitize_tag(raw) else {
                 return Err("empty tag name".into());
             };
-            let exact: Vec<&Tag> = self.board.tags.iter().filter(|t| t.name == name).collect();
-            let found = if exact.is_empty() {
-                self.board.tags.iter().filter(|t| t.name.eq_ignore_ascii_case(&name)).collect()
-            } else {
-                exact
-            };
-            let def = match found.as_slice() {
-                [] => {
+            let def = match self.lookup_agent_tag(&name, None) {
+                Ok(def) => def,
+                Err(groups) if groups.is_empty() => {
                     return Err(format!(
                         "no such tag: {name} (get_ticket lists the board's tags as allowed_tags)"
                     ))
                 }
-                [one] => *one,
-                many => {
-                    let groups: Vec<String> = many.iter().map(|t| t.group.to_string()).collect();
+                Err(groups) => {
+                    let groups: Vec<String> = groups.iter().map(u8::to_string).collect();
                     return Err(format!(
                         "tag {name} is on more than one group ({}); spell it as the board does",
                         groups.join(", ")
@@ -2040,9 +2037,126 @@ impl Daemon {
                     other.name, def.name, def.group
                 ));
             }
-            refs.push(TagRef { name: def.name.clone(), group: def.group });
+            refs.push(def);
         }
         Ok(refs)
+    }
+
+    /// One agent-spelled name looked up in the registry, the lookup both
+    /// `create_ticket` and `tag_ticket` share: exact spelling first, then a
+    /// unique case-insensitive match (models read `BUG` off `allowed_tags`
+    /// and send back `bug`); `group` narrows the search to one axis. `Err`
+    /// carries the axes the name was found on — none means the board does not
+    /// know the word, two or more means it cannot be told which. What comes
+    /// back is the registry's OWN spelling, never the agent's string, so the
+    /// registry is never written on either road.
+    fn lookup_agent_tag(&self, name: &str, group: Option<u8>) -> Result<TagRef, Vec<u8>> {
+        let on_axis = |t: &&Tag| group.is_none_or(|g| g == t.group);
+        let exact: Vec<&Tag> =
+            self.board.tags.iter().filter(on_axis).filter(|t| t.name == name).collect();
+        let found = if exact.is_empty() {
+            self.board
+                .tags
+                .iter()
+                .filter(on_axis)
+                .filter(|t| t.name.eq_ignore_ascii_case(name))
+                .collect()
+        } else {
+            exact
+        };
+        match found.as_slice() {
+            [one] => Ok(TagRef { name: one.name.clone(), group: one.group }),
+            many => Err(many.iter().map(|t| t.group).collect()),
+        }
+    }
+
+    /// `tag_ticket`, for an agent: wear (or take off) a tag the board ALREADY
+    /// has, on the caller's own ticket.
+    ///
+    /// The one deliberate difference from the human's `set_tag` is that the
+    /// registry is read and never written. There, using a name is what puts
+    /// it in the vocabulary — no setup step for a person. Here a name the
+    /// registry does not hold is refused, because the registry is the user's
+    /// language: which words exist, what each axis means, what colour each
+    /// wears. An agent choosing from it helps; an agent adding to it fills an
+    /// axis (ten is the cap) with words nobody at the keyboard chose, on an
+    /// axis it cannot know the meaning of, and every one of them stays in the
+    /// picker forever. So `columns.toml` is never touched on this path and no
+    /// write bar applies.
+    ///
+    /// Authorized as `Mutate` on the ticket, like a note: one card's own
+    /// metadata, the board itself untouched. Idempotent — wearing what is worn
+    /// and removing what is absent both succeed and change nothing — so a
+    /// retry after a dropped connection needs no replay map. The receipt is
+    /// the ticket's whole tag list, so the model sees what its call did,
+    /// including the groupmate that came off to make room.
+    fn agent_tag_ticket(
+        &mut self,
+        by: &Principal,
+        ticket: ulid::Ulid,
+        name: &str,
+        group: Option<u8>,
+        remove: bool,
+    ) -> Response {
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::Mutate, &Resource::Ticket { id: ticket })
+        {
+            return Response::Err { message: format!("denied: {reason}") };
+        }
+        let Some(t) = self.board.ticket(ticket) else {
+            return Response::Err { message: "no such ticket".into() };
+        };
+        let def = match self.lookup_agent_tag(name, group) {
+            Ok(def) => def,
+            Err(groups) if groups.is_empty() => {
+                let message = if self.board.tags.is_empty() {
+                    "the board has no tags yet; tags are created in the board's tag picker"
+                        .to_string()
+                } else if let Some(g) = group {
+                    format!(
+                        "no such tag: {name} in group {g} (get_ticket lists the board's tags as allowed_tags)"
+                    )
+                } else {
+                    format!(
+                        "no such tag: {name} (get_ticket lists the board's tags as allowed_tags)"
+                    )
+                };
+                return Response::Err { message };
+            }
+            Err(groups) => {
+                let groups: Vec<String> = groups.iter().map(u8::to_string).collect();
+                return Response::Err {
+                    message: format!(
+                        "tag {name} is on more than one group ({}); pass group to say which",
+                        groups.join(", ")
+                    ),
+                };
+            }
+        };
+        let before = t.tag_in(def.group).map(|r| r.name.clone());
+        let wearing = before.as_deref() == Some(def.name.as_str());
+        let changed = if remove { wearing } else { !wearing };
+        if changed {
+            let next = if remove { None } else { Some(def.name.clone()) };
+            if self.with_ticket(ticket, |t| t.set_tag(def.group, next)).is_none() {
+                return Response::Err { message: "no such ticket".into() };
+            }
+            self.feed.board(by.actor(), "tag_ticket", Some(ticket));
+        }
+        let tags = self
+            .board
+            .ticket(ticket)
+            .map(|t| {
+                t.tags
+                    .iter()
+                    .map(|r| AgentTagView { name: r.name.clone(), group: r.group })
+                    .collect()
+            })
+            .unwrap_or_default();
+        // The groupmate that came off to make room: only on a put, and only
+        // when there was a different one there.
+        let replaced = if remove || wearing { None } else { before };
+        Response::AgentTagged { tags, replaced, board_version: self.board_version }
     }
 
     /// Remember a mutating tool call's result so a retry replays it.

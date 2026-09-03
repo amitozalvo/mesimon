@@ -319,7 +319,7 @@ pub enum Command {
     },
 
     // ------------------------------------------------------------------
-    // The agent tier (T-84). Six commands now, reachable only by
+    // The agent tier (T-84). Seven commands now, reachable only by
     // `Principal::Agent`, and gated by `mcp::agent_allows` — which is an
     // exhaustive match, so a command added below this line will not compile
     // until someone decides whether an agent may send it.
@@ -387,6 +387,22 @@ pub enum Command {
         /// connection replays the first receipt instead of minting twice.
         #[serde(default)]
         idempotency_key: Option<String>,
+    },
+    /// Put one of the board's EXISTING tags on the caller's own ticket, or
+    /// take it off (`tag_ticket`). The registry is the human's vocabulary —
+    /// which names exist, what each axis means, what colour each wears — and
+    /// this command never touches it: a name the registry does not hold is
+    /// refused, never registered. That is the difference from the human's
+    /// `SetTag`, where using a name is what creates it. `group` is only
+    /// needed when the same name sits on two axes. Idempotent by nature
+    /// (wearing what is worn, removing what is absent, both succeed), so no
+    /// idempotency key.
+    AgentTagTicket {
+        name: String,
+        #[serde(default)]
+        group: Option<u8>,
+        #[serde(default)]
+        remove: bool,
     },
 }
 
@@ -501,7 +517,8 @@ impl Command {
             | AgentMoveTicket { .. }
             // Logged by `handle_agent` with the agent as actor.
             | AgentWriteNote { .. }
-            | AgentCreateTicket { .. } => m(Mutate, false, None),
+            | AgentCreateTicket { .. }
+            | AgentTagTicket { .. } => m(Mutate, false, None),
         }
     }
 }
@@ -684,6 +701,15 @@ pub enum Response {
         #[serde(default)]
         replayed: bool,
     },
+    /// AgentTagTicket's receipt: what the ticket wears now, and the tag on
+    /// the same axis that was taken off to make room, when there was one.
+    AgentTagged {
+        tags: Vec<AgentTagView>,
+        #[serde(default)]
+        replaced: Option<String>,
+        #[serde(default)]
+        board_version: u64,
+    },
 }
 
 /// The caller's own ticket, as an agent sees it.
@@ -714,9 +740,10 @@ pub struct AgentTicketView {
     /// The tags this ticket wears, one per group at most, in group order.
     #[serde(default)]
     pub tags: Vec<AgentTagView>,
-    /// The board's whole tag vocabulary, so `create_ticket` has names to
-    /// use. Same reasoning as `allowed_columns`: transient result data, not
-    /// a schema enum that would put the user's words into every request.
+    /// The board's whole tag vocabulary — the names `create_ticket` and
+    /// `tag_ticket` accept. Same reasoning as `allowed_columns`: transient
+    /// result data, not a schema enum that would put the user's words into
+    /// every request.
     #[serde(default)]
     pub allowed_tags: Vec<AgentTagView>,
     #[serde(default)]

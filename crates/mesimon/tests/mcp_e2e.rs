@@ -255,7 +255,15 @@ fn agent_board_tools_tier_and_collisions() {
         .collect();
     assert_eq!(
         names,
-        ["get_ticket", "list_board", "move_ticket", "read_note", "write_note", "create_ticket"]
+        [
+            "get_ticket",
+            "list_board",
+            "move_ticket",
+            "read_note",
+            "write_note",
+            "create_ticket",
+            "tag_ticket"
+        ]
     );
 
     let t = shim.call_ok("get_ticket", json!({}));
@@ -268,6 +276,10 @@ fn agent_board_tools_tier_and_collisions() {
     assert!(allowed.contains(&"REVIEW"));
     assert_eq!(t["tags"], json!([]), "nothing worn yet");
     assert_eq!(t["allowed_tags"], json!([]), "nothing in the registry yet");
+    // Before anyone has made a tag there is nothing to wear, and the refusal
+    // says where tags come from rather than minting one.
+    let msg = shim.call_err("tag_ticket", json!({"name": "bug"}));
+    assert!(msg.contains("no tags yet"), "{msg}");
 
     // ---- tags: worn ones on get_ticket, the registry as allowed_tags -----
     // A person tags the caller's ticket and registers two more names; the
@@ -358,6 +370,51 @@ fn agent_board_tools_tier_and_collisions() {
     assert!(shaped.contains("array"), "{shaped}");
     assert_eq!(board_of(c.request(Command::Snapshot)).tickets.len(), before, "nothing minted");
 
+    // ---- tag_ticket: the user's vocabulary, worn but never written -------
+    // Two more names, the same word on two axes, so the ambiguity has a case.
+    for (group, name) in [(3u8, "frontend"), (4u8, "frontend")] {
+        assert!(matches!(
+            c.request(Command::RegisterTag { group, name: name.into() }),
+            Response::Ok
+        ));
+    }
+    let registry_before = board_of(c.request(Command::Snapshot)).tags.clone();
+    assert_eq!(registry_before.len(), 5);
+    let t = shim.call_ok("get_ticket", json!({}));
+    assert_eq!(t["tags"], json!([{"name": "BUG", "group": 1}]), "what the person put on");
+    assert_eq!(t["allowed_tags"].as_array().unwrap().len(), 5);
+    // One per axis: the groupmate comes off, and the receipt says so. The
+    // agent's spelling is not what is stored — the registry's is.
+    let worn = shim.call_ok("tag_ticket", json!({"name": "feat"}));
+    assert_eq!(worn["tags"], json!([{"name": "FEAT", "group": 1}]));
+    assert_eq!(worn["replaced"], "BUG");
+    assert!(board_of(c.request(Command::Snapshot)).ticket(ticket).unwrap().wears(1, "FEAT"));
+    // Wearing what is worn: no change, no error, no groupmate named.
+    let worn = shim.call_ok("tag_ticket", json!({"name": "FEAT"}));
+    assert_eq!(worn["tags"], json!([{"name": "FEAT", "group": 1}]));
+    assert!(worn["replaced"].is_null());
+    // A name on two axes needs the axis said; said, it lands.
+    let msg = shim.call_err("tag_ticket", json!({"name": "frontend"}));
+    assert!(msg.contains("(3, 4)") && msg.contains("group"), "{msg}");
+    let worn = shim.call_ok("tag_ticket", json!({"name": "frontend", "group": 3}));
+    assert_eq!(
+        worn["tags"],
+        json!([{"name": "FEAT", "group": 1}, {"name": "frontend", "group": 3}])
+    );
+    // A word the user never chose is refused, not registered; so is a real
+    // word on the wrong axis.
+    let msg = shim.call_err("tag_ticket", json!({"name": "invented-by-agent"}));
+    assert!(msg.contains("no such tag") && msg.contains("allowed_tags"), "{msg}");
+    let msg = shim.call_err("tag_ticket", json!({"name": "bug", "group": 2}));
+    assert!(msg.contains("in group 2"), "{msg}");
+    // Taking one off, and taking it off again: idempotent, no error.
+    let worn = shim.call_ok("tag_ticket", json!({"name": "FEAT", "remove": true}));
+    assert_eq!(worn["tags"], json!([{"name": "frontend", "group": 3}]));
+    let worn = shim.call_ok("tag_ticket", json!({"name": "FEAT", "remove": true}));
+    assert_eq!(worn["tags"], json!([{"name": "frontend", "group": 3}]));
+    // Through all of it the registry did not move: same five, same order.
+    assert_eq!(board_of(c.request(Command::Snapshot)).tags, registry_before);
+
     // ---- the never-tier, on the wire ------------------------------------
     // Not "there is no tool for it" — the daemon refuses the command even when
     // it is handed one directly, which is what makes the tool list a summary
@@ -370,6 +427,10 @@ fn agent_board_tools_tier_and_collisions() {
         Command::ArchiveTicket { id: ticket },
         Command::RenameTicket { id: ticket, title: "hijacked".into() },
         Command::MoveTicket { id: ticket, column: "DONE".into(), before: None },
+        // The human's tag commands: this one registers on the fly, and the
+        // registry is the user's.
+        Command::SetTag { id: ticket, group: 1, name: Some("hijacked".into()) },
+        Command::RegisterTag { group: 4, name: "hijacked".into() },
         Command::Snapshot,
         Command::Shutdown,
     ] {

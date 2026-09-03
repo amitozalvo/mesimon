@@ -198,8 +198,8 @@ editor's surface is the SCREEN's: over the board it is the dialog whatever it ho
 from the ticket page it takes the whole screen. `n`/`N` open a note, `^s` saves and stays, a second
 `^s` on a saved note sends `NoteToAgent` (mesimon's own sentence, human gesture only). The ticket page draws the description under the identity line and
 lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. Agents
-get `read_note`/`write_note` (six tools now, with `create_ticket`) and `get_ticket` carries the
-description. Adding a
+get `read_note`/`write_note` (seven tools now, with `create_ticket` and `tag_ticket`) and
+`get_ticket` carries the description. Adding a
 field to `NoteMeta` is `#[serde(default)]` like everything else. (STALE-MAP "Notes: files under
 the ticket".)
 
@@ -766,7 +766,7 @@ sessions_write_barred }`, and every save goes through `persist_columns`/`persist
 `state.is_live()` for working-set membership and `state.has_pane()` for pane existence —
 `Sleeping` is live-but-parked (no pane, no process; the attention machine latches until wake).
 
-**The agent tier (T-84): six tools, and three named movers.** Every Claude session
+**The agent tier (T-84): seven tools, and three named movers.** Every Claude session
 mesimon spawns also carries `--mcp-config '<inline JSON>'` naming `mesimon mcp` — a stdio shim
 that forwards each `tools/call` to `orch.sock` as `Envelope { principal: Agent { session } }`.
 The config is written to NO file (no `.mcp.json`, no `~/.claude.json`, no `settings.local.json`,
@@ -777,8 +777,8 @@ from every other pane, so the boundary is the 0700 runtime dir — the same one 
 already relies on. The shim is untrusted (it runs in the agent's process tree) and holds no
 policy.
 
-Tools: `get_ticket`, `list_board`, `move_ticket`, `read_note`, `write_note`, `create_ticket`.
-**No tool takes a ticket id** — the ticket comes from the session binding, so there is no
+Tools: `get_ticket`, `list_board`, `move_ticket`, `read_note`, `write_note`, `create_ticket`,
+`tag_ticket`. **No tool takes a ticket id** — the ticket comes from the session binding, so there is no
 ownership check to get wrong. `to_column` is a plain string validated server-side, never an
 `enum`, because column names are the user's words and an enum would inject them into every
 request forever. `core/src/mcp.rs` holds the tool definitions, the description lint (no second
@@ -797,13 +797,22 @@ carries `tags` (worn) and `allowed_tags` (the registry, `allowed_columns`' twin)
 `AgentTagView {name, group}`, and `create_ticket` takes `tags`, an array of NAMES resolved by
 `Daemon::resolve_agent_tags` before the mint — exact then unique case-insensitive, unknown /
 ambiguous / two-on-one-group refused, the registry never written (STALE-MAP "An agent sees
-tags").
+tags"). **`tag_ticket` (T-164, 2026-09-03) wears one of the
+board's EXISTING tags on the caller's ticket, or takes it off** — `Command::AgentTagTicket { name,
+group?, remove }` → `Daemon::agent_tag_ticket`. The registry is READ and never written on this
+path: a name the picker never saw is refused with a pointer at `get_ticket`'s `allowed_tags`
+(the registry as `AgentTagView`s, no colour), a name on two axes is refused until `group` says which, a
+different case that resolves to exactly one entry lands as the registry spells it, and the
+groupmate that came off travels back as `replaced`. Both roads share `Daemon::lookup_agent_tag`. Idempotent (wear what is worn, remove what is
+absent: both succeed), so no replay key. Authorized as `Mutate` on `Resource::Ticket`; feed line
+`tag_ticket`. The human's six tag commands stay in the never-tier because `SetTag` registers on
+the fly and the other five rewrite the registry. (STALE-MAP "An agent wears the user's tags".)
 
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
 command will not compile until someone decides whether an agent may send it. That is the
 enforcement for D10's never-tier — no spawn, no kill, no delete/archive/rename, no workspace, no
-merge, no diff, no tags (all six tag commands mutate board-wide registry state), no session
-read at any tier. `authorize()` is now real for `Agent`: `Session` is denied outright and so is
+merge, no diff, no tag REGISTRY writes (the six human tag commands: `SetTag` registers on the fly,
+the other five rewrite the vocabulary board-wide), no session read at any tier. `authorize()` is now real for `Agent`: `Session` is denied outright and so is
 `Mutate` on `Resource::Board`.
 
 **`Principal` has three inhabitants, and keeping them apart is load-bearing.** `automove` and

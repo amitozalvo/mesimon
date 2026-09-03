@@ -20,9 +20,9 @@ report.
    conversation. It never prepends a system prompt, never appends a reminder, never rewrites what
    you typed.
 
-   It does give the sessions it spawns six board tools — read and move its ticket, read and
-   write its notes, and file a new ticket — so an agent can see which ticket it is on and what
-   it is about. `mesimon doctor --mcp` prints them verbatim, and they are the only thing
+   It does give the sessions it spawns seven board tools — read and move its ticket, read and
+   write its notes, tag it from the tags you already made, and file a new ticket — so an agent
+   can see which ticket it is on and what it is about. `mesimon doctor --mcp` prints them verbatim, and they are the only thing
    mesimon adds to model input.
 
 ## Requirements
@@ -102,10 +102,12 @@ The footer always names the keys for whatever you are looking at.
 
 ## What your agents can see
 
-A Claude session mesimon starts gets six tools — `get_ticket`, `list_board`, `move_ticket`,
-`read_note`, `write_note`, `create_ticket` — so it knows which ticket it is on, can read the
-ticket's description and notes, write notes of its own, move its own card, and file a new ticket
-for work it found outside its scope (the new card has no session; you decide what happens to it).
+A Claude session mesimon starts gets seven tools — `get_ticket`, `list_board`, `move_ticket`,
+`read_note`, `write_note`, `create_ticket`, `tag_ticket` — so it knows which ticket it is on, can
+read the ticket's description and notes, write notes of its own, move its own card, put one of
+your tags on it, and file a new ticket for work it found outside its scope (the new card has no
+session; you decide what happens to it). The tags are yours: an agent picks from the ones you made
+in the picker and cannot add, rename, recolour or delete one.
 They arrive on the command line and are installed nowhere: no `.mcp.json`, no `~/.claude.json`,
 no `settings.local.json`, no plugin. A session you start yourself never sees them, and your own
 MCP servers still load alongside.

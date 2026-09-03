@@ -124,6 +124,9 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
                 idempotency_key: idempotency_key.or(tool_use_id),
             }
         }
+        ToolCall::TagTicket { name, group, remove } => {
+            Command::AgentTagTicket { name, group, remove }
+        }
     };
     let env = Envelope { principal: Principal::Agent { session }, command };
     match ask(sock, &env) {
@@ -148,6 +151,9 @@ fn render(resp: Response) -> Value {
         Response::AgentCreated { key, column, board_version, replayed } => text(&json!({
             "key": key, "column": column, "board_version": board_version, "replayed": replayed
         })),
+        Response::AgentTagged { tags, replaced, board_version } => {
+            text(&json!({ "tags": tags, "replaced": replaced, "board_version": board_version }))
+        }
         // The body as the text block itself: markdown inside a JSON string is
         // a worse read, and the metadata already travels in `get_ticket`.
         Response::Note { text: body, .. } => {
@@ -225,9 +231,25 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_the_six() {
+    fn tools_list_returns_the_seven() {
         let r = line(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 6);
+        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 7);
+    }
+
+    /// The receipt is what the ticket wears now, so the model sees the
+    /// groupmate its call displaced without a second round-trip.
+    #[test]
+    fn a_tag_result_names_what_is_worn_and_what_came_off() {
+        let v = render(Response::AgentTagged {
+            tags: vec![mesimon_core::command::AgentTagView { name: "feature".into(), group: 1 }],
+            replaced: Some("bug".into()),
+            board_version: 4,
+        });
+        assert_eq!(v["isError"], false);
+        let body: Value = serde_json::from_str(v["content"][0]["text"].as_str().unwrap()).unwrap();
+        assert_eq!(body["tags"][0]["name"], "feature");
+        assert_eq!(body["tags"][0]["group"], 1);
+        assert_eq!(body["replaced"], "bug");
     }
 
     #[test]
