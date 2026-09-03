@@ -9,7 +9,7 @@
       │   g           top of column                             s           shell                                │
       │   G           bottom of column                          x           sleep sessions                       │
       │   enter       go to the agent                                                                            │
-      │   space       ticket page, even past a live agent     VIEW                                               │
+      │   space       ticket page                             VIEW                                               │
       │   tab         needs you                                 p           show replies                         │
       │   shift+tab   previous needs you                                                                         │
       │                                                       APP                                                │
@@ -27,4 +27,4 @@
 
 
 
- enter go to the agent ∙ tab needs you ∙ o new ticket ∙ option+hjkl move card ∙ r rename              esc menu ∙ ? keys
+ enter go to the agent ∙ space ticket page ∙ tab needs you ∙ o new ticket ∙ option+hjkl move card     esc menu ∙ ? keys

@@ -824,15 +824,20 @@ static BOARD: &[Binding] = &[
         prio: 12,
     },
     Binding {
+        // Beside `enter` in the footer exactly when `enter` goes to the
+        // agent instead (author 2026-09-03): that is when the page needs
+        // its own key. On a cold ticket `enter` IS the page, so `space` is
+        // silent there — bound, one more spelling of the same move, the way
+        // `m` stays bound while unhinted.
         keys: &[Key::Space],
         verb: Verb::TicketScreen,
         show: "space",
-        hint: |_| "ticket page, even past a live agent",
+        hint: |c| if c.ticket_hot { "ticket page" } else { "" },
         avail: |c| c.has_ticket,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 0,
+        prio: 11,
     },
     Binding {
         keys: &[Key::Char('o')],
@@ -4029,6 +4034,7 @@ mod tests {
             multi_column: true,
             ticket_has_sessions: true,
             has_worktree: true,
+            ticket_hot: true,
             ..Default::default()
         };
         let rows: Vec<&str> =
@@ -4036,5 +4042,17 @@ mod tests {
         for present in ["space", "g", "G", "?", "^L", "esc"] {
             assert!(rows.contains(&present), "{present} missing from the overlay: {rows:?}");
         }
+        // `space` speaks only while `enter` goes to the agent; on a cold
+        // ticket it is silent (and still works — `resolve` says so).
+        let cold = Ctx { ticket_hot: false, ..ctx.clone() };
+        assert_eq!(
+            hint_for(Scope::Board, Verb::TicketScreen, &ctx),
+            Some(("space", "ticket page"))
+        );
+        assert_eq!(hint_for(Scope::Board, Verb::TicketScreen, &cold), None);
+        assert_eq!(resolve(Scope::Board, Key::Space, &cold), Some(Verb::TicketScreen));
+        let hot_footer: Vec<&str> =
+            footer_items(Scope::Board, &ctx).iter().map(|b| b.show).collect();
+        assert_eq!(&hot_footer[..2], &["enter", "space"], "{hot_footer:?}");
     }
 }
