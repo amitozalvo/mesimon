@@ -3775,10 +3775,10 @@ three frames before and at approval, a re-plan, a delete-then-re-plan, and the f
   teardown (last field, drops last; a poisoned lock is taken over, not propagated). Harnesses in
   one binary run one after another; the suite's parallelism is nextest's, across processes, and
   is untouched.
-- The daemon reads `MESIMON_CLAUDE_BIN` ONCE, at construction, into `Daemon::claude_bin` — the
-  contract the CLAUDE.md recipe already stated ("the daemon reads them once") and the one seam
-  that was read at every spawn instead. On its own it did not close the race (the two boots set
-  the variable in the same instant); with the lock it means a seam can never change under a
-  running daemon.
+- The daemon still reads `MESIMON_CLAUDE_BIN` at every spawn, on purpose. Reading it once at
+  construction was tried first: it did not close the race on its own (both boots set the variable
+  in the same instant) and it broke `hook_e2e`, which installs its stub AFTER its daemon is up and
+  spawned a real `claude` instead. The CLAUDE.md line "the daemon reads them once" is true of the
+  timing seams, not of this one.
 - The notes test names the refusal it gets instead of `assert!(matches!(..))`, which is how the
   cause became visible.
