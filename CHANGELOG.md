@@ -4,6 +4,15 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.10
+
+- **The bigger composer is a dialog on the board, not a panel across it.** `Tab` from the
+  one-line composer still grows out of the card you are writing, but what it grows into is now
+  the card itself, bigger: the same surface, the same coloured bar down its left edge wearing the
+  tags you picked, the title on the first row and the column it lands in named under it. The
+  dialog covers whole columns rather than floating over cut-off cards, so the board stays
+  readable on both sides of it. Esc, `^s`, Shift+Enter, `^t` and Shift+Tab work as before.
+
 ## v0.1.0-alpha.9
 
 - **A ticket has a description and notes, and they are markdown files.** Every ticket can carry
