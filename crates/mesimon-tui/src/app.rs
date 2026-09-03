@@ -36,6 +36,9 @@ pub enum Screen {
     Diff {
         ticket: ulid::Ulid,
     },
+    /// The release notes (a menu row): the changelog the binary carries,
+    /// read top to bottom. State lives in `App::releases`, like the diff's.
+    Releases,
 }
 
 /// One shell pane's last lines, as last fetched (`Command::PaneTail`).
@@ -88,6 +91,42 @@ pub struct PreviewView {
     /// line is what it is for — so scrolling back down to `max` hands it
     /// back to the pane rather than pinning it to today's last row.
     pub follows_tail: bool,
+}
+
+/// What the last draw of the RELEASES screen measured: the document's
+/// height is a fact of the frame (it is rendered at the terminal's width),
+/// so the clamp and the page size come from there, `PreviewView`'s shape.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ReleasesView {
+    /// The largest offset that still fills the window (0 = it all fits).
+    pub max: usize,
+    /// One press's worth of rows: the window less one row of overlap.
+    pub page: usize,
+}
+
+/// Everything the release notes screen holds. `releases` is the parsed
+/// changelog (`relnotes::parse`), `build` the tag this binary answers to —
+/// the screen marks that entry `this build` — and the rest is the reading
+/// position. `starts` is written by the draw: the document row each
+/// release's band sits on, which is what `n`/`N` jump between.
+pub struct ReleasesState {
+    pub releases: Vec<mesimon_core::relnotes::Release>,
+    pub build: String,
+    pub scroll: Cell<usize>,
+    pub view: Cell<ReleasesView>,
+    pub starts: std::cell::RefCell<Vec<usize>>,
+}
+
+impl ReleasesState {
+    pub fn new(releases: Vec<mesimon_core::relnotes::Release>, build: &str) -> Self {
+        ReleasesState {
+            releases,
+            build: build.to_string(),
+            scroll: Cell::new(0),
+            view: Cell::new(ReleasesView::default()),
+            starts: std::cell::RefCell::new(Vec::new()),
+        }
+    }
 }
 
 /// Everything the diff screen holds (M4b). Per-view and in-memory only —
@@ -351,6 +390,10 @@ pub enum InputPurpose {
         /// `SetTag` commands once `Response::Created` gives us an id — the
         /// same shape the workspace selector uses.
         tags: Vec<TagRef>,
+        /// The description written in the grown editor and kept by its `^s`
+        /// (2026-09-04): `Tab` reopens the editor on it, and the mint writes
+        /// it as `notes[0]` — the same shape as the tags.
+        description: Option<String>,
     },
     Rename {
         id: ulid::Ulid,
@@ -402,6 +445,9 @@ pub enum Naming {
 /// `{`/`}` (and PgUp/PgDn) hunk-pane page step. The key handler cannot see
 /// the rendered height, so this approximates a screenful; draw clamps.
 const DIFF_PAGE: usize = 20;
+/// The tag this binary answers to, `v` + the workspace version — the entry
+/// the release notes mark `this build`.
+const BUILD_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
 /// How often the ticket page re-captures the selected shell's pane. Slow on
 /// purpose: it is a fork per beat, and a terminal a person is reading rather
@@ -544,6 +590,8 @@ pub struct App {
     pub spin_epoch: Cell<Option<std::time::Instant>>,
     /// Diff-viewer state, Some while `Screen::Diff` is (or was just) open.
     pub diff: Option<DiffState>,
+    /// Release-notes state, Some while `Screen::Releases` is open.
+    pub releases: Option<ReleasesState>,
     /// Set when the user asked to focus: the main loop performs the handover
     /// outside the render loop.
     pub pending_attach: Option<Vec<String>>,
@@ -687,6 +735,7 @@ impl App {
             frames: std::cell::RefCell::new(Vec::new()),
             spin_epoch: Cell::new(None),
             diff: None,
+            releases: None,
             pending_attach: None,
             pending_attach_cwd: None,
             pending_external_edit: None,
@@ -946,7 +995,9 @@ impl App {
                     self.to_board();
                 }
             }
-            Screen::Board => {}
+            // The notes are the binary's, not the board's: nothing in a
+            // snapshot can take them away.
+            Screen::Board | Screen::Releases => {}
         }
     }
 
@@ -1440,6 +1491,7 @@ impl App {
             Mode::Theme { .. } => Scope::Theme,
             _ => match self.screen {
                 Screen::Diff { .. } => Scope::Diff,
+                Screen::Releases => Scope::Releases,
                 Screen::Ticket { .. } => Scope::Ticket,
                 Screen::Board => Scope::Board,
             },
@@ -1456,6 +1508,7 @@ impl App {
         let subject = match &self.screen {
             Screen::Ticket { ticket, .. } | Screen::Diff { ticket } => Some(*ticket),
             Screen::Board => sel,
+            Screen::Releases => None,
         };
         let sessions: Vec<&mesimon_core::board::SessionRecord> =
             subject.map(|t| self.rail_sessions(t)).unwrap_or_default();
@@ -1581,13 +1634,13 @@ impl App {
                 .is_some_and(|t| {
                     !self.board.sessions.iter().any(|s| s.ticket == t) && self.wt_item(t).is_none()
                 }),
-            editor_can_tell: editor.is_some_and(|e| {
-                !e.dirty()
-                    && matches!(
-                        e.purpose,
-                        EditorPurpose::Note { ticket, note: Some(_) }
-                            if self.board.pane_target(ticket).is_some()
-                    )
+            editor_claude_paned: editor.is_some_and(|e| {
+                matches!(e.purpose, EditorPurpose::Note { ticket, .. }
+                    if self.board.pane_target(ticket).is_some())
+            }),
+            editor_seat_empty: editor.is_some_and(|e| {
+                matches!(e.purpose, EditorPurpose::Note { ticket, .. }
+                    if self.board.live_claude(ticket).is_none())
             }),
             editor_word: self.editor_word,
             rich_keys: self.rich_keys,
@@ -1771,7 +1824,11 @@ impl App {
             // ---- tickets ---------------------------------------------------
             Verb::OpenTicket => {
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
+                    purpose: InputPurpose::Create {
+                        workspace: None,
+                        tags: Vec::new(),
+                        description: None,
+                    },
                     buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
             }
@@ -1876,9 +1933,11 @@ impl App {
                 }
                 self.tag_clamp();
             }
-            Verb::TagColor => {
+            Verb::TagColor | Verb::TagColorBack => {
                 let Some((group, name, tint)) = self.tag_cell() else { return Ok(()) };
-                let next = (tint + 1) % mesimon_core::board::TAG_TINTS;
+                let n = mesimon_core::board::TAG_TINTS;
+                let step = if verb == Verb::TagColorBack { n - 1 } else { 1 };
+                let next = (tint + step) % n;
                 if let Response::Err { message } =
                     self.req(Command::SetTagColor { group, name, color: next })
                 {
@@ -2084,21 +2143,36 @@ impl App {
                 }
             }
             Verb::WorktreeShell => self.worktree_shell(),
-            // ---- diff ------------------------------------------------------
-            Verb::ScrollDown => self.diff_scroll(1),
-            Verb::ScrollUp => self.diff_scroll(-1),
-            // One pair of keys, two read-only zones: the diff's hunk pane
-            // and the ticket page's preview. Which one is the screen's to say.
+            // ---- diff, and the release notes on the same keys -------------
+            Verb::ScrollDown | Verb::ScrollUp => {
+                let dir: isize = if verb == Verb::ScrollDown { 1 } else { -1 };
+                match self.screen {
+                    Screen::Releases => self.releases_scroll(dir),
+                    _ => self.diff_scroll(dir),
+                }
+            }
+            // One pair of keys, three read-only zones: the diff's hunk pane,
+            // the ticket page's preview and the release notes. Which one is
+            // the screen's to say.
             Verb::PageDown | Verb::PageUp => {
                 let dir: isize = if verb == Verb::PageDown { 1 } else { -1 };
                 match self.screen {
                     Screen::Diff { .. } => self.diff_scroll(dir * DIFF_PAGE as isize),
                     Screen::Ticket { .. } => self.preview_page(dir),
+                    Screen::Releases => {
+                        let page = self.releases.as_ref().map(|r| r.view.get().page).unwrap_or(0);
+                        self.releases_scroll(dir * page.max(1) as isize);
+                    }
                     Screen::Board => {}
                 }
             }
-            Verb::NextFile => self.diff_nav(1),
-            Verb::PrevFile => self.diff_nav(-1),
+            Verb::NextFile | Verb::PrevFile => {
+                let dir: isize = if verb == Verb::NextFile { 1 } else { -1 };
+                match self.screen {
+                    Screen::Releases => self.releases_nav(dir),
+                    _ => self.diff_nav(dir),
+                }
+            }
             Verb::Refresh => {
                 if let Screen::Diff { ticket } = self.screen {
                     self.diff_refresh(ticket);
@@ -2185,6 +2259,7 @@ impl App {
                 let idx = Flavor::ALL.iter().position(|f| *f == self.theme.flavor).unwrap_or(0);
                 self.mode = Mode::Theme { idx };
             }
+            Verb::ReleaseNotes => self.open_releases(),
             Verb::AdoptObserve => self.adopt_external(false)?,
             // ---- input (handled in key_input; unreachable here) -------------
             Verb::Save
@@ -2204,6 +2279,7 @@ impl App {
             | Verb::HistoryNext
             // ---- editor (handled in key_editor; unreachable here) ----------
             | Verb::EditorSave
+            | Verb::EditorSaveStart
             | Verb::EditorNewline
             | Verb::EditorUp
             | Verb::EditorDown
@@ -2235,6 +2311,7 @@ impl App {
         match &self.screen {
             Screen::Ticket { ticket, .. } | Screen::Diff { ticket } => Some(*ticket),
             Screen::Board => self.selected_ticket().map(|t| t.id),
+            Screen::Releases => None,
         }
     }
 
@@ -2422,6 +2499,11 @@ impl App {
                 // also what makes a ground flip under the picker right.
                 self.mode = Mode::Normal;
                 self.preview(self.resting_flavor());
+            }
+            // The menu is the board's, so the notes always return there.
+            Scope::Releases => {
+                self.releases = None;
+                self.screen = Screen::Board;
             }
             _ => self.mode = Mode::Normal,
         }
@@ -2635,6 +2717,43 @@ impl App {
         }
     }
 
+    /// The menu's `Release notes` row: the changelog this binary was built
+    /// with, opened at the top — the top entry IS this build (the parser's
+    /// test holds the file to that), so the newest notes are the first
+    /// thing read.
+    fn open_releases(&mut self) {
+        let releases = mesimon_core::relnotes::parse(mesimon_core::relnotes::SOURCE);
+        self.releases = Some(ReleasesState::new(releases, BUILD_TAG));
+        self.screen = Screen::Releases;
+    }
+
+    /// `j`/`k`/`{`/`}` on the notes: move the window, clamped against what
+    /// the last draw measured (and again at draw, so a press past the end
+    /// rests on the last full window).
+    fn releases_scroll(&mut self, delta: isize) {
+        let Some(r) = self.releases.as_ref() else { return };
+        let max = r.view.get().max as isize;
+        let now = r.scroll.get() as isize;
+        r.scroll.set((now + delta).clamp(0, max.max(0)) as usize);
+    }
+
+    /// `n`/`N` on the notes: the next release's band below the top of the
+    /// window, or the previous one's above it — by the rows the draw
+    /// recorded, so a jump lands the band on the first row exactly.
+    fn releases_nav(&mut self, dir: isize) {
+        let Some(r) = self.releases.as_ref() else { return };
+        let top = r.scroll.get().min(r.view.get().max);
+        let starts = r.starts.borrow();
+        let target = if dir > 0 {
+            starts.iter().copied().find(|s| *s > top)
+        } else {
+            starts.iter().rev().copied().find(|s| *s < top)
+        };
+        if let Some(t) = target {
+            r.scroll.set(t.min(r.view.get().max));
+        }
+    }
+
     fn diff_scroll(&mut self, delta: isize) {
         let Some(d) = self.diff.as_ref() else { return };
         let now = d.scroll.get() as isize;
@@ -2739,11 +2858,14 @@ impl App {
             // The composer grows into the editor: title carried over, cursor
             // in the description, the picks riding along.
             Some(Verb::Describe) => {
-                if let InputPurpose::Create { workspace, tags } = purpose {
+                if let InputPurpose::Create { workspace, tags, description } = purpose {
                     let mut ed = Editor::new(
                         EditorPurpose::Compose { workspace, tags },
                         buffer,
-                        TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
+                        TextArea::from_text(
+                            description.as_deref().unwrap_or(""),
+                            mesimon_core::board::NOTE_MAX_BYTES,
+                        ),
                         Field::Body,
                     );
                     // The dialog grows out of the card the last frame drew.
@@ -2871,6 +2993,7 @@ impl App {
         match verb {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
             Some(Verb::EditorSave) => return self.editor_save(ed),
+            Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
             Some(Verb::EditorExternal) => {
                 // Parked for the main loop, which owns the terminal; the
                 // editor stays open underneath and `external_edit_done`
@@ -3037,7 +3160,16 @@ impl App {
                     // changed against what was saved: a `^g` after typing,
                     // then the typing undone in vim, is back at the
                     // baseline — and `^s`'s clean road would tell claude.
-                    EditorPurpose::Note { .. } if ed.dirty() => return self.editor_save(ed),
+                    // The write is the commit, and the editor stays open
+                    // under it — `^s`'s road closes, this one does not.
+                    EditorPurpose::Note { ticket, note } if ed.dirty() => {
+                        let body = ed.body.as_str().to_string();
+                        if body.trim().is_empty() {
+                            self.status = "emptied ∙ ^s deletes the note".into();
+                        } else {
+                            self.write_note(&mut ed, ticket, note, body)?;
+                        }
+                    }
                     EditorPurpose::Note { .. } => self.status = "unchanged".into(),
                     EditorPurpose::Compose { .. } => {
                         self.status = format!("edited in {} ∙ ^s saves", self.editor_word)
@@ -3060,11 +3192,8 @@ impl App {
             return Ok(());
         }
         if !ed.dirty() {
-            if let EditorPurpose::Compose { workspace, tags } = ed.purpose {
-                self.mode = Mode::Input {
-                    purpose: InputPurpose::Create { workspace, tags },
-                    buffer: ed.title,
-                };
+            if let EditorPurpose::Compose { .. } = ed.purpose {
+                self.fold_composer(ed);
                 return Ok(());
             }
         }
@@ -3072,12 +3201,32 @@ impl App {
         Ok(())
     }
 
-    /// `^s`. Composing mints the ticket and closes — never asking claude:
-    /// that is the one-line composer's Shift+Enter, and the editor's is a
-    /// newline. A note is written and the editor STAYS — it is a
-    /// document being kept, not a field being submitted — and the same key
-    /// on a saved note tells the ticket's claude to go read it.
-    fn editor_save(&mut self, mut ed: Editor) -> Result<()> {
+    /// The grown composer folds back into the one-line field it grew out of,
+    /// title, picks and description all riding along: `^s`'s road, and a
+    /// clean Esc's. A blank body is no description.
+    fn fold_composer(&mut self, ed: Editor) {
+        let EditorPurpose::Compose { workspace, tags } = ed.purpose else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        let description = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
+        self.mode = Mode::Input {
+            purpose: InputPurpose::Create { workspace, tags, description },
+            buffer: ed.title,
+        };
+    }
+
+    /// `^S` (ctrl+shift+s): save, leave, and put the words in front of
+    /// claude (2026-09-04, user request). Composing, it is the one-line
+    /// composer's Shift+Enter in the bigger room — mint the ticket, write its
+    /// description, start claude on it with the title submitted, in that
+    /// order so the agent's first `get_ticket` already carries the
+    /// description, and stay on the board. On a ticket that exists the note
+    /// is written first, then: a claude with a pane is told it changed
+    /// (`NoteToAgent`); a ticket with no claude at all gets one started on
+    /// the title, "like new"; a Sleeping claude holds the seat and has no
+    /// pane to type at, so the keymap leaves the key inert there.
+    fn editor_save_start(&mut self, mut ed: Editor) -> Result<()> {
         match ed.purpose.clone() {
             EditorPurpose::Compose { workspace, tags } => {
                 let title = ed.title.as_str().trim().to_string();
@@ -3086,36 +3235,118 @@ impl App {
                     self.mode = Mode::Editor(ed);
                     return Ok(());
                 }
-                let body = if ed.body.as_str().trim().is_empty() {
-                    None
-                } else {
-                    Some(ed.body.as_str().to_string())
-                };
+                let body = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
                 self.mode = Mode::Normal;
-                self.mint_ticket(title, workspace, tags, body, false)
+                self.mint_ticket(title, workspace, tags, body, true)
+            }
+            EditorPurpose::Note { ticket, note } => {
+                let body = ed.body.as_str().to_string();
+                let mut note = note;
+                if ed.dirty() {
+                    if body.trim().is_empty() {
+                        if note.is_some() {
+                            // An emptied note is a delete, and that is
+                            // `^s`'s two presses — never a side effect here.
+                            self.status = "empty ∙ ^s deletes the note".into();
+                            self.mode = Mode::Editor(ed);
+                            return Ok(());
+                        }
+                        // A blank NEW note is no note, the way a blank
+                        // description is none: nothing to write, still ask.
+                    } else {
+                        match self.write_note(&mut ed, ticket, note, body)? {
+                            Some(id) => note = Some(id),
+                            None => {
+                                self.mode = Mode::Editor(ed);
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+                self.mode = Mode::Normal;
+                if self.board.pane_target(ticket).is_some() {
+                    self.status = match note {
+                        Some(note) => match self.req(Command::NoteToAgent { ticket, note }) {
+                            Response::Ok => "asked".into(),
+                            Response::Err { message } => message,
+                            _ => String::new(),
+                        },
+                        None => "nothing to tell claude".into(),
+                    };
+                } else if self.board.live_claude(ticket).is_none() {
+                    self.start_composed(ticket);
+                } else {
+                    self.status = "claude is asleep ∙ c wakes it".into();
+                }
+                Ok(())
+            }
+        }
+    }
+
+    /// Write a note's body and remember it: `ed` is re-pointed at the note
+    /// the daemon minted and marked clean, the cache learns the text, and
+    /// the status says `saved` (or `saved as the description` for a first
+    /// note that landed as `notes[0]`). `None` on a refusal, with the
+    /// daemon's message in the status.
+    fn write_note(
+        &mut self,
+        ed: &mut Editor,
+        ticket: ulid::Ulid,
+        note: Option<ulid::Ulid>,
+        body: String,
+    ) -> Result<Option<ulid::Ulid>> {
+        let created = note.is_none();
+        match self.req(Command::WriteNote { ticket, note, text: body.clone() }) {
+            Response::NoteWritten { note: Some(id) } => {
+                ed.purpose = EditorPurpose::Note { ticket, note: Some(id) };
+                ed.saved();
+                self.refresh()?;
+                // A fresh note that landed first IS the description now,
+                // and the status says so once.
+                let (rev, first) = self
+                    .board
+                    .ticket(ticket)
+                    .and_then(|t| t.note(id).map(|n| (n.rev, created && t.notes[0].id == id)))
+                    .unwrap_or((0, false));
+                self.remember_note(id, rev, Some(crate::peek::sanitize(&body)));
+                self.status = if first { "saved as the description" } else { "saved" }.into();
+                Ok(Some(id))
+            }
+            Response::Err { message } => {
+                self.status = message;
+                Ok(None)
+            }
+            _ => Ok(None),
+        }
+    }
+
+    /// `^s`: save and leave the dialog, either way (2026-09-04, user request
+    /// — "^s should just save, and exit the composer to go back to the small
+    /// composer" … "either way ^s saves and exits the dialog"). Composing,
+    /// nothing leaves for the daemon: the description is kept and the dialog
+    /// folds back into the one-line composer, where Enter mints and
+    /// Shift+Enter mints and asks. A note is written and the editor closes; a
+    /// clean one just closes. Telling the ticket's claude is `^S`'s.
+    fn editor_save(&mut self, mut ed: Editor) -> Result<()> {
+        match ed.purpose.clone() {
+            EditorPurpose::Compose { .. } => {
+                let described = !ed.body.as_str().trim().is_empty();
+                self.fold_composer(ed);
+                self.status = if described { "description kept".into() } else { String::new() };
+                Ok(())
             }
             EditorPurpose::Note { ticket, note } => {
                 let body = ed.body.as_str().to_string();
                 let blank = body.trim().is_empty();
                 if !ed.dirty() {
-                    // Nothing to save: the second press tells claude, if
-                    // there is one to tell.
-                    if let Some(note) = note {
-                        if self.board.pane_target(ticket).is_some() {
-                            self.status = match self.req(Command::NoteToAgent { ticket, note }) {
-                                Response::Ok => "asked".into(),
-                                Response::Err { message } => message,
-                                _ => String::new(),
-                            };
-                        }
-                    }
-                    self.mode = Mode::Editor(ed);
+                    // Nothing to save: just leave.
+                    self.mode = Mode::Normal;
                     return Ok(());
                 }
                 if blank {
                     let Some(note) = note else {
                         self.status = "nothing to save".into();
-                        self.mode = Mode::Editor(ed);
+                        self.mode = Mode::Normal;
                         return Ok(());
                     };
                     if !ed.delete_armed {
@@ -3142,33 +3373,10 @@ impl App {
                     }
                     return self.refresh();
                 }
-                let created = note.is_none();
-                match self.req(Command::WriteNote { ticket, note, text: body.clone() }) {
-                    Response::NoteWritten { note: Some(id) } => {
-                        ed.purpose = EditorPurpose::Note { ticket, note: Some(id) };
-                        ed.saved();
-                        self.refresh()?;
-                        // A fresh note that landed first IS the description
-                        // now, and the status says so once.
-                        let (rev, first) = self
-                            .board
-                            .ticket(ticket)
-                            .and_then(|t| {
-                                t.note(id).map(|n| (n.rev, created && t.notes[0].id == id))
-                            })
-                            .unwrap_or((0, false));
-                        self.remember_note(id, rev, Some(crate::peek::sanitize(&body)));
-                        let what = if first { "saved as the description" } else { "saved" };
-                        self.status = if self.board.pane_target(ticket).is_some() {
-                            format!("{what} ∙ ^s again tells claude")
-                        } else {
-                            what.into()
-                        };
-                    }
-                    Response::Err { message } => self.status = message,
-                    _ => {}
-                }
-                self.mode = Mode::Editor(ed);
+                self.mode = match self.write_note(&mut ed, ticket, note, body)? {
+                    Some(_) => Mode::Normal,
+                    None => Mode::Editor(ed),
+                };
                 Ok(())
             }
         }
@@ -3972,8 +4180,8 @@ impl App {
             return Ok(());
         }
         match purpose {
-            InputPurpose::Create { workspace, tags } => {
-                self.mint_ticket(title, workspace, tags, None, start)?;
+            InputPurpose::Create { workspace, tags, description } => {
+                self.mint_ticket(title, workspace, tags, description, start)?;
             }
             InputPurpose::Rename { id } => {
                 self.send(Command::RenameTicket { id, title })?;
@@ -4705,8 +4913,14 @@ mod tests {
         }
     }
 
+    /// `^s` composing keeps the description and folds back into the small
+    /// composer, where Enter mints the ticket AND writes the description
+    /// (2026-09-04, user request: "^s should just save, and exit the
+    /// composer to go back to the small composer"). Nothing leaves for the
+    /// daemon until that Enter, and `Tab` reopens the editor on the kept
+    /// text.
     #[test]
-    fn editor_save_mints_then_writes_the_description() {
+    fn editor_save_keeps_the_description_and_folds_into_the_composer() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         press(&mut app, 'o');
         for c in "Ship it".chars() {
@@ -4720,15 +4934,91 @@ mod tests {
         for c in "and how".chars() {
             press(&mut app, c);
         }
-        assert!(editor(&app).dirty());
+        let before = sent.borrow().len();
         ctrl(&mut app, 's');
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Create { description, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "Ship it");
+                assert_eq!(description.as_deref(), Some("why\nand how"));
+            }
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(sent.borrow().len(), before, "nothing sent: {:?}", sent.borrow());
+        assert_eq!(app.status, "description kept");
+        // Tab reopens the editor on the kept text, clean.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(editor(&app).body.as_str(), "why\nand how");
+        assert!(!editor(&app).dirty());
+        ctrl(&mut app, 's');
+        // Enter on the small composer mints with the description.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         let log = sent.borrow().join("\n");
         let create = log.find("CreateTicket").expect("minted");
         let note = log.find("WriteNote").expect("described");
         assert!(create < note, "the ticket before its note: {log}");
         assert!(log.contains("why\\nand how"), "newlines survive: {log}");
+        assert!(!log.contains("SpawnSession"), "Enter asks nothing: {log}");
         assert!(app.status.contains("enter starts claude"), "{}", app.status);
+    }
+
+    /// Without the kitty tier ctrl+shift+s ARRIVES as ctrl+s, and the press
+    /// degrades to exactly `^s`: the draft is kept, nothing is minted.
+    #[test]
+    fn ctrl_shift_s_degrades_to_ctrl_s_on_the_legacy_floor() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        assert!(!app.rich_keys);
+        press(&mut app, 'o');
+        for c in "Ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        let before = sent.borrow().len();
+        // What a legacy terminal sends: the bare control byte, no Shift.
+        ctrl(&mut app, 's');
+        assert!(matches!(app.mode, Mode::Input { purpose: InputPurpose::Create { .. }, .. }));
+        assert_eq!(sent.borrow().len(), before);
+        // And a Shift that does arrive without the tier resolves to nothing.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
+        assert!(matches!(app.mode, Mode::Editor(_)), "inert, not wrong");
+        assert_eq!(sent.borrow().len(), before);
+    }
+
+    /// `^S` composing is the one-line composer's Shift+Enter: the ticket,
+    /// then its description, then claude on it with the title submitted —
+    /// in that order, so the agent's first `get_ticket` already carries the
+    /// description — and the board stays (2026-09-04, user request).
+    #[test]
+    fn editor_save_start_mints_writes_the_description_then_asks_claude() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        press(&mut app, 'o');
+        for c in "Ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        for c in "why".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "and how".chars() {
+            press(&mut app, c);
+        }
+        assert!(editor(&app).dirty());
+        app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        let log = sent.borrow().join("\n");
+        let create = log.find("CreateTicket").expect("minted");
+        let note = log.find("WriteNote").expect("described");
+        let spawn = log.find("SpawnSession").expect("asked");
+        assert!(create < note, "the ticket before its note: {log}");
+        assert!(note < spawn, "the note before the agent reads it: {log}");
+        assert!(log.contains("submit_prompt: true"), "the title is submitted: {log}");
+        assert!(log.contains("why\\nand how"), "newlines survive: {log}");
+        assert_eq!(app.screen, Screen::Board, "stays on the board");
+        assert!(app.status.contains("claude started"), "{}", app.status);
+        assert_eq!(app.just_created, None, "no Enter window: the agent is already on it");
     }
 
     /// Shift+Enter in the editor is a newline, in the composer's description
@@ -4778,14 +5068,25 @@ mod tests {
     #[test]
     fn a_blank_title_cannot_mint() {
         let mut app = app_three_columns();
+        app.rich_keys = true;
         press(&mut app, 'o');
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         for c in "why".chars() {
             press(&mut app, c);
         }
-        ctrl(&mut app, 's');
+        app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
         assert!(matches!(app.mode, Mode::Editor(_)));
         assert_eq!(app.status, "a ticket needs a title");
+        // `^s` mints nothing, so it has no title to need: the draft folds
+        // back into the composer, description kept, for the title to be typed.
+        ctrl(&mut app, 's');
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Create { description, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "");
+                assert_eq!(description.as_deref(), Some("why"));
+            }
+            other => panic!("{other:?}"),
+        }
     }
 
     #[test]
@@ -4850,30 +5151,83 @@ mod tests {
         assert_eq!(app.board.tickets[0].workspace, None);
     }
 
+    /// `^s` on a note saves and leaves, either way; a clean one just leaves
+    /// (2026-09-04, user request — it stayed open before, with a second
+    /// press telling claude).
     #[test]
-    fn a_note_save_stays_open_and_the_second_ctrl_s_tells_claude() {
-        let (mut app, sent) = app_with_note();
-        // No claude: the save says so and the second press is inert.
+    fn a_note_save_closes_the_editor() {
+        let (mut app, sent) = app_with_note_and(true);
         press(&mut app, 'n');
         app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
         press(&mut app, '!');
         ctrl(&mut app, 's');
-        assert!(matches!(app.mode, Mode::Editor(_)), "stays open");
+        assert_eq!(app.mode, Mode::Normal, "saved and gone");
         assert_eq!(app.status, "saved");
-        assert!(!editor(&app).dirty());
+        assert!(sent_contains(&sent, "WriteNote"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "NoteToAgent"), "telling is ^S's: {:?}", sent.borrow());
+        // Clean: nothing to write, still leaves.
+        press(&mut app, 'n');
         let before = sent.borrow().len();
         ctrl(&mut app, 's');
-        assert_eq!(sent.borrow().len(), before, "nothing to tell");
-        // With a live claude the save offers the second press, and it asks.
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(sent.borrow().len(), before, "nothing sent: {:?}", sent.borrow());
+    }
+
+    /// `^S` on a note saves, leaves, and puts the note in front of claude:
+    /// a paned claude is told (`NoteToAgent`, after the write), a ticket
+    /// with no claude gets one started on the title like a new ticket
+    /// ("treat like new"), and a Sleeping claude leaves the key inert.
+    #[test]
+    fn ctrl_shift_s_on_a_note_tells_claude_or_starts_one() {
+        let cs = KeyModifiers::CONTROL | KeyModifiers::SHIFT;
+        // A paned claude: write, then tell.
         let (mut app, sent) = app_with_note_and(true);
+        app.rich_keys = true;
         press(&mut app, 'n');
         app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
         press(&mut app, '?');
-        ctrl(&mut app, 's');
-        assert_eq!(app.status, "saved ∙ ^s again tells claude");
-        ctrl(&mut app, 's');
+        app.handle_key(KeyCode::Char('S'), cs).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
         assert_eq!(app.status, "asked");
-        assert!(sent_contains(&sent, "NoteToAgent"), "{:?}", sent.borrow());
+        let log = sent.borrow().join("\n");
+        let write = log.find("WriteNote").expect("written");
+        let tell = log.find("NoteToAgent").expect("told");
+        assert!(write < tell, "saved before it is read: {log}");
+        assert!(!log.contains("SpawnSession"), "the seat is taken: {log}");
+        // An empty seat: write, then start claude on the title.
+        let (mut app, sent) = app_with_note_and(false);
+        app.rich_keys = true;
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::End, KeyModifiers::NONE).unwrap();
+        press(&mut app, '?');
+        app.handle_key(KeyCode::Char('S'), cs).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.status, "claude started on the title");
+        let log = sent.borrow().join("\n");
+        let write = log.find("WriteNote").expect("written");
+        let spawn = log.find("SpawnSession").expect("started");
+        assert!(write < spawn, "the note before the agent reads it: {log}");
+        assert!(log.contains("submit_prompt: true"), "{log}");
+        assert!(!log.contains("NoteToAgent"), "nobody to tell: {log}");
+        // A clean note on an empty seat still starts claude: the title is
+        // the prompt, the way it is for a new ticket with no description.
+        let (mut app, sent) = app_with_note_and(false);
+        app.rich_keys = true;
+        press(&mut app, 'n');
+        app.handle_key(KeyCode::Char('S'), cs).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "WriteNote"), "clean: {:?}", sent.borrow());
+        // A Sleeping claude holds the seat and has no pane: inert.
+        let (mut app, sent) = app_with_note_and(true);
+        app.rich_keys = true;
+        app.board.sessions[0].state = SessionState::Sleeping;
+        press(&mut app, 'n');
+        press(&mut app, 'x');
+        let before = sent.borrow().len();
+        app.handle_key(KeyCode::Char('S'), cs).unwrap();
+        assert!(matches!(app.mode, Mode::Editor(_)), "inert");
+        assert_eq!(sent.borrow().len(), before, "{:?}", sent.borrow());
     }
 
     /// `^g` parks the body for the main loop (which owns the terminal) and
@@ -5013,7 +5367,7 @@ mod tests {
         }
         ctrl(&mut app, 's');
         assert_eq!(app.board.tickets[0].notes.len(), 2);
-        assert!(matches!(editor(&app).purpose, EditorPurpose::Note { note: Some(_), .. }));
+        assert_eq!(app.mode, Mode::Normal, "saved and gone");
         assert_eq!(app.status, "saved");
     }
 
@@ -5289,7 +5643,7 @@ mod tests {
     fn paste_into_the_composer_is_one_title() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
+            purpose: InputPurpose::Create { workspace: None, tags: Vec::new(), description: None },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
         assert!(app.on_paste("fix the\nauth bug\n").unwrap());
@@ -5329,7 +5683,7 @@ mod tests {
         assert!(app.status.contains("an ask holds at most 4 KB"), "{}", app.status);
         // The composer's limit is the title's, and the words say so.
         app.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
+            purpose: InputPurpose::Create { workspace: None, tags: Vec::new(), description: None },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
         app.on_paste(&"y".repeat(mesimon_core::board::TITLE_MAX_BYTES + 1)).unwrap();
@@ -5348,7 +5702,7 @@ mod tests {
         use mesimon_core::board::TAG_MAX_BYTES;
         let mut app = app_three_columns();
         app.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace: None, tags: Vec::new() },
+            purpose: InputPurpose::Create { workspace: None, tags: Vec::new(), description: None },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
         app.tag_armed =
@@ -6041,6 +6395,22 @@ mod tests {
         assert!(log.contains("SetTagColor"), "{log}");
         let next = (was + 1) % mesimon_core::board::TAG_TINTS;
         assert!(log.contains(&format!("color: {next}")), "{log}");
+    }
+
+    /// And Shift+Tab walks the ramp back: from the tint Tab just left, one
+    /// press returns, and from the first tint it wraps to the last.
+    #[test]
+    fn shift_tab_cycles_the_colour_back() {
+        let n = mesimon_core::board::TAG_TINTS;
+        let mut board = board_three_columns();
+        board.register_tag(1, "BUG").expect("registered");
+        board.set_tag_color(1, "BUG", 0).expect("tinted");
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        ctrl(&mut app, 't');
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        let log = sent.borrow().join(" ");
+        assert!(log.contains("SetTagColor"), "{log}");
+        assert!(log.contains(&format!("color: {}", n - 1)), "{log}");
     }
 
     /// `r` opens the field pre-filled, so a rename is an edit and not a

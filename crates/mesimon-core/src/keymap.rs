@@ -29,7 +29,11 @@ use std::fmt;
 pub enum Key {
     /// Printable ASCII. An uppercase letter IS the Shift+letter atom.
     Char(char),
-    /// `ctrl+<a-z>` and `ctrl+]`.
+    /// `ctrl+<a-z>` and `ctrl+]`. An UPPERCASE letter is the ctrl+shift+letter
+    /// atom, and it is off the legacy floor on [`Key::ShiftEnter`]'s clause:
+    /// a terminal without the kitty tier sends the bare control byte, which
+    /// is the lowercase atom and another verb, so every binding on one is
+    /// gated on `Ctx::rich_keys` (`ambiguous_atoms_are_inert_without_rich_keys`).
     Ctrl(char),
     Enter,
     /// The ONE atom off the legacy floor: terminals without the kitty
@@ -78,7 +82,8 @@ impl fmt::Display for Key {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Key::Char(c) => write!(f, "{c}"),
-            Key::Ctrl(c) => write!(f, "^{}", c.to_ascii_uppercase()),
+            // The case IS the shift: `^s` and `^S` are two atoms.
+            Key::Ctrl(c) => write!(f, "^{c}"),
             Key::Enter => write!(f, "enter"),
             Key::ShiftEnter => write!(f, "shift+enter"),
             Key::Esc => write!(f, "esc"),
@@ -143,6 +148,11 @@ pub enum Scope {
     /// whose cursor IS the preview (the board behind it repaints as the
     /// cursor moves), so Enter keeps and Esc puts the resting theme back.
     Theme,
+    /// The release notes, reached from a menu row: `CHANGELOG.md` compiled
+    /// into the binary (`relnotes.rs`), one painted band per release, read
+    /// top to bottom. A screen, not a dialog — it is the one document in
+    /// mesimon that is only ever read, so it gets the whole terminal.
+    Releases,
     /// Scope barrier: owns every key, inherits nothing.
     Input,
     /// The full-screen note editor (a title line over a multi-line markdown
@@ -155,7 +165,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 15] = [
+    pub const ALL: [Scope; 16] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -169,6 +179,7 @@ impl Scope {
         Scope::Drawer,
         Scope::Archived,
         Scope::Theme,
+        Scope::Releases,
         Scope::Input,
         Scope::Editor,
     ];
@@ -183,7 +194,8 @@ impl Scope {
             | Scope::Menu
             | Scope::Drawer
             | Scope::Archived
-            | Scope::Theme => Some(Scope::Global),
+            | Scope::Theme
+            | Scope::Releases => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
             | Scope::DeleteChord
@@ -209,6 +221,7 @@ impl Scope {
             Scope::Drawer => "EXTERNAL",
             Scope::Archived => "ARCHIVED",
             Scope::Theme => "THEME",
+            Scope::Releases => "RELEASES",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
         }
@@ -269,6 +282,9 @@ pub enum Verb {
     /// picked once and lived with, the same argument that took `p` off the
     /// footer.
     ThemePick,
+    /// Open the release notes from the menu. Same argument, read even less
+    /// often: what changed is a question for after an update, not a key.
+    ReleaseNotes,
     // ---- sessions ----
     Claude,
     Shell,
@@ -321,6 +337,9 @@ pub enum Verb {
     TagToggle,
     /// Cycle the cell's tag through the tint ramp.
     TagColor,
+    /// The same ramp, the other way (`shift+tab`): ten tints is a long walk
+    /// back past the one just skipped.
+    TagColorBack,
     /// Rename the cell's tag.
     TagRename,
     /// Delete the cell's tag from the registry and every ticket. Two presses.
@@ -388,9 +407,16 @@ pub enum Verb {
     /// ticket's description.
     Describe,
     // ---- editor ----
-    /// `^s`: save. In a note editor it stays open, and a second press on a
-    /// saved note tells the ticket's claude the note changed.
+    /// `^s`: save. Composing, the description is kept and the dialog folds
+    /// back into the one-line composer it grew out of, where Enter mints. In
+    /// a note editor it stays open, and a second press on a saved note tells
+    /// the ticket's claude the note changed.
     EditorSave,
+    /// `^S` (ctrl+shift+s), composing only: Shift on the editor's save axis
+    /// — mint the ticket with its description AND start claude on it with the
+    /// title submitted, staying on the board. The one-line composer's
+    /// Shift+Enter, in the bigger room (2026-09-04, user request).
+    EditorSaveStart,
     /// `enter`: in the title, move to the body; in the body, a newline.
     EditorNewline,
     EditorUp,
@@ -581,9 +607,14 @@ pub struct Ctx {
     /// mirrored). Shift+Tab in the description editor sets it then — the
     /// composer's choice, a press late.
     pub workspace_open: bool,
-    /// The editor shows a SAVED note and the ticket has a claude with a
-    /// pane: `^s` would tell it the note changed.
-    pub editor_can_tell: bool,
+    /// The editor is on a ticket whose claude has a pane: `^S` saves and
+    /// tells it the note changed (`NoteToAgent`).
+    pub editor_claude_paned: bool,
+    /// The editor is on a ticket that holds NO claude at all (a Sleeping one
+    /// holds the seat): `^S` saves and starts one on the title, the way it
+    /// would on a ticket being composed (2026-09-04, "if no claude session
+    /// in ticket, treat like new").
+    pub editor_seat_empty: bool,
     /// The program `^g` hands the note's body to — the basename of
     /// `$VISUAL`, else `$EDITOR`, else `vi` — as the footer's word for it
     /// (`^g nvim`). Empty means no external editor is wired up (every test
@@ -1575,6 +1606,56 @@ static DIFF_VIEW: &[Binding] = &[
     },
 ];
 
+/// The release notes screen: read-only, so the diff's reading keys on the
+/// diff's verbs — `App::dispatch` routes them on the screen. `n N` step by
+/// release the way they step by file there; nothing here mutates.
+static RELEASES: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::ScrollDown,
+        show: "jk",
+        hint: |_| "scroll",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('n'), Key::Char('N')],
+        verb: Verb::NextFile,
+        show: "n N",
+        hint: |_| "next / previous release",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('}'), Key::Char('{'), Key::PageDown, Key::PageUp],
+        verb: Verb::PageDown,
+        show: "{ }",
+        hint: |_| "page",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "q",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The `d` chord tail. Nothing else is bound here: any other key cancels, so
 /// the only way to delete is to mean it twice.
 static DELETE: &[Binding] = &[
@@ -1711,7 +1792,9 @@ static TAG: &[Binding] = &[
         prio: 30,
     },
     Binding {
-        keys: &[Key::Tab],
+        // `shift+tab` walks the ramp the other way — one binding, so the
+        // footer spends no cell on it (`directional` tells them apart).
+        keys: &[Key::Tab, Key::BackTab],
         verb: Verb::TagColor,
         show: "tab",
         hint: |_| "colour",
@@ -2043,6 +2126,16 @@ static MENU_ITEMS: &[MenuItem] = &[
                 format!("{} ∙ for a {} terminal", c.theme_blurb, c.theme_slot_word)
             }
         },
+        avail: always,
+        key: "",
+    },
+    // The third view row: what this build is, in its own words. Never a
+    // suggestion either — the header's update chip is the one that says a
+    // NEWER one exists, and this row reads the notes the binary carries.
+    MenuItem {
+        verb: Verb::ReleaseNotes,
+        label: |_| "Release notes".into(),
+        detail: |_| "what changed in each version, newest first".into(),
         avail: always,
         key: "",
     },
@@ -2487,21 +2580,57 @@ static INPUT: &[Binding] = &[
 /// and `{ }` are text here — paging is `pgup`/`pgdn`.
 static EDITOR: &[Binding] = &[
     Binding {
-        // Save. On a note it STAYS open — a note is a document being kept,
-        // not a field being submitted — and once it is saved the same key,
-        // with nothing changed, tells the ticket's claude to go read it.
-        // Two presses is the merge key's idiom: the first says what the
-        // second will do. `^s` is a legacy-floor atom; raw mode clears IXON,
-        // so the terminal does not eat it as flow control.
+        // Save, and leave the dialog — either way (2026-09-04, user request:
+        // "^s should just save, and exit the composer to go back to the
+        // small composer" … "either way ^s saves and exits the dialog").
+        // Composing, the description is KEPT and the dialog folds back into
+        // the one-line composer it grew out of — the draft is the
+        // composer's, and Enter or Shift+Enter there mints it, description
+        // and all. On a note the body is written and the editor closes; a
+        // clean one just closes. It stayed open before, with a second press
+        // telling claude — that second press is `^S` now, beside it. Always
+        // live: there is always something to keep or a dialog to leave.
+        // `^s` is a legacy-floor atom; raw mode clears IXON, so the terminal
+        // does not eat it as flow control.
         keys: &[Key::Ctrl('s')],
         verb: Verb::EditorSave,
         show: "^s",
-        hint: |c| if c.editor_dirty { "save" } else { "tell claude" },
-        avail: |c| c.editing && (c.editor_dirty || c.editor_can_tell),
+        hint: |_| "save",
+        avail: |c| c.editing,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
         prio: 10,
+    },
+    Binding {
+        // Shift on the save axis: `^s` saves and leaves, `^S` saves, leaves
+        // AND puts the words in front of claude. Composing, that is the
+        // one-line composer's Shift+Enter in the bigger room — mint, and
+        // claude on the ticket with the title submitted. On a ticket that
+        // exists it depends on who is there (2026-09-04, "if no claude
+        // session in ticket, treat like new"): a claude with a pane is TOLD
+        // the note changed (`NoteToAgent`, the old second press of `^s`),
+        // an empty seat gets a claude started on the title exactly as a new
+        // ticket would, and a Sleeping claude — which holds the seat and
+        // has no pane to type at — leaves the key inert and unhinted, as the
+        // board's Shift+Enter is there (`c` wakes it). Only where the
+        // terminal can tell ctrl+shift+s from ctrl+s: on the legacy floor
+        // the press ARRIVES as `^s`, which saves and leaves, and the finger
+        // finds Shift+Enter on the small composer or the board. Same clause
+        // as Shift+Enter's, and it buys the same one sentence.
+        keys: &[Key::Ctrl('S')],
+        verb: Verb::EditorSaveStart,
+        show: "^S",
+        hint: |c| if c.editor_claude_paned { "save + tell claude" } else { "save + ask claude" },
+        avail: |c| {
+            c.editing
+                && c.rich_keys
+                && (c.editor_composing || c.editor_claude_paned || c.editor_seat_empty)
+        },
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 12,
     },
     Binding {
         // Two presses when there is something to lose; the first says so.
@@ -2734,6 +2863,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Drawer => DRAWER,
         Scope::Archived => ARCHIVED,
         Scope::Theme => THEME,
+        Scope::Releases => RELEASES,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
     }
@@ -2791,6 +2921,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
                 _ => Verb::TagCarryDown,
             }
         }
+        (Verb::TagColor, Key::BackTab) => Verb::TagColorBack,
         (Verb::ScrollDown, Key::Char('k') | Key::Up) => Verb::ScrollUp,
         (Verb::EditorDown, Key::Up) => Verb::EditorUp,
         (Verb::PageDown, Key::Char('{') | Key::PageUp) => Verb::PageUp,
@@ -2930,8 +3061,9 @@ mod tests {
                 Scope::Drawer => 10,
                 Scope::Archived => 11,
                 Scope::Theme => 12,
-                Scope::Input => 13,
-                Scope::Editor => 14,
+                Scope::Releases => 13,
+                Scope::Input => 14,
+                Scope::Editor => 15,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -2996,28 +3128,81 @@ mod tests {
     /// plain `Enter` gets exactly the plain `Enter` behaviour.
     #[test]
     fn shift_enter_is_inert_without_rich_keys() {
-        let legacy = Ctx { composing: true, rich_keys: false, ..Default::default() };
+        ambiguous_atoms_are_inert_without_rich_keys(Key::ShiftEnter);
         let rich = Ctx { composing: true, rich_keys: true, ..Default::default() };
-        let mut found = false;
-        for scope in Scope::ALL {
-            for b in bindings(scope) {
-                if b.keys.contains(&Key::ShiftEnter) {
-                    found = true;
-                    assert!(
-                        !(b.avail)(&legacy),
-                        "{:?} in {scope:?} offers ShiftEnter on the legacy floor",
-                        b.verb
-                    );
-                }
-            }
-            assert_eq!(resolve(scope, Key::ShiftEnter, &legacy), None, "{scope:?}");
-        }
-        assert!(found, "no ShiftEnter binding left — drop the atom too");
         // And it does resolve where the terminal can spell it.
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &rich), Some(Verb::SaveStart));
         // A rename is not a composition: nothing to start.
         let renaming = Ctx { composing: false, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &renaming), None);
+    }
+
+    /// The same clause, for the same reason, on the editor's `^S`: a terminal
+    /// without the kitty tier sends the bare 0x13 for ctrl+shift+s, which is
+    /// `^s` — keep the draft, another verb — so the shifted atom must be
+    /// unbound and unhinted there, and the press degrades to exactly the
+    /// unshifted key.
+    #[test]
+    fn ctrl_shift_s_is_inert_without_rich_keys() {
+        ambiguous_atoms_are_inert_without_rich_keys(Key::Ctrl('S'));
+        let rich =
+            Ctx { editing: true, editor_composing: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &rich), Some(Verb::EditorSaveStart));
+        assert_eq!(
+            hint_for(Scope::Editor, Verb::EditorSaveStart, &rich),
+            Some(("^S", "save + ask claude"))
+        );
+        // On a note the key follows who is on the ticket: a paned claude is
+        // told, an empty seat gets one started ("treat like new"), and a
+        // Sleeping claude — neither paned nor an empty seat — leaves it
+        // inert, the board's Shift+Enter's rule.
+        let paned =
+            Ctx { editing: true, editor_claude_paned: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &paned), Some(Verb::EditorSaveStart));
+        assert_eq!(
+            hint_for(Scope::Editor, Verb::EditorSaveStart, &paned),
+            Some(("^S", "save + tell claude"))
+        );
+        let empty =
+            Ctx { editing: true, editor_seat_empty: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &empty), Some(Verb::EditorSaveStart));
+        assert_eq!(
+            hint_for(Scope::Editor, Verb::EditorSaveStart, &empty),
+            Some(("^S", "save + ask claude"))
+        );
+        let asleep = Ctx { editing: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &asleep), None);
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSaveStart, &asleep), None);
+        // And the case is the atom: `^s` and `^S` never collapse in the name.
+        assert_ne!(Key::Ctrl('s').to_string(), Key::Ctrl('S').to_string());
+    }
+
+    /// The ambiguity clause itself: every binding on `atom` must be
+    /// unavailable — and the atom unresolvable — wherever `rich_keys` is off.
+    fn ambiguous_atoms_are_inert_without_rich_keys(atom: Key) {
+        let legacy = Ctx {
+            composing: true,
+            editing: true,
+            editor_composing: true,
+            editor_dirty: true,
+            rich_keys: false,
+            ..Default::default()
+        };
+        let mut found = false;
+        for scope in Scope::ALL {
+            for b in bindings(scope) {
+                if b.keys.contains(&atom) {
+                    found = true;
+                    assert!(
+                        !(b.avail)(&legacy),
+                        "{:?} in {scope:?} offers {atom:?} on the legacy floor",
+                        b.verb
+                    );
+                }
+            }
+            assert_eq!(resolve(scope, atom, &legacy), None, "{scope:?}");
+        }
+        assert!(found, "no {atom:?} binding left — drop the atom too");
     }
 
     /// Shift+Enter says ONE sentence — "ask claude, and stay here" — and its
@@ -3043,8 +3228,9 @@ mod tests {
         // The editor the composer grows into is NOT a fourth home: there
         // Shift+Enter is a newline, composing or noting alike (2026-09-03),
         // because a body is where the finger expects it to break a line.
-        // "Ask claude" from the editor is `^s` and then the board's press on
-        // the minted card; "tell claude" about a note is `^s`'s second press.
+        // "Ask claude" from the editor is `^S` (2026-09-04: the composer's
+        // Shift+Enter on the save key's own shift, gated the same way), and
+        // the same key tells a ticket's claude about a note.
         let composing_full =
             Ctx { editing: true, editor_composing: true, rich_keys: true, ..Default::default() };
         let noting = Ctx { editing: true, rich_keys: true, ..Default::default() };
@@ -3165,8 +3351,15 @@ mod tests {
     /// Every atom the legacy floor cannot spell. The list is short on
     /// purpose: each entry is answered by a named test, and a fifth entry is
     /// a decision, not an addition.
-    const OFF_FLOOR: &[Key] =
-        &[Key::ShiftEnter, Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown];
+    const OFF_FLOOR: &[Key] = &[
+        Key::ShiftEnter,
+        // ctrl+shift+s: Shift+Enter's clause, `ctrl_shift_s_is_inert_without_rich_keys`.
+        Key::Ctrl('S'),
+        Key::AltLeft,
+        Key::AltRight,
+        Key::AltUp,
+        Key::AltDown,
+    ];
 
     /// Alt's escape clause, and the reason it is not `rich_keys`. Shift+Enter
     /// had to be gated because a terminal that cannot report it does report
@@ -3355,6 +3548,7 @@ mod tests {
             (Key::Char('j'), Verb::TagDown),
             (Key::Enter, Verb::TagToggle),
             (Key::Tab, Verb::TagColor),
+            (Key::BackTab, Verb::TagColorBack),
             (Key::Char('r'), Verb::TagRename),
             (Key::Char('d'), Verb::TagForget),
             (Key::Esc, Verb::TagDone),
@@ -3373,7 +3567,7 @@ mod tests {
         }
         // On the `+ new` cell there is no tag to recolour, rename or delete.
         let empty = Ctx { has_ticket: true, ..Default::default() };
-        for k in [Key::Tab, Key::Char('r'), Key::Char('d')] {
+        for k in [Key::Tab, Key::BackTab, Key::Char('r'), Key::Char('d')] {
             assert_eq!(resolve(Scope::TagChord, k, &empty), None, "{k:?}");
         }
         assert_eq!(resolve(Scope::TagChord, Key::Enter, &empty), Some(Verb::TagToggle));
@@ -3403,6 +3597,7 @@ mod tests {
             Key::Char('r'),
             Key::Char('d'),
             Key::Tab,
+            Key::BackTab,
         ] {
             assert_eq!(resolve(Scope::TagChord, k, &naming), None, "{k:?}");
         }
@@ -3482,6 +3677,19 @@ mod tests {
             assert_eq!(resolve(Scope::Editor, k, &ctx), None, "{k:?} must type, not act");
         }
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &ctx), Some(Verb::EditorSave));
+        // Composing, `^s` keeps the draft and folds back into the small
+        // composer (2026-09-04), and it is live before the body is touched —
+        // the carried title is not "dirty" against the editor's baseline, and
+        // a `Tab` then `^s` with nothing typed used to press nothing.
+        let composing = Ctx { editing: true, editor_composing: true, ..Default::default() };
+        assert!(!composing.editor_dirty);
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &composing), Some(Verb::EditorSave));
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &composing), Some(("^s", "save")));
+        // A note says the same word, dirty or clean: it saves and leaves.
+        let clean_note = Ctx { editing: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &clean_note), Some(("^s", "save")));
+        let dirty_note = Ctx { editing: true, editor_dirty: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &dirty_note), Some(("^s", "save")));
         assert_eq!(resolve(Scope::Editor, Key::Esc, &ctx), Some(Verb::Cancel));
         // `^]` closes too, in both of its spellings.
         assert_eq!(resolve(Scope::Editor, Key::Ctrl(']'), &ctx), Some(Verb::Cancel));
@@ -3519,18 +3727,17 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('g'), &Ctx::default()), None);
     }
 
-    /// `^s` says what it will do, and is inert when it would do nothing:
-    /// `save` while there are changes, `tell claude` on a saved note whose
-    /// ticket has a claude with a pane, nothing otherwise.
+    /// `^s` says `save` and is always live in the editor: it saves what
+    /// there is and leaves (2026-09-04 — it used to be inert on a clean note
+    /// and say `tell claude` on a saved one; telling is `^S` now).
     #[test]
-    fn ctrl_s_says_save_then_tell() {
+    fn ctrl_s_says_save_and_always_leaves() {
         let dirty = Ctx { editing: true, editor_dirty: true, ..Default::default() };
         assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &dirty), Some(("^s", "save")));
-        let saved = Ctx { editing: true, editor_can_tell: true, ..Default::default() };
-        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &saved), Some(("^s", "tell claude")));
         let clean = Ctx { editing: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &clean), None);
-        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &clean), None);
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &clean), Some(Verb::EditorSave));
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &clean), Some(("^s", "save")));
+        assert_eq!(resolve(Scope::Board, Key::Ctrl('s'), &Ctx::default()), None);
         // Enter's word is the title's: it is the way down. In the body it is
         // silent — a newline needs no teaching.
         assert_eq!(
@@ -3746,9 +3953,15 @@ mod tests {
     #[test]
     fn undo_reaches_every_screen() {
         let ctx = Ctx { can_undo: true, ..Default::default() };
-        for s in
-            [Scope::Board, Scope::Ticket, Scope::Diff, Scope::Drawer, Scope::Menu, Scope::Theme]
-        {
+        for s in [
+            Scope::Board,
+            Scope::Ticket,
+            Scope::Diff,
+            Scope::Drawer,
+            Scope::Menu,
+            Scope::Theme,
+            Scope::Releases,
+        ] {
             assert_eq!(resolve(s, Key::Char('u'), &ctx), Some(Verb::Undo), "{s:?}");
         }
         let nothing = Ctx::default();
@@ -3789,6 +4002,16 @@ mod tests {
         for retired in [Key::Char('X'), Key::Char('A'), Key::Char('V'), Key::Char('e')] {
             assert_eq!(resolve(Scope::Board, retired, &full), None, "{retired:?} is retired");
         }
+        // The editor's save key, composing: `^s` keeps the draft, `^S` mints
+        // it and starts claude — Enter / Shift+Enter's bargain on the save
+        // key's own shift (2026-09-04).
+        let composing_full =
+            Ctx { editing: true, editor_composing: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &composing_full), Some(Verb::EditorSave));
+        assert_eq!(
+            resolve(Scope::Editor, Key::Ctrl('S'), &composing_full),
+            Some(Verb::EditorSaveStart)
+        );
         // `n` edits the note the cursor means, `N` forces a fresh one: same
         // target, harder — on both screens.
         for scope in [Scope::Board, Scope::Ticket] {
@@ -3829,6 +4052,7 @@ mod tests {
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
             Verb::ThemePick,
+            Verb::ReleaseNotes,
             Verb::Help,
             Verb::Quit,
         ] {
@@ -4042,9 +4266,15 @@ mod tests {
     fn q_pops_and_help_is_everywhere() {
         let ctx = Ctx::default();
         assert_eq!(resolve(Scope::Board, Key::Char('q'), &ctx), Some(Verb::Quit));
-        for s in
-            [Scope::Ticket, Scope::Diff, Scope::Drawer, Scope::Archived, Scope::Menu, Scope::Theme]
-        {
+        for s in [
+            Scope::Ticket,
+            Scope::Diff,
+            Scope::Drawer,
+            Scope::Archived,
+            Scope::Menu,
+            Scope::Theme,
+            Scope::Releases,
+        ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");
         }
