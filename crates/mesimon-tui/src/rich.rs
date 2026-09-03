@@ -34,66 +34,20 @@ use unicode_segmentation::UnicodeSegmentation;
 use unicode_width::UnicodeWidthStr;
 
 use crate::glyphs::Tier;
-use crate::theme::{Ramp, Theme};
+use crate::theme::Theme;
 
-/// Which surface the text is drawn on. Markdown's whole vocabulary here is
-/// value and paint, and both are relative to the ground under them: on the
-/// page the ramp is `rest` and code sits on the elevated surface; on the
-/// elevated surface (the ticket page's header band, T-158) the ramp is `sel`
-/// and code sinks back to the PAGE ground — the other surface is the only
-/// other paint there is, and a slab in the band's own colour would vanish.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum Surface {
-    Ground,
-    Elevated,
-}
-
-/// The ramp and the code paint for a surface.
-struct Paint<'a> {
-    ink: &'a Ramp,
-    code_bg: Option<ratatui::style::Color>,
-}
-
-impl<'a> Paint<'a> {
-    fn of(theme: &'a Theme, surface: Surface) -> Self {
-        match (surface, theme.selected_bg) {
-            (Surface::Elevated, Some(_)) => Paint { ink: &theme.sel, code_bg: theme.bg },
-            _ => Paint { ink: &theme.rest, code_bg: theme.code_bg() },
-        }
-    }
-    fn dim2(&self) -> Style {
-        Style::default().fg(self.ink.dim2)
-    }
-    fn dim3(&self) -> Style {
-        Style::default().fg(self.ink.dim3)
-    }
-}
-
-/// Render `src` into at most `max_lines` lines of at most `width` cells, on
-/// the page ground. A cut ends in the `~` marker — 07 §4.1's vocabulary,
-/// same as `truncate`.
+/// Render `src` into at most `max_lines` lines of at most `width` cells.
+/// A cut ends in the `~` marker — 07 §4.1's vocabulary, same as `truncate`.
 pub(crate) fn render(
     src: &str,
     width: usize,
     max_lines: usize,
     theme: &Theme,
 ) -> Vec<Line<'static>> {
-    render_on(src, width, max_lines, theme, Surface::Ground)
-}
-
-/// `render`, on a chosen surface.
-pub(crate) fn render_on(
-    src: &str,
-    width: usize,
-    max_lines: usize,
-    theme: &Theme,
-    surface: Surface,
-) -> Vec<Line<'static>> {
     if width == 0 || max_lines == 0 {
         return Vec::new();
     }
-    let paint = Paint::of(theme, surface);
-    let mut out = Out { lines: Vec::new(), max: max_lines, width, theme, paint, cut: false };
+    let mut out = Out { lines: Vec::new(), max: max_lines, width, theme, cut: false };
     let tier = theme.glyph_tier();
     let mut bs = blocks(src);
     while matches!(bs.last(), Some(Block::Blank)) {
@@ -120,7 +74,7 @@ pub(crate) fn render_on(
                 // plus a value step. (The peek's `> user's words` fallback
                 // arrives here, which is exactly what it should look like.)
                 let mark = if tier == Tier::Ascii { "> " } else { "› " };
-                let lead = vec![Span::styled(mark, out.paint.dim3())];
+                let lead = vec![Span::styled(mark, theme.dim3())];
                 out.flow(&runs, lead, 2, Role::Quote);
             }
             Block::Item { marker, indent, runs } => {
@@ -130,7 +84,7 @@ pub(crate) fn render_on(
                 let hang = indent + marker.width() + 1;
                 let lead = vec![
                     Span::raw(" ".repeat(indent)),
-                    Span::styled(format!("{marker} "), out.paint.dim2()),
+                    Span::styled(format!("{marker} "), theme.dim2()),
                 ];
                 out.flow(&runs, lead, hang, Role::Body);
             }
@@ -576,8 +530,8 @@ fn link(chars: &[char], i: usize, emph: Emph) -> Option<(Vec<Run>, usize)> {
 // paint
 // ---------------------------------------------------------------------------
 
-fn style_of(e: Emph, role: Role, paint: &Paint) -> Style {
-    let t = paint.ink;
+fn style_of(e: Emph, role: Role, theme: &Theme) -> Style {
+    let t = &theme.rest;
     let (fg, bold) = match role {
         // Two heading levels, both by value; the top two also take weight.
         Role::Head(1..=2) => (t.base, true),
@@ -596,7 +550,7 @@ fn style_of(e: Emph, role: Role, paint: &Paint) -> Style {
         s = s.add_modifier(Modifier::BOLD);
     }
     if e.code {
-        if let Some(bg) = paint.code_bg {
+        if let Some(bg) = theme.code_bg() {
             s = s.bg(bg);
         }
     }
@@ -610,12 +564,12 @@ struct Word {
     width: usize,
 }
 
-fn words(runs: &[Run], paint: &Paint) -> Vec<Word> {
+fn words(runs: &[Run], theme: &Theme) -> Vec<Word> {
     let mut out: Vec<Word> = Vec::new();
     let mut open = false; // is the last word still being extended?
     for r in runs {
         // Where the profile cannot paint, the marker survives instead.
-        let text = if r.emph.code && paint.code_bg.is_none() {
+        let text = if r.emph.code && theme.code_bg().is_none() {
             format!("`{}`", r.text)
         } else {
             r.text.clone()
@@ -655,7 +609,6 @@ struct Out<'a> {
     max: usize,
     width: usize,
     theme: &'a Theme,
-    paint: Paint<'a>,
     cut: bool,
 }
 
@@ -689,7 +642,7 @@ impl Out<'_> {
     /// a quote mark, an indent) and `hang` is the inset every later line of
     /// the same block keeps.
     fn flow(&mut self, runs: &[Run], lead: Vec<Span<'static>>, hang: usize, role: Role) {
-        let ws = words(runs, &self.paint);
+        let ws = words(runs, self.theme);
         if ws.is_empty() {
             return;
         }
@@ -728,7 +681,7 @@ impl Out<'_> {
                                 w = hang;
                             }
                             w += g.width();
-                            push_text(&mut cur, g, style_of(*emph, role, &self.paint));
+                            push_text(&mut cur, g, style_of(*emph, role, self.theme));
                         }
                     }
                     prev = word.parts.last().map(|(_, e)| *e);
@@ -741,12 +694,12 @@ impl Out<'_> {
                     (Some(a), Some(b)) if a == b => a,
                     _ => Emph::default(),
                 };
-                push_text(&mut cur, " ", style_of(joined, role, &self.paint));
+                push_text(&mut cur, " ", style_of(joined, role, self.theme));
                 w += 1;
             }
             for (text, emph) in &word.parts {
                 w += text.width();
-                push_text(&mut cur, text, style_of(*emph, role, &self.paint));
+                push_text(&mut cur, text, style_of(*emph, role, self.theme));
             }
             prev = word.parts.last().map(|(_, e)| *e);
         }
@@ -760,13 +713,13 @@ impl Out<'_> {
     /// shrink-wrapped to its widest row, so it reads as a block of code and
     /// not as a band across the page.
     fn slab(&mut self, rows: &[String]) {
-        let ink = Style::default().fg(self.paint.ink.dim1);
-        let dim2 = self.paint.dim2();
+        let theme = self.theme;
+        let ink = Style::default().fg(theme.rest.dim1);
         let inner =
             rows.iter().map(|r| r.width()).max().unwrap_or(0).min(self.width.saturating_sub(3));
         for r in rows {
             let body = crate::text::truncate(r, inner);
-            let spans = match self.paint.code_bg {
+            let spans = match theme.code_bg() {
                 Some(bg) => {
                     let pad = inner.saturating_sub(body.width());
                     vec![
@@ -775,7 +728,7 @@ impl Out<'_> {
                     ]
                 }
                 // Nothing to paint with: the inset carries the block.
-                None => vec![Span::styled(format!("   {body}"), dim2)],
+                None => vec![Span::styled(format!("   {body}"), theme.dim2())],
             };
             if !self.line(spans) {
                 return;
@@ -787,9 +740,9 @@ impl Out<'_> {
     /// reflow would destroy that. The header row is marked by value.
     fn row(&mut self, text: &str, head: bool) {
         let style = if head {
-            Style::default().fg(self.paint.ink.base).add_modifier(Modifier::BOLD)
+            Style::default().fg(self.theme.rest.base).add_modifier(Modifier::BOLD)
         } else {
-            Style::default().fg(self.paint.ink.dim1)
+            self.theme.dim1()
         };
         let body = crate::text::truncate(text, self.width.saturating_sub(1));
         self.line(vec![Span::raw(" "), Span::styled(body, style)]);

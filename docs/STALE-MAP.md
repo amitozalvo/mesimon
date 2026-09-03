@@ -3593,10 +3593,14 @@ is the `Ground` form and every other caller is unchanged. Where the profile pain
 `test_ticket_header_section_is_a_band` (edges painted, header row and zones not, a code span on
 the page ground, its bullet on the band).
 
-**Two bands, not one (same day).** The author then asked for "a clear separation between title +
-subtitle and the description": the header section is now the identity band — pad, title, state
-line, pad — and, one page-ground row below it, the description's own band with the same pads.
-Both on `selected_bg`; the ground row between them is the separation, since a rule cannot be
-drawn. The body zones start after a breathing row under whichever band is last; the description
-cap follows (`body_rows = height - 9`). `test_ticket_header_section_is_a_band` asserts rows 1-4
-and the description rows painted, row 5 and the breathing row not.
+**The description is the card's body (same day).** The author then asked for "a clear
+separation between title + subtitle and the description", and a second band under the first was
+tried and refused ("not good"). What holds: the IDENTITY — pad, title, state line, pad — is the
+one band, and the description sits on the page ground under it in the card's own frame, `[pad
+1][bar 1][pad 1][text]`, with the accent bar down its left edge wearing the ticket's tags the way
+the card's stripe does on the board (`tags::bar_cell` + `stack_full`, the composer dialog's
+road; cursor weight, `TagLevel::Selected`). The page reads as the card, opened; the separation is
+the change of surface and the bar, not a second slab. `rich::render_on`/`Surface` went with the
+second band — every markdown surface is the page ground again. Pinned by
+`test_ticket_header_section_is_a_band` (band rows 1-4 painted, rows 0/5/6 and the zones on the
+ground, the bar cell painted on every description row, text at column 3).

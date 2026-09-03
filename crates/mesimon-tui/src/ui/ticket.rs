@@ -237,65 +237,76 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // line sits directly under the title, the way a card's meta row does.
     // No band under it: the ticket header ends with its metadata (author
     // 2026-08-30).
-    // Two bands (author 2026-09-03: "a clear separation between title +
-    // subtitle and the description"): the identity band — pad, title, state,
-    // pad — and, one ground row below it, the description's own band, padded
-    // the same. Every row painted edge to edge with real space cells, because
-    // an empty `Line` paints nothing.
-    let paint = |rows: Vec<Line<'static>>| -> Vec<Line<'static>> {
-        rows.into_iter()
-            .map(|mut l| {
-                let used: usize = l.spans.iter().map(|s| s.content.width()).sum();
-                l.spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
-                l.style(band)
-            })
-            .collect()
-    };
-    let head = paint(vec![Line::default(), title_row, ident, Line::default()]);
+    // The identity band — pad, title, state, pad — painted edge to edge with
+    // real space cells, because an empty `Line` paints nothing.
+    let head: Vec<Line<'static>> = vec![Line::default(), title_row, ident, Line::default()]
+        .into_iter()
+        .map(|mut l| {
+            let used: usize = l.spans.iter().map(|s| s.content.width()).sum();
+            l.spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
+            l.style(band)
+        })
+        .collect();
     f.render_widget(
         Paragraph::new(head),
         Rect { x: area.x, y: area.y + 1, width: area.width, height: 4.min(area.height - 1) },
     );
-    // The description — the ticket's first note — as rich text, capped: what
-    // the ticket IS reads before what its sessions are doing. No heading over
-    // it; it is the ticket's own words. Nothing when there is none, so the
-    // geometry below is untouched then.
-    let body_rows = (area.height as usize).saturating_sub(9);
+    // The description — the ticket's first note — is the CARD'S BODY (author
+    // 2026-09-03, after a second band was refused): on the page ground under
+    // the band, in the card's own frame `[pad 1][bar 1][pad 1][text]`, with
+    // the accent bar down its left edge wearing the ticket's tags exactly as
+    // the card's stripe does on the board (`tags::bar_cell` + `stack_full`,
+    // the composer dialog's road). The page reads as the card, opened. Rich
+    // text, capped: what the ticket IS reads before what its sessions are
+    // doing. No heading over it; it is the ticket's own words. Nothing when
+    // there is none, so the geometry below is untouched then.
+    let body_rows = (area.height as usize).saturating_sub(7);
     let desc: Vec<Line<'static>> = ticket
         .description()
         .and_then(|m| app.note_text(m))
         .map(|text| {
             let cap = DESC_MAX_ROWS.min(body_rows / 3).max(1);
-            let surface = if theme.selected_bg.is_some() {
-                crate::rich::Surface::Elevated
-            } else {
-                crate::rich::Surface::Ground
-            };
-            let width = (area.width as usize).saturating_sub(2);
-            crate::rich::render_on(text, width, cap, theme, surface)
+            let width = (area.width as usize).saturating_sub(4);
+            crate::rich::render(text, width, cap, theme)
         })
         .unwrap_or_default();
-    // The gap row, the pad, the rows, the pad.
-    let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 3 };
+    // The rows, then a breathing row.
+    let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 1 };
     if !desc.is_empty() {
-        let mut rows = vec![Line::default()];
-        for row in desc {
-            let mut spans = vec![Span::raw(" ")];
-            spans.extend(row.spans);
-            rows.push(Line::from(spans));
-        }
-        rows.push(Line::default());
-        let h = (extra - 1).min(area.height.saturating_sub(6));
+        let h = (desc.len() as u16).min(area.height.saturating_sub(7));
+        let worn = crate::tags::painted(&app.board, &ticket.tags);
+        let (plain_ch, plain_style) = theme.bar(crate::theme::BarWeight::Cursor);
+        let (bar_ch, bar_style) = crate::tags::bar_cell(
+            theme,
+            plain_ch,
+            plain_style,
+            &worn,
+            crate::theme::TagLevel::Selected,
+        );
+        let mut stripe: Vec<Line<'static>> =
+            (0..h).map(|_| Line::from(Span::styled(bar_ch.clone(), bar_style))).collect();
+        crate::tags::stack_full(
+            theme,
+            &mut stripe,
+            plain_ch,
+            plain_style,
+            &worn,
+            crate::theme::TagLevel::Selected,
+        );
         f.render_widget(
-            Paragraph::new(paint(rows)),
-            Rect { x: area.x, y: area.y + 6, width: area.width, height: h },
+            Paragraph::new(stripe),
+            Rect { x: area.x + 1, y: area.y + 6, width: 1, height: h },
+        );
+        f.render_widget(
+            Paragraph::new(desc),
+            Rect { x: area.x + 3, y: area.y + 6, width: area.width.saturating_sub(4), height: h },
         );
     }
 
     // ---- body zones -------------------------------------------------------
-    // One breathing row under the last band (06 §5.5) before the zones.
+    // One breathing row under the band or the body (06 §5.5) before the zones.
     let body_y = area.y + 6 + extra;
-    // header 1 + band 4 + breathing 1 + footer 1, plus the description band.
+    // header 1 + band 4 + breathing 1 + footer 1, plus the description rows.
     let body_h = area.height.saturating_sub(7 + extra);
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     if two_zone {

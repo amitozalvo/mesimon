@@ -4,14 +4,12 @@
  IN PROGRESS for >1y ∙ created >1y ago
 
 
+   What changed
 
- What changed
+   The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
 
- The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
-
- • detect.rs asks the terminal, then hands the flavor to Theme::new
- • the goldens moved with it~
-
+   • detect.rs asks the terminal, then hands the flavor to Theme::new
+   • the goldens moved with it~
 
   PREVIEW                                                                                  SESSIONS                  2
 
@@ -24,6 +22,8 @@
                                                                                            ≡ What changed      you >1y
                                                                                            ≡ Repro steps    claude >1y
                                                                                            N new note
+
+
 
 
 

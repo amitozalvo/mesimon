@@ -2274,11 +2274,10 @@ fn golden_ticket_note_selected_120() {
     golden("ticket_note_selected_120x30", &lines);
 }
 
-/// The ticket page's header section — title, state line, description — is
-/// a band on the elevated surface (author 2026-09-03), and only that: the
-/// chip row above it and the zones below it stay on the page ground, and the
-/// description's code slab sinks to the page ground rather than vanishing
-/// into the band's own colour.
+/// The ticket page's identity — title and state line — is a band on the
+/// elevated surface (author 2026-09-03), and only that: the chip row above
+/// it and everything below it stay on the page ground. The description under
+/// it is the card's body, with the card's accent bar down its left edge.
 #[test]
 fn test_ticket_header_section_is_a_band() {
     let mut app = app_noted();
@@ -2289,29 +2288,34 @@ fn test_ticket_header_section_is_a_band() {
     let title_y = lines.iter().position(|l| l.contains("Fix OSC-11 detection")).expect("title");
     assert_eq!(title_y, 2, "the title is the band's first written row");
     let sessions_y = lines.iter().position(|l| l.contains("SESSIONS")).expect("zones");
-    // Two bands: the identity band (rows 1-4) and the description's (row 6
-    // to the row before the breathing row), each painted edge to edge, one
-    // ground row between them.
-    let painted = |y: usize| {
-        for x in [0u16, 119] {
-            assert_eq!(buf[(x, y as u16)].bg, elevated, "band row {y} cell {x} unpainted");
+    // The identity band (rows 1-4) is painted edge to edge.
+    for y in 1..=4u16 {
+        for x in [0u16, 3, 119] {
+            assert_eq!(buf[(x, y)].bg, elevated, "band row {y} cell {x} unpainted");
         }
-    };
-    (1..=4).for_each(painted);
-    (6..sessions_y - 1).for_each(painted);
-    assert_ne!(buf[(40, 5)].bg, elevated, "a ground row separates the two bands");
-    // Prose on the band wears the band: the title and the state line.
-    assert_eq!(buf[(3, 2)].bg, elevated);
-    assert_eq!(buf[(3, 3)].bg, elevated);
-    // The breadcrumb row and the breathing row over the zones are not.
-    assert_ne!(buf[(40, 0)].bg, elevated, "the header row stays on the ground");
-    assert_ne!(buf[(40, (sessions_y - 1) as u16)].bg, elevated, "a breathing row before the zones");
-    assert_ne!(buf[(40, sessions_y as u16)].bg, elevated, "the zones are on the ground");
-    // The description's code span is painted in the PAGE ground, not lost.
+    }
+    // The breadcrumb row, the breathing row under the band, the description
+    // and the zones are on the ground.
+    for y in [0, 5, 6, sessions_y - 1, sessions_y] {
+        assert_ne!(buf[(40, y as u16)].bg, elevated, "row {y} is on the ground");
+    }
+    // The description is the card's body: its rows carry the accent bar in
+    // column 1 (a painted cell, the cursor weight) and its text starts at
+    // column 3, the card's own frame.
+    let first = lines.iter().position(|l| l.contains("What changed")).expect("description");
+    let last = lines.iter().position(|l| l.contains("the goldens moved")).expect("last row");
+    assert_eq!(first, 6, "the body starts one breathing row under the band");
+    let (bar_ch, bar_style) = app.theme.bar(crate::theme::BarWeight::Cursor);
+    for y in first..=last {
+        assert_eq!(buf[(1, y as u16)].symbol(), bar_ch.to_string(), "row {y} has the bar");
+        assert_eq!(Some(buf[(1, y as u16)].bg), bar_style.bg, "row {y}'s bar is painted");
+        assert_eq!(Some(buf[(0, y as u16)].bg), app.theme.bg, "row {y}'s page pad is ground");
+    }
+    assert!(lines[first].starts_with("   What changed"), "{:?}", lines[first]);
+    // The description's code span keeps the elevated paint, on the ground.
     let code_y = lines.iter().position(|l| l.contains("detect.rs")).expect("a code row");
     let code_x = lines[code_y].find("detect").map(|b| lines[code_y][..b].chars().count()).unwrap();
-    assert_eq!(buf[(code_x as u16, code_y as u16)].bg, app.theme.bg.expect("ground"));
-    assert_eq!(buf[(code_x as u16 - 2, code_y as u16)].bg, elevated, "the bullet is on the band");
+    assert_eq!(buf[(code_x as u16, code_y as u16)].bg, elevated);
 }
 
 /// A description block eats rows from the zones below, never from the
