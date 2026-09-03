@@ -1,5 +1,6 @@
 //! Branch/directory naming for ticket worktrees — doc 12 §12.5.2's fixed slugger
-//! (D28: changing it produces a lying board). Branch = `msmn/<KEY>-<slug>`,
+//! (D28: changing it produces a lying board — a binding persists its names, so a
+//! slugger change only touches worktrees provisioned after it). Branch = `msmn/<KEY>-<slug>`,
 //! worktree dir = `<KEY>-<slug>`, SAME slugger for both. Lowercasing is mandatory:
 //! APFS is case-insensitive, so `Foo`/`foo` collide — folding makes the collision
 //! deterministic instead of filesystem-dependent.
@@ -10,11 +11,20 @@
 /// The ref namespace mesimon owns; `refs/heads/msmn/` is globbable.
 pub const BRANCH_NS: &str = "msmn";
 
-const SLUG_MAX_BYTES: usize = 60;
+/// Doc 12 said 60, and 60 bytes of a sentence-shaped title cut mid-word
+/// (`T-164-mcp-tool-to-modify-tags-think-how-to-best-design-that-tool-t`,
+/// dogfood 2026-09-03). The key already makes the name unique; the slug only
+/// has to say which ticket, so it is a handful of words, cut at a word.
+const SLUG_MAX_BYTES: usize = 32;
+
+/// The word-boundary cut gives up and cuts mid-word when it would leave fewer
+/// bytes than this — a title that opens with one long token still gets a slug.
+const SLUG_MIN_WORD_CUT: usize = 8;
 
 /// Doc 12 §12.5.2: NFC → ASCII-fold → lowercase → `[^a-z0-9._-]` → `-` →
-/// collapse runs → strip leading/trailing `-` and `.` → 60-byte truncate on a
-/// char boundary → reject-list → fallback `"t"`.
+/// collapse runs → strip leading/trailing `-` and `.` → 32-byte truncate at the
+/// last `-` before the cap (mid-word only when no word fits) → reject-list →
+/// fallback `"t"`.
 ///
 /// ASCII-fold here is the pragmatic subset: strip combining marks after NFD-style
 /// decomposition is out of scope without a unicode table dep, so non-ASCII chars
@@ -50,12 +60,18 @@ pub fn slug(title: &str) -> String {
     }
     // Strip leading/trailing '-' and '.'.
     let trimmed: &str = out.trim_matches(['-', '.']);
-    // Truncate to the byte cap on a char boundary (slug is ASCII here, but stay safe).
+    // Truncate to the byte cap: at the last word boundary that keeps enough of
+    // the name, else on a char boundary (slug is ASCII here, but stay safe).
     let mut s: String = trimmed.into();
     if s.len() > SLUG_MAX_BYTES {
         let mut cut = SLUG_MAX_BYTES;
         while !s.is_char_boundary(cut) {
             cut -= 1;
+        }
+        // `s[..=cut]` holds one byte past the cap, so a '-' AT the cap counts:
+        // the word before it fits whole.
+        if let Some(dash) = s[..=cut].rfind('-').filter(|&d| d >= SLUG_MIN_WORD_CUT) {
+            cut = dash;
         }
         s.truncate(cut);
         let retrimmed = s.trim_end_matches(['-', '.']).to_string();
@@ -113,17 +129,41 @@ mod tests {
     }
 
     #[test]
-    fn slug_truncates_at_60_bytes() {
+    fn slug_truncates_at_32_bytes() {
         let long = "a".repeat(200);
         let s = slug(&long);
-        assert_eq!(s.len(), 60);
+        assert_eq!(s.len(), SLUG_MAX_BYTES);
+    }
+
+    #[test]
+    fn truncation_cuts_at_a_word() {
+        // The dogfood title that motivated the cap: a sentence.
+        let s = slug("mcp tool to modify tags, think how to best design that tool to be useful");
+        assert_eq!(s, "mcp-tool-to-modify-tags-think");
+        assert!(s.len() <= SLUG_MAX_BYTES);
+        // A word ending exactly at the cap is kept whole.
+        let s = slug(&format!("{}-{}", "a".repeat(SLUG_MAX_BYTES), "tail"));
+        assert_eq!(s.len(), SLUG_MAX_BYTES);
+        // Nothing to cut: a title under the cap is untouched.
+        assert_eq!(slug("short and sweet"), "short-and-sweet");
+    }
+
+    #[test]
+    fn truncation_falls_back_mid_word_when_the_first_word_is_long() {
+        // Only a tiny word before the cap: the mid-word cut is the better name.
+        let s = slug(&format!("ab-{}", "c".repeat(100)));
+        assert_eq!(s.len(), SLUG_MAX_BYTES);
+        assert!(s.starts_with("ab-ccc"), "{s:?}");
     }
 
     #[test]
     fn truncation_does_not_leave_trailing_dash_or_dot() {
-        // 59 chars then a '-' run right at the cap.
-        let title = format!("{}-{}", "a".repeat(59), "b".repeat(20));
+        // A '-' run right at the cap.
+        let title = format!("{}-{}", "a".repeat(SLUG_MAX_BYTES - 1), "b".repeat(20));
         let s = slug(&title);
+        assert!(!s.ends_with('-') && !s.ends_with('.'), "{s:?}");
+        // And a '.' at the word cut.
+        let s = slug(&format!("{}.-{}", "a".repeat(20), "b".repeat(20)));
         assert!(!s.ends_with('-') && !s.ends_with('.'), "{s:?}");
     }
 

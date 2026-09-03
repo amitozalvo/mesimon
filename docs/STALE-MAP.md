@@ -3505,3 +3505,18 @@ band on row 0 two rows above the cursor column's painted header band fought it, 
 keeps the page ground and only its chip is painted); no accent-coloured focus frame (L2/L3 hold:
 `attn` stays needs-you only); no per-panel hue. Every golden changed (header chip, footer);
 regenerated once and reviewed by eye.
+
+## A worktree name is a handful of words (2026-09-03, dogfood)
+
+Doc 12 §12.5.2's slugger capped the slug at 60 bytes and cut on a byte, so a sentence-shaped
+title (the author's are) produced `T-164-mcp-tool-to-modify-tags-think-how-to-best-design-that-
+tool-t` as a directory AND a branch — 66 characters of which the last is half a word, in every
+`git branch`, on the ticket page's state row, and in the merge flow's messages. The key already
+makes the name unique; the slug only has to say which ticket. `workspace::SLUG_MAX_BYTES` is 32
+now, and the cut lands on the last `-` at or before the cap (`SLUG_MIN_WORD_CUT` 8: a title that
+opens with one long token still cuts mid-word rather than keeping two letters), so the same
+title yields `T-164-mcp-tool-to-modify-tags-think`. D28's "changing the slugger produces a lying
+board" does not bite: a `Binding` persists its `path` and `branch` at provision time, so every
+existing worktree keeps its name and only tickets provisioned after this build get the short
+one. Tests in `workspace.rs` pin the cap, the word cut, the fallback, and the no-trailing-`-`/`.`
+rule at the new cut.
