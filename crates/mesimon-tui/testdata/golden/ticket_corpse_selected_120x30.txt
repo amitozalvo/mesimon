@@ -10,8 +10,8 @@
                                                                                           ◦ $ bash                 >1y
                                                                                           ✓ ✻ claude               >1y
                                                                                               enter resumes
-                                                                                           c claude ∙ s shell
-                                                                                           x dismiss
+                                                                                           s shell ∙ x dismiss
+
 
 
 

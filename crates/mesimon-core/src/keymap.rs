@@ -1218,11 +1218,15 @@ static TICKET: &[Binding] = &[
         show: "c",
         hint: |c| {
             // Live but paneless is exactly Sleeping: the press wakes the
-            // parked conversation and attaches, so the hint says so.
+            // parked conversation and attaches, so the hint says so. A
+            // claude that is up and in the rail is SILENT here (author
+            // 2026-09-03): the press only focuses the row already listed,
+            // which `enter` on that row says — the key stays bound, the
+            // trailer under the rail stops naming it.
             if c.ticket_has_claude && !c.ticket_promptable {
                 "wake claude"
             } else if c.ticket_has_claude {
-                "claude"
+                ""
             } else {
                 "start claude"
             }

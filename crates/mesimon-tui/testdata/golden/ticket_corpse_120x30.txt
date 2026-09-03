@@ -10,7 +10,7 @@
                                                                                           ◦ $ bash                 >1y
                                                                                           ✓ ✻ claude               >1y
                                                                                               enter resumes
-                                                                                           c claude ∙ s shell ∙ x sleep
+                                                                                           s shell ∙ x sleep
 
 
 

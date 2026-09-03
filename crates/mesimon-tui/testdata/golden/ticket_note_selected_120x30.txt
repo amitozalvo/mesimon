@@ -15,7 +15,7 @@
 
     Repro steps                                                                           ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
-    1. open the board                                                                      c claude ∙ s shell
+    1. open the board                                                                      s shell
     2. press p
     3. watch the peek                                                                      NOTES                     2
 

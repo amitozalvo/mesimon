@@ -8,7 +8,7 @@
                                  │                                                    │
     ● working                    │ TICKETS                                            │   ⠋ ✻ claude               >1y
                                  │   r         rename                                 │   ◦ $ bash                 >1y
-                                 │   n         describe                               │    c claude ∙ s shell ∙ x sleep
+                                 │   n         describe                               │    s shell ∙ x sleep
                                  │   N         new note                               │
                                  │   ^t        tags                                   │
                                  │   a         archive                                │
@@ -16,7 +16,6 @@
                                  │                                                    │
                                  │ SESSIONS                                           │
                                  │   enter     focus                                  │
-                                 │   c         claude                                 │
                                  │   s         shell                                  │
                                  │   S         another shell                          │
                                  │   x         sleep                                  │
@@ -27,4 +26,5 @@
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
+
  jk select session ∙ enter focus ∙ tab needs you ∙ r rename ∙ d delete ∙ n describe                              ? keys

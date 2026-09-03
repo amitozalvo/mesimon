@@ -8,7 +8,7 @@
 
  ! ✻ claude                                                                                    >1y
      Bash(rm -rf node_modules)
-  c claude ∙ s shell ∙ x sleep
+  s shell ∙ x sleep
 
 
 
