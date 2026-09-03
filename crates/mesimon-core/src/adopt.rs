@@ -62,6 +62,10 @@ pub struct SessionsPidFile {
     pub cwd: Option<String>,
     /// `idle` | `busy` — the only observed values; kept as raw text.
     pub status: Option<String>,
+    /// Epoch ms of the last `status` write (`statusUpdatedAt`). Present since
+    /// at least Claude Code 2.1.25x; the interrupt probe needs it to know the
+    /// `idle` is this turn's and not the last one's.
+    pub status_updated_at: Option<u64>,
     pub pid: Option<i32>,
     pub name: Option<String>,
     pub tmux: Option<String>,
@@ -99,12 +103,11 @@ pub fn classify_tail_record(v: &Value) -> TailEvent {
     }
     // Three spellings of an interrupt: the two mid-stream flags, and the Esc
     // press itself, which current Claude Code records as a `user` record
-    // carrying `interruptedMessageId` ("[Request interrupted by user]";
-    // verified live 2026-08-30 — spike S-E's "the transcript may get no
-    // record" does not hold on current builds).
+    // (verified live 2026-08-30 — spike S-E's "the transcript may get no
+    // record" does not hold on current builds; `is_interrupt` for its shape).
     if v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true)
         || v.get("interruptedByShutdown").and_then(Value::as_bool) == Some(true)
-        || v.get("interruptedMessageId").is_some_and(|x| !x.is_null())
+        || is_interrupt(v)
     {
         return TailEvent::Aborted;
     }
@@ -204,7 +207,7 @@ pub fn user_prompt(v: &Value) -> Option<String> {
         || v.get("toolUseResult").is_some()
         || v.get("isMeta").and_then(Value::as_bool) == Some(true)
         || v.get("isSidechain").and_then(Value::as_bool) == Some(true)
-        || v.get("interruptedMessageId").is_some_and(|x| !x.is_null())
+        || is_interrupt(v)
     {
         return None;
     }
@@ -232,6 +235,46 @@ pub fn user_prompt(v: &Value) -> Option<String> {
 /// The opening tag of the harness's background-task wake-up, written as a
 /// plain `user` record with no `isMeta`.
 const TASK_NOTIFICATION_TAG: &str = "<task-notification>";
+
+/// The Esc press's own sentence: `[Request interrupted by user]`, or `… for
+/// tool use]` when the press landed on a running tool. The prefix covers both.
+const INTERRUPT_TAG: &str = "[Request interrupted by user";
+
+/// Is this `user` record the Esc press? Known by its WORDS, the way the
+/// task-notification wake is known by its tag, and only secondarily by the
+/// `interruptedMessageId` beside them: that flag is optional in practice.
+/// Census of the local corpus 2026-09-04 (Claude Code 2.1.220–2.1.259): the
+/// tool-use form carries it about half the time (9 of 22 records lacked it on
+/// 2.1.251–2.1.258) and an SDK-driven interrupt never does — and a record
+/// without it was classed `Other`, so the card read "working" until the next
+/// prompt (dogfood 2026-09-04: "escape to interrupt claude causes ticket
+/// status always running"; the pane-quiet fallback never fired because the
+/// idle prompt keeps repainting). The sentence is the harness's, written as a
+/// single text block; a person typing those exact words as a prompt would be
+/// read the same way, and the cost is a cosmetic "interrupted" that the
+/// turn's next hook corrects.
+fn is_interrupt(v: &Value) -> bool {
+    if v.get("interruptedMessageId").is_some_and(|x| !x.is_null()) {
+        return true;
+    }
+    if v.get("type").and_then(Value::as_str) != Some("user") {
+        return false;
+    }
+    let Some(content) = v.get("message").and_then(|m| m.get("content")) else { return false };
+    let text = match content.as_str() {
+        Some(s) => Some(s),
+        None => content.as_array().and_then(|blocks| {
+            if blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_result")) {
+                return None;
+            }
+            blocks
+                .iter()
+                .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+                .find_map(|b| b.get("text").and_then(Value::as_str))
+        }),
+    };
+    text.is_some_and(|t| t.trim_start().starts_with(INTERRUPT_TAG))
+}
 
 #[cfg(test)]
 mod tests {
@@ -334,6 +377,12 @@ mod tests {
                 {"type":"text","text":"[Request interrupted by user]"}]}}"#,
         );
         assert_eq!(user_prompt(&v), None);
+        // …and the same press with no flag beside it, in the tool-use spelling
+        // (the shape that reached a card as `> [Request interrupted by user for
+        // tool use]`, 2026-09-04).
+        let v = val(r#"{"uuid":"u5b","type":"user","message":{"content":[
+                {"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#);
+        assert_eq!(user_prompt(&v), None);
 
         // The background-task wake-up is the harness speaking, in a plain
         // string record with no flag — only its tag says so.
@@ -402,6 +451,31 @@ mod tests {
         assert_eq!(classify_tail_record(&v), TailEvent::Aborted);
         let v = val(r#"{"uuid":"u8","type":"user","interruptedMessageId":null,"message":{}}"#);
         assert_eq!(classify_tail_record(&v), TailEvent::Other);
+
+        // The flag is optional (census 2026-09-04): both spellings of the
+        // sentence are the press on their own, with the flag null or absent.
+        let v = val(
+            r#"{"uuid":"u9","type":"user","interruptedMessageId":null,"message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#,
+        );
+        assert_eq!(classify_tail_record(&v), TailEvent::Aborted);
+        let v = val(
+            r#"{"uuid":"u10","type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+        );
+        assert_eq!(classify_tail_record(&v), TailEvent::Aborted);
+        let v = val(
+            r#"{"uuid":"u11","type":"user","message":{"content":"[Request interrupted by user]"}}"#,
+        );
+        assert_eq!(classify_tail_record(&v), TailEvent::Aborted);
+        // A tool result that merely QUOTES the sentence is a tool result.
+        let v = val(
+            r#"{"uuid":"u12","type":"user","toolUseResult":{},"message":{"content":[{"type":"tool_result","content":"[Request interrupted by user]"}]}}"#,
+        );
+        assert_eq!(classify_tail_record(&v), TailEvent::Other);
+        // And an assistant record saying the words is not an interrupt.
+        let v = val(
+            r#"{"uuid":"u13","type":"assistant","message":{"content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#,
+        );
+        assert!(matches!(classify_tail_record(&v), TailEvent::AssistantText { .. }));
 
         let v = val(r#"{"uuid":"u6","type":"user","message":{}}"#);
         assert_eq!(classify_tail_record(&v), TailEvent::Other);

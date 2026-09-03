@@ -1,9 +1,13 @@
 //! The Esc-interrupt catch via the transcript (dogfood 2026-08-30): current
 //! Claude Code keeps painting the pane for a minute after an interrupt, so the
 //! pane-quiet probe reads "working" long past the Esc — but it DOES write a
-//! `user` record carrying `interruptedMessageId` at the keypress. A Running
-//! session of ours must demote off that record even while the pane never goes
-//! quiet. Real tmux, in-process daemon, a stub agent that paints forever.
+//! `user` record saying `[Request interrupted by user…]` at the keypress. A
+//! Running session of ours must demote off that record even while the pane
+//! never goes quiet. The record here is the tool-use spelling WITHOUT the
+//! `interruptedMessageId` flag — the shape Claude Code 2.1.25x writes about
+//! half the time and the one that left a card on "working" (2026-09-04); the
+//! flagged form is the unit test's. Real tmux, in-process daemon, a stub
+//! agent that paints forever.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -112,7 +116,7 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
     assert_eq!(rec(&mut c).state, SessionState::Running, "painting pane must hold Running");
 
     // The Esc: no hook, the pane keeps painting, only the transcript speaks.
-    let abort = r#"{"uuid":"u1","type":"user","interruptedMessageId":"msg_011","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+    let abort = r#"{"uuid":"u1","type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#;
     use std::fs::OpenOptions;
     let mut f = OpenOptions::new().append(true).open(&transcript).unwrap();
     writeln!(f, "{abort}").unwrap();

@@ -328,6 +328,23 @@ fn golden_help_overlay_120() {
     golden("help_board_120x30", &render(&app, 120, 30));
 }
 
+/// An Esc-interrupted agent on an otherwise sessionless card: the card
+/// carries `⊘` where it used to carry nothing (2026-09-04).
+#[test]
+fn golden_interrupted_board_120() {
+    let mut b = fixture(false);
+    b.sessions.push(session(
+        21,
+        ulid_n(2),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: StopReason::Interrupted },
+    ));
+    let mut app = app_graphite(b);
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    golden("board_interrupted_120x30", &render(&app, 120, 30));
+}
+
 /// The same overlay on the ticket screen lists a different set — the proof
 /// that it answers "here", not "in general".
 #[test]

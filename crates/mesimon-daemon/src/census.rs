@@ -97,6 +97,18 @@ pub fn scan(
 /// a live pid claiming this sessionId right now. Best-effort — pid reuse can
 /// false-positive, which is why the guard is confirm-overridable.
 pub fn running_pid_for(home: &Path, session_id: uuid::Uuid) -> Option<i32> {
+    live_pid_file(home, session_id).map(|(_, pid)| pid)
+}
+
+/// The pid file a LIVE process keeps for this sessionId — the file whose
+/// `status` the interrupt probe reads (`Daemon::probe_status_files`). Live
+/// pid required: a resumed conversation can leave an older process's file
+/// beside the current one, and only the running one's status means anything.
+pub fn status_file_for(home: &Path, session_id: uuid::Uuid) -> Option<PathBuf> {
+    live_pid_file(home, session_id).map(|(path, _)| path)
+}
+
+fn live_pid_file(home: &Path, session_id: uuid::Uuid) -> Option<(PathBuf, i32)> {
     let dir = home.join("sessions");
     let files = std::fs::read_dir(dir).ok()?;
     for f in files.flatten() {
@@ -107,7 +119,7 @@ pub fn running_pid_for(home: &Path, session_id: uuid::Uuid) -> Option<i32> {
         }
         if let Some(pid) = pf.pid {
             if pid > 0 && unsafe { libc::kill(pid, 0) } == 0 {
-                return Some(pid);
+                return Some((f.path(), pid));
             }
         }
     }

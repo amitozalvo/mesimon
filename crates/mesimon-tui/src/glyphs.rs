@@ -130,6 +130,29 @@ fn plan_mark(tier: Tier) -> char {
     }
 }
 
+/// The interrupted mark: the user pressed Esc on a turn and the agent sits
+/// with the prompt handed back. Not done (no `✓`), not working, not lost
+/// (`waiting` is for a state we cannot see) and not the plain `◦` of a
+/// session nobody has asked anything yet. Before this the card carried NO
+/// glyph for it — identical to a ticket nobody had ever opened (author
+/// 2026-09-04: "it looks like no session exists there"). `⊘` U+2298
+/// CIRCLED DIVISION SLASH: the halt sign — the one shape whose meaning
+/// survives at one cell and at the grey register, and which collides with
+/// none of `✓` done, `x` failed, `z` asleep, `◦` idle. EAW=Neutral, Emoji=No,
+/// Mathematical Operators (every Menlo-family face). The intuitive marks are
+/// all barred by the width law: `⏸`/`⏹` are emoji-presentation codepoints
+/// and `‖`/`■` are Ambiguous, any of which can paint two cells. `¦` BROKEN
+/// BAR shipped for an hour and was too thin to read (author: "doesn't read
+/// nicely"). ASCII `;`, a sentence stopped short: `|` is a spinner frame,
+/// `.` the idle mark, `-` archived, `"`/`:`/`,` the waiting frames.
+pub(crate) fn interrupted(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        ';'
+    } else {
+        '⊘'
+    }
+}
+
 /// The suggestion mark. NOT a chevron: `›` reads as "you are here" — every
 /// terminal prompt has trained that — and a suggestion is the opposite, an
 /// offer you have not taken. NOT `◊` either: a full-height diamond outline is
@@ -303,6 +326,14 @@ pub(crate) fn card_glyph(
     {
         return Some((background(tier, spin), Register::Grey));
     }
+    // Interrupted by the user: a known fact, so above `waiting` (which says
+    // we lost track) and under everything in flight or finished.
+    if sessions
+        .iter()
+        .any(|s| matches!(s.state, SessionState::Idle { stop_reason: StopReason::Interrupted }))
+    {
+        return Some((interrupted(tier), Register::Grey));
+    }
     if sessions.iter().all(|s| matches!(s.state, SessionState::Sleeping)) {
         return Some(('z', Register::Dormant));
     }
@@ -338,6 +369,9 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
         }
         SessionState::Idle { stop_reason: StopReason::Background } => {
             (background(tier, spin), Register::Grey)
+        }
+        SessionState::Idle { stop_reason: StopReason::Interrupted } => {
+            (interrupted(tier), Register::Grey)
         }
         SessionState::Idle { .. } => (if ascii { '.' } else { '◦' }, Register::Grey),
         SessionState::Sleeping => ('z', Register::Dormant),
@@ -380,6 +414,9 @@ pub(crate) fn state_word(state: &SessionState) -> &'static str {
         // Lowercase: nothing is required of the user. The turn is paused on
         // work the agent started, and it will resume itself.
         SessionState::Idle { stop_reason: StopReason::Background } => "background",
+        // Lowercase too: the user stopped it and knows; the next prompt is
+        // theirs to write when they choose.
+        SessionState::Idle { stop_reason: StopReason::Interrupted } => "interrupted",
         SessionState::Idle { .. } => "idle",
         SessionState::Sleeping => "sleeping",
         // A deliberate kill is not a failure — the corpse stays resumable.
@@ -636,6 +673,44 @@ mod tests {
     /// THIS pane), not `waiting` (we have lost track), not the idle mark, and
     /// never the calm `✓` (which would say the ticket is ready to review).
     /// It rides the slow cadence — no third speed on the board.
+    /// An Esc-interrupted turn wears a mark of its own: the card fell through
+    /// every arm and drew NOTHING for it, the look of a ticket with no session
+    /// (author 2026-09-04). Still, not done, not lost, not plain idle, one cell.
+    #[test]
+    fn an_interrupted_turn_has_its_own_still_mark() {
+        use unicode_width::UnicodeWidthChar;
+        let cut = rec(SessionState::Idle { stop_reason: StopReason::Interrupted });
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            let (g, reg) = session_glyph(&cut, tier, 0);
+            assert_eq!(reg, Register::Grey, "an interrupt asks nothing of the user");
+            assert_eq!(card_glyph(&[&cut], tier, 0), Some((g, Register::Grey)));
+            assert_eq!(g.width(), Some(1));
+            assert_ne!(g, if tier == Tier::Ascii { '+' } else { '✓' }, "not done");
+            assert_ne!(g, if tier == Tier::Ascii { '.' } else { '◦' }, "not plain idle");
+            assert_ne!(g, 'z', "not asleep");
+            for f in 0..40 {
+                assert_ne!(g, spinner(tier, f), "not working");
+                assert_ne!(g, waiting(tier, f), "not lost");
+                assert_ne!(g, background(tier, f), "not parked");
+                assert_eq!(session_glyph(&cut, tier, f).0, g, "still: it does not move");
+            }
+        }
+        assert_eq!(state_word(&cut.state), "interrupted");
+        // Under anything in flight or finished, over a lost session.
+        let busy = rec(SessionState::Running);
+        let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        let lost = rec(SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
+        assert_eq!(
+            card_glyph(&[&cut, &busy], Tier::Unicode, 0),
+            Some((spinner(Tier::Unicode, 0), Register::Grey))
+        );
+        assert_eq!(card_glyph(&[&cut, &done], Tier::Unicode, 0), Some(('✓', Register::Calm)));
+        assert_eq!(
+            card_glyph(&[&lost, &cut], Tier::Unicode, 0),
+            Some((interrupted(Tier::Unicode), Register::Grey))
+        );
+    }
+
     #[test]
     fn a_parked_turn_has_its_own_slow_mark() {
         use unicode_width::UnicodeWidthChar;
