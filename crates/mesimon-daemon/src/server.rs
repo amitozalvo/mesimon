@@ -12,7 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use mesimon_backend_tmux::TmuxBackend;
-use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool};
+use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
 use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
 use mesimon_core::board::{
     sanitize_tag, Archived, Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord,
@@ -82,6 +82,17 @@ const RSS_TICKS: u64 = 40;
 /// was never a fast one. Sixty seconds clears every working silence
 /// measured and costs that rare case a minute it was mostly paying anyway.
 const PANE_QUIET_MS: u64 = 60_000;
+/// A `status: idle` in Claude's session file counts only when stamped this
+/// far after the Running spell began: the previous turn's `idle` write and
+/// this turn's `UserPromptSubmit` hook can land in either order (a prompt
+/// typed ahead is submitted the instant the turn ends), and a stale idle read
+/// as this turn's would blank a card that just started working. That hazard
+/// is milliseconds wide; a person's Esc is not. It was 1 s for an hour and
+/// blocked a live Esc 938 ms after Enter (dogfood 2026-09-04).
+const STATUS_IDLE_MARGIN_MS: u64 = 250;
+/// How long a Running session with no session file goes between looks for
+/// one (an older Claude Code writes none; a scan is ~40 small reads).
+const STATUS_FILE_RETRY_MS: u64 = 30_000;
 /// Tickets in this column are sleep-safe: their sessions feed the header's
 /// sleep suggestion. Interim hardcode — becomes a per-column sleep policy
 /// (`never|offer|auto`) with M5's column policies.
@@ -89,6 +100,13 @@ const SLEEP_SAFE_COLUMN: &str = "DONE";
 /// A sleep-safe ticket whose sessions have all been asleep this long feeds
 /// the header's archive suggestion (same offer-not-action shape as sleep).
 const ARCHIVE_SUGGEST_MS: u64 = 3_600_000;
+
+/// `probe_status_files`' memory of one Running session's session file.
+struct StatusProbe {
+    path: Option<std::path::PathBuf>,
+    /// Epoch ms of the last failed search; 0 means never looked.
+    looked_at: u64,
+}
 
 struct GraceEntry {
     ticket: Ticket,
@@ -176,6 +194,9 @@ pub struct Daemon {
     external: Vec<ExternalItem>,
     /// Observe-tier transcript cursors for adopted hook-less sessions.
     tails: HashMap<uuid::Uuid, TailCursor>,
+    /// Per Running Claude session: where its `~/.claude/sessions/<pid>.json`
+    /// is, or when we last failed to find it (`probe_status_files`).
+    status_files: HashMap<uuid::Uuid, StatusProbe>,
     /// Panes SIGTERM'd and awaiting their grace-then-kill-pane (by sid16).
     reaping: HashMap<String, Instant>,
     /// (bytes, sessions seen) — `ps` aggregate, refreshed on the 10 s bucket.
@@ -436,6 +457,7 @@ pub fn run(paths: Paths) -> Result<()> {
         feed,
         external: Vec::new(),
         tails: HashMap::new(),
+        status_files: HashMap::new(),
         reaping: HashMap::new(),
         rss_cache: (0, 0),
         rss_by: HashMap::new(),
@@ -1146,6 +1168,7 @@ impl Daemon {
         }
         if self.ticks % TAIL_POLL_TICKS == 0 {
             changed |= self.poll_tails();
+            changed |= self.probe_status_files();
             changed |= self.refresh_titles();
         }
         if self.ticks % RSS_TICKS == 0 {
@@ -1287,6 +1310,73 @@ impl Daemon {
         changed
     }
 
+    /// The recordless Esc. Pressed before the first assistant output, Claude
+    /// Code hands the prompt back to the box and writes NOTHING to the
+    /// transcript (spike S-E's case, live 2026-09-04: "the conv returned to
+    /// the last message before I prompted") — no hook, no record, and the
+    /// pane-quiet probe a minute later was the whole catch. But Claude Code
+    /// keeps `~/.claude/sessions/<pid>.json` for its own peers (`notify_idle`
+    /// among its `peerFeatures`), and its `status` flips `busy` → `idle` at
+    /// the keypress with `statusUpdatedAt` beside it. Measured over the 40
+    /// live files on this machine 2026-09-04: every `busy` was a Running
+    /// record of ours, every `idle` an Idle one, and the interrupted
+    /// session's stamp was the Esc's own second. Doc 11 §11.3 barred the file
+    /// from setting state as "best-effort enrichment"; the measurement says
+    /// the status is written at every edge, so it gets PaneQuiet's row sixty
+    /// seconds earlier — demotion-only, Medium, `Running` only. The stamp
+    /// must post-date this Running spell by `STATUS_IDLE_MARGIN_MS`. The
+    /// file is found once per spell by sessionId + live pid
+    /// (`census::status_file_for`), then read in place.
+    fn probe_status_files(&mut self) -> bool {
+        let now = now_ms();
+        let cands: Vec<(uuid::Uuid, uuid::Uuid, u64)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| {
+                r.kind == SessionKind::Claude
+                    && r.state == SessionState::Running
+                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
+            })
+            .map(|r| (r.id, r.claude_session_id.unwrap_or(r.id), r.state_changed_at.unwrap_or(now)))
+            .collect();
+        self.status_files.retain(|id, _| cands.iter().any(|(c, _, _)| c == id));
+        if cands.is_empty() {
+            return false;
+        }
+        let home = crate::census::claude_home();
+        let mut changed = false;
+        for (id, claude_id, since) in cands {
+            let probe =
+                self.status_files.entry(id).or_insert(StatusProbe { path: None, looked_at: 0 });
+            if probe.path.is_none() && now.saturating_sub(probe.looked_at) >= STATUS_FILE_RETRY_MS {
+                probe.path = crate::census::status_file_for(&home, claude_id);
+                probe.looked_at = now;
+            }
+            let Some(path) = probe.path.clone() else { continue };
+            let Ok(text) = std::fs::read_to_string(&path) else {
+                probe.path = None;
+                continue;
+            };
+            let Ok(pf) = serde_json::from_str::<SessionsPidFile>(&text) else { continue };
+            if pf.session_id != Some(claude_id) {
+                probe.path = None;
+                continue;
+            }
+            let idle = pf.status.as_deref() == Some("idle")
+                && pf.status_updated_at.is_some_and(|at| at >= since + STATUS_IDLE_MARGIN_MS);
+            if !idle {
+                continue;
+            }
+            if let Some(change) =
+                self.machines.get_mut(&id).and_then(|m| m.apply(&Signal::StatusFileIdle, now))
+            {
+                changed |= self.apply_change(id, &change, None, Some("status"));
+            }
+        }
+        changed
+    }
+
     /// The ticket page's preview zone: what a shell pane has on screen,
     /// oldest line first. Read-only — no state moves, nothing is broadcast,
     /// and the record is only consulted for the pane's name.
@@ -1370,7 +1460,8 @@ impl Daemon {
     /// post-turn painting (dogfood 2026-08-30: an idle pane kept
     /// `window_activity` fresh for 60–80 s, so the interrupted card read
     /// "working" until the user killed it) — but the transcript records
-    /// "[Request interrupted by user]" at the keypress. Only the Aborted
+    /// "[Request interrupted by user]" at the keypress — known by the words,
+    /// since the flag beside them is optional (`adopt::is_interrupt`). Only the Aborted
     /// hint is forwarded for this class: everything else stays hooks-owned,
     /// and a silent transcript during a long tool run must never demote.
     fn poll_tails(&mut self) -> bool {
@@ -1564,6 +1655,16 @@ impl Daemon {
             }
         }
         if let Some(sig) = ingest::signal_of(&frame) {
+            // A prompt reached the agent — every road ends here: the board's
+            // Shift+Enter field, the composer's submit, a line typed in the
+            // pane. The person's own last move on the ticket stops being one
+            // the no-undo rule protects, BEFORE the `Running` edge below asks
+            // automove to reverse it (T-186). An agent's move keeps its guard.
+            if matches!(sig, Signal::UserPromptSubmit) {
+                if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+                    self.moves.asked_by_hand(t);
+                }
+            }
             let machine = self
                 .machines
                 .entry(id)

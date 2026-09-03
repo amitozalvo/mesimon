@@ -195,8 +195,20 @@ card** (T-163, 2026-09-03 — it took the key from the `needs you` attention wal
 and there `Shift+Tab` still sets the ticket's workspace (`SetWorkspace`, at once) while no session
 or worktree has locked it (`Ctx::workspace_open` mirrors the daemon's `set_workspace` lock). The
 editor's surface is the SCREEN's: over the board it is the dialog whatever it holds (`n`/`N` too),
-from the ticket page it takes the whole screen. `n`/`N` open a note, `^s` saves and stays, a second
-`^s` on a saved note sends `NoteToAgent` (mesimon's own sentence, human gesture only). **`^g`
+from the ticket page it takes the whole screen. `n`/`N` open a note. **`^s` saves and leaves the
+dialog, either way** (2026-09-04, user request): on a note the body is written and the editor
+closes (a clean one just closes); composing, the description is kept and the dialog folds back
+into the one-line composer (`InputPurpose::Create { description }`, `App::fold_composer`; `Tab`
+reopens the editor on it, Enter mints it as `notes[0]`). **`^S` (ctrl+shift+s) saves, leaves and
+puts the words in front of claude**: composing, it is the one-line composer's Shift+Enter in the
+bigger room (mint, write the description, spawn claude with the title submitted, stay on the
+board); on a note it follows who is on the ticket — a paned claude is told (`NoteToAgent`,
+mesimon's own sentence, human gesture only; `Ctx::editor_claude_paned`), a ticket with NO claude
+gets one started on the title like a new ticket (`Ctx::editor_seat_empty`), a Sleeping claude
+leaves it inert (`c` wakes it). The editor's own Shift+Enter is a newline. `Key::Ctrl('S')` is off
+the legacy floor on Shift+Enter's clause — a legacy terminal sends the bare `^s` — so it is gated
+on `rich_keys`. `^g`'s return is the one road that writes and STAYS (`App::write_note`).
+(STALE-MAP "The grown composer: `^s` keeps the draft, `^S` mints and asks".) **`^g`
 hands the body to the user's own editor** (T-181, 2026-09-03): `$VISUAL`, else `$EDITOR`, else
 `vi`, run through the shell on the terminal the TUI gives back for the duration — the focus
 handover's road (`tui/src/external.rs`, `lib.rs::event_loop`) — on a 0600 file under
@@ -409,7 +421,11 @@ demote). **No polling for exits**: tmux's `pane-died` hook is the only exit sign
 server-alive guard catches wholesale tmux death. One deliberate poll exists for the Esc
 interrupt, which emits NOTHING (no hook, no transcript record — spike S-E refuted the corpus's
 OSC Tier A−): a `Running` Claude pane whose `#{window_activity}` goes quiet 60 s demotes to
-`Idle{Interrupted}` at medium confidence, demotion-only (`probe_activity` in server.rs). After a
+`Idle{Interrupted}` at medium confidence, demotion-only (`probe_activity` in server.rs) — and
+since 2026-09-04 the same row lands in ~2 s off Claude Code's own `~/.claude/sessions/<pid>.json`
+(`status: idle` stamped after the Running spell began; `probe_status_files`, STALE-MAP "The
+recordless Esc is caught by Claude's own session file"), because a quick Esc writes no
+transcript record at all. After a
 daemon restart, our own Claude sessions sit at `Unknown{DaemonRestarted}` (reconcile never trusts
 stale claims) and borrow the observe tier while `Unknown`: the transcript tail re-derives state at
 Low confidence until a hook re-asserts. Sessions mesimon didn't spawn get no hooks and can never
@@ -453,7 +469,10 @@ A text field never sees an Alt atom at all: `keys::to_key_text`
 strips the modifier, because there Alt is `word_wise`'s "by word" and nothing else — which is
 why `key_tag` reads `to_key` while steering and `to_key_text` only while naming, and why an
 Alt atom (or the `˙` a terminal composes instead) never dismisses the picker as a stray key
-would. A third off-floor atom needs one of these two clauses, argued — not a third one.
+would. A third off-floor atom needs one of these two clauses, argued — not a third one: the third,
+`Key::Ctrl('S')` (2026-09-04, the grown composer's mint-and-ask), took Shift+Enter's — the bare
+control byte a legacy terminal sends is `^s`, another verb, so it is `rich_keys`-gated and
+`ambiguous_atoms_are_inert_without_rich_keys` is the one law both run.
 (STALE-MAP "Alt is admitted, for one verb" + "A tag moves".)
 
 **Composing a ticket: Enter saves, Shift+Enter saves and asks.** A fresh Claude spawn always
@@ -796,6 +815,27 @@ marks both the chip and the rows it stands in front of. To add one: add the menu
 `?` (`ui/help.rs`) renders `keymap::overlay` and is the complete answer for the current
 screen and state.
 
+**Release notes are `CHANGELOG.md`, compiled in, on a screen of their own (2026-09-04).** The
+root changelog is the one store: `core/src/relnotes.rs` holds `SOURCE` (`include_str!`, so an
+edit is in the next binary) and `parse` — a release is a `## <tag> — <date>` heading (em dash or
+hyphen, ISO date) and the markdown under it; a `## ` line that is not one is body text, so prose
+never mints a version, and a fenced line never splits one. `every_release_is_dated_and_in_order`
+runs over the REAL file in `cargo ut`: every heading dated, tags unique and newest first, and the
+top entry IS `v{CARGO_PKG_VERSION}` — bump the version, write its notes, or the suite says so.
+`ci/release.sh` dies early without a dated heading for the tag and lifts that section for the
+GitHub release body (a prefix match now). The Esc menu's `Release notes` row (`Verb::ReleaseNotes`,
+beside the theme row, never a suggestion) opens `Screen::Releases` — state in `App::releases:
+ReleasesState` (parsed notes, the build tag, scroll, and the band rows the draw records) — drawn by
+`ui/releases.rs`: chip `RELEASES`, an identity row, then one document in a reading measure of at
+most 100 cells centred on the screen: a band per release on the elevated surface (tag bold, date
+in words, `this build` on the running one) and `rich.rs` under it. The band of the release the
+window starts inside stays pinned to the first row. `Scope::Releases` inherits `Global` and wears
+the diff's reading keys on the diff's verbs (`jk`, `{ }`, `n N` = next / previous release, `q`),
+routed on the screen in `App::dispatch`; the menu is the board's, so `q` always returns there.
+Goldens are seeded with a three-release fixture (`install_releases`), never the real file, which
+would drift every release; `test_real_changelog_reads_lawfully` pages through the real one at
+three widths under L1 instead. (STALE-MAP "Release notes are the changelog, on a screen".)
+
 **Schema evolution.** Every new `SessionRecord` field must still be `#[serde(default)]` — the
 defaults ARE the migration (back-compat fixture test in `core/src/board.rs`) — but the stakes
 changed in alpha-1: `store.rs` no longer hard-fails on a parse error, so a missing default now
@@ -868,7 +908,10 @@ restrains everything that is not a person, and never a person: *no undo* (an aut
 not reverse a different principal's move inside 60 s), *depth zero* (no automation inside an
 automation's move — nothing recurses today, which is why it was cheap before M5's column
 on-enter actions), and a *fuse* (6 automatic moves of one ticket in 120 s suspends automation for
-it, notice in the advisory row, cleared by any move by hand). State is in memory on purpose: a
+it, notice in the advisory row, cleared by any move by hand). **A person's prompt reaching the agent
+(`Signal::UserPromptSubmit`) supersedes the person's OWN last move** — `MoveGate::asked_by_hand`,
+T-186 — so `<<` to TODO then Shift+Enter lands the card in IN PROGRESS; an agent's move and the
+fuse keep their protection. State is in memory on purpose: a
 debounce, not a security control, so no schema field to get wrong. **M5's column automations
 become another `Principal::Automation { rule }` calling `place_ticket` and inherit all of it.**
 

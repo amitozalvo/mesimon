@@ -185,6 +185,21 @@ impl MoveGate {
         }
     }
 
+    /// A person asked the ticket's agent to work (a prompt reached it): the
+    /// person's own last move stops being one to protect. The no-undo rule
+    /// exists so a hand drag is not snapped back by a machine — but the drag
+    /// and the ask are the SAME hand, and the newer act is the intent
+    /// (dogfood 2026-09-04, T-186: `<<` to TODO then Shift+Enter, and the
+    /// card sat in TODO for a minute while the agent worked). Somebody
+    /// else's move — an agent that announced REVIEW — keeps its protection:
+    /// the person did not make it, so their ask cannot supersede it. The
+    /// fuse is untouched; moving by hand is still what clears it.
+    pub fn asked_by_hand(&mut self, ticket: ulid::Ulid) {
+        if self.last.get(&ticket).is_some_and(|l| l.actor == Principal::Local.actor()) {
+            self.last.remove(&ticket);
+        }
+    }
+
     /// Is automation suspended for this ticket? Drives the card's mark.
     pub fn is_fused(&self, ticket: ulid::Ulid) -> bool {
         self.fused.contains(&ticket)
@@ -347,6 +362,39 @@ mod tests {
         g.leave();
         g.leave();
         assert!(g.check(t(), "A", "B", &auto(), Instant::now()).is_ok());
+    }
+
+    /// The bug: a human parks a running ticket in TODO, then asks the agent
+    /// again. The `Running` edge that follows is the exact reverse of the
+    /// park, inside the window — and it is what the human just asked for.
+    #[test]
+    fn a_prompt_by_hand_supersedes_the_hands_own_park() {
+        let mut g = MoveGate::new();
+        let now = Instant::now();
+        g.record(t(), "IN PROGRESS", "TODO", &Principal::Local, now);
+        assert!(g.check(t(), "TODO", "IN PROGRESS", &auto(), now).is_err(), "the guard is armed");
+        g.asked_by_hand(t());
+        assert_eq!(g.check(t(), "TODO", "IN PROGRESS", &auto(), now), Ok(()));
+    }
+
+    /// ...but not somebody else's move: the agent said REVIEW, and the
+    /// human's next prompt does not hand automove permission to undo that.
+    #[test]
+    fn a_prompt_by_hand_leaves_an_agents_move_protected() {
+        let mut g = MoveGate::new();
+        let now = Instant::now();
+        g.record(t(), "IN PROGRESS", "REVIEW", &agent(), now);
+        g.asked_by_hand(t());
+        assert!(matches!(
+            g.check(t(), "REVIEW", "IN PROGRESS", &auto(), now),
+            Err(Refusal::PingPong { .. })
+        ));
+        // And the fuse is not the ask's to clear.
+        for _ in 0..FLAP_LIMIT {
+            g.record(t(), "A", "B", &auto(), now);
+        }
+        g.asked_by_hand(t());
+        assert!(g.is_fused(t()), "only a move by hand clears the fuse");
     }
 
     #[test]

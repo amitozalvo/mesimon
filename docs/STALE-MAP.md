@@ -4065,3 +4065,197 @@ instead of a rest timer.
   is seen when the cursor leaves, a fresh session starts its own entry, a first reply is news);
   `test_done_mark_decays_once_seen` (grey at rest, calm when unread, grey on the cursor card,
   a visible step on every flavor); the unread `✓` seeded into both L1 sweeps.
+
+## A person's ask supersedes the person's own park (2026-09-04, T-186)
+
+Dogfood: a ticket ran TODO → IN PROGRESS → REVIEW, the user pressed `<<` (REVIEW → IN PROGRESS
+→ TODO, two hand moves), then Shift+Enter to ask claude again — and the card sat in TODO while
+the agent worked. The feed said why: `move_refused:ping_pong`. `movegate`'s no-undo rule
+refuses an automatic move that is the exact reverse of a move somebody else made inside 60 s,
+and automove's TODO → IN PROGRESS on the `Running` edge IS the reverse of the hand's
+IN PROGRESS → TODO. The rule was written for "a human dragging a running ticket back to TODO
+watches automove snap it forward" — but the drag and the ask are the SAME hand, and the ask is
+the newer intent.
+
+- **The rule**: `MoveGate::asked_by_hand(ticket)` drops the ticket's last-move entry iff its
+  actor is `local`. Called from the hook frame path on `Signal::UserPromptSubmit`, BEFORE the
+  machine applies the signal, so the `Running` edge that follows finds no move to protect.
+  One call site covers every road an ask takes — the board's Shift+Enter field
+  (`PromptSession`), the composer's submit, a line typed in the pane — because they all end in
+  that frame.
+- **What stays protected**: an AGENT's move. `mcp_e2e` sends a prompt after the agent's
+  `move_ticket` to REVIEW and asserts automove does not drag it back; the person did not make
+  that move, so their ask cannot supersede it. The fuse is untouched — a move by hand is still
+  what clears it, as its notice says.
+- **Known imprecision**: a task-notification wake also arrives as `UserPromptSubmit`, so a
+  ticket parked on background work, dragged to TODO, and woken by its task will move to
+  IN PROGRESS. The agent is genuinely working then; accepted.
+- E2e: `crates/mesimon/tests/ask_after_park_e2e.rs` (fails without the call — verified). Unit:
+  `movegate::tests::a_prompt_by_hand_*`.
+
+## The Esc interrupt is known by its words (2026-09-04, dogfood)
+
+- **Symptom**: "escape to interrupt claude causes ticket status always running". The card kept
+  the spinner from the Esc until the next prompt.
+- **Cause**: `adopt::classify_tail_record` recognised the Esc press by the `interruptedMessageId`
+  field beside the `[Request interrupted by user…]` record, and the field is optional. Census of
+  the local corpus (Claude Code 2.1.220–2.1.259): the tool-use spelling (`… for tool use]`) lacks
+  it about half the time — 9 of 22 on 2.1.251–2.1.258 — and an SDK-driven interrupt never has it.
+  Correlated against this repo's activity log: every flagged record produced `idle interrupted`
+  within ~3 s; every unflagged one produced NOTHING in the following 120 s. The pane-quiet
+  fallback (60 s) did not rescue any of them — the idle prompt keeps repainting, as T-50 measured.
+- **Fix**: `adopt::is_interrupt` — a `user` record whose text (a string, or the first text block
+  with no `tool_result` beside it) starts with `[Request interrupted by user` IS the press, flag
+  or no flag; the flag stays as a second road. `user_prompt` takes the same test, so the sentence
+  no longer reaches a card as `> [Request interrupted by user for tool use]`. Same shape as the
+  `<task-notification>` tag: a harness sentinel, known by its words.
+- **Accepted imprecision**: a person typing those exact words as a prompt is read as an
+  interrupt — a cosmetic `Idle{Interrupted}` at Low that the turn's next hook corrects.
+- `interrupt_tail_e2e` now appends the unflagged tool-use form (fails without the fix — verified);
+  the flagged form and the two impostors (a quoting tool result, an assistant saying the words)
+  are unit fixtures in `adopt.rs`.
+
+## The recordless Esc is caught by Claude's own session file (2026-09-04, dogfood)
+
+- **Symptom, second half**: the same "always running" report, reproduced live as Enter then Esc
+  within ~2 s — "the conv returned to the last message before I prompted". Claude Code hands
+  the prompt back to the box and writes NOTHING to the transcript (spike S-E's case, still true
+  on 2.1.259): no hook, no `[Request interrupted…]` record. The 60 s pane-quiet probe was the
+  whole catch, and it fired at +63 s.
+- **Signal**: `~/.claude/sessions/<pid>.json` — the file Claude Code keeps for its own peers
+  (`peerFeatures: notify_idle`) — carries `status: busy|idle` and `statusUpdatedAt`, and the
+  interrupted session's stamp was the Esc's own second (01:13:12.012 for a 01:13:12 keypress).
+  Measured across the 40 live files on this machine: every `busy` was a Running record of ours,
+  every `idle` an Idle one; two files from older builds carried no status at all.
+- **Doc 11 §11.3 refuted**: it barred the pid file from setting any §11.7 state as "best-effort
+  enrichment". The status is written at every edge, so it gets PaneQuiet's row sixty seconds
+  earlier and nothing more: `Signal::StatusFileIdle` shares the arm (Running → Idle{Interrupted},
+  Medium, demotion-only, settle). `Daemon::probe_status_files` runs on the tail-poll cadence
+  (2 s), finds the file once per Running spell by sessionId + live pid
+  (`census::status_file_for`; a resumed conversation can leave a dead process's file beside the
+  live one), and requires `statusUpdatedAt ≥ state_changed_at + 250 ms` — the previous turn's
+  `idle` write and this turn's `UserPromptSubmit` can land in either order (a prompt typed
+  ahead is submitted the instant the turn ends). It shipped at 1 s for an hour and blocked a
+  live Esc 938 ms after Enter; the hazard is milliseconds wide, a person's Esc is not. No file
+  (an older Claude Code) means a re-look every 30 s and the pane probe as before.
+- **And a probe never overrides a pending stated leave** (same hour): a `Stop` settles 1500 ms,
+  the file goes idle in the same second, and the probe on its 2 s cadence replaced the pending
+  `EndTurn` with `Interrupted` — a finished turn that automove would not promote. `PaneQuiet` and
+  `StatusFileIdle` now fire only with nothing pending; a Stop arriving inside the probe's own
+  settle still replaces it (`a_probe_never_overrides_a_pending_stated_leave`).
+- E2e: `crates/mesimon/tests/interrupt_status_e2e.rs` — a stale idle holds Running, a fresh one
+  demotes while the pane paints and the quiet threshold sits at 600 s, a re-prompt is not
+  re-demoted by the old stamp. Unit: `attention::status_file_idle_is_pane_quiet_sixty_seconds_early`.
+
+## The grown composer: `^s` keeps the draft, `^S` mints and asks (2026-09-04, user request)
+
+**Refuted:** "Shift+Enter in the editor is a newline" (above) left the grown composer with no
+"save + ask" at all — `^s` minted and closed, and the agent was the board's Shift+Enter on the
+minted card, a press later. The author asked for the one-line composer's gesture inside the big
+one, then corrected the first cut (which put it on `^s` itself): "^s should just save (and exit
+the composer to go back to small composer). ^S to save, exit and run claude like shift+enter
+would do". So the big composer is the small one's second room, not its replacement: what is
+typed there comes BACK, and the small composer's two Enters stay the two ways out.
+
+**Built:**
+- `InputPurpose::Create` carries `description: Option<String>` beside `workspace` and `tags`.
+  `App::fold_composer` is the road back — `^s` (`Verb::EditorSave`, composing) and a clean Esc
+  both take it, title, picks and body riding along, a blank body being no description, status
+  `description kept`; `Tab` reopens the editor on the kept text (`TextArea::from_text`), clean;
+  `commit_input` hands the description to `mint_ticket`, which writes it through `WriteNote`
+  after `CreateTicket` and before any spawn. Nothing leaves for the daemon on `^s`. The `^s`
+  hint reads `save` while composing, and its `avail` gains `editor_composing`: the carried title
+  is not dirty against the editor's baseline, so `Tab` then `^s` with nothing typed was pressing
+  nothing.
+- **`Key::Ctrl('S')` — ctrl+shift+s — is the third off-floor atom, admitted on Shift+Enter's
+  clause, not a third one.** The case IS the shift (`Key::Char` already spells `S` for
+  shift+s; `Display` now writes `^s` / `^S` apart). `keys::to_key` mints the uppercase atom only
+  when the SHIFT modifier arrives on a ctrl+letter, which only the kitty tier reports: a legacy
+  terminal sends the bare 0x13, which is `^s`, another verb — the ambiguous family, so every
+  binding on it is gated on `Ctx::rich_keys` and the press degrades to exactly the unshifted key
+  (`ctrl_shift_s_is_inert_without_rich_keys` runs the same law as the ShiftEnter test through a
+  shared helper; `OFF_FLOOR` lists it beside its test; app test
+  `ctrl_shift_s_degrades_to_ctrl_s_on_the_legacy_floor`). A Shift that arrives without the tier
+  resolves to nothing: inert, not wrong.
+- `Verb::EditorSaveStart` on it, `Scope::Editor`, composing only, `^S save + ask claude`, prio 12
+  — `App::editor_save_start`: `mint_ticket(.., start: true)`, the ticket, then its description,
+  then `SpawnSession { submit_prompt: true }`, in that order so the agent's first `get_ticket`
+  already carries the description; the board stays, status `claude started on the title` (or
+  the worktree's `provisioning …`), no Enter window armed. `shift_stays_on_one_axis` names the
+  pair: `^s` keeps, `^S` mints and asks — Enter / Shift+Enter's bargain on the save key's own
+  shift. `Scope::Editor`'s Shift+Enter, `Verb::SaveStart` and
+  `shift_enter_asks_claude_at_every_stage` are untouched: the same sentence on another atom, not
+  a fourth ShiftEnter home.
+- Golden `editor_compose_120x30`'s bottom edge reads `^s save ∙ ^S save + ask claude ∙ esc close ∙
+  ^t tags`. A blank title: `^S` refuses in place (`a ticket needs a title`); `^s` has nothing to
+  refuse and folds back for the title to be typed.
+
+**And the same pair on a ticket that exists** (the author's third message, same hour: "if no claude
+session in ticket, treat like new. either way ^s saves and exits the dialog"):
+- **`^s` always saves and leaves.** On a note the body is written and the editor closes; a clean
+  one just closes; a blank new one says `nothing to save` and closes; an emptied existing one keeps
+  its two-press delete. The binding is `avail: editing`, hint `save`, dirty or not. **Refuted:** the
+  note editor's "stays open, and a second `^s` on a saved note tells claude" (the notes block and
+  T-181's) — the second press had nowhere to land once the first one left. `Ctx::editor_can_tell`
+  is gone with it. The one road that still writes and STAYS is `^g`'s return
+  (`external_edit_done`, through the new `App::write_note`): the editor's write is the commit, and
+  the dialog is what the user came back to.
+- **`^S` on a note follows who is on the ticket.** After the write (a dirty non-blank body;
+  an emptied existing note refuses with `empty ∙ ^s deletes the note`; a blank new note writes
+  nothing and still asks — a blank description is none): a claude with a pane is told
+  (`NoteToAgent`, the old second press, hint `save + tell claude`, `Ctx::editor_claude_paned`); a
+  ticket with NO claude gets one started on the title through `start_composed`, exactly as a
+  minted ticket does (`Ctx::editor_seat_empty`, `Board::live_claude` none, hint `save + ask
+  claude`); a Sleeping claude holds the seat and has no pane to type at, so the key is inert and
+  unhinted — the board's Shift+Enter's rule there (`c` wakes it). App tests
+  `a_note_save_closes_the_editor`, `ctrl_shift_s_on_a_note_tells_claude_or_starts_one`; keymap
+  `ctrl_s_says_save_and_always_leaves`. The note goldens' edges read `^s save ∙ esc close`.
+
+## An interrupted turn wears `⊘` (2026-09-04, user request)
+
+- `Idle{Interrupted}` fell through every arm of `card_glyph` and drew nothing — the look of a
+  ticket nobody had opened (author: "it looks like no session exists there"), and the rail
+  showed the plain `◦ idle`. Now `glyphs::interrupted`: `⊘` U+2298 CIRCLED DIVISION SLASH, the
+  halt sign — EAW=Neutral, Emoji=No, Mathematical Operators; ASCII `;`. `¦` BROKEN BAR shipped
+  first and was cut within the hour as too thin ("doesn't read nicely"); `⏸`/`⏹` (emoji
+  presentation) and `‖`/`■` (Ambiguous width) are barred by the width law, since any of them
+  can paint two cells. Still (no motion: nothing is happening), grey register (the user
+  stopped it and knows), state word `interrupted`. Precedence: under anything in flight or
+  finished, over `waiting` (a known fact outranks a lost one). Golden
+  `board_interrupted_120x30`; `glyphs::an_interrupted_turn_has_its_own_still_mark`.
+
+## Release notes are the changelog, on a screen (2026-09-04, user request)
+
+**Asked:** "release notes in menu (opens full screen beautiful release notes). think where to
+store them, grouped by the release name + date."
+
+**Where they live — decided:** `CHANGELOG.md` at the repo root, and nowhere else. It already
+existed with one `## <tag>` section per release and `ci/release.sh` already lifted the tag's
+section out of it for the GitHub release body, so a second store (a `releases/` directory, a
+fetched body from the dist repo, a state-dir cache) would have been the same words twice with a
+new way to disagree. Each heading gained its date — `## v0.1.0-alpha.11 — 2026-09-03`, backfilled
+from the tags' commit dates — and the file is `include_str!`ed into `mesimon-core`
+(`relnotes::SOURCE`), so the notes ship inside the binary: offline, nothing written, and a build
+carries exactly the versions that existed when it was made. Fetching the newer release's notes
+from the dist repo was considered and refused: the header's update chip already names the newer
+version, and a page that needs the network to say what THIS build does is the wrong page.
+
+**Built:** `core/src/relnotes.rs` (`Release { tag, date, body }`, `parse`, `date_words` → `3 Sep
+2026`, `position`) with a test that runs the parser over the real file and holds it to dated,
+unique, newest-first headings whose top entry is the workspace version; `ci/release.sh` dies
+before anything slow without a dated heading for the tag (and its awk matches the heading as a
+prefix now). `Scope::Releases` / `Verb::ReleaseNotes` / a `MenuItem` after the theme row;
+`Screen::Releases` + `App::releases: ReleasesState`; `ui/releases.rs`; `RELEASES` in the header
+chip. The screen is a centred reading column (≤ 100 cells) of painted bands and `rich.rs`
+markdown, the current release's band marked `this build`, the band of the release under the
+window pinned to the first row while its notes scroll. Keys are the diff's reading set on the
+diff's verbs, routed on the screen. Goldens `releases_120x30`, `releases_scrolled_120x30`,
+`releases_160x30` are seeded from a fixture; the real changelog is paged through under L1 in
+`test_real_changelog_reads_lawfully`; both law sweeps gained the screen. Menu goldens grew two
+rows; `test_a_sub_floor_sleep_offer_still_outranks_archive` now reads its row from the dialog's
+frame, since the taller menu put the sleep row beside a board card.
+
+**Not done:** no "new in this build" suggestion on first launch after an update (a `seen` stamp in
+`prefs.json` and a `Suggestion` pointing at the row would do it; the author has not asked); no
+`g`/`G`; the notes are not scrubbed through `text.rs` because they are the repo's own file, not
+user or agent text.
