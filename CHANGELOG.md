@@ -4,6 +4,33 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
+## v0.1.0-alpha.9
+
+- **A ticket has a description and notes, and they are markdown files.** Every ticket can carry
+  prose now: the description shows on the ticket page under the title, and any number of notes
+  sit in the rail beside the sessions. They are real markdown files under the ticket, so an
+  editor, a `grep` and a `git diff` all still work on them. `n` opens the note under the cursor,
+  `N` starts a new one, `^s` saves, and a second `^s` on a saved note tells the ticket's agent
+  it changed.
+
+- **The composer grows into a full editor with `Tab`.** A one-line title is often not enough to
+  say what a ticket is. `Tab` in the composer opens a multi-line editor for the description —
+  as a panel over the board that grows out of the card you are about to create, so it is clear
+  which card you are writing. The context line names the column, the workspace and the tags it
+  will be minted with.
+
+- **Shift+Enter on a ticket with no agent starts one on the title.** It already minted-and-asked
+  from the composer and asked a running agent from the board; the one gap was a ticket that had
+  been sitting in TODO. It now spawns claude there and submits the title, the same thing the
+  composer does, without leaving the board. A sleeping agent is not an empty seat — `c` still
+  wakes it.
+
+- **An agent can file a ticket.** `create_ticket` is a sixth tool for the sessions mesimon
+  starts: an agent that finds work outside its ticket's scope can file it instead of doing it
+  or losing it. The new card lands in the first column (or one you name) with no session on it,
+  and nothing an agent can call starts one — you decide what happens to it. `mesimon doctor
+  --mcp` prints the tool verbatim, as it does the other five.
+
 ## v0.1.0-alpha.8
 
 - **Pasting several lines no longer saves the first one and types the rest.** The composer, a
