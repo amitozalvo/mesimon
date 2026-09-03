@@ -2,10 +2,9 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
-   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
-                           ╭─ MENU ─────────────────────────────────────────────────────────╮
-   Keymap validator       >│ ◦ Restart on the new build                                   U │
-                           │     a newer mesimon is on disk ∙ sessions keep running         │
+   Decay treatments       >╭─ MENU ─────────────────────────────────────────────────────────╮
+                           │ ◦ Restart on the new build                                   U │
+   Keymap validator       >│     a newer mesimon is on disk ∙ sessions keep running         │
                            │ ◦ Sleep 3 agents in done                                     Z │
                            │     frees ~3.0GiB ∙ they wake where they left off              │
                            │ ◦ Archive 2 tickets in done                                    │
@@ -18,12 +17,13 @@
                            │     the latest reply under the selected card                   │
                            │   Theme: graphite                                              │
                            │     dark, the default ∙ for a dark terminal                    │
+                           │   Release notes                                                │
+                           │     what changed in each version, newest first                 │
                            │   All keys on this screen                                    ? │
                            │                                                                │
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
 

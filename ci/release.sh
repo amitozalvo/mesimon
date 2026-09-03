@@ -88,6 +88,19 @@ git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 || \
   die "tag $tag is not on origin — the release would name a commit nobody can fetch" \
       "git push origin $tag"
 
+# The notes ship INSIDE the binary (core/src/relnotes.rs reads CHANGELOG.md at
+# build time, and the Esc menu's "Release notes" row renders it), so a tag
+# with no dated heading would release a board that cannot name its own
+# version's changes. The unit test holds the same line; this is the copy
+# that runs before anything slow.
+notes_head=$(grep -m1 -E "^## $tag( — | - )[0-9]{4}-[0-9]{2}-[0-9]{2}$" CHANGELOG.md || true)
+[ -n "$notes_head" ] || \
+  die "CHANGELOG.md has no dated heading for $tag" \
+      "add '## $tag — $(date +%F)' above its notes, at the top of the file"
+notes_date=${notes_head##* }
+[ "$notes_date" = "$(date +%F)" ] || \
+  echo "note: CHANGELOG.md dates $tag $notes_date; today is $(date +%F)"
+
 # --- the gate ---------------------------------------------------------------
 
 step "clippy"
@@ -252,8 +265,9 @@ done
 
 # --- notes ------------------------------------------------------------------
 
+# The tag's section: from its `## <tag> — <date>` heading to the next one.
 awk -v want="## $tag" '
-  $0 == want {found=1; next}
+  !found && (index($0, want " ") == 1 || $0 == want) {found=1; next}
   found && /^## / {exit}
   found {print}
 ' CHANGELOG.md > dist/notes.md || true

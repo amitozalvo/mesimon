@@ -5,7 +5,6 @@
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
 
    Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
-
                            ╭─ MENU ─────────────────────────────────────────────────────────╮
                            │   External sessions                                            │
                            │     claude sessions in this repo that mesimon did not start    │
@@ -15,12 +14,13 @@
                            │     the latest reply under the selected card                   │
                            │   Theme: graphite                                              │
                            │     dark, the default ∙ for a dark terminal                    │
+                           │   Release notes                                                │
+                           │     what changed in each version, newest first                 │
                            │   All keys on this screen                                    ? │
                            │                                                                │
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
 

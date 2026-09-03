@@ -62,6 +62,10 @@ offer becomes the one below — nothing restarts until you press `U`.
 Nothing about that is automatic except the question. mesimon never installs a version you did not
 ask for, and never restarts a board you did not tell it to.
 
+**And it tells you what changed.** Esc → `Release notes` opens every version's notes, newest
+first, with `this build` on the one you are running. They are the binary's own (`CHANGELOG.md`,
+compiled in), so the page works offline and never reaches the network.
+
 - `MESIMON_NO_UPDATE_CHECK=1` turns the check off. `mesimon doctor` prints whether it is on, when
   it last answered and what it heard.
 - Development builds never check. Only the binary `ci/release.sh` cuts is stamped to, so a

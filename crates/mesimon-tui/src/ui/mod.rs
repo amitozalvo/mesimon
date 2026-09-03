@@ -12,6 +12,7 @@ pub(crate) mod diff;
 mod editor;
 mod help;
 mod menu;
+mod releases;
 mod tagpicker;
 #[cfg(test)]
 mod tests;
@@ -100,6 +101,13 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Screen::Diff { ticket } = &app.screen {
         diff::draw(f, app, *ticket);
+        if app.help {
+            help::draw(f, app);
+        }
+        return;
+    }
+    if let Screen::Releases = &app.screen {
+        releases::draw(f, app);
         if app.help {
             help::draw(f, app);
         }

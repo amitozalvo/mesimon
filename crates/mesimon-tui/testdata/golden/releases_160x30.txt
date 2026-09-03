@@ -1,0 +1,30 @@
+ RELEASES   mesimon > kanban-tui
+
+ 3 releases ∙ newest first ∙ this is v0.9.0-alpha.3
+
+                               v0.9.0-alpha.3  ∙  4 Sep 2026                                                           this build
+
+                                • The board reads its own release notes. The Esc menu's Release notes row opens the changelog the
+                                  binary was built with, newest first, one band per release, with this build on the entry you are
+                                  running.
+
+                                • A card's age is time in column. It was the newest session state change, which reset on every
+                                  hook — so a ticket that had sat in review for a week read 2m after a single prompt.
+
+                                • Smaller. n N step between releases; { } page; a long entry keeps its band pinned while its notes
+                                  scroll under it.
+
+
+                               v0.9.0-alpha.2  ∙  2 Sep 2026
+
+                                • Shift+Enter asks the agent from the board. On a ticket with a live claude pane it opens a
+                                  one-line field under the card; Enter sends and stays.
+
+                                • Paths in a shell pane keep their shape:
+
+                                    mesimon exec --env <file> -- claude --settings <hooks>
+
+                                and the pid stays the agent's.
+
+
+ jk scroll ∙ n N next / previous release ∙ { } page ∙ q back                                                                                             ? keys

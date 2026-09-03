@@ -58,6 +58,7 @@ fn screen_word(app: &App) -> &'static str {
         (Screen::Board, _) => "BOARD",
         (Screen::Ticket { .. }, _) => "TICKET",
         (Screen::Diff { .. }, _) => "DIFF",
+        (Screen::Releases, _) => "RELEASES",
     }
 }
 
@@ -284,6 +285,7 @@ fn mode_word(app: &App) -> Option<&'static str> {
         (Screen::Board, Scope::Board)
             | (Screen::Ticket { .. }, Scope::Ticket)
             | (Screen::Diff { .. }, Scope::Diff)
+            | (Screen::Releases, Scope::Releases)
     );
     (!resting).then_some(word)
 }

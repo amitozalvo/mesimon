@@ -4,7 +4,12 @@ Versions are `0.1.0-alpha.N` until the walking skeleton is something a stranger
 can rely on. Alphas can and will change state-file formats; when they do, the
 old file is preserved, never overwritten.
 
-## v0.1.0-alpha.11
+Each release is a `## <tag> — <date>` heading, newest first. The file is compiled
+into the binary and shown by the Esc menu's "Release notes" row (`core/src/relnotes.rs`
+parses it; `cargo ut` checks every heading), and `ci/release.sh` lifts the tag's
+section out of it for the GitHub release body.
+
+## v0.1.0-alpha.11 — 2026-09-03
 
 - **An approved plan becomes a note on the ticket.** When you approve an agent's plan, mesimon
   writes it as a note under the ticket, authored by that agent. Re-planning revises the same
@@ -36,7 +41,7 @@ old file is preserved, never overwritten.
   to the agent. A note survives delete + undo. The footer keeps the screen's keys on the left and
   `esc menu` / `? keys` on the right, and each floating dialog carries its own keys in its frame.
 
-## v0.1.0-alpha.10
+## v0.1.0-alpha.10 — 2026-09-03
 
 - **The bigger composer is a dialog on the board, not a panel across it.** `Tab` from the
   one-line composer still grows out of the card you are writing, but what it grows into is now
@@ -45,7 +50,7 @@ old file is preserved, never overwritten.
   dialog covers whole columns rather than floating over cut-off cards, so the board stays
   readable on both sides of it. Esc, `^s`, Shift+Enter, `^t` and Shift+Tab work as before.
 
-## v0.1.0-alpha.9
+## v0.1.0-alpha.9 — 2026-09-03
 
 - **A ticket has a description and notes, and they are markdown files.** Every ticket can carry
   prose now: the description shows on the ticket page under the title, and any number of notes
@@ -72,7 +77,7 @@ old file is preserved, never overwritten.
   and nothing an agent can call starts one — you decide what happens to it. `mesimon doctor
   --mcp` prints the tool verbatim, as it does the other five.
 
-## v0.1.0-alpha.8
+## v0.1.0-alpha.8 — 2026-09-02
 
 - **Pasting several lines no longer saves the first one and types the rest.** The composer, a
   rename and the ask field took a paste as keystrokes, so a newline was an Enter: the first line
@@ -89,7 +94,7 @@ old file is preserved, never overwritten.
   and the quietest, for a parked ticket, read as washed out. There are two now: the cursor card
   at full strength, every other card one step down. The glyph is what says asleep.
 
-## v0.1.0-alpha.7
+## v0.1.0-alpha.7 — 2026-09-02
 
 - **The board no longer re-asks the terminal whether it is light or dark.** The 3-second
   re-query behind live theme switching could land its reply on stdin as keystrokes, and the
@@ -98,7 +103,7 @@ old file is preserved, never overwritten.
   picker still lands on the right slot. Live repaint on an OS appearance flip is gone with it
   — relaunch, or pick from the Esc menu. `MESIMON_GROUND_WATCH=1` re-arms it.
 
-## v0.1.0-alpha.6
+## v0.1.0-alpha.6 — 2026-09-02
 
 - **Five themes, picked from the Esc menu.** Graphite and chalk are joined by blue (navy and
   gold, the Borland look), amber and green (one phosphor each, a P3 and a P1 monitor). The
@@ -130,7 +135,7 @@ old file is preserved, never overwritten.
 - **A sleeping agent's `z` recedes with its bar**: the glyph walks the same dim ladder the tag
   stripe already does, so a parked ticket reads as parked from either.
 
-## v0.1.0-alpha.5
+## v0.1.0-alpha.5 — 2026-09-02
 
 - **Linux ships — and with it, Windows through WSL2.** Two static builds, `x86_64` and
   `aarch64`, cross-linked from the same Mac that cuts the macOS release, installed by the same
@@ -161,7 +166,7 @@ old file is preserved, never overwritten.
   Windows drive under `/mnt` (git across that boundary is an order of magnitude slower), and
   warns when `curl` is missing, since the update check is silently inert without it.
 
-## v0.1.0-alpha.4
+## v0.1.0-alpha.4 — 2026-09-01
 
 - **`alt`+direction moves a card.** Option plus `hjkl` or an arrow key nudges the
   selected card one step and takes the cursor with it — the gesture every editor
@@ -194,7 +199,7 @@ old file is preserved, never overwritten.
   scrolls with the cursor instead of being cut off: the cell you are on is
   always drawn, and a `~` marks the side still holding tags.
 
-## v0.1.0-alpha.3
+## v0.1.0-alpha.3 — 2026-09-01
 
 - **Your shell environment reaches your agents.** An `export` you add to
   `~/.zshrc` now arrives in the next session mesimon spawns. It could not
@@ -255,7 +260,7 @@ old file is preserved, never overwritten.
   on screen. Repeating a digit also wraps around its row now, instead of walking
   off the end and going dead.
 
-## v0.1.0-alpha.2
+## v0.1.0-alpha.2 — 2026-09-01
 
 - **mesimon ships its own tmux.** A fresh Mac now needs nothing installed —
   `brew install tmux` is gone from the instructions. It is a statically linked
@@ -278,7 +283,7 @@ old file is preserved, never overwritten.
   `MESIMON_TMUX_BIN` overrides the choice; `mesimon doctor` reports which tmux
   is in play and where it came from.
 
-## v0.1.0-alpha.1
+## v0.1.0-alpha.1 — 2026-09-01
 
 The first build shared outside the author's machine.
 

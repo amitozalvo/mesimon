@@ -268,6 +268,48 @@ fn install_diff(app: &mut App) {
     app.screen = Screen::Diff { ticket: ulid_n(3) };
 }
 
+/// Three deterministic releases on the RELEASES screen, `v0.9.0-alpha.3`
+/// being "this build". Seeded directly rather than parsed from the real
+/// `CHANGELOG.md`, which changes every release and would drift every golden
+/// with it; `test_real_changelog_reads_lawfully` walks the real one.
+fn install_releases(app: &mut App) {
+    use mesimon_core::relnotes::Release;
+    let rel = |tag: &str, date: &str, body: &str| Release {
+        tag: tag.into(),
+        date: date.into(),
+        body: body.into(),
+    };
+    let releases = vec![
+        rel(
+            "v0.9.0-alpha.3",
+            "2026-09-04",
+            "- **The board reads its own release notes.** The Esc menu's `Release notes` row \
+             opens the changelog the binary was built with, newest first, one band per \
+             release, with `this build` on the entry you are running.\n\n- **A card's age \
+             is time in column.** It was the newest session state change, which reset on \
+             every hook — so a ticket that had sat in review for a week read `2m` after a \
+             single prompt.\n\n- **Smaller.** `n N` step between releases; `{ }` page; a \
+             long entry keeps its band pinned while its notes scroll under it.",
+        ),
+        rel(
+            "v0.9.0-alpha.2",
+            "2026-09-02",
+            "- **Shift+Enter asks the agent from the board.** On a ticket with a live claude \
+             pane it opens a one-line field under the card; Enter sends and stays.\n\n\
+             - **Paths in a shell pane keep their shape:**\n\n  ```\n  mesimon exec --env \
+             <file> -- claude --settings <hooks>\n  ```\n\n  and the pid stays the agent's.",
+        ),
+        rel(
+            "v0.9.0-alpha.1",
+            "2026-09-01",
+            "- **First alpha.** A board, a daemon, a private tmux. Alphas can and will change \
+             state-file formats; when they do, the old file is preserved, never overwritten.",
+        ),
+    ];
+    app.releases = Some(crate::app::ReleasesState::new(releases, "v0.9.0-alpha.3"));
+    app.screen = Screen::Releases;
+}
+
 // ---- goldens ---------------------------------------------------------------
 
 #[test]
@@ -562,7 +604,9 @@ fn test_a_sub_floor_sleep_offer_still_outranks_archive() {
     app.mode = Mode::Menu { idx: 0 };
     let lines = render(&app, 120, 30);
     let top = lines.iter().find(|l| l.contains("Sleep 2 agents")).expect("the sleep row leads");
-    assert!(unframed(top).starts_with('◦'), "the chip's row is marked: {top:?}");
+    // From the dialog's left edge: the board is still drawn beside the frame.
+    let row = top.split_once('│').map(|(_, r)| r).unwrap_or(top);
+    assert!(unframed(row).starts_with('◦'), "the chip's row is marked: {top:?}");
     let detail = lines.iter().find(|l| l.contains("wake where they left off")).expect("detail");
     assert!(!detail.contains("GiB"), "a payoff that rounds to nothing is spelled: {detail:?}");
 }
@@ -895,6 +939,121 @@ fn golden_diff_screen_100() {
     let mut app = app_graphite(fixture(false));
     install_diff(&mut app);
     golden("diff_100x24", &render(&app, 100, 24));
+}
+
+#[test]
+fn golden_releases_120() {
+    let mut app = app_graphite(fixture(false));
+    install_releases(&mut app);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("this build")), "the build's entry is marked");
+    golden("releases_120x30", &lines);
+}
+
+#[test]
+fn golden_releases_scrolled_120() {
+    // Fourteen rows in: the top entry's band is off the window, so it is
+    // pinned to the first row while its notes scroll under it.
+    let mut app = app_graphite(fixture(false));
+    install_releases(&mut app);
+    app.releases.as_ref().expect("state").scroll.set(14);
+    let lines = render(&app, 120, 30);
+    assert!(lines[4].contains("v0.9.0-alpha.3"), "band pinned: {:?}", lines[4]);
+    golden("releases_scrolled_120x30", &lines);
+}
+
+#[test]
+fn golden_releases_160() {
+    // Wider than the measure: the column stays a hundred cells and centres.
+    let mut app = app_graphite(fixture(false));
+    install_releases(&mut app);
+    golden("releases_160x30", &render(&app, 160, 30));
+}
+
+/// The menu row opens the real changelog on this build's entry; the diff's
+/// reading keys page it, `n`/`N` step by release, `q` returns to the board.
+#[test]
+fn test_release_notes_from_the_menu() {
+    use mesimon_core::keymap::{self, Verb};
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture(false));
+    let ctx = app.ctx();
+    let idx = keymap::menu_items(&ctx)
+        .iter()
+        .position(|m| m.verb == Verb::ReleaseNotes)
+        .expect("the release notes row");
+    app.mode = Mode::Menu { idx };
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
+    assert!(matches!(app.screen, Screen::Releases));
+    let build = concat!("v", env!("CARGO_PKG_VERSION"));
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].contains("RELEASES"), "chip: {:?}", lines[0]);
+    assert!(lines[2].contains(&format!("this is {build}")), "ident: {:?}", lines[2]);
+    assert!(lines[4].contains(build) && lines[4].contains("this build"), "band: {:?}", lines[4]);
+    assert!(lines.last().expect("footer").contains("next / previous release"));
+
+    // `}` pages; `{` back to the top.
+    press(&mut app, '}');
+    let page = app.releases.as_ref().expect("state").view.get().page;
+    assert!(page > 1);
+    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), page);
+    press(&mut app, '{');
+    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 0);
+    // `n` lands the second release's band on the first row; `N` comes back.
+    press(&mut app, 'n');
+    let _ = render(&app, 120, 30);
+    let lines = render(&app, 120, 30);
+    let second = &app.releases.as_ref().expect("state").releases[1].tag;
+    assert!(lines[4].contains(second.as_str()), "n: {:?}", lines[4]);
+    press(&mut app, 'N');
+    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 0);
+    // `j` scrolls one row and never past the end.
+    press(&mut app, 'j');
+    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 1);
+    press(&mut app, 'G');
+    press(&mut app, 'k');
+    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 0);
+    press(&mut app, 'q');
+    assert!(matches!(app.screen, Screen::Board));
+    assert!(app.releases.is_none());
+}
+
+/// The real `CHANGELOG.md`, every page of it, at three widths: no rule or
+/// box glyph reaches a cell (L1 — markdown is full of them), and every
+/// release's band is reachable by `n`.
+#[test]
+fn test_real_changelog_reads_lawfully() {
+    use mesimon_core::relnotes;
+    let releases = relnotes::parse(relnotes::SOURCE);
+    for (w, h) in [(120u16, 30u16), (100, 24), (200, 50)] {
+        let mut app = app_graphite(fixture(false));
+        app.releases = Some(crate::app::ReleasesState::new(
+            releases.clone(),
+            concat!("v", env!("CARGO_PKG_VERSION")),
+        ));
+        app.screen = Screen::Releases;
+        let _ = render(&app, w, h);
+        let st = app.releases.as_ref().expect("state");
+        let (max, page) = (st.view.get().max, st.view.get().page);
+        assert_eq!(st.starts.borrow().len(), releases.len());
+        let mut top = 0;
+        loop {
+            st.scroll.set(top);
+            for line in render(&app, w, h) {
+                for c in line.chars() {
+                    let u = c as u32;
+                    assert!(
+                        !(0x2500..=0x257F).contains(&u),
+                        "{w}x{h} top {top}: drawn structure {c:?} in {line:?}"
+                    );
+                }
+            }
+            if top >= max {
+                break;
+            }
+            top += page;
+        }
+    }
 }
 
 #[test]
@@ -2502,6 +2661,16 @@ fn test_no_banned_sgr() {
                 let mut p = App::for_test(fixture(false), Theme::new(flavor, profile));
                 p.rich_keys = true;
                 p.cursor_col = 1;
+            {
+                // The release notes: rendered markdown on painted bands, and
+                // the one bold allowed there is the tag.
+                install_releases(&mut app);
+                assert!(
+                    render(&app, 120, 30).iter().any(|l| l.contains("this build")),
+                    "the notes must be ON SCREEN, or this law does not bite"
+                );
+                cells(&app, 120, 30)
+            },
                 p.mode = Mode::Input {
                     purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
                     buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
@@ -2628,6 +2797,15 @@ fn test_no_drawn_structure() {
             let mut t = app_graphite(fixture_tagged());
             t.tag_armed = Some(crate::app::TagArm {
                 ticket: Some(ulid_n(3)),
+        {
+            install_releases(&mut app);
+            let lines = sweep(&app);
+            assert!(
+                lines.iter().any(|l| l.contains("this build")),
+                "the notes must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
                 row: 0,
                 col: 0,
                 naming: None,

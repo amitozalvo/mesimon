@@ -17,6 +17,7 @@ pub mod keymap;
 pub mod mcp;
 pub mod principal;
 pub mod reconcile;
+pub mod relnotes;
 pub mod shellenv;
 pub mod text;
 pub mod verdict;
