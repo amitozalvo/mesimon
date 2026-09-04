@@ -4620,3 +4620,41 @@ the Stop settles to EndTurn at High, the probes after the pin have no `Running` 
 The same feed shows the wake road's race one build earlier (12:07:04, `spawning → exited
 {crashed}` off a `PaneDied` two seconds after the ask, before `pane_reborn` existed): the
 record recovered on the `SessionStart{resume}` that followed, and that binary is gone.
+
+## The reload waits for the daemon it asked to stop (2026-09-04, user: "I can't access mesimon board due to a bug after I hit U")
+
+**What happened.** A `U` reload landed while another session's `cargo nextest run --workspace`
+(which is what had relinked the binary and raised the chip) was running every e2e in parallel.
+The TUI asked the daemon to shut down, waited 2 s for `orch.sock` to vanish, exec'd the new
+binary; the fresh client dialled for 5 s, spawning a daemon every 400 ms, and each one lost the
+old daemon's flock and exited quietly; the client bailed, the TUI printed one line and exited,
+the old daemon finished its shutdown — and the repo had twelve live sessions on its private
+tmux server and no board and no daemon. `daemon.lock` still named the dead pid (a flock loser
+never writes it) and `daemon.log` had never had a byte (no daemon crashed). Same binary, same
+inode, came up fine by hand two minutes later; the reload two rebuilds earlier, on an idle box,
+had worked.
+
+**Why.** Three stopwatches and no clock on the thing they were timing: `reexec` gave the
+shutdown 2 s, `connect_or_spawn` gave the next daemon 5 s and counted the handover against it,
+and `begin_shutdown` commits every pending settle through `apply_change` — automove, worktree
+flag refresh (git forks per bound worktree, eleven of them here), persist — on a box that was
+at that moment forking a hundred tmux servers. The client's request to the old daemon has a
+10 s timeout of its own; `Verb::Reload` ignores its result on purpose.
+
+**What holds now.**
+- `client::await_daemon_gone`: socket unlinked AND lock released, up to `HANDOVER_MAX` (30 s),
+  a sentence on the (already restored) terminal after 1 s; `reexec` calls it. A wedged daemon
+  still gets the exec — a client that will not start improves nothing.
+- `connect_or_spawn` probes `daemon.lock` with `LOCK_SH|LOCK_NB` (released at once; it never
+  claims the role). While held — the old daemon finishing, or the one we just spawned between
+  its flock and its bind — nothing is spawned and the budget does not run; that wait is bounded
+  by `HANDOVER_MAX`. A free lock re-arms the budget for the next daemon.
+- `Client::connect` no longer fails the launch on an unreachable daemon: the client comes up
+  with `conn: None` and a `daemon_down` notice carrying the reason, `App::new` opens on a
+  default `Snapshot` with `note_daemon_down()`, and the existing 2 s reconnect cadence (whose
+  reopen respawns) takes it from there. A bad repo path is still fatal. Test:
+  `no_daemon_at_launch_opens_disconnected`; `lock_probe_follows_the_holder` pins the probe.
+
+**Not done.** The shutdown itself is still unbounded and still on the writer thread; the
+handover is now patient with it rather than fast. Bounding it (skip the worktree flag refresh
+on the shutdown road, say) is the next lever if 30 s ever proves short.

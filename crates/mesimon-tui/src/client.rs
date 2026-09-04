@@ -8,7 +8,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
 use mesimon_core::command::{Command, Envelope, ExeStamp, Notice, Response, PROTOCOL_VERSION};
@@ -153,14 +153,100 @@ impl Transport for Client {
 }
 
 impl Client {
+    /// Connect, or come up DISCONNECTED with the reason as a notice.
+    ///
+    /// A daemon that cannot be reached at launch used to be fatal — the
+    /// board never opened and the error was one line on a terminal the user
+    /// had just handed over to a `U` reload (dogfood 2026-09-04: the reload
+    /// landed during a full parallel e2e run, the handover overran the
+    /// client's stopwatch, and the board was gone with twelve sessions live
+    /// behind it). The board is a better place to say "daemon unreachable"
+    /// than an exit status: the app's reconnect cadence keeps dialling, and
+    /// the reopen inside it respawns the daemon when it is truly gone.
     pub fn connect(repo_root: &Path) -> Result<Self> {
-        let (conn, notice) = open_current(repo_root, true)?;
-        Ok(Client {
-            repo_root: repo_root.to_path_buf(),
-            conn: Some(conn),
-            restart_suppressed: notice.is_some(),
-            notice,
-        })
+        // The path itself is fatal — nothing to dial, ever.
+        let _ = Paths::for_repo(repo_root)?;
+        match open_current(repo_root, true) {
+            Ok((conn, notice)) => Ok(Client {
+                repo_root: repo_root.to_path_buf(),
+                conn: Some(conn),
+                restart_suppressed: notice.is_some(),
+                notice,
+            }),
+            Err(why) => Ok(Client {
+                repo_root: repo_root.to_path_buf(),
+                conn: None,
+                restart_suppressed: false,
+                notice: Some(
+                    Notice::new("daemon_down", format!("no daemon yet — {why}"))
+                        .with_detail("reconnecting on a 2 s cadence; `mesimon doctor` says why a daemon will not start".to_string()),
+                ),
+            }),
+        }
+    }
+}
+
+/// How long a client will wait on a daemon that is HOLDING the lock — the
+/// old one finishing its shutdown, or one just spawned still binding —
+/// before it calls the handover wedged. Generous on purpose: a shutdown
+/// commits every pending settle through automove (worktree flags, git forks
+/// per binding) and a busy box stretches all of it; the alternative is a
+/// board that exits under the user with its sessions live.
+pub const HANDOVER_MAX: Duration = Duration::from_secs(30);
+
+/// Is `daemon.lock` flocked by a daemon right now?
+///
+/// The daemon takes the lock before it binds `orch.sock` and holds it to
+/// process exit, so "socket gone, lock held" is the handover gap. Probed with
+/// a SHARED lock, released at once: it never claims the daemon's role, only
+/// asks whether someone holds it. A file that cannot be opened reads as free
+/// — the caller falls back to the stopwatch it always had.
+fn lock_held(lock: &Path) -> bool {
+    let Ok(f) =
+        std::fs::OpenOptions::new().read(true).write(true).create(true).truncate(false).open(lock)
+    else {
+        return false;
+    };
+    let fd = std::os::unix::io::AsRawFd::as_raw_fd(&f);
+    // SAFETY: flock on a descriptor this function owns; the file closes on
+    // drop, which releases anything the probe took.
+    let rc = unsafe { libc::flock(fd, libc::LOCK_SH | libc::LOCK_NB) };
+    if rc == 0 {
+        unsafe { libc::flock(fd, libc::LOCK_UN) };
+        return false;
+    }
+    std::io::Error::last_os_error().raw_os_error() == Some(libc::EWOULDBLOCK)
+}
+
+/// Wait for a daemon asked to stop to be GONE: socket unlinked and lock
+/// released, up to [`HANDOVER_MAX`]. True when it is; false when the wait ran
+/// out (the caller proceeds anyway — a wedged daemon is not improved by a
+/// client that will not start).
+///
+/// The reload (`U`) calls this between `Shutdown` and its exec, because the
+/// fresh client it becomes only tolerates a few seconds of no daemon — and
+/// a shutdown is not bounded by the client's patience.
+pub fn await_daemon_gone(repo_root: &Path) -> bool {
+    let Ok(paths) = Paths::for_repo(repo_root) else { return true };
+    let sock = paths.orch_sock();
+    let lock = paths.lock_file();
+    let start = Instant::now();
+    let mut said = false;
+    loop {
+        if !sock.exists() && !lock_held(&lock) {
+            return true;
+        }
+        let waited = start.elapsed();
+        if waited >= HANDOVER_MAX {
+            return false;
+        }
+        // The terminal is the user's again while this runs; a second of
+        // nothing on it deserves a sentence.
+        if !said && waited >= Duration::from_secs(1) {
+            eprintln!("mesimon: waiting for the daemon to finish shutting down…");
+            said = true;
+        }
+        std::thread::sleep(Duration::from_millis(50));
     }
 }
 
@@ -240,24 +326,50 @@ fn restart_daemon(repo_root: &Path, conn: Conn) -> std::result::Result<Conn, Str
 
 /// Connect, re-spawning the daemon on a cadence while we wait.
 ///
-/// Repeat-spawning is safe and is the fix for the flock window: the daemon
-/// unlinks its socket BEFORE releasing the lock, so a spawn landing in that
-/// gap loses the race and exits quietly without touching the socket, the lock
-/// file, or any state. One extra fork+exec, and the next attempt wins.
+/// `budget` is how long a daemon may take to come up once the lock is FREE.
+/// While something holds the lock — the old daemon finishing its shutdown,
+/// or the one we just spawned between its flock and its bind — nothing is
+/// spawned (it would only lose the flock and exit) and the budget does not
+/// run; that wait is bounded by [`HANDOVER_MAX`] instead. Before this the
+/// stopwatch ran through the handover, and a shutdown that outlasted it left
+/// the user with no board and no daemon (dogfood 2026-09-04: a `U` during a
+/// parallel e2e run).
+///
+/// Repeat-spawning stays safe: a spawn that lands in the last millisecond of
+/// a handover loses the flock and exits quietly without touching the socket,
+/// the lock file, or any state. One extra fork+exec, and the next attempt
+/// wins.
 fn connect_or_spawn(repo_root: &Path, sock: &Path, budget: Duration) -> Result<UnixStream> {
-    let deadline = std::time::Instant::now() + budget;
-    let mut next_spawn = std::time::Instant::now();
+    let lock = Paths::for_repo(repo_root)?.lock_file();
+    let start = Instant::now();
+    let mut deadline = start + budget;
+    let mut next_spawn = start;
     loop {
         let last = match UnixStream::connect(sock) {
             Ok(s) => return Ok(s),
             Err(e) => e,
         };
-        if std::time::Instant::now() >= deadline {
+        let now = Instant::now();
+        if lock_held(&lock) {
+            if now >= start + HANDOVER_MAX {
+                bail!(
+                    "a daemon still holds {} after {} s — it did not finish shutting down",
+                    lock.display(),
+                    HANDOVER_MAX.as_secs()
+                );
+            }
+            // The budget is the next daemon's, from the moment the lock is
+            // its to take.
+            deadline = now + budget;
+            std::thread::sleep(Duration::from_millis(50));
+            continue;
+        }
+        if now >= deadline {
             bail!("daemon did not come up: {last}");
         }
-        if std::time::Instant::now() >= next_spawn {
+        if now >= next_spawn {
             mesimon_daemon::spawn_detached(repo_root)?;
-            next_spawn = std::time::Instant::now() + Duration::from_millis(400);
+            next_spawn = now + Duration::from_millis(400);
         }
         std::thread::sleep(Duration::from_millis(50));
     }
@@ -318,6 +430,28 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The probe reads a daemon's exclusive flock as held, and its release
+    /// as free — without ever taking the lock itself.
+    #[test]
+    fn lock_probe_follows_the_holder() {
+        let dir = std::env::temp_dir().join(format!("msmn-lock-probe-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let lock = dir.join("daemon.lock");
+        assert!(!lock_held(&lock), "a lock nobody holds reads free (and the probe creates it)");
+        assert!(lock.exists());
+
+        // A stand-in daemon: exclusive flock, held for the scope.
+        let holder = std::fs::OpenOptions::new().write(true).open(&lock).unwrap();
+        let fd = std::os::unix::io::AsRawFd::as_raw_fd(&holder);
+        assert_eq!(unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        assert!(lock_held(&lock), "an exclusive holder reads held");
+        // The probe took nothing: the holder can still re-lock exclusively.
+        assert_eq!(unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) }, 0);
+        drop(holder);
+        assert!(!lock_held(&lock), "release reads free");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     fn ident(build: &str, mtime: u64, detached: bool) -> DaemonIdent {
         DaemonIdent {

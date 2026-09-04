@@ -745,11 +745,17 @@ pub struct App {
 
 impl App {
     pub fn new(mut client: Box<dyn Transport>, repo_root: PathBuf, theme: Theme) -> Result<Self> {
-        let snap = fetch(client.as_mut())?;
+        // No daemon at launch is a board that opens empty and keeps dialling
+        // (`daemon_down`, the same cadence a daemon that DIES gets), never an
+        // exit: the transport's notice says why, in the advisory row.
+        let (snap, daemon_down) = match fetch(client.as_mut()) {
+            Ok(snap) => (snap, false),
+            Err(_) => (Snapshot::default(), true),
+        };
         // Before the move: the checker resolves the state root and the
         // staging dir off the same repo path everything else keys on.
         let release = crate::release::ReleaseWatch::new(&repo_root);
-        Ok(Self {
+        let mut app = Self {
             client,
             repo_root,
             board: snap.board,
@@ -823,7 +829,11 @@ impl App {
             diff_two_pane: Cell::new(true),
             daemon_down: false,
             last_reconnect: None,
-        })
+        };
+        if daemon_down {
+            app.note_daemon_down();
+        }
+        Ok(app)
     }
 
     /// Is the `d` chord armed on this ticket? The card (and the ticket page's
@@ -4742,6 +4752,7 @@ impl App {
 /// road on the strength of an `App::apply` that did not exist, so the shell-
 /// env chip only ever appeared once the external drawer had been opened
 /// (found while adding `git`, T-124).
+#[derive(Default)]
 struct Snapshot {
     board: Board,
     grace: Vec<GraceItem>,
@@ -5127,6 +5138,32 @@ mod tests {
 
     fn app_three_columns() -> App {
         App::for_test(board_three_columns(), theme())
+    }
+
+    /// A transport with no daemon behind it, ever.
+    struct Dead;
+    impl Transport for Dead {
+        fn request(&mut self, _: Command) -> Result<Response> {
+            anyhow::bail!("daemon did not come up")
+        }
+        fn poll_event(&mut self) -> bool {
+            false
+        }
+        fn healthy(&mut self) -> bool {
+            false
+        }
+    }
+
+    /// No daemon at launch opens an empty board on the reconnect cadence —
+    /// it does not exit (a `U` reload that outlived the client's patience
+    /// used to leave no board at all, 2026-09-04).
+    #[test]
+    fn no_daemon_at_launch_opens_disconnected() {
+        let app = App::new(Box::new(Dead), PathBuf::from("/nonexistent"), theme())
+            .expect("a dead transport is not a launch failure");
+        assert!(app.daemon_down);
+        assert!(app.board.tickets.is_empty());
+        assert!(app.status.contains("reconnecting"), "status: {}", app.status);
     }
 
     /// Three-column board plus one claude session on ticket 1, request log out.

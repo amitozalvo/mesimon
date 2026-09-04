@@ -87,7 +87,14 @@ attention — kill and respawn them too. Softener (2026-08-30): a RUNNING TUI wa
 binary's mtime and offers `update ready (U reloads)` in the header — `U` shuts the daemon down
 cleanly and execs the new binary in place (`tui/src/update.rs`, `lib.rs::reexec`; STALE-MAP
 "Opt-in binary update reload"), so interactive dogfooding rarely needs the manual kill. The TUI
-also survives daemon death now (reconnect cadence in `tui/src/client.rs`).
+also survives daemon death now (reconnect cadence in `tui/src/client.rs`). **The handover is
+lock-aware (2026-09-04):** `reexec` waits for the socket AND the daemon's flock to go
+(`client::await_daemon_gone`, up to `HANDOVER_MAX` 30 s, a sentence on the terminal after 1 s),
+`connect_or_spawn` spawns nothing and runs no stopwatch while `daemon.lock` is held (probed
+`LOCK_SH`, never taken), and no daemon at launch opens an EMPTY board on the reconnect cadence
+with the reason in the advisory row instead of exiting — a `U` during a parallel e2e run outran
+the old 2 s + 5 s and left twelve live sessions with no board (STALE-MAP "The reload waits for
+the daemon it asked to stop").
 
 **A RELEASED board also asks whether a newer one exists, and a dev board never does.**
 `update.rs` only ever fires for someone who already updated — on a released machine nothing moves

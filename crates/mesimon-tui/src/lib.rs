@@ -117,17 +117,16 @@ pub fn run(repo_root: &Path) -> Result<()> {
 }
 
 /// U on `update ready`: swap this process for the new binary at our own
-/// path. The daemon was asked to shut down first; wait for its socket to
-/// vanish so the fresh TUI's connect-spawn doesn't race the old flock.
+/// path. The daemon was asked to shut down first; wait for it to be gone so
+/// the fresh TUI's connect-spawn doesn't race the old flock.
 fn reexec(repo_root: &Path) -> Result<()> {
-    if let Ok(paths) = mesimon_daemon::Paths::for_repo(repo_root) {
-        let sock = paths.orch_sock();
-        for _ in 0..20 {
-            if !sock.exists() {
-                break;
-            }
-            std::thread::sleep(std::time::Duration::from_millis(100));
-        }
+    // Socket unlinked AND lock released, up to `HANDOVER_MAX` — the fresh
+    // client only tolerates a few seconds of no daemon, and a shutdown
+    // (every pending settle committed through automove) is not bounded by
+    // that. Two seconds of socket-polling here was what a `U` during a
+    // parallel e2e run overran (2026-09-04).
+    if !client::await_daemon_gone(repo_root) {
+        eprintln!("mesimon: the daemon is still shutting down; starting the new client anyway");
     }
     use std::os::unix::process::CommandExt;
     let exe = std::env::current_exe()?;
