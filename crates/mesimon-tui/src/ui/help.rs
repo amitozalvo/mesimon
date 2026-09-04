@@ -22,7 +22,7 @@ use super::dialog;
 
 /// Floor for the key column, so the hints line up in one rail and the rail
 /// sits in the same place on every screen. It is a floor and not the width:
-/// a spelling wider than this (`option+hjkl`, `shift+enter`) pushes the rail
+/// a spelling wider than this (`shift+enter`, `shift+tab`) pushes the rail
 /// out rather than closing the gap, which is what `> <` used to hide — every
 /// key was short enough that nothing tested the arithmetic.
 const KEY_W: usize = 10;

@@ -462,8 +462,9 @@ way: the modifier is eaten and NOTHING arrives, so the key is inert rather than 
 affordable exactly while no CAPABILITY stands behind the atom, and that — not the count — is what
 `alt_is_admitted_only_for_a_nudge` holds. Every Alt binding must be a NUDGE (it moves the thing
 under the cursor one step) and must carry a legacy-floor spelling of the same move on the same
-screen, hinted. Two qualify: `Verb::Nudge` on the board, with `> <` beside it, and
-`Verb::TagCarryLeft` in the tag picker, where `HJKL` and the four Alt atoms share ONE binding —
+screen, hinted. Two qualify: `Verb::Nudge` on the board and
+`Verb::TagCarryLeft` in the tag picker, and in BOTH `HJKL` and the four Alt atoms share ONE binding
+(the board's since 2026-09-04, user request; `> <` is the aiming move beside it, overlay-only) —
 the strongest form of the clause, since the accelerator cannot reach a move the floor does not.
 A text field never sees an Alt atom at all: `keys::to_key_text`
 strips the modifier, because there Alt is `word_wise`'s "by word" and nothing else — which is

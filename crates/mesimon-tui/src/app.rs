@@ -2716,8 +2716,8 @@ impl App {
             return Ok(());
         }
         let (col, idx) = match key {
-            Key::AltLeft | Key::AltRight => {
-                let to = if key == Key::AltRight {
+            Key::Char('H' | 'L') | Key::AltLeft | Key::AltRight => {
+                let to = if matches!(key, Key::Char('L') | Key::AltRight) {
                     (self.cursor_col + 1).min(cols.len() - 1)
                 } else {
                     self.cursor_col.saturating_sub(1)
@@ -2727,11 +2727,11 @@ impl App {
                 }
                 (to, 0)
             }
-            Key::AltUp | Key::AltDown => {
+            Key::Char('J' | 'K') | Key::AltUp | Key::AltDown => {
                 // `ghost_len` counts the column without this card in it, which
                 // is the same count an insertion index is measured against.
                 let n = self.ghost_len(&cols, self.cursor_col, id);
-                let to = if key == Key::AltDown {
+                let to = if matches!(key, Key::Char('J') | Key::AltDown) {
                     self.cursor_row + 1
                 } else {
                     self.cursor_row.saturating_sub(1)
@@ -6894,6 +6894,40 @@ mod tests {
         assert_eq!(buffer.as_str(), "fix the Xthing");
         // And the board did not move underneath it.
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+    }
+
+    /// `HJKL` is the nudge on the legacy floor (2026-09-04, user request):
+    /// one press carries the card one step and the cursor rides with it,
+    /// exactly what the Alt atoms do. `J` reorders inside the column, `L`
+    /// enters the next one at the top, `H` comes back, `K` climbs; an edge
+    /// press stays put.
+    #[test]
+    fn shifted_hjkl_carries_the_card() {
+        let mut app = app_three_columns();
+        // todo: [1, 2]. `J` files ticket 1 under ticket 2, cursor following.
+        press(&mut app, 'J');
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+        // `K` puts it back on top.
+        press(&mut app, 'K');
+        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
+        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        // At the top, `K` has nowhere to go and does nothing.
+        press(&mut app, 'K');
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        // `L` takes it into doing, at the top.
+        press(&mut app, 'L');
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
+        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
+        // `L` again lands it above ticket 3 in done; `H` brings it back.
+        press(&mut app, 'L');
+        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
+        assert_eq!(done, vec![ulid::Ulid(1), ulid::Ulid(3)]);
+        press(&mut app, 'H');
+        assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
+        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
     }
 
     /// `.` does the last move again, and the cursor stays put — that is the

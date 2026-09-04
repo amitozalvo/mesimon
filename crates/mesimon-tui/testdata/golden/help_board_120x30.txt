@@ -5,26 +5,26 @@
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
       ╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮
    Key│ MOVE AROUND                                           SESSIONS                                           │
-      │   hjkl        move around                               c           claude                               │
-      │   g           top of column                             s           shell                                │
-      │   G           bottom of column                          x           sleep sessions                       │
-      │   enter       go to the agent                                                                            │
-      │   space       ticket page                             VIEW                                               │
-      │                                                         p           show replies                         │
+      │   hjkl      move around                                 c         claude                                 │
+      │   g         top of column                               s         shell                                  │
+      │   G         bottom of column                            x         sleep sessions                         │
+      │   enter     go to the agent                                                                              │
+      │   space     ticket page                               VIEW                                               │
+      │                                                         p         show replies                           │
       │ TICKETS                                                                                                  │
-      │   o           new ticket                              APP                                                │
-      │   > <         move card, aiming                         esc         menu                                 │
-      │   option+hjkl move card                                 q           quit                                 │
-      │   r           rename                                    ?           keys                                 │
-      │   tab         describe                                  ^L          redraw                               │
-      │   n           note                                      ^Z          suspend mesimon                      │
-      │   ^t          tags                                                                                       │
-      │   a           archive                                                                                    │
-      │   d           delete                                                                                     │
+      │   o         new ticket                                APP                                                │
+      │   > <       move card, aiming                           esc       menu                                   │
+      │   HJKL      move card                                   q         quit                                   │
+      │   r         rename                                      ?         keys                                   │
+      │   tab       describe                                    ^L        redraw                                 │
+      │   n         note                                        ^Z        suspend mesimon                        │
+      │   ^t        tags                                                                                         │
+      │   a         archive                                                                                      │
+      │   d         delete                                                                                       │
       ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
 
 
 
- enter go to the agent ∙ space ticket page ∙ o new ticket ∙ option+hjkl move card ∙ tab describe      esc menu ∙ ? keys
+ enter go to the agent ∙ space ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe             esc menu ∙ ? keys

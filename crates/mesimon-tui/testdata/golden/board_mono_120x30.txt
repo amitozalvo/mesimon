@@ -27,4 +27,4 @@
 
 
 
- enter go to the agent ∙ space ticket page ∙ o new ticket ∙ option+hjkl move card ∙ tab describe      esc menu ∙ ? keys
+ enter go to the agent ∙ space ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe             esc menu ∙ ? keys

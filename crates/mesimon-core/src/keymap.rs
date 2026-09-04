@@ -937,18 +937,33 @@ static BOARD: &[Binding] = &[
     Binding {
         // The same move `> <` makes, minus the aiming: one press takes the
         // card one column over or one row along, and the cursor rides with
-        // it. This is the one the footer teaches now — spelled `option`,
-        // because that is what the key says on the machine this ships to, and
-        // a hint names the key the hand is looking for. "now" left with `> <`:
+        // it. This is the one the footer teaches now. "now" left with `> <`:
         // it was drawing a contrast with the aiming gesture that the footer no
         // longer sets up, and moving the card IS the verb.
         //
         // `can_nudge` is the wider predicate on purpose — `> <` needs a second
         // column, a nudge also reorders inside one — so the footer offers it
         // on the one-column board where `> <` had nothing to say.
-        keys: &[Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown],
+        //
+        // `HJKL` joined the key list 2026-09-04 (user request), the picker's
+        // arrangement: `hjkl` steps the cursor, `HJKL` steps it carrying the
+        // card, and the four Alt atoms are the same entry, so the accelerator
+        // cannot reach a move the floor does not make. The footer names the
+        // shifted spelling now, because every terminal can send it — the
+        // `option` one worked on the machine this ships to and read as a
+        // dead key on the ones that eat the modifier.
+        keys: &[
+            Key::Char('H'),
+            Key::Char('J'),
+            Key::Char('K'),
+            Key::Char('L'),
+            Key::AltLeft,
+            Key::AltRight,
+            Key::AltUp,
+            Key::AltDown,
+        ],
         verb: Verb::Nudge,
-        show: "option+hjkl",
+        show: "HJKL",
         hint: |_| "move card",
         avail: |c| c.can_nudge,
         class: Class::Plain,
@@ -3385,13 +3400,13 @@ mod tests {
     /// sentences, argued.
     ///
     /// The board's two swapped billing (2026-09-01, author direction): the
-    /// FOOTER teaches `option+hjkl` and `> <` fell to the overlay. The floor
-    /// spelling is still bound and `?` still names it, so the clause holds in
-    /// its bound-beside-it form — but the "hinted" half is spent, and a
-    /// terminal that eats the modifier now reads a footer whose move key does
-    /// nothing and finds the working one only in `?`. That is the cost of
-    /// this arrangement, recorded here because this is the test that would
-    /// otherwise have quietly stopped guarding it.
+    /// FOOTER teaches the nudge and `> <` fell to the overlay. For three days
+    /// the footer spelled it `option+hjkl`, so a terminal that ate the
+    /// modifier read a move key that did nothing and found the working one
+    /// only in `?`. Since 2026-09-04 `HJKL` sits in the nudge's own key list
+    /// — the picker's arrangement, brought to the board — and the footer
+    /// names THAT, so the hinted half of the clause is bought back: the key
+    /// the footer teaches is one every terminal can send.
     #[test]
     fn alt_is_admitted_only_for_a_nudge() {
         const ALT: &[Key] = &[Key::AltLeft, Key::AltRight, Key::AltUp, Key::AltDown];
@@ -3414,17 +3429,20 @@ mod tests {
             "an alt binding that is not one of the two nudges"
         );
 
-        // The board's. The capability it accelerates is on the floor, bound
-        // and spelled; the footer teaches the accelerator and the overlay
-        // keeps the floor, which is the whole of what is left of the clause.
+        // The board's. The capability it accelerates is on the floor twice
+        // over — `> <` aiming, `HJKL` in the accelerator's own key list — and
+        // the footer teaches the shifted spelling; `> <` keeps the overlay.
         let ctx =
             Ctx { has_ticket: true, multi_column: true, can_nudge: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Char('>'), &ctx), Some(Verb::Grab));
         assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card, aiming")));
         assert_eq!(resolve(Scope::Board, Key::AltLeft, &ctx), Some(Verb::Nudge));
-        assert_eq!(hint_for(Scope::Board, Verb::Nudge, &ctx), Some(("option+hjkl", "move card")));
+        for k in [Key::Char('H'), Key::Char('J'), Key::Char('K'), Key::Char('L')] {
+            assert_eq!(resolve(Scope::Board, k, &ctx), Some(Verb::Nudge), "{k:?}");
+        }
+        assert_eq!(hint_for(Scope::Board, Verb::Nudge, &ctx), Some(("HJKL", "move card")));
         let shown: Vec<&str> = footer_items(Scope::Board, &ctx).iter().map(|b| b.show).collect();
-        assert!(shown.contains(&"option+hjkl"), "the footer must name the move: {shown:?}");
+        assert!(shown.contains(&"HJKL"), "the footer must name the move: {shown:?}");
         assert!(!shown.contains(&"> <"), "the floor spelling is overlay-only now: {shown:?}");
         assert!(
             overlay(Scope::Board, &ctx).iter().any(|(_, ks)| ks.iter().any(|(k, _)| *k == "> <")),
@@ -3435,6 +3453,7 @@ mod tests {
         // Nothing to send anywhere: inert, and unhinted with it.
         let alone = Ctx { can_nudge: false, ..ctx };
         assert_eq!(resolve(Scope::Board, Key::AltLeft, &alone), None);
+        assert_eq!(resolve(Scope::Board, Key::Char('H'), &alone), None);
         assert_eq!(hint_for(Scope::Board, Verb::Nudge, &alone), None);
 
         // The picker's. Both spellings reach the same verb, and the shifted
@@ -4003,6 +4022,11 @@ mod tests {
         let tag = Ctx { has_ticket: true, tag_on_entry: true, ..Default::default() };
         assert_eq!(resolve(Scope::TagChord, Key::Char('l'), &tag), Some(Verb::TagRight));
         assert_eq!(resolve(Scope::TagChord, Key::Char('L'), &tag), Some(Verb::TagCarryRight));
+        // And the board's, the same bargain on the card: `hjkl` steps the
+        // cursor, `HJKL` steps it carrying the card.
+        let board = Ctx { has_ticket: true, can_nudge: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('l'), &board), Some(Verb::CursorRight));
+        assert_eq!(resolve(Scope::Board, Key::Char('L'), &board), Some(Verb::Nudge));
         // The old unrelated pairs are gone: no board key at all for the bulk
         // verbs, and none for the two lists.
         let full = Ctx {

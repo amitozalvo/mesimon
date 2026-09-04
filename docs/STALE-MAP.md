@@ -4325,3 +4325,21 @@ rule). `tags_reach_the_composer` now asserts `hint_for` is `None` there. Goldens
 
 **Cost:** `?` on the editor no longer lists Shift+Tab, and on a sleeper's row does not list
 `x` — the same trade `c` on a paned claude already makes.
+
+## `HJKL` moves the card (2026-09-04, user: "shift + hjkl to move tickets")
+
+The board's nudge (`Verb::Nudge`) was reachable only through the four Alt atoms since
+2026-09-01, and the footer taught it as `option+hjkl`. `HJKL` now sits in the SAME binding's
+key list, the arrangement the tag picker already had: `hjkl` steps the cursor, `HJKL` steps it
+carrying the card, and the Alt atoms are the same entry, so the accelerator cannot reach a move
+the floor does not make. The footer names `HJKL`; `> <` (aiming) stays overlay-only.
+
+**Why it matters for the Alt clause:** `alt_is_admitted_only_for_a_nudge` requires every Alt
+binding to carry a legacy-floor spelling of the same move on the same screen, HINTED. For three
+days the board met the bound half (`> <`) and had spent the hinted half — a terminal that eats
+the modifier read a footer whose move key did nothing. Both halves hold again, and the test's
+docstring records the interval.
+
+**Cost:** the footer's `HJKL` says nothing about `option`, which still works. `?` lists both
+under one row, as it does for the picker. Goldens with a board footer moved by one cell.
+
