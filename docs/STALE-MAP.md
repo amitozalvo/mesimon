@@ -5016,13 +5016,10 @@ learn nothing, and a description edited after the spawn is never seen. The CLAUD
 the agent fetch the CURRENT description on every road. Worth doing later as a complement; it is
 not a substitute.
 
-**README promise 1 is now short by a third clause, and this change did not write it.** Applying
-writes `<repo>/CLAUDE.md`, which the allowlist does not name (`.mesimon/`,
-`$GIT_DIR/info/exclude`, worktrees and branches it created, the state dir, fetch refs). The
-`/tmp` runtime dir and the self-update's write of mesimon's own binary are the standing two
-gaps; this is the third, and the author words that promise. Promise 2 survives literally:
-doctor still only prints and has no `--fix`, and the write is a keystroke through a dialog
-showing the exact bytes.
+**README promise 1 was short by a third clause, and the author closed all three the same day**
+— see "The write allowlist says what it does" below. Promise 2 needed nothing: doctor still
+only prints and has no `--fix`, and the write is a keystroke through a dialog showing the exact
+bytes.
 
 **Tests.** `core/src/claudemd.rs`: the snippet names its own marker and the tool, every line
 fits the dialog, applying twice is impossible, the separator is one blank line however the file
@@ -5037,3 +5034,50 @@ its menu row wearing the same mark. `claudemd_e2e.rs` end to end plus the restar
 proves a real spawn carries no `--mcp-config` with the switch off, and that `--settings` is
 untouched — the two flags are different promises. `tags_e2e.rs`'s `schema_version = 2` pin now
 reads `store::COLUMNS_SCHEMA` instead of a literal.
+
+## The write allowlist says what it does (2026-09-04, user: "fix the readme promise wording for all three gaps")
+
+**What changed.** README promise 1 had been literally false in three places, each recorded and
+each deferred because it is a public commitment in the author's voice (auto-memory
+`readme-allowlist-gap`, opened 2026-09-01, "open x3" by T-217). The author asked for the pass,
+so all three are now worded, plus one clause sharpened and one table row corrected.
+
+**The shape it took.** The promise now separates what mesimon writes ON ITS OWN from what it
+writes only when asked, because that turned out to be the real distinction and it was the thing
+the old single sentence could not say. The always-list gained the runtime dir; the three
+consent-gated writes are a list under it.
+
+- **Gap 1, the runtime dir** (`/tmp/mesimon-<uid>/<proj16>/`): never named, and mesimon has
+  always written it — `orch.sock`, `hook.sock`, `tmux.sock`, `daemon.lock`, the release
+  checker's `update/` staging, and `shellenv.env`, which is a copy of the user's login-shell
+  environment with their secrets in it. The wording says that out loud rather than listing file
+  names, and keeps the two facts the memory asked be kept: the dir is 0700 and mesimon refuses
+  it unless it owns it, and those permissions are the ONLY thing between another user on the
+  machine and the agent tool socket, because there is deliberately no token.
+- **Gap 2, mesimon's own binary**: taking an update offer replaces the running binary at its own
+  path plus the sibling `mesimon-tmux` where one exists. Named, with the checksum gate — which
+  is the reason it is safe to promise, not a detail.
+- **Gap 3, `<repo>/CLAUDE.md`** (T-217): named, with the two limits that make it a promise
+  rather than a permission — the dialog shows the exact lines first, and nothing already in the
+  file is edited or removed (`claudemd::appended` only ever appends).
+
+**Two things found while auditing, and fixed in the same pass.** Every non-test write site in
+the workspace was walked to make sure the pass did not leave a fourth gap. It found: the
+worktree ownership marker, which lives in the git admin dir of a worktree mesimon created and
+was only covered by inference (promise 1 now says "and their git bookkeeping"); and a table row
+claiming `~/.local/state/mesimon/<proj16>/` holds "the private tmux socket and conf", when the
+socket is in the runtime dir and only the conf is in the state dir. Everything else was already
+inside a named path.
+
+**The table grew three rows** (`/tmp/mesimon-<uid>/<project key>/`, `<repo>/CLAUDE.md`,
+mesimon's own binary), so "Nothing else. If you ever find mesimon writing outside that list,
+that is a bug worth reporting above all others" is a sentence that now holds.
+
+**Promise 2 was not touched and did not need to be.** "No config mutation ∙ `mesimon doctor`
+diagnoses and prints copy-pasteable fixes. It has no `--fix`" is still literally true: the
+CLAUDE.md write is a TUI keystroke through a dialog, and doctor still only prints. Promise 3 is
+unaffected.
+
+**No test moved.** Nothing in the workspace reads the README (checked), so this is prose only —
+which is exactly why it was worth being careful: there is no validator standing behind promise
+1, only the audit.

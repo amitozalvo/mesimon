@@ -1034,8 +1034,11 @@ never claims success, and the one key that leaves the dialog up) / `i` never (st
 `Board::claude_md_ignored`) / `esc` not now. `doctor` prints the snippet whatever the stamp
 says — that is the door "never" does not close, and why `doctor::wrap` now wraps one PARAGRAPH
 at a time. The write canonicalizes first (a symlinked CLAUDE.md must not become a regular file)
-and is still atomic. **README promise 1 does not yet name this write** — the third standing gap,
-the author's to word. (STALE-MAP "mesimon offers the CLAUDE.md line".)
+and is still atomic. **README promise 1 names this write** — reworded 2026-09-04 at the author's
+request, in the pass that also closed the two standing gaps (the `/tmp` runtime dir and the
+self-update's binary); the promise now separates what mesimon writes on its own from the three
+it writes only when asked, and the "What mesimon writes" table has a row for each.
+(STALE-MAP "mesimon offers the CLAUDE.md line" + "The write allowlist says what it does".)
 
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
 command will not compile until someone decides whether an agent may send it. That is the

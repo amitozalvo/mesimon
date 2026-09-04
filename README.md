@@ -11,11 +11,28 @@ report.
 
 ## Three promises
 
-1. **A strict write allowlist.** mesimon writes only to `.mesimon/`, `$GIT_DIR/info/exclude`, git
-   worktrees and branches it created, and its own state dir under `~/.local/state/mesimon/` —
-   and, only if you turn on periodic fetching (`MESIMON_GIT_FETCH=<minutes>`) or press *Fetch
-   origin* in the Esc menu, the remote-tracking refs and objects a `git fetch` writes. That
-   fetch never writes `FETCH_HEAD`, never runs `gc`, and never touches your branches.
+1. **A strict write allowlist.** On its own, mesimon writes only to `.mesimon/`,
+   `$GIT_DIR/info/exclude`, the git worktrees and `msmn/*` branches it created (and their git
+   bookkeeping), its state dir under `~/.local/state/mesimon/`, and its runtime dir at
+   `/tmp/mesimon-<uid>/<project key>/` — the sockets, the daemon lock, and the environment file
+   every pane is launched with. That last one is a copy of your login shell's environment,
+   secrets and all, so the runtime dir is 0700 and mesimon refuses it unless it owns it; those
+   permissions are also the only thing between another user on this machine and the agent tool
+   socket, because there is deliberately no token.
+
+   Three more, each only when you ask for it:
+
+   - **Remote-tracking refs and objects**, if you turn on periodic fetching
+     (`MESIMON_GIT_FETCH=<minutes>`) or press *Fetch origin* in the Esc menu. That fetch never
+     writes `FETCH_HEAD`, never runs `gc`, and never touches your branches.
+   - **`<repo>/CLAUDE.md`**, if you take the *Teach CLAUDE.md to read the ticket* offer. The
+     dialog shows the exact lines before anything is written; enter appends those lines and
+     nothing else. mesimon never edits or removes what is already in that file, and never
+     touches it again once the lines are there.
+   - **mesimon's own binary**, and the `mesimon-tmux` beside it where one exists, if you take an
+     update offer. The download is checked against its published checksum first and refused
+     without one.
+
    Never your shell rc, your git config, your `~/.claude/`, or your tmux config.
 2. **No config mutation.** `mesimon doctor` diagnoses and prints copy-pasteable fixes. It has no
    `--fix`.
@@ -152,10 +169,13 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 |---|---|
 | `<repo>/.mesimon/` | Your board: columns and tickets. Excluded via `$GIT_DIR/info/exclude`, never `.gitignore`. |
 | `$GIT_DIR/info/exclude` | One line, so `.mesimon/` does not show up in `git status`. |
-| `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, logs, the private tmux socket and conf. |
+| `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, logs, and the private tmux server's conf. (Its socket is in the runtime dir below.) |
 | `~/.local/state/mesimon/update-check.json` | When the release check last answered, and what it heard. One per machine, not per repo. |
 | `~/.local/state/mesimon/prefs.json` | Your theme picks, one for a dark terminal and one for a light one. One per machine, not per repo. |
+| `/tmp/mesimon-<uid>/<project key>/` | The daemon, hook and private-tmux sockets, the daemon lock, and the environment file panes are launched with. 0700, because that file holds your shell's environment. Gone on reboot. |
 | Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. |
+| `<repo>/CLAUDE.md` | Four lines, appended, only if you take the offer and only after the dialog has shown them to you. Nothing already in the file is touched. |
+| mesimon's own binary | Replaced in place, only if you take an update offer, only after its published checksum verifies. |
 
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting
 above all others.
