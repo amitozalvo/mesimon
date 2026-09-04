@@ -16,7 +16,7 @@ use common::*;
 
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::SessionKind;
+use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 
 #[test]
@@ -27,8 +27,14 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     // because `shellenv`'s denylist strips `MESIMON_*` on the way to a pane,
     // and a test that leans on a variable the daemon deliberately withholds
     // would be testing a hole.
-    const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" \
-                        >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    //
+    // `stty -icanon`, because the sleeping-claude case below pastes 2.5 KB:
+    // a tty in canonical mode assembles the line itself and keeps 1 KiB of
+    // it (`MAX_CANON`), dropping the rest AND the newline that would have
+    // ended `read` — measured here first, 2026-09-04. Claude sets raw mode
+    // and has no such cap; the stub has to opt out to stand in for it.
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot("prompt", Some(STUB)) else { return };
     let got = h.dir.join("got.txt");
     let tmux_sock = h.paths.tmux_sock();
@@ -111,11 +117,70 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         "one press, one turn: {received:?}"
     );
 
-    // No pane, no prompt. That is the line `Ctx::ticket_promptable` keeps the
-    // KEY away from — `is_live()` would have said yes here, because a parked
-    // session is live — and the daemon holds it independently for a client
-    // that asks anyway. Dismissing is how this test reaches a paneless record
-    // (the stub never gets far enough into a turn to be sleepable).
+    // A PARKED claude is woken by the ask (2026-09-04). Drive the stub to
+    // Idle through the hooks — the stub emits none of its own — and sleep it
+    // the way `x` does; then the same command that refused a paneless
+    // record before answers `Spawned` instead: the wake is `resume_session`'s
+    // (fresh, since a stub writes no transcript) and the words are parked
+    // until the pane reads. The prompt is deliberately LONG — past the 1 KiB a
+    // pty in canonical mode would keep of anything typed ahead of the process
+    // — because the delivery must be the paste a live pane takes, made on
+    // the first cadence after the `SessionStart` edge, never a type-ahead.
+    let hook_sock = h.paths.hook_sock();
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
+    c.await_state(sid, "sleeping", |s| *s == SessionState::Sleeping);
+
+    let long = format!("mesimon-probe-43 {}", "carry on where you left off ".repeat(90));
+    assert!(long.len() > 2048, "{}", long.len());
+    match c.request(Command::PromptSession { ticket, text: long.clone() }) {
+        Response::Spawned { id, fresh } => {
+            assert_eq!(id, sid, "the wake re-enters the record — never a second claude");
+            assert!(fresh, "a stub has no transcript, so the wake starts fresh");
+        }
+        other => panic!("an ask at a sleeping claude must wake it: {other:?}"),
+    }
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sid).expect("record");
+    assert!(rec.pending_submit, "the owed Enter is on the record — the card shows the launch");
+    assert!(rec.state.has_pane(), "woken: {:?}", rec.state);
+
+    // Nothing may reach the pane before its `SessionStart`: the pane is
+    // being born, and the words wait on the edge the way the composer's
+    // Enter does.
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !std::fs::read_to_string(&got).unwrap_or_default().contains("mesimon-probe-43"),
+        "the prompt went in before the pane said it was reading"
+    );
+    hook_send_with(&hook_sock, &sid.to_string(), "SessionStart", Some("resume"), "{}");
+
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let received = loop {
+        let text = std::fs::read_to_string(&got).unwrap_or_default();
+        if text.contains("mesimon-probe-43") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the parked prompt never reached the woken agent");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    assert!(received.contains(long.trim_end()), "the prompt arrived in pieces: {received:?}");
+    assert_eq!(
+        received.lines().filter(|l| l.contains("mesimon-probe-43")).count(),
+        1,
+        "one paste, one turn: {received:?}"
+    );
+    // The ack clears the offer, as for the composer's.
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    wait_until(Duration::from_secs(5), "the ack to clear the owed Enter", || {
+        c.board().sessions.iter().any(|s| s.id == sid && !s.pending_submit)
+    });
+
+    // No pane, no prompt — and no PARKED claude either: a dismissed record is
+    // `Exited`, which is neither live nor sleeping, so the daemon refuses
+    // rather than resurrecting it. That refusal is held independently of the
+    // key for a client that asks anyway.
     let _ = c.request(Command::KillSession { id: sid });
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {

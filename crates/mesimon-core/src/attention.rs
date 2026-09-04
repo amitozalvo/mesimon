@@ -450,9 +450,15 @@ impl Machine {
 
         let (to, conf) = self.target(sig)?;
 
-        // Flap pin: only terminal transitions get through while pinned.
+        // Flap pin: while pinned, only a STATED transition or a terminal one
+        // gets through. The guard exists for evidence that argues with
+        // itself — a probe, a transcript tail, a silence — not for Claude's
+        // own hooks: a `Stop` is the turn ending whatever came before it, and
+        // dropping it (2026-09-04, four asks in twenty seconds) left a
+        // finished session `Running` until the probe called it interrupted.
         if let Some(until) = self.pinned_until {
             if now < until
+                && conf != Confidence::High
                 && !matches!(to, SessionState::Exited { .. } | SessionState::Failed { .. })
             {
                 return None;
@@ -520,15 +526,21 @@ impl Machine {
         self.entered_at = now;
 
         // Flap guard: >FLAP_MAX committed changes in the window pins the
-        // machine at the state just committed, confidence low. (Deviation from
-        // 11 §11.7.4's "lowest rank seen": we pin in place — simpler, and the
-        // pinned state is at most one transition away from that.)
+        // machine at the state just committed. (Deviation from 11 §11.7.4's
+        // "lowest rank seen": we pin in place — simpler, and the pinned state
+        // is at most one transition away from that.) A stated, High
+        // transition keeps its confidence through the pin: it is Claude
+        // saying so, and marking it Low made `automove` refuse a move the
+        // user's own prompt had just asked for. The pin still arms, so the
+        // inferred signals stay out while the hooks are this busy.
         self.committed.retain(|t| now.saturating_sub(*t) <= FLAP_WINDOW_MS);
         self.committed.push(now);
         let mut confidence = confidence;
         if self.committed.len() > FLAP_MAX {
             self.pinned_until = Some(now + FLAP_PIN_MS);
-            confidence = Confidence::Low;
+            if confidence != Confidence::High {
+                confidence = Confidence::Low;
+            }
         }
         self.confidence = confidence;
 
@@ -1636,7 +1648,7 @@ mod tests {
     }
 
     #[test]
-    fn flap_guard_pins_low() {
+    fn flap_guard_pins_the_inferred_signals() {
         let mut m = m(SessionState::Running);
         // 5 immediate transitions inside 20 s: alternate reasons (all enter at 0ms).
         m.apply(&Signal::PermissionRequest, 1000).unwrap();
@@ -1644,15 +1656,69 @@ mod tests {
         let _ = m.apply(&Signal::PermissionRequest, 3000);
         let _ = m.apply(&Signal::Elicitation, 4000);
         let c = m.apply(&Signal::PreToolUse { tool: AttentionTool::AskUserQuestion }, 5000);
-        // Whichever commit crossed the threshold went Low…
-        assert_eq!(m.confidence(), Confidence::Low);
-        let _ = c;
-        // …and further non-terminal transitions are ignored while pinned.
-        assert!(m.apply(&Signal::UserPromptSubmit, 6000).is_none());
-        assert!(m.tick(9000).is_none());
+        // The commit that crossed the threshold armed the pin — at its own
+        // confidence, since it was stated…
+        assert!(c.is_some());
+        assert_eq!(m.confidence(), Confidence::High);
+        assert!(m.pinned_until.is_some());
+        // …and while pinned, inference is ignored: the transcript tail, the
+        // quiet probe, the status file. Nothing is pending for the tick.
+        let stop = stop_with_teammates(0);
+        // Leaving needs-you settles, pinned or not; the stated leave commits.
+        assert!(m.apply(&Signal::UserPromptSubmit, 5500).is_none(), "leave settles");
+        let c = m.tick(5500 + SETTLE_MS).expect("a stated signal passes the pin");
+        assert_eq!(c.to, SessionState::Running);
+        assert!(m.apply(&stop, 8000).is_none(), "leave settles");
+        m.tick(8000 + SETTLE_MS).expect("settles to end of turn");
+        let mut tailed = m.clone();
+        assert!(tailed
+            .apply(&Signal::TranscriptHint { kind: TailHint::AssistantText }, 10_000)
+            .is_none());
+        m.apply(&Signal::UserPromptSubmit, 10_000).expect("stated, and Idle → Running is instant");
+        assert!(m.apply(&Signal::PaneQuiet, 11_000).is_none());
+        assert!(m.apply(&Signal::StatusFileIdle, 11_000).is_none());
+        assert!(m.tick(14_000).is_none());
+        assert_eq!(*m.state(), SessionState::Running);
         // Terminal still passes.
-        let c = m.apply(&Signal::PaneDied { status: Some(1) }, 7000).expect("terminal passes pin");
+        let c =
+            m.apply(&Signal::PaneDied { status: Some(1) }, 15_000).expect("terminal passes pin");
         assert_eq!(c.to, SessionState::Exited { reason: ExitReason::Crashed });
+    }
+
+    /// Dogfood 2026-09-04: four Shift+Enter asks at one agent inside twenty
+    /// seconds, each a two-second turn. The fifth commit armed the pin, the
+    /// `Stop` that followed was DROPPED by it, the card kept the spinner on a
+    /// finished turn, and when the pin lifted the status-file probe called
+    /// the silence "interrupted". A `Stop` is stated: it commits through the
+    /// pin at High, the probe then has no `Running` to demote, and the
+    /// `Running` that armed the pin kept High too, so the move the prompt
+    /// asked for is not refused.
+    #[test]
+    fn a_stated_stop_commits_through_the_flap_pin() {
+        let stop = stop_with_teammates(0);
+        let mut m = m(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        let mut t = 0;
+        for _ in 0..2 {
+            m.apply(&Signal::UserPromptSubmit, t).expect("running");
+            assert!(m.apply(&stop, t + 3000).is_none(), "leave settles");
+            m.tick(t + 3000 + SETTLE_MS).expect("end of turn");
+            t += 8000;
+        }
+        // The fifth commit in the window.
+        let c = m.apply(&Signal::UserPromptSubmit, t).expect("running");
+        assert_eq!(c.confidence, Confidence::High, "a stated edge is not a flap");
+        assert!(m.pinned_until.is_some(), "the guard still arms");
+        // The Stop inside the pin.
+        assert!(m.apply(&stop, t + 2000).is_none(), "leave settles");
+        let c = m.tick(t + 2000 + SETTLE_MS).expect("the stated end of turn commits");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(c.confidence, Confidence::High);
+        // The probes after the pin have nothing to demote.
+        let later = t + FLAP_PIN_MS + 1000;
+        assert!(m.apply(&Signal::StatusFileIdle, later).is_none());
+        assert!(m.apply(&Signal::PaneQuiet, later).is_none());
+        assert!(m.tick(later + SETTLE_MS).is_none());
+        assert_eq!(*m.state(), SessionState::Idle { stop_reason: StopReason::EndTurn });
     }
 
     #[test]

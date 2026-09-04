@@ -4439,6 +4439,15 @@ impl App {
                     // say, seconds from now, in the only vocabulary that has
                     // ever been trusted for it — the hooks.
                     Response::Ok => "asked".into(),
+                    // A parked claude: the daemon woke it and holds the
+                    // words until the pane reads (2026-09-04). `fresh` is
+                    // the wake road's own word — no conversation was left to
+                    // resume, so a new one starts on this prompt — and it is
+                    // said here for the same reason `c` says it.
+                    Response::Spawned { fresh: false, .. } => "woke claude ∙ asked".into(),
+                    Response::Spawned { fresh: true, .. } => {
+                        "nothing to resume ∙ started a fresh conversation ∙ asked".into()
+                    }
                     Response::Err { message } => message,
                     _ => String::new(),
                 };
@@ -4889,6 +4898,26 @@ pub(crate) mod test_support {
                     };
                     self.notes.insert(id, text);
                     return Ok(Response::NoteWritten { note: Some(id) });
+                }
+                // The daemon's road at a parked claude (2026-09-04): wake
+                // it, park the words, answer `Spawned`. A paned one is `Ok`.
+                Command::PromptSession { ticket, .. } => {
+                    if self.board.pane_target(ticket).is_some() {
+                        return Ok(Response::Ok);
+                    }
+                    let Some(rec) =
+                        self.board.sessions.iter_mut().find(|s| {
+                            s.ticket == ticket && matches!(s.state, SessionState::Sleeping)
+                        })
+                    else {
+                        return Ok(Response::Err {
+                            message: "no live claude session on this ticket".into(),
+                        });
+                    };
+                    rec.state = SessionState::Spawning;
+                    rec.pending_submit = true;
+                    let id = rec.id;
+                    return Ok(Response::Spawned { id, fresh: false });
                 }
                 Command::SpawnSession { ticket, kind, submit_prompt } => {
                     let mut rec = mesimon_core::board::SessionRecord::new(
@@ -6321,18 +6350,37 @@ mod tests {
         assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
     }
 
-    /// A parked agent has no box to type into. `Sleeping` is LIVE — that is
-    /// the trap this holds shut: gating on "has a claude session" would offer
-    /// the key here and send the press at a pane that does not exist.
+    /// A parked agent has no box to type into, and `Sleeping` is LIVE — so
+    /// the field opens as on a paned claude, the hint says the wake it adds,
+    /// and the send is the same `PromptSession`: the daemon wakes the agent
+    /// and parks the words for its pane (2026-09-04). Never a second spawn
+    /// beside it, and never a handover — the board is where the ask lands.
     #[test]
-    fn a_sleeping_agent_is_not_promptable() {
+    fn shift_enter_on_a_sleeping_claude_wakes_it_and_asks() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.rich_keys = true;
         assert!(app.ctx().ticket_has_claude, "the session is live — parked, but live");
         assert!(!app.ctx().ticket_promptable, "…and has no pane to type into");
+        assert_eq!(
+            keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "wake + ask claude"))
+        );
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert_eq!(app.mode, Mode::Normal, "no field opens");
-        assert!(!sent_contains(&sent, "PromptSession"));
+        assert!(
+            matches!(app.mode, Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }),
+            "the field opens on the card"
+        );
+        for c in "carry on".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "ResumeSession"), "the wake is the daemon's");
+        assert_eq!(app.status, "woke claude ∙ asked");
+        assert_eq!(app.screen, Screen::Board);
+        assert!(app.pending_attach.is_none(), "no handover");
     }
 
     /// A ticket holds one claude (2026-09-02). `c` on a parked one is a wake

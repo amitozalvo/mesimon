@@ -190,6 +190,15 @@ pub struct Daemon {
     /// a daemon restart abandons the offer rather than typing into a pane it
     /// no longer understands.
     submit_retry: HashMap<uuid::Uuid, (u64, u8)>,
+    /// A prompt typed on the board at a SLEEPING claude, held until the wake
+    /// it triggered has a pane that reads (the board's Shift+Enter on a
+    /// parked agent, 2026-09-04). Delivered by `retry_pending_submits` on
+    /// the first tick after the `SessionStart` edge, as a bracketed paste —
+    /// never typed ahead into the pty, which is canonical-mode input capped
+    /// at 1 KiB until Claude sets raw mode. In memory beside `submit_retry`
+    /// for the same reason it is: a restart drops the words rather than
+    /// pasting them into a pane it no longer understands.
+    pending_prompt: HashMap<uuid::Uuid, String>,
     ticks: u64,
     feed: FeedWriter,
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
@@ -479,6 +488,7 @@ pub fn run(paths: Paths) -> Result<()> {
         machines,
         probe_stage: HashMap::new(),
         submit_retry: HashMap::new(),
+        pending_prompt: HashMap::new(),
         ticks: 0,
         feed,
         external: Vec::new(),
@@ -1719,6 +1729,19 @@ impl Daemon {
             }
         }
         if let Some(sig) = ingest::signal_of(&frame) {
+            // A death that names a pane still ALIVE is the previous tenant's.
+            // The pane-died notify carries only the session name, and a
+            // wake re-uses the record's sid16 for its new pane; sleep
+            // SIGTERMs and returns, so an ask or a `c` a moment later spawns
+            // into the name while the old pane's death is still on its way
+            // up the hook socket — and that frame, landing on `Spawning`,
+            // was read as the NEW pane crashing (prompt_e2e, 2026-09-04,
+            // the ask at a sleeping claude). Only the window where a pane
+            // was just born can be ambiguous, so only there is tmux asked;
+            // "listed and not dead" is the one answer that refutes a death.
+            if matches!(sig, Signal::PaneDied { .. }) && self.pane_reborn(id) {
+                return;
+            }
             // A prompt reached the agent — every road ends here: the board's
             // Shift+Enter field, the composer's submit, a line typed in the
             // pane. The person's own last move on the ticket stops being one
@@ -1761,10 +1784,18 @@ impl Daemon {
             }
             // The composer's Shift+Enter, second half: the pane is provably
             // alive and reading, so press the Enter its prefilled title has
-            // been waiting for. `Startup` only — a Resume/Clear/Compact
-            // SessionStart lands in a conversation that already has the
-            // prompt, and an Enter there would submit an empty turn.
-            if matches!(sig, Signal::SessionStart { source: StartSource::Startup }) {
+            // been waiting for. `Startup` and `Resume` — the two edges a
+            // spawn or a wake lands on; a Clear/Compact SessionStart is a
+            // conversation ending inside a living pane, and nothing is owed
+            // there. `Resume` joined `Startup` on 2026-09-04 for the board's
+            // ask at a sleeping claude: the wake is a `--resume`, and the
+            // prompt it carries waits on this very edge. The flag is what
+            // gates it — an in-app `/resume` in a pane that owes nothing is
+            // a no-op here.
+            if matches!(
+                sig,
+                Signal::SessionStart { source: StartSource::Startup | StartSource::Resume }
+            ) {
                 dirty |= self.deliver_pending_submit(id);
             }
             // ...and its ack. Any prompt reaching Claude closes the offer,
@@ -1849,7 +1880,14 @@ impl Daemon {
             return false;
         }
         let sid16 = rec.sid16();
-        let _ = self.backend.send_enter(&sid16);
+        // A prompt still parked has not been typed yet, so there is nothing
+        // to press Enter on: the edge only starts the clock, and the first
+        // tick pastes. T-5's correction is the reason for the gap — input on
+        // this edge is a race Claude's startup can lose, and a lost Enter is
+        // re-pressed for free where a lost paste is the user's words gone.
+        if !self.pending_prompt.contains_key(&id) {
+            let _ = self.backend.send_enter(&sid16);
+        }
         self.submit_retry.insert(id, (now_ms() + SUBMIT_RETRY_MS, SUBMIT_ATTEMPTS));
         false
     }
@@ -1886,7 +1924,19 @@ impl Daemon {
             let sid16 = rec.sid16();
             let ticket = rec.ticket;
             let (_, left) = self.submit_retry[&id];
-            let _ = self.backend.send_enter(&sid16);
+            // The board's ask at a sleeping claude, delivered: the pane has
+            // been up a cadence past its `SessionStart`, so the parked words
+            // go in the way a live pane takes them — bracketed paste, then a
+            // separate Enter (`paste_text`, the T-5 shape). The presses that
+            // follow are the ordinary retries; a paste is made once.
+            match self.pending_prompt.remove(&id) {
+                Some(text) => {
+                    let _ = self.backend.paste_text(&sid16, &text);
+                }
+                None => {
+                    let _ = self.backend.send_enter(&sid16);
+                }
+            }
             if left <= 1 {
                 self.submit_retry.remove(&id);
                 self.clear_pending_submit(id);
@@ -1916,9 +1966,27 @@ impl Daemon {
     }
 
     fn clear_pending_submit(&mut self, id: uuid::Uuid) {
+        self.pending_prompt.remove(&id);
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pending_submit = false;
         }
+    }
+
+    /// A `Spawning` record whose pane tmux lists as alive: a pane-died frame
+    /// for it belongs to the pane that held the name before (see the caller).
+    fn pane_reborn(&self, id: uuid::Uuid) -> bool {
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+            return false;
+        };
+        if !matches!(rec.state, SessionState::Spawning) {
+            return false;
+        }
+        let sid16 = rec.sid16();
+        self.backend
+            .snapshot()
+            .ok()
+            .and_then(|panes| panes.into_iter().find(|p| p.session_name == sid16))
+            .is_some_and(|p| !p.pane_dead)
     }
 
     /// Hooks send the session UUID; the tmux pane-died hook sends the sid16.
@@ -3585,9 +3653,7 @@ impl Daemon {
             return Response::Err { message: "nothing to send".into() };
         };
         let Some(id) = self.prompt_target(ticket) else {
-            return Response::Err {
-                message: "no live claude session on this ticket — start or wake one first".into(),
-            };
+            return self.prompt_sleeping(ticket, text);
         };
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             return Response::Err { message: "no such session".into() };
@@ -3602,6 +3668,42 @@ impl Daemon {
             Ok(()) => Response::Ok,
             Err(e) => Response::Err { message: format!("could not deliver: {e}") },
         }
+    }
+
+    /// The same key at a SLEEPING claude wakes it and asks (2026-09-04, user:
+    /// "ask claude on sleeping agent auto wakes it for the user"). Before this
+    /// the key was inert there — a parked agent has no box to type into — and
+    /// the user pressed `c`, waited for the pane, came back and asked; three
+    /// gestures for one sentence. The wake is `resume_session`'s, untouched
+    /// (the double-resume guard, the fresh conversation where the transcript
+    /// is gone, the cwd refusal), so `Response::Spawned` travels back with
+    /// `fresh` and the board can say which it was. The words are PARKED, not
+    /// typed: the pane does not exist yet, and what reaches it is decided on
+    /// the `SessionStart` edge the way the composer's Enter is
+    /// (`deliver_pending_submit`). `pending_submit` is set for the same
+    /// reason the composer sets it — the launching arc on the card is how the
+    /// user watches the ask land — and the seat is still ONE claude: a wake
+    /// re-enters the record, it never mints a second.
+    fn prompt_sleeping(&mut self, ticket: ulid::Ulid, text: String) -> Response {
+        let Some(id) = self
+            .board
+            .live_claude(ticket)
+            .filter(|s| matches!(s.state, SessionState::Sleeping))
+            .map(|s| s.id)
+        else {
+            return Response::Err {
+                message: "no live claude session on this ticket — start or wake one first".into(),
+            };
+        };
+        let resp = self.resume_session(id, false);
+        if let Response::Spawned { .. } = &resp {
+            self.pending_prompt.insert(id, text);
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.pending_submit = true;
+            }
+            self.persist_and_notify();
+        }
+        resp
     }
 
     fn restore_ticket(&mut self, id: ulid::Ulid) -> Response {
@@ -4502,6 +4604,7 @@ impl Daemon {
             // conversation, and the prompt is already in it), so an Enter
             // owed by the old one is stale — never carry it across.
             rec.pending_submit = false;
+            self.pending_prompt.remove(&id);
             if let Some(new_id) = fresh {
                 // Point the record at the conversation it is actually hosting
                 // now. The stale path would otherwise send the NEXT resume

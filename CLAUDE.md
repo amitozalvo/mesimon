@@ -519,7 +519,20 @@ does a second Shift+Enter (the finger is still holding shift). **On a ticket who
 EMPTY the board's press is the composer's second half a press late** (2026-09-03): the same
 `Verb::Prompt` binding, and `dispatch` routes on `Ctx::ticket_has_claude` to `start_composed` —
 claude spawns with the title submitted, no field, no attach, hint `ask claude the title`. A
-`Sleeping` claude is not an empty seat (`c` wakes it) and the key stays inert there; a shell on the
+`Sleeping` claude is not an empty seat and the key WAKES it and asks (2026-09-04, user: "ask claude
+on sleeping agent auto wakes it for the user"): the field opens as on a paned claude (hint `wake +
+ask claude`), and `Daemon::prompt_sleeping` — the road `prompt_session` takes when `prompt_target`
+finds no pane — runs `resume_session` (its guards intact, `Spawned { fresh }` back so the status can
+say `woke claude ∙ asked` or that a fresh conversation started), parks the words in the in-memory
+`pending_prompt` map and sets `pending_submit` (the launching arc); the `SessionStart` edge —
+`Startup` OR `Resume` now — starts the retry clock without pressing, and the FIRST tick pastes the
+words through `paste_text` (bracketed paste + Enter, the live-pane shape; never typed ahead — a pty
+in canonical mode keeps 1 KiB), with the later ticks the ordinary Enter retries until the
+`UserPromptSubmit` ack. A restart drops the parked words like it drops `submit_retry`. `prompt_e2e`
+drives it with a 2.5 KB prompt (its stub runs `stty -icanon`: a canonical tty keeps 1 KiB of a
+line). The same test found the wake racing the sleep's own `pane-died` — the notify names only the
+sid16 the new pane reuses — so `Daemon::pane_reborn` drops a death frame for a `Spawning` record
+whose pane tmux lists alive (STALE-MAP "The ask at a sleeping claude wakes it"). A shell on the
 ticket does not fill the seat. `shift_enter_asks_claude_at_every_stage`
 is what keeps that one idea; a fourth home makes it two, and the atom is off the legacy floor
 precisely because it buys ONE. The gate is `Ctx::ticket_promptable` — `has_pane()`, NOT
@@ -978,9 +991,12 @@ open; the denial is reported to `hook.sock` afterwards for the feed. **Bash is N
 the README says so: command-shape matching is an evasion hole and hooking every shell call taxes
 the thing agents do constantly. `mesimon doctor --mcp` prints the whole surface. E2e:
 `crates/mesimon/tests/mcp_e2e.rs`. **Trap for the next e2e: `automove` is edge-triggered AND the
-attention machine pins at `Confidence::Low` after >4 committed changes in 20 s (`FLAP_MAX`),
-where `automove` refuses to move — a second `UserPromptSubmit` to an already-`Running` session
-produces no edge, so an assertion resting on it passes for the wrong reason.**
+attention machine arms a flap pin after >4 committed changes in 20 s (`FLAP_MAX`) — since
+2026-09-04 the pin drops only INFERRED signals (probe, status file, transcript tail) and a stated
+High one (`Stop`, `UserPromptSubmit`, a hook) commits through it at High; before, a `Stop` was
+dropped and a finished turn sat `Running` until the probe called it interrupted (STALE-MAP "A
+stated Stop commits through the flap pin"). A second `UserPromptSubmit` to an already-`Running`
+session still produces no edge, so an assertion resting on it passes for the wrong reason.**
 
 **Adoption (M3).** Foreign sessions are discovered lazily (drawer open → `RescanExternal`; never
 at startup, never polled) by cwd-field census of `~/.claude/projects/` (`daemon/src/census.rs`;

@@ -4530,3 +4530,93 @@ retired `X` "was shift-of-`x`" is dropped — it was `ArchiveAll` ("Board-wide a
 keys", 2026-08-31). README's board-keys sentence, which still named `A` and `V` beside it, now
 names `x`/`X` and points the archive at the menu. Golden: `menu_suggestions_120x30` (the Sleep
 row's key). No daemon or wire change.
+
+## The ask at a sleeping claude wakes it (2026-09-04, user: "ask claude on sleeping agent auto wakes it for the user")
+
+Shift+Enter on the board had three stages ("Shift+Enter asks the agent from the board", "…the
+same key ASKS it") and one hole between them: a ticket whose claude was `Sleeping` was neither
+an empty seat (the title road refuses to mint a second claude) nor promptable (no pane), so the
+key was inert and the footer said nothing. The user's road was `c`, wait for the pane, `q`,
+Shift+Enter — three gestures for one sentence, on the commonest shape a parked board has.
+
+**The key now opens the field there too, and the daemon wakes the agent on the way.**
+`Verb::Prompt`'s `avail` is `has_ticket && rich_keys` — every stage of the seat — and the hint
+says the extra thing it does: `wake + ask claude` where `ticket_has_claude && !ticket_promptable`
+(live and paneless is exactly Sleeping, the same fact `c` reads for `wake claude`). Nothing else
+on the TUI moved: the same field on the same card, the same `PromptSession`; the status says
+`woke claude ∙ asked`, or `nothing to resume ∙ started a fresh conversation ∙ asked` when the
+wake's `fresh` says the transcript was gone — the words `c` uses, because it is `c`'s road.
+
+**The daemon's road is `prompt_sleeping`**, taken when `prompt_target` finds no pane and
+`live_claude` finds a `Sleeping` record: `resume_session(id, false)` with every guard it has
+(the double-resume refusal, "running elsewhere", the missing cwd, the fresh conversation under a
+minted id), then the prompt PARKED in `Daemon::pending_prompt` and `pending_submit` set on the
+record so the card wears the launching arc. The words are not typed ahead into the pty the way
+the composer's title is: a pty is in canonical mode until Claude sets raw mode, and canonical
+input is capped at 1 KiB (`MAX_CANON`), where a prompt is 4 KiB. So the `SessionStart` edge —
+which now fires the deferred road on `Resume` as well as `Startup`, since a wake is a `--resume`
+and an in-app `/resume` in a pane that owes nothing is a no-op under the flag — only starts the
+retry clock, and the FIRST tick (`SUBMIT_RETRY_MS` later) delivers through `paste_text`, the
+bracketed paste + separate Enter a live pane is known to take (T-5); the ticks after it are the
+ordinary Enter retries to the `UserPromptSubmit` ack. The 500 ms gap is T-5's correction
+applied to a paste: a lost Enter is re-pressed for free, a lost paste is the user's words gone.
+`pending_prompt` sits beside `submit_retry` in memory, for its reason — a restart drops the
+offer rather than pasting into a pane it no longer understands — and `clear_pending_submit`
+drops both.
+
+`prompt_e2e` grew the case: the stub driven to `Idle` through the hooks, slept by `SleepSession`,
+asked with a 2.5 KB prompt — `Spawned { fresh: true }`, the record paned with `pending_submit`,
+NOTHING in the stub's receipt for 1.5 s, then a `SessionStart{resume}` frame, then the whole
+prompt on one line, then the ack clearing the flag. The TUI fake answers `PromptSession` on a
+sleeper with `Spawned` so `shift_enter_on_a_sleeping_claude_wakes_it_and_asks` sees the status;
+`prompting_a_parked_claude_says_it_wakes` replaced the keymap test that pinned the hole shut.
+
+**The e2e found two things on the way.** First, a race that `x` then `c` had all along: `sleep_one`
+SIGTERMs and returns, the record is `Sleeping` before the pane has died, and a wake a moment later
+spawns a new pane under the same sid16 while the old pane's `pane-died` notify — which carries
+only the session name — is still climbing the hook socket; landing on `Spawning`, it read as the
+NEW pane crashing. `Daemon::pane_reborn` now drops a `PaneDied` frame for a `Spawning` record
+whose pane tmux lists as alive — "listed and not dead" is the one answer that refutes a death,
+and only the just-born window is ambiguous, so only there is tmux forked. Second, the stub itself
+measured the canonical cap: `sh`'s `read` on a tty in canonical mode got 1 KiB of the 2.5 KB
+paste and never the newline, so the stub now runs `stty -icanon` first to stand in for a raw-mode
+Claude — the number the "never typed ahead" decision above rests on, seen rather than cited.
+
+**Not done:** the editor's `^S` on a note still leaves a Sleeping claude inert (CLAUDE.md, "a
+Sleeping claude leaves it inert (`c` wakes it)") — the same road would serve it, with
+`NoteToAgent`'s sentence parked instead of the user's. The wake is not measured against a real
+`claude --resume` yet: the paste-on-first-tick shape is T-5's live-pane result plus the
+correction's cadence, not a fresh arm of the spike.
+
+## A stated Stop commits through the flap pin (2026-09-04, user: "it stayed in review and kept running indication while it actually stopped and now it's indicating interrupt")
+
+The deferred line under "The recordless Esc is caught…" — "the flap-pin interaction … should stop
+being reachable in normal use, but nothing asserts it" — was reachable from the board in twenty
+seconds: four Shift+Enter asks at one agent, each a two-second turn. `UserPromptSubmit` → Running
+and `Stop` → Idle{EndTurn} are two commits an ask, so the fourth ask's Running was the fifth
+commit inside `FLAP_WINDOW_MS` and armed the pin at `Confidence::Low` (T-208's feed, 12:17:10).
+Three things followed, each the pin's: `automove` refused the move to IN PROGRESS on Low, so the
+card stayed in REVIEW; the `Stop` two seconds later was DROPPED — the pin let only terminal
+transitions through — so the card kept the spinner on a finished turn; and when the pin lifted
+twenty seconds on, the status-file probe found `Running` with nothing pending and demoted it to
+`Idle{Interrupted}` at Medium (12:17:34), which is the "interrupt" the user saw with no Esc
+pressed.
+
+**The guard was written for evidence that argues with itself** — 11 §11.7.4's world of OSC
+tiers, transcript tails and byte-silence probes — and it was treating Claude's own hooks as more
+of it. A `Stop` is not an inference: it is the turn ending, whatever came before. So the pin now
+keys on confidence, which is what already separates the two kinds of signal: while pinned, a
+signal at `Confidence::High` (every hook-stated transition) commits and keeps High, a terminal
+one commits as before, and everything Medium or Low — `PaneQuiet`, `StatusFileIdle`,
+`TranscriptHint`, the `SubagentStop` promotion — is dropped for the pin's twenty seconds. The
+commit that crosses `FLAP_MAX` still arms the pin, so the inferred signals stay out while the
+hooks are this busy; it just no longer marks a stated commit Low, so `automove` moves the card
+the prompt asked for. The movegate's fuse (6 automatic moves of one ticket in 120 s, cleared by
+a move by hand, noticed in the advisory row) is the honest limiter on that road and was
+untouched. `flap_guard_pins_the_inferred_signals` replaces `flap_guard_pins_low`, and
+`a_stated_stop_commits_through_the_flap_pin` replays the feed: fifth commit High and pinned,
+the Stop settles to EndTurn at High, the probes after the pin have no `Running` to demote.
+
+The same feed shows the wake road's race one build earlier (12:07:04, `spawning → exited
+{crashed}` off a `PaneDied` two seconds after the ask, before `pane_reborn` existed): the
+record recovered on the `SessionStart{resume}` that followed, and that binary is gone.

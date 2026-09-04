@@ -508,6 +508,8 @@ pub struct Ctx {
     /// One of those claude sessions holds a PANE — so there is a box a
     /// prompt can land in. Narrower than `ticket_has_claude`, which counts a
     /// `Sleeping` session: parked is live, but it has no process to type at.
+    /// Live and not this is exactly Sleeping, which is how `c` knows to say
+    /// `wake` and Shift+Enter to say `wake + ask` (2026-09-04).
     pub ticket_promptable: bool,
     /// At least one of the selected ticket's sessions is awake.
     pub ticket_awake: bool,
@@ -880,13 +882,27 @@ static BOARD: &[Binding] = &[
         // claude on the title, submitted, and stays. A ticket saved with
         // plain Enter is one press behind a Shift+Enter one, and this is
         // that press.
-        hint: |c| if c.ticket_has_claude { "ask claude" } else { "ask claude the title" },
-        // A parked agent has no box to type into and no empty seat either —
-        // `c` wakes it — so a Sleeping claude leaves the key inert. And
-        // `rich_keys` is the ShiftEnter clause: where the terminal spells
-        // this as a plain Enter the key must be inert AND unhinted, or the
-        // press would focus the pane instead of opening a field.
-        avail: |c| (c.ticket_promptable || (c.has_ticket && !c.ticket_has_claude)) && c.rich_keys,
+        hint: |c| {
+            // A parked agent has no box to type into, and until 2026-09-04
+            // that left the key inert there — `c`, wait, come back, ask.
+            // Now the press opens the same field and the daemon wakes the
+            // agent on the way (user: "ask claude on sleeping agent auto
+            // wakes it for the user"); the hint says the extra thing it
+            // does. Live but paneless is exactly Sleeping.
+            if c.ticket_has_claude && !c.ticket_promptable {
+                "wake + ask claude"
+            } else if c.ticket_has_claude {
+                "ask claude"
+            } else {
+                "ask claude the title"
+            }
+        },
+        // Every ticket, at every stage of its seat: empty (the title is the
+        // prompt), parked (wake, then ask), paned (ask). `rich_keys` is the
+        // ShiftEnter clause: where the terminal spells this as a plain Enter
+        // the key must be inert AND unhinted, or the press would focus the
+        // pane instead of opening a field.
+        avail: |c| c.has_ticket && c.rich_keys,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -3476,12 +3492,13 @@ mod tests {
         assert_eq!(resolve(Scope::Input, Key::Up, &composing), None);
     }
 
-    /// A prompt needs a box to land in. `ticket_has_claude` counts a parked
-    /// session — `Sleeping` is live — so gating on it would offer the key on
-    /// a ticket with no process, and the press would reach a pane that is not
-    /// there.
+    /// A prompt needs a box to land in, and a parked claude has none —
+    /// `Sleeping` is live and paneless. Until 2026-09-04 that made the key
+    /// inert there; now the press is the same verb and the hint names the
+    /// wake the daemon does on the way. The distinction still lives in the
+    /// hint, which is what tells the user a pane is about to be spent.
     #[test]
-    fn prompting_needs_a_pane_not_merely_a_session() {
+    fn prompting_a_parked_claude_says_it_wakes() {
         let rich = |promptable| Ctx {
             has_ticket: true,
             ticket_has_claude: true,
@@ -3490,8 +3507,15 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich(true)), Some(Verb::Prompt));
-        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich(false)), None);
-        assert!(hint_for(Scope::Board, Verb::Prompt, &rich(false)).is_none());
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich(false)), Some(Verb::Prompt));
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &rich(true)),
+            Some(("shift+enter", "ask claude"))
+        );
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &rich(false)),
+            Some(("shift+enter", "wake + ask claude"))
+        );
         // And plain Enter is untouched either way: the two live side by side
         // in the footer, and only one of them spends the terminal.
         assert_eq!(resolve(Scope::Board, Key::Enter, &rich(true)), Some(Verb::Act));
@@ -3500,8 +3524,9 @@ mod tests {
     /// An EMPTY seat is the composer's moment come round again: the ticket
     /// exists but no claude does, so Shift+Enter starts one on the title —
     /// same verb, and the hint says which sentence it is about to say. A
-    /// parked claude is not an empty seat (`c` wakes it), an empty column has
-    /// no title to ask, and the legacy floor still gets nothing.
+    /// parked claude is not an empty seat — the key wakes it and asks rather
+    /// than starting a second — an empty column has no title to ask, and the
+    /// legacy floor still gets nothing.
     #[test]
     fn shift_enter_on_an_empty_seat_starts_claude_on_the_title() {
         let empty = Ctx { has_ticket: true, rich_keys: true, ..Default::default() };
@@ -3511,7 +3536,10 @@ mod tests {
             Some(("shift+enter", "ask claude the title"))
         );
         let parked = Ctx { ticket_has_claude: true, ..empty.clone() };
-        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &parked), None);
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &parked),
+            Some(("shift+enter", "wake + ask claude"))
+        );
         let no_card = Ctx { has_ticket: false, ..empty.clone() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &no_card), None);
         let legacy = Ctx { rich_keys: false, ..empty };
