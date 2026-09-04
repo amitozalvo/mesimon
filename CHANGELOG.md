@@ -11,6 +11,11 @@ section out of it for the GitHub release body.
 
 ## v0.1.0-alpha.12 — 2026-09-04
 
+- **A new board comes with three tags.** A board that has never had a tag opens with `BUG`,
+  `FEATURE` and `CHANGE` on group 1, coloured rose, green and blue, so the first `^t` is a pick
+  rather than a blank row. Offered once: a board with tags of its own is left alone, and
+  forgetting the three does not bring them back on the next start.
+
 - **Release notes, in the board.** The Esc menu has a `Release notes` row that opens this file
   on a screen of its own: one band per release, the running build marked, the notes as rich
   text under each. `j`/`k` and `{ }` read, `n`/`N` step between releases, `q` returns. The

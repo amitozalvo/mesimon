@@ -563,7 +563,15 @@ ticket page's rail has its own selected session and "which claude" answers diffe
 (`Tag {name, group, color}`), persisted in `columns.toml` (schema 2 — the bump exists so an older
 build bars its writes instead of dropping the registry); `Ticket.tags` is `Vec<TagRef {name,
 group}>`, a pointer into it. Colour lives on the REGISTRY, never on the ticket, so recolouring
-repaints every card at once instead of leaving 40 tickets holding a stale copy. Nothing is seeded:
+repaints every card at once instead of leaving 40 tickets holding a stale copy. **A board with no tags at
+all is offered three starters ONCE** (2026-09-04, user: "creating first tag gets people
+overwhelmed"): `board::STARTER_TAGS` — `BUG` `FEATURE` `CHANGE` on group 1, rose/green/blue as
+chosen colours — written by `Board::seed_starter_tags` from `store::load` when
+`columns.toml` says the offer is still owed (`tags_seeded`, a scalar before the tables; absent
+on every older file, so an existing board with no vocabulary gets them on its first load and one
+with its own is only stamped). Forgetting all three is respected: the stamp is what keeps them
+from coming back. `MESIMON_NO_TAG_SEED=1` declines it (the seam `tags_e2e`/`mcp_e2e` set,
+since they build a registry from nothing). Beyond that nothing is seeded:
 "create on the fly" means no setup step, not a derived list — a name enters by being typed in the
 picker and stays until `ForgetTag`. Max `MAX_TAGS_PER_GROUP` (10) per axis; groups are 1-10 (`0`
 addresses 10). Ten names is more than a picker row fits, so the row is WINDOWED, not

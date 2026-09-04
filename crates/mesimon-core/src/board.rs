@@ -647,12 +647,31 @@ pub struct Board {
     /// wear it, so untagging the last ticket does not silently retire the tag
     /// and a cycle keeps its shape.
     ///
-    /// Nothing is seeded: the registry starts empty and grows the first time
-    /// a name is typed. "Create on the fly" is about not having to set the
-    /// board up before using it, NOT about deriving the list from the tickets.
+    /// A board that never had a vocabulary is given `STARTER_TAGS` once, on
+    /// its first load (`seed_starter_tags`); after that the registry grows
+    /// only when a name is typed. "Create on the fly" is about not having to
+    /// set the board up before using it, NOT about deriving the list from the
+    /// tickets.
     #[serde(default)]
     pub tags: Vec<Tag>,
+    /// Whether the starter offer has been made: true once `STARTER_TAGS` were
+    /// written, or once the board was seen with a vocabulary of its own.
+    /// Persisted, so forgetting every starter is not answered with the three
+    /// coming back on the next daemon start.
+    #[serde(default)]
+    pub tags_seeded: bool,
 }
+
+/// The vocabulary a board starts with, on group 1: three names most work
+/// sorts itself into, each with a colour picked by hand (indices into the
+/// tag ring, tuned on the shipped graphite/chalk ring: rose, green, blue).
+/// Offered ONCE to a board with no tags at all (user 2026-09-04: "creating
+/// first tag gets people overwhelmed"); a board that already has a
+/// vocabulary never sees them, and a user who forgets them is not re-seeded.
+pub const STARTER_TAGS: [(&str, u8); 3] = [("BUG", 0), ("FEATURE", 2), ("CHANGE", 6)];
+
+/// The axis `STARTER_TAGS` land on.
+pub const STARTER_GROUP: u8 = 1;
 
 /// D33i: the shipped default template.
 pub const DEFAULT_COLUMNS: [&str; 4] = ["TODO", "IN PROGRESS", "REVIEW", "DONE"];
@@ -708,6 +727,27 @@ impl Board {
     /// so a card can never render a colourless band.
     pub fn tint_of(&self, t: &TagRef) -> u8 {
         self.tag_def(t.group, &t.name).map(|d| d.tint()).unwrap_or_else(|| default_tint(&t.name))
+    }
+
+    /// Make the starter offer: on a board that has never had a tag, write
+    /// `STARTER_TAGS` onto `STARTER_GROUP`; on a board that already has a
+    /// vocabulary, only remember that no offer is owed. Returns whether
+    /// anything changed, so the caller knows to persist.
+    pub fn seed_starter_tags(&mut self) -> bool {
+        if self.tags_seeded {
+            return false;
+        }
+        if self.tags.is_empty() {
+            for (name, color) in STARTER_TAGS {
+                self.tags.push(Tag {
+                    name: name.to_string(),
+                    group: STARTER_GROUP,
+                    color: Some(color),
+                });
+            }
+        }
+        self.tags_seeded = true;
+        true
     }
 
     /// Add a name to axis `group`. `Err` says why not, so the caller can show
@@ -1320,6 +1360,33 @@ mod tests {
         assert_eq!(sanitize_title("fix the auth bug"), "fix the auth bug");
         // Control characters go, as on every card row.
         assert_eq!(sanitize_title("fix\u{1b}[31m bug"), "fix[31m bug");
+    }
+
+    /// The starters are lawful tags: names `sanitize_tag` would pass whole,
+    /// on one axis, each with a distinct chosen colour on the ring. And the
+    /// offer is made once: a board with a vocabulary is only stamped, and a
+    /// stamped board is never re-seeded.
+    #[test]
+    fn the_starter_tags_are_lawful_and_offered_once() {
+        for (name, color) in STARTER_TAGS {
+            assert_eq!(sanitize_tag(name).as_deref(), Some(name));
+            assert!(color < TAG_TINTS);
+        }
+        let mut colours: Vec<u8> = STARTER_TAGS.iter().map(|(_, c)| *c).collect();
+        colours.dedup();
+        assert_eq!(colours.len(), STARTER_TAGS.len(), "one tint each");
+
+        let mut b = Board::default();
+        assert!(b.seed_starter_tags());
+        assert_eq!(b.group_tags(STARTER_GROUP), vec!["BUG", "FEATURE", "CHANGE"]);
+        assert!(!b.seed_starter_tags(), "a second offer changes nothing");
+        b.tags.clear();
+        assert!(!b.seed_starter_tags(), "forgetting them is not answered with them");
+
+        let mut own = Board::default();
+        own.register_tag(1, "OWN").unwrap();
+        assert!(own.seed_starter_tags(), "the stamp is a change");
+        assert_eq!(own.group_tags(1), vec!["OWN"]);
     }
 
     #[test]

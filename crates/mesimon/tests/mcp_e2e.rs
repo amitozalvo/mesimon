@@ -180,6 +180,9 @@ fn agent_board_tools_tier_and_collisions() {
     // certainly armed at every step. Its expiry is a `movegate` unit test —
     // sleeping out a real window here would only buy flakiness.
     std::env::set_var("MESIMON_PINGPONG_MS", "600000");
+    // The registry is built by hand below, from nothing: decline the starter
+    // tags a fresh board is otherwise offered.
+    std::env::set_var("MESIMON_NO_TAG_SEED", "1");
 
     let daemon_repo = repo.clone();
     let daemon = std::thread::spawn(move || {

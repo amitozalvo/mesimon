@@ -46,6 +46,12 @@ struct ColumnsFile {
     #[serde(default = "schema_v1")]
     schema_version: u32,
     next_key: u64,
+    /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
+    /// so it sits here, before the tables. Absent on every file written
+    /// before 2026-09-04, which is what makes an existing board's first load
+    /// on this build the offer.
+    #[serde(default)]
+    tags_seeded: bool,
     columns: Vec<Column>,
     /// The tag registry (v2). Another array of tables, so it may follow
     /// `columns` but must stay after every scalar.
@@ -313,6 +319,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 columns: cf.columns,
                                 next_key: cf.next_key,
                                 tags: cf.tags,
+                                tags_seeded: cf.tags_seeded,
                                 ..Default::default()
                             };
                             return (b, false, false);
@@ -416,9 +423,22 @@ fn load_sessions(sf: &Path, notices: &mut Vec<Notice>) -> (Vec<SessionRecord>, b
     (Vec::new(), barred)
 }
 
+/// Whether a board with no tags is given the starters at load.
+/// `MESIMON_NO_TAG_SEED=1` is a test seam: the e2es that build a vocabulary
+/// from nothing set it, so their registry starts empty.
+fn seed_tags_wanted() -> bool {
+    std::env::var_os("MESIMON_NO_TAG_SEED").is_none()
+}
+
 /// Load the board. A parse failure is a NOTICE, never an error: the daemon
 /// must come up. `Err` is reserved for genuine environment faults.
 pub fn load(paths: &Paths) -> Result<Loaded> {
+    load_with(paths, seed_tags_wanted())
+}
+
+/// `load`, with the starter-tag offer decided by the caller (the tests, so
+/// none of them has to touch the process environment).
+pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
     let mut notices = Vec::new();
     let cols_path = paths.board_dir.join("board/columns.toml");
     let fresh = !cols_path.is_file();
@@ -441,9 +461,14 @@ pub fn load(paths: &Paths) -> Result<Loaded> {
         board.next_key = recover_next_key(&tickets_dir, &board.tickets);
         readd_missing_columns(&mut board);
     }
+    // The starter offer: a board that never had a tag gets `STARTER_TAGS`
+    // once, and a board with a vocabulary of its own is stamped as needing
+    // none. Never onto a barred file — the stamp would be lost with the
+    // write, and a quarantined board is not the moment to add to it.
+    let seeded = seed_tags && !columns_write_barred && board.seed_starter_tags();
     // Write the defaults out only when the path is actually free: a fresh
     // repo, or a quarantine that succeeded in moving the bad file aside.
-    if (fresh || columns_lost) && !columns_write_barred {
+    if (fresh || columns_lost || seeded) && !columns_write_barred {
         save_columns(paths, &board)?;
     }
 
@@ -457,6 +482,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
     let cf = ColumnsFile {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
+        tags_seeded: board.tags_seeded,
         columns: board.columns.clone(),
         tags: board.tags.clone(),
     };
@@ -1067,7 +1093,8 @@ by = "local"
     }
 
     /// A v1 columns.toml (no registry) still loads, and the tag list defaults
-    /// to empty. The board comes up; nothing is seeded.
+    /// to empty at the file level — the starter offer is `load`'s, and it is
+    /// what `tags_seeded` absent means: the offer is still owed.
     #[test]
     fn v1_columns_file_loads_without_a_registry() {
         let v1 = r#"
@@ -1082,6 +1109,89 @@ order = "a0"
         assert_eq!(cf.schema_version, 1);
         assert_eq!(cf.next_key, 7);
         assert!(cf.tags.is_empty());
+        assert!(!cf.tags_seeded);
+    }
+
+    fn starter_names(b: &Board) -> Vec<&str> {
+        b.group_tags(mesimon_core::board::STARTER_GROUP)
+    }
+
+    /// A fresh board opens with the three starters on group 1, each with its
+    /// hand-picked colour, and the file says the offer was made.
+    #[test]
+    fn a_fresh_board_gets_the_starter_tags_once() {
+        let (dir, paths) = scratch("seedfresh");
+        let l = load(&paths).unwrap();
+        assert!(l.notices.is_empty(), "{:?}", l.notices);
+        assert_eq!(starter_names(&l.board), vec!["BUG", "FEATURE", "CHANGE"]);
+        for (name, color) in mesimon_core::board::STARTER_TAGS {
+            let def = l.board.tag_def(mesimon_core::board::STARTER_GROUP, name).unwrap();
+            assert_eq!(def.color, Some(color), "{name} carries a chosen colour, not a hash");
+        }
+        assert!(l.board.tags_seeded);
+        let text = std::fs::read_to_string(dir.join(".mesimon/board/columns.toml")).unwrap();
+        assert!(text.contains("tags_seeded = true"), "{text}");
+        assert_eq!(text.matches("[[tags]]").count(), 3);
+
+        // Forgetting all three is respected: the next load seeds nothing.
+        let mut b = l.board.clone();
+        b.tags.clear();
+        save_columns(&paths, &b).unwrap();
+        let again = load(&paths).unwrap();
+        assert!(again.board.tags.is_empty(), "the starters must not come back");
+        assert!(again.board.tags_seeded);
+        cleanup(&dir, &paths);
+    }
+
+    /// A board written before the stamp existed: with a vocabulary of its own
+    /// it is left alone (only stamped); with none it gets the offer.
+    #[test]
+    fn an_existing_board_is_offered_the_starters_only_when_it_has_no_tags() {
+        let (dir, paths) = scratch("seedexisting");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            r#"schema_version = 2
+next_key = 4
+
+[[columns]]
+name = "TODO"
+order = "a0"
+
+[[tags]]
+name = "OWN"
+group = 1
+"#,
+        );
+        let l = load(&paths).unwrap();
+        assert_eq!(starter_names(&l.board), vec!["OWN"], "a vocabulary is never added to");
+        assert!(l.board.tags_seeded);
+        assert!(std::fs::read_to_string(&cols).unwrap().contains("tags_seeded = true"));
+
+        write(
+            &cols,
+            r#"schema_version = 2
+next_key = 4
+
+[[columns]]
+name = "TODO"
+order = "a0"
+"#,
+        );
+        let l = load(&paths).unwrap();
+        assert_eq!(starter_names(&l.board), vec!["BUG", "FEATURE", "CHANGE"]);
+        assert_eq!(l.board.next_key, 4, "the rest of the file is untouched");
+        cleanup(&dir, &paths);
+    }
+
+    /// The seam the vocabulary e2es use: no offer, no stamp, no write.
+    #[test]
+    fn the_seed_can_be_declined_for_a_test() {
+        let (dir, paths) = scratch("seedoff");
+        let l = load_with(&paths, false).unwrap();
+        assert!(l.board.tags.is_empty());
+        assert!(!l.board.tags_seeded);
+        cleanup(&dir, &paths);
     }
 
     /// The registry round-trips through the serializer that writes the file.
@@ -1093,6 +1203,7 @@ order = "a0"
         let cf = ColumnsFile {
             schema_version: COLUMNS_SCHEMA,
             next_key: 3,
+            tags_seeded: true,
             columns: vec![Column { name: "TODO".into(), order: "a0".into() }],
             tags: vec![
                 mesimon_core::board::Tag { name: "BUG".into(), group: 1, color: None },

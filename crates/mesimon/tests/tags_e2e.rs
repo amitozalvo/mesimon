@@ -30,6 +30,9 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     let state_dir = paths.state_dir.clone();
     let rt_dir = paths.rt_dir.clone();
 
+    // This test builds the vocabulary from nothing; the starter tags a fresh
+    // board is offered would sit in group 1 ahead of every name it registers.
+    std::env::set_var("MESIMON_NO_TAG_SEED", "1");
     let daemon_repo = repo.clone();
     let daemon = std::thread::spawn(move || {
         let _ = mesimon_daemon::run_foreground(&daemon_repo);
@@ -177,6 +180,9 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     // ---- survives a daemon restart (the real migration test) ---------------
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
+    // This test builds the vocabulary from nothing; the starter tags a fresh
+    // board is offered would sit in group 1 ahead of every name it registers.
+    std::env::set_var("MESIMON_NO_TAG_SEED", "1");
     let daemon_repo = repo.clone();
     let daemon = std::thread::spawn(move || {
         let _ = mesimon_daemon::run_foreground(&daemon_repo);

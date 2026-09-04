@@ -4658,3 +4658,43 @@ at that moment forking a hundred tmux servers. The client's request to the old d
 **Not done.** The shutdown itself is still unbounded and still on the writer thread; the
 handover is now patient with it rather than fast. Bounding it (skip the worktree flag refresh
 on the shutdown road, say) is the next lever if 30 s ever proves short.
+
+## A board with no tags is offered three (2026-09-04, user: "creating first tag gets people overwhelmed. seed group 1 with tags BUG FEATURE CHANGE with appropriate colors if no tags exists")
+
+**What changed.** The registry no longer starts empty on a board that never had a tag. `store::load`
+calls `Board::seed_starter_tags`, which writes `board::STARTER_TAGS` — `BUG` (tint 0), `FEATURE`
+(tint 2), `CHANGE` (tint 6): rose, green and blue on the shipped graphite/chalk ring — onto group
+1 (`STARTER_GROUP`) when the board has no tags, and in every case stamps `Board.tags_seeded`.
+The stamp is persisted in `columns.toml` as `tags_seeded = true`, a scalar declared before the
+tables (the same TOML rule `schema_version` and `next_key` obey). No schema bump: an older build
+drops the key and would re-offer on the next newer load only to a board that is STILL empty,
+which is the offer it would have made anyway.
+
+**What "if no tags exist" means.** Once, not whenever. The naive rule — seed at every load that
+finds an empty registry — would answer a user who pressed `d` on all three with the three coming
+back on the next daemon start, so the offer is a stamp (the same instinct as the dev-channel
+gate: "a stamp, never a heuristic"). A board that already has a vocabulary is stamped without a
+write to its tags; a board written before today with no tags gets the offer on its first load
+under this build, which is the whole point — the overwhelmed user has such a board.
+
+**What was refused.** Seeding in `Board::with_default_columns()` would have reached only a
+repo whose `columns.toml` did not exist yet, missing every existing board; seeding per flavor is
+impossible because the colour is a ring INDEX in the registry and the flavor is a TUI preference
+— the rings differ in hue order per flavor (blue's index 0 is a green), so the three are tuned
+for the default pair and are merely distinct elsewhere. Deriving the colours from the name hash
+(`color: None`) was refused because `default_tint("BUG")` is whatever the hash says, and the
+request was for appropriate colours.
+
+**Tests.** `store.rs`: `a_fresh_board_gets_the_starter_tags_once` (three on group 1, chosen
+colours, the stamp in the file, and a cleared registry stays cleared on reload),
+`an_existing_board_is_offered_the_starters_only_when_it_has_no_tags` (pre-stamp file with a
+vocabulary is only stamped; without one is seeded, `next_key` untouched),
+`the_seed_can_be_declined_for_a_test`. `board.rs`:
+`the_starter_tags_are_lawful_and_offered_once`. The seam `MESIMON_NO_TAG_SEED=1` exists for
+`tags_e2e` and `mcp_e2e`, which assert the registry's exact contents after building it from
+nothing (`allowed_tags == []`, `group_tags(1) == ["BUG", "REGR"]`); `store::load_with(paths,
+seed)` is the same switch for a unit test, so no test touches the environment. The board
+goldens never load a store, so none moved.
+
+**CLAUDE.md** paragraph "Tags are ticket metadata on an axis" now says so, replacing "Nothing
+is seeded".
