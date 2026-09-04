@@ -706,17 +706,17 @@ fn the_offer_reaches_the_menu_and_the_header() {
     offer_claude_md(&mut app, true);
     let header = render(&app, 120, 30);
     assert!(
-        header.iter().any(|l| l.contains("claude.md misses the ticket line (esc)")),
+        header.iter().any(|l| l.contains("tell agents to read the ticket (esc)")),
         "{}",
         header.join("\n")
     );
     app.mode = Mode::Menu { idx: 0 };
     let menu = render(&app, 120, 30);
-    assert!(menu.iter().any(|l| l.contains("Teach CLAUDE.md to read the ticket")), "{menu:#?}");
+    assert!(menu.iter().any(|l| l.contains("Tell agents to read the ticket")), "{menu:#?}");
     // Wearing the same mark the chip does — read from the glyph table, so
     // the two can never be checked against a stale transcription.
     let mark = crate::glyphs::suggest_mark(app.theme.glyph_tier());
-    let row = menu.iter().find(|l| l.contains("Teach CLAUDE.md")).expect("the row");
+    let row = menu.iter().find(|l| l.contains("Tell agents to read")).expect("the row");
     assert!(row.contains(mark), "a suggested row wears `{mark}`: {row}");
     assert!(header.iter().any(|l| l.contains(mark)), "and so does the chip");
 }

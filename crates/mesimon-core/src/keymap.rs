@@ -2445,8 +2445,11 @@ static MENU_ITEMS: &[MenuItem] = &[
     // nothing is written until the bytes are on the screen.
     MenuItem {
         verb: Verb::ClaudeMdOffer,
-        label: |_| "Teach CLAUDE.md to read the ticket".into(),
-        detail: |_| "shows the four lines first ∙ agents fetch the description themselves".into(),
+        // The outcome, not the file: a CLAUDE.md cannot read anything, an
+        // agent can. The file is the mechanism and belongs in the detail,
+        // one line down, next to the promise that nothing is written blind.
+        label: |_| "Tell agents to read the ticket".into(),
+        detail: |_| "adds four lines to CLAUDE.md ∙ you see them first".into(),
         avail: |c| c.claude_md_offer,
         key: "",
     },
@@ -2703,7 +2706,14 @@ static SUGGESTIONS: &[Suggestion] = &[
         // more than a tidy-up. It has no key of its own — the dialog is the
         // whole of it, and a dialog is not something to hang a letter off.
         verb: Verb::ClaudeMdOffer,
-        headline: |_| "claude.md misses the ticket line".into(),
+        // Says what taking it GETS you. "claude.md misses the ticket line"
+        // shipped first and was cut (author: "doesn't indicate well"): it
+        // named a file the reader has no reason to care about yet, spent its
+        // width on mesimon's own jargon — "the ticket line" means nothing
+        // until you have seen it — and "misses" reads as longing as easily as
+        // absence. The file is named on the menu row this points at, and the
+        // dialog shows it in full; the chip's one job is to be worth opening.
+        headline: |_| "tell agents to read the ticket".into(),
         key: "",
     },
     Suggestion {

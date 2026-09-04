@@ -4950,6 +4950,16 @@ bottom edge. They wear `Group::Sessions` now, the drawer's precedent (a dialog's
 group of what they act on, and these act on what every future session is told). And
 `chrome::dialog_open` had to learn the mode, or the footer repeated the edge underneath it.
 
+**The chip says what you GET, and the row says what it touches.** They shipped the other way
+round for an hour — chip `claude.md misses the ticket line`, row `Teach CLAUDE.md to read the
+ticket` — and the author cut it ("doesn't indicate well"). Three things were wrong at once: the
+chip spent its width naming a file the reader has no reason to care about yet, "the ticket line"
+is mesimon's own jargon and means nothing until you have seen it, and "misses" reads as longing
+as readily as absence. The row's label was a category error besides — a CLAUDE.md cannot read a
+ticket, an agent can. Now: chip `tell agents to read the ticket`, row `Tell agents to read the
+ticket` over `adds four lines to CLAUDE.md ∙ you see them first`. The file is named one line
+down, and shown in full a keystroke later.
+
 **Decline, copy and ignore are three different answers.** `esc` writes nothing and the offer
 returns; `i` stamps `Board::claude_md_ignored` and it never returns; `c` writes nothing and
 stamps nothing, and is the one key that leaves the dialog standing — copying is not evidence

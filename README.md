@@ -25,7 +25,7 @@ report.
    - **Remote-tracking refs and objects**, if you turn on periodic fetching
      (`MESIMON_GIT_FETCH=<minutes>`) or press *Fetch origin* in the Esc menu. That fetch never
      writes `FETCH_HEAD`, never runs `gc`, and never touches your branches.
-   - **`<repo>/CLAUDE.md`**, if you take the *Teach CLAUDE.md to read the ticket* offer. The
+   - **`<repo>/CLAUDE.md`**, if you take the *Tell agents to read the ticket* offer. The
      dialog shows the exact lines before anything is written; enter appends those lines and
      nothing else. mesimon never edits or removes what is already in that file, and never
      touches it again once the lines are there.

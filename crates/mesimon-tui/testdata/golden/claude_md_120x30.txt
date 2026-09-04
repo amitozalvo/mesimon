@@ -1,4 +1,4 @@
- BOARD   mesimon > kanban-tui   6 tickets                                      ◦ claude.md misses the ticket line (esc)
+ BOARD   mesimon > kanban-tui   6 tickets                                        ◦ tell agents to read the ticket (esc)
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
