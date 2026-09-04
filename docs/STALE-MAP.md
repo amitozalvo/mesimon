@@ -4515,6 +4515,45 @@ archive's words — a snooze that parks the agent on the way out is a follow-up.
 nothing about a snoozed ticket because a snoozed ticket is not on the board; the ARCHIVED row
 is where its deadline reads. `CHANGELOG.md` is the release commit's, not this one's.
 
+## A snooze sleeps the idle agent first (2026-09-04, user: "snooze auto sleep sessions if not running")
+
+`snooze_ticket` took `archive_ticket`'s awake gate verbatim, so `z` on a ticket whose claude had
+finished its turn came back `sessions still awake — sleep them first`: an `x`, then the `z`
+again. A snooze says "not now", and an agent that has stopped is exactly what `x` would have
+parked, so the daemon now does the `x` on the way. **What goes is what `x` would take** —
+`sleep_eligible` without the bulk sweep's 60 s floor (a `z` is as deliberate as an `x`): a
+claude at `Idle{..}`, a shell with no live child, nothing pinned awake. **All-or-nothing**:
+every pane on the ticket is judged BEFORE any is signalled, so a claude still `Running` (or
+waiting on the user, or `Unknown` after a restart) holds the ticket on the board with nothing
+touched, and the refusal names it — `claude still awake — only idle sessions sleep`, `shell
+still awake — bash has live children (…)`. The sleeps ride `sleep_one`, so the transcript copy,
+the `Sleeping` latch, the SIGTERM and the reaper are the same ones; `persist_sessions` runs
+before the ticket write. The TUI's confirm counts what it saw awake — `snoozed T-9 until 15:42
+∙ its session asleep ∙ u undoes it` — and undo is still the restore: the ticket comes back, the
+agent stays parked, `c` wakes it, on the wake by hand and on the tick wheel's alike. Plain `a`
+keeps refusing: an archive has no "later" in it. `snooze_e2e` drives the stub to `Running`
+(refused, in those words, the session untouched), then `Idle` through a `Stop` frame (snoozed,
+the record `Sleeping`, zero awake).
+
+**The board had a gate of its own, and it was the archive's.** `Verb::SnoozePrefix` refused
+to ARM over any awake session through `archive_gated`, so the daemon's new road was
+unreachable from the keyboard. It now asks `App::snooze_blocked`: a paned claude that is not
+`Idle{..}` refuses at the first press in the daemon's words (the chord never arms for an Enter
+that would only be refused); what the board cannot judge — a shell's live children, a pin —
+is the Enter's to hear. The test fake walks the same road (`Sleeping` on the idle, the refusal
+on the working). `snooze_refuses_a_working_claude_before_it_arms` and
+`snooze_sleeps_an_idle_claude_on_the_way` pin both.
+
+**And the armed card blinks** (user, minutes later: "flash while in snooze not confirmed yet").
+Between the `z` and the Enter or the cancel the title borrows the MOVE ghost's blink —
+`Theme::move_blink`, `sel.base` ↔ `sel.dim3` on the four-frame clock, bold both phases — on
+the board card and on the ticket page's title row (in the band's own ramp there). Not the
+delete's red-tinted flash: that is a deletion's, and a snooze is a card in hand, about to
+leave. The preset row under the title holds still. Goldens are colourless, so
+`board_snooze_armed_120x30` did not move; `test_snooze_armed_blinks_the_card` sweeps
+`Flavor::ALL` (bright at frame 0, dim3 at frame 4, bystanders still, the cancel puts the
+cursor title back) and `test_snooze_armed_blinks_the_ticket_title` covers the page.
+
 ## The bulk sleep moves to `X` (2026-09-04, user: "shouldn't sleep all be Shift+x now that snooze is z? and x is sleep anyway?")
 
 Reverses the letter in "The bulk sleep gets a key, and it is `Z`" and keeps everything else in
@@ -4588,6 +4627,78 @@ Sleeping claude leaves it inert (`c` wakes it)") — the same road would serve i
 `claude --resume` yet: the paste-on-first-tick shape is T-5's live-pane result plus the
 correction's cadence, not a fresh arm of the spike.
 
+## The preferences move into a Settings submenu (2026-09-04, user: "settings submenu in main menu")
+
+The Esc menu had grown to thirteen rows on a busy board, and three of them were not actions
+at all — `Show agent replies`, `Snooze returns with needs-you`, `Theme: graphite` — toggles
+and a picker sitting between `Archived tickets` and `Release notes`. They are now behind one
+row, `Settings`, whose detail names what it hides (`theme: graphite ∙ agent replies ∙ how a
+snooze returns`) so nobody opens it to find out.
+
+**What was built.** `Scope::Settings` (word `SETTINGS`, parent `Global`, `Scope::ALL` index 14
+— `Releases`/`Input`/`Editor` shifted one) with the menu's three bindings, the last hinted
+`back` rather than `close`; `Verb::Settings` and `Mode::Settings { idx }`;
+`keymap::SETTINGS_ITEMS` / `settings_items(ctx)`, the three rows moved verbatim out of
+`MENU_ITEMS`, theme first. They stay `MenuItem`s so `ui/menu.rs::draw_list` draws both lists
+through one function — the menu's `draw` and `draw_settings` are two calls of it with a name
+and a scope. `chrome::dialog_open` counts the new mode, so the footer under it carries only the
+chip and the right cluster.
+
+**Two behaviours differ from the menu proper, on purpose.** A settings row is a toggle or a
+picker, so `App::act(Scope::Settings)` dispatches WITHOUT leaving: the row relabels itself
+(`Hide agent replies`) and the change is on the screen. `Verb::Peek` and `Verb::SnoozeQuiet`
+lost their `self.mode = Mode::Normal` — the menu's own `act` had already set it before either
+ran, so nothing else read those lines. And the theme picker is now the third level, so it pops
+to the SECOND on both roads: `commit_theme` and `back(Scope::Theme)` land on `Mode::Settings`
+at the theme row (`App::settings_row`), and `back(Scope::Settings)` lands on the menu's
+`Settings` row (`App::menu_row`) — `q`/Esc pop exactly one level, as everywhere. `App::tick`
+clamps the settings cursor the way it clamps the menu's.
+
+**Held apart.** No settings row is a suggestion: `every_suggestion_is_a_menu_row` now asserts
+`SUGGESTIONS` never points into `SETTINGS_ITEMS` (a chip's `(esc)` route takes one Enter and
+would land on the wrong list). `menu_holds_the_board_wide_actions` asserts the three
+preferences are in `settings_items` and NOT in `menu_items`; the key-spelling and
+label-spelling checks run over both lists. TUI test
+`settings_is_one_level_under_the_menu_and_a_toggle_keeps_it_open`; the picker tests walk
+through `open_settings`. Goldens: `settings_120x30` new; the three menu goldens are four rows
+shorter and sit lower on the board.
+
+**Not done.** Nothing conditional lives in the settings list yet, so `settings_items`'s filter
+is the menu's for symmetry only. The picker's own frame still says `THEME ∙ for a dark
+terminal` and nothing about the level above it; the `esc put it back` hint is the whole
+promise.
+
+## The week starts on the user's day (2026-09-04, user: "add in settings - first day of week")
+
+The snooze ring's last rung was `next Monday 9:00`, hard-coded — and the author's week starts
+on Sunday. The day is now a preference, and the rung follows it.
+
+**What was built.** `core/src/snooze.rs::Weekday` — `Monday` (default), `Sunday`, `Saturday`,
+the three first days in use anywhere, each carrying its `struct tm` `wday` so `target` is one
+`rem_euclid` with no table. `Preset::NextMonday9` is `Preset::NextWeek9`; `label(week_start)`
+and `target`/`deadline` take the day, and the label STAYS a `&'static str` (three literals for
+the last rung, `hint_for_label` knows all three) so the keymap's hint rule holds. `prefs.json`
+gains `week_start: "monday" | "sunday" | "saturday"` under the same rules as the snooze flag:
+absent reads as Monday, a day this build does not know reads as Monday and is NOT written over
+by a theme pick (only a pick of the day replaces it). The Settings list's fourth row, `Week
+starts on Monday` (`Verb::WeekStart`), cycles the ring on Enter and relabels itself; its detail
+spells the rung it changes (`z's last rung: next Sunday 9:00`). `Ctx::week_start_word` is the
+day's name (a fixed set, so a `&'static str`); `App::ctx` sets it and a bare `Ctx` falls to
+Monday in the label. The Settings door's detail names it (`… ∙ snooze ∙ week start` — it had
+to shorten to fit the 62-cell dialog with the longest theme name). `mesimon doctor`'s `snooze`
+line names the day. Nothing crosses the wire: the daemon only ever saw an absolute `until`.
+
+**Tests.** `next_week_is_always_ahead_whichever_day_starts_it` walks all seven weekdays for
+each of the three starts and asserts the landing day IS the start; the localtime round-trip
+asserts the real `mktime` lands on that `tm_wday`; `the_week_start_is_a_ring_with_a_file_spelling`
+and `the_week_start_defaults_to_monday_and_round_trips` pin the ring and the file; TUI test
+`the_settings_row_moves_the_start_of_the_week` cycles the row, walks `z` to the last rung and
+reads the archived deadline back as a Sunday 09:00. Goldens: `settings_120x30` grew a row; the
+three menu goldens for the door's detail.
+
+**Not done.** Only the three days; a fourth is a variant plus a literal. The wake HOUR (09:00)
+is still a constant, and "tomorrow 9:00" would be the row beside this one if it ever moves.
+
 ## A stated Stop commits through the flap pin (2026-09-04, user: "it stayed in review and kept running indication while it actually stopped and now it's indicating interrupt")
 
 The deferred line under "The recordless Esc is caught…" — "the flap-pin interaction … should stop
@@ -4620,44 +4731,6 @@ the Stop settles to EndTurn at High, the probes after the pin have no `Running` 
 The same feed shows the wake road's race one build earlier (12:07:04, `spawning → exited
 {crashed}` off a `PaneDied` two seconds after the ask, before `pane_reborn` existed): the
 record recovered on the `SessionStart{resume}` that followed, and that binary is gone.
-
-## The reload waits for the daemon it asked to stop (2026-09-04, user: "I can't access mesimon board due to a bug after I hit U")
-
-**What happened.** A `U` reload landed while another session's `cargo nextest run --workspace`
-(which is what had relinked the binary and raised the chip) was running every e2e in parallel.
-The TUI asked the daemon to shut down, waited 2 s for `orch.sock` to vanish, exec'd the new
-binary; the fresh client dialled for 5 s, spawning a daemon every 400 ms, and each one lost the
-old daemon's flock and exited quietly; the client bailed, the TUI printed one line and exited,
-the old daemon finished its shutdown — and the repo had twelve live sessions on its private
-tmux server and no board and no daemon. `daemon.lock` still named the dead pid (a flock loser
-never writes it) and `daemon.log` had never had a byte (no daemon crashed). Same binary, same
-inode, came up fine by hand two minutes later; the reload two rebuilds earlier, on an idle box,
-had worked.
-
-**Why.** Three stopwatches and no clock on the thing they were timing: `reexec` gave the
-shutdown 2 s, `connect_or_spawn` gave the next daemon 5 s and counted the handover against it,
-and `begin_shutdown` commits every pending settle through `apply_change` — automove, worktree
-flag refresh (git forks per bound worktree, eleven of them here), persist — on a box that was
-at that moment forking a hundred tmux servers. The client's request to the old daemon has a
-10 s timeout of its own; `Verb::Reload` ignores its result on purpose.
-
-**What holds now.**
-- `client::await_daemon_gone`: socket unlinked AND lock released, up to `HANDOVER_MAX` (30 s),
-  a sentence on the (already restored) terminal after 1 s; `reexec` calls it. A wedged daemon
-  still gets the exec — a client that will not start improves nothing.
-- `connect_or_spawn` probes `daemon.lock` with `LOCK_SH|LOCK_NB` (released at once; it never
-  claims the role). While held — the old daemon finishing, or the one we just spawned between
-  its flock and its bind — nothing is spawned and the budget does not run; that wait is bounded
-  by `HANDOVER_MAX`. A free lock re-arms the budget for the next daemon.
-- `Client::connect` no longer fails the launch on an unreachable daemon: the client comes up
-  with `conn: None` and a `daemon_down` notice carrying the reason, `App::new` opens on a
-  default `Snapshot` with `note_daemon_down()`, and the existing 2 s reconnect cadence (whose
-  reopen respawns) takes it from there. A bad repo path is still fatal. Test:
-  `no_daemon_at_launch_opens_disconnected`; `lock_probe_follows_the_holder` pins the probe.
-
-**Not done.** The shutdown itself is still unbounded and still on the writer thread; the
-handover is now patient with it rather than fast. Bounding it (skip the worktree flag refresh
-on the shutdown road, say) is the next lever if 30 s ever proves short.
 
 ## A board with no tags is offered three (2026-09-04, user: "creating first tag gets people overwhelmed. seed group 1 with tags BUG FEATURE CHANGE with appropriate colors if no tags exists")
 
@@ -4698,3 +4771,135 @@ goldens never load a store, so none moved.
 
 **CLAUDE.md** paragraph "Tags are ticket metadata on an axis" now says so, replacing "Nothing
 is seeded".
+
+## The reload waits for the daemon it asked to stop (2026-09-04, user: "I can't access mesimon board due to a bug after I hit U")
+
+**What happened.** A `U` reload landed while another session's `cargo nextest run --workspace`
+(which is what had relinked the binary and raised the chip) was running every e2e in parallel.
+The TUI asked the daemon to shut down, waited 2 s for `orch.sock` to vanish, exec'd the new
+binary; the fresh client dialled for 5 s, spawning a daemon every 400 ms, and each one lost the
+old daemon's flock and exited quietly; the client bailed, the TUI printed one line and exited,
+the old daemon finished its shutdown — and the repo had twelve live sessions on its private
+tmux server and no board and no daemon. `daemon.lock` still named the dead pid (a flock loser
+never writes it) and `daemon.log` had never had a byte (no daemon crashed). Same binary, same
+inode, came up fine by hand two minutes later; the reload two rebuilds earlier, on an idle box,
+had worked.
+
+**Why.** Three stopwatches and no clock on the thing they were timing: `reexec` gave the
+shutdown 2 s, `connect_or_spawn` gave the next daemon 5 s and counted the handover against it,
+and `begin_shutdown` commits every pending settle through `apply_change` — automove, worktree
+flag refresh (git forks per bound worktree, eleven of them here), persist — on a box that was
+at that moment forking a hundred tmux servers. The client's request to the old daemon has a
+10 s timeout of its own; `Verb::Reload` ignores its result on purpose.
+
+**What holds now.**
+- `client::await_daemon_gone`: socket unlinked AND lock released, up to `HANDOVER_MAX` (30 s),
+  a sentence on the (already restored) terminal after 1 s; `reexec` calls it. A wedged daemon
+  still gets the exec — a client that will not start improves nothing.
+- `connect_or_spawn` probes `daemon.lock` with `LOCK_SH|LOCK_NB` (released at once; it never
+  claims the role). While held — the old daemon finishing, or the one we just spawned between
+  its flock and its bind — nothing is spawned and the budget does not run; that wait is bounded
+  by `HANDOVER_MAX`. A free lock re-arms the budget for the next daemon.
+- `Client::connect` no longer fails the launch on an unreachable daemon: the client comes up
+  with `conn: None` and a `daemon_down` notice carrying the reason, `App::new` opens on a
+  default `Snapshot` with `note_daemon_down()`, and the existing 2 s reconnect cadence (whose
+  reopen respawns) takes it from there. A bad repo path is still fatal. Test:
+  `no_daemon_at_launch_opens_disconnected`; `lock_probe_follows_the_holder` pins the probe.
+
+**Not done.** The shutdown itself is still unbounded and still on the writer thread; the
+handover is now patient with it rather than fast. Bounding it (skip the worktree flag refresh
+on the shutdown road, say) is the next lever if 30 s ever proves short.
+
+
+## The board's ask can wait for a quiet checkout (2026-09-04, user: five claudes in one checkout committed at once)
+
+**What happened.** Five claudes on five tickets, all in the SHARED checkout, asked to commit via
+the board's Shift+Enter within a minute. One checkout has one index: git's lock serialises the
+index write, not the staging, so agents swept each other's hunks, ran tests over each other's
+half-edits and regenerated each other's goldens. Nobody can know which hunk is whose — not
+mesimon, not the agents. The correct shapes are separate trees (worktrees, M4a) or one writer at
+a time. Mesimon refuses the third shape: no Bash hook to block a commit (the README's reasons
+stand) and no "wait your turn" sentence in anybody's conversation.
+
+**What was built.** Inside the ask field Shift+Tab cycles `now` / `queued`, on a row under the
+field in the composer's own shape (`card::render_ask_mode`; the one `BackTab` binding in
+`Scope::Input` widened, since a key is bound once per scope). It is offered only where waiting
+means something — `Ctx::ask_queueable`: a shared-checkout ticket with an awake pane, never a
+worktree (its checkout is its own) and never a Sleeping claude (waking it at delivery time would
+spawn into the checkout just judged quiet). `PromptSession { queued: true }` parks the words in
+the daemon's in-memory `queued` list — `pending_prompt`'s argument: a restart drops them — and
+`drain_queue` pastes the first waiting ask of every QUIET checkout: no claude with the same `cwd`
+in Spawning / Running / RequiresAction / Idle{Background} / `pending_submit` / a paste of ours
+still owed its ack (`core/src/quiet.rs::working_tickets`; a shell never counts, D15 pins it
+Running for life). Hooked beside `auto_move` in `apply_change` (the EndTurn settle and the
+shutdown flush both come through it, so the words go out on the way down), on the 1 s bucket as
+the net, and at enqueue (a quiet checkout sends at once, `Ok` not `Queued`). One paste per
+checkout per pass: the in-flight marker keeps the checkout busy until the agent's
+`UserPromptSubmit`, which the daemon cannot tell from the user's own keystroke — so the NEXT
+prompt on the ticket is the ack either way, and an ask still WAITING when a prompt lands is
+dropped: the user talked to the agent ahead of it (pane typing, send-now, `MergeToAgent`,
+`NoteToAgent`). Sleep, kill and delete drop it by name; the sweep catches the rest (target
+gone, replaced, parked, ticket archived); a hand move never does. One entry per ticket; a second
+replaces. `Response::Queued { behind }` names the holders.
+
+**What the board shows.** `Response::Board.pending: Vec<Pending { ticket, action, waits_on,
+text, in_flight }>` — kept general, the merge train's rows ride it too. Every owed card wears
+`glyphs::queued` (`⠑ ⠢ ⠔ ⠊`, the half-diagonal pairs no other table uses, ascii `( )`) on the
+SLOW cadence over a still or empty glyph slot only (`queued_over`); the cursor card's accordion
+carries `queued ∙ after T-12` (`+N`, `after its turn`, `sends next`, `sending`) in the snooze
+row's slot, and the ticket page's state row the same words. Shift+Enter on a queued ticket
+reopens the field on the words at `queued` (hint `edit the queued ask`); Esc keeps it, a blank
+Enter drops it (`DropQueuedAsk`, the row says `blank enter drops`) — no Esc-menu row, the menu
+is for things not about the selection. E2e `ask_queue_e2e`.
+
+**Not done.** Persistence across a restart; per-column policy (M5); a wake-then-ask road for a
+sleeping target.
+
+## The merge train: mesimon merges and asks to rebase while the board is quiet (2026-09-04, user: "worktrees deserve automation")
+
+**The deviation, on purpose.** docs/12 invariant 9 says never auto-rebase, auto-merge or
+auto-push, and §12.5.5 reserved `keep_up_to_date = never | offer`. The train is OPT-IN (Settings
+row `Merge train`, `prefs.json::merge_train`, off by default), only ever fast-forwards, only ever
+ASKS the agent to rebase (it never runs `git rebase`), and never pushes. README promise 3
+narrows by one clause: the two merge-flow sentences, which travelled on a per-press human
+gesture (`m`), may now travel on a STANDING instruction — that row — and `mesimon doctor`'s
+`merge train` line says when it is on.
+
+**Armed by a connection.** The daemon reads no preference file; the TUI pushes
+`Command::SetAutomation { merge_train, merge_notice }` on every toggle and from
+`App::reconcile_train` whenever a snapshot reads the daemon unarmed while the preference is on
+(the first snapshot, a daemon restart, another board's train having gone; 30 s back-off; a
+preference that is OFF pushes nothing, so one board never disarms another's). The daemon holds
+it in memory (`daemon/src/train.rs`, the movegate's sibling) tied to the arming client's writer
+`Arc` — held weakly, so `is_armed` reads false the moment the reader thread returns, and
+`Msg::ClientGone` (sent at the end of `client_loop`, on the same `tx` as its requests) prunes
+the subscription and says `merge_train_disarmed` in the feed. A closed board is a stopped train.
+
+**The pass.** `train_pass` runs right after `refresh_worktree_flags` on its bucket
+(`MESIMON_WT_REFRESH_TICKS`, default `RSS_TICKS`; the flags moved off the RSS clause so the seam
+is theirs alone), only while `board_busy()` is empty — the same predicate the queued ask uses,
+board-wide — and does ONE thing. First a merge: the first candidate of `core/src/train.rs::plan`
+in board order (column, then row — automove parks at the top, so the last ticket to finish goes
+first): a REVIEW ticket, attached, no conflict, ahead and fast-forwardable, whose claude is
+`Idle{EndTurn}` at High|Medium or absent (nobody to wait for — what a hand `m` would merge);
+through `merge_ticket` under `Principal::Automation { rule: "merge_train" }` (both merge roads
+take a principal now, and `authorize`), then the merged notice into its agent if `merge_notice`
+is on (a turn starts; the next pass waits for it). A refused merge (a dirty main) is remembered
+per `(branch tip, base tip)` and not retried every bucket; the detail rides `Pending.text`.
+Else ONE rebase ask: an IN PROGRESS or REVIEW ticket the base moved past, claude idle, not fused,
+not already asked at THIS base tip (`Train::asked`, recorded by hand asks too — a hand `m`
+stops the train re-asking), and its pane silent ≥ 5 s by `#{window_activity}` — a person
+mid-sentence there must never get mesimon's appended to theirs. Fuse: 6 train asks on one
+ticket in 2 h suspends it (`Notice merge_train_suspended`), cleared by a hand `m` or a hand
+move, like the movegate's. Merged tickets do NOT move.
+
+**Also.** `merge_ticket`'s quiet gate counts CLAUDE sessions only now: a `!` shell is pinned
+Running for life and an ff-merge never touches the worktree, so it had refused every hand `m`
+under one. `AutomationStatus.train_asked` lets the ticket page read `rebase requested` after a
+train ask without a TUI-local memory (`merge_outstanding`). The header hangs ` ∙ train` off the
+git clause while armed; the cards carry `merge ∙ after T-3 +1` / `rebase ask ∙ next` on the owed
+row. E2e `merge_train_e2e`.
+
+**Not done.** A merge train that moves merged tickets to DONE (M5's column policy); the merged
+notice bouncing the card through IN PROGRESS and back (automove's, and today's hand notify does
+the same); a per-repo preference (it is per machine, like the rest of `prefs.json`).

@@ -83,8 +83,15 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // `d` arms here too, and the title row is the page's card: it flashes
     // as a deletion on the same clock the board card does.
     let doomed = app.doomed(ticket_id) && theme.delete_lit(app.spin_frame());
+    // `z` arms here too: the title blinks on the move ghost's clock, the
+    // board card's treatment for an armed snooze, in this band's own ramp.
+    let snoozing = app.snooze_row(ticket_id).is_some();
     let title_style = if doomed {
         theme.err_text().add_modifier(Modifier::BOLD)
+    } else if snoozing {
+        let blink = theme.move_blink(app.spin_frame());
+        let fg = if blink.fg == Some(theme.sel.dim3) { ink.dim3 } else { ink.base };
+        Style::default().fg(fg).add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(ink.base).add_modifier(Modifier::BOLD)
     };
@@ -201,6 +208,12 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         wt_spans.push(Span::styled(format!(" ∙ {n}"), theme.calm_text()));
     } else if ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree {
         wt_spans.push(Span::styled(" ∙ ⎇ worktree", d2));
+    }
+    // What mesimon owes this ticket, in the card's own words (2026-09-04):
+    // `queued ∙ after T-12`, `train ∙ merges when quiet`. The value step,
+    // never calm — calm is the `m` offer's register on this row.
+    if let Some(row) = app.pending_row(ticket.id) {
+        wt_spans.push(Span::styled(format!(" ∙ {row}"), d2));
     }
     // Tags, spelled out: the ticket page is where you came to read, so there
     // is no reason to make you decode a pip here. Budgeted against the width

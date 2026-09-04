@@ -103,9 +103,11 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // the title line the way a rename does: the ticket is not what is being
     // edited here, it is who the text is going to — so it has to stay whole
     // and stay on screen while the sentence is typed.
-    let prompt_of = |t: &Ticket| -> Option<&EditBuffer> {
+    let prompt_of = |t: &Ticket| -> Option<(&EditBuffer, bool)> {
         match editing {
-            Some((InputPurpose::Prompt { ticket, .. }, buf)) if *ticket == t.id => Some(buf),
+            Some((InputPurpose::Prompt { ticket, queued, .. }, buf)) if *ticket == t.id => {
+                Some((buf, *queued))
+            }
             _ => None,
         }
     };
@@ -182,14 +184,22 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             app.doomed(t.id),
             unseen,
             app.snooze_row(t.id).as_deref(),
+            app.owed(t.id),
+            app.pending_row(t.id).as_deref(),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
-        let edit_cursor = prompt_of(t).map(|buf| {
+        let edit_cursor = prompt_of(t).map(|(buf, queued)| {
             let (line, x_off) = card::render_prompt(&ctx, buf);
             lines.push(line);
-            (lines.len() - 1, x_off)
+            let at = lines.len() - 1;
+            // The delivery row, where the ask can wait (2026-09-04): after
+            // the field, so the cursor row is unchanged.
+            if app.ask_queueable(t.id) {
+                lines.push(card::render_ask_mode(&ctx, queued, app.ticket_queued(t.id)));
+            }
+            (at, x_off)
         });
         groups.push(Group { lines, cursor: selected || held, waiting, edit_cursor });
     };

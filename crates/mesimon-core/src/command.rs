@@ -179,6 +179,18 @@ pub enum Command {
     PromptSession {
         ticket: ulid::Ulid,
         text: String,
+        /// Park the words until the ticket's CHECKOUT is quiet — no claude with
+        /// the same cwd mid-turn — and paste them then (2026-09-04, after five
+        /// claudes in one checkout committed at once). Shared-checkout tickets
+        /// with a pane only; the daemon's in-memory queue, one entry per
+        /// ticket, FIFO per checkout. Absent from an older client = send now.
+        #[serde(default)]
+        queued: bool,
+    },
+    /// Drop the ticket's queued ask before it is delivered. A person's
+    /// gesture (a blank Enter in the reopened field); nothing reaches claude.
+    DropQueuedAsk {
+        ticket: ulid::Ulid,
     },
     /// One note's body, read whole. Bodies never ride the snapshot (a note
     /// can be 32 KiB and the board is cloned on every event), so the ticket
@@ -246,6 +258,18 @@ pub enum Command {
     /// the agent tier never gets it. A press while a sample is in flight
     /// queues rather than being refused.
     GitFetch,
+    /// Arm or disarm the merge train (2026-09-04): while every claude on
+    /// the board is idle, mesimon fast-forwards finished REVIEW branches and
+    /// asks ONE idle agent whose branch fell behind to rebase + test. Held in
+    /// daemon memory and tied to the CONNECTION that armed it — a closed board
+    /// is a stopped train. Local only: it makes mesimon prompt an agent with
+    /// no per-press gesture, which is why the Settings row is the opt-in.
+    SetAutomation {
+        merge_train: bool,
+        /// After a train merge, paste the merged notice into that agent.
+        #[serde(default)]
+        merge_notice: bool,
+    },
     /// Take the header's archive offer: archive exactly the tickets the
     /// suggestion prices (the offer's own candidate set, nothing broader).
     ArchiveAll,
@@ -512,6 +536,7 @@ impl Command {
             // The ticket, never the text: the feed records that the user
             // asked, not what they asked.
             PromptSession { ticket, .. }
+            | DropQueuedAsk { ticket }
             | SpawnSession { ticket, .. }
             | WriteNote { ticket, .. }
             | NoteToAgent { ticket, .. } => m(Mutate, true, Some(*ticket)),
@@ -526,6 +551,7 @@ impl Command {
             | ArchiveAll
             | ReloadShellEnv
             | GitFetch
+            | SetAutomation { .. }
             | KillSession { .. }
             | ResumeSession { .. }
             | SleepSession { .. }
@@ -566,11 +592,16 @@ mod meta_tests {
             Meta { action: Action::Read, logged: false, subject: None }
         );
         let id = ulid::Ulid::new();
-        let m = Command::PromptSession { ticket: id, text: "x".into() }.meta();
+        let m = Command::PromptSession { ticket: id, text: "x".into(), queued: false }.meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });
     }
 }
 
+// `Board` is the snapshot — the whole board, its bindings and what the
+// daemon owes — and it is the one variant a client holds; every other reply
+// is a receipt. Boxing it to please the lint would put a heap hop on the road
+// every event takes and change nothing on the wire.
+#[allow(clippy::large_enum_variant)]
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "resp", rename_all = "snake_case")]
 pub enum Response {
@@ -611,6 +642,13 @@ pub enum Response {
         #[serde(default)]
         fresh: bool,
     },
+    /// PromptSession's receipt when the words were PARKED rather than
+    /// pasted: the short keys of the tickets whose claudes hold the checkout.
+    /// Only a client that sent `queued: true` can receive it.
+    Queued {
+        #[serde(default)]
+        behind: Vec<String>,
+    },
     /// ReclaimAll's receipt: how many actually slept, and why others did not.
     Reclaimed {
         slept: usize,
@@ -647,6 +685,15 @@ pub enum Response {
         /// as "not sampled", which draws nothing.
         #[serde(default)]
         git: RepoGit,
+        /// What mesimon will do next, per ticket (see [`Pending`]): a queued
+        /// ask, a merge the train will make, a rebase it will ask for. Absent
+        /// from an older daemon parses as nothing owed.
+        #[serde(default)]
+        pending: Vec<Pending>,
+        /// Whether the merge train is ARMED (a connection holds it), and what
+        /// it has asked. Absent from an older daemon parses as off.
+        #[serde(default)]
+        automation: AutomationStatus,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -829,6 +876,54 @@ pub struct AgentBoardView {
 /// A ticket's worktree binding, as the board renders it (M4). Oids stay
 /// daemon-side; the client gets words, flags, and (M4b) the worktree path —
 /// carried solely so `!` on the diff screen can open a shell there.
+/// One thing mesimon owes a ticket and will do on its own clock — the
+/// card's slow mark and the cursor card's `queued ∙ after T-12` row read this.
+/// `action` is a WORD (`ask` | `merge` | `rebase`), `Notice::kind`'s rule: a
+/// client that cannot parse a snapshot line drops it.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct Pending {
+    pub ticket: ulid::Ulid,
+    pub action: String,
+    /// Short keys of the tickets whose claudes still hold the checkout (or
+    /// the board, for the train); may include this ticket's own key.
+    #[serde(default)]
+    pub waits_on: Vec<String>,
+    /// The ask's words, so a second Shift+Enter reopens the field on them.
+    /// The local socket only — never the feed (D11), never a file.
+    #[serde(default)]
+    pub text: Option<String>,
+    /// Pasted, waiting on the agent's `UserPromptSubmit` ack.
+    #[serde(default)]
+    pub in_flight: bool,
+}
+
+/// The merge train as the board sees it (see `Command::SetAutomation`).
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct AutomationStatus {
+    /// ARMED — a connection holds it — not the preference.
+    #[serde(default)]
+    pub merge_train: bool,
+    #[serde(default)]
+    pub merge_notice: bool,
+    /// Rebase asks the train (or a hand `m`) delivered, so the ticket page
+    /// can say `rebase requested` without a TUI-local memory.
+    #[serde(default)]
+    pub train_asked: Vec<TrainAsk>,
+    /// Tickets the train's fuse suspended it for.
+    #[serde(default)]
+    pub train_suspended: Vec<ulid::Ulid>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct TrainAsk {
+    pub ticket: ulid::Ulid,
+    /// Asked at the CURRENT base tip — the agent has not caught up yet.
+    pub current: bool,
+    pub at_ms: u64,
+    /// `train` or `local` — a word, `Principal::actor`'s vocabulary.
+    pub by: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct WorktreeItem {
     pub ticket: ulid::Ulid,

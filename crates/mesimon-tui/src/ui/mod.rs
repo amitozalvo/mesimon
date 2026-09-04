@@ -150,6 +150,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);
     }
+    if let Mode::Settings { idx } = &app.mode {
+        menu::draw_settings(f, app, *idx);
+    }
     if let Mode::Theme { idx } = &app.mode {
         themes::draw(f, app, *idx);
     }

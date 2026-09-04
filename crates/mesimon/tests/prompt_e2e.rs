@@ -45,7 +45,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
 
     // Before any agent exists the key has nowhere to send, and the daemon
     // says so rather than swallowing the press.
-    match c.request(Command::PromptSession { ticket, text: "too early".into() }) {
+    match c.request(Command::PromptSession { ticket, text: "too early".into(), queued: false }) {
         Response::Err { message } => {
             assert!(message.contains("no live claude"), "wrong refusal: {message}");
         }
@@ -83,13 +83,17 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     // Blank in, nothing out: an empty prompt must never press Enter on a turn
     // the user did not write. The title is still sitting unsubmitted in the
     // box, so a stray Enter here would submit somebody else's words.
-    match c.request(Command::PromptSession { ticket, text: "   ".into() }) {
+    match c.request(Command::PromptSession { ticket, text: "   ".into(), queued: false }) {
         Response::Err { message } => assert!(message.contains("nothing to send"), "{message}"),
         other => panic!("a blank prompt must refuse: {other:?}"),
     }
 
     assert!(matches!(
-        c.request(Command::PromptSession { ticket, text: "mesimon-probe-42 run the tests".into() }),
+        c.request(Command::PromptSession {
+            ticket,
+            text: "mesimon-probe-42 run the tests".into(),
+            queued: false
+        }),
         Response::Ok
     ));
 
@@ -135,7 +139,7 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
 
     let long = format!("mesimon-probe-43 {}", "carry on where you left off ".repeat(90));
     assert!(long.len() > 2048, "{}", long.len());
-    match c.request(Command::PromptSession { ticket, text: long.clone() }) {
+    match c.request(Command::PromptSession { ticket, text: long.clone(), queued: false }) {
         Response::Spawned { id, fresh } => {
             assert_eq!(id, sid, "the wake re-enters the record — never a second claude");
             assert!(fresh, "a stub has no transcript, so the wake starts fresh");
@@ -184,7 +188,11 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     let _ = c.request(Command::KillSession { id: sid });
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
-        match c.request(Command::PromptSession { ticket, text: "still there?".into() }) {
+        match c.request(Command::PromptSession {
+            ticket,
+            text: "still there?".into(),
+            queued: false,
+        }) {
             Response::Err { message } => {
                 assert!(message.contains("no live claude"), "wrong refusal: {message}");
                 break;

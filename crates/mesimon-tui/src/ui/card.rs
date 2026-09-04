@@ -123,6 +123,27 @@ pub(super) fn render_workspace_selector(
     Line::from(spans).style(theme.selected_row())
 }
 
+/// The ask field's delivery row (2026-09-04): `now` or `queued`, Shift+Tab
+/// cycles — the composer's workspace row, for the field under a card. A
+/// field reopened on a WAITING ask also says how it is dropped, since the
+/// gesture (a blank Enter) is not one the footer teaches.
+pub(super) fn render_ask_mode(ctx: &CardCtx, queued: bool, reopened: bool) -> Line<'static> {
+    let theme = ctx.theme;
+    let word = if queued { "queued" } else { "now" };
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
+        Span::styled("  shift+tab".to_string(), Style::default().fg(theme.sel.dim2)),
+    ];
+    if reopened {
+        spans.push(Span::styled(
+            " ∙ blank enter drops".to_string(),
+            Style::default().fg(theme.sel.dim2),
+        ));
+    }
+    Line::from(spans).style(theme.selected_row())
+}
+
 fn register_style(theme: &Theme, reg: Register) -> Style {
     match reg {
         Register::Attn => theme.attn_text(),
@@ -188,6 +209,8 @@ pub(super) fn render(
     doomed: bool,
     unseen: bool,
     snooze: Option<&str>,
+    owed: bool,
+    owed_row: Option<&str>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
@@ -235,6 +258,11 @@ pub(super) fn render(
         Some((g, Register::Calm)) => Some((g, Register::Grey)),
         other => other,
     };
+    // Mesimon owes this ticket an action — a queued ask, a train merge or
+    // rebase ask (2026-09-04) — and the card says so on every card, not only
+    // the cursor's: the slow owed mark over a still or empty glyph slot,
+    // never over a moving or a loud one (`glyphs::queued_over`).
+    let glyph = if owed { glyphs::queued_over(glyph, tier, ctx.spin) } else { glyph };
     // A pending move's trail is semi-transparent everything — even an attn
     // card demotes while its ghost is in hand (the ghost carries the weight).
     let attn_card = !trail && matches!(glyph, Some((_, Register::Attn)));
@@ -329,9 +357,12 @@ pub(super) fn render(
         theme.dim3()
     } else if attn_card {
         Style::default() // inherits attn_ink from the row
-    } else if held {
+    } else if held || snooze.is_some() {
         // The MOVE ghost blinks in place until dropped or cancelled — the
-        // grabbed card must read as "in hand" (STALE-MAP 2026-08-30).
+        // grabbed card must read as "in hand" (STALE-MAP 2026-08-30). The
+        // armed SNOOZE borrows it (2026-09-04, "flash while in snooze not
+        // confirmed yet"): until Enter or the cancel the card is in hand the
+        // same way, about to leave, and the delete's red is a deletion's.
         theme.move_blink(ctx.spin)
     } else if cursorish {
         Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
@@ -391,7 +422,7 @@ pub(super) fn render(
     // on. Before this the row was gated on `peek.is_some()`, which is a claim
     // about the AGENT, and the commonest tagged card could never show it.
     let tag_row = open && !tags.is_empty();
-    if selected && (!sessions.is_empty() || tag_row || snooze.is_some()) {
+    if selected && (!sessions.is_empty() || tag_row || snooze.is_some() || owed_row.is_some()) {
         let acc_style = if doomed { theme.delete_row() } else { theme.selected_row() };
         let dim = Style::default().fg(theme.sel.dim1);
         let quiet = Style::default().fg(theme.sel.dim2);
@@ -418,6 +449,15 @@ pub(super) fn render(
         // The armed snooze names its preset first: it is what the next key
         // does to this card, before what the card is.
         if let Some(words) = snooze {
+            let words = truncate(words, t_cells.saturating_sub(glyph_cells));
+            push(vec![
+                Span::raw(" ".repeat(glyph_cells)),
+                Span::styled(words, Style::default().fg(theme.sel.dim3)),
+            ]);
+        }
+        // What mesimon will do to this card next, and what it waits on —
+        // the same slot, the same voice: `queued ∙ after T-12`.
+        if let Some(words) = owed_row {
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
             push(vec![
                 Span::raw(" ".repeat(glyph_cells)),

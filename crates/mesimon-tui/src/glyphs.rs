@@ -114,6 +114,55 @@ pub(crate) fn background(tier: Tier, frame: usize) -> char {
     frames[(frame / SLOW_STEP_TICKS) % frames.len()]
 }
 
+/// Owed frames (2026-09-04): mesimon will act on this ticket on its own
+/// clock — a queued ask waiting for its checkout to go quiet, a merge or a
+/// rebase ask the train will make when the board does. A TWO-dot pair on
+/// the HALF-diagonals (`⠑ ⠢ ⠔ ⠊`: dots 1+5, 2+6, 3+5, 2+4), the six pairs the
+/// spinner's arcs, `waiting`'s rim pairs and `background`'s centre bar all
+/// leave unused, so no frame of it can impersonate any of them. Two dots for
+/// the reason `waiting` has two: one is invisible at dim2. It rides the SLOW
+/// cadence — nothing is happening here yet, and the board keeps one fast
+/// register and one slow; a third speed would be a third thing moving. Ascii
+/// alternates parentheses: a bracket says "held", and `( )` sit in no other
+/// table. Grey, never the accent: the user owes nothing, mesimon does.
+const QUEUED_UNICODE: &[char] = &['⠑', '⠢', '⠔', '⠊'];
+const QUEUED_ASCII: &[char] = &['(', ')'];
+
+/// The owed glyph for `frame` — see `QUEUED_UNICODE`.
+pub(crate) fn queued(tier: Tier, frame: usize) -> char {
+    let frames = if tier == Tier::Ascii { QUEUED_ASCII } else { QUEUED_UNICODE };
+    frames[(frame / SLOW_STEP_TICKS) % frames.len()]
+}
+
+/// Lay the owed mark over a card's session glyph. It replaces NOTHING that
+/// moves or shouts: a working spinner, a launching arc, a parked bar and a
+/// waiting pair all say something truer about the card right now, and the
+/// accent and the error mark outrank everything. It takes the STILL marks —
+/// done, idle, asleep, interrupted — and an empty slot, which is where a
+/// ticket waiting on somebody else's turn sits.
+pub(crate) fn queued_over(
+    glyph: Option<(char, Register)>,
+    tier: Tier,
+    frame: usize,
+) -> Option<(char, Register)> {
+    let owed = Some((queued(tier, frame), Register::Grey));
+    match glyph {
+        None => owed,
+        Some((_, Register::Attn | Register::Err)) => glyph,
+        Some((g, _)) if is_still_mark(g, tier) => owed,
+        Some(_) => glyph,
+    }
+}
+
+/// The marks that do not move: done (seen or not), idle, asleep, interrupted.
+fn is_still_mark(g: char, tier: Tier) -> bool {
+    if tier == Tier::Ascii {
+        matches!(g, '+' | '.' | 'z' | ';')
+    } else {
+        matches!(g, '✓' | '✔' | '◦' | 'z' | '⊘')
+    }
+}
+
 /// The plan-review mark: stacked lines read as a list of steps (U+2261
 /// IDENTICAL TO — same Ambiguous-width class as the ✓ we already ship).
 /// NOT U+2630 TRIGRAM FOR HEAVEN: Unicode 16 reclassified the trigrams
@@ -789,6 +838,67 @@ mod tests {
         }
     }
 
+    #[test]
+    fn an_owed_ticket_has_its_own_slow_mark() {
+        use unicode_width::UnicodeWidthChar;
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            for f in 0..40 {
+                let q = queued(tier, f);
+                assert_eq!(q.width(), Some(1), "{q:?} not one cell");
+                assert!(!(0x2500..=0x259F).contains(&(q as u32)), "{q:?} is in the range L1 bans");
+                assert!(!is_still_mark(q, tier), "{q:?} impersonates a still mark");
+                assert!(!matches!(q, 'x' | '!' | '~' | '=' | '*' | '-'), "{q:?} is another mark");
+                for w in 0..40 {
+                    assert_ne!(q, spinner(tier, w), "collides with the spinner");
+                    assert_ne!(q, waiting(tier, w), "collides with waiting");
+                    assert_ne!(q, background(tier, w), "collides with the parked bar");
+                }
+            }
+            for f in 0..3 {
+                assert_eq!(queued(tier, f), queued(tier, f + 1), "held four ticks");
+            }
+            assert_ne!(queued(tier, 3), queued(tier, 4), "and then it steps");
+            let frames = if tier == Tier::Ascii { QUEUED_ASCII } else { QUEUED_UNICODE };
+            let cycle = frames.len() * SLOW_STEP_TICKS;
+            assert_eq!(queued(tier, 0), queued(tier, cycle), "wraps cleanly");
+        }
+    }
+
+    /// The owed mark takes an empty slot and the still marks, and yields to
+    /// everything that moves or shouts.
+    #[test]
+    fn queued_over_yields_to_moving_and_loud_marks() {
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            let owed = Some((queued(tier, 7), Register::Grey));
+            assert_eq!(queued_over(None, tier, 7), owed, "an empty slot");
+            let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
+            let idle = rec(SessionState::Idle { stop_reason: StopReason::Unknown });
+            let asleep = rec(SessionState::Sleeping);
+            let cut = rec(SessionState::Idle { stop_reason: StopReason::Interrupted });
+            for still in [&done, &idle, &asleep, &cut] {
+                let g = card_glyph(&[still], tier, 7);
+                assert_eq!(queued_over(g, tier, 7), owed, "{:?} is still", still.state);
+            }
+            assert_eq!(
+                queued_over(Some((done_unread(tier), Register::Calm)), tier, 7),
+                owed,
+                "the heavy check is still too"
+            );
+            let busy = rec(SessionState::Running);
+            let parked = rec(SessionState::Idle { stop_reason: StopReason::Background });
+            let lost = rec(SessionState::unknown());
+            let mut launching = rec(SessionState::Spawning);
+            launching.pending_submit = true;
+            let attn = rec(SessionState::RequiresAction { reason: Reason::Permission });
+            let crashed = rec(SessionState::Exited { reason: ExitReason::Crashed });
+            for loud in [&busy, &parked, &lost, &launching, &attn, &crashed] {
+                let g = card_glyph(&[loud], tier, 7);
+                assert!(g.is_some());
+                assert_eq!(queued_over(g, tier, 7), g, "{:?} keeps its mark", loud.state);
+            }
+        }
+    }
+
     /// A really-working session on the same ticket outranks a parked one: the
     /// spinner is the louder and truer thing to say about that card.
     #[test]
@@ -878,6 +988,8 @@ mod tests {
         let run = rec(SessionState::Running);
         assert_eq!(session_glyph(&run, Tier::Ascii, 0).0, '|');
         assert_eq!(session_glyph(&run, Tier::Unicode, 0).0, '⠋');
+        assert_eq!(queued(Tier::Ascii, 0), '(');
+        assert_eq!(queued(Tier::Unicode, 0), '⠑');
     }
 
     /// The suggestion mark is its own thing at both tiers, and one cell wide

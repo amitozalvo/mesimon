@@ -71,7 +71,7 @@ pub(crate) fn clock_word(secs: u64) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use mesimon_core::snooze::{deadline, Preset};
+    use mesimon_core::snooze::{deadline, Preset, Weekday};
 
     /// The two calls invert each other, and the presets resolve to a moment
     /// ahead of now on the real clock — whatever zone the test runs in.
@@ -82,11 +82,16 @@ mod tests {
         let back = to_epoch(&local).expect("mktime answers");
         assert_eq!(back, now, "localtime_r then mktime is the identity");
         for p in Preset::ALL {
-            let d = deadline(p, now, &local, &to_epoch).expect("resolves");
-            assert!(d > now, "{p:?} is ahead");
-            if p.is_calendar() {
-                let at = local_of(d).expect("resolves");
-                assert_eq!((at.hour, at.min, at.sec), (9, 0, 0), "{p:?} is at nine");
+            for w in Weekday::ALL {
+                let d = deadline(p, now, &local, w, &to_epoch).expect("resolves");
+                assert!(d > now, "{p:?} on {w:?} is ahead");
+                if p.is_calendar() {
+                    let at = local_of(d).expect("resolves");
+                    assert_eq!((at.hour, at.min, at.sec), (9, 0, 0), "{p:?} is at nine");
+                    if p == Preset::NextWeek9 {
+                        assert_eq!(at.wday, w.wday(), "{p:?} lands on the week's first day");
+                    }
+                }
             }
         }
         assert_eq!(clock_word(now).map(|w| w.len()), Some(5));

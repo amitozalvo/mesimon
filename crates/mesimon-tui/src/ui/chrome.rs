@@ -139,7 +139,16 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // The offer's cells and its gap are spoken for; the git clause takes
         // the rest, and gives its own parts up in order when that is tight.
         let reserved = if offer_w > 0 { offer_w + 4 } else { 1 };
-        let git = git_clause(app, (area.width as usize).saturating_sub(used + reserved));
+        // The merge train's word (2026-09-04) rides the git clause's room,
+        // after it, at the crumb's weight: a standing instruction, never an
+        // offer. It is the first thing to go when the row is tight.
+        let train = if app.automation.merge_train { " ∙ train" } else { "" };
+        let room = (area.width as usize).saturating_sub(used + reserved);
+        let mut git = git_clause(app, room.saturating_sub(train.width()));
+        let git_w: usize = git.iter().map(|s| s.content.width()).sum();
+        if !train.is_empty() && git_w + train.width() <= room {
+            git.push(Span::styled(train.to_string(), theme.dim3()));
+        }
         let git_w: usize = git.iter().map(|s| s.content.width()).sum();
         spans.splice(git_at..git_at, git);
         let used = used + git_w;
@@ -319,7 +328,11 @@ fn dialog_open(app: &App) -> bool {
     app.tag_armed.is_some()
         || matches!(
             app.mode,
-            Mode::Menu { .. } | Mode::Theme { .. } | Mode::Archived { .. } | Mode::External { .. }
+            Mode::Menu { .. }
+                | Mode::Settings { .. }
+                | Mode::Theme { .. }
+                | Mode::Archived { .. }
+                | Mode::External { .. }
         )
         || (matches!(app.screen, Screen::Board)
             && matches!(&app.mode, Mode::Editor(ed) if ed.composing()))

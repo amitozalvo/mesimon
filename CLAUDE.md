@@ -342,7 +342,7 @@ Solarized-light greys and ground, accents darkened to clear 4.5 — paper C* 5�
 ground has a hue the fade target `shadow` is a neutral at its lightness, never the ground.
 Nvim's `#005faf` cursor line was refused as blue's cursor surface (2.7:1 under a mid-ramp grey;
 it is `#2C3590`). `attn_is_its_own_colour` is what keeps `test_attn_provenance*` meaningful on
-a phosphor, and both provenance laws now sweep `Flavor::ALL`. The picker is a menu row
+a phosphor, and both provenance laws now sweep `Flavor::ALL`. The picker is a row of the Settings submenu
 (`Verb::ThemePick` → `Mode::Theme`, `ui/themes.rs`, `Scope::Theme` with the menu's three
 shapes) whose cursor IS the preview — `App::preview` is the one road every retheme takes, the
 watch's included — Enter keeps, Esc puts `App::resting_flavor()` back. The preference is
@@ -558,6 +558,27 @@ agent took it is the hooks' to say. E2e: `crates/mesimon/tests/prompt_e2e.rs` (a
 writing to a file, so one line proves delivery AND submission). Board only, deliberately — the
 ticket page's rail has its own selected session and "which claude" answers differently there.
 (STALE-MAP "Shift+Enter asks the agent from the board".)
+
+**And the ask can WAIT for a quiet checkout (2026-09-04, after five claudes in one checkout
+committed at once).** Shift+Tab inside the ask field flips `now` / `queued` on the row under it
+(`card::render_ask_mode`, composer-style; the one `BackTab` binding in `Scope::Input`, widened —
+`Ctx::ask_queueable`: a shared-checkout ticket with an awake pane, never a worktree, never a
+Sleeping claude). A queued ask rides `PromptSession { queued: true }` into the daemon's in-memory
+`queued` list and is pasted by `drain_queue` when `checkout_holders(cwd)` is empty —
+`core/src/quiet.rs::working_tickets`: no claude with the same `cwd` Spawning / Running /
+RequiresAction / Idle{Background} / `pending_submit` / a paste of ours still owed its ack
+(`Daemon::inflight`); a shell never counts — hooked beside `auto_move` in `apply_change`, on the
+1 s bucket, and at enqueue (a quiet checkout sends at once); one per checkout per pass, FIFO, one
+per ticket. It is DROPPED by any `UserPromptSubmit` on the ticket while it waits (the daemon
+cannot tell its own paste's ack from the user's keystroke, so the next prompt closes it either
+way), by sleep / kill / delete, by the sweep (target gone, replaced, parked, ticket archived) —
+never by a hand move. The snapshot's `pending: Vec<Pending>` (kept general: the train's rows ride
+it) prefills the field on the next Shift+Enter (Esc keeps, a blank Enter drops via
+`DropQueuedAsk`), feeds the card's owed mark (`glyphs::queued`, slow cadence, over still marks
+only — `queued_over`) and the cursor card's `queued ∙ after T-12` row (`App::pending_row`, the
+snooze row's slot; the ticket page's state row reads the same). A restart drops the queue like
+`pending_prompt`. E2e `ask_queue_e2e`. (STALE-MAP "The board's ask can wait for a quiet
+checkout".)
 
 **Tags are ticket metadata on an axis, and `^t` opens a picker.** `Board.tags` is the registry
 (`Tag {name, group, color}`), persisted in `columns.toml` (schema 2 — the bump exists so an older
@@ -854,12 +875,22 @@ is gone. D24 is what makes that free: mesimon's identity is `rec.id` in the `--s
 **A ticket can be snoozed, and a snooze IS an archive with a deadline (T-74, 2026-09-04).**
 `z` on the board or the ticket page arms `Scope::SnoozeChord` (word `SNOOZE`, a barrier like
 `d`/`a`): `z` again walks the fixed ring `1h · 4h · tomorrow 9:00 · next Monday 9:00`
-(`core/src/snooze.rs::Preset`), Enter snoozes, Esc or any stray key cancels; the armed card
+(`core/src/snooze.rs::Preset`; the last rung's day is the **week start** preference,
+`snooze::Weekday` Monday/Sunday/Saturday, `prefs.json::week_start`, the Settings row `Week
+starts on …` cycles it — `Preset::label(week_start)` stays a literal per day), Enter snoozes, Esc or any stray key cancels; the armed card
 draws open with the preset on its own row and the status names the ring, never the clock (the
 golden is deterministic; the confirm status says `snoozed T-9 until 15:42 ∙ u undoes it`).
 `Command::SnoozeTicket { id, until, needs_you }` writes `Archived { until: Some, needs_you }`
 through `archive_ticket`'s gates plus "already past" — so the ticket leaves through
 `Board::column_tickets`, the ARCHIVED row reads `wakes in 3h`, `a`/`u` restore it (= cancel).
+**Where the archive refuses over an awake session, the snooze sleeps it first** (2026-09-04):
+what `x` would take (`sleep_eligible`, no age floor) goes through `sleep_one`, all-or-nothing
+and judged before any is signalled; a claude still working holds the ticket on the board
+(`claude still awake — only idle sessions sleep`; `App::snooze_blocked` says the same at the
+first `z`, so the chord never arms for a refused Enter). The sessions stay parked when the
+ticket returns; `c` wakes them. **The armed card blinks** — the title on `Theme::move_blink`,
+the move ghost's clock, board card and ticket-page title row alike; the delete's red flash is
+a deletion's.
 `TICKET_SCHEMA` is 3 (a v2 build would drop `until` and the ticket would sleep forever). The
 calendar rungs are pure arithmetic over `LocalTime` in `struct tm`'s conventions with the libc
 (`localtime_r`/`mktime`, `tm_isdst = -1`) in `tui/src/localtime.rs`. **The wake is the tick
@@ -872,7 +903,7 @@ TICKET-level producer of the saturated colour**: `card::render` wraps `card_glyp
 comes off on a KEYPRESS that leaves the cursor on it (`App::ack_woke` at the end of `on_key` →
 `Command::SeenTicket`), never on the draw clock — a ticket wakes while the user is away and a
 parked cursor must not clear it. The preference (`prefs.json::snooze_needs_you`, default on) is
-the Esc menu's `Snooze returns with needs-you / quietly` row; `App::save_prefs` is every
+the Settings submenu's `Snooze returns with needs-you / quietly` row; `App::save_prefs` is every
 preference's write. E2e: `crates/mesimon/tests/snooze_e2e.rs`. (STALE-MAP "A ticket can be
 snoozed".)
 
@@ -891,6 +922,17 @@ and `menu_items` floats the suggested rows to the top in that order. The header 
 ONE — right-aligned, `(esc)` or `(U ∙ esc)`/`(X ∙ esc)` for the route, no count of the rest — `◦`
 marks both the chip and the rows it stands in front of. To add one: add the menu row, add the
 `Suggestion`, done. (STALE-MAP "Suggestions are one right-hand chip and a marked menu".)
+
+**The preferences are one level down, behind the menu's `Settings` row (2026-09-04, user
+request).** A menu row is an action or a door, never a toggle: `keymap::SETTINGS_ITEMS`
+(theme, agent replies, how a snooze returns, the week's first day — `MenuItem`s, so
+`ui/menu.rs::draw_list` draws both lists) is behind `Verb::Settings` → `Mode::Settings` / `Scope::Settings` (word
+`SETTINGS`, the menu's three shapes, `esc back`). Choosing a settings row KEEPS the list open
+— the row relabels itself — and the theme picker pops back onto its row on Enter and Esc
+alike; Esc from the list lands on the menu's `Settings` row (`App::menu_row` /
+`settings_row`). No settings row is ever a suggestion (`every_suggestion_is_a_menu_row` holds
+the two lists apart), and the row's detail names the current theme so the door says what is
+behind it. Golden `settings_120x30`. (STALE-MAP "The preferences move into a Settings submenu".)
 
 `?` (`ui/help.rs`) renders `keymap::overlay` and is the complete answer for the current
 screen and state.
@@ -1044,6 +1086,28 @@ spawns pass the user's own `permissions.defaultMode` as `--permission-mode` (fre
 paths lost it otherwise).
 E2e: `crates/mesimon/tests/worktree_e2e.rs` (the one e2e with a real git repo).
 
+**The merge train (opt-in, 2026-09-04).** Settings rows `Merge train` (`prefs.json::merge_train`,
+off) and `Train tells the agent after a merge` (`merge_train_notice`, on). The daemon reads no
+preference: the TUI pushes `Command::SetAutomation` on every toggle and from
+`App::reconcile_train` whenever a snapshot reads it unarmed while the pref is on (30 s back-off;
+a pref that is off pushes nothing), and the daemon holds it in memory tied to the CONNECTION
+(`daemon/src/train.rs`, a `Weak` on the client's writer `Arc`; `Msg::ClientGone` from
+`client_loop` disarms it and prunes the subscription) — a closed board is a stopped train.
+`train_pass` runs after `refresh_worktree_flags` on its own bucket (`MESIMON_WT_REFRESH_TICKS`,
+default `RSS_TICKS`) only while `board_busy()` is empty, and does ONE thing: ff-merge the first
+candidate of `core/src/train.rs::plan` (a REVIEW ticket, attached, ahead, ff-able, claude
+`Idle{EndTurn}` High|Medium or absent; board order) through `merge_ticket` under
+`Principal::Automation { rule: "merge_train" }` — both merge roads take a principal now, and the
+quiet gate counts CLAUDE sessions only, so a `!` shell no longer blocks `m` — then the merged
+notice into its agent if that is on; else ONE rebase ask (IN PROGRESS or REVIEW, base moved past
+it, claude idle, pane silent ≥ 5 s by `#{window_activity}`) once per base tip (`Train::asked`, a
+hand `m` records too), fused at 6 asks / 2 h (`Notice merge_train_suspended`, a hand `m` or move
+clears it). Merged tickets do not move. `AutomationStatus` on the snapshot says armed / asked /
+suspended (`merge_outstanding` reads `train_asked`), `pending` carries `merge` / `rebase` rows so
+the cards say what is coming (`merge ∙ after T-3 +1`), and the header hangs ` ∙ train` off the
+git clause. `mesimon doctor` prints a `merge train` line. E2e `merge_train_e2e`. (STALE-MAP "The
+merge train".)
+
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
 the pane-died notify — required in e2e because the in-process daemon's `current_exe()` is the test
 binary), `MESIMON_REQUIRE_TMUX` (turns the e2e tmux skip into a hard failure — set in CI, because a
@@ -1059,7 +1123,8 @@ trees),
 check), `MESIMON_UPDATE_CHECK` (force a dev build past the CHANNEL gate — the build-tree guard
 still refuses, so copy the binary out of `target/` first),
 `MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s
-server-alive guard cadence). E2e pattern: in-process
+server-alive guard cadence), `MESIMON_WT_REFRESH_TICKS` (the worktree flags' and the merge
+train's cadence, default 40 ticks). E2e pattern: in-process
 daemon thread + real tmux + the real built binary via `env!("CARGO_BIN_EXE_mesimon")` (only
 available in `crates/mesimon/tests/`).
 

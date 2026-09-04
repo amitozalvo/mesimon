@@ -154,6 +154,11 @@ pub enum Scope {
     /// whose cursor IS the preview (the board behind it repaints as the
     /// cursor moves), so Enter keeps and Esc puts the resting theme back.
     Theme,
+    /// The settings submenu, reached from the menu's `Settings` row: the
+    /// preferences (theme, replies, how a snooze returns) in a list of
+    /// their own, so the menu proper stays the list of things to DO. Esc
+    /// pops back to the menu, on the row that opened it.
+    Settings,
     /// The release notes, reached from a menu row: `CHANGELOG.md` compiled
     /// into the binary (`relnotes.rs`), one painted band per release, read
     /// top to bottom. A screen, not a dialog — it is the one document in
@@ -171,7 +176,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 17] = [
+    pub const ALL: [Scope; 18] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -186,6 +191,7 @@ impl Scope {
         Scope::Drawer,
         Scope::Archived,
         Scope::Theme,
+        Scope::Settings,
         Scope::Releases,
         Scope::Input,
         Scope::Editor,
@@ -202,6 +208,7 @@ impl Scope {
             | Scope::Drawer
             | Scope::Archived
             | Scope::Theme
+            | Scope::Settings
             | Scope::Releases => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
@@ -230,6 +237,7 @@ impl Scope {
             Scope::Drawer => "EXTERNAL",
             Scope::Archived => "ARCHIVED",
             Scope::Theme => "THEME",
+            Scope::Settings => "SETTINGS",
             Scope::Releases => "RELEASES",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
@@ -287,7 +295,11 @@ pub enum Verb {
     Menu,
     ExternalDrawer,
     ArchivedList,
-    /// Open the theme picker from the menu. No key of its own: a theme is
+    /// Open the settings submenu from the menu: the preferences, one level
+    /// down, so a menu row is either an action or the door to the settings
+    /// and never a toggle between actions.
+    Settings,
+    /// Open the theme picker from the settings submenu. No key of its own: a theme is
     /// picked once and lived with, the same argument that took `p` off the
     /// footer.
     ThemePick,
@@ -332,6 +344,19 @@ pub enum Verb {
     /// The menu row that flips whether a woken ticket returns lit
     /// (needs-you) or quietly; remembered in `prefs.json`.
     SnoozeQuiet,
+    /// The Settings row that cycles the day a week starts on (Monday →
+    /// Sunday → Saturday) — what the snooze ring's last rung means by "next
+    /// week"; remembered in `prefs.json`.
+    WeekStart,
+    /// The Settings row that turns the merge train on or off (2026-09-04):
+    /// while every claude is idle, mesimon fast-forwards finished REVIEW
+    /// branches and asks idle agents whose branch fell behind to rebase;
+    /// remembered in `prefs.json`, pushed to the daemon, armed only while
+    /// this board is open.
+    MergeTrain,
+    /// The Settings row under it: whether a train merge also pastes the
+    /// merged notice into that agent.
+    MergeTrainNotice,
     /// Re-read the user's shell startup files, so the environment new panes
     /// get is the one their terminal would give them.
     ReloadShellEnv,
@@ -616,6 +641,15 @@ pub struct Ctx {
     /// field has somewhere to go. Gates the key AND its hint: a field with
     /// no history offers no history.
     pub prompt_history: bool,
+    /// The ask field's ticket is a shared-checkout ticket with an awake
+    /// claude, so Shift+Tab can make the ask WAIT for the checkout to go
+    /// quiet (2026-09-04). Never a worktree ticket: its checkout is its own.
+    pub ask_queueable: bool,
+    /// The ask field's toggle sits at `queued` — Enter parks the words.
+    pub ask_queued: bool,
+    /// The subject ticket has an ask waiting (not yet pasted): Shift+Enter
+    /// reopens the field on it, and a blank Enter there drops it.
+    pub ticket_queued: bool,
     // ---- tags ----
     /// A tag name is being typed. While true every binding in the tag tail
     /// stands down, so the digits are text and not axis picks.
@@ -639,6 +673,15 @@ pub struct Ctx {
     pub snooze_word: &'static str,
     /// A woken ticket returns lit (the preference; the menu row flips it).
     pub snooze_needs_you: bool,
+    /// The day the week starts on — `snooze::Weekday::name()`, so the ring's
+    /// last rung and the Settings row agree on the word. Empty in a bare
+    /// `Ctx` (the row falls to a plain label); `App::ctx` always sets it.
+    pub week_start_word: &'static str,
+    /// The merge train preference (the row's word), and whether the daemon
+    /// says it is ARMED — the row's detail says `arming…` between the two.
+    pub merge_train: bool,
+    pub merge_train_notice: bool,
+    pub merge_train_armed: bool,
     // ---- editor ----
     /// The note editor is up. Every editor binding is gated on it.
     pub editing: bool,
@@ -889,7 +932,9 @@ static BOARD: &[Binding] = &[
             // agent on the way (user: "ask claude on sleeping agent auto
             // wakes it for the user"); the hint says the extra thing it
             // does. Live but paneless is exactly Sleeping.
-            if c.ticket_has_claude && !c.ticket_promptable {
+            if c.ticket_queued {
+                "edit the queued ask"
+            } else if c.ticket_has_claude && !c.ticket_promptable {
                 "wake + ask claude"
             } else if c.ticket_has_claude {
                 "ask claude"
@@ -2121,6 +2166,44 @@ static MENU: &[Binding] = &[
     },
 ];
 
+/// The settings submenu's three shapes are the menu's; only the last word
+/// differs — Esc here goes BACK to the menu, not out of it.
+static SETTINGS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "choose",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The theme picker's three shapes are the menu's. `Act` does not mutate:
 /// nothing the daemon owns changes, and the file it writes is this
 /// machine's own preference.
@@ -2271,56 +2354,17 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.has_archived,
         key: "",
     },
+    // The door to the preferences. Never a suggestion — a setting is not
+    // something worth doing right now — and it names what is behind it, so
+    // nobody opens it to find out.
     MenuItem {
-        verb: Verb::Peek,
-        label: |c| {
-            if c.peek_on {
-                "Hide agent replies".into()
-            } else {
-                "Show agent replies".into()
-            }
-        },
-        detail: |_| "the latest reply under the selected card".into(),
-        avail: always,
-        key: "p",
-    },
-    // A preference, beside the other preferences: how a snoozed ticket
-    // comes back. Never a suggestion.
-    MenuItem {
-        verb: Verb::SnoozeQuiet,
-        label: |c| {
-            if c.snooze_needs_you {
-                "Snooze returns with needs-you".into()
-            } else {
-                "Snooze returns quietly".into()
-            }
-        },
-        detail: |c| {
-            if c.snooze_needs_you {
-                "lit until you look at it ∙ enter makes it quiet".into()
-            } else {
-                "it just reappears ∙ enter lights it until you look".into()
-            }
-        },
+        verb: Verb::Settings,
+        label: |_| "Settings".into(),
+        detail: |c| format!("theme: {} ∙ agent replies ∙ snooze ∙ week start", c.theme_name),
         avail: always,
         key: "",
     },
-    // Beside the peek: the two view preferences sit together. Never a
-    // suggestion — a theme is not something worth doing right now.
-    MenuItem {
-        verb: Verb::ThemePick,
-        label: |c| format!("Theme: {}", c.theme_name),
-        detail: |c| {
-            if c.theme_pinned {
-                "pinned by MESIMON_THEME ∙ a pick here still saves for the next launch".into()
-            } else {
-                format!("{} ∙ for a {} terminal", c.theme_blurb, c.theme_slot_word)
-            }
-        },
-        avail: always,
-        key: "",
-    },
-    // The third view row: what this build is, in its own words. Never a
+    // What this build is, in its own words. Never a
     // suggestion either — the header's update chip is the one that says a
     // NEWER one exists, and this row reads the notes the binary carries.
     MenuItem {
@@ -2343,6 +2387,115 @@ static MENU_ITEMS: &[MenuItem] = &[
         detail: |_| "sessions keep running".into(),
         avail: always,
         key: "q",
+    },
+];
+
+/// The settings submenu's rows: every preference, and nothing that acts on
+/// the board. A row here is a toggle or a picker, so choosing one keeps the
+/// submenu open — the row relabels itself and the change is on the screen.
+/// Rows are `MenuItem`s so the two lists draw through one function; none is
+/// ever a suggestion (`every_suggestion_is_a_menu_row` holds them apart).
+static SETTINGS_ITEMS: &[MenuItem] = &[
+    MenuItem {
+        verb: Verb::ThemePick,
+        label: |c| format!("Theme: {}", c.theme_name),
+        detail: |c| {
+            if c.theme_pinned {
+                "pinned by MESIMON_THEME ∙ a pick here still saves for the next launch".into()
+            } else {
+                format!("{} ∙ for a {} terminal", c.theme_blurb, c.theme_slot_word)
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::Peek,
+        label: |c| {
+            if c.peek_on {
+                "Hide agent replies".into()
+            } else {
+                "Show agent replies".into()
+            }
+        },
+        detail: |_| "the latest reply under the selected card".into(),
+        avail: always,
+        key: "p",
+    },
+    // How a snoozed ticket comes back.
+    MenuItem {
+        verb: Verb::SnoozeQuiet,
+        label: |c| {
+            if c.snooze_needs_you {
+                "Snooze returns with needs-you".into()
+            } else {
+                "Snooze returns quietly".into()
+            }
+        },
+        detail: |c| {
+            if c.snooze_needs_you {
+                "lit until you look at it ∙ enter makes it quiet".into()
+            } else {
+                "it just reappears ∙ enter lights it until you look".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    // Which day "next week" starts on: the snooze ring's last rung.
+    MenuItem {
+        verb: Verb::WeekStart,
+        label: |c| {
+            if c.week_start_word.is_empty() {
+                "Week starts on Monday".into()
+            } else {
+                format!("Week starts on {}", c.week_start_word)
+            }
+        },
+        detail: |c| {
+            let day = if c.week_start_word.is_empty() { "Monday" } else { c.week_start_word };
+            format!("z's last rung: next {day} 9:00 ∙ enter cycles the day")
+        },
+        avail: always,
+        key: "",
+    },
+    // The merge train (2026-09-04): the one standing consent for mesimon to
+    // prompt an agent with no per-press gesture, which is why it is a
+    // preference and off by default.
+    MenuItem {
+        verb: Verb::MergeTrain,
+        label: |c| if c.merge_train { "Merge train: on".into() } else { "Merge train: off".into() },
+        detail: |c| {
+            if c.merge_train && c.merge_train_armed {
+                "merges quiet REVIEW branches, asks idle agents to rebase ∙ armed while this board is open".into()
+            } else if c.merge_train {
+                "merges quiet REVIEW branches, asks idle agents to rebase ∙ arming…".into()
+            } else {
+                "mesimon merges and asks to rebase for you while the board is quiet ∙ enter turns it on".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::MergeTrainNotice,
+        label: |c| {
+            if c.merge_train_notice {
+                "Train tells the agent after a merge".into()
+            } else {
+                "Train stays silent after a merge".into()
+            }
+        },
+        detail: |c| {
+            if c.merge_train_notice {
+                "pastes the merged notice into the agent ∙ starts a turn ∙ enter keeps it quiet"
+                    .into()
+            } else {
+                "the card's ⎇✓ says it ∙ enter tells the agent too".into()
+            }
+        },
+        avail: |c| c.merge_train,
+        key: "",
     },
 ];
 
@@ -2431,6 +2584,12 @@ pub fn suggestions(ctx: &Ctx) -> Vec<&'static Suggestion> {
 /// those rows, so the chip and the row are visibly one offer.
 pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
     suggestions(ctx).iter().any(|s| s.verb == verb)
+}
+
+/// The settings rows that apply right now — all of them, today, but the
+/// filter is the menu's so a conditional preference costs nothing later.
+pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
+    SETTINGS_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
 }
 
 /// The menu rows that apply right now.
@@ -2550,7 +2709,17 @@ static INPUT: &[Binding] = &[
         // A prompt field saves nothing: there is no ticket being named and
         // nothing lands on the board. The word has to be the one the press
         // actually does, or the footer is teaching the wrong screen.
-        hint: |c| if c.prompting { "send" } else { "save" },
+        hint: |c| {
+            if c.prompting {
+                if c.ask_queued {
+                    "queue"
+                } else {
+                    "send"
+                }
+            } else {
+                "save"
+            }
+        },
         avail: always,
         class: Class::Plain,
         group: Group::Ticket,
@@ -2636,9 +2805,13 @@ static INPUT: &[Binding] = &[
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
         // Set at creation because the choice locks the moment a session or a
-        // worktree exists — this is the only place it is ever open.
-        hint: |_| "shared checkout / own worktree",
-        avail: |c| c.composing,
+        // worktree exists — this is the only place it is ever open. In the
+        // ASK field the same key cycles the delivery instead — `now` /
+        // `queued` — on the row under the field (2026-09-04); one binding,
+        // because a key is bound once per scope, and one gesture: shift+tab
+        // is "the other way" for whatever the field is about.
+        hint: |c| if c.prompting { "now / queued" } else { "shared checkout / own worktree" },
+        avail: |c| c.composing || (c.prompting && c.ask_queueable),
         class: Class::Plain,
         group: Group::Worktree,
         mutates: false,
@@ -3060,6 +3233,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Drawer => DRAWER,
         Scope::Archived => ARCHIVED,
         Scope::Theme => THEME,
+        Scope::Settings => SETTINGS,
         Scope::Releases => RELEASES,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
@@ -3259,9 +3433,10 @@ mod tests {
                 Scope::Drawer => 11,
                 Scope::Archived => 12,
                 Scope::Theme => 13,
-                Scope::Releases => 14,
-                Scope::Input => 15,
-                Scope::Editor => 16,
+                Scope::Settings => 14,
+                Scope::Releases => 15,
+                Scope::Input => 16,
+                Scope::Editor => 17,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -3409,6 +3584,33 @@ mod tests {
     /// already running (open a field), and inside that field (send). The atom
     /// is off the legacy floor, so what it buys has to be a single idea; this
     /// is the test that notices when a fourth home makes it two.
+    /// The ask waits only where waiting means something: a shared-checkout
+    /// ticket with an awake claude. Its toggle renames Enter, and a ticket
+    /// with an ask already waiting is offered the field on it (2026-09-04).
+    #[test]
+    fn the_ask_field_queues_only_on_a_shared_checkout() {
+        let prompting = Ctx { prompting: true, rich_keys: true, ..Ctx::default() };
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &prompting), None, "a worktree ticket");
+        assert_eq!(hint_for(Scope::Input, Verb::CycleWorkspace, &prompting), None);
+        let shared = Ctx { ask_queueable: true, ..prompting.clone() };
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &shared), Some(Verb::CycleWorkspace));
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &shared), Some(("enter", "send")));
+        let queued = Ctx { ask_queued: true, ..shared.clone() };
+        assert_eq!(hint_for(Scope::Input, Verb::Save, &queued), Some(("enter", "queue")));
+        let onboard = Ctx {
+            has_ticket: true,
+            ticket_has_claude: true,
+            ticket_promptable: true,
+            rich_keys: true,
+            ticket_queued: true,
+            ..Ctx::default()
+        };
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &onboard),
+            Some(("shift+enter", "edit the queued ask"))
+        );
+    }
+
     #[test]
     fn shift_enter_asks_claude_at_every_stage() {
         let composing = Ctx { composing: true, rich_keys: true, ..Default::default() };
@@ -3464,9 +3666,18 @@ mod tests {
         // deliberately unhinted — `enter send` beside it already teaches it.
         assert_eq!(hint_for(Scope::Input, Verb::SaveStart, &prompting), None);
         // A prompt field is not a composer: no workspace to cycle, no tags to
-        // pick, because there is no ticket being made.
+        // pick, because there is no ticket being made. Shift+Tab is bound
+        // there only where the ask can WAIT (a shared-checkout ticket with a
+        // pane), and then it cycles the delivery, not the workspace.
         assert_eq!(resolve(Scope::Input, Key::BackTab, &prompting), None);
         assert_eq!(resolve(Scope::Input, Key::Ctrl('t'), &prompting), None);
+        let queueable = Ctx { ask_queueable: true, ..prompting.clone() };
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &queueable), Some(Verb::CycleWorkspace));
+        assert_eq!(
+            hint_for(Scope::Input, Verb::CycleWorkspace, &queueable),
+            Some(("shift+tab", "now / queued"))
+        );
+        assert_eq!(resolve(Scope::Input, Key::Ctrl('t'), &queueable), None);
     }
 
     /// `↑`/`↓` in a prompt field walk what was asked before — and ONLY there,
@@ -4320,14 +4531,31 @@ mod tests {
             Verb::ArchivedList,
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
-            Verb::ThemePick,
+            Verb::Settings,
             Verb::ReleaseNotes,
-            Verb::SnoozeQuiet,
             Verb::Help,
             Verb::Quit,
         ] {
             assert!(verbs.contains(&v), "{v:?} missing from the menu: {verbs:?}");
         }
+        // The preferences are one level down, behind the Settings row, and
+        // not in the menu proper: a menu row is an action or a door.
+        let prefs: Vec<Verb> = settings_items(&ctx).iter().map(|m| m.verb).collect();
+        assert_eq!(
+            prefs,
+            [Verb::ThemePick, Verb::Peek, Verb::SnoozeQuiet, Verb::WeekStart, Verb::MergeTrain]
+        );
+        // The notice row rides under the train row, and only while it is on.
+        let on: Vec<Verb> = settings_items(&Ctx { merge_train: true, ..ctx.clone() })
+            .iter()
+            .map(|m| m.verb)
+            .collect();
+        assert_eq!(on.last(), Some(&Verb::MergeTrainNotice));
+        assert_eq!(on.len(), prefs.len() + 1);
+        for v in prefs {
+            assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
+        }
+        assert_eq!(resolve(Scope::Settings, Key::Esc, &ctx), Some(Verb::Back));
         // Rows that do not apply stay out: nothing archived, nothing to sleep.
         let quiet = Ctx::default();
         let quiet_verbs: Vec<Verb> = menu_items(&quiet).iter().map(|m| m.verb).collect();
@@ -4344,7 +4572,7 @@ mod tests {
             .collect();
         assert!(!stem.contains(&Verb::InstallUpdate), "an offer with no version: {stem:?}");
         // Every menu row that names a key must name one the keymap really has.
-        for m in menu_items(&ctx) {
+        for m in menu_items(&ctx).into_iter().chain(settings_items(&ctx)) {
             if m.key.is_empty() {
                 continue;
             }
@@ -4367,6 +4595,11 @@ mod tests {
             assert!(
                 MENU_ITEMS.iter().any(|m| m.verb == s.verb),
                 "suggestion {:?} has no menu row to point at",
+                s.verb
+            );
+            assert!(
+                !SETTINGS_ITEMS.iter().any(|m| m.verb == s.verb),
+                "suggestion {:?} points one level down, where the chip cannot take it",
                 s.verb
             );
         }
@@ -4462,7 +4695,7 @@ mod tests {
             theme_slot_word: "dark",
             ..Default::default()
         };
-        for m in MENU_ITEMS {
+        for m in MENU_ITEMS.iter().chain(SETTINGS_ITEMS) {
             let label = (m.label)(&ctx);
             assert!(!label.is_empty(), "{:?} has no label", m.verb);
             // A label built from a Ctx value can end up a stem — "Install "
@@ -4570,6 +4803,7 @@ mod tests {
             Scope::Archived,
             Scope::Menu,
             Scope::Theme,
+            Scope::Settings,
             Scope::Releases,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");

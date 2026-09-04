@@ -1,5 +1,6 @@
 //! The Esc menu — everything that acts on the board as a whole, plus the two
-//! lists that are not the board.
+//! lists that are not the board — and the settings list one level under it,
+//! drawn by the same function: the preferences are `MenuItem`s too.
 //!
 //! These actions deliberately have no key of their own: they are rare, they
 //! are not about the selection, and a menu row has room to say what it will do
@@ -14,7 +15,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap::{self, Scope};
+use mesimon_core::keymap::{self, MenuItem, Scope};
 
 use crate::app::App;
 use crate::text::truncate;
@@ -22,9 +23,27 @@ use crate::text::truncate;
 use super::dialog;
 
 pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
+    let items = keymap::menu_items(&app.ctx());
+    draw_list(f, app, idx, "MENU", Scope::Menu, &items);
+}
+
+/// The settings submenu: the same surface, its own name and keys. No row
+/// here is ever a suggestion, so the lead never carries the mark.
+pub(super) fn draw_settings(f: &mut Frame, app: &App, idx: usize) {
+    let items = keymap::settings_items(&app.ctx());
+    draw_list(f, app, idx, "SETTINGS", Scope::Settings, &items);
+}
+
+fn draw_list(
+    f: &mut Frame,
+    app: &App,
+    idx: usize,
+    name: &str,
+    scope: Scope,
+    items: &[&'static MenuItem],
+) {
     let theme = &app.theme;
     let ctx = app.ctx();
-    let items = keymap::menu_items(&ctx);
     if items.is_empty() {
         return;
     }
@@ -39,8 +58,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         None,
         &theme.rest,
         dialog::Edges {
-            title: dialog::title(&theme.rest, "MENU"),
-            tail: dialog::keys(app, Scope::Menu, &theme.rest, inner_w.saturating_sub(4)),
+            title: dialog::title(&theme.rest, name),
+            tail: dialog::keys(app, scope, &theme.rest, inner_w.saturating_sub(4)),
         },
     );
 

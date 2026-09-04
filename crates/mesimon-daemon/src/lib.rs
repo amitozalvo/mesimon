@@ -15,6 +15,7 @@ pub mod server;
 pub mod shellenv;
 pub mod store;
 pub mod tail;
+pub mod train;
 pub mod worktree;
 
 use std::path::Path;

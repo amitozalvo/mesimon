@@ -1,8 +1,9 @@
 //! Snooze (T-74), end to end: an archive with a deadline leaves the board,
 //! the daemon's tick wheel brings it back at the top of its column with its
 //! age restarted and — when asked — lit, `SeenTicket` puts the light out,
-//! and the two refusals (a past deadline, an awake session) hold. Real
-//! tmux, in-process daemon, stub agent.
+//! the past-deadline refusal holds, a working claude holds the ticket on
+//! the board, and an idle one is put to sleep by the snooze. Real tmux,
+//! in-process daemon, stub agent.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -13,7 +14,7 @@ use common::*;
 
 use std::time::Duration;
 
-use mesimon_core::board::SessionKind;
+use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 
 fn now_secs() -> u64 {
@@ -100,18 +101,34 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     });
     assert!(!c.board().ticket(stays).unwrap().is_woke(), "quiet means quiet");
 
-    // And an awake session holds the ticket on the board, in the archive's words.
-    assert!(matches!(
-        c.request(Command::SpawnSession {
-            ticket: napper,
-            kind: SessionKind::Claude,
-            submit_prompt: false,
-        }),
-        Response::Spawned { .. }
-    ));
+    // A session still working holds the ticket on the board, naming itself —
+    // and an idle one is put to sleep by the snooze, so the ticket goes.
+    let Response::Spawned { id: sid, .. } = c.request(Command::SpawnSession {
+        ticket: napper,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) else {
+        panic!("spawn");
+    };
+    let hook_sock = h.paths.hook_sock();
+    hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
     err_containing(
         c.request(Command::SnoozeTicket { id: napper, until: now_secs() + 60, needs_you: true }),
-        "awake",
+        "claude still awake",
     );
+    assert!(!c.board().ticket(napper).unwrap().is_archived());
+    assert!(c.board().sessions.iter().any(|s| s.id == sid && s.state == SessionState::Running));
+
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    assert!(matches!(
+        c.request(Command::SnoozeTicket { id: napper, until: now_secs() + 60, needs_you: true }),
+        Response::Ok
+    ));
+    let board = c.board();
+    assert!(board.ticket(napper).unwrap().is_archived());
+    assert!(board.sessions.iter().any(|s| s.id == sid && s.state == SessionState::Sleeping));
+    assert_eq!(board.ticket_awake_sessions(napper), 0);
     drop(h);
 }

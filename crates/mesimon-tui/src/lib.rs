@@ -40,9 +40,12 @@ use client::Client;
 
 /// The words a snooze preset wears on the card row and in the status line —
 /// the keymap's own hint for it, so the footer, the card and the status all
-/// say one thing.
-pub(crate) fn snooze_words(p: mesimon_core::snooze::Preset) -> &'static str {
-    mesimon_core::snooze::hint_for_label(p.label())
+/// say one thing. The week start names the last rung's day.
+pub(crate) fn snooze_words(
+    p: mesimon_core::snooze::Preset,
+    week_start: mesimon_core::snooze::Weekday,
+) -> &'static str {
+    mesimon_core::snooze::hint_for_label(p.label(week_start))
 }
 
 /// What `mesimon doctor` says about the note editor's `^g`: which program
@@ -52,6 +55,7 @@ pub use external::doctor_line as editor_status;
 pub use prefs::doctor_line as theme_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
 pub use prefs::snooze_doctor_line as snooze_status;
+pub use prefs::train_doctor_line as train_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
 /// the offer it raises, and the doctor must not carry a second copy of the
@@ -96,6 +100,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.prefs = loaded.prefs;
     app.prefs_path = prefs_path;
     app.prefs_write_barred = loaded.write_barred;
+    // The merge train preference reaches the daemon now, not on the first
+    // event: an armed board that sits quiet would otherwise never say so.
+    app.reconcile_train();
     if let Some(notice) = loaded.notice {
         app.status = notice;
     }

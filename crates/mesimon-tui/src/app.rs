@@ -197,6 +197,13 @@ pub enum Mode {
     Theme {
         idx: usize,
     },
+    /// The settings submenu: the preferences, one level under the menu.
+    /// `idx` is the cursor over `keymap::settings_items`. Choosing a row
+    /// keeps the list open (the row relabels itself), Esc returns to the
+    /// menu on the row that opened it.
+    Settings {
+        idx: usize,
+    },
     /// The note editor. A mode and not a second slot: it REPLACES the
     /// one-line composer (Tab carries the title over) and never coexists
     /// with a move, a menu or a picker, so `Mode` is where it belongs.
@@ -382,6 +389,11 @@ const PROMPT_HISTORY_MAX: usize = 50;
 /// than a minute, and the git state is what says when it landed.
 const MERGE_ASK_COOLDOWN: Duration = Duration::from_secs(60);
 
+/// How long `reconcile_train` waits before pushing the train preference
+/// again to a daemon that still reads unarmed (an older daemon that refuses
+/// it, a race with another board).
+const TRAIN_PUSH_BACKOFF: Duration = Duration::from_secs(30);
+
 /// The m key's staged progression (author 2026-08-30): each press shows what
 /// the next press does. Stage is derived from git state, never stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -451,6 +463,10 @@ pub enum InputPurpose {
         /// the walk is and the draft it stepped off, so `↓` past the newest
         /// ask puts the user's own words back. `None` is the ordinary field.
         walk: Option<HistoryWalk>,
+        /// The row under the field says `queued`: Enter parks the words
+        /// until the ticket's checkout is quiet (2026-09-04). Shift+Tab
+        /// cycles it; `now` every time the field opens fresh.
+        queued: bool,
     },
 }
 
@@ -546,6 +562,12 @@ pub struct App {
     /// Where the board's own checkout stands (T-124): branch, ahead/behind
     /// its upstream, uncommitted changes. Unsampled draws nothing.
     pub git: mesimon_core::command::RepoGit,
+    /// What mesimon owes each ticket and will do on its own clock — a queued
+    /// ask, a train merge, a train rebase ask (2026-09-04). The card's slow
+    /// owed mark and the cursor card's `queued ∙ after T-12` row read this.
+    pub pending: Vec<mesimon_core::command::Pending>,
+    /// The merge train as the daemon holds it: armed or not, what it asked.
+    pub automation: mesimon_core::command::AutomationStatus,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -557,6 +579,9 @@ pub struct App {
     /// notice) — what keeps the identity line from offering the same ask
     /// again the moment `merge_note` clears. See `merge_outstanding`.
     merge_sent: Option<(ulid::Ulid, MergeStage, Instant)>,
+    /// When `SetAutomation` was last pushed: the reconcile on every snapshot
+    /// re-arms the train after a daemon restart, and this is its back-off.
+    train_pushed_at: Option<Instant>,
     /// The m flow's reply — rendered on the ticket screen's identity line
     /// (next to the branch state it acts on), never the footer. Cleared with
     /// `status` on the next keypress.
@@ -766,10 +791,13 @@ impl App {
             notices: snap.notices,
             shell_env: snap.shell_env,
             git: snap.git,
+            pending: snap.pending,
+            automation: snap.automation,
             theme,
             resume_refused: None,
             merge_armed: None,
             merge_sent: None,
+            train_pushed_at: None,
             merge_note: String::new(),
             screen: Screen::Board,
             cursor_col: 0,
@@ -870,6 +898,7 @@ impl App {
         match fetch(self.client.as_mut()) {
             Ok(snap) => {
                 self.absorb(snap);
+                self.reconcile_train();
                 if self.daemon_down {
                     self.daemon_down = false;
                     self.status = "daemon back ∙ board refreshed".into();
@@ -976,6 +1005,8 @@ impl App {
         self.notices = snap.notices;
         self.shell_env = snap.shell_env;
         self.git = snap.git;
+        self.pending = snap.pending;
+        self.automation = snap.automation;
         self.clamp_cursor();
         self.clamp_screen();
     }
@@ -1059,6 +1090,14 @@ impl App {
                 self.mode = Mode::Normal;
             } else if idx >= n {
                 self.mode = Mode::Menu { idx: n - 1 };
+            }
+        }
+        if let Mode::Settings { idx } = self.mode {
+            let n = keymap::settings_items(&self.ctx()).len();
+            if n == 0 {
+                self.mode = Mode::Normal;
+            } else if idx >= n {
+                self.mode = Mode::Settings { idx: n - 1 };
             }
         }
         // A note editor on a ticket that vanished has nowhere to save to.
@@ -1520,7 +1559,8 @@ impl App {
         };
         self.prefs.set(self.ground, flavor);
         let pinned = self.forced.take().is_some();
-        self.mode = Mode::Normal;
+        // Back to the settings list, where the theme row now reads the pick.
+        self.mode = Mode::Settings { idx: self.settings_row(Verb::ThemePick) };
         self.preview(flavor);
         let name = flavor.name();
         self.status = match self.save_prefs(name) {
@@ -1531,6 +1571,18 @@ impl App {
             let var = std::env::var("MESIMON_THEME").unwrap_or_default();
             self.status.push_str(&format!(" ∙ MESIMON_THEME={var} pins the next launch"));
         }
+    }
+
+    /// Where `verb`'s row sits in the menu right now, so a submenu can close
+    /// onto the row that opened it. A row that is not offered lands on the
+    /// first one rather than past the end.
+    fn menu_row(&self, verb: Verb) -> usize {
+        keymap::menu_items(&self.ctx()).iter().position(|m| m.verb == verb).unwrap_or(0)
+    }
+
+    /// The same, in the settings list.
+    fn settings_row(&self, verb: Verb) -> usize {
+        keymap::settings_items(&self.ctx()).iter().position(|m| m.verb == verb).unwrap_or(0)
     }
 
     /// Write `prefs.json` — the one road every preference takes, so the bar
@@ -1548,19 +1600,117 @@ impl App {
         }
     }
 
+    /// The board's half of the daemon's snooze gate: a paned claude that is
+    /// not idle will not sleep, so the snooze would be refused. `None` means
+    /// arm — the daemon still judges at the Enter.
+    fn snooze_blocked(&self, id: ulid::Ulid) -> Option<String> {
+        self.board
+            .sessions
+            .iter()
+            .filter(|s| s.ticket == id && s.state.has_pane())
+            .find(|s| {
+                s.kind == SessionKind::Claude && !matches!(s.state, SessionState::Idle { .. })
+            })
+            .map(|_| "claude still awake — only idle sessions sleep".to_string())
+    }
+
     /// The snooze chord's status: what `z` and Enter do next. Names the
     /// preset, never the resolved clock — the clock is the confirm's to say.
     fn snooze_status(&mut self) {
         if let Some((_, p)) = self.snooze_armed {
-            self.status = format!("z next ∙ enter {} ∙ esc cancels", crate::snooze_words(p));
+            let words = crate::snooze_words(p, self.prefs.week_start);
+            self.status = format!("z next ∙ enter {words} ∙ esc cancels");
         }
     }
 
     /// The row the armed card carries under its title (`snooze 1h`), or
     /// nothing when this ticket is not the one under the chord.
+    /// Tell the daemon the train preference (2026-09-04): on every toggle,
+    /// and from `reconcile_train` whenever a snapshot says the daemon does
+    /// not hold what the preference says — the first snapshot, a daemon
+    /// restart, another board's train having gone. An older daemon refuses
+    /// the command; the status says which binary to reload.
+    fn push_automation(&mut self) {
+        self.train_pushed_at = Some(Instant::now());
+        let resp = self.req(Command::SetAutomation {
+            merge_train: self.prefs.merge_train,
+            merge_notice: self.prefs.merge_train_notice,
+        });
+        if let Response::Err { message } = resp {
+            self.status = format!("merge train needs the new daemon ∙ U reloads ∙ {message}");
+        }
+    }
+
+    /// Preference on, daemon unarmed, back-off passed: push. A preference
+    /// that is OFF pushes nothing, so one board never disarms another's.
+    pub(crate) fn reconcile_train(&mut self) {
+        if self.prefs.merge_train
+            && !self.automation.merge_train
+            && self.train_pushed_at.is_none_or(|t| t.elapsed() >= TRAIN_PUSH_BACKOFF)
+        {
+            self.push_automation();
+        }
+    }
+
+    /// Can an ask on this ticket WAIT? A shared-checkout ticket with an awake
+    /// claude and no worktree binding — mirrors the daemon's `enqueue_ask`
+    /// gates, so the toggle is never offered where the daemon would refuse.
+    pub(crate) fn ask_queueable(&self, ticket: ulid::Ulid) -> bool {
+        self.board.pane_target(ticket).is_some()
+            && self
+                .board
+                .ticket(ticket)
+                .is_some_and(|t| t.workspace_strategy() == WorkspaceStrategy::SharedCheckout)
+            && self.wt_item(ticket).is_none()
+    }
+
+    /// An ask is waiting on this ticket — not yet pasted.
+    pub(crate) fn ticket_queued(&self, ticket: ulid::Ulid) -> bool {
+        self.pending_of(ticket).is_some_and(|p| p.action == "ask" && !p.in_flight)
+    }
+
+    /// The snapshot's entry for what mesimon owes this ticket, if any.
+    pub(crate) fn pending_of(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::command::Pending> {
+        self.pending.iter().find(|p| p.ticket == ticket)
+    }
+
+    /// Does the card wear the owed mark?
+    pub(crate) fn owed(&self, ticket: ulid::Ulid) -> bool {
+        self.pending_of(ticket).is_some()
+    }
+
+    /// The owed row's words (2026-09-04): what mesimon will do to this card
+    /// next and what it waits on — `queued ∙ after T-12`, `train ∙ merges
+    /// when quiet`. Names the first ticket still working and counts the rest,
+    /// so the row stays one row.
+    pub(crate) fn pending_row(&self, ticket: ulid::Ulid) -> Option<String> {
+        let p = self.pending_of(ticket)?;
+        let own = self.board.ticket(ticket).map(|t| t.short_key.as_str()).unwrap_or("");
+        let others: Vec<&str> =
+            p.waits_on.iter().map(String::as_str).filter(|k| *k != own).collect();
+        // One grammar for every action — `<what> ∙ after <who>` — because a
+        // card row is 22 cells and the ticket page reads the same words.
+        let after = match others.as_slice() {
+            [] if p.waits_on.is_empty() => None,
+            [] => Some("after its turn".to_string()),
+            [one] => Some(format!("after {one}")),
+            [one, rest @ ..] => Some(format!("after {one} +{}", rest.len())),
+        };
+        Some(match (p.action.as_str(), after) {
+            ("ask", _) if p.in_flight => "queued ∙ sending".into(),
+            ("ask", None) => "queued ∙ sends next".into(),
+            ("ask", Some(a)) => format!("queued ∙ {a}"),
+            ("merge", None) => "merge ∙ next".into(),
+            ("merge", Some(a)) => format!("merge ∙ {a}"),
+            ("rebase", None) => "rebase ask ∙ next".into(),
+            ("rebase", Some(a)) => format!("rebase ask ∙ {a}"),
+            (other, _) => other.to_string(),
+        })
+    }
+
     pub(crate) fn snooze_row(&self, ticket: ulid::Ulid) -> Option<String> {
         let (id, p) = self.snooze_armed?;
-        (id == ticket).then(|| crate::snooze_words(p).to_string())
+        (id == ticket).then(|| crate::snooze_words(p, self.prefs.week_start).to_string())
     }
 
     /// Enter on the chord: resolve the preset to a deadline on the local
@@ -1574,26 +1724,40 @@ impl App {
             self.status = "the local clock would not answer ∙ not snoozed".into();
             return Ok(());
         };
-        let Some(until) =
-            mesimon_core::snooze::deadline(preset, now, &local, &crate::localtime::to_epoch)
-        else {
+        let week_start = self.prefs.week_start;
+        let Some(until) = mesimon_core::snooze::deadline(
+            preset,
+            now,
+            &local,
+            week_start,
+            &crate::localtime::to_epoch,
+        ) else {
             self.status = "could not place that day on the clock ∙ not snoozed".into();
             return Ok(());
         };
         let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
         let needs_you = self.prefs.snooze_needs_you;
+        // The daemon sleeps the ticket's idle sessions on the way (or refuses
+        // over one still working); the count is read off the board it judged.
+        let awake = self.board.ticket_awake_sessions(id);
         match self.req(Command::SnoozeTicket { id, until, needs_you }) {
             Response::Err { message } => self.status = message,
             _ => {
                 // Undo is the restore: an archive with a deadline is undone
                 // the way an archive is, and the restore cancels the deadline.
                 self.last_undo = Some(LastUndo::Archive(id));
+                let label = preset.label(week_start);
                 let when = if preset.is_calendar() {
-                    preset.label().to_string()
+                    label.to_string()
                 } else {
-                    crate::localtime::clock_word(until).unwrap_or_else(|| preset.label().into())
+                    crate::localtime::clock_word(until).unwrap_or_else(|| label.into())
                 };
-                self.status = format!("snoozed {key} until {when} ∙ u undoes it");
+                let slept = match awake {
+                    0 => String::new(),
+                    1 => " ∙ its session asleep".into(),
+                    n => format!(" ∙ {n} sessions asleep"),
+                };
+                self.status = format!("snoozed {key} until {when}{slept} ∙ u undoes it");
             }
         }
         self.refresh()
@@ -1659,6 +1823,7 @@ impl App {
             Mode::External { .. } => Scope::Drawer,
             Mode::Archived { .. } => Scope::Archived,
             Mode::Theme { .. } => Scope::Theme,
+            Mode::Settings { .. } => Scope::Settings,
             _ => match self.screen {
                 Screen::Diff { .. } => Scope::Diff,
                 Screen::Releases => Scope::Releases,
@@ -1791,14 +1956,30 @@ impl App {
                 Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }
             ),
             prompt_history: !self.prompt_history.is_empty(),
+            ask_queueable: matches!(
+                self.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }
+            ) && subject.is_some_and(|t| self.ask_queueable(t)),
+            ask_queued: matches!(
+                self.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { queued: true, .. }, .. }
+            ),
+            ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
             tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
             tag_on_entry: self.tag_cell().is_some(),
             tag_worn: self.tag_cell().is_some_and(|(g, n, _)| {
                 self.tag_subject().is_some_and(|t| t.iter().any(|t| t.group == g && t.name == n))
             }),
             tag_forget_armed: self.tag_armed.as_ref().is_some_and(|a| a.forget_armed),
-            snooze_word: self.snooze_armed.map(|(_, p)| p.label()).unwrap_or(""),
+            snooze_word: self
+                .snooze_armed
+                .map(|(_, p)| p.label(self.prefs.week_start))
+                .unwrap_or(""),
             snooze_needs_you: self.prefs.snooze_needs_you,
+            week_start_word: self.prefs.week_start.name(),
+            merge_train: self.prefs.merge_train,
+            merge_train_notice: self.prefs.merge_train_notice,
+            merge_train_armed: self.automation.merge_train,
             // Board-wide, because the ten digits share one binding and `avail`
             // never sees which one was pressed. A digit whose own group is
             // empty says so in the status line instead.
@@ -1871,6 +2052,14 @@ impl App {
     /// lets a second ask through; the agent rebasing changes the stage, so a
     /// landed request stops holding at once.
     pub(crate) fn merge_outstanding(&self, ticket: ulid::Ulid) -> Option<&'static str> {
+        // The train's asks are the daemon's memory, not this TUI's: an ask
+        // recorded at the CURRENT base tip reads `rebase requested` here the
+        // way a hand one does, until the branch catches up (2026-09-04).
+        if self.automation.train_asked.iter().any(|a| a.ticket == ticket && a.current)
+            && Self::merge_stage(self.wt_item(ticket)?) == Some(MergeStage::Rebase)
+        {
+            return Some("rebase requested");
+        }
         let (t, stage, at) = self.merge_sent?;
         if t != ticket || Self::merge_stage(self.wt_item(ticket)?) != Some(stage) {
             return None;
@@ -2010,6 +2199,7 @@ impl App {
             Verb::Back => self.back(scope),
             Verb::Quit => self.quit = true,
             Verb::Menu => self.mode = Mode::Menu { idx: 0 },
+            Verb::Settings => self.mode = Mode::Settings { idx: 0 },
             // ---- tickets ---------------------------------------------------
             Verb::OpenTicket => {
                 self.mode = Mode::Input {
@@ -2245,11 +2435,15 @@ impl App {
             }
             Verb::SnoozePrefix => {
                 if let Some(id) = self.subject() {
-                    if self.board.ticket_awake_sessions(id) > 0 {
-                        // The archive's refusal, in the archive's words: a
-                        // snooze IS an archive, and the second press would
-                        // only be refused.
-                        self.archive_gated(id)?;
+                    // The daemon sleeps the ticket's idle sessions on the
+                    // snooze and refuses over one still working; a claude
+                    // the board can already see working is refused at the
+                    // first press, in the daemon's words, so the chord never
+                    // arms for an Enter that would only be refused. What the
+                    // board cannot judge (a shell's children, a pin) is the
+                    // Enter's to hear.
+                    if let Some(why) = self.snooze_blocked(id) {
+                        self.status = why;
                     } else {
                         self.snooze_armed = Some((id, Preset::OneHour));
                         self.snooze_status();
@@ -2271,16 +2465,48 @@ impl App {
                 self.snooze_armed = None;
                 self.status = "snooze cancelled".into();
             }
+            Verb::MergeTrain => {
+                let on = !self.prefs.merge_train;
+                self.prefs.set_merge_train(on);
+                let word = if on { "merge train on" } else { "merge train off" };
+                self.status = match self.save_prefs(word) {
+                    Ok(()) => format!("{word} ∙ saved"),
+                    Err(why) => why,
+                };
+                self.push_automation();
+            }
+            Verb::MergeTrainNotice => {
+                let on = !self.prefs.merge_train_notice;
+                self.prefs.set_merge_train_notice(on);
+                let word = if on {
+                    "the train tells the agent after a merge"
+                } else {
+                    "the train stays silent after a merge"
+                };
+                self.status = match self.save_prefs(word) {
+                    Ok(()) => format!("{word} ∙ saved"),
+                    Err(why) => why,
+                };
+                self.push_automation();
+            }
             Verb::SnoozeQuiet => {
                 let on = !self.prefs.snooze_needs_you;
                 self.prefs.set_snooze_needs_you(on);
-                self.mode = Mode::Normal;
                 let word = if on {
                     "a woken ticket returns with needs-you"
                 } else {
                     "a woken ticket returns quietly"
                 };
                 self.status = match self.save_prefs(word) {
+                    Ok(()) => format!("{word} ∙ saved"),
+                    Err(why) => why,
+                };
+            }
+            Verb::WeekStart => {
+                let day = self.prefs.week_start.next();
+                self.prefs.set_week_start(day);
+                let word = format!("the week starts on {}", day.name());
+                self.status = match self.save_prefs(&word) {
                     Ok(()) => format!("{word} ∙ saved"),
                     Err(why) => why,
                 };
@@ -2338,9 +2564,21 @@ impl App {
             // press late, and it starts claude on the title without a field.
             Verb::Prompt => {
                 if let Some(id) = self.subject() {
-                    if ctx.ticket_has_claude {
+                    if ctx.ticket_queued {
+                        // An ask is waiting: the field reopens on its words,
+                        // at `queued`. Enter re-queues, a blank Enter drops.
+                        let text =
+                            self.pending_of(id).and_then(|p| p.text.clone()).unwrap_or_default();
                         self.mode = Mode::Input {
-                            purpose: InputPurpose::Prompt { ticket: id, walk: None },
+                            purpose: InputPurpose::Prompt { ticket: id, walk: None, queued: true },
+                            buffer: EditBuffer::from_text(
+                                text,
+                                mesimon_core::command::PROMPT_MAX_BYTES,
+                            ),
+                        };
+                    } else if ctx.ticket_has_claude {
+                        self.mode = Mode::Input {
+                            purpose: InputPurpose::Prompt { ticket: id, walk: None, queued: false },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
                     } else {
@@ -2484,7 +2722,6 @@ impl App {
                 } else {
                     "replies hidden".into()
                 };
-                self.mode = Mode::Normal;
             }
             Verb::ExternalDrawer => self.open_drawer()?,
             Verb::ArchivedList => {
@@ -2654,6 +2891,15 @@ impl App {
                     if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
                 self.mode = Mode::Archived { idx };
             }
+            Scope::Settings => {
+                let Mode::Settings { idx } = self.mode else {
+                    return;
+                };
+                let n = keymap::settings_items(&self.ctx()).len();
+                let idx =
+                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                self.mode = Mode::Settings { idx };
+            }
             Scope::Theme => {
                 let Mode::Theme { idx } = self.mode else {
                     return;
@@ -2697,6 +2943,21 @@ impl App {
                 let ctx = self.ctx();
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
+            // A settings row is a toggle or a picker, so the list STAYS: the
+            // row relabels itself and the change is on the screen. The
+            // picker sets its own mode and comes back here when it closes.
+            Scope::Settings => {
+                let Mode::Settings { idx } = self.mode else {
+                    return Ok(());
+                };
+                let ctx = self.ctx();
+                let items = keymap::settings_items(&ctx);
+                let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
+                    return Ok(());
+                };
+                let verb = item.verb;
+                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+            }
             Scope::Drawer => self.adopt_external(true),
             Scope::Archived => {
                 let Mode::Archived { idx } = self.mode else {
@@ -2737,9 +2998,11 @@ impl App {
                 // Put it back: whatever was previewed, the board returns to
                 // the theme it rests on. No entry flavor is stored, which is
                 // also what makes a ground flip under the picker right.
-                self.mode = Mode::Normal;
+                self.mode = Mode::Settings { idx: self.settings_row(Verb::ThemePick) };
                 self.preview(self.resting_flavor());
             }
+            // One level up, on the row that opened it.
+            Scope::Settings => self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) },
             // The menu is the board's, so the notes always return there.
             Scope::Releases => {
                 self.releases = None;
@@ -3141,14 +3404,18 @@ impl App {
                 self.status = "1-9 pick a group ∙ esc done".into();
                 return Ok(());
             }
-            Some(Verb::CycleWorkspace) => {
-                if let InputPurpose::Create { workspace, .. } = &mut purpose {
+            Some(Verb::CycleWorkspace) => match &mut purpose {
+                InputPurpose::Create { workspace, .. } => {
                     *workspace = match workspace {
                         None => Some(WorkspaceStrategy::Worktree),
                         Some(_) => None,
                     };
                 }
-            }
+                // In the ask field the same key cycles the DELIVERY: now, or
+                // parked until the checkout is quiet (2026-09-04).
+                InputPurpose::Prompt { queued, .. } => *queued = !*queued,
+                InputPurpose::Rename { .. } => {}
+            },
             // The ask history, shell-style. `↑` from the ordinary field keeps
             // the draft and shows the newest ask; each further `↑` goes one
             // older and stops at the oldest. `↓` comes back the same way, and
@@ -4426,7 +4693,20 @@ impl App {
     /// the next keystroke.
     fn commit_input(&mut self, purpose: InputPurpose, buffer: String, start: bool) -> Result<()> {
         let title = buffer.trim().to_string();
+        // A blank field commits nothing — except a blank Enter in a field
+        // reopened on a WAITING ask, which is how the ask is dropped
+        // (2026-09-04): the words are still on the card until this.
         if title.is_empty() {
+            if let InputPurpose::Prompt { ticket, .. } = purpose {
+                if self.ticket_queued(ticket) {
+                    self.status = match self.req(Command::DropQueuedAsk { ticket }) {
+                        Response::Ok => "queued ask dropped".into(),
+                        Response::Err { message } => message,
+                        _ => String::new(),
+                    };
+                    self.refresh()?;
+                }
+            }
             return Ok(());
         }
         match purpose {
@@ -4440,15 +4720,24 @@ impl App {
             // sending IS the whole act here, so both Enters do it — see the
             // input scope's ShiftEnter binding for why the harder one stays
             // bound rather than dying under the finger that opened the field.
-            InputPurpose::Prompt { ticket, .. } => {
+            InputPurpose::Prompt { ticket, queued, .. } => {
                 self.remember_prompt(&title);
-                self.status = match self.req(Command::PromptSession { ticket, text: title }) {
+                let had = self.ticket_queued(ticket);
+                let own =
+                    self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+                self.status = match self.req(Command::PromptSession { ticket, text: title, queued })
+                {
                     // Deliberately not "sent to claude": what is provably
                     // true is that it went into the box and Enter was
                     // pressed. Whether the agent took it is the card's to
                     // say, seconds from now, in the only vocabulary that has
                     // ever been trusted for it — the hooks.
+                    // Sending now over a waiting ask drops the waiting one:
+                    // the daemon did, and the status says so.
+                    Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
                     Response::Ok => "asked".into(),
+                    // Parked: name what it waits on, the way the card does.
+                    Response::Queued { behind } => queued_status(&behind, &own),
                     // A parked claude: the daemon woke it and holds the
                     // words until the pane reads (2026-09-04). `fresh` is
                     // the wake road's own word — no conversation was left to
@@ -4762,6 +5051,8 @@ struct Snapshot {
     notices: Vec<mesimon_core::command::Notice>,
     shell_env: mesimon_core::command::ShellEnvStatus,
     git: mesimon_core::command::RepoGit,
+    pending: Vec<mesimon_core::command::Pending>,
+    automation: mesimon_core::command::AutomationStatus,
 }
 
 impl Snapshot {
@@ -4776,11 +5067,33 @@ impl Snapshot {
                 notices,
                 shell_env,
                 git,
-            } => {
-                Some(Self { board, grace, external, resources, worktrees, notices, shell_env, git })
-            }
+                pending,
+                automation,
+            } => Some(Self {
+                board,
+                grace,
+                external,
+                resources,
+                worktrees,
+                notices,
+                shell_env,
+                git,
+                pending,
+                automation,
+            }),
             _ => None,
         }
+    }
+}
+
+/// The status line for a parked ask: who it waits on, in the card's words.
+fn queued_status(behind: &[String], own: &str) -> String {
+    let others: Vec<&str> = behind.iter().map(String::as_str).filter(|k| *k != own).collect();
+    match others.as_slice() {
+        [] if behind.is_empty() => "queued ∙ sends next".into(),
+        [] => "queued ∙ after its turn".into(),
+        [one] => format!("queued ∙ after {one}"),
+        [one, rest @ ..] => format!("queued ∙ after {one} +{}", rest.len()),
     }
 }
 
@@ -4805,6 +5118,9 @@ pub(crate) mod test_support {
         pub resources: Resources,
         pub shell_env: mesimon_core::command::ShellEnvStatus,
         pub git: mesimon_core::command::RepoGit,
+        /// What the fake daemon says it owes, and whether its train is armed.
+        pub pending: Vec<mesimon_core::command::Pending>,
+        pub automation: mesimon_core::command::AutomationStatus,
         /// Debug-formatted log of every request, for behavior assertions.
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         /// Make FocusStart answer Err (the daemon refusing a focus).
@@ -4912,8 +5228,21 @@ pub(crate) mod test_support {
                 }
                 // The daemon's road at a parked claude (2026-09-04): wake
                 // it, park the words, answer `Spawned`. A paned one is `Ok`.
-                Command::PromptSession { ticket, .. } => {
+                Command::PromptSession { ticket, queued, .. } => {
                     if self.board.pane_target(ticket).is_some() {
+                        // A parked ask: the daemon names who holds the
+                        // checkout, and lists it until it goes.
+                        if queued {
+                            self.pending.push(mesimon_core::command::Pending {
+                                ticket,
+                                action: "ask".into(),
+                                waits_on: vec!["T-9".into()],
+                                text: None,
+                                in_flight: false,
+                            });
+                            return Ok(Response::Queued { behind: vec!["T-9".into()] });
+                        }
+                        self.pending.retain(|p| p.ticket != ticket);
                         return Ok(Response::Ok);
                     }
                     let Some(rec) =
@@ -4956,6 +5285,8 @@ pub(crate) mod test_support {
                     notices: Vec::new(),
                     shell_env: self.shell_env.clone(),
                     git: self.git.clone(),
+                    pending: self.pending.clone(),
+                    automation: self.automation.clone(),
                 }),
                 Command::MoveTicket { id, column, before } => {
                     // The daemon's DONE gate, as close as the fake can stand
@@ -5026,15 +5357,32 @@ pub(crate) mod test_support {
                 // The daemon's snooze gate, mirrored: awake sessions and a
                 // past deadline refuse; otherwise an archive with the deadline.
                 Command::SnoozeTicket { id, until, needs_you } => {
-                    if self.board.ticket_awake_sessions(id) > 0 {
-                        return Ok(Response::Err {
-                            message: "sessions still awake — sleep them first".into(),
-                        });
-                    }
                     if until <= 1000 {
                         return Ok(Response::Err {
                             message: "snooze deadline is already past".into(),
                         });
+                    }
+                    // The daemon's road: idle panes sleep, a working one
+                    // refuses before anything is touched.
+                    let awake: Vec<usize> = self
+                        .board
+                        .sessions
+                        .iter()
+                        .enumerate()
+                        .filter(|(_, s)| s.ticket == id && s.state.has_pane())
+                        .map(|(i, _)| i)
+                        .collect();
+                    if awake.iter().any(|&i| {
+                        let s = &self.board.sessions[i];
+                        s.kind == SessionKind::Claude
+                            && !matches!(s.state, SessionState::Idle { .. })
+                    }) {
+                        return Ok(Response::Err {
+                            message: "claude still awake — only idle sessions sleep".into(),
+                        });
+                    }
+                    for i in awake {
+                        self.board.sessions[i].state = SessionState::Sleeping;
                     }
                     match self.board.tickets.iter_mut().find(|t| t.id == id) {
                         Some(t) => {
@@ -5048,6 +5396,10 @@ pub(crate) mod test_support {
                         }
                         None => Ok(Response::Err { message: "no such ticket".into() }),
                     }
+                }
+                Command::DropQueuedAsk { ticket } => {
+                    self.pending.retain(|p| p.ticket != ticket);
+                    Ok(Response::Ok)
                 }
                 Command::SeenTicket { id } => {
                     match self.board.tickets.iter_mut().find(|t| t.id == id) {
@@ -5087,6 +5439,8 @@ pub(crate) mod test_support {
                 resources: Resources::default(),
                 shell_env: Default::default(),
                 git: Default::default(),
+                pending: Vec::new(),
+                automation: Default::default(),
                 sent: sent.clone(),
                 refuse_focus,
                 notes: std::collections::HashMap::new(),
@@ -5242,6 +5596,8 @@ mod tests {
             resources: Resources::default(),
             shell_env: Default::default(),
             git: Default::default(),
+            pending: Vec::new(),
+            automation: Default::default(),
             sent: sent.clone(),
             refuse_focus: false,
             notes,
@@ -6047,7 +6403,7 @@ mod tests {
         use mesimon_core::command::PROMPT_MAX_BYTES;
         let mut app = app_three_columns();
         app.mode = Mode::Input {
-            purpose: InputPurpose::Prompt { ticket: ulid::Ulid(1), walk: None },
+            purpose: InputPurpose::Prompt { ticket: ulid::Ulid(1), walk: None, queued: false },
             buffer: EditBuffer::new(PROMPT_MAX_BYTES),
         };
         app.on_paste(&"x".repeat(PROMPT_MAX_BYTES + 100)).unwrap();
@@ -6108,15 +6464,57 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
     }
 
-    /// The theme picker is a menu row too.
-    fn open_theme_picker(app: &mut App) {
+    /// The settings list is a menu row.
+    fn open_settings(app: &mut App) {
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         let items = keymap::menu_items(&app.ctx());
+        let idx = items.iter().position(|m| m.verb == Verb::Settings).expect("the settings row");
+        for _ in 0..idx {
+            press(app, 'j');
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Settings { idx: 0 }), "{:?}", app.mode);
+    }
+
+    /// The theme picker is a settings row, one level further down.
+    fn open_theme_picker(app: &mut App) {
+        open_settings(app);
+        let items = keymap::settings_items(&app.ctx());
         let idx = items.iter().position(|m| m.verb == Verb::ThemePick).expect("the theme row");
         for _ in 0..idx {
             press(app, 'j');
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+    }
+
+    /// Settings is a submenu: Esc pops back onto the menu row that opened
+    /// it, and a toggle row keeps the list open with its new words.
+    #[test]
+    fn settings_is_one_level_under_the_menu_and_a_toggle_keeps_it_open() {
+        let mut app = app_three_columns();
+        open_settings(&mut app);
+        assert_eq!(app.scope(), Scope::Settings);
+        // The replies row: toggle, and the list stays with the row relabelled.
+        let items = keymap::settings_items(&app.ctx());
+        let idx = items.iter().position(|m| m.verb == Verb::Peek).expect("the replies row");
+        for _ in 0..idx {
+            press(&mut app, 'j');
+        }
+        assert!(!app.peek);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.peek, "enter flipped it");
+        assert_eq!(app.mode, Mode::Settings { idx }, "and the list is still open");
+        let items = keymap::settings_items(&app.ctx());
+        assert_eq!((items[idx].label)(&app.ctx()), "Hide agent replies");
+        // Esc: back to the menu, on the Settings row; a second Esc closes it.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        let menu_idx = keymap::menu_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::Settings)
+            .expect("the settings row");
+        assert_eq!(app.mode, Mode::Menu { idx: menu_idx });
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
     }
 
     #[test]
@@ -6140,7 +6538,7 @@ mod tests {
         assert_eq!(app.theme.flavor, Flavor::Blue);
         assert!(app.force_redraw, "a retheme repaints from nothing");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.mode, Mode::Settings { idx: 0 }, "esc pops to the settings list");
         assert_eq!(app.theme.flavor, Flavor::Graphite, "esc puts the resting theme back");
         assert_eq!(app.prefs.dark, Flavor::Graphite, "nothing was saved");
     }
@@ -6158,7 +6556,7 @@ mod tests {
         press(&mut app, 'j');
         press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Normal);
+        assert_eq!(app.mode, Mode::Settings { idx: 0 }, "enter keeps, and pops to settings");
         assert_eq!(app.theme.flavor, Flavor::Amber);
         assert_eq!(app.status, "amber saved for light terminals");
         let back = crate::prefs::load(&path).prefs;
@@ -6245,6 +6643,224 @@ mod tests {
         assert_eq!(app.screen, Screen::Board, "the board never leaves");
         assert!(app.pending_attach.is_none(), "no handover — that is the point");
         assert_eq!(app.mode, Mode::Normal, "the field closed");
+    }
+
+    /// The train row writes the preference AND tells the daemon; a snapshot
+    /// that reads the daemon unarmed while the preference is on pushes again,
+    /// once per back-off; a preference that is off pushes nothing.
+    #[test]
+    fn the_train_row_writes_the_preference_and_tells_the_daemon() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        let pushes = |sent: &std::cell::RefCell<Vec<String>>| {
+            sent.borrow().iter().filter(|c| c.contains("SetAutomation")).count()
+        };
+        // Off: a refresh pushes nothing.
+        app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 0);
+        let ctx = app.ctx();
+        app.dispatch(Verb::MergeTrain, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(app.prefs.merge_train);
+        assert!(app.status.contains("merge train on"), "{}", app.status);
+        assert!(sent_contains(&sent, "SetAutomation { merge_train: true, merge_notice: true }"));
+        assert_eq!(pushes(&sent), 1);
+        // The daemon (the fake) still reads unarmed: the next snapshot inside
+        // the back-off does not push again.
+        app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 1);
+        // The notice row pushes too.
+        let ctx = app.ctx();
+        app.dispatch(Verb::MergeTrainNotice, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(!app.prefs.merge_train_notice);
+        assert!(sent_contains(&sent, "SetAutomation { merge_train: true, merge_notice: false }"));
+        // Back off passed and still unarmed: push again.
+        app.train_pushed_at = Some(Instant::now() - TRAIN_PUSH_BACKOFF);
+        app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 3);
+        // Armed: nothing more to say.
+        app.automation.merge_train = true;
+        app.train_pushed_at = None;
+        app.reconcile_train();
+        assert_eq!(pushes(&sent), 3);
+        // Off again: one push saying so, and never again.
+        let ctx = app.ctx();
+        app.dispatch(Verb::MergeTrain, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(sent_contains(&sent, "SetAutomation { merge_train: false"));
+        app.train_pushed_at = None;
+        app.automation.merge_train = false;
+        app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 4);
+    }
+
+    /// A rebase ask the TRAIN delivered reads `rebase requested` on the
+    /// ticket page the way a hand one does, while the branch is still
+    /// behind the tip it was asked at.
+    #[test]
+    fn a_train_ask_reads_as_requested_until_the_branch_catches_up() {
+        let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
+        let t = ulid::Ulid(1);
+        app.worktrees.push(WorktreeItem {
+            ticket: t,
+            branch: "msmn/T-1-x".into(),
+            status: "attached".into(),
+            merged: false,
+            conflict: false,
+            ahead: 2,
+            needs_rebase: true,
+            detail: None,
+            path: None,
+        });
+        assert_eq!(app.merge_outstanding(t), None);
+        app.automation.train_asked = vec![mesimon_core::command::TrainAsk {
+            ticket: t,
+            current: true,
+            at_ms: 1,
+            by: "train".into(),
+        }];
+        assert_eq!(app.merge_outstanding(t), Some("rebase requested"));
+        assert_eq!(app.merge_stage_word(t), None, "no `m` hint while it stands");
+        app.automation.train_asked[0].current = false;
+        assert_eq!(app.merge_outstanding(t), None, "the base moved on: askable again");
+        // Caught up: the stage is no longer Rebase, so nothing is outstanding.
+        app.automation.train_asked[0].current = true;
+        app.worktrees[0].needs_rebase = false;
+        assert_eq!(app.merge_outstanding(t), None);
+    }
+
+    /// Shift+Tab in the ask field parks the words instead of sending them
+    /// (2026-09-04): the field's row says `queued`, Enter says `queue`, the
+    /// command carries the flag, and the status names who holds the checkout.
+    #[test]
+    fn shift_tab_queues_the_ask_and_the_status_names_the_holder() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queueable, "a shared-checkout ticket with a pane");
+        assert!(!app.ctx().ask_queued, "send now, every time the field opens");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued);
+        assert!(matches!(
+            app.mode,
+            Mode::Input { purpose: InputPurpose::Prompt { queued: true, .. }, .. }
+        ));
+        for c in "commit it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "queued ∙ after T-9");
+        assert_eq!(app.mode, Mode::Normal);
+        // The refresh lists it, so the next press reopens the waiting ask at
+        // `queued`, and Shift+Tab puts it back to now.
+        assert!(app.ctx().ticket_queued);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued);
+    }
+
+    /// A worktree ticket's checkout is its own: nothing to wait for, so the
+    /// toggle is not offered and the key is inert there.
+    #[test]
+    fn the_ask_toggle_is_inert_on_a_worktree_ticket() {
+        let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.board.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queueable);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued, "the key did nothing");
+        assert!(matches!(
+            app.mode,
+            Mode::Input { purpose: InputPurpose::Prompt { queued: false, .. }, .. }
+        ));
+    }
+
+    /// A ticket with an ask waiting reopens the field on those words, at
+    /// `queued`; Esc leaves it waiting, a blank Enter drops it, and sending
+    /// now over it says the waiting one went.
+    #[test]
+    fn a_queued_ask_reopens_prefilled_and_a_blank_enter_drops_it() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.pending = vec![mesimon_core::command::Pending {
+            ticket: ulid::Ulid(1),
+            action: "ask".into(),
+            waits_on: vec!["T-3".into()],
+            text: Some("commit it".into()),
+            in_flight: false,
+        }];
+        assert!(app.ctx().ticket_queued);
+        assert_eq!(
+            mesimon_core::keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "edit the queued ask"))
+        );
+        assert!(app.owed(ulid::Ulid(1)), "the card wears the owed mark");
+        assert_eq!(app.pending_row(ulid::Ulid(1)).as_deref(), Some("queued ∙ after T-3"));
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(field_text(&app), "commit it");
+        assert!(app.ctx().ask_queued);
+        // Esc: still waiting, nothing sent.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!sent_contains(&sent, "PromptSession"));
+        assert!(!sent_contains(&sent, "DropQueuedAsk"));
+        // A blank Enter drops it.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        for _ in 0.."commit it".len() {
+            app.handle_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "DropQueuedAsk"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "queued ask dropped");
+        assert!(!app.ctx().ticket_queued, "the refresh read it gone");
+        // Queue one again, then send now over it: the status says the
+        // waiting one went.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        for c in "later".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.status, "queued ∙ after T-9");
+        assert!(app.ctx().ticket_queued, "the refresh read it listed");
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(field_text(&app), "", "the fake keeps no text; the field is on the entry");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued);
+        for c in "now please".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "queued: false"));
+        assert_eq!(app.status, "asked ∙ queued ask dropped");
+    }
+
+    /// The owed row's words, and the in-flight form.
+    #[test]
+    fn the_owed_row_names_what_it_waits_on() {
+        let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
+        let row = |app: &mut App, waits_on: Vec<&str>, in_flight: bool, action: &str| {
+            app.pending = vec![mesimon_core::command::Pending {
+                ticket: ulid::Ulid(1),
+                action: action.into(),
+                waits_on: waits_on.into_iter().map(String::from).collect(),
+                text: None,
+                in_flight,
+            }];
+            app.pending_row(ulid::Ulid(1)).unwrap()
+        };
+        let own = app.board.tickets[0].short_key.clone();
+        assert_eq!(row(&mut app, vec![], false, "ask"), "queued ∙ sends next");
+        assert_eq!(row(&mut app, vec![&own], false, "ask"), "queued ∙ after its turn");
+        assert_eq!(row(&mut app, vec!["T-3", &own], false, "ask"), "queued ∙ after T-3");
+        assert_eq!(row(&mut app, vec!["T-3", "T-4", "T-5"], false, "ask"), "queued ∙ after T-3 +2");
+        assert_eq!(row(&mut app, vec![], true, "ask"), "queued ∙ sending");
+        assert_eq!(row(&mut app, vec![], false, "merge"), "merge ∙ next");
+        assert_eq!(row(&mut app, vec!["T-3"], false, "merge"), "merge ∙ after T-3");
+        assert_eq!(row(&mut app, vec![], false, "rebase"), "rebase ask ∙ next");
+        assert_eq!(row(&mut app, vec!["T-3", "T-4"], false, "rebase"), "rebase ask ∙ after T-3 +1");
+        app.pending.clear();
+        assert!(app.pending_row(ulid::Ulid(1)).is_none());
+        assert!(!app.owed(ulid::Ulid(1)));
     }
 
     /// `↑` in the prompt field recalls what was asked before, newest first;
@@ -7495,14 +8111,33 @@ mod tests {
         assert_eq!(app.snooze_armed, None);
     }
 
-    /// A snooze is an archive: awake sessions refuse it in the archive's
-    /// words, before any second press.
+    /// A claude still working refuses the snooze at the FIRST press, in the
+    /// daemon's words — the chord never arms for an Enter that would only be
+    /// refused.
     #[test]
-    fn snooze_refuses_awake_sessions_like_the_archive() {
+    fn snooze_refuses_a_working_claude_before_it_arms() {
         let (mut app, _sent, _sid) = app_with_claude(SessionState::Running, false);
         press(&mut app, 'z');
         assert_eq!(app.snooze_armed, None);
-        assert!(app.status.contains("awake"), "{}", app.status);
+        assert_eq!(app.status, "claude still awake — only idle sessions sleep");
+    }
+
+    /// An idle claude is put to sleep BY the snooze (user 2026-09-04:
+    /// "snooze auto sleep sessions if not running"): `z` arms over it, Enter
+    /// snoozes, the record is parked, and the confirm says so.
+    #[test]
+    fn snooze_sleeps_an_idle_claude_on_the_way() {
+        let (mut app, _sent, sid) = app_with_claude(
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn },
+            false,
+        );
+        press(&mut app, 'z');
+        assert!(app.snooze_armed.is_some(), "{}", app.status);
+        app.on_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.status.contains("its session asleep"), "{}", app.status);
+        assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
+        let rec = app.board.sessions.iter().find(|s| s.id == sid).unwrap();
+        assert_eq!(rec.state, SessionState::Sleeping);
     }
 
     /// The woke mark comes off on a KEYPRESS that leaves the cursor on the
@@ -7545,6 +8180,47 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let t = app.board.ticket(ulid::Ulid(1)).unwrap();
         assert!(t.archived.as_ref().is_some_and(|a| !a.needs_you));
+    }
+
+    /// The Settings row cycles the week's first day, the ring's last rung
+    /// renames itself, and the deadline lands on that day.
+    #[test]
+    fn the_settings_row_moves_the_start_of_the_week() {
+        use mesimon_core::snooze::Weekday;
+        let mut app = app_three_columns();
+        assert_eq!(app.ctx().week_start_word, "Monday");
+        let ctx = app.ctx();
+        app.dispatch(Verb::WeekStart, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert_eq!(app.prefs.week_start, Weekday::Sunday);
+        assert!(app.status.contains("Sunday"), "{}", app.status);
+        assert_eq!(app.ctx().week_start_word, "Sunday");
+        // Walk the ring to the last rung: it is Sunday's now.
+        for _ in 0..4 {
+            press(&mut app, 'z');
+        }
+        assert_eq!(app.snooze_armed, Some((ulid::Ulid(1), Preset::NextWeek9)));
+        assert_eq!(app.ctx().snooze_word, "next Sunday 9:00");
+        assert_eq!(app.snooze_row(ulid::Ulid(1)).as_deref(), Some("snooze until next Sunday 9:00"));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.status.contains("next Sunday 9:00"), "{}", app.status);
+        let t = app.board.ticket(ulid::Ulid(1)).unwrap();
+        let until = t.archived.as_ref().and_then(|a| a.until.as_deref()).expect("a deadline");
+        // The deadline is a Sunday, 09:00 local, ahead of now.
+        let until: u64 = until.trim_start_matches('@').parse().expect("@<secs>");
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        assert!(until > now);
+        let secs = libc::time_t::try_from(until).unwrap();
+        let mut tm: libc::tm = unsafe { std::mem::zeroed() };
+        unsafe { libc::localtime_r(&secs, &mut tm) };
+        assert_eq!((tm.tm_wday, tm.tm_hour, tm.tm_min), (0, 9, 0));
+        // Two more presses wrap the ring back to Monday.
+        let ctx = app.ctx();
+        app.dispatch(Verb::WeekStart, Key::Enter, Scope::Settings, &ctx).unwrap();
+        app.dispatch(Verb::WeekStart, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert_eq!(app.prefs.week_start, Weekday::Monday);
     }
 
     /// Digits address columns while a card is held (04 §2.5) — MOVE is the one

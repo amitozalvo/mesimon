@@ -11,10 +11,30 @@ section out of it for the GitHub release body.
 
 ## v0.1.0-alpha.12 — 2026-09-04
 
+- **An ask can wait for a quiet checkout.** In the board's ask field, Shift+Tab flips `now` /
+  `queued`: a queued ask is parked until no claude sharing the ticket's checkout is mid-turn,
+  then pasted — so five "commit" asks in one checkout land one at a time instead of on top of
+  each other. Offered on shared-checkout tickets only (a worktree's checkout is its own). The
+  card wears a slow mark and, open, says `queued ∙ after T-12`; Shift+Enter reopens the words,
+  a blank Enter drops them, and talking to the agent yourself while it waits drops them too.
+
+- **A merge train, opt-in.** Settings has a `Merge train` row (off by default). While every
+  claude on the board is idle, mesimon fast-forwards the first finished REVIEW branch, tells its
+  agent (its own row, on by default), and asks one idle agent whose branch fell behind to rebase
+  and test — once per move of main, fused at six asks in two hours. It runs only while the
+  board that turned it on is open; `mesimon doctor` prints a `merge train` line. The cards say
+  what is coming (`merge ∙ after T-3 +1`), and the header reads `∙ train`. A shell on a ticket no
+  longer blocks `m`.
+
 - **A new board comes with three tags.** A board that has never had a tag opens with `BUG`,
   `FEATURE` and `CHANGE` on group 1, coloured rose, green and blue, so the first `^t` is a pick
   rather than a blank row. Offered once: a board with tags of its own is left alone, and
   forgetting the three does not bring them back on the next start.
+
+- **The week starts on your day.** Settings has a `Week starts on Monday` row; Enter cycles
+  Monday → Sunday → Saturday. It is what the snooze ring's last rung means by "next week":
+  `z` walks `1h · 4h · tomorrow 9:00 · next Sunday 9:00` for a Sunday week. Saved in
+  `prefs.json`; `mesimon doctor`'s `snooze` line names the day.
 
 - **Release notes, in the board.** The Esc menu has a `Release notes` row that opens this file
   on a screen of its own: one band per release, the running build marked, the notes as rich

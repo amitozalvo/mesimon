@@ -23,6 +23,8 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use mesimon_core::snooze::Weekday;
+
 use crate::theme::{Flavor, Ground};
 
 pub(crate) const SCHEMA: u64 = 1;
@@ -34,6 +36,19 @@ pub(crate) struct Prefs {
     /// On by default; the Esc menu's row flips it. Same file, no schema
     /// move: an absent key reads as the default and a save keeps it.
     pub snooze_needs_you: bool,
+    /// The day a week starts on — what the snooze ring's last rung, `next
+    /// Monday 9:00`, means by "next week". Monday by default; the Settings
+    /// row cycles Monday → Sunday → Saturday. Same file, no schema move.
+    pub week_start: Weekday,
+    /// The merge train (2026-09-04): while every claude on the board is idle,
+    /// mesimon fast-forwards finished REVIEW branches and asks idle agents
+    /// whose branch fell behind to rebase + test. OFF by default — it prompts
+    /// an agent with no per-press gesture, and this row is the consent. The
+    /// TUI pushes it to the daemon; the daemon never reads this file.
+    pub merge_train: bool,
+    /// After a train merge, paste the merged notice into that agent (starts
+    /// a turn). On by default; only meaningful while the train is on.
+    pub merge_train_notice: bool,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -44,17 +59,38 @@ impl Default for Prefs {
             dark: Flavor::Graphite,
             light: Flavor::Chalk,
             snooze_needs_you: true,
+            week_start: Weekday::Monday,
+            merge_train: false,
+            merge_train_notice: true,
             doc: Map::new(),
         }
     }
 }
 
 const SNOOZE_KEY: &str = "snooze_needs_you";
+const WEEK_START_KEY: &str = "week_start";
+const MERGE_TRAIN_KEY: &str = "merge_train";
+const MERGE_TRAIN_NOTICE_KEY: &str = "merge_train_notice";
 
 impl Prefs {
+    pub(crate) fn set_merge_train(&mut self, on: bool) {
+        self.merge_train = on;
+        self.doc.insert(MERGE_TRAIN_KEY.into(), Value::from(on));
+    }
+
+    pub(crate) fn set_merge_train_notice(&mut self, on: bool) {
+        self.merge_train_notice = on;
+        self.doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(on));
+    }
+
     pub(crate) fn set_snooze_needs_you(&mut self, on: bool) {
         self.snooze_needs_you = on;
         self.doc.insert(SNOOZE_KEY.into(), Value::from(on));
+    }
+
+    pub(crate) fn set_week_start(&mut self, day: Weekday) {
+        self.week_start = day;
+        self.doc.insert(WEEK_START_KEY.into(), Value::from(day.key()));
     }
 
     pub(crate) fn for_ground(&self, g: Ground) -> Flavor {
@@ -89,6 +125,17 @@ impl Prefs {
             }
         }
         doc.insert(SNOOZE_KEY.into(), Value::from(self.snooze_needs_you));
+        doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
+        doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
+        // A day this build does not know is a newer build's; like a foreign
+        // theme name, the default it read as is not written over it.
+        let foreign = doc
+            .get(WEEK_START_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|s| Weekday::from_key(s).is_none());
+        if !foreign {
+            doc.insert(WEEK_START_KEY.into(), Value::from(self.week_start.key()));
+        }
         Value::Object(doc).to_string() + "\n"
     }
 }
@@ -131,10 +178,21 @@ pub(crate) fn load(path: &Path) -> Loaded {
         doc.get(key).and_then(Value::as_str).and_then(Flavor::from_name).unwrap_or(fallback)
     };
     let snooze_needs_you = doc.get(SNOOZE_KEY).and_then(Value::as_bool).unwrap_or(true);
+    let merge_train = doc.get(MERGE_TRAIN_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let merge_train_notice =
+        doc.get(MERGE_TRAIN_NOTICE_KEY).and_then(Value::as_bool).unwrap_or(true);
+    let week_start = doc
+        .get(WEEK_START_KEY)
+        .and_then(Value::as_str)
+        .and_then(Weekday::from_key)
+        .unwrap_or_default();
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
         snooze_needs_you,
+        week_start,
+        merge_train,
+        merge_train_notice,
         doc,
     };
     if schema > SCHEMA {
@@ -188,14 +246,35 @@ pub fn doctor_line() -> String {
     line
 }
 
-/// What `mesimon doctor` says about the snooze preference (T-74).
-pub fn snooze_doctor_line() -> String {
-    let on = prefs_path().map(|p| load(&p).prefs.snooze_needs_you).unwrap_or(true);
-    if on {
-        "a woken ticket returns with needs-you (the Esc menu flips it)".into()
+/// What `mesimon doctor` says about the snooze preferences (T-74): how a
+/// woken ticket returns, and which day "next week" starts on.
+/// `mesimon doctor`'s `merge train` line: on or off, and whether it tells
+/// the agent after a merge. Fresh from the file, no daemon needed.
+pub fn train_doctor_line() -> String {
+    let loaded = prefs_path().map(|p| load(&p)).unwrap_or_else(|| Loaded {
+        prefs: Prefs::default(),
+        write_barred: false,
+        notice: None,
+    });
+    let p = &loaded.prefs;
+    if !p.merge_train {
+        "off (Settings turns it on: merges quiet REVIEW branches, asks idle agents to rebase)"
+            .into()
+    } else if p.merge_train_notice {
+        "on ∙ tells the agent after a merge ∙ armed only while a board is open".into()
     } else {
-        "a woken ticket returns quietly (the Esc menu flips it)".into()
+        "on ∙ silent after a merge ∙ armed only while a board is open".into()
     }
+}
+
+pub fn snooze_doctor_line() -> String {
+    let prefs = prefs_path().map(|p| load(&p).prefs).unwrap_or_default();
+    let back = if prefs.snooze_needs_you {
+        "a woken ticket returns with needs-you"
+    } else {
+        "a woken ticket returns quietly"
+    };
+    format!("{back} ∙ the week starts on {} (Settings changes both)", prefs.week_start.name())
 }
 
 #[cfg(test)]
@@ -287,6 +366,66 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["snooze_needs_you"], false);
         assert_eq!(v["dark"], "amber");
+    }
+
+    /// The merge train: absent is OFF (it prompts agents with no gesture)
+    /// and the notice absent is ON; both round-trip and survive a theme pick.
+    #[test]
+    fn the_merge_train_defaults_off_and_round_trips() {
+        let p = scratch("train");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(!l.prefs.merge_train, "absent is the default: off");
+        assert!(l.prefs.merge_train_notice, "absent is the default: on");
+        l.prefs.set_merge_train(true);
+        l.prefs.set_merge_train_notice(false);
+        save(&p, &l.prefs).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.merge_train);
+        assert!(!l.prefs.merge_train_notice);
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["merge_train"], true);
+        assert_eq!(v["merge_train_notice"], false);
+        assert_eq!(v["dark"], "amber");
+    }
+
+    /// The week-start preference: absent is Monday, a pick round-trips as
+    /// its lower-case name, a day this build does not know falls to Monday
+    /// and survives a save of something else.
+    #[test]
+    fn the_week_start_defaults_to_monday_and_round_trips() {
+        let p = scratch("weekstart");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.week_start, Weekday::Monday, "absent is the default");
+        l.prefs.set_week_start(Weekday::Sunday);
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert_eq!(l.prefs.week_start, Weekday::Sunday);
+        assert!(l.prefs.snooze_needs_you, "the neighbour is untouched");
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["week_start"], "sunday");
+        // A foreign day reads as the default and a theme pick keeps it.
+        std::fs::write(
+            &p,
+            r#"{"schema_version":1,"dark":"blue","light":"chalk","week_start":"wednesday"}"#,
+        )
+        .unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.week_start, Weekday::Monday);
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["week_start"], "wednesday", "not written over");
+        // Picking a day IS what replaces it.
+        l.prefs.set_week_start(Weekday::Saturday);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["week_start"], "saturday");
     }
 
     #[test]

@@ -16,11 +16,13 @@ pub mod fracindex;
 pub mod keymap;
 pub mod mcp;
 pub mod principal;
+pub mod quiet;
 pub mod reconcile;
 pub mod relnotes;
 pub mod shellenv;
 pub mod snooze;
 pub mod text;
+pub mod train;
 pub mod verdict;
 pub mod workspace;
 

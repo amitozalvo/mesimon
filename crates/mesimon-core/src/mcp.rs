@@ -517,6 +517,8 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // ticket id, so an agent could not even address its own without
         // guessing one — and it must not address its own either.
         | Command::PromptSession { .. }
+        | Command::DropQueuedAsk { .. }
+        | Command::SetAutomation { .. }
         // The same delivery with mesimon's words: still one session's turn
         // being steered, still a human's gesture only.
         | Command::NoteToAgent { .. }
@@ -858,7 +860,9 @@ mod tests {
             Command::PaneTail { session: s, lines: 20 },
             // One agent steering another agent's turn is the sharpest thing
             // the never-tier exists to stop.
-            Command::PromptSession { ticket: t, text: "do the thing".into() },
+            Command::PromptSession { ticket: t, text: "do the thing".into(), queued: false },
+            Command::DropQueuedAsk { ticket: t },
+            Command::SetAutomation { merge_train: true, merge_notice: true },
             Command::NoteToAgent { ticket: t, note: t },
             // The ticket-addressed forms; the agent forms are the tier.
             Command::ReadNote { ticket: t, note: t },

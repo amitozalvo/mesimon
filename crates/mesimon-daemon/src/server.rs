@@ -153,6 +153,9 @@ enum Msg {
     /// A git sample of the board's own checkout landed (T-124), with the
     /// verdict of the fetch that preceded it when one was asked for.
     GitSampled(mesimon_core::command::RepoGit, Option<std::result::Result<(), String>>),
+    /// A client's reader thread returned: its connection is closed. The
+    /// merge train it may have armed disarms with it (2026-09-04).
+    ClientGone(Arc<Mutex<UnixStream>>),
 }
 
 pub struct Daemon {
@@ -199,6 +202,28 @@ pub struct Daemon {
     /// for the same reason it is: a restart drops the words rather than
     /// pasting them into a pane it no longer understands.
     pending_prompt: HashMap<uuid::Uuid, String>,
+    /// Asks parked until the ticket's CHECKOUT is quiet (2026-09-04, after
+    /// five claudes in one checkout committed at once): the board's
+    /// Shift+Enter with the field's toggle at `queued`. FIFO per checkout,
+    /// one entry per ticket, pasted by `drain_queue` when `checkout_holders`
+    /// is empty. In memory for `pending_prompt`'s reason: a restart drops
+    /// the words rather than pasting them into a pane it no longer
+    /// understands, and the mark on the card goes with them.
+    queued: Vec<QueuedAsk>,
+    /// Tickets whose pane mesimon pasted into ON ITS OWN CLOCK — a queued
+    /// ask, the train's rebase request or merged notice — whose
+    /// `UserPromptSubmit` has not landed yet: `(expiry ms, feed word on the
+    /// ack)`. The daemon cannot tell its own paste's ack from a keystroke of
+    /// the user's, so the next prompt on the ticket closes it either way; a
+    /// ticket here counts as WORKING (`quiet::working_tickets`), which is
+    /// what keeps a second paste out of the same checkout in the same pass.
+    inflight: HashMap<ulid::Ulid, (u64, &'static str)>,
+    /// The merge train (2026-09-04): armed by a connection, what it asked,
+    /// its fuse. See `crate::train`.
+    train: crate::train::Train,
+    /// The base branch's tip as of the last `refresh_worktree_flags` — a
+    /// rebase ask is recorded against it, and repeated only once it moves.
+    base_tip: String,
     ticks: u64,
     feed: FeedWriter,
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
@@ -489,6 +514,10 @@ pub fn run(paths: Paths) -> Result<()> {
         probe_stage: HashMap::new(),
         submit_retry: HashMap::new(),
         pending_prompt: HashMap::new(),
+        queued: Vec::new(),
+        inflight: HashMap::new(),
+        train: Default::default(),
+        base_tip: String::new(),
         ticks: 0,
         feed,
         external: Vec::new(),
@@ -566,6 +595,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
+            Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -743,6 +773,29 @@ fn user_default_mode() -> Option<String> {
         .map(str::to_string)
 }
 
+/// How long a paste of mesimon's own counts as a turn before its
+/// `UserPromptSubmit` is given up on (a modal in the pane, a box that is
+/// not reading).
+const INFLIGHT_MS: u64 = 10_000;
+
+/// How long a pane must have been silent before the train pastes into it:
+/// a person typing there makes it active, and their half-sentence must not
+/// get mesimon's appended and submitted.
+const TRAIN_PANE_QUIET_MS: u64 = 5_000;
+
+/// An ask parked until its checkout is quiet (see `Daemon::queued`).
+struct QueuedAsk {
+    ticket: ulid::Ulid,
+    /// The pane it was queued at (`Board::pane_target` then); a different
+    /// session in the seat at delivery time drops it.
+    session: uuid::Uuid,
+    /// The checkout key: `SessionRecord.cwd`, compared as a string.
+    cwd: String,
+    text: String,
+    #[allow(dead_code)]
+    queued_at: u64,
+}
+
 fn now_ms() -> u64 {
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
@@ -913,6 +966,9 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
             break;
         }
     }
+    // Same `tx` as the requests above, so it orders after them: whatever
+    // this connection armed is disarmed once its last word is in.
+    let _ = tx.send(Msg::ClientGone(writer));
 }
 
 /// What a mutating agent tool call left behind, kept under its idempotency
@@ -1036,9 +1092,17 @@ impl Daemon {
             Command::MoveTag { group, name, to_group, to_index } => {
                 self.move_tag(group, name, to_group, to_index)
             }
-            Command::MergeTicket { id } => self.merge_ticket(id),
-            Command::MergeToAgent { id, request } => self.merge_to_agent(id, request),
-            Command::PromptSession { ticket, text } => self.prompt_session(ticket, text),
+            Command::MergeTicket { id } => self.merge_ticket(id, &Principal::Local),
+            Command::MergeToAgent { id, request } => {
+                self.merge_to_agent(id, request, &Principal::Local)
+            }
+            Command::PromptSession { ticket, text, queued } => {
+                self.prompt_session(ticket, text, queued)
+            }
+            Command::DropQueuedAsk { ticket } => self.drop_queued_ask(ticket),
+            Command::SetAutomation { merge_train, merge_notice } => {
+                self.set_automation(merge_train, merge_notice, stream)
+            }
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
             Command::WriteNote { ticket, note, text } => {
                 self.write_note(ticket, note, text, &Principal::Local)
@@ -1224,6 +1288,12 @@ impl Daemon {
             changed |= self.probe_spawning();
             changed |= self.probe_activity();
             changed |= self.wake_snoozed(now / 1000);
+            // The queued asks' safety net: the edge above is the road, this
+            // is the clock (a paste that never got its ack, a target that
+            // went without a state change of its own).
+            changed |= self.sweep_queue();
+            changed |= self.expire_inflight(now);
+            changed |= self.drain_queue(now);
             let a = self.archive_figures();
             if a != self.archive_cache {
                 self.archive_cache = a;
@@ -1237,9 +1307,12 @@ impl Daemon {
         }
         if self.ticks % RSS_TICKS == 0 {
             changed |= self.refresh_rss();
-            if !self.worktrees.is_empty() {
-                self.refresh_worktree_flags();
-            }
+        }
+        // The worktree flags on their own cadence (a seam for the train's
+        // e2e), and the train's pass right behind them, on fresh flags.
+        if self.ticks % wt_refresh_ticks() == 0 && !self.worktrees.is_empty() {
+            self.refresh_worktree_flags();
+            changed |= self.train_pass();
         }
         // One tick off the writer's own burst above: the sample is a fork on
         // a worker, but its spawn should not stack on the worktree flags.
@@ -1750,6 +1823,9 @@ impl Daemon {
             if matches!(sig, Signal::UserPromptSubmit) {
                 if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
                     self.moves.asked_by_hand(t);
+                    // Our own paste's ack, or the user talking to the agent
+                    // while an ask waited — which drops it (2026-09-04).
+                    dirty |= self.ack_owed(t);
                 }
             }
             let machine = self
@@ -2033,6 +2109,12 @@ impl Daemon {
         let snapshot = rec.clone();
         self.feed.session_state(&snapshot, &change.from, hook);
         self.auto_move(snapshot.ticket, &change.to, change.confidence);
+        // A turn ended, or a target died: the queued asks look again. The
+        // settle that lands `Idle{EndTurn}` comes through here from the
+        // tick, and so does the shutdown flush — the words go out on the
+        // way down rather than being lost with the restart.
+        self.sweep_queue();
+        self.drain_queue(now_ms());
         true
     }
 
@@ -2648,6 +2730,9 @@ impl Daemon {
             let _ = store::save_ticket(&self.paths, &t);
         }
         self.moves.record(id, &from, dest, by, Instant::now());
+        if by.is_human() {
+            self.train.hand_touched(id);
+        }
         self.feed.board(by.actor(), rule, Some(id));
         self.broadcast();
         if automatic {
@@ -2773,6 +2858,23 @@ impl Daemon {
             .filter_map(|id| self.board.ticket(*id))
             .map(|t| t.short_key.clone())
             .collect();
+        let mut train_fused: Vec<String> = self
+            .train
+            .fused_tickets()
+            .filter_map(|id| self.board.ticket(*id))
+            .map(|t| t.short_key.clone())
+            .collect();
+        if !train_fused.is_empty() {
+            train_fused.sort();
+            notices.push(Notice::new(
+                "merge_train_suspended",
+                format!(
+                    "merge train suspended for {} — asked to rebase too often. \
+                     m on it, or a move by hand, clears it.",
+                    train_fused.join(", ")
+                ),
+            ));
+        }
         if !fused.is_empty() {
             fused.sort();
             notices.push(Notice::new(
@@ -2804,6 +2906,90 @@ impl Daemon {
                 fetch_error: self.git_fetch_error.clone(),
                 ..self.git_cache.clone()
             },
+            pending: self.pending_items(),
+            automation: self.automation_status(),
+        }
+    }
+
+    /// What mesimon owes each ticket (see `Pending`). Empty until the queued
+    /// ask and the merge train land; kept in one place so the snapshot road
+    /// forks no git.
+    fn pending_items(&self) -> Vec<mesimon_core::command::Pending> {
+        use mesimon_core::command::Pending;
+        let mut out: Vec<Pending> = self
+            .queued
+            .iter()
+            .map(|q| mesimon_core::command::Pending {
+                ticket: q.ticket,
+                action: "ask".into(),
+                waits_on: self.keys_of(&self.checkout_holders(&q.cwd)),
+                text: Some(q.text.clone()),
+                in_flight: false,
+            })
+            .collect();
+        for (t, (_, word)) in &self.inflight {
+            if *word == "queued_ask_delivered" {
+                out.push(mesimon_core::command::Pending {
+                    ticket: *t,
+                    action: "ask".into(),
+                    waits_on: Vec::new(),
+                    text: None,
+                    in_flight: true,
+                });
+            }
+        }
+        // What the train will do once the board is quiet — said before it
+        // happens, so the card can be watched rather than discovered.
+        if self.train.is_armed() && !self.worktrees_barred {
+            let plan = self.train_plan();
+            let waits_on = self.keys_of(&self.board_busy());
+            for t in plan.merge {
+                let tip = self
+                    .worktrees
+                    .get(&t)
+                    .map(|b| worktree::branch_tip(&self.paths.repo_root, &b.branch))
+                    .unwrap_or_default();
+                out.push(Pending {
+                    ticket: t,
+                    action: "merge".into(),
+                    waits_on: waits_on.clone(),
+                    text: self.train.refusal(t, &tip, &self.base_tip).map(String::from),
+                    in_flight: false,
+                });
+            }
+            for t in plan.rebase {
+                out.push(Pending {
+                    ticket: t,
+                    action: "rebase".into(),
+                    waits_on: waits_on.clone(),
+                    text: None,
+                    in_flight: false,
+                });
+            }
+        }
+        out
+    }
+
+    fn automation_status(&self) -> mesimon_core::command::AutomationStatus {
+        let mut train_asked: Vec<mesimon_core::command::TrainAsk> = self
+            .train
+            .asked()
+            .iter()
+            .map(|(t, r)| mesimon_core::command::TrainAsk {
+                ticket: *t,
+                current: r.base_oid == self.base_tip,
+                at_ms: r.at_ms,
+                by: if r.by_hand { "local" } else { "train" }.into(),
+            })
+            .collect();
+        train_asked.sort_by_key(|a| a.ticket);
+        let mut train_suspended: Vec<ulid::Ulid> = self.train.fused_tickets().copied().collect();
+        train_suspended.sort();
+        mesimon_core::command::AutomationStatus {
+            merge_train: self.train.is_armed(),
+            merge_notice: self.train.notice(),
+            train_asked,
+            train_suspended,
         }
     }
 
@@ -3204,6 +3390,9 @@ impl Daemon {
         }
         let ticket = self.board.tickets.remove(pos);
         self.moves.forget(id);
+        self.train.forget(id);
+        self.forget_queued(id, "queued_ask_dropped", "local");
+        self.inflight.remove(&id);
         // Sessions detach and keep running through the grace band (D21).
         let sessions: Vec<SessionRecord> =
             self.board.sessions.iter().filter(|s| s.ticket == id).cloned().collect();
@@ -3395,7 +3584,18 @@ impl Daemon {
 
     /// The merge key (M4): preflight in memory; merge only when clean; never
     /// resolve conflicts — that is MergeToAgent's job.
-    fn merge_ticket(&mut self, id: ulid::Ulid) -> Response {
+    fn merge_ticket(&mut self, id: ulid::Ulid, by: &Principal) -> Response {
+        if let Decision::Deny { .. } = authorize(by, &Action::Mutate, &Resource::Ticket { id }) {
+            return Response::Merge {
+                outcome: MergeOutcome::Refused,
+                detail: "not allowed".into(),
+            };
+        }
+        // A person's merge clears the train's memory of this ticket the way a
+        // hand move clears the movegate's fuse.
+        if by.is_human() {
+            self.train.hand_touched(id);
+        }
         let Some(b) = self.worktrees.get(&id) else {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
@@ -3410,8 +3610,12 @@ impl Daemon {
         }
         let branch = b.branch.clone();
         // Quiet-tickets rule (author): never merge under a working agent.
+        // A CLAUDE — a shell is pinned `Running` for the life of its pane
+        // (D15), and an ff-merge never touches the worktree it sits in
+        // (2026-09-04; it refused every `m` under a `!` shell before).
         let busy = self.board.sessions.iter().any(|s| {
             s.ticket == id
+                && s.kind == SessionKind::Claude
                 && matches!(
                     s.state,
                     SessionState::Spawning
@@ -3486,7 +3690,14 @@ impl Daemon {
         &mut self,
         id: ulid::Ulid,
         request: mesimon_core::command::MergeRequest,
+        by: &Principal,
     ) -> Response {
+        if let Decision::Deny { .. } = authorize(by, &Action::Mutate, &Resource::Ticket { id }) {
+            return Response::Err { message: "not allowed".into() };
+        }
+        if by.is_human() {
+            self.train.hand_touched(id);
+        }
         let Some(b) = self.worktrees.get(&id) else {
             return Response::Err { message: "no worktree on this ticket".into() };
         };
@@ -3510,9 +3721,185 @@ impl Daemon {
                  contains this work."
             ),
         };
-        match self.backend.paste_text(&rec.sid16(), &text) {
-            Ok(()) => Response::Ok,
+        let sid = rec.sid16();
+        match self.backend.paste_text(&sid, &text) {
+            Ok(()) => {
+                // A delivered rebase ask is remembered against the base tip,
+                // by hand or by train: the train does not ask again until
+                // the base moves (2026-09-04).
+                if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
+                    self.train.record_ask(
+                        id,
+                        self.base_tip.clone(),
+                        now_ms(),
+                        by.is_human(),
+                        Instant::now(),
+                    );
+                }
+                Response::Ok
+            }
             Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+        }
+    }
+
+    // ------------------------------------------------------------ merge train
+
+    /// `Command::SetAutomation`: arm the train on THIS connection (the
+    /// latest arming client owns it), or disarm it from any. Accepted under
+    /// the worktrees bar — the pass no-ops there and the bar's own notice
+    /// says why — so the Settings row never fights it.
+    fn set_automation(
+        &mut self,
+        merge_train: bool,
+        merge_notice: bool,
+        stream: &Arc<Mutex<UnixStream>>,
+    ) -> Response {
+        if merge_train {
+            self.train.arm(stream, merge_notice);
+        } else if self.train.is_armed() {
+            self.train.disarm();
+            self.feed.board("local", "merge_train_disarmed", None);
+        }
+        self.broadcast();
+        Response::Ok
+    }
+
+    /// A client's reader thread returned. Its subscription goes (the lazy
+    /// prune in `broadcast` would catch it on the next failed write), and
+    /// the train it armed stops: nobody is watching the board it drives.
+    fn on_client_gone(&mut self, stream: &Arc<Mutex<UnixStream>>) {
+        self.subscribers.retain(|s| !Arc::ptr_eq(s, stream));
+        if self.train.owned_by(stream) {
+            self.train.disarm();
+            self.feed.board("automation", "merge_train_disarmed", None);
+            self.broadcast();
+        }
+    }
+
+    fn train_flags(&self) -> HashMap<ulid::Ulid, mesimon_core::train::WtFlags> {
+        self.worktrees
+            .iter()
+            .map(|(t, b)| {
+                (
+                    *t,
+                    mesimon_core::train::WtFlags {
+                        attached: b.status == BindingStatus::Attached,
+                        ahead: self.wt_ahead.get(t).copied().unwrap_or(0),
+                        merged: self.wt_merged.get(t).copied().unwrap_or(false),
+                        needs_rebase: self.wt_needs_rebase.get(t).copied().unwrap_or(false),
+                        conflict: self.wt_conflicts.contains(&b.branch),
+                    },
+                )
+            })
+            .collect()
+    }
+
+    /// What the train would do, over the cached flags — no git on this road.
+    fn train_plan(&self) -> mesimon_core::train::Plan {
+        let flags = self.train_flags();
+        let asked = self.train.asked_tips();
+        let fused: std::collections::HashSet<ulid::Ulid> =
+            self.train.fused_tickets().copied().collect();
+        mesimon_core::train::plan(&mesimon_core::train::Input {
+            board: &self.board,
+            flags: &flags,
+            base_tip: &self.base_tip,
+            asked: &asked,
+            fused: &fused,
+        })
+    }
+
+    /// One pass of the train (2026-09-04), after `refresh_worktree_flags`
+    /// on its bucket: ONE action, only while the whole board is quiet. A
+    /// merge first — the first REVIEW candidate in board order, through the
+    /// same road a hand `m` takes under `Principal::Automation`, then the
+    /// merged notice into its agent if that is on (a turn starts; the next
+    /// pass waits for it). Else ONE rebase ask, into a pane that has been
+    /// quiet for `TRAIN_PANE_QUIET_MS` — a user mid-sentence in the pane
+    /// must never get mesimon's appended to theirs. A refused merge is
+    /// remembered per tip pair so a dirty main is not retried every bucket.
+    fn train_pass(&mut self) -> bool {
+        if !self.train.is_armed()
+            || self.worktrees_barred
+            || self.worktrees.is_empty()
+            || self.base_branch.is_none()
+        {
+            return false;
+        }
+        if !self.board_busy().is_empty() {
+            return false;
+        }
+        let plan = self.train_plan();
+        let by = Principal::Automation { rule: mesimon_core::train::RULE.into() };
+        let now = now_ms();
+        for t in plan.merge {
+            let tip = self
+                .worktrees
+                .get(&t)
+                .map(|b| worktree::branch_tip(&self.paths.repo_root, &b.branch))
+                .unwrap_or_default();
+            if self.train.refused(t, &tip, &self.base_tip) {
+                continue;
+            }
+            match self.merge_ticket(t, &by) {
+                Response::Merge { outcome: MergeOutcome::Merged, .. } => {
+                    self.feed.board("automation", "merge_train_merged", Some(t));
+                    if self.train.notice() {
+                        if self.board.pane_target(t).is_some() {
+                            let req = mesimon_core::command::MergeRequest::MergedNotice;
+                            match self.merge_to_agent(t, req, &by) {
+                                Response::Ok => {
+                                    self.feed.board("automation", "merge_train_notified", Some(t));
+                                    self.inflight.insert(
+                                        t,
+                                        (now + INFLIGHT_MS, "merge_train_notice_landed"),
+                                    );
+                                }
+                                _ => self.feed.board(
+                                    "automation",
+                                    "merge_train_refused:deliver_failed",
+                                    Some(t),
+                                ),
+                            }
+                        } else {
+                            self.feed.board("automation", "merge_train_refused:no_pane", Some(t));
+                        }
+                    }
+                    return true;
+                }
+                Response::Merge { outcome: MergeOutcome::Refused, detail } => {
+                    self.train.refuse(t, tip, self.base_tip.clone(), detail);
+                    self.feed.board("automation", "merge_train_refused:merge", Some(t));
+                }
+                // NeedsRebase / AlreadyMerged: the cached flags lagged git;
+                // the refresh that ran before this pass will not next time.
+                _ => return true,
+            }
+        }
+        let Some(t) = plan.rebase.first().copied() else { return false };
+        let Some(sid) = self.board.pane_target(t).map(|s| s.sid16()) else { return false };
+        let Ok(activity) = self.backend.activity() else { return false };
+        let quiet = activity
+            .iter()
+            .find(|(name, _)| *name == sid)
+            .is_some_and(|(_, at)| now.saturating_sub(at * 1000) >= TRAIN_PANE_QUIET_MS);
+        if !quiet {
+            return false;
+        }
+        let was_fused = self.train.is_fused(t);
+        match self.merge_to_agent(t, mesimon_core::command::MergeRequest::Rebase, &by) {
+            Response::Ok => {
+                self.feed.board("automation", "merge_train_rebase_asked", Some(t));
+                self.inflight.insert(t, (now + INFLIGHT_MS, "merge_train_rebase_landed"));
+                if !was_fused && self.train.is_fused(t) {
+                    self.feed.board("automation", "merge_train_suspended", Some(t));
+                }
+                true
+            }
+            _ => {
+                self.feed.board("automation", "merge_train_refused:deliver_failed", Some(t));
+                false
+            }
         }
     }
 
@@ -3646,12 +4033,19 @@ impl Daemon {
     /// (`sanitize_prompt`), so the README's zero-prompt-injection promise
     /// holds for it in the strongest form the promise has: mesimon does not
     /// add a token, and here it does not author one either.
-    fn prompt_session(&mut self, ticket: ulid::Ulid, text: String) -> Response {
+    fn prompt_session(&mut self, ticket: ulid::Ulid, text: String, queued: bool) -> Response {
         // Blank in, nothing out: an empty paste would press Enter on a turn
         // the user never wrote.
         let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
             return Response::Err { message: "nothing to send".into() };
         };
+        if queued {
+            return self.enqueue_ask(ticket, text);
+        }
+        // Sending now while an ask waits is the user talking to the agent
+        // ahead of it: the waiting words are theirs to drop, and they just
+        // did (the TUI's status says so).
+        self.forget_queued(ticket, "queued_ask_dropped", "local");
         let Some(id) = self.prompt_target(ticket) else {
             return self.prompt_sleeping(ticket, text);
         };
@@ -3667,6 +4061,196 @@ impl Daemon {
             // pane.
             Ok(()) => Response::Ok,
             Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+        }
+    }
+
+    // ------------------------------------------------------------ queued asks
+
+    /// Tickets holding a CHECKOUT: a working claude with that cwd
+    /// (`quiet::working_tickets` — a shell never counts), a paste of ours
+    /// still owed its ack, and the sessions of a deleted ticket riding out
+    /// the grace band there, judged by their frozen state (conservative:
+    /// they keep running for 30 s in the same tree).
+    fn checkout_holders(&self, cwd: &str) -> Vec<ulid::Ulid> {
+        let inflight: std::collections::HashSet<ulid::Ulid> =
+            self.inflight.keys().copied().collect();
+        let mut out = mesimon_core::quiet::working_tickets(&self.board, &inflight, Some(cwd));
+        for g in self.grace.values() {
+            if g.sessions.iter().any(|s| s.cwd == cwd && mesimon_core::quiet::is_working(s)) {
+                out.push(g.ticket.id);
+            }
+        }
+        out
+    }
+
+    /// Every working ticket on the board — the merge train's gate.
+    fn board_busy(&self) -> Vec<ulid::Ulid> {
+        let inflight: std::collections::HashSet<ulid::Ulid> =
+            self.inflight.keys().copied().collect();
+        let mut out = mesimon_core::quiet::working_tickets(&self.board, &inflight, None);
+        for g in self.grace.values() {
+            if g.sessions.iter().any(mesimon_core::quiet::is_working) {
+                out.push(g.ticket.id);
+            }
+        }
+        out
+    }
+
+    fn keys_of(&self, ids: &[ulid::Ulid]) -> Vec<String> {
+        ids.iter().filter_map(|t| self.board.ticket(*t)).map(|t| t.short_key.clone()).collect()
+    }
+
+    /// The board's Shift+Enter with the field at `queued`: park the words
+    /// until no claude sharing this ticket's checkout is mid-turn. A pane is
+    /// required — a Sleeping claude would have to be woken at delivery time
+    /// into the very checkout just judged quiet, with `resume_session`'s own
+    /// refusals arriving seconds later — and so is the shared checkout: a
+    /// worktree's checkout is its own, and there the toggle is not offered.
+    /// One entry per ticket (a second replaces the words in place, keeping
+    /// the turn), then a drain: a checkout already quiet sends at once.
+    fn enqueue_ask(&mut self, ticket: ulid::Ulid, text: String) -> Response {
+        let Some(rec) = self.board.pane_target(ticket) else {
+            return Response::Err {
+                message: "a queued ask needs an awake claude — wake it first".into(),
+            };
+        };
+        let (session, cwd) = (rec.id, rec.cwd.clone());
+        let shared = self
+            .board
+            .ticket(ticket)
+            .is_some_and(|t| t.workspace_strategy() == WorkspaceStrategy::SharedCheckout)
+            && !self.worktrees.contains_key(&ticket);
+        if !shared {
+            return Response::Err {
+                message: "a worktree ticket's checkout is its own — send it now".into(),
+            };
+        }
+        let now = now_ms();
+        if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
+            q.text = text;
+            q.session = session;
+            self.feed.board("local", "queued_ask_replaced", Some(ticket));
+        } else {
+            self.queued.push(QueuedAsk { ticket, session, cwd: cwd.clone(), text, queued_at: now });
+            self.feed.board("local", "queued_ask", Some(ticket));
+        }
+        self.drain_queue(now);
+        self.broadcast();
+        if self.queued.iter().any(|q| q.ticket == ticket) {
+            let behind = self.keys_of(&self.checkout_holders(&cwd));
+            Response::Queued { behind }
+        } else if self.inflight.contains_key(&ticket) {
+            Response::Ok
+        } else {
+            Response::Err { message: "could not deliver".into() }
+        }
+    }
+
+    /// Paste the first waiting ask of every QUIET checkout — one per
+    /// checkout per pass, since the paste itself makes it busy again (the
+    /// in-flight marker, until the agent's `UserPromptSubmit` says so). The
+    /// target must still be the pane the ask was queued at: a fresh spawn in
+    /// the seat is a different conversation.
+    fn drain_queue(&mut self, now: u64) -> bool {
+        let mut changed = false;
+        let mut seen: Vec<String> = Vec::new();
+        let mut i = 0;
+        while i < self.queued.len() {
+            let cwd = self.queued[i].cwd.clone();
+            if seen.contains(&cwd) || !self.checkout_holders(&cwd).is_empty() {
+                seen.push(cwd);
+                i += 1;
+                continue;
+            }
+            seen.push(cwd);
+            let q = self.queued.remove(i);
+            changed = true;
+            match self.board.pane_target(q.ticket) {
+                Some(rec) if rec.id == q.session => {
+                    let sid = rec.sid16();
+                    match self.backend.paste_text(&sid, &q.text) {
+                        Ok(()) => {
+                            self.inflight
+                                .insert(q.ticket, (now + INFLIGHT_MS, "queued_ask_delivered"));
+                            self.feed.board("automation", "queued_ask_sent", Some(q.ticket));
+                        }
+                        Err(_) => {
+                            self.feed.board("automation", "queued_ask_failed", Some(q.ticket))
+                        }
+                    }
+                }
+                _ => {
+                    self.feed.board("automation", "queued_ask_dropped_target_gone", Some(q.ticket))
+                }
+            }
+        }
+        changed
+    }
+
+    /// Drop the asks whose ticket or target is gone: the ticket deleted or
+    /// archived, the pane dead or parked, or a different session in the
+    /// seat. The explicit cancels (`kill_session`, `sleep_one`,
+    /// `delete_ticket`, a send-now) name their reason; this is the net.
+    fn sweep_queue(&mut self) -> bool {
+        let stale: Vec<ulid::Ulid> = self
+            .queued
+            .iter()
+            .filter(|q| {
+                let ticket_gone = self.board.ticket(q.ticket).is_none_or(|t| t.is_archived());
+                let target_gone =
+                    self.board.pane_target(q.ticket).is_none_or(|s| s.id != q.session);
+                ticket_gone || target_gone
+            })
+            .map(|q| q.ticket)
+            .collect();
+        for t in &stale {
+            self.forget_queued(*t, "queued_ask_dropped_target_gone", "automation");
+        }
+        !stale.is_empty()
+    }
+
+    /// A paste that never got its `UserPromptSubmit` within `INFLIGHT_MS`:
+    /// the words sit in the box, as an ordinary spawn leaves them, and the
+    /// checkout stops counting as busy for them.
+    fn expire_inflight(&mut self, now: u64) -> bool {
+        let dead: Vec<ulid::Ulid> =
+            self.inflight.iter().filter(|(_, (until, _))| *until <= now).map(|(t, _)| *t).collect();
+        for t in &dead {
+            self.inflight.remove(t);
+            self.feed.board("automation", "paste_unacked", Some(*t));
+        }
+        !dead.is_empty()
+    }
+
+    /// A prompt reached the ticket's agent. Ours in flight — the ack; or the
+    /// user's own while an ask waited — which drops the ask: they talked to
+    /// the agent ahead of it, and the parked words may now be moot.
+    fn ack_owed(&mut self, ticket: ulid::Ulid) -> bool {
+        let mut changed = false;
+        if let Some((_, word)) = self.inflight.remove(&ticket) {
+            self.feed.board("automation", word, Some(ticket));
+            changed = true;
+        }
+        changed | self.forget_queued(ticket, "queued_ask_dropped_by_hand", "local")
+    }
+
+    fn forget_queued(&mut self, ticket: ulid::Ulid, why: &str, actor: &str) -> bool {
+        let before = self.queued.len();
+        self.queued.retain(|q| q.ticket != ticket);
+        if self.queued.len() != before {
+            self.feed.board(actor, why, Some(ticket));
+            return true;
+        }
+        false
+    }
+
+    /// A blank Enter in the reopened field: the person dropped the ask.
+    fn drop_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
+        if self.forget_queued(ticket, "queued_ask_dropped", "local") {
+            self.broadcast();
+            Response::Ok
+        } else {
+            Response::Err { message: "nothing queued on this ticket".into() }
         }
     }
 
@@ -3753,11 +4337,20 @@ impl Daemon {
         resp
     }
 
-    /// Snooze: an archive with a deadline (T-74). The same gate as
-    /// `archive_ticket` — a snoozed ticket is off the board, so nothing on it
-    /// may hold a pane — plus a deadline that has not already passed, since
-    /// a snooze that wakes on the next tick is a refusal nobody could see.
-    /// `wake_snoozed` on the tick wheel is the other half.
+    /// Snooze: an archive with a deadline (T-74). `archive_ticket`'s gates
+    /// plus a deadline that has not already passed, since a snooze that
+    /// wakes on the next tick is a refusal nobody could see — but where the
+    /// archive REFUSES over an awake session, a snooze puts it to sleep
+    /// first (2026-09-04, user request): a snooze says "not now", and an
+    /// agent that has stopped is exactly what `x` would have parked before
+    /// the `z`. Only what `x` would accept goes — `sleep_eligible` without
+    /// the bulk sweep's age floor, since a `z` is as deliberate as an `x` —
+    /// and it is all-or-nothing: every pane on the ticket is judged BEFORE
+    /// any is signalled, so a claude still working (or waiting on the user,
+    /// or pinned awake, or a shell with a live child) holds the ticket on
+    /// the board with nothing on it touched, in words that name it.
+    /// `wake_snoozed` on the tick wheel is the other half; the sessions
+    /// stay asleep when the ticket returns, and `c` wakes them.
     fn snooze_ticket(&mut self, id: ulid::Ulid, until: u64, needs_you: bool) -> Response {
         match self.board.ticket(id) {
             None => return Response::Err { message: "no such ticket".into() },
@@ -3766,11 +4359,34 @@ impl Daemon {
             }
             Some(_) => {}
         }
-        if self.board.ticket_awake_sessions(id) > 0 {
-            return Response::Err { message: "sessions still awake — sleep them first".into() };
-        }
         if until <= now_secs() {
             return Response::Err { message: "snooze deadline is already past".into() };
+        }
+        let now = now_ms();
+        let awake: Vec<(uuid::Uuid, SessionKind)> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| s.ticket == id && s.state.has_pane())
+            .map(|s| (s.id, s.kind))
+            .collect();
+        for (sid, kind) in &awake {
+            let Some(rec) = self.board.sessions.iter().find(|s| s.id == *sid) else { continue };
+            if let Err(why) = self.sleep_eligible(rec, now, false) {
+                let who = match kind {
+                    SessionKind::Claude => "claude",
+                    SessionKind::Bash => "shell",
+                };
+                return Response::Err { message: format!("{who} still awake — {why}") };
+            }
+        }
+        for (sid, _) in &awake {
+            // Judged eligible a moment ago on this same thread; a refusal
+            // here would be a record that vanished between the two loops.
+            let _ = self.sleep_one(*sid, false);
+        }
+        if !awake.is_empty() {
+            self.persist_sessions();
         }
         let at = now_iso();
         let resp = self
@@ -3835,6 +4451,7 @@ impl Daemon {
             // computed against the board it is about to rejoin.
             let order = self.order_within(&col, id, &Position::Top);
             self.moves.forget(id);
+            self.train.forget(id);
             let stamp = now_iso();
             if let Some(t) = self.board.ticket_mut(id) {
                 t.archived = None;
@@ -3881,6 +4498,7 @@ impl Daemon {
         // describes a board state from before it left, and applying it to the
         // ticket's first move back would be a refusal nobody could explain.
         self.moves.forget(id);
+        self.train.forget(id);
         let now = now_iso();
         self.with_ticket(id, |t| {
             t.archived = None;
@@ -4238,6 +4856,7 @@ impl Daemon {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
         let Some(base) = self.base_branch.clone() else { return };
+        self.base_tip = worktree::branch_tip(&self.paths.repo_root, &base);
         let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
         for tid in tickets {
             let (branch, locked, attached) = {
@@ -4291,12 +4910,14 @@ impl Daemon {
         rec.state = SessionState::Exited { reason };
         rec.waiting_since = None;
         rec.detail = None;
-        let (id, state) = (rec.id, rec.state.clone());
+        let (id, state, ticket) = (rec.id, rec.state.clone(), rec.ticket);
         self.machines.insert(id, Machine::new(state, now_ms()));
         if let Some(sid) = reap {
             let _ = self.backend.signal_session(&sid);
             self.reaping.insert(sid, Instant::now() + REAP_GRACE);
         }
+        // The user ended the session an ask was waiting for.
+        self.forget_queued(ticket, "queued_ask_dropped", "local");
         self.persist_and_notify();
         Response::Ok
     }
@@ -4707,6 +5328,12 @@ impl Daemon {
         self.probe_stage.remove(&id);
         let _ = self.backend.signal_session(&sid);
         self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+        // The user parked the claude an ask was waiting for: a queued ask
+        // needs an awake pane, and waking it later against their gesture is
+        // not what they asked for.
+        if let Some(t) = self.board.sessions.iter().find(|s| s.id == id).map(|s| s.ticket) {
+            self.forget_queued(t, "queued_ask_dropped", "local");
+        }
         Ok(())
     }
 
@@ -5027,6 +5654,17 @@ fn tmux_text(s: &str, max_chars: usize) -> String {
 }
 
 /// Test seam only — e2e cannot wait out the real 15 s server guard.
+/// The worktree flags' (and the train's) cadence, in ticks: `RSS_TICKS`
+/// unless `MESIMON_WT_REFRESH_TICKS` says otherwise — a test seam, since an
+/// e2e cannot wait 10 s a step.
+fn wt_refresh_ticks() -> u64 {
+    std::env::var("MESIMON_WT_REFRESH_TICKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&t| t > 0)
+        .unwrap_or(RSS_TICKS)
+}
+
 fn server_guard_ticks() -> u64 {
     std::env::var("MESIMON_SERVER_GUARD_TICKS")
         .ok()

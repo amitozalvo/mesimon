@@ -528,6 +528,15 @@ fn golden_menu_120() {
     golden("menu_120x30", &render(&app, 120, 30));
 }
 
+/// The settings list over the board: the three preferences, the theme row
+/// naming the one worn, no suggestion mark anywhere, `esc back` in its edge.
+#[test]
+fn golden_settings_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Settings { idx: 0 };
+    golden("settings_120x30", &render(&app, 120, 30));
+}
+
 /// The theme picker over the board: six rows, the flavor's ground at the
 /// right edge, and the saved slots named in words on their rows.
 #[test]
@@ -1807,7 +1816,7 @@ fn golden_prompt_field_120() {
         buffer.insert(c);
     }
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
         buffer,
     };
     let lines = render(&app, 120, 30);
@@ -1827,6 +1836,117 @@ fn golden_prompt_field_120() {
     golden("board_prompt_120x30", &render(&app, 120, 30));
 }
 
+/// The same field with its delivery at `queued` (2026-09-04): the row under
+/// it says so, and Enter's word is `queue`.
+#[test]
+fn golden_prompt_field_queued_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
+    for c in "commit what you have".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: true },
+        buffer,
+    };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("queued  shift+tab")), "{}", lines.join("\n"));
+    assert!(lines.last().is_some_and(|l| l.contains("enter queue")), "{:?}", lines.last());
+    golden("board_prompt_queued_120x30", &render(&app, 120, 30));
+}
+
+fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pending {
+    mesimon_core::command::Pending {
+        ticket: ulid_n(ticket),
+        action: "ask".into(),
+        waits_on: waits_on.iter().map(|s| s.to_string()).collect(),
+        text: Some("commit what you have".into()),
+        in_flight: false,
+    }
+}
+
+/// A ticket with an ask waiting wears the owed mark on its resting card —
+/// over the still done-check, in the grey register, at the slow cadence.
+#[test]
+fn golden_queued_mark_120() {
+    let mut app = app_graphite(fixture(false));
+    app.pending = vec![pending_ask(5, &["T-3"])];
+    let lines = render(&app, 120, 30);
+    let mark = crate::glyphs::queued(crate::glyphs::Tier::Unicode, 0);
+    assert!(
+        lines.iter().any(|l| l.contains(mark) && l.contains("Grapheme truncation")),
+        "T-5 wears the owed mark:\n{}",
+        lines.join("\n")
+    );
+    golden("board_queued_120x30", &render(&app, 120, 30));
+}
+
+/// The cursor card opens on the owed row: what mesimon will do next to it,
+/// and what it waits on.
+#[test]
+fn golden_queued_open_120() {
+    let mut app = app_graphite(fixture(false));
+    app.pending = vec![pending_ask(5, &["T-3"])];
+    app.cursor_col = 2;
+    app.cursor_row = 0;
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("queued ∙ after T-3")), "{}", lines.join("\n"));
+    golden("board_queued_open_120x30", &render(&app, 120, 30));
+}
+
+/// The ticket page's state row carries the same words.
+#[test]
+fn golden_ticket_queued_120() {
+    let mut app = app_graphite(fixture(false));
+    app.pending = vec![pending_ask(5, &["T-3"])];
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("∙ queued ∙ after T-3")), "{}", lines.join("\n"));
+    golden("ticket_queued_120x30", &render(&app, 120, 30));
+}
+
+/// The merge train armed (2026-09-04): the header carries its word, a
+/// REVIEW card it will merge wears the owed mark and, open, says so and
+/// names what it waits on; a card it will ask to rebase says that.
+#[test]
+fn golden_train_120() {
+    let mut app = app_graphite(fixture(false));
+    app.automation.merge_train = true;
+    app.pending = vec![
+        mesimon_core::command::Pending {
+            ticket: ulid_n(5),
+            action: "merge".into(),
+            waits_on: vec!["T-3".into(), "T-4".into()],
+            text: None,
+            in_flight: false,
+        },
+        mesimon_core::command::Pending {
+            ticket: ulid_n(6),
+            action: "rebase".into(),
+            waits_on: vec!["T-3".into(), "T-4".into()],
+            text: None,
+            in_flight: false,
+        },
+    ];
+    app.cursor_col = 2;
+    app.cursor_row = 0;
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].contains("∙ train"), "the header says the train is armed:\n{}", lines[0]);
+    assert!(lines.iter().any(|l| l.contains("merge ∙ after T-3 +1")), "{}", lines.join("\n"));
+    let mark = crate::glyphs::queued(crate::glyphs::Tier::Unicode, 0);
+    // T-6's claude FAILED: the error mark outranks the owed one, so the card
+    // keeps its `x` and only the open row would say what the train owes.
+    assert!(
+        lines.iter().any(|l| l.contains("x Flaky e2e on runner") && !l.contains(mark)),
+        "the error mark wins over the owed mark:\n{}",
+        lines.join("\n")
+    );
+    golden("train_120x30", &render(&app, 120, 30));
+}
+
 /// An empty field says what it is for, in the same words the key was hinted
 /// with — otherwise the state is a blank row under a card.
 #[test]
@@ -1836,7 +1956,7 @@ fn test_an_empty_prompt_field_names_itself() {
     app.cursor_col = 1;
     app.cursor_row = 0;
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     let lines = render(&app, 120, 30);
@@ -1863,7 +1983,7 @@ fn test_the_prompt_field_moves_no_text() {
     app.cursor_row = 0;
     let before = render(&app, 120, 30);
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     let after = render(&app, 120, 30);
@@ -2860,7 +2980,11 @@ fn test_no_banned_sgr() {
                 p.rich_keys = true;
                 p.cursor_col = 1;
                 p.mode = Mode::Input {
-                    purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
+                    purpose: crate::app::InputPurpose::Prompt {
+                        ticket: ulid_n(3),
+                        walk: None,
+                        queued: false,
+                    },
                     buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
                 cells(&p, 120, 30)
@@ -3043,7 +3167,11 @@ fn test_no_drawn_structure() {
                 buf.insert(c);
             }
             p.mode = Mode::Input {
-                purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None },
+                purpose: crate::app::InputPurpose::Prompt {
+                    ticket: ulid_n(3),
+                    walk: None,
+                    queued: false,
+                },
                 buffer: buf,
             };
             let lines = sweep(&p);
@@ -3499,6 +3627,62 @@ fn delete_flash_holds(flavor: Flavor) {
     assert_eq!(app.status, "delete cancelled");
     let (fg, bg) = cell_at(&cells(&app, 120, 30), "Decay").expect("title after cancel");
     assert_eq!((fg, bg), (theme.sel.base, sel_bg), "cancel puts the cursor surface back");
+}
+
+/// The armed snooze blinks the card (user 2026-09-04: "flash while in snooze
+/// not confirmed yet") — the move ghost's blink, not the delete's red: from
+/// the `z` to the Enter or the cancel the title square-waves between the
+/// cursor title and dim3, bystanders hold still, and the cancel puts the
+/// cursor title back.
+#[test]
+fn test_snooze_armed_blinks_the_card() {
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let title_fg = |buf: &ratatui::buffer::Buffer, needle: &str| {
+            for y in 0..30u16 {
+                let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect::<String>();
+                if let Some(ix) = row.find(needle) {
+                    return Some(buf[(row[..ix].chars().count() as u16, y)].fg);
+                }
+            }
+            None
+        };
+        let mut app = App::for_test(fixture(false), Theme::new(flavor, Profile::TrueColor));
+        app.cursor_col = 0;
+        press(&mut app, 'z');
+        app.spin_epoch.set(Some(std::time::Instant::now()));
+        let lit = cells(&app, 120, 30);
+        assert_eq!(title_fg(&lit, "Decay"), Some(theme.sel.base), "{flavor:?}: bright phase");
+        let bystander0 = title_fg(&lit, "Grapheme");
+        app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+        let dark = cells(&app, 120, 30);
+        assert_eq!(title_fg(&dark, "Decay"), Some(theme.sel.dim3), "{flavor:?}: dark phase");
+        assert_eq!(title_fg(&dark, "Grapheme"), bystander0, "bystander cards hold still");
+        press(&mut app, 'x');
+        assert_eq!(app.status, "snooze cancelled");
+        let after = cells(&app, 120, 30);
+        assert_eq!(title_fg(&after, "Decay"), Some(theme.sel.base), "cancel puts the title back");
+    }
+}
+
+/// And the ticket page's title row, that page's card, blinks the same way.
+#[test]
+fn test_snooze_armed_blinks_the_ticket_title() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    press(&mut app, 'z');
+    let fg_at = |app: &App| {
+        let buf = cells(app, 120, 30);
+        let row: String = (0..120u16).map(|x| buf[(x, 2u16)].symbol()).collect();
+        let x = row.find("Decay").expect("title row") as u16;
+        buf[(x, 2u16)].fg
+    };
+    app.spin_epoch.set(Some(std::time::Instant::now()));
+    assert_eq!(fg_at(&app), theme.sel.base);
+    app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_millis(410)));
+    assert_eq!(fg_at(&app), theme.sel.dim3);
 }
 
 /// The ticket page's title row is that page's card: `d` there flashes it the

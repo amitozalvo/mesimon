@@ -207,6 +207,9 @@ fn environment(verbose: bool) -> Section {
     records.push(rec(Level::Note, "editor", mesimon_tui::editor_status()));
     // How a snoozed ticket returns (T-74) — the third preference in the file.
     records.push(rec(Level::Note, "snooze", mesimon_tui::snooze_status()));
+    // The merge train (2026-09-04): the one standing consent for mesimon to
+    // prompt an agent with no per-press gesture, so doctor says when it is on.
+    records.push(rec(Level::Note, "merge train", mesimon_tui::train_status()));
 
     records.push(match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => rec(Level::Ok, "HOME", redact(&h, verbose)),
