@@ -4512,3 +4512,19 @@ a `snooze` Note.
 archive's words — a snooze that parks the agent on the way out is a follow-up. The card says
 nothing about a snoozed ticket because a snoozed ticket is not on the board; the ARCHIVED row
 is where its deadline reads. `CHANGELOG.md` is the release commit's, not this one's.
+
+## The bulk sleep moves to `X` (2026-09-04, user: "shouldn't sleep all be Shift+x now that snooze is z? and x is sleep anyway?")
+
+Reverses the letter in "The bulk sleep gets a key, and it is `Z`" and keeps everything else in
+it: still board-only, still `prio: 0`, still the menu row's own predicate, still one press where
+the chip says `(X ∙ esc)`. The argument that put it on `Z` — shift hardens or forces the same
+verb on the same target, and `X` would widen the target — stopped holding the day `z` snoozed the
+ticket (T-74): `z`/`Z` then shared neither verb nor target, a bigger break of the shift law than
+`x`/`X`, which shares the verb and only widens what it sleeps from the selection's sessions to
+the done column's. `N` already forces the verb onto a different note, so "widens" is the same
+kind of stretch, not a new one; the doc comment on `shift_stays_on_one_axis` now reads "hardens,
+forces or widens". The retired-keys list swaps `X` for `Z`, and the older claim that the
+retired `X` "was shift-of-`x`" is dropped — it was `ArchiveAll` ("Board-wide actions have no
+keys", 2026-08-31). README's board-keys sentence, which still named `A` and `V` beside it, now
+names `x`/`X` and points the archive at the menu. Golden: `menu_suggestions_120x30` (the Sleep
+row's key). No daemon or wire change.

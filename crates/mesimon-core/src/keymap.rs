@@ -1123,13 +1123,15 @@ static BOARD: &[Binding] = &[
         // about the selection, and a menu row has room to say what it will
         // do) — this is the second exception, on the same terms as `U`:
         // overlay-only (`prio: 0`), so the footer never carries it and the
-        // chip that names it is the only place it is taught. `Z` is zzz, not
-        // shift-of-`x` — the retired `X` was that, and shift may not switch
-        // verbs. Gated on the menu row's own predicate, so the key works
-        // exactly when the offer stands.
-        keys: &[Key::Char('Z')],
+        // chip that names it is the only place it is taught. `X` IS
+        // shift-of-`x` (2026-09-04, user): the same verb, sleep sessions,
+        // widened from the selection to the done column — shift never
+        // switches verbs, and the `Z` it replaced had become one, once `z`
+        // snoozed the ticket beside it. Gated on the menu row's own
+        // predicate, so the key works exactly when the offer stands.
+        keys: &[Key::Char('X')],
         verb: Verb::SleepAllDone,
-        show: "Z",
+        show: "X",
         hint: |_| "sleep the agents in done",
         avail: |c| c.bulk_sleep > 0,
         class: Class::Plain,
@@ -2230,7 +2232,7 @@ static MENU_ITEMS: &[MenuItem] = &[
             None => "frees their memory ∙ they wake where they left off".into(),
         },
         avail: |c| c.bulk_sleep > 0,
-        key: "Z",
+        key: "X",
     },
     MenuItem {
         verb: Verb::ArchiveAllDone,
@@ -2389,7 +2391,7 @@ static SUGGESTIONS: &[Suggestion] = &[
     Suggestion {
         verb: Verb::SleepAllDone,
         headline: |c| format!("sleep {}", plural(c.bulk_sleep, "agent")),
-        key: "Z",
+        key: "X",
     },
     Suggestion {
         verb: Verb::ArchiveAllDone,
@@ -4197,10 +4199,10 @@ mod tests {
         assert_eq!(hint_for(Scope::Board, Verb::Undo, &arch), Some(("u", "undo archive")));
     }
 
-    /// Shift hardens or forces the same verb on the same target. It never
-    /// switches verbs, and it is never how a board-wide action is reached —
-    /// `Z` is not shift-of-`x` but its own atom (zzz), which is why the
-    /// retired `X` stays retired.
+    /// Shift hardens, forces or widens the same verb. It never switches
+    /// verbs — which is why the bulk sleep is `X` (the selection's `x`,
+    /// widened to the done column) and not `Z`, which sat beside `z` once
+    /// that snoozed the ticket: two verbs on one letter (2026-09-04, user).
     #[test]
     fn shift_stays_on_one_axis() {
         let t = Ctx { sel_session: true, ..Default::default() };
@@ -4230,7 +4232,7 @@ mod tests {
             has_archived: true,
             ..Default::default()
         };
-        for retired in [Key::Char('X'), Key::Char('A'), Key::Char('V'), Key::Char('e')] {
+        for retired in [Key::Char('Z'), Key::Char('A'), Key::Char('V'), Key::Char('e')] {
             assert_eq!(resolve(Scope::Board, retired, &full), None, "{retired:?} is retired");
         }
         // The editor's save key, composing: `^s` keeps the draft, `^S` mints
@@ -4250,22 +4252,25 @@ mod tests {
             assert_eq!(resolve(scope, Key::Char('N'), &full), Some(Verb::NoteNew), "{scope:?}");
         }
         // The bulk sleep is the exception, and it is one the header teaches:
-        // its own key, gated on the same predicate as the row and the chip,
-        // and kept off the footer so the board still reads as the selection's.
-        assert_eq!(resolve(Scope::Board, Key::Char('Z'), &full), Some(Verb::SleepAllDone));
-        assert_eq!(resolve(Scope::Board, Key::Char('Z'), &Ctx::default()), None);
-        assert_eq!(resolve(Scope::Ticket, Key::Char('Z'), &full), None, "board-only");
+        // `x`'s own shift, gated on the same predicate as the row and the
+        // chip, and kept off the footer so the board still reads as the
+        // selection's.
+        let seated = Ctx { ticket_has_sessions: true, ..full.clone() };
+        assert_eq!(resolve(Scope::Board, Key::Char('x'), &seated), Some(Verb::Sleep));
+        assert_eq!(resolve(Scope::Board, Key::Char('X'), &full), Some(Verb::SleepAllDone));
+        assert_eq!(resolve(Scope::Board, Key::Char('X'), &Ctx::default()), None);
+        assert_eq!(resolve(Scope::Ticket, Key::Char('X'), &full), None, "board-only");
         assert!(
-            !footer_items(Scope::Board, &full).iter().any(|b| b.show == "Z"),
+            !footer_items(Scope::Board, &full).iter().any(|b| b.show == "X"),
             "the header chip carries this offer; the footer stays out of it"
         );
         assert_eq!(
             hint_for(Scope::Board, Verb::SleepAllDone, &full),
-            Some(("Z", "sleep the agents in done"))
+            Some(("X", "sleep the agents in done"))
         );
-        // And `z` beside it is the card's own zzz (T-74): the selection is
-        // snoozed, the column's agents are slept — two things that sleep,
-        // not one verb on two targets, which is what the retired `X` was.
+        // And `z` is the card's own zzz (T-74), with nothing on its shift:
+        // snoozing a ticket and sleeping a column's agents are two verbs,
+        // and shift may not carry a second one.
         assert_eq!(resolve(Scope::Board, Key::Char('z'), &full), Some(Verb::SnoozePrefix));
         assert!(!footer_items(Scope::Board, &full).iter().any(|b| b.show == "z"), "overlay-only");
     }

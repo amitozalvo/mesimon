@@ -849,7 +849,8 @@ preference's write. E2e: `crates/mesimon/tests/snooze_e2e.rs`. (STALE-MAP "A tic
 snoozed".)
 
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
-NO key, bar the two the header itself teaches (`U` reloads, `Z` sleeps the done agents — both
+NO key, bar the two the header itself teaches (`U` reloads, `X` sleeps the done agents, `x`'s
+own shift widened to the column, since 2026-09-04 — both
 overlay-only, so the footer stays the selection's) — they live in the Esc menu (`ui/menu.rs`,
 rows from `keymap::menu_items`), because they are rare, are not about the selection, and a menu
 row has room to say what it will do. The board's footer names the door — `esc menu`, in the
@@ -859,7 +860,7 @@ right cluster beside `? keys` (T-158).
 priority-ordered list (update ready > sleep N agents > archive N tickets); each entry's
 availability IS its menu row's `avail`, so the header cannot offer what the menu will not do,
 and `menu_items` floats the suggested rows to the top in that order. The header shows exactly
-ONE — right-aligned, `(esc)` or `(U ∙ esc)`/`(Z ∙ esc)` for the route, no count of the rest — `◦`
+ONE — right-aligned, `(esc)` or `(U ∙ esc)`/`(X ∙ esc)` for the route, no count of the rest — `◦`
 marks both the chip and the rows it stands in front of. To add one: add the menu row, add the
 `Suggestion`, done. (STALE-MAP "Suggestions are one right-hand chip and a marked menu".)
 

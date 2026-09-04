@@ -673,7 +673,7 @@ fn test_suggestion_priority_picks_the_chip() {
     app.resources.reclaim_bytes = 3 << 30;
     app.resources.archive_tickets = 2;
     let head = &render(&app, 120, 30)[0];
-    assert!(head.ends_with("◦ sleep 3 agents (Z ∙ esc)"), "{head:?}");
+    assert!(head.ends_with("◦ sleep 3 agents (X ∙ esc)"), "{head:?}");
     // A chip that cannot fit says nothing rather than shearing the line — the
     // menu is still one Esc away. Scarcity outranks an offer for the room.
     app.resources.pty_total = 511;
@@ -699,7 +699,7 @@ fn test_a_sub_floor_sleep_offer_still_outranks_archive() {
     app.resources.archive_tickets = 3;
     let head = &render(&app, 120, 30)[0];
     assert!(
-        head.ends_with("◦ sleep 2 agents (Z ∙ esc)"),
+        head.ends_with("◦ sleep 2 agents (X ∙ esc)"),
         "sleep outranks archive at any size: {head:?}"
     );
     // And the row it points at says so in words rather than claiming ~0.0GiB.

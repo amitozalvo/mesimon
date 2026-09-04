@@ -4,7 +4,7 @@
                            ╭─ MENU ─────────────────────────────────────────────────────────╮
    Decay treatments       >│ ◦ Restart on the new build                                   U │
                            │     a newer mesimon is on disk ∙ sessions keep running         │
-   Keymap validator       >│ ◦ Sleep 3 agents in done                                     Z │
+   Keymap validator       >│ ◦ Sleep 3 agents in done                                     X │
                            │     frees ~3.0GiB ∙ they wake where they left off              │
                            │ ◦ Archive 2 tickets in done                                    │
                            │     clears the column ∙ restore any of them later              │

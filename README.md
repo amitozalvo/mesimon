@@ -102,7 +102,8 @@ so mesimon never mints a merge commit.
 `tab` jumps to whatever needs you. The board is deliberately quiet — exactly one saturated colour
 exists, and it means *this session is waiting on you*.
 
-`Z` parks idle sessions, `A` archives a finished ticket, `V` lists the archive. **Closing the board
+`x` parks a ticket's idle sessions and `X` parks every idle agent in DONE; the Esc menu archives
+finished tickets and lists the archive. **Closing the board
 does not stop your agents** — that is the point of the daemon.
 
 The footer always names the keys for whatever you are looking at.
@@ -143,7 +144,7 @@ pkill -f "mesimon daemon"          # stops the daemon (sessions survive this)
 tmux -S /tmp/mesimon-$(id -u)/<project key>/tmux.sock kill-server   # stops the agents
 ```
 
-Inside the board, `Z` parks every idle session, which is the gentler version.
+Inside the board, `X` parks every idle agent in DONE, which is the gentler version.
 
 ## What mesimon writes
 
