@@ -5120,3 +5120,104 @@ unaffected.
 **No test moved.** Nothing in the workspace reads the README (checked), so this is prose only —
 which is exactly why it was worth being careful: there is no validator standing behind promise
 1, only the audit.
+
+## The board diffs its own checkout (T-221, 2026-09-04)
+
+**What the corpus assumed.** docs/08 built the review surface around a branch: every diff is
+`BASE...BRANCH` through a `worktree::Binding`, and §2's layer model made an untracked file a
+*sighting* — listed, never opened, because "mesimon reads committed state only, so nothing
+here can race the agent". That reasoning holds for a worktree, where the thing under review is
+a commit. It does not hold for the board's own checkout, which is where most tickets actually
+work: `workspace` defaults to shared_checkout, so a ticket's agent edits the repo root and
+leaves the work uncommitted, and nothing in mesimon could show it. The header could count it
+(`⎇ main ↑2 ∙ 3 changed`, T-124) and then had no key.
+
+**What shipped.** `v` on the board opens the same `Screen::Diff` on `git diff HEAD` — HEAD to
+the working tree, staged and unstaged in one row per path. `Command::DiffTarget { Ticket { id }
+| Checkout }` replaced the two commands' `ticket` field rather than adding two more commands:
+the response, the permit pool, the service function and the whole TUI state are shared, and an
+`Option<Ulid>` whose `None` silently meant "the checkout" is the implicit classification
+`Command::meta` and `agent_allows` exist to refuse. `Screen::Diff` lost its ticket and became a
+unit variant, which its own doc comment had claimed since M4b ("state lives in `App::diff`, not
+here"); `App::diff_ticket()` is now the one place a screen asks its state which target it is on.
+
+**Which diff you get is the SCREEN's to answer, never the cursor's.** The board is the
+repository's screen and the ticket page is the ticket's, so a worktree ticket under the cursor
+does not change what the board's `v` shows — its branch diff is still `space` then `v`. Same
+verb on both (`one_verb_one_key_across_screens` covers the key now), different subject, and the
+board's binding is `Group::View` rather than `Worktree`: the board has no other Worktree binding
+and one here would mint a one-row `BRANCH` section in `?` over a working-tree diff. `avail` is
+`Ctx::git_repo` (`RepoGit::sampled`), so the key is inert where there is no repository rather
+than answering with git's error.
+
+**The hint sits where it operates, not in the footer** (author 2026-09-04, the same day: it
+shipped in the footer for an hour). `prio: 0`, and `chrome::git_clause` draws ` v diff` beside
+the checkout's own `∙ 3 changed` — T-158's idiom, the one the ticket rail's `c s x` and the
+PREVIEW heading's `{ } page` already use. The footer belongs to the SELECTION and this key is
+not about the selection; the header is where the checkout already speaks. It rides the COUNT
+rather than the branch name, because `v` opens what is uncommitted: on a clean checkout there
+is nothing for it to say, and `?` still lists it. It is also the first rung the clause gives up
+when the row is tight — hint, then count, then the name truncates to its floor, and the arrows
+are never cut. `hint_spans` spells it like every other hint (bold key, dim word), because "a
+key looks like this wherever it is hinted" is what makes one readable off the footer at all.
+
+**An untracked row is an ADD here, and that is what made the change small.** The daemon stamps
+it — `status = "A"`, `old_mode = "000000"`, `new_mode` from `symlink_metadata` — and serves its
+content from `git diff --no-index -- /dev/null <path>`. Everything downstream then needed no
+target condition at all: `diff_fetch`'s `status.is_empty()` skip simply stops skipping them,
+08 §2's "untracked — not reviewable" copy is never reached (and stays right for a branch), and
+the gutter reads `A` + `U`. The status letter still means exactly "there is no patch behind this
+row". Route on `untracked && status.is_empty()`, never on `untracked` alone: `git rm --cached`
+emits **both** a `D` record and a `?` record for one path.
+
+**Four mechanical facts, each measured rather than assumed.**
+
+- `git diff --raw HEAD` writes the destination blob as **forty zeros** whenever the worktree
+  file's stat differs from the index (git's `diff-lib.c::get_stat_data`). 08 §1.3 spelled
+  `ModeOnly` as `old_blob == new_blob && old_mode != new_mode`, which therefore could NEVER fire
+  on this range — a worktree-only `chmod +x` fell through to `Text` with zero hunks and rendered
+  as an empty diff. `build_file_diff` now says it from the patch: the modes differ, both are real
+  file modes, no hunks, no binary marker. The "real file mode" clause (non-empty, not `000000`)
+  is load-bearing and not cosmetic — without it an empty new file, an empty deleted file and an
+  untracked row would each newly read as a mode change, which is a live regression on the
+  BRANCH diff. Three unit tests hold that line.
+- `git diff --no-index` **exits 1** when it finds differences. `git_bytes` bails on any non-zero
+  status, so the untracked road has a sibling that accepts 0 and 1 and nothing above.
+- `status --porcelain=v2 -unormal` collapses an untracked directory to one `? dir/` row, and
+  `--no-index` cannot open a directory — so that row could never be read. The checkout list uses
+  `-uall`. Ignored files stay out either way (this repo: 1 untracked against 816k ignored), and
+  the cost is the same walk.
+- The empty tree for an unborn HEAD is asked of git (`hash-object -t tree /dev/null`), never
+  spelled: `4b825dc…` is the SHA-1 value and wrong in a SHA-256 repository.
+
+**One `status` call carries three answers** — branch (via `gitstatus::parse`), the HEAD oid, and
+the dirty/untracked flags (via `diff::parse_status_v2_z`), read twice over the same bytes. The
+oid is pinned from it rather than resolved again, so a commit landing between the calls cannot
+leave the range and `base_oid` describing different HEADs.
+
+**Three things fixed on the way past.** `apply_status_flags` was O(untracked × files) against a
+`Vec` that grows as it pushes — harmless with `-unormal`'s handful, quadratic with `-uall`, so it
+indexes the stable rows first. The branch diff's `--numstat` call omitted `--find-renames` and
+rode on `diff.renames` defaulting true, which gave a rename's badge the add's count under a user
+who set it false. And `serve_diff` never ran `mcp::agent_allows`: `client_loop` short-circuits
+both diff commands before `handle_agent`, and `authorize` allows `(Read, _)` for an agent, so
+CLAUDE.md's stated enforcement for D10's never-tier was not true on the path the commands
+actually take. It is now — `Principal::Agent` is denied before the permit is taken. (Not an
+escalation either way: any same-uid process can claim `Principal::Local`, and the boundary is
+the 0700 runtime dir, as designed.)
+
+**Two gaps left open, deliberately, and named in the module doc.** A path in a merge conflict
+gives `git diff HEAD` a COMBINED diff (`@@@`), which `parse_hunk_header` reads as zero hunks, so
+it renders as "no content change" — the branch diff never meets this because it compares two
+commits, and combined-diff parsing is not worth building for it. And an untracked directory git
+refuses to descend into (another repository) stays a display-only row, the same shape the branch
+diff gives every untracked path. The untracked row count is capped at 2000: a response line has
+no length cap on the client side, and one missing `.gitignore` rule should not be able to mint a
+megabyte of them.
+
+**Goldens.** Only `board_git_120x30` drifted — the one golden that seeds `RepoGit::sampled`, and
+therefore the only header that gains ` v diff`. The five branch-diff goldens did not move, which
+is the check that the copy split went in the right place. `diff_checkout_120x30` is new, and both
+L1 law sweeps gained a checkout arm — each with a needle assertion, which the existing
+`install_diff` arms had never had.
+

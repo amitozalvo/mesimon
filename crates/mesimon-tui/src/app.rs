@@ -13,7 +13,7 @@ use mesimon_core::board::{
     WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    Command, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
+    Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
 };
 use mesimon_core::keymap::{self, Ctx, Key, Scope, Verb};
 use mesimon_core::snooze::Preset;
@@ -32,11 +32,10 @@ pub enum Screen {
         ticket: ulid::Ulid,
         rail_idx: usize,
     },
-    /// Read-only diff viewer (M4b): ticket `v`. State lives in `App::diff`,
-    /// not here — Screen is cloned on every keypress.
-    Diff {
-        ticket: ulid::Ulid,
-    },
+    /// Read-only diff viewer (M4b): `v`, from a ticket page or the board.
+    /// State — which target, and everything about it — lives in `App::diff`,
+    /// not here: Screen is cloned on every keypress.
+    Diff,
     /// The release notes (a menu row): the changelog the binary carries,
     /// read top to bottom. State lives in `App::releases`, like the diff's.
     Releases,
@@ -133,8 +132,10 @@ impl ReleasesState {
 /// Everything the diff screen holds (M4b). Per-view and in-memory only —
 /// no persistent caches; R and the density cycle recompute.
 pub struct DiffState {
-    pub ticket: ulid::Ulid,
-    /// Restore `Screen::Ticket` on q/esc.
+    /// Which diff this is: a ticket's branch, or the board's own checkout.
+    pub target: DiffTarget,
+    /// Which rail row `q`/`esc` restores. Meaningful only on a ticket target;
+    /// the checkout's `q` goes back to the board.
     pub rail_idx: usize,
     pub branch: String,
     pub base_oid: String,
@@ -154,8 +155,24 @@ pub struct DiffState {
     pub z_armed: bool,
     /// Below the two-pane breakpoint: false shows the file list, true the diff.
     pub swap: bool,
-    /// false = evicted: no dirty/untracked flags, `!` refused.
+    /// false = evicted: no dirty/untracked flags, `!` refused. Always true on
+    /// a checkout target — the working tree IS the thing being read — which is
+    /// why `Ctx::worktree_present` reads the TARGET as well as this flag.
     pub worktree_present: bool,
+}
+
+impl DiffState {
+    /// The ticket this diff belongs to; `None` for the checkout.
+    pub fn ticket(&self) -> Option<ulid::Ulid> {
+        self.target.ticket()
+    }
+
+    /// A branch diff, not the board's checkout. The two differ in what the
+    /// identity line says, what an untracked row can do, and whether `!` is
+    /// offered.
+    pub fn is_branch(&self) -> bool {
+        matches!(self.target, DiffTarget::Ticket { .. })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -1018,17 +1035,38 @@ impl App {
     }
 
     /// One road for every snapshot, whoever asked for it.
+    ///
+    /// Destructured rather than read field-by-field off `snap`: a field added
+    /// to `Snapshot` and forgotten here becomes a binding nothing uses, which
+    /// the release gate's `-D warnings` refuses. Two have been forgotten —
+    /// `shell_env`, which is why every field rides one struct at all (T-124),
+    /// and `claude_md`, which left the CLAUDE.md offer standing on the header
+    /// after the user took it, until the next launch re-fetched (T-217).
     fn absorb(&mut self, snap: Snapshot) {
-        self.board = snap.board;
-        self.grace = snap.grace;
-        self.external = snap.external;
-        self.resources = snap.resources;
-        self.worktrees = snap.worktrees;
-        self.notices = snap.notices;
-        self.shell_env = snap.shell_env;
-        self.git = snap.git;
-        self.pending = snap.pending;
-        self.automation = snap.automation;
+        let Snapshot {
+            board,
+            grace,
+            external,
+            resources,
+            worktrees,
+            notices,
+            shell_env,
+            git,
+            pending,
+            automation,
+            claude_md,
+        } = snap;
+        self.board = board;
+        self.grace = grace;
+        self.external = external;
+        self.resources = resources;
+        self.worktrees = worktrees;
+        self.notices = notices;
+        self.shell_env = shell_env;
+        self.git = git;
+        self.pending = pending;
+        self.automation = automation;
+        self.claude_md = claude_md;
         self.clamp_cursor();
         self.clamp_screen();
     }
@@ -1141,9 +1179,10 @@ impl App {
                 }
             }
             // Ticket-vanish only. A binding going away must NOT exit: evicted
-            // worktrees still render from the object store.
-            Screen::Diff { ticket } => {
-                if self.board.ticket(*ticket).is_none() {
+            // worktrees still render from the object store. The checkout diff
+            // has no ticket to vanish, so nothing here can close it.
+            Screen::Diff => {
+                if self.diff_ticket().is_some_and(|t| self.board.ticket(t).is_none()) {
                     self.diff = None;
                     self.to_board();
                 }
@@ -1834,9 +1873,7 @@ impl App {
         if self.snooze_armed.is_some() {
             return Scope::SnoozeChord;
         }
-        if self.diff.as_ref().is_some_and(|d| d.z_armed)
-            && matches!(self.screen, Screen::Diff { .. })
-        {
+        if self.diff.as_ref().is_some_and(|d| d.z_armed) && matches!(self.screen, Screen::Diff) {
             return Scope::DiffView;
         }
         match &self.mode {
@@ -1848,7 +1885,7 @@ impl App {
             Mode::Settings { .. } => Scope::Settings,
             Mode::ClaudeMd => Scope::ClaudeMd,
             _ => match self.screen {
-                Screen::Diff { .. } => Scope::Diff,
+                Screen::Diff => Scope::Diff,
                 Screen::Releases => Scope::Releases,
                 Screen::Ticket { .. } => Scope::Ticket,
                 Screen::Board => Scope::Board,
@@ -1864,7 +1901,8 @@ impl App {
         // On the ticket screen the "selected ticket" is the one being shown,
         // not whatever the board cursor happens to sit on.
         let subject = match &self.screen {
-            Screen::Ticket { ticket, .. } | Screen::Diff { ticket } => Some(*ticket),
+            Screen::Ticket { ticket, .. } => Some(*ticket),
+            Screen::Diff => self.diff_ticket(),
             Screen::Board => sel,
             Screen::Releases => None,
         };
@@ -1941,6 +1979,7 @@ impl App {
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
+            git_repo: self.git.sampled,
             git_upstream: self.git.upstream.is_some(),
             git_remote: self
                 .git
@@ -1964,7 +2003,13 @@ impl App {
             merge_actionable: merge.is_some(),
             merge_word: merge.unwrap_or("merge"),
             two_pane: self.diff_two_pane.get(),
-            worktree_present: self.diff.as_ref().is_some_and(|d| d.worktree_present),
+            // Whether `!` has a worktree to open. The checkout diff always
+            // has a working tree, and offers no shell for it: the user is
+            // standing in the directory already.
+            worktree_present: self
+                .diff
+                .as_ref()
+                .is_some_and(|d| d.is_branch() && d.worktree_present),
             density_word: self
                 .diff
                 .as_ref()
@@ -2694,11 +2739,13 @@ impl App {
                     self.merge_key(id)?;
                 }
             }
-            Verb::OpenDiff => {
-                if let Screen::Ticket { ticket, rail_idx } = self.screen {
-                    self.open_diff(ticket, rail_idx)?;
-                }
-            }
+            // One verb, two subjects, and the SCREEN is what answers which:
+            // the board is the repo's screen, the ticket page is the ticket's.
+            Verb::OpenDiff => match self.screen {
+                Screen::Ticket { ticket, rail_idx } => self.open_ticket_diff(ticket, rail_idx)?,
+                Screen::Board => self.open_checkout_diff()?,
+                _ => {}
+            },
             Verb::WorktreeShell => self.worktree_shell(),
             // ---- diff, and the release notes on the same keys -------------
             Verb::ScrollDown | Verb::ScrollUp => {
@@ -2714,7 +2761,7 @@ impl App {
             Verb::PageDown | Verb::PageUp => {
                 let dir: isize = if verb == Verb::PageDown { 1 } else { -1 };
                 match self.screen {
-                    Screen::Diff { .. } => self.diff_scroll(dir * DIFF_PAGE as isize),
+                    Screen::Diff => self.diff_scroll(dir * DIFF_PAGE as isize),
                     Screen::Ticket { .. } => self.preview_page(dir),
                     Screen::Releases => {
                         let page = self.releases.as_ref().map(|r| r.view.get().page).unwrap_or(0);
@@ -2731,8 +2778,8 @@ impl App {
                 }
             }
             Verb::Refresh => {
-                if let Screen::Diff { ticket } = self.screen {
-                    self.diff_refresh(ticket);
+                if matches!(self.screen, Screen::Diff) {
+                    self.diff_refresh();
                 }
             }
             Verb::ViewPrefix => {
@@ -2861,14 +2908,23 @@ impl App {
         }
     }
 
-    /// The ticket a verb acts on: the shown ticket on the ticket and diff
-    /// screens, the cursor card on the board.
+    /// The ticket a verb acts on: the shown ticket on the ticket screen and on
+    /// a branch diff, the cursor card on the board. A checkout diff is about
+    /// no ticket, and says so.
     fn subject(&self) -> Option<ulid::Ulid> {
         match &self.screen {
-            Screen::Ticket { ticket, .. } | Screen::Diff { ticket } => Some(*ticket),
+            Screen::Ticket { ticket, .. } => Some(*ticket),
+            Screen::Diff => self.diff_ticket(),
             Screen::Board => self.selected_ticket().map(|t| t.id),
             Screen::Releases => None,
         }
+    }
+
+    /// The ticket the open diff belongs to — `None` for the checkout, and
+    /// `None` when no diff is open. The one place the screen asks its state
+    /// which target it is on.
+    pub fn diff_ticket(&self) -> Option<ulid::Ulid> {
+        self.diff.as_ref().and_then(|d| d.ticket())
     }
 
     fn selected_session(&self) -> Option<uuid::Uuid> {
@@ -3081,14 +3137,18 @@ impl App {
     fn back(&mut self, scope: Scope) {
         match scope {
             Scope::Ticket => self.to_board(),
+            // Back to whatever opened it: the ticket page for a branch diff,
+            // the board for the checkout's.
             Scope::Diff => {
-                let rail_idx = self.diff.as_ref().map(|d| d.rail_idx).unwrap_or(0);
-                let ticket = match self.screen {
-                    Screen::Diff { ticket } => ticket,
-                    _ => return,
-                };
+                let Some(d) = self.diff.as_ref() else { return };
+                let (target, rail_idx) = (d.target, d.rail_idx);
                 self.diff = None;
-                self.screen = Screen::Ticket { ticket, rail_idx };
+                match target {
+                    DiffTarget::Ticket { id } => {
+                        self.screen = Screen::Ticket { ticket: id, rail_idx }
+                    }
+                    DiffTarget::Checkout => self.to_board(),
+                }
             }
             Scope::Theme => {
                 // Put it back: whatever was previewed, the board returns to
@@ -3297,9 +3357,12 @@ impl App {
         self.drop_ghost(&cols, id, col, idx)
     }
 
-    /// `!` in the diff viewer: a shell in the worktree, at its root.
+    /// `!` in the diff viewer: a shell in the worktree, at its root. Offered
+    /// on a branch diff only — a worktree is a directory that is hard to reach,
+    /// and on the checkout diff the user is already standing in it
+    /// (`Ctx::worktree_present` is what keeps the key inert there).
     fn worktree_shell(&mut self) {
-        let Screen::Diff { ticket } = self.screen else {
+        let Some(ticket) = self.diff_ticket() else {
             return;
         };
         let present = self.diff.as_ref().is_some_and(|d| d.worktree_present);
@@ -4382,10 +4445,10 @@ impl App {
         })
     }
 
-    /// Ticket `v` (M4b): enter the read-only diff viewer. Column-agnostic
-    /// (D34.7); attached or evicted both work — evicted renders from the
-    /// object store.
-    fn open_diff(&mut self, ticket: ulid::Ulid, rail_idx: usize) -> Result<()> {
+    /// Ticket `v` (M4b): enter the read-only diff viewer on the ticket's
+    /// branch. Column-agnostic (D34.7); attached or evicted both work —
+    /// evicted renders from the object store.
+    fn open_ticket_diff(&mut self, ticket: ulid::Ulid, rail_idx: usize) -> Result<()> {
         let viewable = self
             .wt_item(ticket)
             .map(|w| matches!(w.status.as_str(), "attached" | "evicted"))
@@ -4394,10 +4457,22 @@ impl App {
             self.status = "no worktree to diff — review is per-branch".into();
             return Ok(());
         }
-        match self.req(Command::DiffList { ticket }) {
+        self.enter_diff(DiffTarget::Ticket { id: ticket }, rail_idx)
+    }
+
+    /// Board `v` (T-221): the checkout's own uncommitted work. No gate — a
+    /// checkout always exists where there is a repository, and the binding is
+    /// what asks whether there is one (`Ctx::git_repo`).
+    fn open_checkout_diff(&mut self) -> Result<()> {
+        self.enter_diff(DiffTarget::Checkout, 0)
+    }
+
+    /// The one road onto `Screen::Diff`, whichever key opened it.
+    fn enter_diff(&mut self, target: DiffTarget, rail_idx: usize) -> Result<()> {
+        match self.req(Command::DiffList { target }) {
             Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
                 self.diff = Some(DiffState {
-                    ticket,
+                    target,
                     rail_idx,
                     branch,
                     base_oid,
@@ -4412,7 +4487,7 @@ impl App {
                     swap: false,
                     worktree_present,
                 });
-                self.screen = Screen::Diff { ticket };
+                self.screen = Screen::Diff;
                 self.diff_fetch(0);
             }
             Response::Err { message } => self.status = message,
@@ -4423,10 +4498,11 @@ impl App {
 
     /// Re-run DiffList in place (R, and the density cycle's cache flush).
     /// Keeps the cursor on the same path when it survives the recompute.
-    fn diff_refresh(&mut self, ticket: ulid::Ulid) {
+    fn diff_refresh(&mut self) {
         let Some(d) = self.diff.as_ref() else { return };
         let keep = d.files.get(d.file_idx).map(|f| f.path.clone());
-        match self.req(Command::DiffList { ticket }) {
+        let target = d.target;
+        match self.req(Command::DiffList { target }) {
             Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
                 let Some(d) = self.diff.as_mut() else { return };
                 d.file_idx = keep.and_then(|p| files.iter().position(|f| f.path == p)).unwrap_or(0);
@@ -4446,8 +4522,11 @@ impl App {
     }
 
     /// Fetch the cursor file plus one prefetch each side (~10 ms/file [M]),
-    /// skipping cached entries and untracked-only rows (nothing to fetch —
-    /// git diff cannot see them).
+    /// skipping cached entries and rows with no patch behind them. On a branch
+    /// diff that is every untracked row — `git diff` cannot see a file the
+    /// agent never added — while the checkout stamps its untracked rows `A`
+    /// and serves them, so the same test admits them without asking the
+    /// target (T-221).
     fn diff_fetch(&mut self, idx: usize) {
         for (i, cursor) in
             [(idx as isize, true), (idx as isize + 1, false), (idx as isize - 1, false)]
@@ -4462,8 +4541,8 @@ impl App {
             if f.status.is_empty() || d.cache.contains_key(&f.path) {
                 continue;
             }
-            let (ticket, path, context) = (d.ticket, f.path.clone(), d.density);
-            match self.req(Command::DiffFile { ticket, path: path.clone(), context }) {
+            let (target, path, context) = (d.target, f.path.clone(), d.density);
+            match self.req(Command::DiffFile { target, path: path.clone(), context }) {
                 Response::DiffFile { file } => {
                     if let Some(d) = self.diff.as_mut() {
                         d.cache.insert(path, file);
@@ -5270,6 +5349,49 @@ pub(crate) mod test_support {
                         detail: "merged 2 commit(s)".into(),
                     });
                 }
+                // The checkout diff, so a test can press `v` on the board
+                // and land on the real screen. A ticket target still
+                // dead-ends: the fake snapshot carries no worktrees, which is
+                // what `install_diff` seeds by hand instead.
+                Command::DiffList { target } => {
+                    if target != DiffTarget::Checkout {
+                        return Ok(Response::Err { message: "no worktree".into() });
+                    }
+                    let row =
+                        |path: &str, status: &str, adds, untracked| mesimon_core::diff::FileEntry {
+                            path: path.into(),
+                            old_path: None,
+                            status: status.into(),
+                            old_mode: if untracked { "000000".into() } else { "100644".into() },
+                            new_mode: "100644".into(),
+                            old_blob: String::new(),
+                            new_blob: String::new(),
+                            adds: Some(adds),
+                            dels: Some(0),
+                            dirty: !untracked,
+                            untracked,
+                        };
+                    return Ok(Response::DiffList {
+                        branch: "main".into(),
+                        base_oid: "c".repeat(40),
+                        branch_oid: String::new(),
+                        files: vec![
+                            row("src/app.rs", "M", 4, false),
+                            row("AGENTS.md", "A", 8, true),
+                        ],
+                        worktree_present: true,
+                    });
+                }
+                Command::DiffFile { path, .. } => {
+                    return Ok(Response::DiffFile {
+                        file: mesimon_core::diff::FileDiff {
+                            path,
+                            old_path: None,
+                            render: mesimon_core::diff::Render::Text,
+                            hunks: Vec::new(),
+                        },
+                    });
+                }
                 // The daemon's lock, mirrored, so a test can see it refuse.
                 Command::SetWorkspace { id, workspace } => {
                     if self.board.sessions.iter().any(|s| s.ticket == id) {
@@ -5505,6 +5627,23 @@ pub(crate) mod test_support {
                     self.pending.retain(|p| p.ticket != ticket);
                     Ok(Response::Ok)
                 }
+                // The daemon's two answers to the CLAUDE.md offer, in the one
+                // respect the client can see: an apply re-samples the file
+                // BEFORE it replies (`answer_claude_md` invalidates and
+                // refreshes), so the very next snapshot says the line is
+                // there, and "never" is a stamp on the board.
+                Command::ClaudeMd { action } => {
+                    match action {
+                        mesimon_core::command::ClaudeMdAction::Apply => {
+                            self.claude_md.exists = true;
+                            self.claude_md.present = true;
+                        }
+                        mesimon_core::command::ClaudeMdAction::Ignore => {
+                            self.board.claude_md_ignored = true;
+                        }
+                    }
+                    Ok(Response::Ok)
+                }
                 Command::SeenTicket { id } => {
                     match self.board.tickets.iter_mut().find(|t| t.id == id) {
                         Some(t) => {
@@ -5597,6 +5736,67 @@ mod tests {
 
     fn app_three_columns() -> App {
         App::for_test(board_three_columns(), theme())
+    }
+
+    /// A board whose CLAUDE.md is sampled and does not carry the line, so the
+    /// offer stands — built through the transport, because the point of the
+    /// two tests below is the snapshot road, not the flags at the end of it.
+    fn app_offered_claude_md() -> App {
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let fake = super::test_support::FakeTransport {
+            board: board_three_columns(),
+            grace: vec![],
+            external: vec![],
+            resources: Resources::default(),
+            shell_env: Default::default(),
+            git: Default::default(),
+            pending: Vec::new(),
+            automation: Default::default(),
+            claude_md: mesimon_core::command::ClaudeMdStatus {
+                path: "/repo/kanban-tui/CLAUDE.md".into(),
+                exists: true,
+                present: false,
+            },
+            sent,
+            refuse_focus: false,
+            notes: std::collections::HashMap::new(),
+        };
+        App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
+            .expect("fake transport snapshot")
+    }
+
+    fn offered(app: &App) -> bool {
+        keymap::is_suggested(Verb::ClaudeMdOffer, &app.ctx())
+    }
+
+    /// Taking the offer withdraws it, in the same breath. The daemon
+    /// re-samples the file before it answers, so the refresh the Enter runs
+    /// already carries `present: true` — but `absorb` dropped the field on
+    /// the floor and the chip stood until the next launch (the report:
+    /// "not being dismissed after approve until mesimon restart").
+    #[test]
+    fn taking_the_claude_md_offer_withdraws_it() {
+        let mut app = app_offered_claude_md();
+        assert!(offered(&app), "a sampled file without the line is offered");
+        app.mode = Mode::ClaudeMd;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+        assert!(app.claude_md.present, "the apply's own refresh must land the new sample");
+        assert!(!offered(&app), "and the chip comes off without a relaunch");
+        assert!(app.status.contains("CLAUDE.md"), "{}", app.status);
+    }
+
+    /// The other answer, on the road that always worked (the stamp is board
+    /// state, and the board was never the field that got dropped) — asserted
+    /// beside it so the pair cannot drift apart again.
+    #[test]
+    fn putting_the_claude_md_offer_away_withdraws_it() {
+        let mut app = app_offered_claude_md();
+        app.mode = Mode::ClaudeMd;
+        press(&mut app, 'i');
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+        assert!(app.board.claude_md_ignored);
+        assert!(!offered(&app));
     }
 
     /// A transport with no daemon behind it, ever.

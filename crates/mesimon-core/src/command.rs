@@ -358,14 +358,14 @@ pub enum Command {
     GateStatus,
     GatePassed,
     Shutdown,
-    /// Read-only diff viewer (M4b): the ticket's stable file list,
-    /// BASE...BRANCH. Served on the connection thread, never the writer.
+    /// Read-only diff viewer (M4b): the target's stable file list. Served on
+    /// the connection thread, never the writer.
     DiffList {
-        ticket: ulid::Ulid,
+        target: DiffTarget,
     },
     /// One file's hunks on demand. `context` is the -U density (1 | 3 | 8).
     DiffFile {
-        ticket: ulid::Ulid,
+        target: DiffTarget,
         path: String,
         #[serde(default = "default_diff_context")]
         context: u32,
@@ -471,6 +471,35 @@ pub enum Command {
 
 fn default_diff_context() -> u32 {
     3
+}
+
+/// Which diff a `DiffList`/`DiffFile` is about (T-221).
+///
+/// An `Option<ulid::Ulid>` whose `None` silently meant "the checkout" would be
+/// exactly the implicit classification [`Command::meta`] and
+/// [`crate::mcp::agent_allows`] exist to refuse: the two targets read
+/// different things through different git plumbing, and one of them has no
+/// ticket at all.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum DiffTarget {
+    /// The ticket's worktree branch, BASE...BRANCH — what this ticket changed,
+    /// still right after base moved.
+    Ticket { id: ulid::Ulid },
+    /// The board's own checkout, HEAD vs the working tree — what is
+    /// uncommitted here, right now. No ticket, no worktree binding.
+    Checkout,
+}
+
+impl DiffTarget {
+    /// The ticket this diff belongs to, if any. The checkout belongs to none,
+    /// which is what every screen-to-ticket map in the TUI has to say.
+    pub fn ticket(&self) -> Option<ulid::Ulid> {
+        match self {
+            DiffTarget::Ticket { id } => Some(*id),
+            DiffTarget::Checkout => None,
+        }
+    }
 }
 
 /// The two answers the CLAUDE.md dialog can send (T-217). Declining and
@@ -757,7 +786,9 @@ pub enum Response {
         message: String,
     },
     /// DiffList's answer: the stable file list plus display-only in-flight
-    /// flags. `branch_oid` is the live tip at serve time.
+    /// flags. `branch_oid` is the live tip at serve time; on a checkout
+    /// target it is empty and `base_oid` is the HEAD the diff was taken
+    /// against.
     DiffList {
         branch: String,
         base_oid: String,
@@ -765,7 +796,8 @@ pub enum Response {
         files: Vec<crate::diff::FileEntry>,
         /// false = evicted: no worktree directory, so no dirty/untracked
         /// flags and no `!` shell — the diff itself still renders from the
-        /// object store.
+        /// object store. Always true on a checkout target, which IS the
+        /// working tree; whether `!` is offered there is the TUI's to say.
         #[serde(default)]
         worktree_present: bool,
     },

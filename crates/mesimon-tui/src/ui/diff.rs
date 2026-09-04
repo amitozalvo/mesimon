@@ -46,38 +46,39 @@ pub(crate) fn density_word(context: u32) -> &'static str {
     }
 }
 
-pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid) {
+pub(super) fn draw(f: &mut Frame, app: &App) {
     let theme = &app.theme;
     let area = f.area();
-    let Some(ticket) = app.board.ticket(ticket_id) else {
-        return;
-    };
     let Some(d) = app.diff.as_ref() else { return };
 
-    // ---- top block: the header (DIFF chip, breadcrumb, the ticket as its
-    // leaf), identity, painted band --------------------------------------------
-    chrome::draw_header(
-        f,
-        Rect { x: area.x, y: area.y, width: area.width, height: 1 },
-        app,
-        Some(&ticket.title),
-    );
+    // ---- top block: the header (DIFF chip, breadcrumb, and the ticket as its
+    // leaf where there is one — the checkout's diff belongs to the repo, which
+    // the breadcrumb already names), identity, painted band -------------------
+    let leaf = app.diff_ticket().and_then(|id| app.board.ticket(id)).map(|t| t.title.as_str());
+    chrome::draw_header(f, Rect { x: area.x, y: area.y, width: area.width, height: 1 }, app, leaf);
 
     let (adds, dels) = d
         .files
         .iter()
         .fold((0u32, 0u32), |(a, del), f| (a + f.adds.unwrap_or(0), del + f.dels.unwrap_or(0)));
-    let base8: String = d.base_oid.chars().take(8).collect();
     let n = d.files.len();
     let noun = if n == 1 { "file" } else { "files" };
+    // A branch is measured against the base it forked from; the checkout is
+    // measured against itself, so the word is what it is rather than an oid.
+    let against = if d.is_branch() {
+        let base8: String = d.base_oid.chars().take(8).collect();
+        format!("vs {base8}")
+    } else {
+        "uncommitted".to_string()
+    };
     let mut ident = vec![
         Span::styled(format!(" ⎇ {}", d.branch), theme.dim1()),
         Span::styled(
-            format!(" ∙ vs {base8} ∙ {n} {noun} ∙ +{adds} -{dels} ∙ {}", density_word(d.density)),
+            format!(" ∙ {against} ∙ {n} {noun} ∙ +{adds} -{dels} ∙ {}", density_word(d.density)),
             theme.dim2(),
         ),
     ];
-    if !d.worktree_present {
+    if d.is_branch() && !d.worktree_present {
         ident.push(Span::styled(" ∙ worktree evicted".to_string(), theme.dim2()));
     }
 
@@ -149,10 +150,12 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     let mut lines: Vec<Line<'static>> = vec![Line::from(head), Line::default()];
 
     if d.files.is_empty() {
-        lines.push(Line::from(Span::styled(
-            format!(" no commits on {} yet", d.branch),
-            theme.dim3(),
-        )));
+        let empty = if d.is_branch() {
+            format!(" no commits on {} yet", d.branch)
+        } else {
+            format!(" nothing uncommitted on {}", d.branch)
+        };
+        lines.push(Line::from(Span::styled(empty, theme.dim3())));
         f.render_widget(Paragraph::new(lines), area);
         return;
     }
@@ -166,9 +169,14 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     for (i, entry) in d.files.iter().enumerate().skip(first).take(visible) {
         let selected = i == d.file_idx;
         let stable = if entry.status.is_empty() { "·" } else { entry.status.as_str() };
+        // The in-flight column says what the committed state does not know
+        // about. On the checkout diff EVERY row is uncommitted by
+        // construction, so `D` there would be a letter on every line saying
+        // nothing; `U` still earns its cell, because untracked is a different
+        // thing from unstaged.
         let inflight = if entry.untracked {
             "U"
-        } else if entry.dirty {
+        } else if entry.dirty && d.is_branch() {
             "D"
         } else {
             " "
@@ -357,10 +365,16 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
             )));
         }
         Render::TooLarge { bytes } => {
-            body.push(Line::from(Span::styled(
-                format!("{:.1} MB — ! opens it in your shell", *bytes as f64 / 1_048_576.0),
-                theme.dim1(),
-            )));
+            // `!` is the reader for a worktree, which is a directory hard to
+            // reach. On the checkout there is nothing to offer: the user is
+            // already standing in it.
+            let mb = *bytes as f64 / 1_048_576.0;
+            let word = if d.is_branch() {
+                format!("{mb:.1} MB — ! opens it in your shell")
+            } else {
+                format!("{mb:.1} MB — too large to render")
+            };
+            body.push(Line::from(Span::styled(word, theme.dim1())));
         }
         Render::Unresolvable { message } => {
             body.push(Line::from(Span::styled(message.clone(), theme.err_text())));

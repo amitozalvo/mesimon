@@ -1,0 +1,30 @@
+ DIFF   mesimon > kanban-tui
+
+ ⎇ main ∙ uncommitted ∙ 2 files ∙ +14 -3 ∙ normal
+
+
+  FILES                  (2)    crates/mesimon-tui/src/ui/diff.rs ∙ file 1/2 ∙ 1 hunk
+
+  M  crates/mesimon~  +12 -3    @@ -70,3 +70,4 @@  fn draw
+  AU AGENTS.md         +2 -0         70      let n = d.files.len();
+                                -    71      let base8 = d.base_oid;
+                                +    71      let against = "uncommitted";
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ jk scroll ∙ n N next / previous file ∙ { } page ∙ z context, layout… ∙ R refresh ∙ q back                       ? keys

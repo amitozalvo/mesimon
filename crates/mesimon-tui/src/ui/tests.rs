@@ -215,8 +215,9 @@ fn fixture_woke() -> Board {
 }
 
 /// Install a deterministic diff view on ticket 3 and enter `Screen::Diff`.
-/// Seeded directly: FakeTransport's snapshot carries no worktrees and its
-/// catch-all answers `Ok`, so the `v` entry path dead-ends in tests.
+/// Seeded directly: FakeTransport's snapshot carries no worktrees, so the
+/// TICKET target's `v` entry path dead-ends in tests. (The checkout target's
+/// does not — see `board_v_opens_the_checkout_diff`.)
 fn install_diff(app: &mut App) {
     use mesimon_core::diff::{FileDiff, FileEntry, Hunk, HunkLine, Render, Sign};
     let entry = |path: &str, status: &str, adds: Option<u32>, dels: Option<u32>| FileEntry {
@@ -299,7 +300,7 @@ fn install_diff(app: &mut App) {
         path: Some("/wt/T-3-fix-osc-11-detection".into()),
     }];
     app.diff = Some(crate::app::DiffState {
-        ticket: ulid_n(3),
+        target: mesimon_core::command::DiffTarget::Ticket { id: ulid_n(3) },
         rail_idx: 0,
         branch: "msmn/T-3-fix-osc-11-detection".into(),
         base_oid: "a1b2c3d4".repeat(5),
@@ -314,7 +315,91 @@ fn install_diff(app: &mut App) {
         swap: false,
         worktree_present: true,
     });
-    app.screen = Screen::Diff { ticket: ulid_n(3) };
+    app.screen = Screen::Diff;
+}
+
+/// The same screen on the board's own checkout (T-221): no ticket, no
+/// worktree, and an untracked row that opens like any other add.
+fn install_checkout_diff(app: &mut App) {
+    use mesimon_core::diff::{FileDiff, FileEntry, Hunk, HunkLine, Render, Sign};
+    let entry = |path: &str, status: &str, adds: u32, dels: u32, untracked: bool| FileEntry {
+        path: path.into(),
+        old_path: None,
+        status: status.into(),
+        old_mode: if untracked { "000000".into() } else { "100644".into() },
+        new_mode: "100644".into(),
+        old_blob: if untracked { String::new() } else { "a".repeat(40) },
+        new_blob: "0".repeat(40),
+        adds: Some(adds),
+        dels: Some(dels),
+        // Everything in a checkout diff is uncommitted; only `untracked` says
+        // anything the row does not already say.
+        dirty: true,
+        untracked,
+    };
+    let files = vec![
+        entry("crates/mesimon-tui/src/ui/diff.rs", "M", 12, 3, false),
+        entry("AGENTS.md", "A", 2, 0, true),
+    ];
+    let line =
+        |sign, old_ln, new_ln, text: &str| HunkLine { sign, old_ln, new_ln, text: text.into() };
+    let mut cache = std::collections::HashMap::new();
+    cache.insert(
+        "crates/mesimon-tui/src/ui/diff.rs".to_string(),
+        FileDiff {
+            path: "crates/mesimon-tui/src/ui/diff.rs".into(),
+            old_path: None,
+            render: Render::Text,
+            hunks: vec![Hunk {
+                old_start: 70,
+                old_len: 3,
+                new_start: 70,
+                new_len: 4,
+                header: " fn draw".into(),
+                lines: vec![
+                    line(Sign::Ctx, Some(70), Some(70), "    let n = d.files.len();"),
+                    line(Sign::Del, Some(71), None, "    let base8 = d.base_oid;"),
+                    line(Sign::Add, None, Some(71), "    let against = \"uncommitted\";"),
+                ],
+            }],
+        },
+    );
+    cache.insert(
+        "AGENTS.md".to_string(),
+        FileDiff {
+            path: "AGENTS.md".into(),
+            old_path: None,
+            render: Render::Text,
+            hunks: vec![Hunk {
+                old_start: 0,
+                old_len: 0,
+                new_start: 1,
+                new_len: 2,
+                header: String::new(),
+                lines: vec![
+                    line(Sign::Add, None, Some(1), "# Agents"),
+                    line(Sign::Add, None, Some(2), "This repo is driven by mesimon."),
+                ],
+            }],
+        },
+    );
+    app.diff = Some(crate::app::DiffState {
+        target: mesimon_core::command::DiffTarget::Checkout,
+        rail_idx: 0,
+        branch: "main".into(),
+        base_oid: "c1d2e3f4".repeat(5),
+        branch_oid: String::new(),
+        files,
+        file_idx: 0,
+        scroll: std::cell::Cell::new(0),
+        marquee: std::cell::Cell::new(None),
+        density: 3,
+        cache,
+        z_armed: false,
+        swap: false,
+        worktree_present: true,
+    });
+    app.screen = Screen::Diff;
 }
 
 /// Three deterministic releases on the RELEASES screen, `v0.9.0-alpha.3`
@@ -1227,6 +1312,112 @@ fn golden_diff_screen_120() {
     let mut app = app_graphite(fixture(false));
     install_diff(&mut app);
     golden("diff_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_checkout_diff_120() {
+    let mut app = app_graphite(fixture(false));
+    install_checkout_diff(&mut app);
+    golden("diff_checkout_120x30", &render(&app, 120, 30));
+}
+
+/// The checkout diff is the same screen answering a different question, and
+/// the three places it has to say so (T-221).
+#[test]
+fn checkout_diff_says_uncommitted_and_offers_no_worktree_shell() {
+    let mut app = app_graphite(fixture(false));
+    install_checkout_diff(&mut app);
+    let rows = lines_of(&cells(&app, 120, 30));
+
+    // The header's leaf is the ticket a diff belongs to; this one belongs to
+    // the repository, which the breadcrumb already names.
+    assert!(rows[0].starts_with(" DIFF   mesimon > kanban-tui"), "{}", rows[0]);
+    assert!(!rows[0].contains('>') || rows[0].matches('>').count() == 1, "no leaf: {}", rows[0]);
+    // Measured against itself, in a word rather than an oid.
+    assert!(rows[2].contains("⎇ main ∙ uncommitted ∙ 2 files"), "{}", rows[2]);
+    assert!(!rows[2].contains(" vs "), "{}", rows[2]);
+    assert!(!rows[2].contains("worktree evicted"), "{}", rows[2]);
+
+    // `!` opens a shell in a worktree, which is a directory that is hard to
+    // reach. Here the user is standing in it, so the key is not offered.
+    let footer = rows.last().unwrap();
+    assert!(!footer.contains("shell here"), "{footer}");
+    assert!(footer.contains("q back"), "{footer}");
+    assert_eq!(
+        mesimon_core::keymap::resolve(
+            mesimon_core::keymap::Scope::Diff,
+            mesimon_core::keymap::Key::Char('!'),
+            &app.ctx()
+        ),
+        None
+    );
+
+    // Every row is uncommitted here, so `D` would be a letter on every line
+    // saying nothing; `U` still earns its cell.
+    let listed: String = rows.iter().filter(|r| r.contains("AGENTS.md")).cloned().collect();
+    assert!(listed.contains("AU AGENTS.md"), "the untracked row is an add, and says it: {listed}");
+    assert!(!rows.iter().any(|r| r.contains("MD ")), "no dirty letter on a checkout diff");
+
+    // And `q` lands on the board, not on some ticket page.
+    press(&mut app, 'q');
+    assert!(matches!(app.screen, Screen::Board));
+    assert!(app.diff.is_none());
+}
+
+/// `v` on the board opens it for real, through dispatch and the wire.
+#[test]
+fn board_v_opens_the_checkout_diff() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    assert!(app.ctx().git_repo, "a sampled checkout is what the key needs");
+    press(&mut app, 'v');
+    assert!(matches!(app.screen, Screen::Diff));
+    let d = app.diff.as_ref().unwrap();
+    assert!(!d.is_branch(), "the board's v is the checkout's, whatever the cursor is over");
+    assert_eq!(d.branch, "main");
+    assert_eq!(app.diff_ticket(), None, "no ticket is the subject here");
+
+    // Without a repository under it the key does nothing at all.
+    let mut bare = app_graphite(fixture(false));
+    press(&mut bare, 'v');
+    assert!(matches!(bare.screen, Screen::Board));
+    assert!(bare.diff.is_none());
+}
+
+/// The board's `v` is hinted where it operates, not in the footer: beside the
+/// `∙ 3 changed` it opens (T-158's idiom, T-221's key). The footer is the
+/// selection's, and this key is not about the selection.
+#[test]
+fn the_board_teaches_v_beside_the_change_count() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("∙ 3 changed  v diff"), "{head:?}");
+
+    let ctx = app.ctx();
+    let (left, _) = mesimon_core::keymap::footer_split(mesimon_core::keymap::Scope::Board, &ctx);
+    assert!(!left.iter().any(|b| b.show == "v"), "and stays off the footer");
+    // Overlay-only means the overlay still has it — that is the whole bargain.
+    let overlay = mesimon_core::keymap::overlay(mesimon_core::keymap::Scope::Board, &ctx);
+    assert!(
+        overlay.iter().any(|(_, items)| items.iter().any(|(show, _)| *show == "v")),
+        "`?` is where a prio-0 key is always listed"
+    );
+
+    // A clean checkout has nothing to open, so it says nothing — but the key
+    // is still live, and `?` still names it.
+    app.git = git_state("main", 2, 1, 0);
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ main"), "{head:?}");
+    assert!(!head.contains("v diff"), "no count, no hint: {head:?}");
+    assert_eq!(
+        mesimon_core::keymap::resolve(
+            mesimon_core::keymap::Scope::Board,
+            mesimon_core::keymap::Key::Char('v'),
+            &app.ctx()
+        ),
+        Some(mesimon_core::keymap::Verb::OpenDiff)
+    );
 }
 
 #[test]
@@ -2571,14 +2762,22 @@ fn test_layout_arithmetic() {
                 app.cursor_col = cursor;
                 let _ = render(&app, w, h);
             }
-            // The diff screen across the same matrix, both single-pane swaps.
+            // The diff screen across the same matrix, both single-pane swaps
+            // and both targets — the checkout's has no header leaf, which is
+            // the one width the branch's never exercises.
             for swap in [false, true] {
-                let mut app = app_graphite(fixture(true));
-                install_diff(&mut app);
-                if let Some(d) = app.diff.as_mut() {
-                    d.swap = swap;
+                for checkout in [false, true] {
+                    let mut app = app_graphite(fixture(true));
+                    if checkout {
+                        install_checkout_diff(&mut app);
+                    } else {
+                        install_diff(&mut app);
+                    }
+                    if let Some(d) = app.diff.as_mut() {
+                        d.swap = swap;
+                    }
+                    let _ = render(&app, w, h);
                 }
-                let _ = render(&app, w, h);
             }
         }
     }
@@ -3120,6 +3319,18 @@ fn test_no_banned_sgr() {
             },
             {
                 install_diff(&mut app);
+                assert!(
+                    render(&app, 120, 30).iter().any(|l| l.contains("vs a1b2c3d4")),
+                    "the branch diff must be ON SCREEN, or this law does not bite"
+                );
+                cells(&app, 120, 30)
+            },
+            {
+                install_checkout_diff(&mut app);
+                assert!(
+                    render(&app, 120, 30).iter().any(|l| l.contains("uncommitted")),
+                    "the checkout diff must be ON SCREEN, or this law does not bite"
+                );
                 cells(&app, 120, 30)
             },
             {
@@ -3276,7 +3487,21 @@ fn test_no_drawn_structure() {
         },
         {
             install_diff(&mut app);
-            sweep(&app)
+            let lines = sweep(&app);
+            assert!(
+                lines.iter().any(|l| l.contains("vs a1b2c3d4")),
+                "the branch diff must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
+        {
+            install_checkout_diff(&mut app);
+            let lines = sweep(&app);
+            assert!(
+                lines.iter().any(|l| l.contains("uncommitted")),
+                "the checkout diff must be ON SCREEN, or this law does not bite"
+            );
+            lines
         },
         {
             install_releases(&mut app);
@@ -3578,13 +3803,15 @@ fn test_git_clause_is_silent_until_sampled_and_quiet_in_sync() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 0, 0, 0);
     let head = &render(&app, 120, 30)[0];
+    // Nothing uncommitted, so nothing for `v` to open and no hint (T-221).
     assert!(head.contains("kanban-tui ⎇ main   7 tickets"), "{head:?}");
     app.git = git_state("main", 0, 3, 0);
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("⎇ main ↓3   7 tickets"), "{head:?}");
+    // A count is a thing to read, and the key that reads it rides beside it.
     app.git = git_state("main", 1, 0, 2);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ main ↑1 ∙ 2 changed   7 tickets"), "{head:?}");
+    assert!(head.contains("⎇ main ↑1 ∙ 2 changed  v diff   7 tickets"), "{head:?}");
     // Detached: the short oid stands in for the name, no arrows without an upstream.
     app.git = mesimon_core::command::RepoGit {
         detached: true,
@@ -3592,7 +3819,7 @@ fn test_git_clause_is_silent_until_sampled_and_quiet_in_sync() {
         ..git_state("a1b2c3d", 0, 0, 1)
     };
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ a1b2c3d ∙ 1 changed   7 tickets"), "{head:?}");
+    assert!(head.contains("⎇ a1b2c3d ∙ 1 changed  v diff   7 tickets"), "{head:?}");
 }
 
 /// The offer has first claim on the row. The clause gives its parts up in
@@ -3606,13 +3833,17 @@ fn test_git_clause_gives_way_to_the_offer() {
     app.git = git_state(long, 1, 0, 3);
     app.force_release_available("v0.1.0-alpha.5");
     let head = &render(&app, 160, 30)[0];
-    assert!(head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed   7 tickets")), "{head:?}");
+    assert!(head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed  v diff   7 tickets")), "{head:?}");
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "{head:?}");
+    // The hint is the first rung down: a key is not a fact about the branch.
+    let head = &render(&app, 110, 30)[0];
+    assert!(head.contains("~ ↑1 ∙ 3 changed   7 tickets"), "the count outlives it: {head:?}");
+    assert!(!head.contains("v diff"), "the hint goes first: {head:?}");
     let head = &render(&app, 100, 30)[0];
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
     assert!(head.contains("⎇ msmn/T-124"), "the name is kept to its floor: {head:?}");
     assert!(head.contains("~ ↑1   7 tickets"), "the arrow rides the cut name: {head:?}");
-    assert!(!head.contains("changed"), "the count goes first: {head:?}");
+    assert!(!head.contains("changed"), "the count goes next: {head:?}");
     let head = &render(&app, 80, 30)[0];
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
     assert!(!head.contains('⎇'), "below the floor the clause stands aside whole: {head:?}");
@@ -3621,7 +3852,7 @@ fn test_git_clause_gives_way_to_the_offer() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state(long, 1, 0, 3);
     let head = &render(&app, 100, 30)[0];
-    assert!(head.contains("⎇ msmn/T-124-git-status-pull-push-indicat~ ↑1 ∙ 3 changed"), "{head:?}");
+    assert!(head.contains("⎇ msmn/T-124-git-status-pull-push~ ↑1 ∙ 3 changed  v diff"), "{head:?}");
 }
 
 /// The ASCII tier spells the clause with the card's own fallbacks.

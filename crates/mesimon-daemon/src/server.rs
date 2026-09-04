@@ -19,8 +19,8 @@ use mesimon_core::board::{
     SessionState, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
-    AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, Envelope, Event,
-    ExternalItem, GraceItem, MergeOutcome, Notice, Resources, Response, WorktreeItem,
+    AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, DiffTarget, Envelope,
+    Event, ExternalItem, GraceItem, MergeOutcome, Notice, Resources, Response, WorktreeItem,
     PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
@@ -866,18 +866,42 @@ impl Drop for PermitGuard<'_> {
 /// DiffList/DiffFile, served on the connection thread (M4b): read-only, no
 /// board access, no BoardChanged — the writer thread never sees them.
 fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
-    let ticket = match &env.command {
-        Command::DiffList { ticket } | Command::DiffFile { ticket, .. } => *ticket,
+    let target = match &env.command {
+        Command::DiffList { target } | Command::DiffFile { target, .. } => *target,
         _ => return Response::Err { message: "not a diff command".into() },
     };
+    // The short-circuit runs before `handle_agent`, so `mcp::agent_allows` —
+    // which denies both diff commands — is never reached on the path they
+    // actually take. Say it here, where it is true: a diff is a read of the
+    // user's whole working tree, and D10's never-tier means it.
+    if matches!(env.principal, Principal::Agent { .. }) && !mcp::agent_allows(&env.command) {
+        return Response::Err { message: "denied: not in the agent tier".into() };
+    }
     // D32c invariant 2 holds on this path too — the short-circuit must not
-    // bypass the chokepoint.
-    if let Decision::Deny { reason } =
-        authorize(&env.principal, &Action::Read, &Resource::Ticket { id: ticket })
-    {
+    // bypass the chokepoint. The checkout is the board's own, so it is a read
+    // of the board rather than of any one ticket.
+    let resource = match target {
+        DiffTarget::Ticket { id } => Resource::Ticket { id },
+        DiffTarget::Checkout => Resource::Board,
+    };
+    if let Decision::Deny { reason } = authorize(&env.principal, &Action::Read, &resource) {
         return Response::Err { message: format!("denied: {reason}") };
     }
     let _permit = PermitGuard::acquire(&ctx.permits);
+    let repo = &ctx.paths.repo_root;
+    let DiffTarget::Ticket { id: ticket } = target else {
+        return match &env.command {
+            Command::DiffList { .. } => crate::diff::checkout_diff_list(repo)
+                .unwrap_or_else(|e| Response::Err { message: e.to_string() }),
+            Command::DiffFile { path, context, .. } => {
+                match crate::diff::checkout_diff_file(repo, path, *context) {
+                    Ok(file) => Response::DiffFile { file },
+                    Err(e) => Response::Err { message: e.to_string() },
+                }
+            }
+            _ => unreachable!(),
+        };
+    };
     let bindings = match worktree::load_bindings(&ctx.paths) {
         Ok(b) => b,
         Err(e) => return Response::Err { message: format!("read bindings: {e}") },
@@ -908,7 +932,6 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
         }
         _ => {}
     }
-    let repo = &ctx.paths.repo_root;
     match &env.command {
         Command::DiffList { .. } => crate::diff::diff_list(repo, binding)
             .unwrap_or_else(|e| Response::Err { message: e.to_string() }),

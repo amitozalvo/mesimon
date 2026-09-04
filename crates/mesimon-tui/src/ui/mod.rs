@@ -100,8 +100,8 @@ pub fn draw(f: &mut Frame, app: &App) {
         }
         return;
     }
-    if let Screen::Diff { ticket } = &app.screen {
-        diff::draw(f, app, *ticket);
+    if matches!(app.screen, Screen::Diff) {
+        diff::draw(f, app);
         if app.help {
             help::draw(f, app);
         }

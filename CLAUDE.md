@@ -14,10 +14,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 orchestrates many coding-agent sessions behind a per-repo daemon and a private tmux server.
 Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), M2 (attention), M3 (adoption +
 resources), M3.5 (design foundation), M4a (per-ticket worktrees + the staged merge flow),
-and M4b (read-only diff viewer: ticket `v` → `Screen::Diff`; DiffList/DiffFile served
-read-only off the writer thread on the connection threads; `!` shell-in-worktree; STALE-MAP
-"M4b read-only diff viewer shipped" records the deviations) are built, plus the M6 keymap
-pass (below). M4 spec:
+and M4b (read-only diff viewer: `v` → `Screen::Diff`, from a ticket page or the board;
+DiffList/DiffFile served read-only off the writer thread on the connection threads; `!`
+shell-in-worktree; STALE-MAP "M4b read-only diff viewer shipped" records the deviations) are
+built, plus the M6 keymap pass (below). M4 spec:
 `~/.claude/plans/smooth-puzzling-sphinx.md`.
 The roadmap and execution state live in the auto-memory (`mesimon-project-state`) and
 `~/.claude/plans/reactive-painting-umbrella.md` — note the auto-memory does NOT follow into
@@ -1118,6 +1118,33 @@ blocked while unmerged; teardown waits for the reaper (never remove a live cwd),
 spawns pass the user's own `permissions.defaultMode` as `--permission-mode` (fresh worktree
 paths lost it otherwise).
 E2e: `crates/mesimon/tests/worktree_e2e.rs` (the one e2e with a real git repo).
+
+**The diff viewer has two targets, and the SCREEN says which (T-221, 2026-09-04).**
+`Command::DiffTarget` is `Ticket { id }` (the worktree branch, `BASE...BRANCH` through a
+`worktree::Binding` — what this ticket changed) or `Checkout` (the board's own repo, `git diff
+HEAD` → the working tree — what is uncommitted here). Ticket `v` opens the first, board `v` the
+second, and a worktree ticket under the board cursor changes nothing: the board is the
+repository's screen, the ticket page is the ticket's, so a branch diff is still `space` then
+`v`. `Screen::Diff` is a UNIT variant — the target lives on `DiffState`, and `App::diff_ticket()`
+is the one place a screen asks which it is on. The board's binding is `Group::View` (the board
+has no other Worktree binding; one would mint a `BRANCH` section in `?` over a working-tree
+diff), `avail: |c| c.git_repo` (= `RepoGit::sampled`, so it is inert with no repository), and
+**`prio: 0` — the hint sits where it operates**: `chrome::git_clause` draws ` v diff` beside the
+header's own `∙ 3 changed`, the T-158 idiom the ticket rail's `c s x` and the PREVIEW heading's
+`{ } page` already use, so the footer stays the selection's. It rides the COUNT, so a clean
+checkout says nothing and `?` is where the key stays; and it is the FIRST rung the clause gives
+up when the row is tight (then the count, then the name truncates). `!` is offered only on a
+branch — `Ctx::worktree_present` ANDs the target — because a shell
+in the checkout is one you already have. **On the checkout an untracked file OPENS**: the daemon
+stamps the row `status = "A"` / `old_mode = "000000"` / `new_mode` from `symlink_metadata` and
+serves it from `git diff --no-index -- /dev/null <path>` (which exits 1 on differences, hence
+`git_bytes_diff`), so `diff_fetch`'s `status.is_empty()` skip and 08 §2's "not reviewable" copy
+both needed no target condition at all. The list runs `-uall`, not `-unormal`, because
+`-unormal` collapses an untracked directory to one unopenable `? dir/` row. Trap: `git diff
+--raw HEAD` writes the destination blob as FORTY ZEROS, so `build_file_diff`'s `ModeOnly` clause
+can no longer be blob equality — it is "modes differ, both real file modes, no hunks, not
+binary", and the `000000` half is what keeps an empty add or delete from reading as a chmod.
+E2e: `crates/mesimon/tests/diff_e2e.rs`. (STALE-MAP "The board diffs its own checkout".)
 
 **The merge train (opt-in, 2026-09-04).** Settings rows `Merge train` (`prefs.json::merge_train`,
 off) and `Train tells the agent after a merge` (`merge_train_notice`, on). The daemon reads no

@@ -864,8 +864,12 @@ mod tests {
             Command::GateStatus,
             Command::GatePassed,
             Command::Shutdown,
-            Command::DiffList { ticket: t },
-            Command::DiffFile { ticket: t, path: "a".into(), context: 3 },
+            Command::DiffList { target: crate::command::DiffTarget::Ticket { id: t } },
+            Command::DiffFile {
+                target: crate::command::DiffTarget::Checkout,
+                path: "a".into(),
+                context: 3,
+            },
             Command::PaneTail { session: s, lines: 20 },
             // One agent steering another agent's turn is the sharpest thing
             // the never-tier exists to stop.

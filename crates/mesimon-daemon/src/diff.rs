@@ -17,6 +17,15 @@ use crate::worktree::{branch_tip, Binding, BindingStatus};
 /// Above this, the pane shows `TooLarge` and `!` is the reader (docs/08 §1.3).
 pub const MAX_PATCH_BYTES: u64 = 2 * 1024 * 1024;
 
+/// At most this many untracked rows ride one checkout list. A repository
+/// missing a `.gitignore` rule can hand `-uall` tens of thousands of paths,
+/// and a response line has no length cap on the client's side (only requests
+/// do, `ORCH_LINE_MAX_BYTES`).
+pub const MAX_UNTRACKED_ROWS: usize = 2000;
+
+/// git's own binary heuristic: a NUL inside the first 8000 bytes.
+const BINARY_SNIFF_BYTES: usize = 8000;
+
 /// Read-path git, bytes out. `--no-optional-locks` always.
 fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
     let out =
@@ -25,6 +34,18 @@ fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
         bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
     }
     Ok(out.stdout)
+}
+
+/// `git_bytes` for the `--no-index` road, where **exit 1 is success**: that is
+/// git's diff convention for "differences found", and every untracked file we
+/// ask about has some. Anything above 1 is still a failure.
+fn git_bytes_diff(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    let out =
+        crate::git::git(repo).arg("--no-optional-locks").args(args).output().context("run git")?;
+    match out.status.code() {
+        Some(0) | Some(1) => Ok(out.stdout),
+        _ => bail!("{}", String::from_utf8_lossy(&out.stderr).trim()),
+    }
 }
 
 /// The stable file list, BASE...BRANCH (three dots: the merge-base diff —
@@ -46,9 +67,13 @@ pub fn diff_list(repo: &Path, binding: &Binding) -> Result<Response> {
     )
     .map_err(|e| anyhow::anyhow!("git diff failed: {}", first_line(&e.to_string())))?;
     let mut files = parse_raw_z(&raw);
-    if let Ok(numstat) =
-        git_bytes(repo, &["--no-pager", "diff", "--numstat", "-z", "--no-ext-diff", &range])
-    {
+    // `--find-renames` here as well as on the raw call: without it the counts
+    // come from whatever `diff.renames` is set to, and a user who set it false
+    // gets a rename's badge off the add's numstat row.
+    if let Ok(numstat) = git_bytes(
+        repo,
+        &["--no-pager", "diff", "--numstat", "-z", "--find-renames", "--no-ext-diff", &range],
+    ) {
         merge_numstat(&mut files, &parse_numstat_z(&numstat));
     }
     let worktree_present = binding.status == BindingStatus::Attached && binding.path.is_dir();
@@ -130,6 +155,227 @@ pub fn diff_file(repo: &Path, binding: &Binding, path: &str, context: u32) -> Re
 
 fn first_line(s: &str) -> &str {
     s.lines().next().unwrap_or(s)
+}
+
+// ---------------------------------------------------------------------------
+// The board's own checkout (T-221): HEAD vs the working tree.
+//
+// The branch diff answers "what did this ticket change"; this answers "what is
+// uncommitted here". Most tickets are shared_checkout, so their agents' work
+// lives exactly here and nothing else in mesimon could show it.
+//
+// Two gaps are known and deliberate. A path in a merge conflict gives
+// `git diff HEAD` a COMBINED diff (`@@@`), which `parse_hunk_header` reads as
+// zero hunks, so it renders as "no content change" — the branch diff never
+// meets this, because it compares two commits. And an untracked directory git
+// refuses to descend into (another repository) stays a display-only row, the
+// same shape the branch diff gives every untracked path.
+// ---------------------------------------------------------------------------
+
+/// The empty tree, for a repository whose HEAD is unborn. Asked of git rather
+/// than spelled: `4b825dc…` is the SHA-1 value and wrong in a SHA-256 repo.
+fn empty_tree(repo: &Path) -> Result<String> {
+    let out = git_bytes(repo, &["hash-object", "-t", "tree", "/dev/null"])?;
+    Ok(String::from_utf8_lossy(&out).trim().to_string())
+}
+
+/// `# branch.oid <oid>` out of a porcelain v2 `--branch -z` stream. `None` on
+/// `(initial)`, which is how an unborn HEAD reports.
+fn head_oid(bytes: &[u8]) -> Option<String> {
+    for rec in bytes.split(|b| *b == 0) {
+        if let Some(rest) = rec.strip_prefix(b"# branch.oid ") {
+            let oid = String::from_utf8_lossy(rest).trim().to_string();
+            return (oid != "(initial)").then_some(oid);
+        }
+    }
+    None
+}
+
+/// The mode git would record for a worktree file, so an untracked row can be
+/// classified like any other. `None` for anything that is not a file or a
+/// symlink — a fifo or a socket would block `--no-index` on open.
+fn worktree_mode(path: &Path) -> Option<String> {
+    let md = std::fs::symlink_metadata(path).ok()?;
+    if md.file_type().is_symlink() {
+        return Some("120000".to_string());
+    }
+    if !md.file_type().is_file() {
+        return None;
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if md.permissions().mode() & 0o111 != 0 {
+            return Some("100755".to_string());
+        }
+    }
+    Some("100644".to_string())
+}
+
+/// The adds badge for an untracked file, without forking git — its whole
+/// content is the diff. `None` where git would print `Binary files … differ`,
+/// or past the patch ceiling, which are the two rows that get no count anyway.
+fn untracked_adds(path: &Path, max_bytes: u64) -> Option<u32> {
+    let md = std::fs::metadata(path).ok()?;
+    if md.len() > max_bytes {
+        return None;
+    }
+    let bytes = std::fs::read(path).ok()?;
+    if bytes.iter().take(BINARY_SNIFF_BYTES).any(|b| *b == 0) {
+        return None;
+    }
+    let mut n = bytes.iter().filter(|b| **b == b'\n').count() as u32;
+    if bytes.last().is_some_and(|b| *b != b'\n') {
+        n += 1;
+    }
+    Some(n)
+}
+
+/// The checkout's file list: branch, the HEAD it is measured against, and one
+/// row per changed path — staged, unstaged, or untracked.
+///
+/// One `status` call carries three answers (branch, HEAD oid, the flags), so
+/// the branch name costs no extra fork and a detached HEAD reads as the short
+/// oid, the same convention `gitstatus` and the header already use.
+fn checkout_entries(repo: &Path) -> Result<(String, String, Vec<mesimon_core::diff::FileEntry>)> {
+    // `-uall`, not `-unormal`: `-unormal` collapses an untracked directory to
+    // one `? dir/` row, and `git diff --no-index` cannot open a directory, so
+    // that row could never be read. Ignored files stay out either way.
+    let status = git_bytes(repo, &["status", "--porcelain=v2", "--branch", "-uall", "-z"])
+        .map_err(|e| anyhow::anyhow!("git status failed: {}", first_line(&e.to_string())))?;
+    let g = crate::gitstatus::parse(&status);
+    // Pin the oid the status reported: a commit landing between these calls
+    // must not leave the range and `base_oid` describing different HEADs.
+    let base = match head_oid(&status) {
+        Some(oid) => oid,
+        None => empty_tree(repo)?,
+    };
+    let raw = git_bytes(
+        repo,
+        &[
+            "--no-pager",
+            "diff",
+            "--raw",
+            "-z",
+            "--abbrev=40",
+            "--find-renames",
+            "--no-ext-diff",
+            &base,
+        ],
+    )
+    .map_err(|e| anyhow::anyhow!("git diff failed: {}", first_line(&e.to_string())))?;
+    let mut files = parse_raw_z(&raw);
+    // `--find-renames` here too. Without it the counts come from `diff.renames`,
+    // and a user who set it false gets a rename's badge off the add's numstat.
+    if let Ok(numstat) = git_bytes(
+        repo,
+        &["--no-pager", "diff", "--numstat", "-z", "--find-renames", "--no-ext-diff", &base],
+    ) {
+        merge_numstat(&mut files, &parse_numstat_z(&numstat));
+    }
+    apply_status_flags(&mut files, &parse_status_v2_z(&status));
+
+    // An untracked row is an ADD here, not a display-only sighting: the
+    // checkout can serve its content from `--no-index`, so it is stamped like
+    // one and every reader downstream — the fetch, the gutter, the hunk pane —
+    // treats it as the add it is. A path git would not descend into keeps the
+    // empty status, which still means "there is no patch behind this row".
+    let mut untracked = 0usize;
+    files.retain_mut(|f| {
+        if !f.untracked || !f.status.is_empty() {
+            return true;
+        }
+        untracked += 1;
+        if untracked > MAX_UNTRACKED_ROWS {
+            return false;
+        }
+        if let Some(mode) = worktree_mode(&repo.join(&f.path)) {
+            f.status = "A".to_string();
+            f.old_mode = "000000".to_string();
+            f.new_mode = mode;
+            f.adds = untracked_adds(&repo.join(&f.path), MAX_PATCH_BYTES);
+            f.dels = f.adds.map(|_| 0);
+        }
+        true
+    });
+    Ok((g.branch, base, files))
+}
+
+/// `DiffList` for the checkout target.
+pub fn checkout_diff_list(repo: &Path) -> Result<Response> {
+    let (branch, base_oid, files) = checkout_entries(repo)?;
+    Ok(Response::DiffList {
+        branch,
+        base_oid,
+        // No second tip: the working tree is not a ref.
+        branch_oid: String::new(),
+        files,
+        worktree_present: true,
+    })
+}
+
+/// `DiffFile` for the checkout target. Like the branch road, a path the list
+/// did not name is refused — which is also what keeps `--no-index`, whose two
+/// operands are plain paths, from being pointed anywhere but at this checkout.
+pub fn checkout_diff_file(repo: &Path, path: &str, context: u32) -> Result<FileDiff> {
+    let (_, base, files) = checkout_entries(repo)?;
+    let Some(entry) = files.iter().find(|f| f.path == path) else {
+        bail!("no such file in this diff");
+    };
+    let ctx = format!("-U{}", context.clamp(0, 999));
+    let mut args: Vec<&str> = vec![
+        "--no-pager",
+        "diff",
+        "--no-color",
+        "--no-ext-diff",
+        &ctx,
+        "--src-prefix=a/",
+        "--dst-prefix=b/",
+    ];
+    let untracked = entry.untracked && entry.status == "A";
+    if untracked {
+        // The whole file is the patch. Size is checked here rather than in
+        // `build_file_diff` so a 500 MB stray never becomes 500 MB of stdout.
+        let bytes = std::fs::metadata(repo.join(path)).map(|m| m.len()).unwrap_or(0);
+        if bytes > MAX_PATCH_BYTES {
+            return Ok(FileDiff {
+                path: entry.path.clone(),
+                old_path: None,
+                render: Render::TooLarge { bytes },
+                hunks: Vec::new(),
+            });
+        }
+        args.push("--no-index");
+        args.push("--");
+        args.push("/dev/null");
+        args.push(path);
+        return Ok(match git_bytes_diff(repo, &args) {
+            Ok(patch) => build_file_diff(entry, &patch, MAX_PATCH_BYTES),
+            Err(e) => unresolvable(entry, &e.to_string()),
+        });
+    }
+    if entry.old_path.is_some() {
+        args.push("--find-renames");
+    }
+    args.push(&base);
+    args.push("--");
+    if let Some(old) = &entry.old_path {
+        args.push(old);
+    }
+    args.push(path);
+    Ok(match git_bytes(repo, &args) {
+        Ok(patch) => build_file_diff(entry, &patch, MAX_PATCH_BYTES),
+        Err(e) => unresolvable(entry, &e.to_string()),
+    })
+}
+
+fn unresolvable(entry: &mesimon_core::diff::FileEntry, message: &str) -> FileDiff {
+    FileDiff {
+        path: entry.path.clone(),
+        old_path: entry.old_path.clone(),
+        render: Render::Unresolvable { message: first_line(message).to_string() },
+        hunks: Vec::new(),
+    }
 }
 
 #[cfg(test)]
@@ -271,5 +517,182 @@ mod tests {
         let fd = diff_file(&repo, &b, "keep.txt", 3).unwrap();
         assert_eq!(fd.render, Render::Text);
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    // ---- the board's own checkout (T-221) --------------------------------
+
+    /// A plain repository with one commit and no worktree — the shape every
+    /// shared_checkout ticket actually works in.
+    fn checkout_scratch(name: &str) -> Option<PathBuf> {
+        if !have_git() {
+            return None;
+        }
+        let repo = std::env::temp_dir().join(format!("msmn-chk-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&repo).ok();
+        std::fs::create_dir_all(&repo).unwrap();
+        let run = |d: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&repo, &["init", "-q", "-b", "main"]);
+        run(&repo, &["config", "user.email", "t@t"]);
+        run(&repo, &["config", "user.name", "t"]);
+        std::fs::write(repo.join("keep.txt"), "line one\nline two\n").unwrap();
+        std::fs::write(repo.join("moved-src.txt"), "stable\n").unwrap();
+        std::fs::write(repo.join("tool.sh"), "#!/bin/sh\necho hi\n").unwrap();
+        std::fs::write(repo.join("clean.txt"), "untouched\n").unwrap();
+        run(&repo, &["add", "."]);
+        run(&repo, &["commit", "-qm", "init"]);
+        Some(repo)
+    }
+
+    fn dirty_checkout(name: &str) -> Option<PathBuf> {
+        let repo = checkout_scratch(name)?;
+        let run = |d: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        // Unstaged edit, staged-and-then-edited (MM), a staged rename, a
+        // worktree-only chmod, and four kinds of untracked.
+        std::fs::write(repo.join("keep.txt"), "line one\nCHANGED two\n").unwrap();
+        std::fs::write(repo.join("clean.txt"), "staged\n").unwrap();
+        run(&repo, &["add", "clean.txt"]);
+        std::fs::write(repo.join("clean.txt"), "staged then edited\n").unwrap();
+        run(&repo, &["mv", "moved-src.txt", "moved-dst.txt"]);
+        run(&repo, &["update-index", "--chmod=+x", "tool.sh"]);
+        run(&repo, &["reset", "-q", "--", "tool.sh"]);
+        std::fs::set_permissions(
+            repo.join("tool.sh"),
+            std::os::unix::fs::PermissionsExt::from_mode(0o755),
+        )
+        .unwrap();
+        std::fs::write(repo.join("stray.txt"), "one\ntwo\nno trailing newline").unwrap();
+        std::fs::write(repo.join("blob.bin"), [0u8, 159, 146, 150]).unwrap();
+        std::fs::create_dir_all(repo.join("newdir")).unwrap();
+        std::fs::write(repo.join("newdir/inside.txt"), "nested\n").unwrap();
+        std::os::unix::fs::symlink("keep.txt", repo.join("link.txt")).unwrap();
+        Some(repo)
+    }
+
+    fn files_of(resp: &Response) -> Vec<mesimon_core::diff::FileEntry> {
+        match resp {
+            Response::DiffList { files, .. } => files.clone(),
+            other => panic!("expected DiffList, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn checkout_list_is_one_row_per_path_with_untracked_as_adds() {
+        let Some(repo) = dirty_checkout("list") else { return };
+        let resp = checkout_diff_list(&repo).unwrap();
+        let files = files_of(&resp);
+        let by = |p: &str| files.iter().find(|f| f.path == p).cloned().unwrap();
+
+        match &resp {
+            Response::DiffList { branch, base_oid, branch_oid, worktree_present, .. } => {
+                assert_eq!(branch, "main");
+                assert_eq!(base_oid.len(), 40, "the HEAD the diff was taken against");
+                assert!(branch_oid.is_empty(), "the working tree is not a ref");
+                assert!(worktree_present, "the checkout IS the working tree");
+            }
+            _ => unreachable!(),
+        }
+
+        assert_eq!(by("keep.txt").status, "M");
+        assert_eq!(by("keep.txt").adds, Some(1));
+        // Staged AND edited since: still one row, HEAD to the working tree.
+        assert_eq!(files.iter().filter(|f| f.path == "clean.txt").count(), 1);
+        assert_eq!(by("clean.txt").status, "M");
+        let moved = by("moved-dst.txt");
+        assert_eq!(moved.status, "R");
+        assert_eq!(moved.old_path.as_deref(), Some("moved-src.txt"));
+
+        // An untracked file is an ADD here, not a sighting.
+        let stray = by("stray.txt");
+        assert_eq!(stray.status, "A");
+        assert!(stray.untracked);
+        assert_eq!(stray.old_mode, "000000");
+        assert_eq!(stray.new_mode, "100644");
+        assert_eq!(stray.adds, Some(3), "the last line counts without its newline");
+        assert_eq!(stray.dels, Some(0));
+        assert_eq!(by("blob.bin").adds, None, "a binary stray gets no count");
+        assert_eq!(by("link.txt").new_mode, "120000");
+    }
+
+    #[test]
+    fn checkout_list_expands_an_untracked_directory() {
+        let Some(repo) = dirty_checkout("uall") else { return };
+        let files = files_of(&checkout_diff_list(&repo).unwrap());
+        // `-unormal` would give one `newdir/` row, which cannot be opened.
+        assert!(files.iter().any(|f| f.path == "newdir/inside.txt"));
+        assert!(!files.iter().any(|f| f.path.ends_with('/')));
+    }
+
+    #[test]
+    fn checkout_file_renders_an_untracked_file_as_all_adds() {
+        let Some(repo) = dirty_checkout("adds") else { return };
+        let fd = checkout_diff_file(&repo, "stray.txt", 3).unwrap();
+        assert_eq!(fd.render, Render::Text);
+        let lines: Vec<_> = fd.hunks.iter().flat_map(|h| h.lines.iter()).collect();
+        assert_eq!(lines.len(), 3);
+        assert!(lines.iter().all(|l| l.sign == Sign::Add), "a new file is nothing but adds");
+        assert_eq!(lines[0].text, "one");
+
+        // And a tracked edit still reads normally on the same road.
+        let fd = checkout_diff_file(&repo, "keep.txt", 3).unwrap();
+        assert_eq!(fd.render, Render::Text);
+        assert!(fd.hunks[0].lines.iter().any(|l| l.text.contains("CHANGED")));
+    }
+
+    #[test]
+    fn checkout_file_reads_an_untracked_symlink_as_a_symlink() {
+        let Some(repo) = dirty_checkout("link") else { return };
+        assert_eq!(checkout_diff_file(&repo, "link.txt", 3).unwrap().render, Render::Symlink);
+        assert_eq!(checkout_diff_file(&repo, "blob.bin", 3).unwrap().render, Render::Binary);
+    }
+
+    /// The T-221 classification bug, end to end through real git: the raw
+    /// record's destination blob is forty zeros, so blob equality could never
+    /// have answered here.
+    #[test]
+    fn checkout_worktree_chmod_is_a_mode_change() {
+        let Some(repo) = dirty_checkout("chmod") else { return };
+        let files = files_of(&checkout_diff_list(&repo).unwrap());
+        let sh = files.iter().find(|f| f.path == "tool.sh").unwrap();
+        assert_eq!((sh.old_mode.as_str(), sh.new_mode.as_str()), ("100644", "100755"));
+        assert_eq!(sh.new_blob, "0".repeat(40), "the worktree side has no oid");
+        assert_eq!(
+            checkout_diff_file(&repo, "tool.sh", 3).unwrap().render,
+            Render::ModeOnly { old_mode: "100644".into(), new_mode: "100755".into() }
+        );
+    }
+
+    #[test]
+    fn checkout_list_on_an_unborn_head_uses_the_empty_tree() {
+        let Some(repo) = checkout_scratch("unborn") else { return };
+        // A fresh repository with a staged file and nothing committed.
+        let fresh = repo.join("fresh");
+        std::fs::create_dir_all(&fresh).unwrap();
+        let run = |args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(&fresh).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}");
+        };
+        run(&["init", "-q", "-b", "main"]);
+        run(&["config", "user.email", "t@t"]);
+        run(&["config", "user.name", "t"]);
+        std::fs::write(fresh.join("first.txt"), "hello\n").unwrap();
+        run(&["add", "first.txt"]);
+        let files = files_of(&checkout_diff_list(&fresh).unwrap());
+        let first = files.iter().find(|f| f.path == "first.txt").unwrap();
+        assert_eq!(first.status, "A", "staged against the empty tree, not untracked");
+        assert_eq!(checkout_diff_file(&fresh, "first.txt", 3).unwrap().render, Render::Text);
+    }
+
+    #[test]
+    fn checkout_file_refuses_a_path_outside_the_list() {
+        let Some(repo) = dirty_checkout("escape") else { return };
+        // `--no-index` takes two plain paths; the list is what fences it.
+        assert!(checkout_diff_file(&repo, "../../etc/passwd", 3).is_err());
+        assert!(checkout_diff_file(&repo, "clean-but-unchanged", 3).is_err());
     }
 }

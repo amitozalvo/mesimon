@@ -631,6 +631,10 @@ pub struct Ctx {
     /// `create it` off this, and nothing else reads it.
     pub claude_md_exists: bool,
     // ---- the board's own checkout (T-124) ----
+    /// There is a repository under the board at all — the checkout has been
+    /// sampled. `v` on the board diffs its uncommitted work (T-221), and
+    /// where there is no repository the key is inert rather than a message.
+    pub git_repo: bool,
     /// The checkout's branch tracks a remote branch, so a fetch has
     /// somewhere to go. Gates the menu row: without an upstream there are no
     /// arrows on the header either.
@@ -1140,6 +1144,31 @@ static BOARD: &[Binding] = &[
         group: Group::Ticket,
         mutates: true,
         prio: 70,
+    },
+    Binding {
+        // The same verb the ticket page's `v` carries, on the screen whose
+        // subject is the repository rather than a ticket: the board diffs the
+        // CHECKOUT's uncommitted work (T-221). Which diff you get is answered
+        // by which screen you pressed it on, never by what the cursor is over
+        // — a worktree ticket's branch diff is still `space` then `v`.
+        //
+        // `Group::View` and not `Worktree`: the board has no other Worktree
+        // binding, so one here would mint a `BRANCH` section in `?` over a
+        // working-tree diff. `p show replies ∙ v diff` is what it is.
+        //
+        // Overlay-only (`prio: 0`), because the hint sits where it operates:
+        // `chrome::git_clause` draws it beside the checkout's own `∙ 3
+        // changed`, which is the thing it reads — the ticket rail's `c s x`
+        // and the PREVIEW heading's `{ } page` are the same idiom (T-158).
+        keys: &[Key::Char('v')],
+        verb: Verb::OpenDiff,
+        show: "v",
+        hint: |_| "diff",
+        avail: |c| c.git_repo,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 0,
     },
     Binding {
         // `Tab` on a card is the composer's `Tab` a ticket late: the card
@@ -4440,6 +4469,7 @@ mod tests {
             has_worktree: true,
             merge_actionable: true,
             merge_word: "merge",
+            git_repo: true,
             ..Default::default()
         };
         for (key, verb) in [
@@ -4451,6 +4481,10 @@ mod tests {
             (Key::Char('z'), Verb::SnoozePrefix),
             (Key::Char('x'), Verb::Sleep),
             (Key::Char('n'), Verb::NoteEdit),
+            // One verb, two subjects: the board's `v` diffs the checkout, the
+            // ticket page's diffs that ticket's branch (T-221). What differs
+            // is what the screen is about, never what the key means.
+            (Key::Char('v'), Verb::OpenDiff),
         ] {
             assert_eq!(resolve(Scope::Board, key, &ctx), Some(verb), "board {key:?}");
             assert_eq!(resolve(Scope::Ticket, key, &ctx), Some(verb), "ticket {key:?}");
@@ -4469,6 +4503,35 @@ mod tests {
         assert!(!bindings(Scope::Ticket)
             .iter()
             .any(|b| b.class == Class::Arm && b.verb == Verb::Sleep));
+    }
+
+    /// The board's `v` needs a repository under it, and says so by being
+    /// inert — the "a key that is hinted works" clause. The ticket page's `v`
+    /// keeps its own gate, which is a worktree, not a checkout.
+    #[test]
+    fn v_needs_a_repository_and_is_the_same_verb_on_both_screens() {
+        let bare = Ctx { has_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('v'), &bare), None, "no repo, no diff");
+        assert_eq!(hint_for(Scope::Board, Verb::OpenDiff, &bare), None);
+
+        let repo = Ctx { git_repo: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('v'), &repo), Some(Verb::OpenDiff));
+        assert_eq!(hint_for(Scope::Board, Verb::OpenDiff, &repo), Some(("v", "diff")));
+        // A card under the cursor changes nothing: the board's `v` is the
+        // repository's, whatever the cursor is over.
+        let carded = Ctx { git_repo: true, has_ticket: true, has_worktree: true, ..repo.clone() };
+        assert_eq!(resolve(Scope::Board, Key::Char('v'), &carded), Some(Verb::OpenDiff));
+
+        // The ticket page reads the worktree, not the checkout.
+        let wt = Ctx { has_worktree: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Ticket, Key::Char('v'), &wt), Some(Verb::OpenDiff));
+        assert_eq!(resolve(Scope::Ticket, Key::Char('v'), &repo), None, "a repo is not a branch");
+
+        // It is a view, not a branch action: the board has no other Worktree
+        // binding and must not grow a one-row BRANCH section in `?`.
+        let b = bindings(Scope::Board).iter().find(|b| b.verb == Verb::OpenDiff).unwrap();
+        assert_eq!(b.group, Group::View);
+        assert!(!b.mutates, "a diff reads and nothing else");
     }
 
     /// `x` is one verb wearing two words (and silence on a sleeper), and the
@@ -4630,8 +4693,12 @@ mod tests {
             bulk_sleep: 3,
             bulk_archive: 3,
             has_archived: true,
+            // `v` is live on the board now, so `V` has a lowercase twin to be
+            // retired against rather than being absent from the scope.
+            git_repo: true,
             ..Default::default()
         };
+        assert_eq!(resolve(Scope::Board, Key::Char('v'), &full), Some(Verb::OpenDiff));
         for retired in [Key::Char('Z'), Key::Char('A'), Key::Char('V'), Key::Char('e')] {
             assert_eq!(resolve(Scope::Board, retired, &full), None, "{retired:?} is retired");
         }

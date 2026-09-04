@@ -59,7 +59,7 @@ fn screen_word(app: &App) -> &'static str {
         (_, Mode::Editor(ed)) if !ed.composing() => "NOTE",
         (Screen::Board, _) => "BOARD",
         (Screen::Ticket { .. }, _) => "TICKET",
-        (Screen::Diff { .. }, _) => "DIFF",
+        (Screen::Diff, _) => "DIFF",
         (Screen::Releases, _) => "RELEASES",
     }
 }
@@ -174,9 +174,17 @@ const GIT_BRANCH_FLOOR: usize = 10;
 /// something to do here", and the change count is a fact in words, not a
 /// star on the name. Nothing is drawn until a sample has landed.
 ///
-/// `room` is what the row can spare. The parts give way in order: the count
-/// drops first, then the name truncates to its floor, and the arrows are
-/// never cut — below that the clause stands aside whole rather than lie.
+/// Since T-221 it also carries the key that READS the count — ` v diff`,
+/// beside the `∙ 3 changed` it opens — which is the hint-where-it-operates
+/// idiom the ticket rail's `c s x` and the PREVIEW heading's `{ } page`
+/// already use (T-158), and why the board's `v` is `prio: 0`. It rides the
+/// COUNT and not the branch: `v` shows what is uncommitted, so on a clean
+/// checkout there is nothing for it to say and `?` is where it stays.
+///
+/// `room` is what the row can spare. The parts give way in order: the hint
+/// drops first, then the count, then the name truncates to its floor, and the
+/// arrows are never cut — below that the clause stands aside whole rather
+/// than lie.
 fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     let g = &app.git;
     if !g.sampled || g.branch.is_empty() {
@@ -193,10 +201,31 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     }
     let mut changed =
         if g.changed > 0 { format!(" ∙ {} changed", g.changed) } else { String::new() };
+    // The key is spelled by `hint_spans` like every other hint — bold key,
+    // dim word — because "a key looks like this wherever it is hinted" is
+    // what makes one readable off the footer at all. Two spaces rather than
+    // a fourth `∙`: the separator is for facts, and this is not one.
+    let ctx = app.ctx();
+    let mut hint: Vec<Span<'static>> = if changed.is_empty() {
+        Vec::new()
+    } else {
+        keymap::binding_for(keymap::Scope::Board, keymap::Verb::OpenDiff, &ctx)
+            .map(|b| {
+                let mut out = vec![Span::raw("  ".to_string())];
+                out.extend(hint_spans(&[b], &ctx, &theme.rest, room));
+                out
+            })
+            .unwrap_or_default()
+    };
+    let hint_w: usize = hint.iter().map(|s| s.content.width()).sum();
     // ` ⎇ ` is three cells; the arrows ride on the name.
     let fixed = 3 + state.width();
     let floor = g.branch.width().min(GIT_BRANCH_FLOOR);
-    let mut name_room = room.saturating_sub(fixed + changed.width());
+    let mut name_room = room.saturating_sub(fixed + changed.width() + hint_w);
+    if name_room < floor {
+        hint.clear();
+        name_room = room.saturating_sub(fixed + changed.width());
+    }
     if name_room < floor {
         changed.clear();
         name_room = room.saturating_sub(fixed);
@@ -214,6 +243,7 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     if !changed.is_empty() {
         out.push(Span::styled(changed, theme.dim2()));
     }
+    out.extend(hint);
     out
 }
 
@@ -366,7 +396,7 @@ fn mode_word(app: &App) -> Option<&'static str> {
         (&app.screen, scope),
         (Screen::Board, Scope::Board)
             | (Screen::Ticket { .. }, Scope::Ticket)
-            | (Screen::Diff { .. }, Scope::Diff)
+            | (Screen::Diff, Scope::Diff)
             | (Screen::Releases, Scope::Releases)
     );
     (!resting).then_some(word)

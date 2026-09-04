@@ -17,7 +17,11 @@ pub struct FileEntry {
     /// Some(..) iff status == "R" (the pre-rename path).
     #[serde(default)]
     pub old_path: Option<String>,
-    /// "A" "M" "D" "R" "T" — or "" for an in-flight-only (untracked) row.
+    /// "A" "M" "D" "R" "T" — or "" for an in-flight-only (untracked) row,
+    /// which is display-only on a branch diff because `git diff` cannot see a
+    /// file the agent never added. The checkout diff (T-221) stamps those rows
+    /// "A" instead and serves them from `--no-index`, so an empty status still
+    /// means exactly "there is no patch behind this row".
     pub status: String,
     #[serde(default)]
     pub old_mode: String,
@@ -371,7 +375,21 @@ pub fn build_file_diff(entry: &FileEntry, patch: &[u8], max_bytes: u64) -> FileD
     if binary_marker {
         return FileDiff { render: Render::Binary, ..base };
     }
-    if entry.old_blob == entry.new_blob && entry.old_mode != entry.new_mode {
+    // A mode change and nothing else. 08 §1.3 spelled this as blob equality,
+    // which only holds on a commit-to-commit range: `git diff --raw HEAD`
+    // writes forty zeros for the destination blob whenever the worktree file's
+    // stat differs from the index, so a worktree-only `chmod +x` could never
+    // match and rendered as an empty Text diff (T-221). The patch says it
+    // directly instead — no content, not binary, the modes differ — and both
+    // modes must be real file modes: without that clause an empty new file
+    // (`000000` → `100644`, no hunks), an empty deleted file, and an untracked
+    // row would every one of them read as a mode change.
+    let file_mode = |m: &String| !m.is_empty() && m != "000000";
+    if entry.old_mode != entry.new_mode
+        && file_mode(&entry.old_mode)
+        && file_mode(&entry.new_mode)
+        && hunks.is_empty()
+    {
         return FileDiff {
             render: Render::ModeOnly {
                 old_mode: entry.old_mode.clone(),
@@ -394,17 +412,26 @@ pub fn merge_numstat(files: &mut [FileEntry], numstat: &[(String, Option<(u32, u
 }
 
 /// Set dirty flags on stable entries and append untracked-only rows.
+///
+/// The stable rows are indexed once rather than scanned per untracked path:
+/// a worktree listed with `-unormal` has a handful of those, but the board's
+/// own checkout is listed with `-uall` (T-221) and a repository missing a
+/// `.gitignore` rule has tens of thousands — against a `Vec` that grows as
+/// this pushes.
 pub fn apply_status_flags(files: &mut Vec<FileEntry>, flags: &StatusFlags) {
+    let mut at: std::collections::HashMap<String, usize> =
+        files.iter().enumerate().map(|(i, f)| (f.path.clone(), i)).collect();
     for f in files.iter_mut() {
         if flags.dirty.contains(&f.path) {
             f.dirty = true;
         }
     }
     for path in &flags.untracked {
-        if let Some(f) = files.iter_mut().find(|f| f.path == *path) {
-            f.untracked = true;
+        if let Some(i) = at.get(path) {
+            files[*i].untracked = true;
             continue;
         }
+        at.insert(path.clone(), files.len());
         files.push(FileEntry {
             path: path.clone(),
             old_path: None,
@@ -614,6 +641,62 @@ mod tests {
             fd.render,
             Render::ModeOnly { old_mode: "100644".into(), new_mode: "100755".into() }
         );
+    }
+
+    /// The T-221 bug: `git diff --raw HEAD` writes forty zeros for the
+    /// destination blob whenever the worktree file's stat differs from the
+    /// index, so blob equality could never answer here and a worktree-only
+    /// chmod rendered as an empty Text diff.
+    #[test]
+    fn classify_mode_only_when_the_new_blob_is_zeroed() {
+        let mut e = entry("M", "100644", "100755");
+        e.old_blob = OID_A.into();
+        e.new_blob = "0".repeat(40);
+        let fd = build_file_diff(&e, b"old mode 100644\nnew mode 100755\n", 1024);
+        assert_eq!(
+            fd.render,
+            Render::ModeOnly { old_mode: "100644".into(), new_mode: "100755".into() }
+        );
+    }
+
+    /// The `000000` guard, which is what keeps the rule above from swallowing
+    /// three other shapes that also have differing modes and no hunks.
+    #[test]
+    fn an_empty_new_file_is_not_a_mode_change() {
+        let mut e = entry("A", "000000", "100644");
+        e.new_blob = OID_A.into();
+        let fd = build_file_diff(&e, b"new file mode 100644\nindex 0000000..e69de29\n", 1024);
+        assert_eq!(fd.render, Render::Text, "an empty add is not a chmod");
+
+        let mut e = entry("D", "100644", "000000");
+        e.old_blob = OID_A.into();
+        let fd = build_file_diff(&e, b"deleted file mode 100644\nindex e69de29..0000000\n", 1024);
+        assert_eq!(fd.render, Render::Text, "an empty delete is not a chmod");
+    }
+
+    #[test]
+    fn an_untracked_row_is_not_a_mode_change() {
+        // The row `apply_status_flags` appends: every mode and blob empty.
+        let e = entry("", "", "");
+        assert_eq!(build_file_diff(&e, b"", 1024).render, Render::Text);
+    }
+
+    #[test]
+    fn status_flags_fold_in_linear_time() {
+        // 5k stable rows and 5k untracked paths, half of them already listed.
+        let mut files: Vec<FileEntry> = (0..5000)
+            .map(|i| FileEntry { path: format!("src/f{i}.rs"), ..entry("M", "100644", "100644") })
+            .collect();
+        let flags = StatusFlags {
+            dirty: (0..5000).map(|i| format!("src/f{i}.rs")).collect(),
+            untracked: (2500..7500).map(|i| format!("src/f{i}.rs")).collect(),
+        };
+        apply_status_flags(&mut files, &flags);
+        assert_eq!(files.len(), 7500, "only the unlisted paths are appended");
+        assert!(files[0].dirty && !files[0].untracked);
+        assert!(files[2500].dirty && files[2500].untracked, "a listed path is flagged, not pushed");
+        assert_eq!(files[7499].status, "", "the appended rows keep the display-only shape");
+        assert!(files[7499].untracked);
     }
 
     #[test]

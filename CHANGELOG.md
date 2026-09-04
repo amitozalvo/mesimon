@@ -11,6 +11,24 @@ section out of it for the GitHub release body.
 
 ## v0.1.0-alpha.13 — 2026-09-04
 
+- **`v` on the board diffs the checkout.** The diff viewer used to open only from a ticket
+  page, and only for tickets with their own worktree — which left the commonest case
+  unreadable, because a shared-checkout agent works in the repo itself and leaves the work
+  uncommitted. `v` on the board now opens the same screen on `git diff HEAD`: everything
+  staged and unstaged, against the HEAD it was measured from. The header already said how
+  much there was (`⎇ main ↑2 ∙ 3 changed`); the key that reads it now sits right beside the
+  count, rather than in the footer with the keys that act on the card under the cursor.
+
+  **Untracked files open too.** A file the agent just wrote is invisible to `git diff`, so the
+  branch viewer could only ever list it and say "not reviewable" — usually about the one file
+  you most wanted to see. On the checkout it is an add like any other, and its whole content
+  is the diff. `!` is not offered here, because a shell in the checkout is a shell you already
+  have; `q` goes back to the board.
+
+  Which diff you get is answered by the screen you pressed `v` on, never by what the cursor is
+  over: the board is the repository's screen, the ticket page is the ticket's. A worktree
+  ticket's branch diff is still `space` then `v`, unchanged.
+
 - **mesimon offers the CLAUDE.md line.** A spawned session is often handed only the ticket's
   *title* — its description lives in a note that only the `get_ticket` tool reaches, so agents
   miss it and people end up typing "read the ticket" into every prompt. The board now offers to
