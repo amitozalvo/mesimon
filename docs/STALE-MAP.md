@@ -4810,6 +4810,25 @@ at that moment forking a hundred tmux servers. The client's request to the old d
 handover is now patient with it rather than fast. Bounding it (skip the worktree flag refresh
 on the shutdown road, say) is the next lever if 30 s ever proves short.
 
+**Addendum 2026-09-04 — a flock release is prompt, not instantaneous, and the test said the
+wrong one of those.** `lock_probe_follows_the_holder` flaked four times in a day across two
+sessions, always on its last assertion (`release reads free`), and never reproducibly: 400
+sequential runs clean, 300 concurrent runs of the test alone clean, 40 loaded full-suite runs
+clean — then 3 failures in 120 runs at `--test-threads=64/128`. Thread interleaving was the
+knob, so it was an in-process race, and instrumenting it ended the guessing: at the moment of
+failure `lsof` found NO holder, and the very next probe read free. **The lock was held by a
+process that no longer existed.** A `fork` elsewhere in the binary (`release.rs`'s install test
+runs a `Command`) duplicates every open descriptor into the child, and a duplicate of the test's
+`holder` fd carries the same open file description and therefore the same flock — so the
+parent's `close` does not release it, and the lock outlives the drop until the child reaches
+`exec` and `O_CLOEXEC` fires. Microseconds wide, which is why it needed 128 threads to hit.
+The test now polls for release against a 5 s deadline, which asserts the thing that is true
+(the release lands) rather than the thing that is not (it lands within zero microseconds of
+`close`). **`lock_held` itself is unchanged and correct** — it reports `EWOULDBLOCK` and nothing
+else, and both callers poll, so a stale `held` costs one more turn of a loop already turning.
+The TUI does fork in production (the external editor's handover, the release checker's `curl`
+and `tar`), so the window is reachable there too and is equally harmless.
+
 
 ## The board's ask can wait for a quiet checkout (2026-09-04, user: five claudes in one checkout committed at once)
 

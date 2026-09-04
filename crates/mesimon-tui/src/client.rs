@@ -449,7 +449,21 @@ mod tests {
         // The probe took nothing: the holder can still re-lock exclusively.
         assert_eq!(unsafe { libc::flock(fd, libc::LOCK_EX | libc::LOCK_NB) }, 0);
         drop(holder);
-        assert!(!lock_held(&lock), "release reads free");
+        // Release is prompt, not instantaneous, and the assertion has to say
+        // the first thing rather than the second. Another thread in this
+        // binary can be between `fork` and `exec` holding an INHERITED copy
+        // of this descriptor — same open file description, so the same flock
+        // — which keeps the lock alive past our close until CLOEXEC fires.
+        // (`release.rs`'s install test runs a `Command`; at
+        // `--test-threads=128` this landed in the window about 2% of runs,
+        // and `lsof` found no holder at all by the next probe.) The product
+        // never notices: both callers poll, so a stale `held` costs one more
+        // 100 ms turn of a loop that was already turning.
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while lock_held(&lock) {
+            assert!(Instant::now() < deadline, "release reads free");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         let _ = std::fs::remove_dir_all(&dir);
     }
 
