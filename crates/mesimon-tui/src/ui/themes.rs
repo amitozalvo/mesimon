@@ -74,13 +74,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
             ])
             .style(row_style),
         );
-        let mut detail = flavor.blurb().to_string();
-        for g in [Ground::Dark, Ground::Light] {
-            if app.prefs.for_ground(g) == flavor {
-                detail.push_str(&format!(" ∙ your pick for a {} terminal", word(g)));
-            }
-        }
-        let text = format!("     {}", truncate(&detail, inner_w.saturating_sub(6)));
+        let text = format!("     {}", truncate(flavor.blurb(), inner_w.saturating_sub(6)));
         let pad = inner_w.saturating_sub(text.width());
         lines.push(
             Line::from(vec![Span::styled(text, theme.dim3()), Span::raw(" ".repeat(pad))])

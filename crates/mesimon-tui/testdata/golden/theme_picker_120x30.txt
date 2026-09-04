@@ -8,9 +8,9 @@
 
                            ╭─ THEME ∙ for a dark terminal ──────────────────────────────────╮
                            │   graphite                                                dark │
-                           │     dark, the default ∙ your pick for a dark terminal          │
+                           │     dark, the default                                          │
                            │   chalk                                                  light │
-                           │     light, paper ∙ your pick for a light terminal              │
+                           │     light, paper                                               │
                            │   blue                                                    dark │
                            │     navy and gold, the Borland look                            │
                            │   amber                                                   dark │

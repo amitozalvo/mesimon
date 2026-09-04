@@ -3073,7 +3073,9 @@ rebuilt wholesale; `App::preview(flavor)` is that, factored, and every retheme g
 `App::resting_flavor()` = the pin or the current ground's slot, which is also what makes a
 ground flip under the picker right for free. Enter is `mutates: false` — nothing the daemon owns
 changes. Words, never a mark, for "which slot holds this": `◦` is the suggestion chip's and
-`›`/`◊` were rejected; the row's detail says `your pick for a dark terminal`. The menu row sits
+`›`/`◊` were rejected; the row's detail said `your pick for a dark terminal` until 2026-09-04, when
+the author had the clause removed — the row's ground tag already says which slot, and the
+blurb reads cleaner alone. The menu row sits
 beside `p`: the two view preferences together, never a suggestion (a theme is not something
 worth doing right now), never a footer cell (the `p` argument).
 
