@@ -18,7 +18,7 @@ use unicode_width::UnicodeWidthStr;
 use mesimon_core::keymap::{self, MenuItem, Scope};
 
 use crate::app::App;
-use crate::text::truncate;
+use crate::text::{marquee_offset, marquee_window, truncate};
 
 use super::dialog;
 
@@ -97,8 +97,32 @@ fn draw_list(
             ])
             .style(row_style),
         );
+        // A subtitle too long for the dialog reveals itself marquee-style on
+        // the selected row — the board card title's clock, its reveal and its
+        // one pass. A menu row's detail is where a preference says what it
+        // will do, so `~` was cutting the half that matters.
+        let budget = inner_w.saturating_sub(6);
         let detail = (item.detail)(&ctx);
-        let text = format!("     {}", truncate(&detail, inner_w.saturating_sub(6)));
+        let overflow = detail.width().saturating_sub(budget);
+        let scroll = if selected && overflow > 0 {
+            let key = words_key(&detail);
+            let ms = match app.menu_marquee.get() {
+                Some((k, epoch)) if k == key => epoch.elapsed().as_millis() as u64,
+                _ => {
+                    app.menu_marquee.set(Some((key, std::time::Instant::now())));
+                    0
+                }
+            };
+            marquee_offset(ms, overflow)
+        } else {
+            0
+        };
+        let body = if scroll > 0 {
+            marquee_window(&detail, budget, scroll)
+        } else {
+            truncate(&detail, budget)
+        };
+        let text = format!("     {body}");
         let pad = inner_w.saturating_sub(text.width());
         lines.push(
             Line::from(vec![Span::styled(text, theme.dim3()), Span::raw(" ".repeat(pad))])
@@ -106,4 +130,15 @@ fn draw_list(
         );
     }
     f.render_widget(Paragraph::new(lines), inner);
+}
+
+/// The marquee clock's key: the subtitle's own words. Hashing the sentence
+/// rather than the row means a toggle that rewrites its own detail restarts
+/// the reveal, and a list that reorders under the cursor cannot carry a
+/// half-scrolled clock onto somebody else's words.
+fn words_key(detail: &str) -> u64 {
+    use std::hash::{DefaultHasher, Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    detail.hash(&mut h);
+    h.finish()
 }

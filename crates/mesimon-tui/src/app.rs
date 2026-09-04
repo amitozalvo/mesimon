@@ -600,6 +600,10 @@ pub struct App {
     pub marquee: Cell<Option<(ulid::Ulid, std::time::Instant)>>,
     /// Same clock for the ticket rail's selected session name.
     pub rail_marquee: Cell<Option<(uuid::Uuid, std::time::Instant)>>,
+    /// Same clock for the selected menu or settings row's subtitle, keyed to
+    /// the WORDS: a different row is a new sentence, and so is the same row
+    /// relabelled by its own toggle, which is exactly when the pass replays.
+    pub menu_marquee: Cell<Option<(u64, std::time::Instant)>>,
     /// First visible card row of the cursor column (draw-side scroll state).
     pub scroll_row: Cell<usize>,
     /// Transcript peek (`p`): the cursor card also shows its latest assistant
@@ -808,6 +812,7 @@ impl App {
             col_window: Cell::new(0),
             marquee: Cell::new(None),
             rail_marquee: Cell::new(None),
+            menu_marquee: Cell::new(None),
             scroll_row: Cell::new(0),
             peek: false,
             peek_cache: crate::peek::PeekCache::default(),

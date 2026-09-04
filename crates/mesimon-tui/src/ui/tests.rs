@@ -537,6 +537,42 @@ fn golden_settings_120() {
     golden("settings_120x30", &render(&app, 120, 30));
 }
 
+/// A subtitle wider than the dialog reveals itself on the selected row, the
+/// way an overlong card title and an overlong rail name do. A preference's
+/// detail is where it says what it will do, so the half past the `~` is the
+/// half worth reading.
+#[test]
+fn the_settings_subtitle_marquees() {
+    let mut app = app_graphite(fixture_archived());
+    // The merge train's row: the longest detail in the list, and off by
+    // default, which is the sentence that explains the standing consent.
+    app.mode = Mode::Settings { idx: 4 };
+    let row = |lines: &[String]| -> String {
+        lines
+            .iter()
+            .find(|l| l.contains("merges and asks to rebase"))
+            .unwrap_or_else(|| panic!("the merge train's subtitle: {lines:#?}"))
+            .clone()
+    };
+    let resting = row(&render(&app, 120, 30));
+    assert!(resting.contains("mesimon merges and asks"), "the pass starts at the start: {resting}");
+    assert!(resting.contains('~'), "and it is cut, which is what the walk repairs: {resting}");
+    // Past the opening hold: the draw armed the clock, so date it into the
+    // past rather than sleeping through six steps of it.
+    let (key, _) = app.menu_marquee.get().expect("an overflowing subtitle arms the clock");
+    app.menu_marquee
+        .set(Some((key, std::time::Instant::now() - std::time::Duration::from_millis(2000))));
+    let walked = row(&render(&app, 120, 30));
+    assert!(!walked.contains("mesimon merges"), "the words have moved: {walked}");
+    assert!(!walked.contains('~'), "a walking marquee hard-clips: {walked}");
+    assert!(walked.contains("board is q"), "and it reveals what the cut hid: {walked}");
+    // An unselected row is still cut: one sentence moves, the list is quiet.
+    app.mode = Mode::Settings { idx: 0 };
+    let quiet = row(&render(&app, 120, 30));
+    assert!(quiet.contains("mesimon merges and asks"), "{quiet}");
+    assert!(quiet.contains('~'), "{quiet}");
+}
+
 /// The theme picker over the board: six rows, the flavor's ground at the
 /// right edge, and the saved slots named in words on their rows.
 #[test]
