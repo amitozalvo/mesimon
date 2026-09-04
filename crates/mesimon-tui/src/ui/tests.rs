@@ -2062,9 +2062,10 @@ fn golden_ticket_queued_120() {
     golden("ticket_queued_120x30", &render(&app, 120, 30));
 }
 
-/// The merge train armed (2026-09-04): the header carries its word, a
-/// REVIEW card it will merge wears the owed mark and, open, says so and
-/// names what it waits on; a card it will ask to rebase says that.
+/// The merge train armed (2026-09-04): a REVIEW card it will merge wears
+/// the owed mark and, open, says so and names what it waits on; a card it
+/// will ask to rebase says that. The HEADER says nothing — the train only
+/// reaches attached worktree tickets, so it has no board-wide word.
 #[test]
 fn golden_train_120() {
     let mut app = app_graphite(fixture(false));
@@ -2088,7 +2089,11 @@ fn golden_train_120() {
     app.cursor_col = 2;
     app.cursor_row = 0;
     let lines = render(&app, 120, 30);
-    assert!(lines[0].contains("∙ train"), "the header says the train is armed:\n{}", lines[0]);
+    assert!(
+        !lines[0].contains("train") && !lines[0].contains("merge"),
+        "an armed train adds no word to the header:\n{}",
+        lines[0]
+    );
     assert!(lines.iter().any(|l| l.contains("merge ∙ after T-3 +1")), "{}", lines.join("\n"));
     let mark = crate::glyphs::queued(crate::glyphs::Tier::Unicode, 0);
     // T-6's claude FAILED: the error mark outranks the owed one, so the card

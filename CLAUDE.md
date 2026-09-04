@@ -1131,8 +1131,12 @@ it, claude idle, pane silent ≥ 5 s by `#{window_activity}`) once per base tip 
 hand `m` records too), fused at 6 asks / 2 h (`Notice merge_train_suspended`, a hand `m` or move
 clears it). Merged tickets do not move. `AutomationStatus` on the snapshot says armed / asked /
 suspended (`merge_outstanding` reads `train_asked`), `pending` carries `merge` / `rebase` rows so
-the cards say what is coming (`merge ∙ after T-3 +1`), and the header hangs ` ∙ train` off the
-git clause. `mesimon doctor` prints a `merge train` line. E2e `merge_train_e2e`. (STALE-MAP "The
+the cards say what is coming (`merge ∙ after T-3 +1`). **The header says NOTHING** — a ` ∙ train`
+clause beside the checkout's own branch shipped for a day and was cut (author 2026-09-04, with
+` ∙ auto-merge`, its hour-old rename): the header speaks for the whole board and the train only
+ever reaches ATTACHED worktree tickets, so a board-wide word claims more than it does. Armed-ness
+is the Settings row's to say and what it will do is the card's. `mesimon doctor` prints a
+`merge train` line. E2e `merge_train_e2e`. (STALE-MAP "The
 merge train".)
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for

@@ -4915,9 +4915,19 @@ move, like the movegate's. Merged tickets do NOT move.
 **Also.** `merge_ticket`'s quiet gate counts CLAUDE sessions only now: a `!` shell is pinned
 Running for life and an ff-merge never touches the worktree, so it had refused every hand `m`
 under one. `AutomationStatus.train_asked` lets the ticket page read `rebase requested` after a
-train ask without a TUI-local memory (`merge_outstanding`). The header hangs ` ∙ train` off the
-git clause while armed; the cards carry `merge ∙ after T-3 +1` / `rebase ask ∙ next` on the owed
-row. E2e `merge_train_e2e`.
+train ask without a TUI-local memory (`merge_outstanding`). The cards carry
+`merge ∙ after T-3 +1` / `rebase ask ∙ next` on the owed row. E2e `merge_train_e2e`.
+
+**The header word is cut (2026-09-04, the next day).** ` ∙ train` hung off the git clause while
+armed, was renamed ` ∙ auto-merge` on the author's ask ("rename train to something more
+indicative"), and was removed an hour later on their second reading: *"it's applying only to
+worktree tickets and not globally really."* The header is the BOARD's row — it sits beside the
+checkout's own branch and change count — and the train only ever merges an attached worktree
+ticket, so any word there overstates its reach; the rename made that louder rather than fixing
+it, since `auto-merge` beside `⎇ main` reads as a promise about main. The two halves already had
+homes: the Settings row says whether it is armed, the card's `merge ∙ after T-3 +1` row says what
+it will actually do, and `mesimon doctor` prints the line. `golden_train_120` now asserts the
+INVERSE — an armed train adds no word to line 0 — so the clause cannot come back by accident.
 
 **Not done.** A merge train that moves merged tickets to DONE (M5's column policy); the merged
 notice bouncing the card through IN PROGRESS and back (automove's, and today's hand notify does

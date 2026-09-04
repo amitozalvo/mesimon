@@ -139,16 +139,15 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // The offer's cells and its gap are spoken for; the git clause takes
         // the rest, and gives its own parts up in order when that is tight.
         let reserved = if offer_w > 0 { offer_w + 4 } else { 1 };
-        // The merge train's word (2026-09-04) rides the git clause's room,
-        // after it, at the crumb's weight: a standing instruction, never an
-        // offer. It is the first thing to go when the row is tight.
-        let train = if app.automation.merge_train { " ∙ train" } else { "" };
+        // The merge train has NO word here (author 2026-09-04, after one day
+        // of ` ∙ train` and an hour of ` ∙ auto-merge`): the header speaks for
+        // the whole board, and the train only ever touches ATTACHED worktree
+        // tickets — a board-wide clause beside the checkout's own branch
+        // claims it will merge everything. Where it is armed is a preference
+        // (the Settings row) and what it will actually do is per ticket (the
+        // card's `merge ∙ after T-3` row), so both halves already have a home.
         let room = (area.width as usize).saturating_sub(used + reserved);
-        let mut git = git_clause(app, room.saturating_sub(train.width()));
-        let git_w: usize = git.iter().map(|s| s.content.width()).sum();
-        if !train.is_empty() && git_w + train.width() <= room {
-            git.push(Span::styled(train.to_string(), theme.dim3()));
-        }
+        let git = git_clause(app, room);
         let git_w: usize = git.iter().map(|s| s.content.width()).sum();
         spans.splice(git_at..git_at, git);
         let used = used + git_w;
