@@ -1,0 +1,30 @@
+ TICKET   mesimon > kanban-tui
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago ∙ queued ∙ after T-3
+
+
+                                                                                           SESSIONS                  1
+
+                                                                                          ✓ ✻ claude               >1y
+                                                                                           s shell ∙ x sleep
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys
