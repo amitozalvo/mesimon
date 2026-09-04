@@ -110,11 +110,17 @@ mesimon
 On the board: `a` adds a ticket, `enter` opens it, `space` opens its page, `m` then `<`/`>` moves
 it between columns, `p` peeks at a live pane, `q` quits.
 
-On a ticket page: `c` starts a Claude session, `s` a shell, `enter` focuses a live one — that hands
-your whole terminal over; detach with tmux's `ctrl-b d` and you are back on the board. `w` switches
-the ticket between a shared checkout and its own worktree (locked once a session exists), `v` shows
-the diff once there is a worktree, and the merge flow lives on the identity line: fast-forward only,
-so mesimon never mints a merge commit.
+In the new-ticket composer, `shift-tab` cycles between the shared checkout and a dedicated
+worktree; that choice locks once a session exists. On a ticket page: `c` starts a Claude session,
+`s` a shell, and `enter` focuses a live one — that hands your whole terminal over. Detach with
+`ctrl-]` (or `ctrl-5`) and you are back on the board. `v` shows the diff once there is a worktree,
+and the merge flow lives on the identity line: fast-forward only, so mesimon never mints a merge
+commit.
+
+On Hebrew and other layouts that mirror the bracket keys, `ctrl-]` arrives as Esc — which
+interrupts the agent instead of detaching. `ctrl-5` is bound for exactly that and works on any
+layout; in iTerm2 you can also fix the keystroke itself, leaving Escape alone: Keys → Key
+Bindings → `ctrl-]` → Send Hex Code → `0x1d`.
 
 `tab` jumps to whatever needs you. The board is deliberately quiet — exactly one saturated colour
 exists, and it means *this session is waiting on you*.

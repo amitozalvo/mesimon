@@ -305,6 +305,20 @@ fn multiplexer(verbose: bool) -> Section {
         ))),
         Some(v) => records.push(tmux_verdict(&v)),
     }
+    // The detach key, and the one layout where pressing it is worse than
+    // doing nothing. `conf.rs` binds both C-] and C-5 to detach-client; on
+    // Hebrew the bracket keys are mirrored, so ctrl+physical-] emits 0x1B,
+    // tmux never sees its key, and the byte lands in the pane as Esc — which
+    // interrupts the agent. C-5 exists for exactly that (digits do not move).
+    // The terminal can also fix the keystroke, which is the better repair:
+    // it leaves the Escape key itself — and so vim, the board's menu and
+    // Claude's own Esc — untouched.
+    records.push(rec(Level::Note, "back to board", "Ctrl+] or Ctrl+5").advice(
+        "On Hebrew and other layouts that mirror the bracket keys, Ctrl+] arrives as Esc, \
+         which interrupts the agent instead of detaching. Ctrl+5 is bound for that and works \
+         on any layout.\nRemapping the keystroke fixes the key itself and leaves Escape alone:\n\
+         iTerm2: Keys > Key Bindings > Ctrl+] > Send Hex Code 0x1d",
+    ));
     Section { name: "multiplexer", records }
 }
 
