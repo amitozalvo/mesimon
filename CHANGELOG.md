@@ -9,7 +9,16 @@ into the binary and shown by the Esc menu's "Release notes" row (`core/src/relno
 parses it; `cargo ut` checks every heading), and `ci/release.sh` lifts the tag's
 section out of it for the GitHub release body.
 
-## v0.1.0-alpha.12 — 2026-09-04
+## v0.1.0-alpha.13 — 2026-09-04
+
+- **`z` snoozes a ticket.** On a card or its page, `z` arms a ring — `1h · 4h · tomorrow 9:00 ·
+  next Monday 9:00` — and a second `z` walks it; Enter snoozes, Esc or any stray key cancels.
+  The armed card opens with the preset on its own row and blinks until you confirm. A snooze IS
+  an archive with a deadline: the ticket leaves the board, the ARCHIVED row reads `wakes in 3h`,
+  and `a`/`u` bring it back early. It returns at the TOP of its column with its age restarted
+  and, unless you turn that off in Settings, lit as needing you — the mark comes off when a
+  keypress leaves your cursor on it. A ticket whose agent has finished its turn is put to sleep
+  on the way out; one still working holds the ticket on the board and nothing is touched.
 
 - **An ask can wait for a quiet checkout.** In the board's ask field, Shift+Tab flips `now` /
   `queued`: a queued ask is parked until no claude sharing the ticket's checkout is mid-turn,
@@ -26,15 +35,51 @@ section out of it for the GitHub release body.
   what is coming (`merge ∙ after T-3 +1`), and the header reads `∙ train`. A shell on a ticket no
   longer blocks `m`.
 
+- **The board says where its checkout stands.** The header hangs `⎇ main ↑2 ↓1 ∙ 3 changed` off
+  the breadcrumb: the branch you are on, commits due to push, commits due to pull, files changed.
+  Fetching is yours to ask for — the Esc menu's `Fetch origin` row, or `MESIMON_GIT_FETCH=<minutes>`
+  — and it writes nothing but the remote-tracking refs. The clause yields to a suggestion chip
+  when the header is tight: the count goes first, then the branch name truncates; the arrows are
+  never cut.
+
+- **Shift+Enter wakes a sleeping claude and asks it.** The board's ask had a hole: a ticket whose
+  claude was parked was neither an empty seat nor promptable, so the key did nothing and the road
+  was `c`, wait, `q`, ask. The field opens there now (`wake + ask claude`) and the daemon wakes
+  the agent on the way, holding your words until its first breath. Alongside it, a finished turn
+  can no longer be lost: four asks in twenty seconds used to trip the attention machine's flap
+  guard, which dropped the real `Stop` and left the spinner on a card that was done. What the
+  agent states now commits through the guard; only guesses are held back.
+
 - **A new board comes with three tags.** A board that has never had a tag opens with `BUG`,
   `FEATURE` and `CHANGE` on group 1, coloured rose, green and blue, so the first `^t` is a pick
   rather than a blank row. Offered once: a board with tags of its own is left alone, and
   forgetting the three does not bring them back on the next start.
 
+- **`HJKL` moves the card.** The board's nudge was reachable only through `alt+hjkl`, a dead key
+  on any terminal that eats the modifier, and the footer taught only that spelling. The shifted
+  letters now carry the card the way `hjkl` walks the cursor — the arrangement the tag picker
+  already had — and the footer names it.
+
+- **`X` sleeps the done column's agents.** `z` took the letter the bulk sleep used to sit on, so
+  the bulk sleep moved onto `x`'s own shift: same verb, wider target — the selection's sessions
+  for `x`, DONE's agents for `X`. The header's chip says `(X ∙ esc)`.
+
 - **The week starts on your day.** Settings has a `Week starts on Monday` row; Enter cycles
   Monday → Sunday → Saturday. It is what the snooze ring's last rung means by "next week":
   `z` walks `1h · 4h · tomorrow 9:00 · next Sunday 9:00` for a Sunday week. Saved in
   `prefs.json`; `mesimon doctor`'s `snooze` line names the day.
+
+- **A reload waits for the daemon it stopped.** `U` on a busy machine could leave a dozen live
+  sessions with no board: the shutdown got two seconds, the next daemon five, and a shutdown that
+  flushes every pending settle outlasted both. The lock is the clock now, not a stopwatch — the
+  reload waits for the old daemon to let go, and the client that finds one still holding on waits
+  rather than racing it. And no daemon at launch is no longer fatal: the board opens empty with
+  the reason in the advisory row and connects when one appears.
+
+- **Smaller.** The theme picker's row detail is the blurb alone — the row's own ground tag
+  already said which slot a theme belongs to.
+
+## v0.1.0-alpha.12 — 2026-09-04
 
 - **Release notes, in the board.** The Esc menu has a `Release notes` row that opens this file
   on a screen of its own: one band per release, the running build marked, the notes as rich
