@@ -159,6 +159,13 @@ pub enum Scope {
     /// their own, so the menu proper stays the list of things to DO. Esc
     /// pops back to the menu, on the row that opened it.
     Settings,
+    /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
+    /// be written, shown verbatim, over the board. The one modal
+    /// confirmation in mesimon — every other one is a chord tail or the `m`
+    /// key's arm, and neither can show four lines of text. Enter and Esc are
+    /// the list dialogs' own `Act`/`Back`; `c` and `i` are its two extra
+    /// answers.
+    ClaudeMd,
     /// The release notes, reached from a menu row: `CHANGELOG.md` compiled
     /// into the binary (`relnotes.rs`), one painted band per release, read
     /// top to bottom. A screen, not a dialog — it is the one document in
@@ -176,7 +183,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 18] = [
+    pub const ALL: [Scope; 19] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -192,6 +199,7 @@ impl Scope {
         Scope::Archived,
         Scope::Theme,
         Scope::Settings,
+        Scope::ClaudeMd,
         Scope::Releases,
         Scope::Input,
         Scope::Editor,
@@ -209,6 +217,7 @@ impl Scope {
             | Scope::Archived
             | Scope::Theme
             | Scope::Settings
+            | Scope::ClaudeMd
             | Scope::Releases => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
@@ -238,6 +247,7 @@ impl Scope {
             Scope::Archived => "ARCHIVED",
             Scope::Theme => "THEME",
             Scope::Settings => "SETTINGS",
+            Scope::ClaudeMd => "CLAUDE.MD",
             Scope::Releases => "RELEASES",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
@@ -357,6 +367,19 @@ pub enum Verb {
     /// The Settings row under it: whether a train merge also pastes the
     /// merged notice into that agent.
     MergeTrainNotice,
+    /// The Settings row that turns the agent tool surface on or off for this
+    /// board (T-217). Board state, not a preference: it is per repo, it
+    /// lives in `columns.toml`, and the daemon reads it at every spawn.
+    McpTools,
+    /// The menu row that opens the CLAUDE.md dialog (T-217): the snippet
+    /// shown verbatim, with four ways out.
+    ClaudeMdOffer,
+    /// `c` in that dialog — the snippet to the terminal's clipboard. Writes
+    /// nothing and stamps nothing, so the dialog stays open behind it.
+    ClaudeMdCopy,
+    /// `i` in that dialog — never offer it again. `mesimon doctor` still
+    /// prints the snippet, which is what makes "never" affordable here.
+    ClaudeMdIgnore,
     /// Re-read the user's shell startup files, so the environment new panes
     /// get is the one their terminal would give them.
     ReloadShellEnv,
@@ -596,6 +619,17 @@ pub struct Ctx {
     /// Reading the shell environment failed, so panes are getting the fallback.
     /// Offered on the same row, because "ask again" is the same act.
     pub shell_env_failed: bool,
+    // ---- the agent tier (T-217) ----
+    /// This board hands its sessions the MCP tool surface. Board state, per
+    /// repo — the Settings row's label and detail are the only readers.
+    pub mcp_tools: bool,
+    /// The repo's `CLAUDE.md` does not yet tell a session to read its ticket,
+    /// the tools it would name are on, and the offer was not answered with
+    /// "never". All three, because each one alone would offer noise.
+    pub claude_md_offer: bool,
+    /// That file exists at all. The dialog's Enter says `add it` or
+    /// `create it` off this, and nothing else reads it.
+    pub claude_md_exists: bool,
     // ---- the board's own checkout (T-124) ----
     /// The checkout's branch tracks a remote branch, so a fetch has
     /// somewhere to go. Gates the menu row: without an upstream there are no
@@ -2204,6 +2238,72 @@ static SETTINGS: &[Binding] = &[
     },
 ];
 
+/// The CLAUDE.md dialog's four answers (T-217). Enter and Esc are the list
+/// dialogs' own verbs, which is what keeps "one verb per key across screens"
+/// true; `c` and `i` are the two this surface adds.
+///
+/// The three answers wear `Group::Sessions` — the drawer's precedent, where a
+/// dialog's keys take the group of what they act on, and what these act on is
+/// what every future session gets told. `Group::App` would have been the
+/// tempting read and is structurally wrong: `footer_split` reserves it for the
+/// right-hand cluster, so an answer in it lands in the FOOTER rather than in
+/// the frame's own edge, which is where a dialog teaches itself.
+///
+/// `c` writes nothing and stamps nothing — copying is not evidence of pasting
+/// — so it is the one key here that leaves the dialog standing. `i` is the
+/// only way to answer "never", and it is affordable exactly because
+/// `mesimon doctor` prints the snippet whatever the stamp says.
+static CLAUDE_MD: &[Binding] = &[
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        // Names the file's fate, not the key's: the dialog above already
+        // spells the path, and this is the half the user is deciding.
+        hint: |c| if c.claude_md_exists { "add it" } else { "create it" },
+        avail: always,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('c')],
+        verb: Verb::ClaudeMdCopy,
+        show: "c",
+        hint: |_| "copy",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('i')],
+        verb: Verb::ClaudeMdIgnore,
+        show: "i",
+        hint: |_| "never ask again",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        // Not "back": this dialog is a question, and Esc's answer is "not
+        // now" — different from `i`'s "not ever", and it has to read so.
+        hint: |_| "not now",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The theme picker's three shapes are the menu's. `Act` does not mutate:
 /// nothing the daemon owns changes, and the file it writes is this
 /// machine's own preference.
@@ -2340,6 +2440,16 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.bulk_archive > 0,
         key: "",
     },
+    // The CLAUDE.md offer (T-217). Its row is the dialog's door, so the
+    // detail says what the dialog will show rather than what it will write —
+    // nothing is written until the bytes are on the screen.
+    MenuItem {
+        verb: Verb::ClaudeMdOffer,
+        label: |_| "Teach CLAUDE.md to read the ticket".into(),
+        detail: |_| "shows the four lines first ∙ agents fetch the description themselves".into(),
+        avail: |c| c.claude_md_offer,
+        key: "",
+    },
     MenuItem {
         verb: Verb::ExternalDrawer,
         label: |_| "External sessions".into(),
@@ -2360,7 +2470,10 @@ static MENU_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::Settings,
         label: |_| "Settings".into(),
-        detail: |c| format!("theme: {} ∙ agent replies ∙ snooze ∙ week start", c.theme_name),
+        // Names what is behind the door, and fits the row: the detail's
+        // budget is 56 cells, so the list is the interesting half rather than
+        // all seven rows (it named four of six before this).
+        detail: |c| format!("theme: {} ∙ replies ∙ snooze ∙ week ∙ agent tools", c.theme_name),
         avail: always,
         key: "",
     },
@@ -2497,6 +2610,33 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: |c| c.merge_train,
         key: "",
     },
+    // The agent tool surface (T-217). The one row here that is NOT a
+    // preference: it is board state in `columns.toml`, per repo, because
+    // "may agents on this board see their ticket" is a property of the
+    // board — so it acts over the wire and reads back off the snapshot.
+    MenuItem {
+        verb: Verb::McpTools,
+        label: |c| {
+            if c.mcp_tools {
+                "Agent tools: on".into()
+            } else {
+                "Agent tools: off".into()
+            }
+        },
+        // Off says the consequence, not the mechanism, and names the one
+        // thing that surprises: a pane's argv is fixed at exec, so the
+        // sessions already running keep whatever they were born with.
+        detail: |c| {
+            if c.mcp_tools {
+                "the seven board tools every spawn carries ∙ enter takes them away".into()
+            } else {
+                "spawns carry no tools ∙ a session cannot see its ticket ∙ live panes keep theirs"
+                    .into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
 ];
 
 /// `3 agents`, `1 agent` — a count and its noun. Every suggestion carries a
@@ -2555,6 +2695,15 @@ static SUGGESTIONS: &[Suggestion] = &[
                 "shell env changed".into()
             }
         },
+        key: "",
+    },
+    Suggestion {
+        // Under the two above and over the two below: a one-time setup nudge
+        // is never more urgent than a running system's news, and it is worth
+        // more than a tidy-up. It has no key of its own — the dialog is the
+        // whole of it, and a dialog is not something to hang a letter off.
+        verb: Verb::ClaudeMdOffer,
+        headline: |_| "claude.md misses the ticket line".into(),
         key: "",
     },
     Suggestion {
@@ -3234,6 +3383,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Archived => ARCHIVED,
         Scope::Theme => THEME,
         Scope::Settings => SETTINGS,
+        Scope::ClaudeMd => CLAUDE_MD,
         Scope::Releases => RELEASES,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
@@ -3434,9 +3584,10 @@ mod tests {
                 Scope::Archived => 12,
                 Scope::Theme => 13,
                 Scope::Settings => 14,
-                Scope::Releases => 15,
-                Scope::Input => 16,
-                Scope::Editor => 17,
+                Scope::ClaudeMd => 15,
+                Scope::Releases => 16,
+                Scope::Input => 17,
+                Scope::Editor => 18,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -4543,14 +4694,27 @@ mod tests {
         let prefs: Vec<Verb> = settings_items(&ctx).iter().map(|m| m.verb).collect();
         assert_eq!(
             prefs,
-            [Verb::ThemePick, Verb::Peek, Verb::SnoozeQuiet, Verb::WeekStart, Verb::MergeTrain]
+            [
+                Verb::ThemePick,
+                Verb::Peek,
+                Verb::SnoozeQuiet,
+                Verb::WeekStart,
+                Verb::MergeTrain,
+                // Not a preference at all — board state in `columns.toml`,
+                // per repo — but it is a switch, and a switch belongs behind
+                // the same door. Last, so no existing row's index moves.
+                Verb::McpTools,
+            ]
         );
-        // The notice row rides under the train row, and only while it is on.
+        // The notice row rides UNDER the train row (not at the end of the
+        // list — a row after it would make that reading a coincidence), and
+        // only while the train is on.
         let on: Vec<Verb> = settings_items(&Ctx { merge_train: true, ..ctx.clone() })
             .iter()
             .map(|m| m.verb)
             .collect();
-        assert_eq!(on.last(), Some(&Verb::MergeTrainNotice));
+        let train = on.iter().position(|v| *v == Verb::MergeTrain).expect("the train row");
+        assert_eq!(on.get(train + 1), Some(&Verb::MergeTrainNotice));
         assert_eq!(on.len(), prefs.len() + 1);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");

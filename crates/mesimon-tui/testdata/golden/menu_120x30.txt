@@ -12,7 +12,7 @@
                            │   Archived tickets                                             │
                            │     off the board, still here                                  │
                            │   Settings                                                     │
-                           │     theme: graphite ∙ agent replies ∙ snooze ∙ week start      │
+                           │     theme: graphite ∙ replies ∙ snooze ∙ week ∙ agent tools    │
                            │   Release notes                                                │
                            │     what changed in each version, newest first                 │
                            │   All keys on this screen                                    ? │

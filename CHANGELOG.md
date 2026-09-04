@@ -11,6 +11,19 @@ section out of it for the GitHub release body.
 
 ## v0.1.0-alpha.13 — 2026-09-04
 
+- **mesimon offers the CLAUDE.md line.** A spawned session is often handed only the ticket's
+  *title* — its description lives in a note that only the `get_ticket` tool reaches, so agents
+  miss it and people end up typing "read the ticket" into every prompt. The board now offers to
+  add four lines to your repo's `CLAUDE.md` saying so. It shows them first: a dialog with the
+  exact text, and four answers — add it, copy it, not now, or never ask again. Nothing is
+  written without that keystroke, and `mesimon doctor` prints the same lines whatever you
+  answered.
+
+- **Agent tools can be switched off, per repo.** Settings has an `Agent tools` row (on by
+  default). Off means sessions spawn with no `--mcp-config` at all: they cannot see which
+  ticket they are on. Sessions already running keep what they were born with — sleep and wake
+  one to pick the change up. `mesimon doctor` says which way the switch is set.
+
 - **`z` snoozes a ticket.** On a card or its page, `z` arms a ring — `1h · 4h · tomorrow 9:00 ·
   next Monday 9:00` — and a second `z` walks it; Enter snoozes, Esc or any stray key cancels.
   The armed card opens with the preset on its own row and blinks until you confirm. A snooze IS

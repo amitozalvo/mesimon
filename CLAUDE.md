@@ -1013,6 +1013,30 @@ absent: both succeed), so no replay key. Authorized as `Mutate` on `Resource::Ti
 `tag_ticket`. The human's six tag commands stay in the never-tier because `SetTag` registers on
 the fly and the other five rewrite the registry. (STALE-MAP "An agent wears the user's tags".)
 
+**The tools can be switched OFF, and the board offers to tell CLAUDE.md they exist**
+(T-217, 2026-09-04). `Board.mcp_tools` is a per-REPO scalar in `columns.toml` beside
+`tags_seeded` (default ON; `COLUMNS_SCHEMA` 3 — a bump, not a serde default, because an older
+build dropping `mcp_tools = false` would hand every agent its tools back after the user took
+them away; `Board::Default` is hand-written for the same field). `claude_argv` omits
+`--mcp-config` entirely when it is off — not an empty config — and `resume_argv` both DROPS the
+pair when off and INSERTS it when on and the persisted argv lacks it, so a wake is the road a
+session takes to pick the switch up either way; a live pane keeps what it was born with.
+`Command::SetMcpTools` (denied to agents: a tier that could switch itself off is not one), the
+Settings row `Agent tools: on|off`, and a `doctor` line. And because the layers are `MESIMON_TICKET`
+for the shell and `get_ticket` for the model, with nothing telling the model to USE the second
+one, `core/src/claudemd.rs::SNIPPET` is four lines mesimon offers to append to the repo's own
+`CLAUDE.md` — hard-wrapped to `WRAP` (56) because `Mode::ClaudeMd` shows it VERBATIM and
+`dialog::MAX_W` is 64, with `MESIMON_TICKET` itself as the marker (so applying twice is
+impossible and this repo is never offered anything). The dialog is mesimon's ONE modal
+confirmation — every other confirm is a chord tail or `m`'s arm, which draw nothing — and its
+four answers are `enter` add / `c` copy (OSC 52, `osc.rs::copy_to_clipboard`, write-only so it
+never claims success, and the one key that leaves the dialog up) / `i` never (stamps
+`Board::claude_md_ignored`) / `esc` not now. `doctor` prints the snippet whatever the stamp
+says — that is the door "never" does not close, and why `doctor::wrap` now wraps one PARAGRAPH
+at a time. The write canonicalizes first (a symlinked CLAUDE.md must not become a regular file)
+and is still atomic. **README promise 1 does not yet name this write** — the third standing gap,
+the author's to word. (STALE-MAP "mesimon offers the CLAUDE.md line".)
+
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
 command will not compile until someone decides whether an agent may send it. That is the
 enforcement for D10's never-tier — no spawn, no kill, no delete/archive/rename, no workspace, no

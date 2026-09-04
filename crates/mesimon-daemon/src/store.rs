@@ -23,7 +23,14 @@ use crate::paths::Paths;
 /// registry on its next write. The stamp makes it refuse the file and bar its
 /// writes instead — 16 §6.2's rule that a newer file is left untouched rather
 /// than silently downgraded.
-pub const COLUMNS_SCHEMA: u32 = 2;
+/// v3 (T-217) added `mcp_tools`. Bumped for the same reason once more, and
+/// the reason is sharper here than it was for `tags_seeded`, which rode a
+/// serde default with no bump at all: a build that drops `tags_seeded` only
+/// re-offers three tags, but a build that drops `mcp_tools = false` hands
+/// every agent on the board its tools back after the user took them away.
+/// A consent flag may not be lost by a downgrade. `claude_md_ignored` rides
+/// the same bump.
+pub const COLUMNS_SCHEMA: u32 = 3;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
 /// `save_ticket` drop every note's metadata while the files stayed behind
@@ -39,6 +46,11 @@ fn schema_v1() -> u32 {
     1
 }
 
+/// `ColumnsFile::mcp_tools` defaults ON — see the field.
+fn yes() -> bool {
+    true
+}
+
 #[derive(Serialize, Deserialize, Default)]
 struct ColumnsFile {
     /// MUST be first: it is a scalar and `columns` serializes as `[[columns]]`,
@@ -52,6 +64,16 @@ struct ColumnsFile {
     /// on this build the offer.
     #[serde(default)]
     tags_seeded: bool,
+    /// Whether this board hands its sessions the MCP tool surface
+    /// (`Board::mcp_tools`, T-217). Another scalar, so it sits up here with
+    /// the others. Its default is TRUE, which is why it names a function
+    /// rather than riding `bool`'s own default: a file written before this
+    /// field existed means "on", not "the user turned the tools off".
+    #[serde(default = "yes")]
+    mcp_tools: bool,
+    /// The CLAUDE.md offer was answered "never" (`Board::claude_md_ignored`).
+    #[serde(default)]
+    claude_md_ignored: bool,
     columns: Vec<Column>,
     /// The tag registry (v2). Another array of tables, so it may follow
     /// `columns` but must stay after every scalar.
@@ -320,6 +342,8 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 next_key: cf.next_key,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
+                                mcp_tools: cf.mcp_tools,
+                                claude_md_ignored: cf.claude_md_ignored,
                                 ..Default::default()
                             };
                             return (b, false, false);
@@ -478,11 +502,29 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
     Ok(Loaded { board, notices, columns_write_barred, sessions_write_barred })
 }
 
+/// The agent-tools switch, read and nothing else (T-217).
+///
+/// `load` is not an option for this: it seeds the starter tags and writes
+/// `columns.toml` out for a repo that has none, and `mesimon doctor` runs
+/// against arbitrary directories and may not create a board to answer a
+/// question about one. Anything unreadable answers `true`, the shipped
+/// default — doctor reporting "off" for a repo that never said so would be
+/// worse than saying nothing.
+pub fn read_mcp_tools(paths: &Paths) -> bool {
+    let path = paths.board_dir.join("board/columns.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return true;
+    };
+    toml::from_str::<ColumnsFile>(&text).map(|cf| cf.mcp_tools).unwrap_or(true)
+}
+
 pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
     let cf = ColumnsFile {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
         tags_seeded: board.tags_seeded,
+        mcp_tools: board.mcp_tools,
+        claude_md_ignored: board.claude_md_ignored,
         columns: board.columns.clone(),
         tags: board.tags.clone(),
     };
@@ -1184,6 +1226,57 @@ order = "a0"
         cleanup(&dir, &paths);
     }
 
+    /// A file written before T-217 has neither switch. The agent tools must
+    /// read as ON — the shipped behaviour — and the CLAUDE.md offer as
+    /// unanswered. This is the whole reason `mcp_tools` names a serde default
+    /// instead of riding `bool`'s.
+    #[test]
+    fn a_file_without_the_switches_reads_as_tools_on_and_never_ignored() {
+        let (dir, paths) = scratch("t217compat");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            r#"schema_version = 2
+next_key = 4
+tags_seeded = true
+
+[[columns]]
+name = "TODO"
+order = "a0"
+"#,
+        );
+        let l = load(&paths).unwrap();
+        assert!(l.board.mcp_tools, "an absent switch is not a switch turned off");
+        assert!(!l.board.claude_md_ignored);
+        assert!(!l.columns_write_barred, "a v2 file is still ours to write");
+        cleanup(&dir, &paths);
+    }
+
+    /// And an unreadable file falls back to defaults, which must ALSO read as
+    /// tools on: `Board`'s hand-written `Default` is what carries that, and a
+    /// derived one would have made a corrupt file look like a user's choice.
+    #[test]
+    fn the_default_board_has_the_tools_on() {
+        assert!(Board::default().mcp_tools);
+        assert!(Board::with_default_columns().mcp_tools);
+        assert!(!Board::default().claude_md_ignored);
+    }
+
+    /// The stamp survives the round trip, so "never ask again" is never asked
+    /// again after a restart.
+    #[test]
+    fn the_switches_round_trip_through_the_file() {
+        let (dir, paths) = scratch("t217trip");
+        let mut l = load(&paths).unwrap();
+        l.board.mcp_tools = false;
+        l.board.claude_md_ignored = true;
+        save_columns(&paths, &l.board).unwrap();
+        let back = load(&paths).unwrap();
+        assert!(!back.board.mcp_tools);
+        assert!(back.board.claude_md_ignored);
+        cleanup(&dir, &paths);
+    }
+
     /// The seam the vocabulary e2es use: no offer, no stamp, no write.
     #[test]
     fn the_seed_can_be_declined_for_a_test() {
@@ -1204,6 +1297,8 @@ order = "a0"
             schema_version: COLUMNS_SCHEMA,
             next_key: 3,
             tags_seeded: true,
+            mcp_tools: false,
+            claude_md_ignored: true,
             columns: vec![Column { name: "TODO".into(), order: "a0".into() }],
             tags: vec![
                 mesimon_core::board::Tag { name: "BUG".into(), group: 1, color: None },
@@ -1220,12 +1315,20 @@ order = "a0"
         assert!(!text.contains("color") || text.matches("color").count() == 1, "{text}");
         assert_eq!(back.tags[1].color, Some(4));
         assert_eq!(back.next_key, 3);
+        // T-217's two scalars ride the same rule: declared before the tables,
+        // and round-tripped rather than dropped.
+        assert!(!back.mcp_tools);
+        assert!(back.claude_md_ignored);
+        let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
+        let table = text.find("[[columns]]").expect("the columns table");
+        assert!(scalars < table, "a scalar after a table is a TOML error:\n{text}");
         // The stamp is what stops an older build silently dropping the
         // registry on its next write: at v1 it would parse, ignore `tags`,
         // and overwrite the file without them.
-        assert_eq!(COLUMNS_SCHEMA, 2);
+        assert_eq!(COLUMNS_SCHEMA, 3);
         assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
-        assert!(matches!(verdict(COLUMNS_SCHEMA, 1), Verdict::Newer(2)));
+        assert!(matches!(verdict(2, COLUMNS_SCHEMA), Verdict::Load));
+        assert!(matches!(verdict(COLUMNS_SCHEMA, 2), Verdict::Newer(3)));
     }
 
     /// Today's ticket.toml carries no stamp; it must read as schema 1 (16 §6.2

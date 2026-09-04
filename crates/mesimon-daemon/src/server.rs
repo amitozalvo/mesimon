@@ -307,6 +307,9 @@ pub struct Daemon {
     /// the fetch bookkeeping beside it is stamped into the snapshot, so an
     /// armed fetch cannot make every cycle read as a change.
     git_cache: mesimon_core::command::RepoGit,
+    /// Whether the repo's own `CLAUDE.md` tells a session to read its ticket
+    /// (T-217), behind an mtime gate — see `claudemd::Sampler`.
+    claude_md: crate::claudemd::Sampler,
     /// A sample (or fetch + sample) is running on a worker thread.
     git_inflight: bool,
     /// Something asked for a sample while one was in flight: run again when
@@ -553,6 +556,7 @@ pub fn run(paths: Paths) -> Result<()> {
         shell_env_error: None,
         self_exe: hook_bin.clone(),
         git_cache: mesimon_core::command::RepoGit::default(),
+        claude_md: crate::claudemd::Sampler::default(),
         git_inflight: false,
         git_wanted: false,
         git_fetch_wanted: false,
@@ -572,6 +576,9 @@ pub fn run(paths: Paths) -> Result<()> {
         d.persist_sessions();
     }
     d.refresh_worktree_flags();
+    // Whether the repo already tells its sessions to read their ticket. One
+    // read at startup, then only when a `stat` says the file moved.
+    d.claude_md.refresh(&d.paths.repo_root);
     // The checkout's own state, off-thread; the header is blank until it lands.
     d.queue_git_sample();
     // Ask the user's shell what the environment is, immediately. Until the
@@ -1115,6 +1122,8 @@ impl Daemon {
                 self.snooze_ticket(id, until, needs_you)
             }
             Command::SeenTicket { id } => self.seen_ticket(id),
+            Command::SetMcpTools { on } => self.set_mcp_tools(on),
+            Command::ClaudeMd { action } => self.answer_claude_md(action),
             Command::ArchiveAll => {
                 let (archived, skipped) = self.archive_all();
                 if archived > 0 {
@@ -1313,6 +1322,13 @@ impl Daemon {
         if self.ticks % wt_refresh_ticks() == 0 && !self.worktrees.is_empty() {
             self.refresh_worktree_flags();
             changed |= self.train_pass();
+        }
+        // The CLAUDE.md sample, on the same slow bucket but off the worktree
+        // guard: a board with no worktrees still has a CLAUDE.md. Two `stat`s
+        // unless something moved, so it costs the same as asking whether to
+        // ask.
+        if self.ticks % wt_refresh_ticks() == 0 {
+            changed |= self.claude_md.refresh(&self.paths.repo_root);
         }
         // One tick off the writer's own burst above: the sample is a fork on
         // a worker, but its spawn should not stack on the worktree flags.
@@ -2908,6 +2924,7 @@ impl Daemon {
             },
             pending: self.pending_items(),
             automation: self.automation_status(),
+            claude_md: self.claude_md.status(),
         }
     }
 
@@ -4417,6 +4434,62 @@ impl Daemon {
         }
     }
 
+    /// Turn the agent tool surface on or off for this board (T-217).
+    ///
+    /// Only ever the whole board, only ever a person: `mcp::agent_allows`
+    /// denies the command, so nothing an agent says can reach here. What
+    /// changes is what the NEXT spawn or wake is built with — a running pane's
+    /// argv was fixed at exec and nothing can revise it, which is the sentence
+    /// the Settings row spends its detail on.
+    fn set_mcp_tools(&mut self, on: bool) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.mcp_tools == on {
+            return Response::Ok;
+        }
+        self.board.mcp_tools = on;
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// Answer the CLAUDE.md offer (T-217): write the snippet, or stamp the
+    /// board so it is never offered again.
+    ///
+    /// Both roads need `columns.toml` writable — the stamp obviously, and the
+    /// apply because a write we could not record would offer itself again on
+    /// the next sample and look like it had failed. Declining and copying
+    /// never arrive here; they write nothing.
+    fn answer_claude_md(&mut self, action: mesimon_core::command::ClaudeMdAction) -> Response {
+        use mesimon_core::command::ClaudeMdAction;
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        match action {
+            // The receipt is `Ok`, not the path: the snapshot already carries
+            // it (`ClaudeMdStatus::path`), and it is the same string the
+            // dialog just showed. A second spelling of one fact is a second
+            // thing to keep in step.
+            ClaudeMdAction::Apply => match crate::claudemd::apply(&self.paths.repo_root) {
+                Ok(_) => {
+                    // Our own write moved the file; a same-millisecond write
+                    // of the same length would not, so drop the stamps rather
+                    // than trusting them.
+                    self.claude_md.invalidate();
+                    self.claude_md.refresh(&self.paths.repo_root);
+                    self.broadcast();
+                    Response::Ok
+                }
+                Err(message) => Response::Err { message },
+            },
+            ClaudeMdAction::Ignore => {
+                self.board.claude_md_ignored = true;
+                self.persist_and_notify();
+                Response::Ok
+            }
+        }
+    }
+
     /// The tick wheel's half of a snooze: every ticket whose deadline has
     /// passed comes back — at the TOP of its column, the way every automatic
     /// move lands (the return is fresh news), with its age restarted, and lit
@@ -5030,15 +5103,17 @@ impl Daemon {
         let settings = crate::hook_settings::write_settings(&self.paths, id, &mesimon_bin())
             .map_err(|e| format!("hook settings: {e}"))?;
         let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-        let mut argv = vec![
-            claude,
-            "--settings".into(),
-            settings.display().to_string(),
-            "--mcp-config".into(),
-            self.mcp_config_json(id),
-            identity_flag.to_string(),
-            identity_value.to_string(),
-        ];
+        let mut argv = vec![claude, "--settings".into(), settings.display().to_string()];
+        // The board's own switch (T-217). Off means the flag is not there at
+        // all — not an empty config, not a server with no tools: a session
+        // that was never told about mesimon cannot be told about it later,
+        // and that is the whole of what "off" is worth promising.
+        if self.board.mcp_tools {
+            argv.push("--mcp-config".into());
+            argv.push(self.mcp_config_json(id));
+        }
+        argv.push(identity_flag.to_string());
+        argv.push(identity_value.to_string());
         // Replicate the user's own configured permission mode as an explicit
         // flag (dogfood 2026-08-30: a session in a fresh worktree lost the
         // global defaultMode; the flag is the only mode source Claude Code
@@ -5076,12 +5151,32 @@ impl Daemon {
                     // mesimon binary by absolute path, and a persisted argv
                     // outlives an install — `U` reloads onto a new binary and
                     // a replayed blob would point the shim at the old one.
+                    //
+                    // And DROP it where the board's switch is off (T-217): a
+                    // wake is the road a session takes to pick the switch up,
+                    // since a live pane's argv was fixed at exec.
                     let _ = it.next();
-                    argv.push("--mcp-config".into());
-                    argv.push(self.mcp_config_json(rec.id));
+                    if self.board.mcp_tools {
+                        argv.push("--mcp-config".into());
+                        argv.push(self.mcp_config_json(rec.id));
+                    }
                 } else {
                     argv.push(a.clone());
                 }
+            }
+            // The switch travels both ways. A record born while the tools
+            // were off carries no flag to rewrite, so turning them back on
+            // would reach only sessions spawned afterwards — and "wake it to
+            // pick the setting up" would be true in one direction and a lie
+            // in the other. Inserted after `--settings <path>` so the argv
+            // reads the way `claude_argv` builds it.
+            if self.board.mcp_tools && !argv.iter().any(|a| a == "--mcp-config") {
+                let at = argv
+                    .iter()
+                    .position(|a| a == "--settings")
+                    .map(|i| (i + 2).min(argv.len()))
+                    .unwrap_or(argv.len().min(1));
+                argv.splice(at..at, ["--mcp-config".to_string(), self.mcp_config_json(rec.id)]);
             }
             return Ok(argv);
         }

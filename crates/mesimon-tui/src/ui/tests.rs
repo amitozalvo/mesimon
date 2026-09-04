@@ -582,6 +582,67 @@ fn golden_theme_picker_120() {
     golden("theme_picker_120x30", &render(&app, 120, 30));
 }
 
+/// The CLAUDE.md dialog: the destination named, the snippet verbatim on the
+/// elevated surface, and the four answers in the bottom edge. This golden is
+/// the promise the feature makes — what is on the screen is what gets written.
+#[test]
+fn golden_claude_md_120() {
+    let mut app = app_graphite(fixture_archived());
+    offer_claude_md(&mut app, true);
+    app.mode = Mode::ClaudeMd;
+    golden("claude_md_120x30", &render(&app, 120, 30));
+}
+
+/// A board whose CLAUDE.md does not yet carry the line, so the offer stands.
+/// `exists` is the one fact the dialog's wording turns on.
+fn offer_claude_md(app: &mut App, exists: bool) {
+    app.claude_md = mesimon_core::command::ClaudeMdStatus {
+        path: "/repo/kanban-tui/CLAUDE.md".into(),
+        exists,
+        present: false,
+    };
+}
+
+/// The snippet reaches the screen unwrapped and unabridged. A dialog that
+/// reflowed it would be showing something other than what Enter writes, which
+/// is the one thing this surface may not do.
+#[test]
+fn the_dialog_shows_the_snippet_verbatim() {
+    let mut app = app_graphite(fixture_archived());
+    offer_claude_md(&mut app, true);
+    app.mode = Mode::ClaudeMd;
+    let lines = render(&app, 120, 30);
+    for want in mesimon_core::claudemd::SNIPPET.lines().filter(|l| !l.trim().is_empty()) {
+        assert!(
+            lines.iter().any(|l| l.contains(want)),
+            "the snippet line `{want}` is not on screen whole:\n{}",
+            lines.join("\n")
+        );
+    }
+    // And the file it would touch, with the verb that says whether it exists.
+    assert!(lines.iter().any(|l| l.contains("appends to") && l.contains("CLAUDE.md")));
+    offer_claude_md(&mut app, false);
+    let fresh = render(&app, 120, 30);
+    assert!(fresh.iter().any(|l| l.contains("creates")), "{}", fresh.join("\n"));
+}
+
+/// Every answer is taught in the frame's own edge, so the dialog says what it
+/// can do without the footer repeating it.
+#[test]
+fn the_dialog_teaches_its_four_answers() {
+    let mut app = app_graphite(fixture_archived());
+    offer_claude_md(&mut app, true);
+    app.mode = Mode::ClaudeMd;
+    let lines = render(&app, 120, 30);
+    let edge = lines
+        .iter()
+        .find(|l| l.contains("add it"))
+        .unwrap_or_else(|| panic!("the bottom edge: {lines:#?}"));
+    for key in ["enter add it", "c copy", "i never ask again", "esc not now"] {
+        assert!(edge.contains(key), "`{key}` missing from the edge: {edge}");
+    }
+}
+
 /// The three standing offers, in priority order, right-aligned in the header —
 /// and the same three at the top of the menu wearing the same `›`. This golden
 /// is the whole suggestion language in one picture.
@@ -601,6 +662,63 @@ fn suggesting_app() -> App {
     app.resources.reclaim_bytes = 3 << 30;
     app.resources.archive_tickets = 2;
     app
+}
+
+/// Every clause of the offer, one at a time. Three of them are the feature's
+/// own logic; the fourth — an EMPTY path — is the one that matters most, since
+/// an older daemon and a first sample still in flight both report it, and an
+/// unknown that read as "missing" would offer to write a file on a guess.
+#[test]
+fn the_offer_stands_only_when_all_four_clauses_hold() {
+    let mut app = app_graphite(fixture_archived());
+    use mesimon_core::keymap::{is_suggested, Verb};
+    let offered = |a: &App| is_suggested(Verb::ClaudeMdOffer, &a.ctx());
+
+    assert!(!offered(&app), "an unsampled board offers nothing");
+    offer_claude_md(&mut app, true);
+    assert!(offered(&app), "sampled, missing, tools on, not ignored");
+
+    // The file already says it — however it got there.
+    app.claude_md.present = true;
+    assert!(!offered(&app));
+    app.claude_md.present = false;
+
+    // The tools it names are switched off, so the snippet would be a lie.
+    app.board.mcp_tools = false;
+    assert!(!offered(&app));
+    app.board.mcp_tools = true;
+
+    // Answered "never".
+    app.board.claude_md_ignored = true;
+    assert!(!offered(&app));
+    app.board.claude_md_ignored = false;
+
+    // And no answer at all is not the same as "missing".
+    app.claude_md.path = String::new();
+    assert!(!offered(&app), "an empty path is an unknown, not a no");
+}
+
+/// The offer is a chip AND the menu row it points at, and they are the same
+/// availability — the whole suggestion language in one assertion.
+#[test]
+fn the_offer_reaches_the_menu_and_the_header() {
+    let mut app = app_graphite(fixture_archived());
+    offer_claude_md(&mut app, true);
+    let header = render(&app, 120, 30);
+    assert!(
+        header.iter().any(|l| l.contains("claude.md misses the ticket line (esc)")),
+        "{}",
+        header.join("\n")
+    );
+    app.mode = Mode::Menu { idx: 0 };
+    let menu = render(&app, 120, 30);
+    assert!(menu.iter().any(|l| l.contains("Teach CLAUDE.md to read the ticket")), "{menu:#?}");
+    // Wearing the same mark the chip does — read from the glyph table, so
+    // the two can never be checked against a stale transcription.
+    let mark = crate::glyphs::suggest_mark(app.theme.glyph_tier());
+    let row = menu.iter().find(|l| l.contains("Teach CLAUDE.md")).expect("the row");
+    assert!(row.contains(mark), "a suggested row wears `{mark}`: {row}");
+    assert!(header.iter().any(|l| l.contains(mark)), "and so does the chip");
 }
 
 /// The release offer: a newer tag than this build is published, and the

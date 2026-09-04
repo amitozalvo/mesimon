@@ -635,7 +635,7 @@ impl Ticket {
     }
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Board {
     pub columns: Vec<Column>,
     pub tickets: Vec<Ticket>,
@@ -660,6 +660,50 @@ pub struct Board {
     /// coming back on the next daemon start.
     #[serde(default)]
     pub tags_seeded: bool,
+    /// Whether sessions mesimon spawns carry the MCP tool surface at all
+    /// (T-217). On by default, and per REPO rather than per machine: the
+    /// question "may agents on this board see their ticket" is a property of
+    /// the board. Off means `claude_argv` omits `--mcp-config` entirely and a
+    /// wake drops it from the argv it replays, so the only way back in is a
+    /// spawn or a wake — a live pane keeps what it was born with.
+    ///
+    /// Its default is `true`, which is why the file's field carries an
+    /// explicit `#[serde(default = ..)]` rather than `bool`'s own `false`.
+    #[serde(default = "yes")]
+    pub mcp_tools: bool,
+    /// The CLAUDE.md offer was declined for good (T-217). A stamp, in the
+    /// grain of `tags_seeded`: the offer is a header chip, so without
+    /// somewhere to record "never" it would stand in front of the menu
+    /// forever. `mesimon doctor` still prints the snippet — that is the way
+    /// back, and why "never" here can be total.
+    #[serde(default)]
+    pub claude_md_ignored: bool,
+}
+
+/// `Board::mcp_tools` defaults ON: a serde default has to be a function, and
+/// this is the whole of it.
+fn yes() -> bool {
+    true
+}
+
+/// Hand-written rather than derived, for one field: `mcp_tools` starts ON, and
+/// `#[derive(Default)]` would start it off. A default `Board` is what a repo
+/// with no `columns.toml` gets and what `store::load` falls back to when the
+/// file cannot be read — an unreadable file must not read as "the user turned
+/// the agent tools off".
+impl Default for Board {
+    fn default() -> Self {
+        Self {
+            columns: Vec::new(),
+            tickets: Vec::new(),
+            sessions: Vec::new(),
+            next_key: 0,
+            tags: Vec::new(),
+            tags_seeded: false,
+            mcp_tools: true,
+            claude_md_ignored: false,
+        }
+    }
 }
 
 /// The vocabulary a board starts with, on group 1: three names most work

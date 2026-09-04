@@ -99,7 +99,12 @@ fn render(sections: &[Section], verbose: bool) -> String {
             if let Some(a) = &r.advice {
                 for (i, line) in wrap(a, 58).into_iter().enumerate() {
                     let tag = if i == 0 { "ADVICE" } else { "      " };
-                    out.push_str(&format!("        {tag}  {line}\n"));
+                    let row = format!("        {tag}  {line}");
+                    // A blank paragraph break is blank: sixteen spaces of
+                    // indent on an empty line is trailing whitespace in
+                    // whatever the user pipes this into.
+                    out.push_str(row.trim_end());
+                    out.push('\n');
                 }
             }
         }
@@ -119,20 +124,37 @@ fn count(s: &Section, l: Level) -> usize {
     s.records.iter().filter(|r| r.level == l).count()
 }
 
+/// Wrap advice to `width`, one PARAGRAPH at a time.
+///
+/// The paragraph split is load-bearing, not cosmetic: doctor's promise is
+/// copy-pasteable fixes, and a fix that is meant to be pasted verbatim — a
+/// command, or T-217's CLAUDE.md snippet — stops being one the moment its
+/// newlines are reflowed into prose. A line already inside the measure is
+/// therefore passed through untouched; only prose that overruns is wrapped.
 fn wrap(text: &str, width: usize) -> Vec<String> {
     let mut lines = Vec::new();
-    let mut cur = String::new();
-    for word in text.split_whitespace() {
-        if !cur.is_empty() && cur.len() + 1 + word.len() > width {
-            lines.push(std::mem::take(&mut cur));
+    for para in text.split('\n') {
+        if para.trim().is_empty() {
+            lines.push(String::new());
+            continue;
+        }
+        if para.chars().count() <= width {
+            lines.push(para.to_string());
+            continue;
+        }
+        let mut cur = String::new();
+        for word in para.split_whitespace() {
+            if !cur.is_empty() && cur.len() + 1 + word.len() > width {
+                lines.push(std::mem::take(&mut cur));
+            }
+            if !cur.is_empty() {
+                cur.push(' ');
+            }
+            cur.push_str(word);
         }
         if !cur.is_empty() {
-            cur.push(' ');
+            lines.push(cur);
         }
-        cur.push_str(word);
-    }
-    if !cur.is_empty() {
-        lines.push(cur);
     }
     lines
 }
@@ -337,7 +359,7 @@ fn is_wsl() -> bool {
             .is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"))
 }
 
-fn agents(verbose: bool) -> Section {
+fn agents(repo: &Path, verbose: bool) -> Section {
     let mut records = Vec::new();
     match which("claude") {
         None => records.push(
@@ -356,6 +378,43 @@ fn agents(verbose: bool) -> Section {
             }
         }
     }
+
+    // The agent tool surface, and whether the repo tells a session to use it
+    // (T-217). Both read the board's own files; neither writes one.
+    if let Ok(paths) = mesimon_daemon::Paths::for_repo(repo) {
+        let on = mesimon_daemon::store::read_mcp_tools(&paths);
+        if on {
+            records.push(rec(Level::Ok, "agent tools", "on for this repo"));
+        } else {
+            records.push(
+                rec(Level::Note, "agent tools", "off for this repo").advice(
+                    "Sessions spawn without --mcp-config, so none of them can see which ticket it is on. The Esc menu's Settings > Agent tools row turns them back on; a running session picks it up when you sleep and wake it.",
+                ),
+            );
+        }
+
+        // Always printed, and always with the snippet when it is missing —
+        // including on a board that answered the offer with "never ask
+        // again". Doctor is deliberately the one door that stamp does not
+        // close, which is what makes "never" a safe thing to press.
+        let mut sampler = mesimon_daemon::claudemd::Sampler::default();
+        sampler.refresh(&paths.repo_root);
+        let md = sampler.status();
+        if md.present {
+            records.push(rec(Level::Ok, "claude.md", "tells sessions to read their ticket"));
+        } else {
+            let file = if md.exists { "CLAUDE.md" } else { "CLAUDE.md (would be created)" };
+            records.push(
+                rec(Level::Warn, "claude.md", format!("{file} does not mention MESIMON_TICKET"))
+                    .advice(format!(
+                        "A spawned session is often handed only the ticket's TITLE; its description lives in a note that only the get_ticket tool reaches, so agents miss it. Add this to {}:\n\n{}\nThe Esc menu offers to write it for you.",
+                        md.path,
+                        mesimon_core::claudemd::SNIPPET,
+                    )),
+            );
+        }
+    }
+
     Section { name: "agents", records }
 }
 
@@ -582,7 +641,7 @@ pub fn run(args: &[String]) -> Result<()> {
         environment(verbose),
         install(verbose),
         multiplexer(verbose),
-        agents(verbose),
+        agents(&repo, verbose),
         git_section(&repo, verbose),
         daemon(&repo, verbose),
     ];
@@ -607,6 +666,24 @@ pub fn run(args: &[String]) -> Result<()> {
 
 #[cfg(test)]
 mod tests {
+    use super::wrap;
+
+    /// Advice that is meant to be pasted keeps its shape. `wrap` reflows
+    /// prose that overruns and leaves everything else exactly as written,
+    /// which is what lets a fix be a fix rather than a description of one.
+    #[test]
+    fn advice_keeps_the_lines_it_was_given() {
+        let snippet = mesimon_core::claudemd::SNIPPET;
+        let advice = format!("Add this:\n\n{snippet}");
+        let out = wrap(&advice, 58);
+        for line in snippet.lines() {
+            assert!(out.iter().any(|l| l == line), "`{line}` was reflowed: {out:#?}");
+        }
+        // And prose still wraps.
+        let long = "a ".repeat(60);
+        assert!(wrap(&long, 58).len() > 1);
+    }
+
     use super::*;
 
     /// Two floors, read differently: 3.3 is where containment starts, 3.1 is

@@ -225,6 +225,38 @@ fn agent_board_tools_tier_and_collisions() {
         assert!(!forbidden.exists(), "mesimon wrote {forbidden:?}");
     }
 
+    // ---- and the whole surface can be switched off (T-217) ---------------
+    // Off means the flag is ABSENT, not an empty config: a session that was
+    // never told about mesimon cannot be told about it later, and that is the
+    // whole of what the switch promises. A second ticket, because a live
+    // pane's argv was fixed at exec and nothing can revise it.
+    assert!(matches!(c.request(Command::SetMcpTools { on: false }), Response::Ok));
+    let quiet = match c
+        .request(Command::CreateTicket { column: "TODO".into(), title: "no tools".into() })
+    {
+        Response::Created { id } => id,
+        other => panic!("create failed: {other:?}"),
+    };
+    let quiet_sid = match c.request(Command::SpawnSession {
+        ticket: quiet,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let board = board_of(c.request(Command::Snapshot));
+    let quiet_rec = board.sessions.iter().find(|s| s.id == quiet_sid).unwrap();
+    assert!(
+        !quiet_rec.argv.iter().any(|a| a == "--mcp-config"),
+        "the switch is off, so the flag is not there at all: {:?}",
+        quiet_rec.argv
+    );
+    // The hooks are untouched — the two flags are different promises, and
+    // turning the tools off must not also blind the board to attention.
+    assert!(quiet_rec.argv.iter().any(|a| a == "--settings"), "{:?}", quiet_rec.argv);
+    assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
+
     // ---- the session knows which ticket it is on, from the shell ---------
     // MESIMON_TICKET now reaches a shared-checkout session too; before T-84 it
     // was worktree-only, which is the board default's blind spot.

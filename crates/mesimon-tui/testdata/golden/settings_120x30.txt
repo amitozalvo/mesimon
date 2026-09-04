@@ -6,7 +6,6 @@
 
    Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
 
-
                            ╭─ SETTINGS ─────────────────────────────────────────────────────╮
                            │   Theme: graphite                                              │
                            │     dark, the default ∙ for a dark terminal                    │
@@ -18,8 +17,9 @@
                            │     z's last rung: next Monday 9:00 ∙ enter cycles the day     │
                            │   Merge train: off                                             │
                            │     mesimon merges and asks to rebase for you while the board~ │
+                           │   Agent tools: on                                              │
+                           │     the seven board tools every spawn carries ∙ enter takes t~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

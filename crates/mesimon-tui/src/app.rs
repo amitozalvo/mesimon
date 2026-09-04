@@ -204,6 +204,16 @@ pub enum Mode {
     Settings {
         idx: usize,
     },
+    /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
+    /// be written, shown verbatim over the board, with four ways out. No
+    /// `idx` — it is a question, not a list, and its answers are its keys.
+    ///
+    /// The one modal confirmation in mesimon. Every other one is a chord tail
+    /// (`d`, `a`, `z`) or the `m` key's arm, which say their question in the
+    /// status line and draw nothing; none of them can show four lines of text,
+    /// and showing the exact bytes before writing a file the user tracks in
+    /// git is the whole point of this one.
+    ClaudeMd,
     /// The note editor. A mode and not a second slot: it REPLACES the
     /// one-line composer (Tab carries the title over) and never coexists
     /// with a move, a menu or a picker, so `Mode` is where it belongs.
@@ -568,6 +578,12 @@ pub struct App {
     pub pending: Vec<mesimon_core::command::Pending>,
     /// The merge train as the daemon holds it: armed or not, what it asked.
     pub automation: mesimon_core::command::AutomationStatus,
+    /// Whether the repo's `CLAUDE.md` already tells a session to read its
+    /// ticket (T-217), and the path the offer would write to. An empty `path`
+    /// is "no answer yet" — a daemon predating the field, or one whose first
+    /// sample has not landed — and offers nothing, which is the safe way for
+    /// an unknown to read.
+    pub claude_md: mesimon_core::command::ClaudeMdStatus,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -797,6 +813,7 @@ impl App {
             git: snap.git,
             pending: snap.pending,
             automation: snap.automation,
+            claude_md: snap.claude_md,
             theme,
             resume_refused: None,
             merge_armed: None,
@@ -1829,6 +1846,7 @@ impl App {
             Mode::Archived { .. } => Scope::Archived,
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
+            Mode::ClaudeMd => Scope::ClaudeMd,
             _ => match self.screen {
                 Screen::Diff { .. } => Scope::Diff,
                 Screen::Releases => Scope::Releases,
@@ -1982,6 +2000,16 @@ impl App {
                 .unwrap_or(""),
             snooze_needs_you: self.prefs.snooze_needs_you,
             week_start_word: self.prefs.week_start.name(),
+            mcp_tools: self.board.mcp_tools,
+            // Every clause, and the first is `path`: an empty one means no
+            // daemon has answered yet (a build predating the field, or a
+            // first sample still in flight), and an unknown must never read
+            // as "missing" — that would offer to write a file on a guess.
+            claude_md_offer: !self.claude_md.path.is_empty()
+                && !self.claude_md.present
+                && self.board.mcp_tools
+                && !self.board.claude_md_ignored,
+            claude_md_exists: self.claude_md.exists,
             merge_train: self.prefs.merge_train,
             merge_train_notice: self.prefs.merge_train_notice,
             merge_train_armed: self.automation.merge_train,
@@ -2494,6 +2522,52 @@ impl App {
                 };
                 self.push_automation();
             }
+            // Board state, not a preference: it goes to the daemon and comes
+            // back on the snapshot, so there is nothing local to flip and the
+            // row relabels itself off the answer.
+            Verb::McpTools => {
+                let on = !self.board.mcp_tools;
+                match self.client.request(Command::SetMcpTools { on })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        // Says the reach, not just the state: a user who
+                        // turns the tools off and watches a running agent go
+                        // on using them has been told wrong.
+                        self.status = if on {
+                            "agent tools on ∙ new sessions and wakes get them".into()
+                        } else {
+                            "agent tools off ∙ new sessions and wakes lose them".into()
+                        };
+                    }
+                }
+            }
+            // The offer opens the dialog and does nothing else. Every road
+            // that writes runs from inside it, with the bytes on the screen.
+            Verb::ClaudeMdOffer => self.mode = Mode::ClaudeMd,
+            Verb::ClaudeMdCopy => {
+                // Cannot be verified: OSC 52 is write-only and a terminal may
+                // ignore it. So the status says what was sent, not that it
+                // arrived, and the dialog stays up with the text on it.
+                self.status = match crate::osc::copy_to_clipboard(mesimon_core::claudemd::SNIPPET) {
+                    Ok(()) => "snippet copied ∙ if your terminal allows it".into(),
+                    Err(e) => format!("could not write to the terminal: {e}"),
+                };
+            }
+            Verb::ClaudeMdIgnore => {
+                use mesimon_core::command::ClaudeMdAction;
+                match self.client.request(Command::ClaudeMd { action: ClaudeMdAction::Ignore })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.mode = Mode::Normal;
+                        self.refresh()?;
+                        // Names the way back, because "never" is a long time
+                        // and doctor is the only door left.
+                        self.status = "claude.md offer put away ∙ mesimon doctor still prints it"
+                            .into();
+                    }
+                }
+            }
             Verb::SnoozeQuiet => {
                 let on = !self.prefs.snooze_needs_you;
                 self.prefs.set_snooze_needs_you(on);
@@ -2962,6 +3036,23 @@ impl App {
                 };
                 let verb = item.verb;
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+            }
+            // The dialog's Enter: the one road that writes the file, and it
+            // runs with the bytes it is about still on the screen.
+            Scope::ClaudeMd => {
+                use mesimon_core::command::ClaudeMdAction;
+                let path = self.claude_md.path.clone();
+                match self.client.request(Command::ClaudeMd { action: ClaudeMdAction::Apply })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.mode = Mode::Normal;
+                        self.refresh()?;
+                        // Names the file, because the user is about to want
+                        // to look at what landed in it.
+                        self.status = format!("added the mesimon section to {path}");
+                    }
+                }
+                Ok(())
             }
             Scope::Drawer => self.adopt_external(true),
             Scope::Archived => {
@@ -5058,6 +5149,7 @@ struct Snapshot {
     git: mesimon_core::command::RepoGit,
     pending: Vec<mesimon_core::command::Pending>,
     automation: mesimon_core::command::AutomationStatus,
+    claude_md: mesimon_core::command::ClaudeMdStatus,
 }
 
 impl Snapshot {
@@ -5074,6 +5166,7 @@ impl Snapshot {
                 git,
                 pending,
                 automation,
+                claude_md,
             } => Some(Self {
                 board,
                 grace,
@@ -5085,6 +5178,7 @@ impl Snapshot {
                 git,
                 pending,
                 automation,
+                claude_md,
             }),
             _ => None,
         }
@@ -5126,6 +5220,10 @@ pub(crate) mod test_support {
         /// What the fake daemon says it owes, and whether its train is armed.
         pub pending: Vec<mesimon_core::command::Pending>,
         pub automation: mesimon_core::command::AutomationStatus,
+        /// What the fake daemon says about the repo's CLAUDE.md. Default is
+        /// an empty path, which no test has to think about: it reads as "not
+        /// sampled" and offers nothing.
+        pub claude_md: mesimon_core::command::ClaudeMdStatus,
         /// Debug-formatted log of every request, for behavior assertions.
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         /// Make FocusStart answer Err (the daemon refusing a focus).
@@ -5290,6 +5388,7 @@ pub(crate) mod test_support {
                     notices: Vec::new(),
                     shell_env: self.shell_env.clone(),
                     git: self.git.clone(),
+                    claude_md: self.claude_md.clone(),
                     pending: self.pending.clone(),
                     automation: self.automation.clone(),
                 }),
@@ -5446,6 +5545,7 @@ pub(crate) mod test_support {
                 git: Default::default(),
                 pending: Vec::new(),
                 automation: Default::default(),
+                claude_md: Default::default(),
                 sent: sent.clone(),
                 refuse_focus,
                 notes: std::collections::HashMap::new(),
@@ -5600,6 +5700,7 @@ mod tests {
             external: vec![],
             resources: Resources::default(),
             shell_env: Default::default(),
+            claude_md: Default::default(),
             git: Default::default(),
             pending: Vec::new(),
             automation: Default::default(),

@@ -1,0 +1,30 @@
+ BOARD   mesimon > kanban-tui   6 tickets                                      ◦ claude.md misses the ticket line (esc)
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
+
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
+
+   Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
+
+
+                           ╭─ CLAUDE.MD ────────────────────────────────────────────────────╮
+                           │ appends to /repo/kanban-tui/CLAUDE.md                          │
+                           │                                                                │
+                           │   ## mesimon                                                   │
+                           │                                                                │
+                           │   When `MESIMON_TICKET` is set, this session is working a      │
+                           │   mesimon ticket. Call `get_ticket` before you start — the     │
+                           │   ticket's description and notes may carry context the         │
+                           │   prompt does not.                                             │
+                           │                                                                │
+                           ╰────── enter add it ∙ c copy ∙ i never ask again ∙ esc not now ─╯
+
+
+
+
+
+
+
+
+
+ CLAUDE.MD                                                                                                       ? keys

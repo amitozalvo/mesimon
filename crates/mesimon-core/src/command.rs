@@ -270,6 +270,24 @@ pub enum Command {
         #[serde(default)]
         merge_notice: bool,
     },
+    /// Turn the agent tool surface on or off for this board (T-217).
+    ///
+    /// Per repo, persisted in `columns.toml`, and read at every spawn: off
+    /// means `claude_argv` omits `--mcp-config` and a wake drops it from the
+    /// argv it replays. Local only — an agent that could switch its own tools
+    /// off, or back on, would be deciding its own tier.
+    SetMcpTools {
+        on: bool,
+    },
+    /// Answer the CLAUDE.md offer (T-217): write the snippet into the repo's
+    /// `CLAUDE.md`, or record that it is never to be offered again.
+    ///
+    /// The one command that writes a file the user tracks in git, which is
+    /// why it exists only behind a dialog that shows the exact bytes first,
+    /// and why declining and copying send nothing at all.
+    ClaudeMd {
+        action: ClaudeMdAction,
+    },
     /// Take the header's archive offer: archive exactly the tickets the
     /// suggestion prices (the offer's own candidate set, nothing broader).
     ArchiveAll,
@@ -455,6 +473,18 @@ fn default_diff_context() -> u32 {
     3
 }
 
+/// The two answers the CLAUDE.md dialog can send (T-217). Declining and
+/// copying are not here: both write nothing, so neither travels.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeMdAction {
+    /// Append `claudemd::SNIPPET` to the repo's `CLAUDE.md`, creating it if it
+    /// is not there. A no-op if the marker is already present.
+    Apply,
+    /// Never offer it again on this board. `mesimon doctor` still prints it.
+    Ignore,
+}
+
 /// The ceiling on one `PromptSession`. A prompt is a sentence or a paragraph
 /// typed into a card-width field, not a document: what the board's Shift+Enter
 /// is for is "ask the agent a thing while looking at the board", and anything
@@ -552,6 +582,11 @@ impl Command {
             | ReloadShellEnv
             | GitFetch
             | SetAutomation { .. }
+            // Both are board-wide settings a person took a gesture to change,
+            // and one of them writes a file in the repo — the feed is where
+            // "who turned the agent tools off" gets answered later.
+            | SetMcpTools { .. }
+            | ClaudeMd { .. }
             | KillSession { .. }
             | ResumeSession { .. }
             | SleepSession { .. }
@@ -694,6 +729,12 @@ pub enum Response {
         /// it has asked. Absent from an older daemon parses as off.
         #[serde(default)]
         automation: AutomationStatus,
+        /// Whether the repo's `CLAUDE.md` already tells a session to read its
+        /// ticket (see [`ClaudeMdStatus`]). Absent from an older daemon parses
+        /// as "not sampled", where `present: false` would offer — so the
+        /// TUI reads `path` being empty as "no answer yet" and offers nothing.
+        #[serde(default)]
+        claude_md: ClaudeMdStatus,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -1052,6 +1093,30 @@ pub struct ShellEnvStatus {
     /// it as the concrete thing the reload would change.
     #[serde(default)]
     pub vars: usize,
+}
+
+/// Whether the repo's `CLAUDE.md` already tells a session to read its ticket
+/// (T-217), and where the offer would write if it does not.
+///
+/// A FILESYSTEM fact, which is why it rides the snapshot rather than the board:
+/// the ignore stamp is board state (`Board::claude_md_ignored`) and travels with
+/// it, but whether the file says the words is something only a `stat` and a read
+/// can answer. The daemon samples it behind an mtime+len gate — a repo's
+/// CLAUDE.md can be a hundred kilobytes and a snapshot happens on every change.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ClaudeMdStatus {
+    /// The file the offer would write: `<repo>/CLAUDE.md`, whether or not it
+    /// exists yet. Empty before the first sample, which draws nothing.
+    #[serde(default)]
+    pub path: String,
+    /// The file exists at all. False makes the dialog say "creates" rather than
+    /// "appends to", and is the only difference between the two.
+    #[serde(default)]
+    pub exists: bool,
+    /// `claudemd::MARKER` was found — here, or in `.claude/CLAUDE.md`. True
+    /// withdraws the offer, however the words got there.
+    #[serde(default)]
+    pub present: bool,
 }
 
 /// The git state of the checkout the board sits in — the REPO's, not a

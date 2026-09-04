@@ -235,3 +235,98 @@ mod tests {
         assert_eq!(s.feed(KeyCode::Char('x'), KeyModifiers::NONE), Feed::Pass(vec![plain('x')]));
     }
 }
+
+/// Put `text` on the terminal's clipboard with OSC 52 (T-217).
+///
+/// The counterpart to everything above: this module reads a terminal's
+/// unasked-for OSC, and this one function writes one on purpose.
+///
+/// **Why OSC 52 and not `pbcopy`.** mesimon has no clipboard support at all
+/// today — the only copy code in the workspace is the tmux conf's `pbcopy` /
+/// `wl-copy` / `xclip` pipe, which serves tmux's own copy-mode INSIDE an agent
+/// pane and is unreachable from the board. A native call would also be wrong
+/// here specifically: the board is the thing people run over ssh, and
+/// `pbcopy` on the far side of an ssh session copies to a clipboard nobody is
+/// looking at. OSC 52 travels to the terminal that is actually in front of the
+/// user. (docs/04's `y` specifies a richer future yank — native call first,
+/// OSC 52 only when remote and opted in. This is not that key.)
+///
+/// **It can silently do nothing**, and that is why the caller must not close
+/// the dialog behind it: a terminal may refuse OSC 52 (many do by default),
+/// and an outer tmux swallows it without `set-clipboard on`. There is no reply
+/// to read — the sequence is write-only — so mesimon cannot tell success from
+/// refusal, and must not claim one. The text stays on screen either way, which
+/// is a selection away from the same outcome.
+pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let mut out = std::io::stdout();
+    write!(out, "\x1b]52;c;{}\x07", base64(text.as_bytes()))?;
+    out.flush()
+}
+
+/// Base64, standard alphabet with padding — the ~20 lines that keep a
+/// dependency out of the graph for one escape sequence. The workspace pins a
+/// single major of everything and CI fails on a duplicate, so a crate is never
+/// free here.
+fn base64(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b = [chunk[0], *chunk.get(1).unwrap_or(&0), *chunk.get(2).unwrap_or(&0)];
+        let n = u32::from(b[0]) << 16 | u32::from(b[1]) << 8 | u32::from(b[2]);
+        for i in 0..4 {
+            if i <= chunk.len() {
+                out.push(ALPHABET[(n >> (18 - 6 * i)) as usize & 0x3f] as char);
+            } else {
+                out.push('=');
+            }
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod copy_tests {
+    use super::base64;
+
+    /// RFC 4648's own vectors, plus the padding cases either side of them —
+    /// a hand-rolled encoder is worth exactly as much as its test.
+    #[test]
+    fn base64_matches_the_rfc_vectors() {
+        assert_eq!(base64(b""), "");
+        assert_eq!(base64(b"f"), "Zg==");
+        assert_eq!(base64(b"fo"), "Zm8=");
+        assert_eq!(base64(b"foo"), "Zm9v");
+        assert_eq!(base64(b"foob"), "Zm9vYg==");
+        assert_eq!(base64(b"fooba"), "Zm9vYmE=");
+        assert_eq!(base64(b"foobar"), "Zm9vYmFy");
+    }
+
+    /// The snippet is what actually gets copied, em dash and all: a multi-byte
+    /// character must not fall off the end of a chunk.
+    #[test]
+    fn the_snippet_survives_the_encoder() {
+        let text = mesimon_core::claudemd::SNIPPET;
+        let encoded = base64(text.as_bytes());
+        assert_eq!(encoded.len() % 4, 0, "a padded encoding is a multiple of four");
+        // Decode it back by hand and compare: the only proof that matters.
+        const ALPHABET: &[u8; 64] =
+            b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+        let mut bits = Vec::new();
+        for c in encoded.bytes().filter(|c| *c != b'=') {
+            let v = ALPHABET.iter().position(|a| *a == c).expect("in the alphabet") as u32;
+            bits.push(v);
+        }
+        let mut bytes = Vec::new();
+        for quad in bits.chunks(4) {
+            let mut n = 0u32;
+            for (i, v) in quad.iter().enumerate() {
+                n |= v << (18 - 6 * i);
+            }
+            for i in 0..quad.len() - 1 {
+                bytes.push((n >> (16 - 8 * i)) as u8);
+            }
+        }
+        assert_eq!(String::from_utf8(bytes).expect("utf8"), text);
+    }
+}

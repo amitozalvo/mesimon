@@ -4903,3 +4903,137 @@ row. E2e `merge_train_e2e`.
 **Not done.** A merge train that moves merged tickets to DONE (M5's column policy); the merged
 notice bouncing the card through IN PROGRESS and back (automove's, and today's hand notify does
 the same); a per-repo preference (it is per machine, like the rest of `prefs.json`).
+
+## mesimon offers the CLAUDE.md line, behind a confirm dialog (T-217, 2026-09-04, user: "suggest claude.md edits to the user ∙ suggest to auto apply them, keep minimal, short and only if started with mesimon")
+
+**The bug.** A session mesimon spawns is told which ticket it is on twice: `MESIMON_TICKET`
+in the pane's environment tells the SHELL, and `get_ticket` tells the MODEL
+(`server.rs::session_vars` names the two layers). Nothing told the model to USE the second
+one — and the prompt it is handed is often only the ticket's TITLE, since the composer's
+Shift+Enter, `start_composed` on an empty seat and a wake-and-ask all submit the title while
+the description lives in `notes[0]`. So agents skipped the description and users typed "read
+ticket for more context" into every prompt by hand. The user's words: *"sometimes claude
+doesn't read ticket for more context, it's not reliable. users write description but claude
+just skips it."*
+
+**The snippet, and the sentence it does NOT say.** `core/src/claudemd.rs::SNIPPET` is four
+lines under a `## mesimon` heading, and the wording that matters is *"the ticket's description
+and notes may carry context the prompt does not"* — never "the prompt is only the title".
+Only the composed spawn submits the title alone; an ask field or a prompt typed into the pane
+is the user's own words, so the stronger sentence would be false on the commonest road, and a
+CLAUDE.md that is wrong once is disbelieved everywhere (the user caught this: *"prompt *may*
+be only the title, there *might* be more context in description"*).
+
+`MESIMON_TICKET` doubles as the MARKER. Using the snippet's own subject as its signature means
+there is nothing to keep in step: applying twice is impossible, a user who wrote the
+instruction in their own words is never nagged, `.claude/CLAUDE.md` counts as much as the
+root's, and mesimon's own repo is correctly offered nothing.
+
+**Authored at 56 columns, and that is a law.** `dialog::MAX_W` is 64, so the dialog's inner
+width is 62. A dialog that re-wrapped the text would not be showing what it writes — which is
+the whole promise of a confirm dialog over a file the user tracks in git — so `SNIPPET` is
+hard-wrapped to `claudemd::WRAP` and `the_snippet_fits_the_dialog` holds the two numbers
+together. Edit the text and the test says whether the dialog can still show it.
+
+**The one modal confirmation in mesimon.** Every other confirm is a chord tail (`d`, `a`, `z`)
+or the `m` key's `Class::Arm`: they put the question in the status line and draw nothing, and
+none of them can show four lines of text. `Mode::ClaudeMd` / `Scope::ClaudeMd` is drawn through
+`ui/dialog.rs::frame` like the five list dialogs, but it is a question rather than a list, so
+it has no `idx` and its answers are its keys: `enter` add it / `create it`, `c` copy, `i` never
+ask again, `esc` not now. Enter and Esc reuse the list dialogs' own `Act`/`Back` (with a
+`Scope::ClaudeMd` arm in each), which is what keeps "one verb per key across screens" true.
+
+Two things the build got wrong first and are worth recording. The three answers were written
+as `Group::App` — semantically right, structurally wrong: `footer_split` partitions on
+`group != Group::App`, so they landed in the FOOTER's right cluster instead of the frame's
+bottom edge. They wear `Group::Sessions` now, the drawer's precedent (a dialog's keys take the
+group of what they act on, and these act on what every future session is told). And
+`chrome::dialog_open` had to learn the mode, or the footer repeated the edge underneath it.
+
+**Decline, copy and ignore are three different answers.** `esc` writes nothing and the offer
+returns; `i` stamps `Board::claude_md_ignored` and it never returns; `c` writes nothing and
+stamps nothing, and is the one key that leaves the dialog standing — copying is not evidence
+of pasting. "Never" is affordable because `mesimon doctor` prints the snippet whatever the
+stamp says, which is the door the stamp does not close (the user asked for exactly that:
+*"doctor always suggests"*).
+
+**Copying is OSC 52, and it can silently do nothing.** No clipboard support existed: no crate
+in any manifest, and the only copy code in the workspace is the tmux conf's
+`pbcopy`/`wl-copy`/`xclip` pipe, which serves tmux's own copy-mode inside an agent pane and is
+unreachable from the board. A native call would also be wrong here specifically — the board is
+what people run over ssh, and `pbcopy` on the far side copies to a clipboard nobody is looking
+at. `osc.rs::copy_to_clipboard` writes `ESC ] 52 ; c ; <base64> BEL` with a hand-rolled
+encoder (~20 lines; the workspace pins one major of everything and CI fails on a duplicate, so
+a crate is never free). The sequence is write-only: a terminal may refuse it and an outer tmux
+swallows it without `set-clipboard on`, and mesimon cannot tell success from refusal — so the
+status says `snippet copied ∙ if your terminal allows it` and the text stays on screen.
+
+**The MCP switch, because an offer to call a tool that is off is noise.** The user asked for
+the opt-out in the same breath (*"if MCP is disabled, don't suggest (we need MCP enable /
+disable in configuration, opt out)"*). `Board::mcp_tools` is PER REPO, in `columns.toml`
+beside `tags_seeded` — "may agents on this board see their ticket" is a property of the board
+— and because `Response::Board` clones the whole `Board`, it reached the TUI with no wire
+change at all. `claude_argv` (the one argv builder since T-84) omits `--mcp-config` entirely
+when it is off: not an empty config, not a server with no tools, because a session that was
+never told about mesimon cannot be told about it later. `resume_argv` needed BOTH halves — drop
+the pair when off, and INSERT it when on and the persisted argv lacks it — since a record born
+while the tools were off has no flag to rewrite, and "wake it to pick the setting up" would
+otherwise be true in one direction and a lie in the other. A live pane keeps what it was born
+with; that is the sentence the Settings row spends its detail on.
+
+**`COLUMNS_SCHEMA` 2 → 3, and the reason is sharper than `tags_seeded`'s.** That stamp rode a
+serde default with no bump because an older build dropping it only re-offers three tags.
+Dropping `mcp_tools = false` is different in kind: an alpha.13 binary would silently hand every
+agent on the board its tools back after the user took them away. A consent flag may not be lost
+to a downgrade, so the bump makes an older build bar its writes instead — which is what schema
+2 already exists for. `claude_md_ignored` rides the same bump. `Board`'s `Default` had to be
+hand-written for one field, since `#[derive(Default)]` would have started `mcp_tools` off and a
+default `Board` is what an UNREADABLE `columns.toml` falls back to — a corrupt file must not
+read as a user's choice.
+
+**Writing a file the user tracks in git.** `daemon/src/claudemd.rs::apply` copies
+`paths.rs::ensure_excluded`'s shape (read, look for the marker, append, write) with two
+additions. It CANONICALIZES first: a CLAUDE.md symlinked into a dotfiles repo is ordinary, and
+`write_atomic`'s temp+rename would swap the LINK for a regular file. And it is still atomic,
+because truncating the user's own tracked file and then crashing would cost them work that is
+not mesimon's to lose. Sampling is behind an mtime+len `stat` gate (`claudemd::Sampler`): a
+CLAUDE.md is commonly tens of kilobytes — mesimon's own is ninety-five — and a snapshot happens
+on every board change.
+
+**`doctor` prints the snippet, and `wrap` had to learn paragraphs.** Doctor's promise is
+copy-pasteable fixes, and the advice renderer reflowed everything on whitespace, which turned
+the snippet into prose. `wrap` now wraps one paragraph at a time and passes through any line
+already inside the measure — a fix meant to be pasted verbatim stops being one the moment its
+newlines are lost. `agents()` takes `&repo` now (`git_section`'s shape) and reads the switch
+through `store::read_mcp_tools`, a read-only accessor added because `load` SEEDS and WRITES
+`columns.toml` for a repo that has none, and doctor may not create a board to answer a question
+about one.
+
+**What is NOT here.** Submitting the ticket description alongside the title at spawn. It is
+smaller and it is not injection — the description is the user's own words — but it reaches only
+the composed-spawn road, while a wake, a resume, an adopted session and a hand-typed prompt
+learn nothing, and a description edited after the spawn is never seen. The CLAUDE.md line makes
+the agent fetch the CURRENT description on every road. Worth doing later as a complement; it is
+not a substitute.
+
+**README promise 1 is now short by a third clause, and this change did not write it.** Applying
+writes `<repo>/CLAUDE.md`, which the allowlist does not name (`.mesimon/`,
+`$GIT_DIR/info/exclude`, worktrees and branches it created, the state dir, fetch refs). The
+`/tmp` runtime dir and the self-update's write of mesimon's own binary are the standing two
+gaps; this is the third, and the author words that promise. Promise 2 survives literally:
+doctor still only prints and has no `--fix`, and the write is a keystroke through a dialog
+showing the exact bytes.
+
+**Tests.** `core/src/claudemd.rs`: the snippet names its own marker and the tool, every line
+fits the dialog, applying twice is impossible, the separator is one blank line however the file
+ended. `daemon/src/claudemd.rs`: the offer and the write on a repo with no file, applying twice
+writes once, `.claude/CLAUDE.md` withdraws the offer, an unchanged file is not resampled, a
+symlink is followed not replaced. `daemon/src/store.rs`: a v2 file reads as tools-on and
+never-ignored, the default board has the tools on, both scalars round-trip above the tables.
+`osc.rs`: RFC 4648's vectors, and the snippet decoded back. `ui/tests.rs`: golden
+`claude_md_120x30`, the snippet on screen verbatim, the four answers in the edge, all four
+clauses of the offer (including that an EMPTY path is an unknown, not a no), and the chip and
+its menu row wearing the same mark. `claudemd_e2e.rs` end to end plus the restart; `mcp_e2e.rs`
+proves a real spawn carries no `--mcp-config` with the switch off, and that `--settings` is
+untouched — the two flags are different promises. `tags_e2e.rs`'s `schema_version = 2` pin now
+reads `store::COLUMNS_SCHEMA` instead of a literal.

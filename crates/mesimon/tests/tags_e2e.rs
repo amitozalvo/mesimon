@@ -162,7 +162,13 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
 
     // ---- the registry on disk ----------------------------------------------
     let cols = std::fs::read_to_string(repo.join(".mesimon/board/columns.toml")).unwrap();
-    assert!(cols.contains("schema_version = 2"), "registry bumped the stamp:\n{cols}");
+    // The stamp the writer says it writes — read from the constant, not a
+    // literal, so a later bump moves this with the code instead of breaking
+    // a test about tags (T-217 bumped it to 3 and this said 2).
+    assert!(
+        cols.contains(&format!("schema_version = {}", mesimon_daemon::store::COLUMNS_SCHEMA)),
+        "the registry file is not stamped with the writer's own schema:\n{cols}"
+    );
     assert!(cols.contains("[[tags]]"), "registry reached the disk:\n{cols}");
     assert!(cols.contains("REGR") && cols.contains("BUG"));
     let tags_at = cols.find("[[tags]]").unwrap();

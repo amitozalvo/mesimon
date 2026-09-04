@@ -541,6 +541,15 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // The network and the repo's remote-tracking refs, on an agent's
         // say-so: never. The board shows an agent nothing of the fetch either.
         | Command::GitFetch
+        // The tool surface itself. An agent that could switch its own tools
+        // off — or back on for a board whose user took them away — would be
+        // deciding its own tier, which is the one thing this match exists to
+        // stop. It cannot see the flag either: no tool reports it.
+        | Command::SetMcpTools { .. }
+        // Writes a file the user tracks in git, and stamps a board-wide
+        // "never ask again". The dialog that shows the bytes is a person's;
+        // this is not a road an agent gets a share of.
+        | Command::ClaudeMd { .. }
         | Command::MoveTicket { .. }
         | Command::SpawnSession { .. }
         | Command::KillSession { .. }
