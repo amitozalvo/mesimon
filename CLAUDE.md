@@ -1,5 +1,11 @@
 # CLAUDE.md
 
+## mesimon
+
+When `MESIMON_TICKET` is set, this session is working a
+mesimon ticket. Call `get_ticket` before you start — the
+ticket's description and notes may carry context the
+prompt does not.
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
