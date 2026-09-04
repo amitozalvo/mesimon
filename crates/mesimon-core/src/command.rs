@@ -225,6 +225,12 @@ pub enum Command {
     /// editor writes `~/.zshrc` would fork a shell on every keystroke-save.
     /// The daemon notices the change and OFFERS; the person decides.
     ReloadShellEnv,
+    /// Fetch the checkout's upstream remote now (the Esc menu's `Fetch origin`
+    /// row), whether or not the periodic opt-in is armed. A person's gesture:
+    /// it reaches the network and writes remote-tracking refs, which is why
+    /// the agent tier never gets it. A press while a sample is in flight
+    /// queues rather than being refused.
+    GitFetch,
     /// Take the header's archive offer: archive exactly the tickets the
     /// suggestion prices (the offer's own candidate set, nothing broader).
     ArchiveAll,
@@ -501,6 +507,7 @@ impl Command {
             | MoveTag { .. }
             | ArchiveAll
             | ReloadShellEnv
+            | GitFetch
             | KillSession { .. }
             | ResumeSession { .. }
             | SleepSession { .. }
@@ -617,6 +624,11 @@ pub enum Response {
         /// empty", which shows no offer — the right way to fail.
         #[serde(default)]
         shell_env: ShellEnvStatus,
+        /// Where the checkout the board sits in stands against its upstream
+        /// (see [`RepoGit`]). Serde-additive: absent from an older daemon parses
+        /// as "not sampled", which draws nothing.
+        #[serde(default)]
+        git: RepoGit,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -929,6 +941,52 @@ pub struct ShellEnvStatus {
     pub vars: usize,
 }
 
+/// The git state of the checkout the board sits in — the REPO's, not a
+/// ticket's worktree (that is [`WorktreeItem`]). Sampled by the daemon off its
+/// writer thread from one `git status --porcelain=v2 --branch`; the header
+/// draws the branch, the arrows and the change count from it, and the Esc
+/// menu's `Fetch origin` row spells the same facts in words.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct RepoGit {
+    /// A sample has landed and the directory is a git checkout. False draws
+    /// nothing at all — no sample yet, or not a repository.
+    #[serde(default)]
+    pub sampled: bool,
+    /// The branch name, or the short oid while HEAD is detached.
+    #[serde(default)]
+    pub branch: String,
+    #[serde(default)]
+    pub detached: bool,
+    /// `origin/main` — the tracking ref. None means no arrows and nothing to
+    /// fetch.
+    #[serde(default)]
+    pub upstream: Option<String>,
+    /// Commits on the branch the upstream lacks: a push is due.
+    #[serde(default)]
+    pub ahead: u32,
+    /// Commits on the upstream the branch lacks: a pull is due. Only ever
+    /// moves after a fetch, mesimon's (opt-in) or the user's own.
+    #[serde(default)]
+    pub behind: u32,
+    /// Entries `git status` lists: modified, staged, unmerged and untracked.
+    #[serde(default)]
+    pub changed: u32,
+    /// A fetch is running right now.
+    #[serde(default)]
+    pub fetching: bool,
+    /// The periodic fetch cadence (`MESIMON_GIT_FETCH`, minutes → seconds);
+    /// 0 = the opt-in is off and only the menu row fetches.
+    #[serde(default)]
+    pub fetch_every_secs: u64,
+    /// When the last fetch succeeded (unix ms); 0 = never, this daemon.
+    #[serde(default)]
+    pub fetched_at_ms: u64,
+    /// The last fetch failed — its first stderr line. The previous
+    /// remote-tracking refs stand, so `behind` is simply older than it looks.
+    #[serde(default)]
+    pub fetch_error: Option<String>,
+}
+
 /// Pushed to subscribed clients whenever board state changes.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
@@ -969,10 +1027,12 @@ mod tests {
             "next_key":0},"grace":[]}"#;
         let r: Response = serde_json::from_str(old).unwrap();
         match r {
-            Response::Board { notices, worktrees, external, .. } => {
+            Response::Board { notices, worktrees, external, git, .. } => {
                 assert!(notices.is_empty());
                 assert!(worktrees.is_empty());
                 assert!(external.is_empty());
+                assert_eq!(git, RepoGit::default(), "absent git state reads as unsampled");
+                assert!(!git.sampled);
             }
             other => panic!("expected board, got {other:?}"),
         }

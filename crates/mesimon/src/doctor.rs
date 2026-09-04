@@ -362,6 +362,23 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             "Per-ticket worktrees, the diff viewer and the merge flow all shell out to git.",
         )),
     }
+    // The checkout the board sits in (T-124): what the header will say, and
+    // whether the opt-in fetch is armed — read through the daemon's own
+    // sampler, so doctor and the header cannot disagree.
+    let g = mesimon_daemon::gitstatus::sample(repo);
+    if g.sampled && !g.branch.is_empty() {
+        let every = mesimon_daemon::gitstatus::fetch_every_from_env();
+        let fetch = if every.is_zero() {
+            "fetch off (opt in: MESIMON_GIT_FETCH=5, minutes)".to_string()
+        } else {
+            format!("fetch every {}m (MESIMON_GIT_FETCH)", every.as_secs() / 60)
+        };
+        let upstream = match &g.upstream {
+            Some(u) => format!("upstream {u}"),
+            None => "no upstream".to_string(),
+        };
+        records.push(rec(Level::Ok, "branch", format!("{}, {upstream}, {fetch}", g.branch)));
+    }
     // A repo on the Windows drive reaches git through WSL's 9p bridge, where
     // every operation is many times slower — and worktrees, the diff viewer
     // and the merge flow shell out to git constantly. Only WSL mounts drives

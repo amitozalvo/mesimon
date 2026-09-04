@@ -542,6 +542,9 @@ pub struct App {
     /// What the environment new panes get is doing — whether a shell startup
     /// file has moved since it was captured, and whether a reload is running.
     pub shell_env: mesimon_core::command::ShellEnvStatus,
+    /// Where the board's own checkout stands (T-124): branch, ahead/behind
+    /// its upstream, uncommitted changes. Unsampled draws nothing.
+    pub git: mesimon_core::command::RepoGit,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -736,20 +739,21 @@ pub struct App {
 
 impl App {
     pub fn new(mut client: Box<dyn Transport>, repo_root: PathBuf, theme: Theme) -> Result<Self> {
-        let (board, grace, external, resources, worktrees, notices) = fetch(client.as_mut())?;
+        let snap = fetch(client.as_mut())?;
         // Before the move: the checker resolves the state root and the
         // staging dir off the same repo path everything else keys on.
         let release = crate::release::ReleaseWatch::new(&repo_root);
         Ok(Self {
             client,
             repo_root,
-            board,
-            grace,
-            external,
-            resources,
-            worktrees,
-            notices,
-            shell_env: Default::default(),
+            board: snap.board,
+            grace: snap.grace,
+            external: snap.external,
+            resources: snap.resources,
+            worktrees: snap.worktrees,
+            notices: snap.notices,
+            shell_env: snap.shell_env,
+            git: snap.git,
             theme,
             resume_refused: None,
             merge_armed: None,
@@ -847,15 +851,8 @@ impl App {
     /// screen and flags the reconnect cadence instead of exiting the TUI.
     pub fn refresh(&mut self) -> Result<()> {
         match fetch(self.client.as_mut()) {
-            Ok((board, grace, external, resources, worktrees, notices)) => {
-                self.board = board;
-                self.grace = grace;
-                self.external = external;
-                self.resources = resources;
-                self.worktrees = worktrees;
-                self.notices = notices;
-                self.clamp_cursor();
-                self.clamp_screen();
+            Ok(snap) => {
+                self.absorb(snap);
                 if self.daemon_down {
                     self.daemon_down = false;
                     self.status = "daemon back ∙ board refreshed".into();
@@ -947,26 +944,56 @@ impl App {
 
     /// Take whatever board a command replied with (RescanExternal does this).
     fn absorb_board(&mut self, resp: Response) {
-        if let Response::Board {
-            board,
-            grace,
-            external,
-            resources,
-            worktrees,
-            notices,
-            shell_env,
-        } = resp
-        {
-            self.board = board;
-            self.grace = grace;
-            self.external = external;
-            self.resources = resources;
-            self.worktrees = worktrees;
-            self.notices = notices;
-            self.shell_env = shell_env;
-            self.clamp_cursor();
-            self.clamp_screen();
+        if let Some(snap) = Snapshot::of(resp) {
+            self.absorb(snap);
         }
+    }
+
+    /// One road for every snapshot, whoever asked for it.
+    fn absorb(&mut self, snap: Snapshot) {
+        self.board = snap.board;
+        self.grace = snap.grace;
+        self.external = snap.external;
+        self.resources = snap.resources;
+        self.worktrees = snap.worktrees;
+        self.notices = snap.notices;
+        self.shell_env = snap.shell_env;
+        self.git = snap.git;
+        self.clamp_cursor();
+        self.clamp_screen();
+    }
+
+    /// The `Fetch origin` row's detail (T-124): what is out of sync, in
+    /// words, and how old the answer is. The header says `↑2 ↓1`; this is
+    /// the sentence behind it.
+    fn git_fetch_note(&self) -> String {
+        let g = &self.git;
+        let mut parts: Vec<String> = Vec::new();
+        if g.ahead > 0 {
+            parts.push(format!("{} to push", g.ahead));
+        }
+        if g.behind > 0 {
+            parts.push(format!("{} to pull", g.behind));
+        }
+        if parts.is_empty() {
+            parts.push("in sync".into());
+        }
+        if let Some(e) = &g.fetch_error {
+            parts.push(format!("fetch failed: {}", crate::text::truncate(e, 48)));
+        } else if g.fetched_at_ms > 0 {
+            let now = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_millis() as u64)
+                .unwrap_or(0);
+            let since = std::time::Duration::from_millis(now.saturating_sub(g.fetched_at_ms));
+            parts.push(format!("fetched {}", crate::release::ago(since)));
+        } else {
+            parts.push("never fetched".into());
+        }
+        if g.fetch_every_secs > 0 {
+            parts.push(format!("every {}m", g.fetch_every_secs / 60));
+        }
+        parts.join(" ∙ ")
     }
 
     pub fn columns(&self) -> Vec<String> {
@@ -1631,6 +1658,17 @@ impl App {
             // a slow rc file does not leave the chip standing as if it missed.
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
+            git_upstream: self.git.upstream.is_some(),
+            git_remote: self
+                .git
+                .upstream
+                .as_deref()
+                .and_then(|u| u.split_once('/'))
+                .map(|(remote, _)| remote.to_string())
+                .unwrap_or_default(),
+            git_fetching: self.git.fetching,
+            git_fetch_on: self.git.fetch_every_secs > 0,
+            git_fetch_note: self.git_fetch_note(),
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
             ticket_described: subject
@@ -2110,6 +2148,15 @@ impl App {
                 // an existing session picks the new one up.
                 self.status = "re-reading your shell environment ∙                                new and woken sessions get it"
                     .into();
+            }
+            Verb::GitFetch => {
+                match self.req(Command::GitFetch) {
+                    Response::Err { message } => self.status = message,
+                    // "fetching", not "fetched": the header's arrows are the
+                    // answer, and they move when the sample lands.
+                    _ => self.status = "fetching ∙ the header follows".into(),
+                }
+                self.refresh()?;
             }
             Verb::ArchiveAllDone => {
                 match self.req(Command::ArchiveAll) {
@@ -4546,24 +4593,48 @@ impl App {
     }
 }
 
-type Snapshot6 = (
-    Board,
-    Vec<GraceItem>,
-    Vec<ExternalItem>,
-    Resources,
-    Vec<WorktreeItem>,
-    Vec<mesimon_core::command::Notice>,
-);
+/// One `Response::Board`, named. EVERY field the daemon sends rides this,
+/// whichever road asked for it: `shell_env` used to be dropped by the refresh
+/// road on the strength of an `App::apply` that did not exist, so the shell-
+/// env chip only ever appeared once the external drawer had been opened
+/// (found while adding `git`, T-124).
+struct Snapshot {
+    board: Board,
+    grace: Vec<GraceItem>,
+    external: Vec<ExternalItem>,
+    resources: Resources,
+    worktrees: Vec<WorktreeItem>,
+    notices: Vec<mesimon_core::command::Notice>,
+    shell_env: mesimon_core::command::ShellEnvStatus,
+    git: mesimon_core::command::RepoGit,
+}
 
-fn fetch(client: &mut dyn Transport) -> Result<Snapshot6> {
-    match client.request(Command::Snapshot)? {
-        // `shell_env` is deliberately not carried through here: `App::apply`
-        // owns that field and runs on the first tick, so the startup snapshot
-        // would only be setting it a quarter-second early.
-        Response::Board { board, grace, external, resources, worktrees, notices, .. } => {
-            Ok((board, grace, external, resources, worktrees, notices))
+impl Snapshot {
+    fn of(resp: Response) -> Option<Self> {
+        match resp {
+            Response::Board {
+                board,
+                grace,
+                external,
+                resources,
+                worktrees,
+                notices,
+                shell_env,
+                git,
+            } => {
+                Some(Self { board, grace, external, resources, worktrees, notices, shell_env, git })
+            }
+            _ => None,
         }
-        other => anyhow::bail!("unexpected snapshot response: {other:?}"),
+    }
+}
+
+fn fetch(client: &mut dyn Transport) -> Result<Snapshot> {
+    let resp = client.request(Command::Snapshot)?;
+    if let Response::Board { .. } = resp {
+        Snapshot::of(resp).ok_or_else(|| anyhow::anyhow!("snapshot was not a board"))
+    } else {
+        anyhow::bail!("unexpected snapshot response: {resp:?}")
     }
 }
 
@@ -4578,6 +4649,7 @@ pub(crate) mod test_support {
         pub external: Vec<ExternalItem>,
         pub resources: Resources,
         pub shell_env: mesimon_core::command::ShellEnvStatus,
+        pub git: mesimon_core::command::RepoGit,
         /// Debug-formatted log of every request, for behavior assertions.
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
         /// Make FocusStart answer Err (the daemon refusing a focus).
@@ -4707,6 +4779,7 @@ pub(crate) mod test_support {
                     worktrees: Vec::new(),
                     notices: Vec::new(),
                     shell_env: self.shell_env.clone(),
+                    git: self.git.clone(),
                 }),
                 Command::MoveTicket { id, column, before } => {
                     // The daemon's DONE gate, as close as the fake can stand
@@ -4800,6 +4873,7 @@ pub(crate) mod test_support {
                 external: vec![],
                 resources: Resources::default(),
                 shell_env: Default::default(),
+                git: Default::default(),
                 sent: sent.clone(),
                 refuse_focus,
                 notes: std::collections::HashMap::new(),
@@ -4927,6 +5001,7 @@ mod tests {
             external: vec![],
             resources: Resources::default(),
             shell_env: Default::default(),
+            git: Default::default(),
             sent: sent.clone(),
             refuse_focus: false,
             notes,

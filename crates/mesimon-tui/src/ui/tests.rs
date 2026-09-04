@@ -2236,6 +2236,8 @@ fn test_attn_provenance_calm() {
         let attn = theme.attn;
         let mut app = App::for_test(fixture(false), theme);
         app.cursor_col = 1;
+        // The checkout's arrows are calm, never attn (T-124).
+        app.git = git_state("main", 2, 1, 3);
         let mut arch = App::for_test(fixture_archived(), Theme::new(flavor, Profile::TrueColor));
         arch.mode = Mode::Archived { idx: 0 };
         for buf in [cells(&app, 120, 30), cells(&arch, 120, 30)] {
@@ -3103,6 +3105,107 @@ fn test_done_mark_decays_once_seen() {
     seed_spoke(&mut mono, ulid_n(5));
     let row = render(&mono, 120, 30).into_iter().find(|l| l.contains("Grapheme")).expect("T-5");
     assert!(row.contains("+ Grapheme"), "{row:?}");
+}
+
+/// A sampled checkout for the header (T-124), tracking `origin/main`.
+fn git_state(
+    branch: &str,
+    ahead: u32,
+    behind: u32,
+    changed: u32,
+) -> mesimon_core::command::RepoGit {
+    mesimon_core::command::RepoGit {
+        sampled: true,
+        branch: branch.into(),
+        upstream: Some("origin/main".into()),
+        ahead,
+        behind,
+        changed,
+        ..Default::default()
+    }
+}
+
+/// The board's own checkout on the header (T-124): the branch, the arrows and
+/// the change count after the breadcrumb, with the offer still at the right
+/// edge — and the menu row that spells the same facts in words.
+#[test]
+fn golden_git_120() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    app.force_update_ready();
+    golden("board_git_120x30", &render(&app, 120, 30));
+    app.mode = Mode::Menu { idx: 0 };
+    let menu = render(&app, 120, 30);
+    assert!(menu.iter().any(|l| l.contains("Fetch origin")), "the menu offers the fetch: {menu:?}");
+    assert!(
+        menu.iter().any(|l| l.contains("2 to push ∙ 1 to pull ∙ never fetched")),
+        "the row spells the arrows out: {menu:?}"
+    );
+}
+
+/// Nothing until a sample lands; then only what is out of sync is said —
+/// a clean branch in sync is the branch name and nothing more.
+#[test]
+fn test_git_clause_is_silent_until_sampled_and_quiet_in_sync() {
+    let app = app_graphite(fixture(false));
+    let head = &render(&app, 120, 30)[0];
+    assert!(!head.contains('⎇'), "unsampled draws nothing: {head:?}");
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 0, 0, 0);
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("kanban-tui ⎇ main   7 tickets"), "{head:?}");
+    app.git = git_state("main", 0, 3, 0);
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ main ↓3   7 tickets"), "{head:?}");
+    app.git = git_state("main", 1, 0, 2);
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ main ↑1 ∙ 2 changed   7 tickets"), "{head:?}");
+    // Detached: the short oid stands in for the name, no arrows without an upstream.
+    app.git = mesimon_core::command::RepoGit {
+        detached: true,
+        upstream: None,
+        ..git_state("a1b2c3d", 0, 0, 1)
+    };
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ a1b2c3d ∙ 1 changed   7 tickets"), "{head:?}");
+}
+
+/// The offer has first claim on the row. The clause gives its parts up in
+/// order — the count, then the name down to its floor — and the arrows are
+/// never cut; when even the floor will not fit it stands aside whole.
+#[test]
+fn test_git_clause_gives_way_to_the_offer() {
+    let long = "msmn/T-124-git-status-pull-push-indication";
+    assert_eq!(long.width(), 42);
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state(long, 1, 0, 3);
+    app.force_release_available("v0.1.0-alpha.5");
+    let head = &render(&app, 160, 30)[0];
+    assert!(head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed   7 tickets")), "{head:?}");
+    assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "{head:?}");
+    let head = &render(&app, 100, 30)[0];
+    assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
+    assert!(head.contains("⎇ msmn/T-124"), "the name is kept to its floor: {head:?}");
+    assert!(head.contains("~ ↑1   7 tickets"), "the arrow rides the cut name: {head:?}");
+    assert!(!head.contains("changed"), "the count goes first: {head:?}");
+    let head = &render(&app, 80, 30)[0];
+    assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
+    assert!(!head.contains('⎇'), "below the floor the clause stands aside whole: {head:?}");
+    // With no offer the clause has the row: the name gives a little and the
+    // count stays, because the name is still above its floor.
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state(long, 1, 0, 3);
+    let head = &render(&app, 100, 30)[0];
+    assert!(head.contains("⎇ msmn/T-124-git-status-pull-push-indicat~ ↑1 ∙ 3 changed"), "{head:?}");
+}
+
+/// The ASCII tier spells the clause with the card's own fallbacks.
+#[test]
+fn test_git_clause_has_an_ascii_spelling() {
+    let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
+    app.git = git_state("main", 2, 1, 3);
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("& main ^2 v1 ∙ 3 changed"), "{head:?}");
 }
 
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.

@@ -93,6 +93,11 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     // The board's own facts and offer — on the board, not on a note editor
     // that happens to have been opened from it.
     if word == "BOARD" {
+        // The checkout's own state (T-124) hangs off the breadcrumb — where
+        // you are is also which branch — but it is FITTED last, into what the
+        // offer leaves: the offer is the next thing to do, the branch is where
+        // you already are. `git_at` is where it goes.
+        let git_at = spans.len();
         // D33e: session count, RSS aggregate, PTY headroom — all grey. The one
         // saturated colour stays reserved for `needs you`.
         let r = &app.resources;
@@ -129,6 +134,13 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         let budget = (area.width as usize).saturating_sub(used + 4);
         let offer = suggestion_chip(app, budget);
         let offer_w: usize = offer.iter().map(|s| s.content.width()).sum();
+        // The offer's cells and its gap are spoken for; the git clause takes
+        // the rest, and gives its own parts up in order when that is tight.
+        let reserved = if offer_w > 0 { offer_w + 4 } else { 1 };
+        let git = git_clause(app, (area.width as usize).saturating_sub(used + reserved));
+        let git_w: usize = git.iter().map(|s| s.content.width()).sum();
+        spans.splice(git_at..git_at, git);
+        let used = used + git_w;
         if offer_w > 0 {
             let pad = (area.width as usize).saturating_sub(used + offer_w + 1);
             spans.push(Span::raw(" ".repeat(pad)));
@@ -138,6 +150,61 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     // Needs-you lives in the breadcrumb's `!N` (07 §2.2's separate
     // `needs you N` word form superseded by the shared component).
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// What the branch name keeps of itself while the row is tight: `main` whole,
+/// or a key's worth of a slug (`msmn/T-12…`). The ticket page's `⎇` clause
+/// keeps a floor for the same reason (`ticket.rs::WT_BRANCH_FLOOR`).
+const GIT_BRANCH_FLOOR: usize = 10;
+
+/// The board's own checkout, as a clause after the breadcrumb (T-124):
+/// ` ⎇ main ↑2 ↓1 ∙ 3 changed`. The glyph and the name are quiet identity
+/// (`dim3`/`dim2` — the same weight as `mesimon` in the crumb), the arrows
+/// are the calm register the card's `⎇↑` already uses for "there is
+/// something to do here", and the change count is a fact in words, not a
+/// star on the name. Nothing is drawn until a sample has landed.
+///
+/// `room` is what the row can spare. The parts give way in order: the count
+/// drops first, then the name truncates to its floor, and the arrows are
+/// never cut — below that the clause stands aside whole rather than lie.
+fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
+    let g = &app.git;
+    if !g.sampled || g.branch.is_empty() {
+        return Vec::new();
+    }
+    let theme = &app.theme;
+    let tier = theme.glyph_tier();
+    let mut state = String::new();
+    if g.ahead > 0 {
+        state.push_str(&format!(" {}{}", crate::glyphs::ahead_mark(tier), g.ahead));
+    }
+    if g.behind > 0 {
+        state.push_str(&format!(" {}{}", crate::glyphs::behind_mark(tier), g.behind));
+    }
+    let mut changed =
+        if g.changed > 0 { format!(" ∙ {} changed", g.changed) } else { String::new() };
+    // ` ⎇ ` is three cells; the arrows ride on the name.
+    let fixed = 3 + state.width();
+    let floor = g.branch.width().min(GIT_BRANCH_FLOOR);
+    let mut name_room = room.saturating_sub(fixed + changed.width());
+    if name_room < floor {
+        changed.clear();
+        name_room = room.saturating_sub(fixed);
+    }
+    if name_room < floor {
+        return Vec::new();
+    }
+    let mut out = vec![
+        Span::styled(format!(" {} ", crate::glyphs::branch_mark(tier)), theme.dim3()),
+        Span::styled(truncate(&g.branch, name_room), theme.dim2()),
+    ];
+    if !state.is_empty() {
+        out.push(Span::styled(state, theme.calm_text()));
+    }
+    if !changed.is_empty() {
+        out.push(Span::styled(changed, theme.dim2()));
+    }
+    out
 }
 
 /// The standing offer, right-aligned: the highest-priority one, in full words,

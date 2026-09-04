@@ -315,6 +315,10 @@ pub enum Verb {
     /// Re-read the user's shell startup files, so the environment new panes
     /// get is the one their terminal would give them.
     ReloadShellEnv,
+    /// Fetch the checkout's upstream remote now (T-124) — the Esc menu's
+    /// `Fetch origin` row. The header's `↓` only moves after a fetch, and
+    /// the periodic one is opt-in, so this is the road most boards take.
+    GitFetch,
     /// `^t` — open the tag tail. Works on the board, the ticket screen, and
     /// inside the composer.
     TagPrefix,
@@ -545,6 +549,20 @@ pub struct Ctx {
     /// Reading the shell environment failed, so panes are getting the fallback.
     /// Offered on the same row, because "ask again" is the same act.
     pub shell_env_failed: bool,
+    // ---- the board's own checkout (T-124) ----
+    /// The checkout's branch tracks a remote branch, so a fetch has
+    /// somewhere to go. Gates the menu row: without an upstream there are no
+    /// arrows on the header either.
+    pub git_upstream: bool,
+    /// That remote's name (`origin`), for the row's label.
+    pub git_remote: String,
+    /// A fetch is running now — the row stands down until it lands.
+    pub git_fetching: bool,
+    /// `MESIMON_GIT_FETCH` armed the periodic fetch; the row says so.
+    pub git_fetch_on: bool,
+    /// The row's detail, spelled by the app: `2 to push ∙ 1 to pull ∙ fetched
+    /// 4m ago`. Words live here; the header carries the glyph form.
+    pub git_fetch_note: String,
     /// The rail cursor is on a NOTE row, not a session.
     pub sel_note: bool,
     /// The subject ticket has a description (`notes[0]`).
@@ -2086,6 +2104,29 @@ static MENU_ITEMS: &[MenuItem] = &[
             }
         },
         avail: |c| c.shell_env_stale || c.shell_env_failed,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::GitFetch,
+        // Names the remote, because "origin" is a convention and not a fact;
+        // the fallback is only ever the spelling test's, since the row does
+        // not stand without an upstream.
+        label: |c| {
+            let remote = if c.git_remote.is_empty() { "the remote" } else { c.git_remote.as_str() };
+            if c.git_fetch_on {
+                format!("Fetch {remote} now")
+            } else {
+                format!("Fetch {remote}")
+            }
+        },
+        detail: |c| {
+            if c.git_fetch_note.is_empty() {
+                "re-reads where the branch stands against its upstream".into()
+            } else {
+                c.git_fetch_note.clone()
+            }
+        },
+        avail: |c| c.git_upstream && !c.git_fetching,
         key: "",
     },
     MenuItem {
@@ -4244,6 +4285,33 @@ mod tests {
         let sleep = MENU_ITEMS.iter().find(|m| m.verb == Verb::SleepAllDone).expect("row");
         assert!(!(sleep.detail)(&thin).contains("GiB"), "a ~0.0GiB payoff must not be claimed");
         assert!((sleep.detail)(&fat).contains("~3.0GiB"));
+    }
+
+    /// The fetch row (T-124) stands only with an upstream to fetch from and
+    /// while no fetch is running, and it is NOT a suggestion: the header
+    /// already carries the arrows, and a chip is for the next thing to DO.
+    #[test]
+    fn the_fetch_row_needs_an_upstream_and_is_not_a_suggestion() {
+        let quiet = Ctx::default();
+        assert!(!menu_items(&quiet).iter().any(|m| m.verb == Verb::GitFetch));
+        let tracking = Ctx {
+            git_upstream: true,
+            git_remote: "origin".into(),
+            git_fetch_note: "2 to push ∙ never fetched".into(),
+            ..Default::default()
+        };
+        let row = menu_items(&tracking)
+            .into_iter()
+            .find(|m| m.verb == Verb::GitFetch)
+            .expect("the fetch row stands with an upstream");
+        assert_eq!((row.label)(&tracking), "Fetch origin");
+        assert_eq!((row.detail)(&tracking), "2 to push ∙ never fetched");
+        let armed = Ctx { git_fetch_on: true, ..tracking.clone() };
+        assert_eq!((row.label)(&armed), "Fetch origin now");
+        let busy = Ctx { git_fetching: true, ..tracking.clone() };
+        assert!(!menu_items(&busy).iter().any(|m| m.verb == Verb::GitFetch));
+        assert!(!is_suggested(Verb::GitFetch, &tracking), "never a chip");
+        assert!(!SUGGESTIONS.iter().any(|s| s.verb == Verb::GitFetch));
     }
 
     /// Bare arrows are aliases of the letter motions, everywhere the letters

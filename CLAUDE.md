@@ -380,6 +380,25 @@ session name = `sid16` (first 16 hex of the mesimon-minted session UUID; identit
 discovered, D24). A running server never re-reads the conf: conf changes only affect fresh
 servers, so live-server changes must also be issued as commands (see `install_pane_died_hook`).
 
+**The board says where its own checkout stands (T-124, 2026-09-04).** The header hangs
+`⎇ main ↑2 ↓1 ∙ 3 changed` off the breadcrumb: `daemon/src/gitstatus.rs::sample` is ONE
+`git status --porcelain=v2 --branch -z` fork on a worker thread (the shell-env road:
+`queue_git_sample` → `Msg::GitSampled` → `on_git_sampled`, broadcast on a real delta only, an
+ask mid-flight queues on `git_wanted`), landing as `Response::Board.git: RepoGit`
+(`#[serde(default)]`; unsampled draws nothing, so goldens never see it unless seeded).
+`chrome::git_clause` fits it AFTER the suggestion chip is sized — the offer has first claim, the
+count drops first, the name truncates to `GIT_BRANCH_FLOOR`, the arrows are never cut — in
+`dim3`/`dim2` for the name and **calm** for the arrows (never attn). `glyphs::branch_mark`/
+`ahead_mark`/`behind_mark` are the one home for `⎇ ↑ ↓`; the card reads them too. The fetch is
+opt-in — `MESIMON_GIT_FETCH=<minutes>` or the Esc menu's `Fetch origin` row (`Command::GitFetch`,
+a person's gesture, denied to agents) — and runs on the same worker before the sample, fenced
+(`gitstatus::fetch`: `gc.auto=0`, `--no-write-fetch-head`, every prompt door closed, `setsid` +
+group kill at 30 s, `GIT_SSH_COMMAND` deliberately untouched). README promise 1 names the
+remote-tracking refs it writes. The menu row's detail spells the arrows in words
+(`App::git_fetch_note`). The same change made every snapshot field ride one `Snapshot` struct
+through `App::absorb` — `shell_env` had been dropped on the refresh road. E2e:
+`crates/mesimon/tests/gitstatus_e2e.rs`. (STALE-MAP "The board says where its checkout stands".)
+
 **A pane gets the user's own shell environment, delivered by a launcher, never by argv.** A
 Claude pane is exec'd DIRECTLY by tmux (multi-element argv), so no shell runs and no rc file is
 ever read on that path; a shell pane is `[$SHELL]`, one element, which tmux execs into an

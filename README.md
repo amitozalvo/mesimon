@@ -12,7 +12,10 @@ report.
 ## Three promises
 
 1. **A strict write allowlist.** mesimon writes only to `.mesimon/`, `$GIT_DIR/info/exclude`, git
-   worktrees and branches it created, and its own state dir under `~/.local/state/mesimon/`.
+   worktrees and branches it created, and its own state dir under `~/.local/state/mesimon/` —
+   and, only if you turn on periodic fetching (`MESIMON_GIT_FETCH=<minutes>`) or press *Fetch
+   origin* in the Esc menu, the remote-tracking refs and objects a `git fetch` writes. That
+   fetch never writes `FETCH_HEAD`, never runs `gc`, and never touches your branches.
    Never your shell rc, your git config, your `~/.claude/`, or your tmux config.
 2. **No config mutation.** `mesimon doctor` diagnoses and prints copy-pasteable fixes. It has no
    `--fix`.

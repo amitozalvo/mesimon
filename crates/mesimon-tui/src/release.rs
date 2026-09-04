@@ -344,7 +344,8 @@ pub fn doctor_line() -> String {
     }
 }
 
-fn ago(d: Duration) -> String {
+/// `4m ago` / `2h ago` / `3d ago` — the menu's word for a moment behind us.
+pub(crate) fn ago(d: Duration) -> String {
     let m = d.as_secs() / 60;
     match m {
         0 => "just now".into(),

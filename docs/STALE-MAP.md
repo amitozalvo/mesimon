@@ -4343,3 +4343,74 @@ docstring records the interval.
 **Cost:** the footer's `HJKL` says nothing about `option`, which still works. `?` lists both
 under one row, as it does for the picker. Goldens with a board footer moved by one cell.
 
+## The board says where its checkout stands (T-124, 2026-09-04)
+
+**Ask:** "git status + pull/push indication on board". Decided with the author: indication
+only (no push, no pull — the shell does those), the fetch opt-in and periodic, and "think how
+to style it to be beautiful".
+
+**The look.** The board header hangs the checkout's state off the breadcrumb, because the
+breadcrumb is where you are and so is the branch: ` BOARD   mesimon > kanban-tui ⎇ main ↑2 ↓1
+∙ 3 changed   7 tickets … ◦ update ready (U ∙ esc)`. The glyph is `dim3` and the name `dim2` —
+quiet identity, the weight of `mesimon` in the crumb — the arrows ride the calm register the
+card's `⎇↑`/`⎇↓` already use for "something to do here", and the change count is a fact in
+words (`3 changed`), never a `*` on the name: the header speaks in words and a star is a
+footnote nobody can look up. A clean branch in sync is the name and nothing more; nothing is
+drawn until a sample has landed, so **no existing golden moved** (`board_git_120x30` is the
+new one). ASCII tier: `& main ^2 v1 ∙ 3 changed`. `glyphs::branch_mark`/`ahead_mark`/
+`behind_mark` are now the ONE home for `⎇ ↑ ↓` and `card.rs::worktree_mark` reads them, so the
+card and the header cannot drift.
+
+**The offer has first claim on the row.** The left clauses used to shrink the right chip's
+budget and a long one dropped the update chip at 100 cols (the reason notices went to the
+advisory row). `draw_header` now sizes the suggestion chip FIRST and fits the git clause into
+what is left (`chrome::git_clause`), which gives its parts up in order: the count drops, the
+name truncates through `text::truncate` to a floor (`GIT_BRANCH_FLOOR` 10, the ticket page's
+`WT_BRANCH_FLOOR` idea), the arrows are never cut, and below the floor the clause stands aside
+whole rather than lie. `test_git_clause_gives_way_to_the_offer` pins 160/100/80 cols with a
+42-cell branch and the release chip on. Words live in the menu: the `Fetch origin` row's
+detail is `2 to push ∙ 1 to pull ∙ fetched 4m ago` (`App::git_fetch_note`, `Ctx::git_fetch_note`).
+
+**One fork, off the writer.** `daemon/src/gitstatus.rs::sample` runs `git status
+--porcelain=v2 --branch -unormal -z --no-optional-locks` once (0.01–0.03 s here; `-unormal`
+never walks an ignored dir and collapses an untracked one to a row; the optional-locks flag is
+what stops `status` writing the refreshed index back) and `parse` reads `branch.head/upstream/
+ab` and counts the entry records — under `-z` a rename's original path is its OWN field, so the
+walk is a cursor, not a NUL count (`ahead_behind_and_every_kind_of_change_counts_once`). The
+worker is the shell-env road: `queue_git_sample` spawns a thread, `Msg::GitSampled` lands on
+the writer, `on_git_sampled` broadcasts only on a real delta. Two flags, `git_inflight` and
+`git_wanted`: an ask mid-flight (boot, a `GitFetch` press, the post-`ff_merge` sample) queues
+and re-runs, never drops. The tick spawns on `ticks % RSS_TICKS == 1`, one off the writer's own
+worktree-flag burst. The fetch bookkeeping (`fetching`, `fetched_at_ms`, `fetch_error`,
+`fetch_every_secs`) lives on `Daemon` and is STAMPED into `Response::Board.git` by `snapshot()`,
+so the cache compare sees the sampled part only and an armed fetch cannot make every cycle
+read as a change. `RepoGit` is `#[serde(default)]` on `Response::Board`; an older daemon reads
+as unsampled.
+
+**The fetch, fenced.** `MESIMON_GIT_FETCH=<minutes>` (read once at daemon start; doctor's
+`branch` line prints it) arms the periodic one; `Command::GitFetch` (the menu row, a person's
+gesture, `agent_allows` denies it) fetches now either way. Both run on the same worker BEFORE
+the sample: `git -c gc.auto=0 -c maintenance.auto=false fetch --quiet --no-write-fetch-head
+--no-tags --no-recurse-submodules <remote>` with `GIT_TERMINAL_PROMPT=0`, `GIT_ASKPASS=""` (an
+empty value shadows `core.askPass` AND `SSH_ASKPASS` in git's ladder) and
+`SSH_ASKPASS_REQUIRE=never`; `setsid` in `pre_exec` so a foreground daemon's tty cannot reach
+it and so the whole process group can be killed on the 30 s deadline (`Child::kill` reaches
+`git`, not the `git-remote-https`/`ssh` under it, which hold the stderr pipe). `GIT_SSH_COMMAND`
+is deliberately NOT set — it would override `core.sshCommand` and the user's identity setup.
+`gc.auto=0` matters: a fetch may otherwise trigger `gc --auto`, which repacks objects and
+packed-refs, writes far outside the README clause. The remote is `branch.<name>.remote` (never
+the `origin/` prefix, which a remote with a slash would break); `.` means a local upstream and
+no fetch. A failure keeps the first stderr line on the menu row's detail and the previous
+refs stand; a success clears `base_branch` (a fetch on git ≥ 2.48 can mint
+`refs/remotes/origin/HEAD`, `default_branch`'s first rung). README promise 1 gained the clause.
+E2e: `crates/mesimon/tests/gitstatus_e2e.rs` — bare origin, two clones, ahead, then behind
+only after `GitFetch`, `FETCH_HEAD` absent, a dirty tree counted.
+
+**A bug found on the way.** `App::fetch` dropped `shell_env` on the strength of an `App::apply`
+that did not exist, so the `shell env changed` chip only ever appeared once the external drawer
+had been opened. Every snapshot field now rides one `Snapshot` struct through one `App::absorb`,
+whoever asked for it.
+
+**Not done:** nothing per ticket. A configurable fetch cadence per repo (rather than the env)
+and a `mesimon doctor` check that the remote answers without a prompt are the obvious next
+asks.

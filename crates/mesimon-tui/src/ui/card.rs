@@ -19,7 +19,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
-use crate::glyphs::{self, Register};
+use crate::glyphs::{self, ahead_mark, behind_mark, branch_mark, Register, Tier};
 use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
     EditBuffer,
@@ -154,9 +154,11 @@ fn worktree_mark(
     ascii: bool,
 ) -> Option<(String, WtTone)> {
     let w = wt?;
-    let g = if ascii { '&' } else { '⎇' };
-    let (dots, check, up, down) =
-        if ascii { ('.', '+', '^', 'v') } else { ('…', '✓', '↑', '↓') };
+    let tier = if ascii { Tier::Ascii } else { Tier::Unicode };
+    // The glyph and the arrows are the header's too (T-124): one home.
+    let g = branch_mark(tier);
+    let (up, down) = (ahead_mark(tier), behind_mark(tier));
+    let (dots, check) = if ascii { ('.', '+') } else { ('…', '✓') };
     Some(match w.status.as_str() {
         "queued" | "provisioning" => (format!("{g}{dots}"), WtTone::Quiet),
         "error" => (format!("{g}x"), WtTone::Err),

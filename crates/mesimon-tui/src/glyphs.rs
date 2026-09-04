@@ -175,6 +175,36 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
     }
 }
 
+/// The branch glyph `⎇` U+2387 and the two arrows the board's own checkout
+/// (the header, T-124) and a ticket's worktree (the card's `⎇↑`/`⎇↓`) share.
+/// One home so the two surfaces cannot drift: `↑` is "ahead, push/merge
+/// due" and `↓` is "behind, pull/rebase due" wherever they appear. `↑`
+/// U+2191 / `↓` U+2193 are EAW=N, one cell, outside the banned box range;
+/// the ASCII tier reads `& ^ v`.
+pub(crate) fn branch_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '&'
+    } else {
+        '⎇'
+    }
+}
+
+pub(crate) fn ahead_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '^'
+    } else {
+        '↑'
+    }
+}
+
+pub(crate) fn behind_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        'v'
+    } else {
+        '↓'
+    }
+}
+
 /// The done mark while its reply is UNREAD (T-173): `✔` U+2714, the heavy
 /// check, against the thin `✓` U+2713 `card_glyph` gives a finished agent
 /// once the cursor has been on the card. Same idea, thicker stroke — the
@@ -858,6 +888,27 @@ mod tests {
         assert_eq!(suggest_mark(Tier::Unicode), '◦');
         assert_eq!(suggest_mark(Tier::Ascii), '*');
         assert_eq!('◦'.width(), Some(1));
+    }
+
+    /// The branch glyph and both arrows are one cell at both tiers and stay
+    /// out of the banned box range — the header row is width-critical.
+    #[test]
+    fn branch_marks_are_one_cell_at_both_tiers() {
+        use unicode_width::UnicodeWidthChar;
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            for c in [branch_mark(tier), ahead_mark(tier), behind_mark(tier)] {
+                assert_eq!(c.width(), Some(1), "{c:?}");
+                assert!(!(0x2500..=0x259F).contains(&(c as u32)), "{c:?}");
+            }
+        }
+        assert_eq!(
+            (branch_mark(Tier::Unicode), ahead_mark(Tier::Unicode), behind_mark(Tier::Unicode)),
+            ('⎇', '↑', '↓')
+        );
+        assert_eq!(
+            (branch_mark(Tier::Ascii), ahead_mark(Tier::Ascii), behind_mark(Tier::Ascii)),
+            ('&', '^', 'v')
+        );
     }
 
     /// The unread done mark pins its literal and its width, and is not the

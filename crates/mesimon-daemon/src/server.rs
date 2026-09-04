@@ -150,6 +150,9 @@ enum Msg {
     /// A shell-environment capture finished. Off-thread because it forks the
     /// user's login shell and runs their rc files (`crate::shellenv`).
     ShellEnvCaptured(std::result::Result<crate::shellenv::ShellEnv, String>),
+    /// A git sample of the board's own checkout landed (T-124), with the
+    /// verdict of the fetch that preceded it when one was asked for.
+    GitSampled(mesimon_core::command::RepoGit, Option<std::result::Result<(), String>>),
 }
 
 pub struct Daemon {
@@ -266,6 +269,29 @@ pub struct Daemon {
     shell_env_error: Option<String>,
     /// This binary, for the pane launcher (`mesimon exec`) and the hook.
     self_exe: std::path::PathBuf,
+    /// Where the board's own checkout stands (T-124): the SAMPLED part only —
+    /// the fetch bookkeeping beside it is stamped into the snapshot, so an
+    /// armed fetch cannot make every cycle read as a change.
+    git_cache: mesimon_core::command::RepoGit,
+    /// A sample (or fetch + sample) is running on a worker thread.
+    git_inflight: bool,
+    /// Something asked for a sample while one was in flight: run again when
+    /// it lands rather than drop the ask (a merge just moved main, a press).
+    git_wanted: bool,
+    /// The next sample fetches first — the periodic cadence came due, or the
+    /// menu row was pressed.
+    git_fetch_wanted: bool,
+    /// The in-flight sample is fetching. What the menu row shows meanwhile.
+    git_fetching: bool,
+    /// `MESIMON_GIT_FETCH`, read once. Zero = only the menu row fetches.
+    git_fetch_every: Duration,
+    /// When the last fetch was ATTEMPTED — a failing remote is retried on the
+    /// cadence, never every sample.
+    git_last_fetch: Option<Instant>,
+    /// When the last fetch succeeded (unix ms), 0 = never.
+    git_fetched_at_ms: u64,
+    /// The last fetch's first stderr line; cleared by the next success.
+    git_fetch_error: Option<String>,
 }
 
 pub fn run(paths: Paths) -> Result<()> {
@@ -487,6 +513,15 @@ pub fn run(paths: Paths) -> Result<()> {
         shell_env_capturing: false,
         shell_env_error: None,
         self_exe: hook_bin.clone(),
+        git_cache: mesimon_core::command::RepoGit::default(),
+        git_inflight: false,
+        git_wanted: false,
+        git_fetch_wanted: false,
+        git_fetching: false,
+        git_fetch_every: crate::gitstatus::fetch_every_from_env(),
+        git_last_fetch: None,
+        git_fetched_at_ms: 0,
+        git_fetch_error: None,
     };
     let mut parked = false;
     for id in just_exited {
@@ -498,6 +533,8 @@ pub fn run(paths: Paths) -> Result<()> {
         d.persist_sessions();
     }
     d.refresh_worktree_flags();
+    // The checkout's own state, off-thread; the header is blank until it lands.
+    d.queue_git_sample();
     // Ask the user's shell what the environment is, immediately. Until the
     // answer lands, spawns fall back to the daemon's own inherited env — which
     // is what every spawn used before this existed, so the window is a
@@ -518,6 +555,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Hook(frame) => d.on_hook(frame),
             Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
+            Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -1015,6 +1053,17 @@ impl Daemon {
                 self.persist_and_notify();
                 Response::Ok
             }
+            Command::GitFetch => {
+                if self.git_cache.upstream.is_none() {
+                    return Response::Err { message: "no upstream to fetch".into() };
+                }
+                self.git_fetch_wanted = true;
+                self.queue_git_sample();
+                // `fetching` becoming true is what the menu row shows for the
+                // press; a slow remote must not leave the row looking missed.
+                self.broadcast();
+                Response::Ok
+            }
             Command::MoveTicket { id, column, before } => self.move_ticket(id, column, before),
             Command::SpawnSession { ticket, .. }
                 if self.worktrees_barred && self.ticket_wants_worktree(ticket) =>
@@ -1176,6 +1225,16 @@ impl Daemon {
             if !self.worktrees.is_empty() {
                 self.refresh_worktree_flags();
             }
+        }
+        // One tick off the writer's own burst above: the sample is a fork on
+        // a worker, but its spawn should not stack on the worktree flags.
+        if self.ticks % RSS_TICKS == 1 {
+            if !self.git_fetch_every.is_zero()
+                && self.git_last_fetch.is_none_or(|t| t.elapsed() >= self.git_fetch_every)
+            {
+                self.git_fetch_wanted = true;
+            }
+            self.queue_git_sample();
         }
         if self.ticks % server_guard_ticks() == 0 {
             changed |= self.guard_server();
@@ -2665,6 +2724,75 @@ impl Daemon {
                 failed: self.shell_env_error.is_some(),
                 vars: self.shell_env.vars.len(),
             },
+            git: mesimon_core::command::RepoGit {
+                fetching: self.git_fetching,
+                fetch_every_secs: self.git_fetch_every.as_secs(),
+                fetched_at_ms: self.git_fetched_at_ms,
+                fetch_error: self.git_fetch_error.clone(),
+                ..self.git_cache.clone()
+            },
+        }
+    }
+
+    /// Sample the checkout's git state on a worker thread — fetching first
+    /// when a fetch is wanted. One at a time: a second ask while one is in
+    /// flight is remembered and run when it lands, never dropped.
+    fn queue_git_sample(&mut self) {
+        if self.git_inflight {
+            self.git_wanted = true;
+            return;
+        }
+        self.git_inflight = true;
+        self.git_wanted = false;
+        let fetch = std::mem::take(&mut self.git_fetch_wanted) && self.git_cache.upstream.is_some();
+        self.git_fetching = fetch;
+        let repo = self.paths.repo_root.clone();
+        let branch = self.git_cache.branch.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let verdict = if fetch {
+                crate::gitstatus::remote_of(&repo, &branch)
+                    .map(|remote| crate::gitstatus::fetch(&repo, &remote))
+            } else {
+                None
+            };
+            let _ = tx.send(Msg::GitSampled(crate::gitstatus::sample(&repo), verdict));
+        });
+    }
+
+    /// A sample landed. Broadcast only on a visible change: an idle checkout
+    /// sampled every 10 s must not repaint every board.
+    fn on_git_sampled(
+        &mut self,
+        sample: mesimon_core::command::RepoGit,
+        fetched: Option<std::result::Result<(), String>>,
+    ) {
+        self.git_inflight = false;
+        let mut changed = std::mem::replace(&mut self.git_fetching, false);
+        if let Some(verdict) = fetched {
+            self.git_last_fetch = Some(Instant::now());
+            match verdict {
+                Ok(()) => {
+                    self.git_fetched_at_ms = now_ms();
+                    self.git_fetch_error = None;
+                    // A fetch can mint `refs/remotes/origin/HEAD` (git ≥ 2.48
+                    // follows the remote's HEAD), which is the first rung of
+                    // `default_branch`'s ladder: let it be asked again.
+                    self.base_branch = None;
+                }
+                Err(e) => self.git_fetch_error = Some(e),
+            }
+            changed = true;
+        }
+        if sample != self.git_cache {
+            self.git_cache = sample;
+            changed = true;
+        }
+        if self.git_wanted {
+            self.queue_git_sample();
+        }
+        if changed {
+            self.broadcast();
         }
     }
 
@@ -3255,6 +3383,9 @@ impl Daemon {
         match worktree::ff_merge(&self.paths.repo_root, &branch, &base) {
             Ok(()) => {
                 self.refresh_worktree_flags();
+                // The merge just moved the checkout's branch: the header's
+                // `↑` should say so before the next 10 s bucket.
+                self.queue_git_sample();
                 self.persist_and_notify();
                 Response::Merge {
                     outcome: MergeOutcome::Merged,

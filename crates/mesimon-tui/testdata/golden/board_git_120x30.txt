@@ -1,0 +1,30 @@
+ BOARD   mesimon > kanban-tui ⎇ main ↑2 ↓1 ∙ 3 changed   7 tickets                             ◦ update ready (U ∙ esc)
+
+   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+
+   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+
+   Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys

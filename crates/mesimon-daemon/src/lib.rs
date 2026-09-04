@@ -5,6 +5,7 @@ pub mod census;
 pub mod diff;
 pub mod feed;
 pub mod git;
+pub mod gitstatus;
 pub mod hook_settings;
 pub mod ingest;
 pub mod movegate;
