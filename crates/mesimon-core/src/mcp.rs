@@ -527,6 +527,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::RestoreTicket { .. }
         | Command::ArchiveTicket { .. }
         | Command::UnarchiveTicket { .. }
+        // A snooze is an archive with a deadline, and a woke mark is the
+        // user's to clear: both are the person's gestures.
+        | Command::SnoozeTicket { .. }
+        | Command::SeenTicket { .. }
         | Command::ArchiveAll
         // The environment every future pane gets, board-wide and shared by
         // every session. An agent asking to re-read the user's rc files would
@@ -826,6 +830,8 @@ mod tests {
             Command::RestoreTicket { id: t },
             Command::ArchiveTicket { id: t },
             Command::UnarchiveTicket { id: t },
+            Command::SnoozeTicket { id: t, until: 1, needs_you: true },
+            Command::SeenTicket { id: t },
             Command::ArchiveAll,
             Command::MoveTicket { id: t, column: "DONE".into(), before: None },
             Command::SpawnSession {

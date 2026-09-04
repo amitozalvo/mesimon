@@ -128,6 +128,12 @@ pub enum Scope {
     /// does NOT come through here — undoing a mistake must never be harder
     /// than making it.
     ArchiveChord,
+    /// After `z` on the board or the ticket screen (T-74): a chord tail you
+    /// STAY in while `z` walks the preset ring — `1h`, `4h`, `tomorrow
+    /// 9:00`, `next Monday 9:00` — until Enter snoozes or Esc (or any stray
+    /// key) cancels. A snooze is an archive with a deadline, so like the
+    /// archive chord it costs a deliberate second press.
+    SnoozeChord,
     /// After `^t` on the board, the ticket screen, or inside the composer —
     /// a chord tail, not a screen. `^t` rather than `t` because this must
     /// work while a title is being typed, and a Ctrl-letter is the only
@@ -165,7 +171,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 16] = [
+    pub const ALL: [Scope; 17] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -173,6 +179,7 @@ impl Scope {
         Scope::DiffView,
         Scope::DeleteChord,
         Scope::ArchiveChord,
+        Scope::SnoozeChord,
         Scope::TagChord,
         Scope::Move,
         Scope::Menu,
@@ -200,6 +207,7 @@ impl Scope {
             | Scope::DiffView
             | Scope::DeleteChord
             | Scope::ArchiveChord
+            | Scope::SnoozeChord
             | Scope::TagChord
             | Scope::Input
             | Scope::Editor => None,
@@ -215,6 +223,7 @@ impl Scope {
             Scope::Diff | Scope::DiffView => "DIFF",
             Scope::DeleteChord => "DELETE",
             Scope::ArchiveChord => "ARCHIVE",
+            Scope::SnoozeChord => "SNOOZE",
             Scope::TagChord => "TAG",
             Scope::Move => "MOVE",
             Scope::Menu => "MENU",
@@ -312,6 +321,17 @@ pub enum Verb {
     ArchivePrefix,
     Archive,
     ArchiveAllDone,
+    /// `z` — arms the snooze chord on the first preset (T-74).
+    SnoozePrefix,
+    /// `z` inside the chord — the next preset on the ring.
+    SnoozeNext,
+    /// Enter inside the chord — snooze until the preset's deadline.
+    SnoozeConfirm,
+    /// Esc inside the chord — never mind.
+    SnoozeCancel,
+    /// The menu row that flips whether a woken ticket returns lit
+    /// (needs-you) or quietly; remembered in `prefs.json`.
+    SnoozeQuiet,
     /// Re-read the user's shell startup files, so the environment new panes
     /// get is the one their terminal would give them.
     ReloadShellEnv,
@@ -610,6 +630,13 @@ pub struct Ctx {
     pub tags_exist: bool,
     /// `d` is armed: the next `d` deletes that tag board-wide.
     pub tag_forget_armed: bool,
+    // ---- snooze ----
+    /// The armed preset's label (`1h`, `tomorrow 9:00`…) while the snooze
+    /// chord is up, so Enter's hint can name the pick; empty otherwise.
+    /// Static because a hint is — the presets are a fixed ring.
+    pub snooze_word: &'static str,
+    /// A woken ticket returns lit (the preference; the menu row flips it).
+    pub snooze_needs_you: bool,
     // ---- editor ----
     /// The note editor is up. Every editor binding is gated on it.
     pub editing: bool,
@@ -1169,6 +1196,22 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // Overlay-only like `a`: a snooze IS an archive, with a deadline.
+        // `z` is "zzz" beside `Z` (sleep the done agents) — two zzz's, one
+        // for the card and one for its agents — and it is free here: the
+        // only other `z` is the diff viewer's view prefix, a reading screen
+        // with no ticket verbs, and neither is reachable from the other.
+        keys: &[Key::Char('z')],
+        verb: Verb::SnoozePrefix,
+        show: "z",
+        hint: |_| "snooze",
+        avail: |c| c.has_ticket && !c.ticket_archived,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
         // Overlay-only, and the whole card-destroying set went with it: the
         // board's footer is for moving and opening, and destroying a ticket
         // is done from the page that shows you what you are destroying. Both
@@ -1504,6 +1547,17 @@ static TICKET: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        keys: &[Key::Char('z')],
+        verb: Verb::SnoozePrefix,
+        show: "z",
+        hint: |_| "snooze",
+        avail: |c| !c.ticket_archived,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
         // Hinted here, and only here: this is the screen that shows the
         // ticket's sessions and its worktree, so it is the screen where the
         // word "delete" means something specific. The board's copy is
@@ -1732,6 +1786,45 @@ static ARCHIVE: &[Binding] = &[Binding {
     mutates: true,
     prio: 10,
 }];
+
+/// The `z` chord tail (T-74). A tail you stay in: `z` walks the preset
+/// ring, Enter takes the pick, Esc leaves — and, like the other chords, a
+/// key bound to nothing here cancels rather than acts.
+static SNOOZE: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('z')],
+        verb: Verb::SnoozeNext,
+        show: "z",
+        hint: |_| "next",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::SnoozeConfirm,
+        show: "enter",
+        hint: |c| crate::snooze::hint_for_label(c.snooze_word),
+        avail: always,
+        class: Class::Grace,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Esc],
+        verb: Verb::SnoozeCancel,
+        show: "esc",
+        hint: |_| "cancel",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 30,
+    },
+];
 
 /// The `^t` chord tail. Like the delete and archive chords this inherits
 /// nothing, so a stray key cancels rather than acting — but unlike them it is
@@ -2172,6 +2265,27 @@ static MENU_ITEMS: &[MenuItem] = &[
         detail: |_| "the latest reply under the selected card".into(),
         avail: always,
         key: "p",
+    },
+    // A preference, beside the other preferences: how a snoozed ticket
+    // comes back. Never a suggestion.
+    MenuItem {
+        verb: Verb::SnoozeQuiet,
+        label: |c| {
+            if c.snooze_needs_you {
+                "Snooze returns with needs-you".into()
+            } else {
+                "Snooze returns quietly".into()
+            }
+        },
+        detail: |c| {
+            if c.snooze_needs_you {
+                "lit until you look at it ∙ enter makes it quiet".into()
+            } else {
+                "it just reappears ∙ enter lights it until you look".into()
+            }
+        },
+        avail: always,
+        key: "",
     },
     // Beside the peek: the two view preferences sit together. Never a
     // suggestion — a theme is not something worth doing right now.
@@ -2921,6 +3035,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::DiffView => DIFF_VIEW,
         Scope::DeleteChord => DELETE,
         Scope::ArchiveChord => ARCHIVE,
+        Scope::SnoozeChord => SNOOZE,
         Scope::TagChord => TAG,
         Scope::Move => MOVE,
         Scope::Menu => MENU,
@@ -3119,15 +3234,16 @@ mod tests {
                 Scope::DiffView => 4,
                 Scope::DeleteChord => 5,
                 Scope::ArchiveChord => 6,
-                Scope::TagChord => 7,
-                Scope::Move => 8,
-                Scope::Menu => 9,
-                Scope::Drawer => 10,
-                Scope::Archived => 11,
-                Scope::Theme => 12,
-                Scope::Releases => 13,
-                Scope::Input => 14,
-                Scope::Editor => 15,
+                Scope::SnoozeChord => 7,
+                Scope::TagChord => 8,
+                Scope::Move => 9,
+                Scope::Menu => 10,
+                Scope::Drawer => 11,
+                Scope::Archived => 12,
+                Scope::Theme => 13,
+                Scope::Releases => 14,
+                Scope::Input => 15,
+                Scope::Editor => 16,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -3874,7 +3990,14 @@ mod tests {
     #[test]
     fn unavailable_keys_do_nothing() {
         let empty = Ctx { multi_column: true, ..Default::default() };
-        for k in [Key::Char('>'), Key::Char('r'), Key::Char('d'), Key::Char('c'), Key::Char('n')] {
+        for k in [
+            Key::Char('>'),
+            Key::Char('r'),
+            Key::Char('d'),
+            Key::Char('c'),
+            Key::Char('n'),
+            Key::Char('z'),
+        ] {
             assert_eq!(resolve(Scope::Board, k, &empty), None, "{k:?} acted with no ticket");
         }
         let selected = Ctx { has_ticket: true, multi_column: true, ..Default::default() };
@@ -3923,6 +4046,7 @@ mod tests {
             (Key::Char('r'), Verb::Rename),
             (Key::Char('d'), Verb::DeletePrefix),
             (Key::Char('a'), Verb::ArchivePrefix),
+            (Key::Char('z'), Verb::SnoozePrefix),
             (Key::Char('x'), Verb::Sleep),
             (Key::Char('n'), Verb::NoteEdit),
         ] {
@@ -3999,6 +4123,35 @@ mod tests {
         let gone = Ctx { has_ticket: true, ticket_archived: true, ..Default::default() };
         assert_eq!(hint_for(Scope::Board, Verb::ArchivePrefix, &gone), Some(("a", "restore")));
         assert_eq!(hint_for(Scope::Board, Verb::ArchivePrefix, &live), Some(("a", "archive")));
+    }
+
+    /// A snooze is an archive with a deadline, and it is a chord the same
+    /// way: `z` arms, `z` again walks the ring, Enter takes the pick, Esc or
+    /// any stray key leaves. The prefix is inert on an archived ticket (`a`
+    /// restores there) and on an empty column; the tail names the pick.
+    #[test]
+    fn snooze_is_a_chord() {
+        let live = Ctx { has_ticket: true, ..Default::default() };
+        for s in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(s, Key::Char('z'), &live), Some(Verb::SnoozePrefix), "{s:?}");
+        }
+        let armed = Ctx { has_ticket: true, snooze_word: "tomorrow 9:00", ..Default::default() };
+        assert_eq!(resolve(Scope::SnoozeChord, Key::Char('z'), &armed), Some(Verb::SnoozeNext));
+        assert_eq!(resolve(Scope::SnoozeChord, Key::Enter, &armed), Some(Verb::SnoozeConfirm));
+        assert_eq!(resolve(Scope::SnoozeChord, Key::Esc, &armed), Some(Verb::SnoozeCancel));
+        assert_eq!(resolve(Scope::SnoozeChord, Key::Char('x'), &armed), None);
+        assert_eq!(resolve(Scope::SnoozeChord, Key::Char('?'), &armed), None, "a barrier");
+        assert_eq!(
+            hint_for(Scope::SnoozeChord, Verb::SnoozeConfirm, &armed),
+            Some(("enter", "snooze until tomorrow 9:00"))
+        );
+        let gone = Ctx { has_ticket: true, ticket_archived: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('z'), &gone), None);
+        assert_eq!(resolve(Scope::Ticket, Key::Char('z'), &gone), None);
+        assert_eq!(resolve(Scope::Board, Key::Char('z'), &Ctx::default()), None);
+        // The chord's word is its own, so the footer says SNOOZE while armed.
+        assert_eq!(Scope::SnoozeChord.word(), "SNOOZE");
+        assert_eq!(Scope::SnoozeChord.parent(), None);
     }
 
     /// A chord prefix advertises one key, never `d d` — pressing it swaps the
@@ -4110,6 +4263,11 @@ mod tests {
             hint_for(Scope::Board, Verb::SleepAllDone, &full),
             Some(("Z", "sleep the agents in done"))
         );
+        // And `z` beside it is the card's own zzz (T-74): the selection is
+        // snoozed, the column's agents are slept — two things that sleep,
+        // not one verb on two targets, which is what the retired `X` was.
+        assert_eq!(resolve(Scope::Board, Key::Char('z'), &full), Some(Verb::SnoozePrefix));
+        assert!(!footer_items(Scope::Board, &full).iter().any(|b| b.show == "z"), "overlay-only");
     }
 
     /// Board-wide actions live in the menu, and the menu is one Esc away.
@@ -4131,6 +4289,7 @@ mod tests {
             Verb::ArchiveAllDone,
             Verb::ThemePick,
             Verb::ReleaseNotes,
+            Verb::SnoozeQuiet,
             Verb::Help,
             Verb::Quit,
         ] {
@@ -4392,9 +4551,10 @@ mod tests {
                     | Scope::DiffView
                     | Scope::DeleteChord
                     | Scope::ArchiveChord
+                    | Scope::SnoozeChord
                     | Scope::TagChord
             ) {
-                continue; // barrier scopes: four chord tails and two text fields
+                continue; // barrier scopes: five chord tails and two text fields
             }
             assert_eq!(resolve(s, Key::Char('?'), &ctx), Some(Verb::Help), "{s:?}");
         }

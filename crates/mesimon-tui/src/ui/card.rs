@@ -187,10 +187,14 @@ pub(super) fn render(
     tags: &[crate::tags::Painted],
     doomed: bool,
     unseen: bool,
+    snooze: Option<&str>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(3);
     let tier = theme.glyph_tier();
+    // The `z` chord is armed on this card: it opens and names the preset on
+    // a row of its own, the way a quick tag opens the card it tagged.
+    let open = open || snooze.is_some();
     // The `d` chord is armed on this card: it flashes as a deletion — the
     // diff's del tint under an `err` title — until the second `d` or the
     // cancel, on the MOVE ghost's cadence (`Theme::delete_lit`).
@@ -201,10 +205,20 @@ pub(super) fn render(
     // in-flight binding IS a parked spawn, and nothing else queues one. So
     // the card carries the same slow arc it will carry a moment later, and
     // Shift+Enter is answered on the frame after the press either way.
-    let glyph = glyphs::card_glyph(sessions, tier, ctx.spin).or_else(|| {
-        let launching = wt.is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"));
-        launching.then(|| (glyphs::launching(tier, ctx.spin), Register::Grey))
-    });
+    // A ticket back from a snooze that asked to be lit (T-74) wears the
+    // needs-you mark with no session behind it — the one ticket-level
+    // producer of the saturated colour, cleared by the keypress that lands
+    // the cursor on it. It outranks the sessions' glyph the way a waiting
+    // session outranks a working one: someone asked to be told.
+    let glyph = if ticket.is_woke() {
+        Some(('!', Register::Attn))
+    } else {
+        glyphs::card_glyph(sessions, tier, ctx.spin).or_else(|| {
+            let launching =
+                wt.is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"));
+            launching.then(|| (glyphs::launching(tier, ctx.spin), Register::Grey))
+        })
+    };
     // The done mark decays once seen (T-173, the D19 decay 06 §3.6 parked
     // for M6): while the reply it stands for is one the cursor has not been
     // on the card for it is the HEAVY check in the calm register, and the
@@ -377,7 +391,7 @@ pub(super) fn render(
     // on. Before this the row was gated on `peek.is_some()`, which is a claim
     // about the AGENT, and the commonest tagged card could never show it.
     let tag_row = open && !tags.is_empty();
-    if selected && (!sessions.is_empty() || tag_row) {
+    if selected && (!sessions.is_empty() || tag_row || snooze.is_some()) {
         let acc_style = if doomed { theme.delete_row() } else { theme.selected_row() };
         let dim = Style::default().fg(theme.sel.dim1);
         let quiet = Style::default().fg(theme.sel.dim2);
@@ -401,6 +415,15 @@ pub(super) fn render(
         // where a glyph precedes the title, flush where none does — a
         // session-less card has no glyph column, and indenting its chips
         // past a title that starts at the bar hung them in the air.
+        // The armed snooze names its preset first: it is what the next key
+        // does to this card, before what the card is.
+        if let Some(words) = snooze {
+            let words = truncate(words, t_cells.saturating_sub(glyph_cells));
+            push(vec![
+                Span::raw(" ".repeat(glyph_cells)),
+                Span::styled(words, Style::default().fg(theme.sel.dim3)),
+            ]);
+        }
         if tag_row {
             let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
             row.extend(crate::tags::chips(theme, tags, t_cells.saturating_sub(glyph_cells)));
@@ -502,6 +525,13 @@ pub(super) fn render(
     // the aggregate glyph — a resting card is one line, plus its stripe.
     // Per-session detail lives in the accordion and the ticket rail.
     lines
+}
+
+/// Does this card need you — a usable-confidence attention session, or the
+/// ticket itself back from a snooze that asked to be seen (T-74)? The one
+/// predicate the off-screen `!N` badge and the collapsed spine read.
+pub(super) fn needs_you(ticket: &Ticket, sessions: &[&SessionRecord]) -> bool {
+    ticket.is_woke() || is_waiting(sessions)
 }
 
 /// Does this ticket currently hold a usable-confidence attention session?

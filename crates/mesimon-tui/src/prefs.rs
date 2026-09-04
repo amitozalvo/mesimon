@@ -30,17 +30,33 @@ pub(crate) const SCHEMA: u64 = 1;
 pub(crate) struct Prefs {
     pub dark: Flavor,
     pub light: Flavor,
+    /// A ticket back from a snooze wears needs-you until looked at (T-74).
+    /// On by default; the Esc menu's row flips it. Same file, no schema
+    /// move: an absent key reads as the default and a save keeps it.
+    pub snooze_needs_you: bool,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
 
 impl Default for Prefs {
     fn default() -> Self {
-        Prefs { dark: Flavor::Graphite, light: Flavor::Chalk, doc: Map::new() }
+        Prefs {
+            dark: Flavor::Graphite,
+            light: Flavor::Chalk,
+            snooze_needs_you: true,
+            doc: Map::new(),
+        }
     }
 }
 
+const SNOOZE_KEY: &str = "snooze_needs_you";
+
 impl Prefs {
+    pub(crate) fn set_snooze_needs_you(&mut self, on: bool) {
+        self.snooze_needs_you = on;
+        self.doc.insert(SNOOZE_KEY.into(), Value::from(on));
+    }
+
     pub(crate) fn for_ground(&self, g: Ground) -> Flavor {
         match g {
             Ground::Dark => self.dark,
@@ -72,6 +88,7 @@ impl Prefs {
                 doc.insert(key.into(), Value::from(f.name()));
             }
         }
+        doc.insert(SNOOZE_KEY.into(), Value::from(self.snooze_needs_you));
         Value::Object(doc).to_string() + "\n"
     }
 }
@@ -113,8 +130,13 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let slot = |key: &str, fallback: Flavor| {
         doc.get(key).and_then(Value::as_str).and_then(Flavor::from_name).unwrap_or(fallback)
     };
-    let prefs =
-        Prefs { dark: slot("dark", Flavor::Graphite), light: slot("light", Flavor::Chalk), doc };
+    let snooze_needs_you = doc.get(SNOOZE_KEY).and_then(Value::as_bool).unwrap_or(true);
+    let prefs = Prefs {
+        dark: slot("dark", Flavor::Graphite),
+        light: slot("light", Flavor::Chalk),
+        snooze_needs_you,
+        doc,
+    };
     if schema > SCHEMA {
         return Loaded {
             prefs,
@@ -164,6 +186,16 @@ pub fn doctor_line() -> String {
         line = format!("{line} ∙ {n}");
     }
     line
+}
+
+/// What `mesimon doctor` says about the snooze preference (T-74).
+pub fn snooze_doctor_line() -> String {
+    let on = prefs_path().map(|p| load(&p).prefs.snooze_needs_you).unwrap_or(true);
+    if on {
+        "a woken ticket returns with needs-you (the Esc menu flips it)".into()
+    } else {
+        "a woken ticket returns quietly (the Esc menu flips it)".into()
+    }
 }
 
 #[cfg(test)]
@@ -232,6 +264,29 @@ mod tests {
         assert!(l.write_barred);
         assert!(l.notice.as_deref().unwrap_or("").contains("newer"));
         assert_eq!((l.prefs.dark, l.prefs.light), (Flavor::Green, Flavor::Blue));
+    }
+
+    /// The snooze preference (T-74): absent reads as on, a flip round-trips,
+    /// and a theme pick on an older-shaped file keeps what it found.
+    #[test]
+    fn the_snooze_preference_defaults_on_and_round_trips() {
+        let p = scratch("snooze");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.snooze_needs_you, "absent is the default: on");
+        l.prefs.set_snooze_needs_you(false);
+        save(&p, &l.prefs).unwrap();
+        let l = load(&p);
+        assert!(!l.prefs.snooze_needs_you);
+        assert_eq!(l.prefs.dark, Flavor::Blue, "the theme slots are untouched");
+        // A later theme pick writes the flag it loaded, not the default.
+        let mut l = l;
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["snooze_needs_you"], false);
+        assert_eq!(v["dark"], "amber");
     }
 
     #[test]

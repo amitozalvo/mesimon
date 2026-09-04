@@ -31,7 +31,9 @@ pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
     let theme = &app.theme;
     let repo =
         app.repo_root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-    let needs_you = mesimon_core::attention::attention_queue(&app.board).len();
+    // Sessions waiting plus tickets a snooze woke lit (T-74) — the daemon's
+    // tmux status line counts the same way.
+    let needs_you = app.board.needs_you_count();
     let mut spans = vec![
         Span::styled("mesimon".to_string(), Style::default().fg(ink.dim2)),
         Span::styled(" > ".to_string(), Style::default().fg(ink.dim3)),

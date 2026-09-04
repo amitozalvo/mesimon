@@ -124,7 +124,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut groups: Vec<Group> = Vec::new();
     let mut push_card = |t: &Ticket, selected: bool, held: bool| {
         let sessions = ticket_sessions(app, t.id);
-        let waiting = card::is_waiting(&sessions);
+        let waiting = card::needs_you(t, &sessions);
         // The registry lives on the board, so colours resolve here rather
         // than inside the card, which never sees it.
         let painted = crate::tags::painted(&app.board, &t.tags);
@@ -181,6 +181,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             &painted,
             app.doomed(t.id),
             unseen,
+            app.snooze_row(t.id).as_deref(),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are
@@ -478,7 +479,7 @@ fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
     let tickets = app.board.column_tickets(name);
     let waiting = tickets.iter().any(|t| {
         let sessions = ticket_sessions(app, t.id);
-        card::is_waiting(&sessions)
+        card::needs_you(t, &sessions)
     });
     let count = tickets.len().to_string();
 

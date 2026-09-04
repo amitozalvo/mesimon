@@ -1,11 +1,10 @@
  BOARD   mesimon > kanban-tui   6 tickets                                                      ◦ update ready (U ∙ esc)
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
-
-   Decay treatments       >╭─ MENU ─────────────────────────────────────────────────────────╮
-                           │ ◦ Restart on the new build                                   U │
-   Keymap validator       >│     a newer mesimon is on disk ∙ sessions keep running         │
-                           │ ◦ Sleep 3 agents in done                                     Z │
+                           ╭─ MENU ─────────────────────────────────────────────────────────╮
+   Decay treatments       >│ ◦ Restart on the new build                                   U │
+                           │     a newer mesimon is on disk ∙ sessions keep running         │
+   Keymap validator       >│ ◦ Sleep 3 agents in done                                     Z │
                            │     frees ~3.0GiB ∙ they wake where they left off              │
                            │ ◦ Archive 2 tickets in done                                    │
                            │     clears the column ∙ restore any of them later              │
@@ -15,6 +14,8 @@
                            │     off the board, still here                                  │
                            │   Show agent replies                                         p │
                            │     the latest reply under the selected card                   │
+                           │   Snooze returns with needs-you                                │
+                           │     lit until you look at it ∙ enter makes it quiet            │
                            │   Theme: graphite                                              │
                            │     dark, the default ∙ for a dark terminal                    │
                            │   Release notes                                                │
@@ -24,7 +25,6 @@
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
  MENU                                                                                                            ? keys

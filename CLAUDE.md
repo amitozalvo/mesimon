@@ -823,6 +823,31 @@ again — collision is not this code's to reason about), sets `claude_session_id
 is gone. D24 is what makes that free: mesimon's identity is `rec.id` in the `--settings`/
 `--mcp-config` blobs, so hooks and the MCP principal never notice the conversation's id move.
 
+**A ticket can be snoozed, and a snooze IS an archive with a deadline (T-74, 2026-09-04).**
+`z` on the board or the ticket page arms `Scope::SnoozeChord` (word `SNOOZE`, a barrier like
+`d`/`a`): `z` again walks the fixed ring `1h · 4h · tomorrow 9:00 · next Monday 9:00`
+(`core/src/snooze.rs::Preset`), Enter snoozes, Esc or any stray key cancels; the armed card
+draws open with the preset on its own row and the status names the ring, never the clock (the
+golden is deterministic; the confirm status says `snoozed T-9 until 15:42 ∙ u undoes it`).
+`Command::SnoozeTicket { id, until, needs_you }` writes `Archived { until: Some, needs_you }`
+through `archive_ticket`'s gates plus "already past" — so the ticket leaves through
+`Board::column_tickets`, the ARCHIVED row reads `wakes in 3h`, `a`/`u` restore it (= cancel).
+`TICKET_SCHEMA` is 3 (a v2 build would drop `until` and the ticket would sleep forever). The
+calendar rungs are pure arithmetic over `LocalTime` in `struct tm`'s conventions with the libc
+(`localtime_r`/`mktime`, `tm_isdst = -1`) in `tui/src/localtime.rs`. **The wake is the tick
+wheel's** (`Daemon::wake_snoozed`, the 1 s bucket): back at the TOP of its column
+(`Position::Top`), `entered_at` restamped, the move gate forgetting it, feed line `snooze_woke`,
+no broadcast of its own. **A woken ticket with `needs_you` sets `Ticket.woke_at` — the one
+TICKET-level producer of the saturated colour**: `card::render` wraps `card_glyph` with `!` in
+`Register::Attn`, `card::needs_you(ticket, sessions)` feeds the badge and the spine, and
+`Board::needs_you_count()` is the header chip's AND the tmux status line's number. The mark
+comes off on a KEYPRESS that leaves the cursor on it (`App::ack_woke` at the end of `on_key` →
+`Command::SeenTicket`), never on the draw clock — a ticket wakes while the user is away and a
+parked cursor must not clear it. The preference (`prefs.json::snooze_needs_you`, default on) is
+the Esc menu's `Snooze returns with needs-you / quietly` row; `App::save_prefs` is every
+preference's write. E2e: `crates/mesimon/tests/snooze_e2e.rs`. (STALE-MAP "A ticket can be
+snoozed".)
+
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
 NO key, bar the two the header itself teaches (`U` reloads, `Z` sleeps the done agents — both
 overlay-only, so the footer stays the selection's) — they live in the Esc menu (`ui/menu.rs`,

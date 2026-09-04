@@ -218,6 +218,21 @@ pub enum Command {
     UnarchiveTicket {
         id: ulid::Ulid,
     },
+    /// Archive with a deadline (T-74): the daemon's tick wheel restores the
+    /// ticket at `until` (unix seconds), at the top of its column, and with
+    /// `needs_you` lights it until the cursor rests on it. Same gate as
+    /// `ArchiveTicket`; refused when `until` is already past. Reversible the
+    /// same way — `UnarchiveTicket` is also how a snooze is cancelled.
+    SnoozeTicket {
+        id: ulid::Ulid,
+        until: u64,
+        needs_you: bool,
+    },
+    /// The cursor rested on a ticket a snooze woke: clear its needs-you
+    /// mark (`Ticket::woke_at`). A no-op on any other ticket.
+    SeenTicket {
+        id: ulid::Ulid,
+    },
     /// Re-read the user's shell environment (the Esc menu's shell-env row).
     ///
     /// Deliberately explicit rather than automatic on an rc-file change: the
@@ -490,7 +505,10 @@ impl Command {
             | MergeToAgent { id, .. }
             | RestoreTicket { id }
             | ArchiveTicket { id }
-            | UnarchiveTicket { id } => m(Mutate, true, Some(*id)),
+            | UnarchiveTicket { id }
+            | SnoozeTicket { id, .. } => m(Mutate, true, Some(*id)),
+            // A cursor landing is not news for the feed.
+            SeenTicket { id } => m(Mutate, false, Some(*id)),
             // The ticket, never the text: the feed records that the user
             // asked, not what they asked.
             PromptSession { ticket, .. }

@@ -48,6 +48,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         // Epoch-adjacent so the identity line's age renders a stable `>1y`.
         created_at: "1970-01-01T00:00:00Z".into(),
         entered_at: None,
+        woke_at: None,
         workspace: None,
         tags: Vec::new(),
         notes: Vec::new(),
@@ -178,7 +179,37 @@ fn app_graphite(board: Board) -> App {
 fn fixture_archived() -> Board {
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(7)) {
-        t.archived = Some(mesimon_core::board::Archived { at: "@100".into(), by: "local".into() });
+        t.archived = Some(mesimon_core::board::Archived {
+            at: "@100".into(),
+            by: "local".into(),
+            until: None,
+            needs_you: false,
+        });
+    }
+    b
+}
+
+/// The archived fixture with T-7's archive carrying a deadline (T-74): a
+/// snooze, waking in the year 2100 so the row reads a stable `wakes in >1y`.
+fn fixture_snoozed() -> Board {
+    let mut b = fixture_archived();
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(7)) {
+        t.archived = Some(mesimon_core::board::Archived {
+            at: "@100".into(),
+            by: "local".into(),
+            until: Some("@4102444800".into()),
+            needs_you: true,
+        });
+    }
+    b
+}
+
+/// The calm fixture with T-4 back from a snooze that asked to be lit — no
+/// session on it at all, so whatever attn appears is the ticket's own.
+fn fixture_woke() -> Board {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(4)) {
+        t.woke_at = Some("@100".into());
     }
     b
 }
@@ -434,6 +465,59 @@ fn golden_archive_armed_120() {
         lines.last()
     );
     golden("board_archive_armed_120x30", &lines);
+}
+
+/// The armed snooze chord (T-74): the footer is the chord's scope naming
+/// the ring and the pick, and the card opens with the preset on a row of
+/// its own. A second `z` walks the ring — the row and the footer move
+/// together.
+#[test]
+fn golden_snooze_armed_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 0;
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Char('z'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.last().is_some_and(|l| l.contains("enter snooze 1h")),
+        "the armed state must name the pick: {:?}",
+        lines.last()
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("snooze 1h")),
+        "the card must carry the preset while armed"
+    );
+    golden("board_snooze_armed_120x30", &lines);
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Char('z'),
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let lines = render(&app, 120, 30);
+    assert!(lines.last().is_some_and(|l| l.contains("enter snooze 4h")), "{:?}", lines.last());
+    assert!(lines.iter().any(|l| l.contains("snooze 4h")));
+}
+
+/// The archived dialog with a snoozed row: it says when the ticket comes
+/// back where a plain archive says how long it has been gone.
+#[test]
+fn golden_archived_snoozed_120() {
+    let mut app = app_graphite(fixture_snoozed());
+    app.mode = Mode::Archived { idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("wakes in >1y")),
+        "the snoozed row must say when it wakes"
+    );
+    golden("archived_snoozed_120x30", &lines);
+    // And the ticket page says the same beside its archived badge.
+    app.mode = Mode::Normal;
+    app.screen = Screen::Ticket { ticket: ulid_n(7), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("archived ∙ wakes in >1y")), "{lines:#?}");
 }
 
 /// The Esc menu: the board-wide actions, which deliberately have no keys.
@@ -2257,14 +2341,35 @@ fn test_attn_provenance_calm() {
 #[test]
 fn test_attn_provenance_waiting() {
     for flavor in Flavor::ALL {
-        attn_stays_on_the_waiting_card(flavor);
+        attn_stays_on_the_waiting_card(flavor, fixture(true));
     }
 }
 
-fn attn_stays_on_the_waiting_card(flavor: Flavor) {
+/// L3 for the one ticket-level producer (T-74): a card back from a snooze
+/// that asked to be lit wears attn on its own rows and lights the header
+/// count, with no session behind it — and nowhere else. Same law, same
+/// sweep, a different reason for the colour.
+#[test]
+fn test_attn_provenance_woke() {
+    for flavor in Flavor::ALL {
+        attn_stays_on_the_waiting_card(flavor, fixture_woke());
+    }
+    // The header counts it: one ticket, `!1`.
+    let app = app_graphite(fixture_woke());
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].contains("!1"), "the header must count the woke ticket: {}", lines[0]);
+    // And its spine, collapsed, carries the mark too — the woke card is in
+    // the column a narrow board folds.
+    let mut narrow = app_graphite(fixture_woke());
+    narrow.cursor_col = 0;
+    let lines = render(&narrow, 60, 30);
+    assert!(lines.iter().any(|l| l.contains('!')), "the folded column must show the mark");
+}
+
+fn attn_stays_on_the_waiting_card(flavor: Flavor, board: Board) {
     let theme = Theme::new(flavor, Profile::TrueColor);
     let attn = theme.attn;
-    let mut app = App::for_test(fixture(true), theme);
+    let mut app = App::for_test(board, theme);
     app.cursor_col = 0; // cursor away from the waiting card
     let buf = cells(&app, 120, 30);
     // Rows that legally carry attn: the header (0) and the rows of the card
@@ -2689,6 +2794,16 @@ fn test_no_banned_sgr() {
         arch.mode = Mode::Archived { idx: 0 };
         let mut picker = App::for_test(fixture(false), Theme::new(flavor, profile));
         picker.mode = Mode::Theme { idx: 2 };
+        // The snooze chord armed on a woke board: the open card's preset row
+        // and the ticket-level attn mark, both new paint (T-74).
+        let mut armed = App::for_test(fixture_woke(), Theme::new(flavor, profile));
+        armed.cursor_col = 0;
+        armed
+            .handle_key(
+                ratatui::crossterm::event::KeyCode::Char('z'),
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            )
+            .unwrap();
         for buf in [
             {
                 assert!(
@@ -2699,6 +2814,13 @@ fn test_no_banned_sgr() {
             },
             cells(&arch, 120, 30),
             cells(&picker, 120, 30),
+            {
+                assert!(
+                    render(&armed, 120, 30).iter().any(|l| l.contains("snooze 1h")),
+                    "the armed snooze must be ON SCREEN, or this law does not bite"
+                );
+                cells(&armed, 120, 30)
+            },
             {
                 app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
                 assert!(
@@ -2821,6 +2943,14 @@ fn test_no_drawn_structure() {
     arch.mode = Mode::Archived { idx: 0 };
     let mut picker = app_graphite(fixture(false));
     picker.mode = Mode::Theme { idx: 2 };
+    let mut armed = app_graphite(fixture_woke());
+    armed.cursor_col = 0;
+    armed
+        .handle_key(
+            ratatui::crossterm::event::KeyCode::Char('z'),
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        )
+        .unwrap();
     let screens: Vec<Vec<String>> = vec![
         {
             let lines = sweep(&app);
@@ -2832,6 +2962,14 @@ fn test_no_drawn_structure() {
         },
         sweep(&arch),
         sweep(&picker),
+        {
+            let lines = sweep(&armed);
+            assert!(
+                lines.iter().any(|l| l.contains("snooze 1h")),
+                "the armed snooze must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
         {
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
             let lines = sweep(&app);

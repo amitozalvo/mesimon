@@ -305,6 +305,12 @@ pub struct Ticket {
     /// falls back to `created_at` there, the only honest value left.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub entered_at: Option<String>,
+    /// When a snooze woke this ticket with `needs_you` set, until the cursor
+    /// has rested on the card (`SeenTicket`). Set means the card wears the
+    /// needs-you mark with no session behind it — the one ticket-level
+    /// attention producer (T-74). A scalar, so it sits with the scalars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub woke_at: Option<String>,
     /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
     /// a column policy only defaults NEW tickets, M5). `None` = inherit the board
     /// default. Must stay after the scalar fields (TOML serialize order).
@@ -523,6 +529,13 @@ pub fn sanitize_tag(raw: &str) -> Option<String> {
 }
 
 /// The `[archived]` table on a ticket. Presence = off the board.
+///
+/// A SNOOZE is an archive with a deadline (T-74): `until` set means the
+/// daemon's tick wheel restores the ticket to the board when the clock
+/// passes it, at the top of its column. Everything an archive already gets —
+/// hidden by `Board::column_tickets`, refused by `place_ticket` and the
+/// spawns, listed in the ARCHIVED dialog, restored by `a` — a snooze gets
+/// for free, and a restore by hand simply cancels the snooze.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Archived {
     /// Same clock as `created_at` (`@<unix secs>`).
@@ -530,6 +543,21 @@ pub struct Archived {
     /// Actor. v0.1 has no user@host plumbing — always "local" (STALE-MAP).
     #[serde(default)]
     pub by: String,
+    /// The wake deadline, same clock, when this archive is a snooze.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub until: Option<String>,
+    /// Raise `needs you` on the card when the snooze wakes (`Ticket::woke_at`).
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub needs_you: bool,
+}
+
+fn is_false(b: &bool) -> bool {
+    !*b
+}
+
+/// `@<unix secs>` → seconds. The one parser for the ticket's own stamps.
+pub fn stamp_secs(stamp: &str) -> Option<u64> {
+    stamp.strip_prefix('@')?.parse().ok()
 }
 
 /// M4 (supersedes D25's column-only enum): how a ticket's sessions get a cwd.
@@ -563,6 +591,16 @@ impl Ticket {
 
     pub fn is_archived(&self) -> bool {
         self.archived.is_some()
+    }
+
+    /// The snooze deadline in unix seconds, when this archive is a snooze.
+    pub fn snooze_until_secs(&self) -> Option<u64> {
+        self.archived.as_ref()?.until.as_deref().and_then(stamp_secs)
+    }
+
+    /// Returned from a snooze and not yet seen: wears needs-you on its own.
+    pub fn is_woke(&self) -> bool {
+        self.woke_at.is_some()
     }
 
     /// This ticket's tag on axis `group`, if it wears one. At most one per
@@ -857,6 +895,18 @@ impl Board {
         v
     }
 
+    /// Tickets back from a snooze that nobody has looked at yet (T-74).
+    pub fn woke_tickets(&self) -> Vec<&Ticket> {
+        self.tickets.iter().filter(|t| t.is_woke() && !t.is_archived()).collect()
+    }
+
+    /// The `!N` count: sessions in the attention set plus tickets a snooze
+    /// woke with needs-you. The header chip and the tmux status line both
+    /// read this, so the number is one number.
+    pub fn needs_you_count(&self) -> usize {
+        crate::attention::attention_queue(self).len() + self.woke_tickets().len()
+    }
+
     /// Sessions of the ticket that hold (or should hold) a pane. The archive
     /// gate, its TUI advisory, and the header suggestion all share this — the
     /// suggestion never offers what the keystroke would refuse.
@@ -957,11 +1007,51 @@ mod tests {
             order: order.into(),
             created_at: "@0".into(),
             entered_at: None,
+            woke_at: None,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),
             archived: None,
         }
+    }
+
+    /// A snooze is an archive with a deadline: the deadline and the wake
+    /// flag ride inside `[archived]` (the TOML shape is pinned in the
+    /// daemon's store tests), and the count that lights the header sees a
+    /// woke ticket but never an archived one.
+    #[test]
+    fn snooze_fields_roundtrip_and_count() {
+        let mut t = ticket(1, "TODO", "a");
+        t.archived = Some(Archived {
+            at: "@10".into(),
+            by: "local".into(),
+            until: Some("@4102444800".into()),
+            needs_you: true,
+        });
+        let json = serde_json::to_string(&t).expect("serializes");
+        let back: Ticket = serde_json::from_str(&json).expect("parses");
+        assert_eq!(back.snooze_until_secs(), Some(4102444800));
+        assert!(back.archived.as_ref().is_some_and(|a| a.needs_you));
+        assert!(!back.is_woke());
+        // A plain archive carries neither: absent, not null, so an older
+        // build's file and this build's agree byte for byte.
+        let plain = ticket(3, "TODO", "c");
+        let json = serde_json::to_string(&plain).expect("serializes");
+        assert!(!json.contains("woke_at") && !json.contains("needs_you"), "{json}");
+
+        let mut w = ticket(2, "TODO", "b");
+        w.woke_at = Some("@20".into());
+        let json = serde_json::to_string(&w).expect("serializes");
+        let back: Ticket = serde_json::from_str(&json).expect("parses");
+        assert!(back.is_woke());
+
+        let mut b = Board::default();
+        b.tickets.push(t);
+        b.tickets.push(w);
+        assert_eq!(b.woke_tickets().len(), 1, "an archived ticket never counts, a woke one does");
+        assert_eq!(b.needs_you_count(), 1);
+        assert_eq!(stamp_secs("@7"), Some(7));
+        assert_eq!(stamp_secs("7"), None);
     }
 
     /// The registry is board-level and persisted: a group's vocabulary is
@@ -1019,7 +1109,8 @@ mod tests {
         assert!(!b.forget_tag(1, "BUG"), "forgetting twice is a no-op");
 
         // Archiving must not renumber a cycle either.
-        b.tickets[0].archived = Some(Archived { at: "@1".into(), by: "local".into() });
+        b.tickets[0].archived =
+            Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
         assert_eq!(b.group_tags(1), vec!["REGR"]);
     }
 
@@ -1259,7 +1350,8 @@ mod tests {
         let mut b = Board::with_default_columns();
         b.tickets.push(ticket(1, "DONE", "a"));
         let mut t = ticket(2, "DONE", "b");
-        t.archived = Some(Archived { at: "@10".into(), by: "local".into() });
+        t.archived =
+            Some(Archived { at: "@10".into(), by: "local".into(), until: None, needs_you: false });
         b.tickets.push(t);
         let done: Vec<_> = b.column_tickets("DONE").iter().map(|t| t.id.0).collect();
         assert_eq!(done, vec![1]);
@@ -1273,7 +1365,8 @@ mod tests {
         let mut b = Board::with_default_columns();
         for (id, at) in [(1u128, "@100"), (2, "@300"), (3, "@200")] {
             let mut t = ticket(id, "REVIEW", "a");
-            t.archived = Some(Archived { at: at.into(), by: "local".into() });
+            t.archived =
+                Some(Archived { at: at.into(), by: "local".into(), until: None, needs_you: false });
             b.tickets.push(t);
         }
         let ids: Vec<_> = b.archived_tickets().iter().map(|t| t.id.0).collect();

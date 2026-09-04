@@ -3,9 +3,8 @@
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
-
-   Keymap validator       >╭─ MENU ─────────────────────────────────────────────────────────╮
-                           │ ◦ Install v0.1.0-alpha.5                                       │
+                           ╭─ MENU ─────────────────────────────────────────────────────────╮
+   Keymap validator       >│ ◦ Install v0.1.0-alpha.5                                       │
                            │     downloads and verifies it ∙ nothing restarts yet           │
                            │   External sessions                                            │
                            │     claude sessions in this repo that mesimon did not start    │
@@ -13,6 +12,8 @@
                            │     off the board, still here                                  │
                            │   Show agent replies                                         p │
                            │     the latest reply under the selected card                   │
+                           │   Snooze returns with needs-you                                │
+                           │     lit until you look at it ∙ enter makes it quiet            │
                            │   Theme: graphite                                              │
                            │     dark, the default ∙ for a dark terminal                    │
                            │   Release notes                                                │
@@ -22,7 +23,6 @@
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
 

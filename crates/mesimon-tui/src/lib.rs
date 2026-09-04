@@ -11,6 +11,7 @@ mod external;
 mod glyphs;
 mod handover;
 mod layout;
+mod localtime;
 mod osc;
 mod peek;
 mod prefs;
@@ -37,11 +38,20 @@ use ratatui::crossterm::terminal::{
 use app::App;
 use client::Client;
 
+/// The words a snooze preset wears on the card row and in the status line —
+/// the keymap's own hint for it, so the footer, the card and the status all
+/// say one thing.
+pub(crate) fn snooze_words(p: mesimon_core::snooze::Preset) -> &'static str {
+    mesimon_core::snooze::hint_for_label(p.label())
+}
+
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
 /// What `mesimon doctor` says about the theme picks (`prefs.rs`).
 pub use prefs::doctor_line as theme_status;
+/// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
+pub use prefs::snooze_doctor_line as snooze_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
 /// the offer it raises, and the doctor must not carry a second copy of the

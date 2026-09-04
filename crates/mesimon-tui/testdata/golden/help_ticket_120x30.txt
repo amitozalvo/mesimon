@@ -11,6 +11,7 @@
                                  │   N         new note                               │    s shell ∙ x sleep
                                  │   ^t        tags                                   │
                                  │   a         archive                                │
+                                 │   z         snooze                                 │
                                  │   d         delete                                 │
                                  │                                                    │
                                  │ SESSIONS                                           │
@@ -25,6 +26,5 @@
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
-
 
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

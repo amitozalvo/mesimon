@@ -185,14 +185,18 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
     );
     let mut lines: Vec<Line> = Vec::new();
     for (i, t) in archived.iter().enumerate() {
-        // Archive age from the `@<secs>` stamp; unparsable stamps show no age.
-        let age = t
-            .archived
-            .as_ref()
-            .and_then(|a| a.at.strip_prefix('@'))
-            .and_then(|s| s.parse::<u64>().ok())
-            .map(|secs| crate::text::age_slot(now, secs * 1000, false))
-            .unwrap_or_default();
+        // A snoozed ticket says when it comes back; a plain archive says how
+        // long it has been gone. Unparsable stamps show nothing.
+        let age = match t.snooze_until_secs() {
+            Some(until) => format!("wakes {}", crate::text::until_word(now, until * 1000)),
+            None => t
+                .archived
+                .as_ref()
+                .and_then(|a| a.at.strip_prefix('@'))
+                .and_then(|s| s.parse::<u64>().ok())
+                .map(|secs| crate::text::age_slot(now, secs * 1000, false))
+                .unwrap_or_default(),
+        };
         let head = format!(" {}  {} ∙ {} ∙ {}", t.short_key, truncate(&t.title, 28), t.column, age);
         let pad = inner_w.saturating_sub(head.width());
         let style = if i == idx {

@@ -110,7 +110,10 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     // Sanitized by subtraction: the tab became a space, the bidi mark went.
     assert_eq!(body, "# Why this\n\nBecause the peek lied.\n");
     let toml = std::fs::read_to_string(tdir.join("ticket.toml")).unwrap();
-    assert!(toml.contains("schema_version = 2"), "{toml}");
+    // The stamp is whatever this build writes (it was 2 when notes landed and
+    // 3 since the snooze), never a number a later bump has to chase.
+    let stamp = format!("schema_version = {}", mesimon_daemon::store::TICKET_SCHEMA);
+    assert!(toml.contains(&stamp), "{toml}");
     assert!(toml.contains("[[notes]]"), "{toml}");
     assert!(toml.contains("created_by = \"local\""), "{toml}");
     assert!(toml.contains("name = \"Why this\""), "{toml}");

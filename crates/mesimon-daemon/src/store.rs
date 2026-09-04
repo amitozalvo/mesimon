@@ -27,8 +27,12 @@ pub const COLUMNS_SCHEMA: u32 = 2;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
 /// `save_ticket` drop every note's metadata while the files stayed behind
-/// as orphans.
-pub const TICKET_SCHEMA: u32 = 2;
+/// as orphans. v3 (T-74) added the snooze — `archived.until`/`needs_you`
+/// and `woke_at` — for the same reason: a v2 build would drop the deadline
+/// on its next save and the ticket would sleep forever. The cost is the
+/// same trade: a v3 file is NOT loaded by a v2 build (a notice, and the
+/// ticket is absent there until the newer build is back).
+pub const TICKET_SCHEMA: u32 = 3;
 pub const SESSIONS_SCHEMA: u32 = 1;
 
 fn schema_v1() -> u32 {
@@ -829,6 +833,67 @@ created_at = "@2"
         assert_eq!(t.notes[0].name, "");
     }
 
+    /// A v2 ticket — a plain `[archived]` with no deadline — still parses,
+    /// and the snooze fields default to "not a snooze, not woke". The other
+    /// direction: a snoozed ticket round-trips through the stamped wrapper
+    /// with `woke_at` among the scalars and the deadline inside the table.
+    #[test]
+    fn pre_snooze_ticket_toml_parses() {
+        let alpha12 = r#"
+schema_version = 2
+id = "01J8ZQ7VJ00000000000000000"
+short_key = "T-4"
+title = "parked"
+column = "TODO"
+order = "a0"
+created_at = "@1788046350"
+entered_at = "@1788046360"
+
+[[tags]]
+name = "BUG"
+group = 1
+
+[archived]
+at = "@1788046400"
+by = "local"
+"#;
+        let f: TicketFile = toml::from_str(alpha12).unwrap();
+        assert_eq!(f.schema_version, 2);
+        let a = f.ticket.archived.as_ref().expect("archived");
+        assert_eq!((a.until.as_deref(), a.needs_you), (None, false));
+        assert!(!f.ticket.is_woke());
+        assert_eq!(f.ticket.snooze_until_secs(), None);
+
+        let mut t = f.ticket.clone();
+        t.woke_at = Some("@1788046500".into());
+        t.archived = Some(mesimon_core::board::Archived {
+            at: "@1788046400".into(),
+            by: "local".into(),
+            until: Some("@1788050000".into()),
+            needs_you: true,
+        });
+        let f = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
+        let s = toml::to_string_pretty(&f).unwrap();
+        assert!(s.find("woke_at").unwrap() < s.find("[[tags]]").unwrap(), "{s}");
+        assert!(s.find("[archived]").unwrap() < s.find("until").unwrap(), "{s}");
+        let back: TicketFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.ticket.archived, t.archived);
+        assert_eq!(back.ticket.snooze_until_secs(), Some(1788050000));
+        assert!(back.ticket.is_woke());
+        // Not a snooze: neither key is written, so the file reads as it did.
+        let plain = TicketFile { schema_version: TICKET_SCHEMA, ticket: f.ticket.clone() };
+        let mut plain = plain;
+        plain.ticket.woke_at = None;
+        plain.ticket.archived = Some(mesimon_core::board::Archived {
+            at: "@1".into(),
+            by: "local".into(),
+            until: None,
+            needs_you: false,
+        });
+        let s = toml::to_string_pretty(&plain).unwrap();
+        assert!(!s.contains("until") && !s.contains("needs_you") && !s.contains("woke_at"), "{s}");
+    }
+
     /// `[[notes]]` is another array of tables: after `[[tags]]`, before
     /// `[archived]`. The serializer that writes the file is the judge.
     #[test]
@@ -841,6 +906,7 @@ created_at = "@2"
             order: "a0".into(),
             created_at: "@0".into(),
             entered_at: None,
+            woke_at: None,
             workspace: None,
             tags: Vec::new(),
             notes: vec![mesimon_core::board::NoteMeta {
@@ -852,7 +918,12 @@ created_at = "@2"
                 edited_at: "@2".into(),
                 edited_by: "agent:00000000-0000-0000-0000-000000000000".into(),
             }],
-            archived: Some(mesimon_core::board::Archived { at: "@3".into(), by: "local".into() }),
+            archived: Some(mesimon_core::board::Archived {
+                at: "@3".into(),
+                by: "local".into(),
+                until: None,
+                needs_you: false,
+            }),
         };
         t.set_tag(1, Some("BUG".into()));
         let f = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
@@ -880,12 +951,15 @@ created_at = "@2"
             order: "a0".into(),
             created_at: "@0".into(),
             entered_at: None,
+            woke_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
             archived: Some(mesimon_core::board::Archived {
                 at: "@1788046350".into(),
                 by: "local".into(),
+                until: None,
+                needs_you: false,
             }),
         };
         t.set_tag(1, Some("BUG".into()));
@@ -916,12 +990,15 @@ created_at = "@2"
             order: "a0".into(),
             created_at: "@0".into(),
             entered_at: None,
+            woke_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
             archived: Some(mesimon_core::board::Archived {
                 at: "@1788046350".into(),
                 by: "local".into(),
+                until: None,
+                needs_you: false,
             }),
         };
         let s = toml::to_string_pretty(&t).unwrap();
@@ -966,12 +1043,15 @@ by = "local"
                 order: "a0".into(),
                 created_at: "@0".into(),
                 entered_at: None,
+                woke_at: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
                 notes: Vec::new(),
                 archived: Some(mesimon_core::board::Archived {
                     at: "@1788050000".into(),
                     by: "local".into(),
+                    until: None,
+                    needs_you: false,
                 }),
             },
         };
@@ -1071,6 +1151,7 @@ by = "local"
             order: "a0".into(),
             created_at: "@0".into(),
             entered_at: None,
+            woke_at: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),

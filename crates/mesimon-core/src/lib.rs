@@ -19,6 +19,7 @@ pub mod principal;
 pub mod reconcile;
 pub mod relnotes;
 pub mod shellenv;
+pub mod snooze;
 pub mod text;
 pub mod verdict;
 pub mod workspace;

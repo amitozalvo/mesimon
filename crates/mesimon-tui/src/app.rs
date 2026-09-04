@@ -16,6 +16,7 @@ use mesimon_core::command::{
     Command, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
 };
 use mesimon_core::keymap::{self, Ctx, Key, Scope, Verb};
+use mesimon_core::snooze::Preset;
 use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
 
 use crate::client::Transport;
@@ -681,6 +682,11 @@ pub struct App {
     /// cancels. Only ever armed when `a` would archive — restoring is one
     /// press, because undoing a mistake must not be harder than making it.
     archive_armed: Option<ulid::Ulid>,
+    /// The `z` chord (T-74): the ticket under it and the preset the ring
+    /// is on. `z` again steps the ring, Enter snoozes until the preset's
+    /// deadline, anything else cancels. The armed card draws open with the
+    /// preset named on a row of its own.
+    snooze_armed: Option<(ulid::Ulid, Preset)>,
     /// The `^t` tail is open. Checked BEFORE `Mode::Input` in `scope()` and
     /// in `handle_key`, so arming from the composer leaves the half-typed
     /// title untouched underneath and Esc returns to it.
@@ -808,6 +814,7 @@ impl App {
             delete_armed: None,
             tag_armed: None,
             archive_armed: None,
+            snooze_armed: None,
             last_undo: None,
             last_action: None,
             help: false,
@@ -1168,6 +1175,7 @@ impl App {
         for (code, mods) in keys {
             self.handle_key(code, mods)?;
         }
+        self.ack_woke()?;
         Ok(true)
     }
 
@@ -1505,22 +1513,96 @@ impl App {
         self.mode = Mode::Normal;
         self.preview(flavor);
         let name = flavor.name();
-        self.status = match self.prefs_path.as_ref() {
-            _ if self.prefs_write_barred => format!(
-                "{name} for this session ∙ prefs.json was written by a newer mesimon, not touched"
-            ),
-            None => format!("{name} for this session"),
-            Some(path) => match crate::prefs::save(path, &self.prefs) {
-                Ok(()) => format!("{name} saved for {slot} terminals"),
-                Err(e) => {
-                    format!("{name} for this session ∙ could not write {}: {e}", path.display())
-                }
-            },
+        self.status = match self.save_prefs(name) {
+            Ok(()) => format!("{name} saved for {slot} terminals"),
+            Err(why) => why,
         };
         if pinned {
             let var = std::env::var("MESIMON_THEME").unwrap_or_default();
             self.status.push_str(&format!(" ∙ MESIMON_THEME={var} pins the next launch"));
         }
+    }
+
+    /// Write `prefs.json` — the one road every preference takes, so the bar
+    /// and the write errors read the same whichever row set them. `Err` is
+    /// the status line saying why `what` holds for this session only.
+    fn save_prefs(&self, what: &str) -> Result<(), String> {
+        match self.prefs_path.as_ref() {
+            _ if self.prefs_write_barred => Err(format!(
+                "{what} for this session ∙ prefs.json was written by a newer mesimon, not touched"
+            )),
+            None => Err(format!("{what} for this session")),
+            Some(path) => crate::prefs::save(path, &self.prefs).map_err(|e| {
+                format!("{what} for this session ∙ could not write {}: {e}", path.display())
+            }),
+        }
+    }
+
+    /// The snooze chord's status: what `z` and Enter do next. Names the
+    /// preset, never the resolved clock — the clock is the confirm's to say.
+    fn snooze_status(&mut self) {
+        if let Some((_, p)) = self.snooze_armed {
+            self.status = format!("z next ∙ enter {} ∙ esc cancels", crate::snooze_words(p));
+        }
+    }
+
+    /// The row the armed card carries under its title (`snooze 1h`), or
+    /// nothing when this ticket is not the one under the chord.
+    pub(crate) fn snooze_row(&self, ticket: ulid::Ulid) -> Option<String> {
+        let (id, p) = self.snooze_armed?;
+        (id == ticket).then(|| crate::snooze_words(p).to_string())
+    }
+
+    /// Enter on the chord: resolve the preset to a deadline on the local
+    /// clock at THIS press, send it, and say when the ticket comes back.
+    fn snooze(&mut self, id: ulid::Ulid, preset: Preset) -> Result<()> {
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let Some(local) = crate::localtime::now_local() else {
+            self.status = "the local clock would not answer ∙ not snoozed".into();
+            return Ok(());
+        };
+        let Some(until) =
+            mesimon_core::snooze::deadline(preset, now, &local, &crate::localtime::to_epoch)
+        else {
+            self.status = "could not place that day on the clock ∙ not snoozed".into();
+            return Ok(());
+        };
+        let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
+        let needs_you = self.prefs.snooze_needs_you;
+        match self.req(Command::SnoozeTicket { id, until, needs_you }) {
+            Response::Err { message } => self.status = message,
+            _ => {
+                // Undo is the restore: an archive with a deadline is undone
+                // the way an archive is, and the restore cancels the deadline.
+                self.last_undo = Some(LastUndo::Archive(id));
+                let when = if preset.is_calendar() {
+                    preset.label().to_string()
+                } else {
+                    crate::localtime::clock_word(until).unwrap_or_else(|| preset.label().into())
+                };
+                self.status = format!("snoozed {key} until {when} ∙ u undoes it");
+            }
+        }
+        self.refresh()
+    }
+
+    /// A keypress left the cursor on a ticket a snooze woke lit: it has been
+    /// seen, and the mark comes off. On a KEY, never on the draw clock — a
+    /// ticket wakes at the top of its column while the user may be away,
+    /// and a cursor that happened to be parked there must not clear a mark
+    /// nobody looked at. The daemon no-ops on any other ticket.
+    fn ack_woke(&mut self) -> Result<()> {
+        let Some(id) = self.subject() else { return Ok(()) };
+        if !self.board.ticket(id).is_some_and(|t| t.is_woke()) {
+            return Ok(());
+        }
+        if let Response::Err { message } = self.req(Command::SeenTicket { id }) {
+            self.status = message;
+        }
+        self.refresh()
     }
 
     /// A text field owns the keyboard: the composer, a rename, or a tag name.
@@ -1552,6 +1634,9 @@ impl App {
         }
         if self.archive_armed.is_some() {
             return Scope::ArchiveChord;
+        }
+        if self.snooze_armed.is_some() {
+            return Scope::SnoozeChord;
         }
         if self.diff.as_ref().is_some_and(|d| d.z_armed)
             && matches!(self.screen, Screen::Diff { .. })
@@ -1702,6 +1787,8 @@ impl App {
                 self.tag_subject().is_some_and(|t| t.iter().any(|t| t.group == g && t.name == n))
             }),
             tag_forget_armed: self.tag_armed.as_ref().is_some_and(|a| a.forget_armed),
+            snooze_word: self.snooze_armed.map(|(_, p)| p.label()).unwrap_or(""),
+            snooze_needs_you: self.prefs.snooze_needs_you,
             // Board-wide, because the ten digits share one binding and `avail`
             // never sees which one was pressed. A digit whose own group is
             // empty says so in the status line instead.
@@ -1822,12 +1909,15 @@ impl App {
         // Disarm the two things a keypress can be standing in the middle of.
         // A chord tail keeps its own arming (the scope carries it) until the
         // dispatch below either consumes it or cancels it.
-        let was = (self.delete_armed.take(), self.archive_armed.take());
+        let was = (self.delete_armed.take(), self.archive_armed.take(), self.snooze_armed.take());
         if scope != Scope::DeleteChord {
             self.delete_armed = None;
         }
         if scope != Scope::ArchiveChord {
             self.archive_armed = None;
+        }
+        if scope != Scope::SnoozeChord {
+            self.snooze_armed = None;
         }
         if !matches!(key, Key::Char('m')) {
             self.merge_armed = None;
@@ -1844,6 +1934,8 @@ impl App {
                 self.status = "delete cancelled".into();
             } else if scope == Scope::ArchiveChord {
                 self.status = "archive cancelled".into();
+            } else if scope == Scope::SnoozeChord {
+                self.status = "snooze cancelled".into();
             } else if scope == Scope::DiffView {
                 if let Some(d) = self.diff.as_mut() {
                     d.z_armed = false;
@@ -1854,6 +1946,7 @@ impl App {
         };
         self.delete_armed = was.0;
         self.archive_armed = was.1;
+        self.snooze_armed = was.2;
         self.dispatch(verb, key, scope, &ctx)
     }
 
@@ -2139,6 +2232,48 @@ impl App {
                 } else if let Some(id) = self.archive_armed.take() {
                     self.archive_gated(id)?;
                 }
+            }
+            Verb::SnoozePrefix => {
+                if let Some(id) = self.subject() {
+                    if self.board.ticket_awake_sessions(id) > 0 {
+                        // The archive's refusal, in the archive's words: a
+                        // snooze IS an archive, and the second press would
+                        // only be refused.
+                        self.archive_gated(id)?;
+                    } else {
+                        self.snooze_armed = Some((id, Preset::OneHour));
+                        self.snooze_status();
+                    }
+                }
+            }
+            Verb::SnoozeNext => {
+                if let Some((id, p)) = self.snooze_armed {
+                    self.snooze_armed = Some((id, p.next()));
+                    self.snooze_status();
+                }
+            }
+            Verb::SnoozeConfirm => {
+                if let Some((id, p)) = self.snooze_armed.take() {
+                    self.snooze(id, p)?;
+                }
+            }
+            Verb::SnoozeCancel => {
+                self.snooze_armed = None;
+                self.status = "snooze cancelled".into();
+            }
+            Verb::SnoozeQuiet => {
+                let on = !self.prefs.snooze_needs_you;
+                self.prefs.set_snooze_needs_you(on);
+                self.mode = Mode::Normal;
+                let word = if on {
+                    "a woken ticket returns with needs-you"
+                } else {
+                    "a woken ticket returns quietly"
+                };
+                self.status = match self.save_prefs(word) {
+                    Ok(()) => format!("{word} ∙ saved"),
+                    Err(why) => why,
+                };
             }
             Verb::ReloadShellEnv => {
                 self.send(Command::ReloadShellEnv)?;
@@ -4672,6 +4807,7 @@ pub(crate) mod test_support {
                         order: "zzzz".into(),
                         created_at: "1970-01-01T00:00:00Z".into(),
                         entered_at: None,
+                        woke_at: None,
                         workspace: None,
                         tags: Vec::new(),
                         notes: Vec::new(),
@@ -4830,6 +4966,8 @@ pub(crate) mod test_support {
                             t.archived = Some(mesimon_core::board::Archived {
                                 at: "@1000".into(),
                                 by: "local".into(),
+                                until: None,
+                                needs_you: false,
                             });
                             Ok(Response::Ok)
                         }
@@ -4840,6 +4978,41 @@ pub(crate) mod test_support {
                     match self.board.tickets.iter_mut().find(|t| t.id == id) {
                         Some(t) => {
                             t.archived = None;
+                            Ok(Response::Ok)
+                        }
+                        None => Ok(Response::Err { message: "no such ticket".into() }),
+                    }
+                }
+                // The daemon's snooze gate, mirrored: awake sessions and a
+                // past deadline refuse; otherwise an archive with the deadline.
+                Command::SnoozeTicket { id, until, needs_you } => {
+                    if self.board.ticket_awake_sessions(id) > 0 {
+                        return Ok(Response::Err {
+                            message: "sessions still awake — sleep them first".into(),
+                        });
+                    }
+                    if until <= 1000 {
+                        return Ok(Response::Err {
+                            message: "snooze deadline is already past".into(),
+                        });
+                    }
+                    match self.board.tickets.iter_mut().find(|t| t.id == id) {
+                        Some(t) => {
+                            t.archived = Some(mesimon_core::board::Archived {
+                                at: "@1000".into(),
+                                by: "local".into(),
+                                until: Some(format!("@{until}")),
+                                needs_you,
+                            });
+                            Ok(Response::Ok)
+                        }
+                        None => Ok(Response::Err { message: "no such ticket".into() }),
+                    }
+                }
+                Command::SeenTicket { id } => {
+                    match self.board.tickets.iter_mut().find(|t| t.id == id) {
+                        Some(t) => {
+                            t.woke_at = None;
                             Ok(Response::Ok)
                         }
                         None => Ok(Response::Err { message: "no such ticket".into() }),
@@ -4900,6 +5073,7 @@ mod tests {
             order: order.into(),
             created_at: "1970-01-01T00:00:00Z".into(),
             entered_at: None,
+            woke_at: None,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),
@@ -7187,6 +7361,105 @@ mod tests {
         press(&mut app, 'm');
         assert!(matches!(app.mode, Mode::Normal), "m must not grab on the board");
         assert!(app.board.column_tickets("todo").len() == 2);
+    }
+
+    /// The snooze chord (T-74): `z` arms on the first preset, `z` walks the
+    /// ring, a stray key cancels and says so, Enter sends an archive with a
+    /// deadline ahead of now and arms undo as the restore.
+    #[test]
+    fn snooze_is_a_chord_that_walks_the_ring() {
+        let mut app = app_three_columns();
+        press(&mut app, 'z');
+        assert_eq!(app.snooze_armed, Some((ulid::Ulid(1), Preset::OneHour)));
+        assert_eq!(app.scope(), Scope::SnoozeChord);
+        assert!(app.status.contains("enter snooze 1h"), "{}", app.status);
+        press(&mut app, 'z');
+        assert_eq!(app.snooze_armed, Some((ulid::Ulid(1), Preset::FourHours)));
+        assert_eq!(app.snooze_row(ulid::Ulid(1)).as_deref(), Some("snooze 4h"));
+        assert_eq!(app.snooze_row(ulid::Ulid(2)), None, "the row is the armed card's alone");
+        // A stray key is "never mind", and it says so.
+        press(&mut app, 'x');
+        assert_eq!(app.snooze_armed, None);
+        assert_eq!(app.status, "snooze cancelled");
+        assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
+        // Esc is the same, in its own words.
+        press(&mut app, 'z');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.snooze_armed, None);
+        assert!(matches!(app.mode, Mode::Normal), "esc cancels the chord, never opens the menu");
+        // Enter takes the pick: the fake daemon archives with the deadline.
+        press(&mut app, 'z');
+        press(&mut app, 'z');
+        press(&mut app, 'z'); // tomorrow 9:00
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.snooze_armed, None);
+        let t = app.board.ticket(ulid::Ulid(1)).unwrap();
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let until = t.snooze_until_secs().expect("an archive with a deadline");
+        assert!(until > now + 3600, "tomorrow 9:00 is more than an hour out");
+        assert!(t.archived.as_ref().is_some_and(|a| a.needs_you), "the default is lit");
+        assert_eq!(app.last_undo, Some(LastUndo::Archive(ulid::Ulid(1))));
+        assert!(app.status.starts_with("snoozed T-1 until tomorrow 9:00"), "{}", app.status);
+        assert!(app.board.column_tickets("todo").iter().all(|t| t.id != ulid::Ulid(1)));
+        // And `z` on the archived ticket is inert: `a` restores there.
+        app.mode = Mode::Archived { idx: 0 };
+        press(&mut app, 'z');
+        assert_eq!(app.snooze_armed, None);
+    }
+
+    /// A snooze is an archive: awake sessions refuse it in the archive's
+    /// words, before any second press.
+    #[test]
+    fn snooze_refuses_awake_sessions_like_the_archive() {
+        let (mut app, _sent, _sid) = app_with_claude(SessionState::Running, false);
+        press(&mut app, 'z');
+        assert_eq!(app.snooze_armed, None);
+        assert!(app.status.contains("awake"), "{}", app.status);
+    }
+
+    /// The woke mark comes off on a KEYPRESS that leaves the cursor on the
+    /// card — never on the draw clock, and never for a card the cursor
+    /// merely passed over on its way somewhere else.
+    #[test]
+    fn a_keypress_on_a_woke_card_acks_it() {
+        // Seeded on the daemon's side (the fake transport), not the app's
+        // copy: every ack refreshes, and a refresh reads the daemon.
+        let mut b = board_three_columns();
+        for id in [1u128, 2] {
+            b.tickets.iter_mut().find(|t| t.id == ulid::Ulid(id)).unwrap().woke_at =
+                Some("@100".into());
+        }
+        let mut app = App::for_test(b, theme());
+        assert_eq!(app.board.needs_you_count(), 2);
+        // Drawing acks nothing.
+        let _ = app.ctx();
+        assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_woke());
+        // `j` moves the cursor from T-1 to T-2: T-2 is where the key left
+        // it, so T-2 is seen and T-1 is not.
+        app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+        assert!(app.board.ticket(ulid::Ulid(1)).unwrap().is_woke(), "passed over, not seen");
+        assert!(!app.board.ticket(ulid::Ulid(2)).unwrap().is_woke(), "landed on: seen");
+        app.on_key(KeyCode::Char('k'), KeyModifiers::NONE).unwrap();
+        assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().is_woke());
+        assert_eq!(app.board.needs_you_count(), 0);
+    }
+
+    /// The menu row flips the preference and the next snooze carries it.
+    #[test]
+    fn the_menu_row_flips_how_a_snooze_returns() {
+        let mut app = app_three_columns();
+        assert!(app.ctx().snooze_needs_you);
+        let ctx = app.ctx();
+        app.dispatch(Verb::SnoozeQuiet, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(!app.prefs.snooze_needs_you);
+        assert!(app.status.contains("quietly"), "{}", app.status);
+        press(&mut app, 'z');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let t = app.board.ticket(ulid::Ulid(1)).unwrap();
+        assert!(t.archived.as_ref().is_some_and(|a| !a.needs_you));
     }
 
     /// Digits address columns while a card is held (04 §2.5) — MOVE is the one

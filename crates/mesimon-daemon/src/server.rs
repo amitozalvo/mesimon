@@ -1037,6 +1037,10 @@ impl Daemon {
             Command::RestoreTicket { id } => self.restore_ticket(id),
             Command::ArchiveTicket { id } => self.archive_ticket(id),
             Command::UnarchiveTicket { id } => self.unarchive_ticket(id),
+            Command::SnoozeTicket { id, until, needs_you } => {
+                self.snooze_ticket(id, until, needs_you)
+            }
+            Command::SeenTicket { id } => self.seen_ticket(id),
             Command::ArchiveAll => {
                 let (archived, skipped) = self.archive_all();
                 if archived > 0 {
@@ -1209,6 +1213,7 @@ impl Daemon {
         if self.ticks % 4 == 0 {
             changed |= self.probe_spawning();
             changed |= self.probe_activity();
+            changed |= self.wake_snoozed(now / 1000);
             let a = self.archive_figures();
             if a != self.archive_cache {
                 self.archive_cache = a;
@@ -2992,7 +2997,12 @@ impl Daemon {
                 continue;
             }
             if let Some(t) = self.board.ticket_mut(id) {
-                t.archived = Some(Archived { at: at.clone(), by: "local".into() });
+                t.archived = Some(Archived {
+                    at: at.clone(),
+                    by: "local".into(),
+                    until: None,
+                    needs_you: false,
+                });
                 let t = t.clone();
                 let _ = store::save_ticket(&self.paths, &t);
                 archived += 1;
@@ -3096,6 +3106,7 @@ impl Daemon {
             order: fracindex::between(&last, ""),
             created_at: now_iso(),
             entered_at: Some(now_iso()),
+            woke_at: None,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),
@@ -3630,11 +3641,112 @@ impl Daemon {
         }
         let at = now_iso();
         let resp = self
-            .with_ticket(id, |t| t.archived = Some(Archived { at, by: "local".into() }))
+            .with_ticket(id, |t| {
+                t.archived =
+                    Some(Archived { at, by: "local".into(), until: None, needs_you: false })
+            })
             .unwrap_or(Response::Err { message: "no such ticket".into() });
         // Re-price now — a taken offer must not linger until the next bucket.
         self.archive_cache = self.archive_figures();
         resp
+    }
+
+    /// Snooze: an archive with a deadline (T-74). The same gate as
+    /// `archive_ticket` — a snoozed ticket is off the board, so nothing on it
+    /// may hold a pane — plus a deadline that has not already passed, since
+    /// a snooze that wakes on the next tick is a refusal nobody could see.
+    /// `wake_snoozed` on the tick wheel is the other half.
+    fn snooze_ticket(&mut self, id: ulid::Ulid, until: u64, needs_you: bool) -> Response {
+        match self.board.ticket(id) {
+            None => return Response::Err { message: "no such ticket".into() },
+            Some(t) if t.is_archived() => {
+                return Response::Err { message: "already archived".into() }
+            }
+            Some(_) => {}
+        }
+        if self.board.ticket_awake_sessions(id) > 0 {
+            return Response::Err { message: "sessions still awake — sleep them first".into() };
+        }
+        if until <= now_secs() {
+            return Response::Err { message: "snooze deadline is already past".into() };
+        }
+        let at = now_iso();
+        let resp = self
+            .with_ticket(id, |t| {
+                t.woke_at = None;
+                t.archived = Some(Archived {
+                    at,
+                    by: "local".into(),
+                    until: Some(format!("@{until}")),
+                    needs_you,
+                });
+            })
+            .unwrap_or(Response::Err { message: "no such ticket".into() });
+        self.archive_cache = self.archive_figures();
+        resp
+    }
+
+    /// The cursor rested on a ticket a snooze woke lit: the mark comes off.
+    /// A no-op — no write, no broadcast — on a ticket that wears none, so
+    /// the TUI can send it whenever it likes.
+    fn seen_ticket(&mut self, id: ulid::Ulid) -> Response {
+        match self.board.ticket(id) {
+            None => Response::Err { message: "no such ticket".into() },
+            Some(t) if !t.is_woke() => Response::Ok,
+            Some(_) => self
+                .with_ticket(id, |t| t.woke_at = None)
+                .unwrap_or(Response::Err { message: "no such ticket".into() }),
+        }
+    }
+
+    /// The tick wheel's half of a snooze: every ticket whose deadline has
+    /// passed comes back — at the TOP of its column, the way every automatic
+    /// move lands (the return is fresh news), with its age restarted, and lit
+    /// if the snooze asked for it. Restore-by-hand's rules travel with it:
+    /// the move gate forgets the ticket, and a column that vanished while it
+    /// slept falls back to the first. One write per ticket and NO broadcast
+    /// here — `on_tick` fires one for everything the bucket changed. Returns
+    /// whether anything woke.
+    fn wake_snoozed(&mut self, now: u64) -> bool {
+        let due: Vec<ulid::Ulid> = self
+            .board
+            .tickets
+            .iter()
+            .filter(|t| t.snooze_until_secs().is_some_and(|until| until <= now))
+            .map(|t| t.id)
+            .collect();
+        if due.is_empty() {
+            return false;
+        }
+        for id in due {
+            let Some(t) = self.board.ticket(id) else { continue };
+            let needs_you = t.archived.as_ref().is_some_and(|a| a.needs_you);
+            let col = if self.board.columns.iter().any(|c| c.name == t.column) {
+                t.column.clone()
+            } else {
+                match self.board.sorted_columns().first() {
+                    Some(c) => c.name.clone(),
+                    None => continue,
+                }
+            };
+            // `column_tickets` never lists an archived ticket, so the order is
+            // computed against the board it is about to rejoin.
+            let order = self.order_within(&col, id, &Position::Top);
+            self.moves.forget(id);
+            let stamp = now_iso();
+            if let Some(t) = self.board.ticket_mut(id) {
+                t.archived = None;
+                t.column = col;
+                t.order = order;
+                t.entered_at = Some(stamp.clone());
+                t.woke_at = needs_you.then_some(stamp);
+                let t = t.clone();
+                let _ = store::save_ticket(&self.paths, &t);
+            }
+            self.feed.board("automation", "snooze_woke", Some(id));
+        }
+        self.archive_cache = self.archive_figures();
+        true
     }
 
     /// Restore lands in the column the ticket was archived from — `column`
@@ -4740,11 +4852,13 @@ impl Daemon {
             .map(|t| tmux_text(&t.title, 48))
             .unwrap_or_default();
         let queue = mesimon_core::attention::attention_queue(&self.board);
-        let needs_you = queue.len();
+        // Sessions in the attention set plus tickets a snooze woke lit —
+        // the header chip's number, so the two never disagree.
+        let needs_you = self.board.needs_you_count();
         // The user is looking at this pane: a `!1` that means "the session
         // you're inside" is noise, so the chip only shows when somewhere
         // ELSE needs them too.
-        let only_self = needs_you == 1 && queue[0].id == focused;
+        let only_self = needs_you == 1 && queue.first().is_some_and(|s| s.id == focused);
         let attn = if needs_you > 0 && !only_self {
             // Painted chip, not bare fg: `noreverse` alone drops the segment
             // to the terminal's default background (illegible on light
@@ -4916,11 +5030,14 @@ fn created_at_ms(created_at: &str) -> Option<u64> {
 /// `read_note` away; this keeps a routine call from carrying 32 KiB.
 const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
 
-fn now_iso() -> String {
-    // Seconds precision is enough for created_at; avoid a chrono dependency.
-    let secs = std::time::SystemTime::now()
+fn now_secs() -> u64 {
+    std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs())
-        .unwrap_or(0);
-    format!("@{secs}")
+        .unwrap_or(0)
+}
+
+fn now_iso() -> String {
+    // Seconds precision is enough for created_at; avoid a chrono dependency.
+    format!("@{}", now_secs())
 }

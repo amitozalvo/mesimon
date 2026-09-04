@@ -129,7 +129,16 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         let how = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Archive, &app.ctx())
             .map(|(show, hint)| format!(" ∙ {show} {hint}s"))
             .unwrap_or_default();
-        ident_spans.push(Span::styled(format!(" ∙ archived{how}"), d1));
+        // A snooze says when it ends; restoring it by hand ends it early.
+        let wakes = ticket
+            .snooze_until_secs()
+            .map(|until| format!(" ∙ wakes {}", crate::text::until_word(now, until * 1000)))
+            .unwrap_or_default();
+        ident_spans.push(Span::styled(format!(" ∙ archived{wakes}{how}"), d1));
+    } else if ticket.is_woke() {
+        // Back from a snooze and not yet looked at: the page IS the look, so
+        // the keypress that opened it is clearing the mark as this draws.
+        ident_spans.push(Span::styled(" ∙ back from snooze".to_string(), d1));
     }
     // The worktree clause is built aside so the tags can sit in front of it:
     // what a ticket IS reads before where its code lives (author 2026-09-01).

@@ -75,6 +75,21 @@ pub(crate) fn age_in_column(now_ms: u64, then_ms: u64) -> String {
     }
 }
 
+/// The age slot's vocabulary pointed forward: how long until `then`. A
+/// snoozed ticket's row in the archived dialog reads `wakes in 3h`; once the
+/// deadline has passed (the tick wheel is about to act) it reads `wakes
+/// now`.
+pub(crate) fn until_word(now_ms: u64, then_ms: u64) -> String {
+    if then_ms <= now_ms {
+        return "now".into();
+    }
+    // The slot never ticks seconds: "in 40s" is not a promise worth making.
+    match age_slot(then_ms, now_ms, false).as_str() {
+        "now" => "in <2m".into(),
+        age => format!("in {age}"),
+    }
+}
+
 /// The ticket page's "created …" clause. `created now ago` was the slot
 /// read literally; `just now` is what a person says.
 pub(crate) fn age_created(now_ms: u64, then_ms: u64) -> String {

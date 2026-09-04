@@ -4414,3 +4414,101 @@ whoever asked for it.
 **Not done:** nothing per ticket. A configurable fetch cadence per repo (rather than the env)
 and a `mesimon doctor` check that the remote answers without a prompt are the obvious next
 asks.
+## A ticket can be snoozed (T-74, 2026-09-04)
+
+**Ask:** "snooze ticket from board ∙ think about snooze time presets (1h, tomorrow morning,
+next week…) ∙ archive then return to board with optional needs-you returned from snooze
+(configurable) ∙ snooze hotkey cycles snooze times, indicated on ticket as well as hint when
+applying snooze, enter approves, esc cancels". Decided with the author: the key is `z`, the
+ladder is `1h · 4h · tomorrow 9:00 · next Monday 9:00`, needs-you on return is ON with an
+Esc-menu opt-out, and a woken ticket lands at the top of its column.
+
+**A snooze IS an archive with a deadline.** `Archived` gained `until: Option<String>`
+(`@<secs>`) and `needs_you: bool`, both `#[serde(default)]` and skipped when unset, so a plain
+archive's file is byte-for-byte what it was. Everything an archive already gets, a snooze gets
+for nothing: hidden by the one chokepoint `Board::column_tickets`, refused by `place_ticket`
+and the spawns, listed in the ARCHIVED dialog (its row reads `wakes in 3h` where a plain
+archive's reads its age; the ticket page says `archived ∙ wakes in 3h ∙ a restores`), restored
+by `a` and by `u` — and a restore by hand simply cancels the deadline. `Response::Board` did not
+change. `Command::SnoozeTicket { id, until, needs_you }` (`Mutate`, logged, never-tier for
+agents) takes `archive_ticket`'s three gates plus "the deadline is already past"; the TUI
+resolves the preset to unix seconds at the Enter and the daemon only compares clocks.
+
+**`TICKET_SCHEMA` is 3**, on the notes bump's reasoning: a v2 build would read the file, drop
+`until` on its next save, and the ticket would sleep forever. The trade is the same — a v3
+ticket file is NOT loaded by a v2 build (a notice, the ticket absent there until the newer
+build is back). `pre_snooze_ticket_toml_parses` pins both directions.
+
+**The wake is the tick wheel's** (`Daemon::wake_snoozed`, the 1 s bucket of `on_tick`,
+before the archive re-price): every ticket whose `until` has passed comes back with
+`archived = None`, at the TOP of its column (`order_within(.., Position::Top)` — the return is
+fresh news, the way every automatic move lands), `entered_at` restamped so the card's age
+restarts, the move gate forgetting it (restore-by-hand's rule), a vanished column falling back
+to the first, one `save_ticket` per ticket, a feed line `snooze_woke` with `automation` as the
+actor, and NO broadcast of its own — `on_tick` fires the one for the bucket. Nothing in
+`begin_shutdown`: deadlines are on disk and a restarted daemon wakes the overdue on its first
+tick. The daemon has no unit harness, so `snooze_e2e.rs` is the coverage: a 2 s snooze leaves
+the board, returns on top, lit, with the age moved; a quiet one returns unlit; a past deadline
+and an awake session are refused.
+
+**The first ticket-level producer of the saturated colour.** Attention was a session's
+property — `RequiresAction` at usable confidence, three predicates (`card_glyph`,
+`card::is_waiting`, `attention_queue`), six paint sites. A snooze that asked to be lit sets
+`Ticket.woke_at` (a scalar, before `[[tags]]`) on the wake, and the card wears `!` in
+`Register::Attn` — the inverted title row and the bar follow from the register — with no
+session behind it. `card::render` wraps `card_glyph` rather than changing its signature (one
+production caller, forty-five test sites); `card::needs_you(ticket, sessions)` wraps
+`is_waiting` for the off-screen `!N` badge and the collapsed spine; `Board::needs_you_count()`
+(`attention_queue` + woke tickets) is the header chip's number and the daemon's tmux status
+chip's, so the two cannot disagree. `test_attn_provenance_woke` sweeps `Flavor::ALL` with a
+session-less woke card: attn on its own rows and the header, nowhere else, and the folded
+column carries the mark. `test_attn_provenance_calm` did not move.
+
+**The mark comes off on a KEYPRESS, never on the draw clock.** `Command::SeenTicket { id }`
+(`Mutate`, unlogged, a no-op with no write on any other ticket) is sent by `App::ack_woke` at
+the end of `on_key` when the key left the cursor on a woke ticket — a `j` that passes over one
+does not ack it, a `k` that lands on it does, and so does opening its page. Draw-time acking
+was refused on purpose: a ticket wakes at 09:00 at the top of its column while the user is
+away, and a cursor that happened to be parked in that slot would have cleared a mark nobody
+looked at. `a_keypress_on_a_woke_card_acks_it` pins the passed-over case.
+
+**`z` is a chord you stay in.** `Scope::SnoozeChord` (word `SNOOZE`, parent `None`, the fifth
+barrier in `q_pops_and_help_is_everywhere`'s list): `z` on the board or the ticket page arms
+on `1h` (`Verb::SnoozePrefix`, overlay-only like `a`, avail `has_ticket && !ticket_archived`;
+an awake session gets the archive's own refusal before any second press), `z` inside walks the
+ring (`SnoozeNext`), Enter takes the pick (`SnoozeConfirm`, `Class::Grace`, hint
+`snooze::hint_for_label(c.snooze_word)` — a `&'static str` per rung, because a hint is one),
+Esc leaves (`SnoozeCancel`), any stray key cancels through the `None` road with `snooze
+cancelled`. The armed card draws OPEN (the quick-tag flash's seam) with the preset on a row of
+its own under the title, `dim3`; the status says `z next ∙ enter snooze 1h ∙ esc cancels` and
+names no clock, so the golden `board_snooze_armed_120x30` is deterministic — the resolved time
+(`snoozed T-9 until 15:42 ∙ u undoes it`) is the confirm's. `Ctx` grew `snooze_word` and
+`snooze_needs_you`. `snooze_is_a_chord` in the keymap and the app pin the shape;
+`one_verb_one_key_across_screens` and `unavailable_keys_do_nothing` learned `z`.
+
+**`z` beside `Z`.** `Z` sleeps the done agents and stays board-only, `prio: 0`; `z` snoozes the
+selection. Both are zzz — two things that sleep — not one verb on two targets, which is what
+retired `X`. `shift_stays_on_one_axis` says so. The only other `z` is the diff viewer's view
+prefix, a reading screen with no ticket verbs, and neither is reachable from the other.
+
+**The calendar rungs.** `core/src/snooze.rs` is pure: `Preset` (the ring, `label`, `next`),
+`LocalTime` in `struct tm`'s own conventions (years since 1900, 0-based month, 0 = Sunday, so
+the glue is a field copy), `target` (09:00, `mday + 1` or `+ days to the NEXT Monday — seven on
+a Monday`, `mday` left un-normalised on purpose) and `deadline(preset, now, local, to_epoch)`.
+`tui/src/localtime.rs` is the libc on either side — `localtime_r` in, `mktime` with
+`tm_isdst = -1` out, which does the DST arithmetic and rolls `mday = 32` into the next month, so
+no month-length rule lives anywhere in mesimon. The core tests inject a civil-from-days fake
+`mktime` (Sunday/Monday/Saturday, month-end, year-end); the TUI test round-trips the real clock
+and checks every rung lands ahead of now at 09:00 in whatever zone the test runs.
+
+**The preference.** `prefs.json` gained `snooze_needs_you` (default true): read with a default,
+written on every save, so a theme pick by an older build keeps it (the file is a `Map`, no
+schema move). The Esc menu's `Snooze returns with needs-you` / `Snooze returns quietly` row
+(`Verb::SnoozeQuiet`, never a suggestion) flips it and says so; `App::save_prefs` is the one
+road every preference's write now takes (the theme pick moved onto it). `mesimon doctor` prints
+a `snooze` Note.
+
+**Not done:** snoozing a ticket whose claude is awake still asks you to sleep it first, in the
+archive's words — a snooze that parks the agent on the way out is a follow-up. The card says
+nothing about a snoozed ticket because a snoozed ticket is not on the board; the ARCHIVED row
+is where its deadline reads. `CHANGELOG.md` is the release commit's, not this one's.
