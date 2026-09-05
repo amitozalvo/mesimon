@@ -95,6 +95,82 @@ pub fn branch_name(short_key: &str, title: &str) -> String {
     format!("{}/{}", BRANCH_NS, dir_name(short_key, title))
 }
 
+// ---------------------------------------------------------------------------
+// A board root that holds repositories (T-225).
+//
+// The author's `simbly` is a directory of twenty independent git repositories
+// under a three-file "meta" repo whose `.gitignore` says `*/`. Every git
+// answer mesimon gave there was about the meta — the header's branch, the
+// checkout diff, a worktree of nothing. The census below is how the daemon
+// learns the shape: one `readdir` of the root and a probe of `<child>/.git`,
+// never recursive, classified here so the rule is testable without a disk.
+// ---------------------------------------------------------------------------
+
+/// The most nested repositories one board follows. A root with more child
+/// repos than this is a code dump, not a workspace; the census stops there.
+pub const MAX_WORKSPACE_REPOS: usize = 64;
+
+/// What `<child>/.git` was, for one immediate child directory of the root.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GitMark {
+    /// No `.git` at all: a plain directory.
+    None,
+    /// A `.git` DIRECTORY: a repository of its own.
+    Dir,
+    /// A `.git` FILE (`gitdir: …`): a worktree of some repository, or a
+    /// submodule checkout — either way its owner is elsewhere, so it is
+    /// never a workspace repo itself.
+    File,
+}
+
+/// The names of the root's immediate children that are independent
+/// repositories: a `.git` directory of their own and not a submodule the root
+/// declares. Sorted, capped at [`MAX_WORKSPACE_REPOS`]. Names starting with a
+/// dot are admitted (the author keeps worktrees under `.wt/`, and those
+/// resolve to their owners by carrying a gitfile); `.git` itself and the
+/// board's own `.mesimon` never appear because neither holds a `.git`.
+pub fn nested_repos<'a>(
+    children: impl IntoIterator<Item = (&'a str, GitMark)>,
+    submodule_paths: &[String],
+) -> Vec<String> {
+    let mut out: Vec<String> = children
+        .into_iter()
+        .filter(|(_, mark)| *mark == GitMark::Dir)
+        .map(|(name, _)| name)
+        .filter(|name| !submodule_paths.iter().any(|p| p.trim_end_matches('/') == *name))
+        .map(str::to_string)
+        .collect();
+    out.sort();
+    out.truncate(MAX_WORKSPACE_REPOS);
+    out
+}
+
+/// `19 repos` — what the header and the diff screen call a workspace where
+/// they would name a branch. One word for both, so the two screens agree.
+pub fn repos_word(n: usize) -> String {
+    if n == 1 {
+        "1 repo".to_string()
+    } else {
+        format!("{n} repos")
+    }
+}
+
+/// The `path = …` values of a `.gitmodules` file. A submodule's checkout can
+/// carry a real `.git` directory (pre-1.7.8 layout, or `git submodule
+/// absorbgitdirs` never run), and a superproject's worktrees are the case the
+/// corpus already refuses (12 §12.6.9) — so a declared submodule is never a
+/// workspace repo, whatever its `.git` looks like.
+pub fn submodule_paths(gitmodules: &str) -> Vec<String> {
+    gitmodules
+        .lines()
+        .filter_map(|l| {
+            let (k, v) = l.split_once('=')?;
+            (k.trim() == "path").then(|| v.trim().to_string())
+        })
+        .filter(|p| !p.is_empty())
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -178,5 +254,47 @@ mod tests {
         // D33f: author's board carries Hebrew titles; key prefix keeps them unique.
         assert_eq!(dir_name("T-12", "תקן את הבאג"), "T-12-t");
         assert_eq!(branch_name("T-12", "תקן את הבאג"), "msmn/T-12-t");
+    }
+
+    /// The census rule (T-225): a `.git` DIRECTORY is a repo of its own, a
+    /// gitfile belongs to someone else, a declared submodule is never a
+    /// workspace repo whatever its `.git` looks like, and the answer is
+    /// sorted so the header's count and the diff's order never depend on
+    /// `readdir`.
+    #[test]
+    fn nested_repos_admits_own_git_dirs_and_nothing_else() {
+        let children = [
+            ("web", GitMark::Dir),
+            ("api", GitMark::Dir),
+            (".wt", GitMark::None),
+            ("fe-feedback", GitMark::File),
+            ("node_modules", GitMark::None),
+            ("vendor", GitMark::Dir),
+        ];
+        assert_eq!(nested_repos(children, &[]), vec!["api", "vendor", "web"]);
+        assert_eq!(nested_repos(children, &["vendor/".to_string()]), vec!["api", "web"]);
+        assert!(nested_repos([("x", GitMark::File), ("y", GitMark::None)], &[]).is_empty());
+    }
+
+    #[test]
+    fn nested_repos_is_capped() {
+        let names: Vec<String> = (0..100).map(|i| format!("r{i:03}")).collect();
+        let out = nested_repos(names.iter().map(|n| (n.as_str(), GitMark::Dir)), &[]);
+        assert_eq!(out.len(), MAX_WORKSPACE_REPOS);
+        assert_eq!(out[0], "r000");
+    }
+
+    #[test]
+    fn gitmodules_paths_are_read() {
+        let text =
+            "[submodule \"lib\"]\n\tpath = vendor/lib\n\turl = x\n[submodule \"b\"]\n  path=b\n";
+        assert_eq!(submodule_paths(text), vec!["vendor/lib", "b"]);
+        assert!(submodule_paths("").is_empty());
+    }
+
+    #[test]
+    fn repos_word_counts() {
+        assert_eq!(repos_word(1), "1 repo");
+        assert_eq!(repos_word(19), "19 repos");
     }
 }

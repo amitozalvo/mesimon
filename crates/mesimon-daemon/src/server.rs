@@ -4899,6 +4899,28 @@ impl Daemon {
                 _ => Err("no worktree bound to this ticket — adopt one first".into()),
             },
             WorkspaceStrategy::Worktree => {
+                // T-225: on a workspace root (repositories nested one level
+                // under it) a worktree of the root is a worktree of the meta
+                // repo — its handful of files and none of the code — so the
+                // spawn is refused in words until workspace worktrees exist.
+                // The census is asked here (1.5 ms) rather than read off the
+                // last sample, so a spawn before the boot sample lands is
+                // judged the same way. A binding already attached is kept.
+                let attached = self
+                    .worktrees
+                    .get(&ticket)
+                    .is_some_and(|b| b.status == BindingStatus::Attached);
+                if !attached {
+                    let repos = crate::gitstatus::census(&self.paths.repo_root);
+                    if !repos.is_empty() {
+                        return Err(format!(
+                            "this board sits on a workspace of {} — a worktree of it would hold \
+                             none of the code; workspace worktrees are not built yet, use the \
+                             shared checkout",
+                            mesimon_core::workspace::repos_word(repos.len())
+                        ));
+                    }
+                }
                 match self.worktrees.get(&ticket).map(|b| b.status.clone()) {
                     Some(BindingStatus::Attached) => Ok(Some(self.worktrees[&ticket].path.clone())),
                     Some(BindingStatus::Queued) | Some(BindingStatus::Provisioning) => Ok(None),

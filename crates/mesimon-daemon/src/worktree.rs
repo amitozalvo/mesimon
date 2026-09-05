@@ -271,11 +271,39 @@ pub fn have_git() -> bool {
     Command::new("git").arg("--version").output().map(|o| o.status.success()).unwrap_or(false)
 }
 
-/// origin/HEAD → {main, master, trunk} → current HEAD name.
+/// The remote's HEAD → {main, master, trunk} → current HEAD name.
+///
+/// The remote asked is the one the checkout's branch tracks
+/// (`branch.<b>.remote`), then `origin`, then the only remote there is. It
+/// was a literal `origin/HEAD` (T-225): the author's v2 repos name their one
+/// remote `gitlab`, so the first rung never fired there and a stale `main`
+/// on the second beat the real deploy branch the remote's HEAD names.
 pub fn default_branch(repo: &Path) -> Result<String> {
-    if let Ok(s) = git_read(repo, &["symbolic-ref", "--short", "refs/remotes/origin/HEAD"]) {
-        if let Some(b) = s.trim().strip_prefix("origin/") {
-            return Ok(b.to_string());
+    let head = git_read(repo, &["rev-parse", "--abbrev-ref", "HEAD"])
+        .map(|s| s.trim().to_string())
+        .unwrap_or_default();
+    let mut remotes: Vec<String> = Vec::new();
+    let mut consider = |r: String| {
+        if !r.is_empty() && !remotes.contains(&r) {
+            remotes.push(r);
+        }
+    };
+    if let Some(r) = crate::gitstatus::remote_of(repo, &head) {
+        consider(r);
+    }
+    consider("origin".into());
+    if let Ok(list) = git_read(repo, &["remote"]) {
+        let all: Vec<&str> = list.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        if let [only] = all[..] {
+            consider(only.to_string());
+        }
+    }
+    for remote in &remotes {
+        let refname = format!("refs/remotes/{remote}/HEAD");
+        if let Ok(s) = git_read(repo, &["symbolic-ref", "--short", &refname]) {
+            if let Some(b) = s.trim().strip_prefix(&format!("{remote}/")) {
+                return Ok(b.to_string());
+            }
         }
     }
     for cand in ["main", "master", "trunk"] {
@@ -1060,5 +1088,38 @@ mod tests {
         assert!(!b.path.join("node_modules/big.js").exists());
 
         std::fs::remove_dir_all(&repo).ok();
+    }
+
+    /// T-225: the remote's HEAD is read off the remote the branch tracks —
+    /// or the only remote there is — not a literal `origin`. A clone with
+    /// `-o gitlab` whose origin defaults to `trunk` while a local `main` also
+    /// exists used to answer `main`.
+    #[test]
+    fn default_branch_reads_the_head_of_the_remote_the_checkout_uses() {
+        let Some(bare_src) = scratch_repo("dfltsrc") else { return };
+        let run = |d: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+            String::from_utf8_lossy(&out.stdout).into_owned()
+        };
+        // The source's default branch is `trunk`; `main` exists there too.
+        run(&bare_src, &["branch", "-m", "main", "trunk"]);
+        run(&bare_src, &["branch", "main"]);
+        let clone = bare_src.with_file_name("msmn-wt-dfltclone");
+        std::fs::remove_dir_all(&clone).ok();
+        run(
+            &bare_src,
+            &["clone", "-q", "-o", "gitlab", bare_src.to_str().unwrap(), clone.to_str().unwrap()],
+        );
+        assert_eq!(default_branch(&clone).unwrap(), "trunk", "the remote's HEAD, via `gitlab`");
+        // With no tracking on the checked-out branch, the sole remote is asked.
+        run(&clone, &["checkout", "-q", "-b", "local-only"]);
+        assert_eq!(default_branch(&clone).unwrap(), "trunk");
+        // No remote HEAD anywhere: the ladder falls to a local `main`.
+        run(&clone, &["branch", "main"]);
+        run(&clone, &["remote", "rm", "gitlab"]);
+        assert_eq!(default_branch(&clone).unwrap(), "main");
+        std::fs::remove_dir_all(&clone).ok();
+        std::fs::remove_dir_all(&bare_src).ok();
     }
 }

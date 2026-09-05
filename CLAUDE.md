@@ -1177,6 +1177,27 @@ can no longer be blob equality — it is "modes differ, both real file modes, no
 binary", and the `000000` half is what keeps an empty add or delete from reading as a chmod.
 E2e: `crates/mesimon/tests/diff_e2e.rs`. (STALE-MAP "The board diffs its own checkout".)
 
+**A board on a WORKSPACE — repositories nested one level under the root — says so and diffs
+them together (T-225, 2026-09-05).** The author's simbly is nineteen independent repos under a
+three-file meta repo (`.gitignore` = `*/`); every git answer there was about the meta.
+`gitstatus::census(root)` (one `readdir` + `<child>/.git` probe, depth one, classified by
+`workspace::nested_repos`: a `.git` DIR is a repo of its own, a gitfile belongs to someone else,
+a declared submodule never counts; capped at `MAX_WORKSPACE_REPOS`) fills `RepoGit.repos`, and
+`gitstatus::sample(root)` sums `changed` across the root and every child (`sample_one` is the
+single-repo sample). The header names a workspace by its count — `⎇ 19 repos ∙ 214 changed  v
+diff`, `workspace::repos_word`, the root's own arrows left off — and board `v` is ONE list:
+`checkout_diff_list` runs per repo, the root's rows bare, each child's prefixed `<repo>/`, and
+`checkout_diff_file` routes on the first path component against the CHILD's list. A folder of
+repos with no repo at the root still samples (branch empty). **A worktree ticket is refused in
+words** at `resolve_spawn_cwd` (census asked there, not the cached sample) until workspace
+worktrees exist, and `Ctx::multi_repo` hides the composer's/editor's Shift+Tab workspace
+choice. `doctor` prints a `workspace` line. On the way past, `worktree::default_branch` stopped
+reading `origin/HEAD` literally: it asks the remote the checked-out branch tracks, then
+`origin`, then the sole remote (simbly's are named `gitlab`). The design and the phases still
+owed — learned repos from the hook stream, workspace worktrees as a meta worktree holding one
+child worktree each, per-child merge — are `docs/spikes/T-225-multirepo-workspace.md`. E2e:
+`crates/mesimon/tests/workspace_e2e.rs`. (STALE-MAP "A board on a workspace of repositories".)
+
 **The merge train (opt-in, 2026-09-04).** Settings rows `Merge train` (`prefs.json::merge_train`,
 off) and `Train tells the agent after a merge` (`merge_train_notice`, on). The daemon reads no
 preference: the TUI pushes `Command::SetAutomation` on every toggle and from

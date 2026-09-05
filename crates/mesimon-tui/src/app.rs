@@ -2013,6 +2013,7 @@ impl App {
             shell_env_stale: self.shell_env.stale && !self.shell_env.reloading,
             shell_env_failed: self.shell_env.failed && !self.shell_env.reloading,
             git_repo: self.git.sampled,
+            multi_repo: !self.git.repos.is_empty(),
             git_upstream: self.git.upstream.is_some(),
             git_remote: self
                 .git

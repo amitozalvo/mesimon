@@ -5428,3 +5428,91 @@ row. `app.rs`: Enter turns it on and withdraws the offer, off re-offers, `i` sta
 switches survive a restart, the agent tier denied all three. `brief_e2e`: a real spawn's argv
 carries `FLAG` then `TEXT` verbatim after `--mcp-config`, never `--system-prompt`; no tools, no
 brief; switched off, gone.
+
+## A board on a workspace of repositories says so, and diffs them together (T-225, 2026-09-05, user: "i use multirepo (simbly, take a look). worktrees, diff, and other features of mesimon may break there so I avoid using them")
+
+**What the corpus assumed.** One board, one repository, and `Paths::repo_root` is it: the
+header's branch, the checkout diff, a worktree, a merge — every git question was asked of the
+directory the TUI was started in. docs/13's ticket table had a `[[repos]]` list "from v1 even
+though it always has one entry — monorepo/multi-repo is the most likely future schema break",
+and the code never implemented the list. The author's `simbly` is the case: a directory holding
+nineteen independent git repositories under a three-file *meta* repo whose `.gitignore` says
+`*/`. Measured there (`docs/spikes/T-225-multirepo-workspace.md`): nothing failed, and every
+git answer was confidently about the meta — `⎇ master ∙ 1 changed` for a board over twenty
+repos, `v` diffing three files, a worktree ticket minting a worktree of the meta (an empty tree
+with a CLAUDE.md describing directories that were not there) and merging into its `master`.
+The author's avoidance was the correct response to a tool that could not say what it did not
+know.
+
+**What shipped — phase 1 of the spike, the honest floor; no schema moved.**
+
+- **The census.** `gitstatus::census(root)` is one `readdir` of the root and a
+  `symlink_metadata` of `<child>/.git` each — depth one, never recursive, 1.5 ms on the
+  author's tree — classified by `workspace::nested_repos`: a `.git` DIRECTORY is a repo of its
+  own, a gitfile belongs to someone else (a worktree kept under the root, the author's `.wt/`),
+  a child `.gitmodules` declares is never a workspace repo whatever its `.git` looks like (the
+  superproject case the corpus already refuses, 12 §12.6.9), sorted, capped at
+  `MAX_WORKSPACE_REPOS` (64). Not used as signals, deliberately: the parent's tracked-file
+  count, a `*/` ignore line, manifest files of `meta`/`git-repo`/`vcstool` — the nested-`.git`
+  census is exact and the rest are guesses.
+- **On the snapshot.** `RepoGit.repos: Vec<String>` (`#[serde(default)]`), beside the fields it
+  reinterprets: `changed` is now the SUM over the root and every nested repo (the author's
+  call — files, not repos, "and we need the diff viewer to support that"), `branch`/arrows/
+  `upstream` stay the root's own and speak for nothing under it. `gitstatus::sample(root)` is
+  the workspace sample (`sample_one` is the old single-repo one); a folder of repos with no
+  repository at the root still reads `sampled` — there IS a checkout under the board, nineteen
+  of them — with `branch` empty, so the header speaks and `v` has something to open.
+- **The header** names a workspace by its count where a checkout is named by its branch:
+  `⎇ 19 repos ∙ 214 changed  v diff`, the root's arrows left off (they are the meta's), the
+  same fit ladder. `workspace::repos_word` is the one spelling; the diff screen's identity row
+  uses it too, so the two agree.
+- **Board `v` is one list across the workspace.** `checkout_diff_list(root)` runs
+  `checkout_entries` per repo — the root's rows first and bare, then each child's prefixed
+  `<repo>/`, in census order — and `checkout_diff_file` routes on the first path component: a
+  census name goes to that child with the rest, anything else is the root's own. The two
+  cannot collide (a directory that is a nested repo is never a tracked path of the meta), and
+  the rest is checked against the CHILD's list, so a `..` through the prefix goes nowhere. A
+  meta that does not ignore its children lists each as a `? child/` sighting git will not
+  descend into; those rows are dropped, because the child's own rows follow under that very
+  name. The census is asked per call (1.5 ms) rather than cached — the list and the file
+  must agree about which names are repos, and a cache on the connection thread would be a
+  second source of truth.
+- **A worktree ticket is refused in words.** `resolve_spawn_cwd` asks the census (not the last
+  sample, so a spawn before the boot sample lands is judged the same) and returns `this board
+  sits on a workspace of 19 repos — a worktree of it would hold none of the code; workspace
+  worktrees are not built yet, use the shared checkout`. Nothing is provisioned — no binding,
+  no branch, no directory. A binding already attached is kept. And `Ctx::multi_repo` hides the
+  composer's and the editor's Shift+Tab workspace choice (the ASK field's `now / queued` on the
+  same key is untouched — `a_workspace_board_offers_no_worktree_choice`), so the refusal is the
+  belt under a choice that is not offered.
+- **`doctor`** prints a `workspace` line before `branch` (which then reads `root: master, …`),
+  with the first four names and the two facts above.
+
+**And a single-repo bug on the way past: `default_branch` read `origin/HEAD` literally.** The
+author's v2 repos name their one remote `gitlab`, so the first rung never fired there and a
+stale local `main` on the second rung beat the real deploy branch the remote's HEAD names. It
+now asks the remote the checked-out branch tracks (`gitstatus::remote_of`), then `origin`, then
+the only remote there is, before the `main`/`master`/`trunk` ladder. `on_git_sampled`'s
+"a fetch can mint `refs/remotes/origin/HEAD`" comment stays right in spirit — it is the
+remote's HEAD, whatever the remote is called.
+
+**What is deliberately NOT here** — the spike's phases 2–4, in order: which repos a ticket
+touched, LEARNED from the hook stream (the `Edit`/`Write` `file_path` `ingest` already reads)
+and never asked (author: "it's manual labor, and the agent might want to change another
+subrepo in the same session"); **workspace worktrees** — a worktree of the meta as the
+container, one child worktree each inside it on the same `msmn/<KEY>-<slug>` branch, base =
+that child's checked-out branch, merge per child (not atomic across repos; the ticket page
+says which half landed), bindings schema 2 — the refusal above is the placeholder for exactly
+that; `Fetch all remotes`; the quiet gate keyed on learned repos. Measured cost of a full
+workspace worktree on simbly: 3 627 files / 70 MB, to be timed before it ships.
+
+**Tests.** `workspace.rs`: the census rule, the cap, `.gitmodules`, the word. `diff.rs`: a
+scratch meta over `api`/`web` plus a gitfile child and a declared submodule — census, the
+summed sample (and the same root with its `.git` removed, a folder), the prefixed list with
+the sighting dropped, file routing and its three refusals. `worktree.rs`: a clone with
+`-o gitlab` whose origin defaults to `trunk`. `keymap.rs`: the hidden choice. TUI:
+`test_git_clause_names_a_workspace_by_its_count` and golden `board_workspace_120x30` (a clean
+workspace keeps its name and loses the count and the key). E2e `workspace_e2e`: the census and
+sum on the wire, the list and the file through the prefix, the refused spawn and the untouched
+worktree root. `CHANGELOG.md` was NOT edited: alpha.13 is tagged, and the next heading is the
+next release's to write.

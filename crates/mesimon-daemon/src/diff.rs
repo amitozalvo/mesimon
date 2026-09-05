@@ -301,23 +301,74 @@ fn checkout_entries(repo: &Path) -> Result<(String, String, Vec<mesimon_core::di
     Ok((g.branch, base, files))
 }
 
-/// `DiffList` for the checkout target.
-pub fn checkout_diff_list(repo: &Path) -> Result<Response> {
-    let (branch, base_oid, files) = checkout_entries(repo)?;
+/// `DiffList` for the checkout target. On a workspace (T-225) it is ONE list
+/// over the root and every nested repo — the root's own rows first and
+/// unprefixed, then each child's prefixed `<repo>/`, in census order — which
+/// is the header's summed count spelled out, row by row.
+pub fn checkout_diff_list(root: &Path) -> Result<Response> {
+    let repos = crate::gitstatus::census(root);
+    if repos.is_empty() {
+        let (branch, base_oid, files) = checkout_entries(root)?;
+        return Ok(Response::DiffList {
+            branch,
+            base_oid,
+            // No second tip: the working tree is not a ref.
+            branch_oid: String::new(),
+            files,
+            worktree_present: true,
+        });
+    }
+    // A folder of repos has no HEAD of its own: the root contributes nothing
+    // and the list is its children's. A meta repo contributes its rows minus
+    // the one `? child/` sighting git leaves for a nested repository it will
+    // not descend into — that child's rows follow, under its name.
+    let (mut files, base_oid) = match checkout_entries(root) {
+        Ok((_, base, mut rows)) => {
+            rows.retain(|f| !repos.iter().any(|r| f.path.trim_end_matches('/') == r));
+            (rows, base)
+        }
+        Err(_) => (Vec::new(), String::new()),
+    };
+    for name in &repos {
+        let Ok((_, _, rows)) = checkout_entries(&root.join(name)) else { continue };
+        files.extend(rows.into_iter().map(|mut f| {
+            f.path = format!("{name}/{}", f.path);
+            f.old_path = f.old_path.take().map(|old| format!("{name}/{old}"));
+            f
+        }));
+    }
     Ok(Response::DiffList {
-        branch,
+        branch: mesimon_core::workspace::repos_word(repos.len()),
         base_oid,
-        // No second tip: the working tree is not a ref.
         branch_oid: String::new(),
         files,
         worktree_present: true,
     })
 }
 
-/// `DiffFile` for the checkout target. Like the branch road, a path the list
-/// did not name is refused — which is also what keeps `--no-index`, whose two
+/// `DiffFile` for the checkout target. On a workspace the first path
+/// component names the nested repo the row came from — a census name routes
+/// to that child with the rest of the path, anything else is the root's own
+/// (a directory that is a nested repo is never a tracked path of the meta,
+/// so the two cannot collide). The child's list is what the rest is checked
+/// against, so a `..` can go nowhere.
+pub fn checkout_diff_file(root: &Path, path: &str, context: u32) -> Result<FileDiff> {
+    let repos = crate::gitstatus::census(root);
+    if let Some((name, rest)) = path.split_once('/') {
+        if repos.iter().any(|r| r == name) {
+            let mut fd = checkout_diff_file_one(&root.join(name), rest, context)?;
+            fd.path = format!("{name}/{}", fd.path);
+            fd.old_path = fd.old_path.take().map(|old| format!("{name}/{old}"));
+            return Ok(fd);
+        }
+    }
+    checkout_diff_file_one(root, path, context)
+}
+
+/// One repository's `DiffFile`. Like the branch road, a path the list did
+/// not name is refused — which is also what keeps `--no-index`, whose two
 /// operands are plain paths, from being pointed anywhere but at this checkout.
-pub fn checkout_diff_file(repo: &Path, path: &str, context: u32) -> Result<FileDiff> {
+fn checkout_diff_file_one(repo: &Path, path: &str, context: u32) -> Result<FileDiff> {
     let (_, base, files) = checkout_entries(repo)?;
     let Some(entry) = files.iter().find(|f| f.path == path) else {
         bail!("no such file in this diff");
@@ -694,5 +745,137 @@ mod tests {
         // `--no-index` takes two plain paths; the list is what fences it.
         assert!(checkout_diff_file(&repo, "../../etc/passwd", 3).is_err());
         assert!(checkout_diff_file(&repo, "clean-but-unchanged", 3).is_err());
+    }
+
+    // ---- a workspace: repositories nested under the root (T-225) --------------
+
+    /// The author's shape in miniature: a meta repo tracking its own notes
+    /// and ignoring every child, over two independent repos, plus a gitfile
+    /// child (a worktree of `web`) and a declared submodule, neither of
+    /// which is a workspace repo.
+    fn workspace_scratch(name: &str) -> Option<PathBuf> {
+        if !have_git() {
+            return None;
+        }
+        let root = std::env::temp_dir().join(format!("msmn-ws-{name}-{}", std::process::id()));
+        std::fs::remove_dir_all(&root).ok();
+        let run = |d: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        let init = |d: &Path, file: &str, body: &str| {
+            std::fs::create_dir_all(d).unwrap();
+            run(d, &["init", "-q", "-b", "main"]);
+            run(d, &["config", "user.email", "t@t"]);
+            run(d, &["config", "user.name", "t"]);
+            std::fs::write(d.join(file), body).unwrap();
+            run(d, &["add", "."]);
+            run(d, &["commit", "-qm", "init"]);
+        };
+        init(&root, "CLAUDE.md", "# ws\n");
+        std::fs::write(root.join(".gitignore"), "*/\n").unwrap();
+        std::fs::write(
+            root.join(".gitmodules"),
+            "[submodule \"v\"]\n\tpath = vendored\n\turl = x\n",
+        )
+        .unwrap();
+        run(&root, &["add", ".gitignore", ".gitmodules"]);
+        run(&root, &["commit", "-qm", "ignore"]);
+        init(&root.join("web"), "page.tsx", "hello\n");
+        init(&root.join("api"), "server.ts", "one\ntwo\n");
+        init(&root.join("vendored"), "lib.c", "int x;\n");
+        run(&root.join("web"), &["worktree", "add", "-q", "../.wt-web", "-b", "feedback"]);
+        std::fs::create_dir_all(root.join("node_modules/dep")).unwrap();
+        Some(root)
+    }
+
+    #[test]
+    fn census_names_own_repos_only() {
+        let Some(root) = workspace_scratch("census") else { return };
+        assert_eq!(crate::gitstatus::census(&root), vec!["api", "web"]);
+        // A plain checkout has no census, and a folder that is not a repo
+        // still has its children.
+        let Some(plain) = checkout_scratch("census-plain") else { return };
+        assert!(crate::gitstatus::census(&plain).is_empty());
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        assert_eq!(crate::gitstatus::census(&root), vec!["api", "web"]);
+        std::fs::remove_dir_all(&root).ok();
+        std::fs::remove_dir_all(&plain).ok();
+    }
+
+    #[test]
+    fn workspace_sample_sums_the_children() {
+        let Some(root) = workspace_scratch("sample") else { return };
+        let g = crate::gitstatus::sample(&root);
+        assert!(g.sampled);
+        assert_eq!(g.repos, vec!["api", "web"]);
+        assert_eq!((g.branch.as_str(), g.changed), ("main", 0));
+        std::fs::write(root.join("api/server.ts"), "one\nCHANGED\n").unwrap();
+        std::fs::write(root.join("api/stray.md"), "new\n").unwrap();
+        std::fs::write(root.join("web/page.tsx"), "bye\n").unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "# ws\nmore\n").unwrap();
+        let g = crate::gitstatus::sample(&root);
+        assert_eq!(g.changed, 4, "{g:?}");
+        // A folder of repos: no root branch, still sampled, still summed.
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let g = crate::gitstatus::sample(&root);
+        assert!(g.sampled && g.branch.is_empty(), "{g:?}");
+        assert_eq!((g.repos.len(), g.changed), (2, 3), "{g:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workspace_list_is_one_list_prefixed_by_repo() {
+        let Some(root) = workspace_scratch("list") else { return };
+        std::fs::write(root.join("api/server.ts"), "one\nCHANGED\n").unwrap();
+        std::fs::write(root.join("api/stray.md"), "new\n").unwrap();
+        std::fs::write(root.join("web/page.tsx"), "bye\n").unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "# ws\nmore\n").unwrap();
+        let resp = checkout_diff_list(&root).unwrap();
+        match &resp {
+            Response::DiffList { branch, base_oid, branch_oid, worktree_present, .. } => {
+                assert_eq!(branch, "2 repos");
+                assert_eq!(base_oid.len(), 40, "the meta's HEAD");
+                assert!(branch_oid.is_empty() && *worktree_present);
+            }
+            _ => unreachable!(),
+        }
+        let paths: Vec<String> = files_of(&resp).into_iter().map(|f| f.path).collect();
+        assert_eq!(paths, vec!["CLAUDE.md", "api/server.ts", "api/stray.md", "web/page.tsx"]);
+
+        // A meta that does NOT ignore its children lists each as a `? child/`
+        // sighting git will not descend into: dropped, because the child's
+        // own rows follow under that very name.
+        std::fs::write(root.join(".gitignore"), "").unwrap();
+        let paths: Vec<String> =
+            files_of(&checkout_diff_list(&root).unwrap()).into_iter().map(|f| f.path).collect();
+        assert!(paths.iter().any(|p| p == ".gitignore"), "{paths:?}");
+        assert!(!paths.iter().any(|p| p == "api/" || p == "web/"), "{paths:?}");
+        assert!(paths.iter().any(|p| p == "api/server.ts"), "{paths:?}");
+        // The gitfile child and node_modules ARE the root's own untracked
+        // sightings — they are not repos, so nothing else speaks for them.
+        assert!(paths.iter().any(|p| p == ".wt-web/"), "{paths:?}");
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    #[test]
+    fn workspace_file_routes_on_the_prefix() {
+        let Some(root) = workspace_scratch("file") else { return };
+        std::fs::write(root.join("api/server.ts"), "one\nCHANGED\n").unwrap();
+        std::fs::write(root.join("api/stray.md"), "new\n").unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "# ws\nmore\n").unwrap();
+        let fd = checkout_diff_file(&root, "api/server.ts", 3).unwrap();
+        assert_eq!(fd.path, "api/server.ts");
+        assert_eq!(fd.hunks.len(), 1, "{fd:?}");
+        let fd = checkout_diff_file(&root, "api/stray.md", 3).unwrap();
+        assert_eq!((fd.path.as_str(), fd.hunks.len()), ("api/stray.md", 1));
+        let fd = checkout_diff_file(&root, "CLAUDE.md", 3).unwrap();
+        assert_eq!(fd.path, "CLAUDE.md");
+        // Refused: a child path its list does not name, a `..` through the
+        // prefix, a repo that is not in the census.
+        assert!(checkout_diff_file(&root, "api/page.tsx", 3).is_err());
+        assert!(checkout_diff_file(&root, "api/../CLAUDE.md", 3).is_err());
+        assert!(checkout_diff_file(&root, "vendored/lib.c", 3).is_err());
+        std::fs::remove_dir_all(&root).ok();
     }
 }

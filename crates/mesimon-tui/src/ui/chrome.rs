@@ -187,16 +187,26 @@ const GIT_BRANCH_FLOOR: usize = 10;
 /// than lie.
 fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     let g = &app.git;
-    if !g.sampled || g.branch.is_empty() {
+    // A workspace (T-225) is named by its count where a checkout is named by
+    // its branch, and the root's own arrows stay off the row: they speak for
+    // the meta repo, which is not what the board is about. The count IS the
+    // board's — files changed across every repo under it.
+    let workspace = !g.repos.is_empty();
+    if !g.sampled || (g.branch.is_empty() && !workspace) {
         return Vec::new();
     }
+    let name = if workspace {
+        mesimon_core::workspace::repos_word(g.repos.len())
+    } else {
+        g.branch.clone()
+    };
     let theme = &app.theme;
     let tier = theme.glyph_tier();
     let mut state = String::new();
-    if g.ahead > 0 {
+    if g.ahead > 0 && !workspace {
         state.push_str(&format!(" {}{}", crate::glyphs::ahead_mark(tier), g.ahead));
     }
-    if g.behind > 0 {
+    if g.behind > 0 && !workspace {
         state.push_str(&format!(" {}{}", crate::glyphs::behind_mark(tier), g.behind));
     }
     let mut changed =
@@ -220,7 +230,7 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     let hint_w: usize = hint.iter().map(|s| s.content.width()).sum();
     // ` ⎇ ` is three cells; the arrows ride on the name.
     let fixed = 3 + state.width();
-    let floor = g.branch.width().min(GIT_BRANCH_FLOOR);
+    let floor = name.width().min(GIT_BRANCH_FLOOR);
     let mut name_room = room.saturating_sub(fixed + changed.width() + hint_w);
     if name_room < floor {
         hint.clear();
@@ -235,7 +245,7 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     }
     let mut out = vec![
         Span::styled(format!(" {} ", crate::glyphs::branch_mark(tier)), theme.dim3()),
-        Span::styled(truncate(&g.branch, name_room), theme.dim2()),
+        Span::styled(truncate(&name, name_room), theme.dim2()),
     ];
     if !state.is_empty() {
         out.push(Span::styled(state, theme.calm_text()));

@@ -1180,8 +1180,19 @@ pub struct RepoGit {
     #[serde(default)]
     pub behind: u32,
     /// Entries `git status` lists: modified, staged, unmerged and untracked.
+    /// On a workspace (`repos` non-empty) it is the SUM over the root and
+    /// every nested repo — the number the board's checkout diff then lists.
     #[serde(default)]
     pub changed: u32,
+    /// The root's immediate children that are repositories of their own
+    /// (T-225, `workspace::nested_repos`), sorted. Empty on an ordinary
+    /// checkout. Non-empty means the board sits on a WORKSPACE — a meta repo
+    /// over its children, or a plain folder of them (then `branch` is empty:
+    /// the root itself has no HEAD) — and the header names the count where
+    /// it would name a branch; the branch, arrows and upstream here are the
+    /// root's own and speak for nothing under it.
+    #[serde(default)]
+    pub repos: Vec<String>,
     /// A fetch is running right now.
     #[serde(default)]
     pub fetching: bool,

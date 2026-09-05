@@ -4317,3 +4317,30 @@ fn test_clipped_column_edge_peeks() {
         assert_eq!(*fg, theme.rest.base, "a fully visible column never fades");
     }
 }
+
+/// A workspace (T-225) — repositories nested under the root — is named on the
+/// header by its count where a checkout is named by its branch, with the
+/// change count summed across every repo and the root's own arrows left off:
+/// they speak for the meta repo, not the board.
+#[test]
+fn test_git_clause_names_a_workspace_by_its_count() {
+    let mut app = app_graphite(fixture(false));
+    app.git = mesimon_core::command::RepoGit {
+        repos: vec!["api".into(), "infra".into(), "web".into()],
+        ..git_state("master", 2, 1, 7)
+    };
+    assert!(app.ctx().multi_repo);
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ 3 repos ∙ 7 changed  v diff"), "{head:?}");
+    assert!(!head.contains("↑") && !head.contains("master"), "{head:?}");
+    // A folder of repos has no branch of its own and still speaks.
+    app.git.branch.clear();
+    app.git.upstream = None;
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ 3 repos ∙ 7 changed"), "{head:?}");
+    // Clean: the count and its key go quiet, the workspace stays named.
+    app.git.changed = 0;
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ 3 repos   ") && !head.contains("v diff"), "{head:?}");
+    golden("board_workspace_120x30", &render(&app, 120, 30));
+}

@@ -477,6 +477,31 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
     // whether the opt-in fetch is armed — read through the daemon's own
     // sampler, so doctor and the header cannot disagree.
     let g = mesimon_daemon::gitstatus::sample(repo);
+    // A workspace (T-225): repositories nested one level under the root.
+    // Said before the branch line, because the branch line is then about
+    // the meta repo and reads as the whole board's without this.
+    if !g.repos.is_empty() {
+        let shown: Vec<&str> = g.repos.iter().take(4).map(String::as_str).collect();
+        let more = if g.repos.len() > shown.len() { ", …" } else { "" };
+        records.push(
+            rec(
+                // `Ok`, not `Note`: a note hides without `--verbose`, and the
+                // `branch` line under it reads `root: …` on its account.
+                Level::Ok,
+                "workspace",
+                format!(
+                    "{} nested here ({}{more})",
+                    mesimon_core::workspace::repos_word(g.repos.len()),
+                    shown.join(", ")
+                ),
+            )
+            .advice(
+                "The header counts changes across all of them and v on the board diffs them \
+                 together. Worktree tickets are not offered on a workspace yet: a worktree of \
+                 the root would hold none of the code.",
+            ),
+        );
+    }
     if g.sampled && !g.branch.is_empty() {
         let every = mesimon_daemon::gitstatus::fetch_every_from_env();
         let fetch = if every.is_zero() {
@@ -488,7 +513,8 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             Some(u) => format!("upstream {u}"),
             None => "no upstream".to_string(),
         };
-        records.push(rec(Level::Ok, "branch", format!("{}, {upstream}, {fetch}", g.branch)));
+        let whose = if g.repos.is_empty() { "" } else { "root: " };
+        records.push(rec(Level::Ok, "branch", format!("{whose}{}, {upstream}, {fetch}", g.branch)));
     }
     // A repo on the Windows drive reaches git through WSL's 9p bridge, where
     // every operation is many times slower — and worktrees, the diff viewer

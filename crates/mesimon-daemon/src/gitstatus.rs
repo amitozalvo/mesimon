@@ -35,7 +35,7 @@ pub const FETCH_TIMEOUT: Duration = Duration::from_secs(30);
 
 /// One `git status` on `repo`, parsed. Not a repository, or no git at all,
 /// reads as "not sampled" — the header draws nothing rather than a guess.
-pub fn sample(repo: &Path) -> RepoGit {
+pub fn sample_one(repo: &Path) -> RepoGit {
     let out = crate::git::git(repo)
         .args(["--no-optional-locks", "status", "--porcelain=v2", "--branch", "-unormal", "-z"])
         .stdin(Stdio::null())
@@ -44,6 +44,54 @@ pub fn sample(repo: &Path) -> RepoGit {
         Ok(o) if o.status.success() => parse(&o.stdout),
         _ => RepoGit::default(),
     }
+}
+
+/// The board root's sample (T-225): the root's own status, plus the census
+/// of nested repositories and, when there are any, their changed counts
+/// summed in. A folder of repos with no repository at the root still reads
+/// as sampled — there IS a checkout under the board, nineteen of them — so
+/// the header speaks and `v` has something to open; its `branch` stays
+/// empty because the root has no HEAD to name.
+pub fn sample(root: &Path) -> RepoGit {
+    let mut g = sample_one(root);
+    let repos = census(root);
+    if repos.is_empty() {
+        return g;
+    }
+    for name in &repos {
+        g.changed += sample_one(&root.join(name)).changed;
+    }
+    g.sampled = true;
+    g.repos = repos;
+    g
+}
+
+/// The root's immediate child directories that are repositories of their own
+/// — `workspace::nested_repos` over one `readdir` and a `symlink_metadata`
+/// of `<child>/.git` each. Depth one, never recursive; 1.5 ms on the
+/// author's twenty-repo workspace. An unreadable root is an empty census.
+pub fn census(root: &Path) -> Vec<String> {
+    use mesimon_core::workspace::{nested_repos, submodule_paths, GitMark};
+    let Ok(entries) = std::fs::read_dir(root) else { return Vec::new() };
+    let mut children: Vec<(String, GitMark)> = Vec::new();
+    for e in entries.flatten() {
+        // The child itself through symlinks is fine (a symlinked repo dir is
+        // a repo); `.git` is probed without following, the way git does.
+        if !e.path().is_dir() {
+            continue;
+        }
+        let Ok(name) = e.file_name().into_string() else { continue };
+        let mark = match std::fs::symlink_metadata(e.path().join(".git")) {
+            Ok(md) if md.is_dir() => GitMark::Dir,
+            Ok(md) if md.is_file() => GitMark::File,
+            _ => GitMark::None,
+        };
+        children.push((name, mark));
+    }
+    let submodules = std::fs::read_to_string(root.join(".gitmodules"))
+        .map(|t| submodule_paths(&t))
+        .unwrap_or_default();
+    nested_repos(children.iter().map(|(n, m)| (n.as_str(), *m)), &submodules)
 }
 
 /// The porcelain v2 `--branch -z` stream, distilled. Headers are `# key value`

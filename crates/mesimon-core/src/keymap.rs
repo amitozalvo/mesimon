@@ -646,6 +646,11 @@ pub struct Ctx {
     /// sampled. `v` on the board diffs its uncommitted work (T-221), and
     /// where there is no repository the key is inert rather than a message.
     pub git_repo: bool,
+    /// The board sits on a WORKSPACE — a root with repositories nested one
+    /// level under it (`RepoGit::repos`, T-225). A worktree there would be a
+    /// worktree of the meta repo and none of the code, so the workspace
+    /// choice is not offered, and the daemon refuses it besides.
+    pub multi_repo: bool,
     /// The checkout's branch tracks a remote branch, so a fetch has
     /// somewhere to go. Gates the menu row: without an upstream there are no
     /// arrows on the header either.
@@ -3082,7 +3087,7 @@ static INPUT: &[Binding] = &[
         // because a key is bound once per scope, and one gesture: shift+tab
         // is "the other way" for whatever the field is about.
         hint: |c| if c.prompting { "now / queued" } else { "shared checkout / own worktree" },
-        avail: |c| c.composing || (c.prompting && c.ask_queueable),
+        avail: |c| (c.composing && !c.multi_repo) || (c.prompting && c.ask_queueable),
         class: Class::Plain,
         group: Group::Worktree,
         mutates: false,
@@ -3333,7 +3338,7 @@ static EDITOR: &[Binding] = &[
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
         hint: |_| "",
-        avail: |c| c.editing && (c.editor_composing || c.workspace_open),
+        avail: |c| c.editing && !c.multi_repo && (c.editor_composing || c.workspace_open),
         class: Class::Plain,
         group: Group::Worktree,
         mutates: true,
@@ -5216,5 +5221,28 @@ mod tests {
         let hot_footer: Vec<&str> =
             footer_items(Scope::Board, &ctx).iter().map(|b| b.show).collect();
         assert_eq!(&hot_footer[..2], &["enter", "space"], "{hot_footer:?}");
+    }
+
+    /// T-225: on a workspace board the composer offers no workspace choice
+    /// — a worktree of the root holds none of the code — while the same key
+    /// still flips an ask between `now` and `queued`.
+    #[test]
+    fn a_workspace_board_offers_no_worktree_choice() {
+        let composing = Ctx { editing: true, composing: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &composing), Some(Verb::CycleWorkspace));
+        let on_workspace = Ctx { multi_repo: true, ..composing.clone() };
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &on_workspace), None);
+        assert_eq!(hint_for(Scope::Input, Verb::CycleWorkspace, &on_workspace), None);
+        let asking = Ctx {
+            editing: true,
+            prompting: true,
+            ask_queueable: true,
+            multi_repo: true,
+            ..Default::default()
+        };
+        assert_eq!(resolve(Scope::Input, Key::BackTab, &asking), Some(Verb::CycleWorkspace));
+        let editor =
+            Ctx { editing: true, workspace_open: true, multi_repo: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &editor), None);
     }
 }
