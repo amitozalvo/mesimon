@@ -1,15 +1,15 @@
-//! Sampling and writing the repo's own `CLAUDE.md` (T-217).
+//! Sampling the repo's own `CLAUDE.md` (T-217).
 //!
-//! `mesimon_core::claudemd` holds the text and the arithmetic; this is the two
-//! pieces of I/O around it — "does the file already say it" and "append it" —
-//! and the care that the second one needs.
+//! `mesimon_core::claudemd` holds the text; this is the one piece of I/O
+//! around it — "does the file already say it". A user who wrote the
+//! instruction into their own CLAUDE.md has done the thing the agent-brief
+//! offer (T-224, `mesimon_core::brief`) is for, and the offer stands down.
 //!
-//! `<repo>/CLAUDE.md` is the ONLY file mesimon writes that the user tracks in
-//! git, which is why nothing here runs without a keystroke behind it: the TUI
-//! shows the exact bytes in a dialog first, and `Command::ClaudeMd` is the
-//! answer to that dialog. `paths.rs::ensure_excluded` is the shape the append
-//! copies — read, look for the marker, add, write — since it is mesimon's only
-//! other write to the repo root.
+//! Until T-224 this module also WROTE the snippet into `<repo>/CLAUDE.md`
+//! behind the dialog. That road is gone: the brief lives in the system prompt
+//! of the sessions mesimon starts, reaches only them, and writes nothing the
+//! user tracks in git. `c` in the dialog still copies the snippet for a user
+//! who would rather keep the words in their own file.
 
 use std::path::{Path, PathBuf};
 
@@ -30,10 +30,10 @@ pub struct Sampler {
     stamps: Vec<Option<(u64, u128)>>,
 }
 
-/// The files a marker may live in: the repo root's `CLAUDE.md`, which is where
-/// the offer writes, and `.claude/CLAUDE.md`, which Claude Code reads just as
-/// happily. A user who put the instruction in the second one has already done
-/// the thing the offer asks for and must not be nagged for it.
+/// The files a marker may live in: the repo root's `CLAUDE.md`, and
+/// `.claude/CLAUDE.md`, which Claude Code reads just as happily. A user who put
+/// the instruction in either has already done the thing the offer asks for and
+/// must not be nagged for it.
 fn paths(repo: &Path) -> [PathBuf; 2] {
     [repo.join("CLAUDE.md"), repo.join(".claude").join("CLAUDE.md")]
 }
@@ -68,58 +68,11 @@ impl Sampler {
         let present = files
             .iter()
             .any(|p| std::fs::read_to_string(p).is_ok_and(|b| claudemd::has_marker(&b)));
-        let next = ClaudeMdStatus {
-            path: files[0].display().to_string(),
-            exists: files[0].is_file(),
-            present,
-        };
+        let next = ClaudeMdStatus { path: files[0].display().to_string(), present };
         let changed = next != self.status;
         self.status = next;
         changed
     }
-
-    /// Forget the stamps, so the next `refresh` reads whatever the state of
-    /// the file is. Called after our own write — the write moves the mtime,
-    /// but a same-millisecond write of the same length would not.
-    pub fn invalidate(&mut self) {
-        self.stamps.clear();
-    }
-}
-
-/// Append the snippet to `<repo>/CLAUDE.md`, creating the file if it is not
-/// there. `Ok(path)` names what was written; a file that already carries the
-/// marker is left alone and still reports Ok, since the caller's request is
-/// satisfied either way.
-///
-/// Two things are deliberate:
-///
-/// - **The symlink is followed, not replaced.** A CLAUDE.md symlinked into a
-///   dotfiles repo is ordinary, and a temp-and-rename would swap the LINK for
-///   a regular file — losing the user's arrangement and writing somewhere they
-///   did not mean. `canonicalize` resolves it first, so the write lands on the
-///   real file and the link survives.
-/// - **It is still atomic.** Truncating the user's own tracked file with a
-///   plain `write` and then crashing would cost them work that is not
-///   mesimon's to lose, so the resolved path is written through the store's
-///   temp+fsync+rename.
-pub fn apply(repo: &Path) -> Result<PathBuf, String> {
-    let target = repo.join("CLAUDE.md");
-    let body = match std::fs::read_to_string(&target) {
-        Ok(b) => b,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-        Err(e) => return Err(format!("could not read {}: {e}", target.display())),
-    };
-    if claudemd::has_marker(&body) {
-        return Ok(target);
-    }
-    // Resolve before writing; a missing file has nothing to resolve.
-    let real = std::fs::canonicalize(&target).unwrap_or_else(|_| target.clone());
-    if real.exists() && !real.is_file() {
-        return Err(format!("{} is not a regular file", real.display()));
-    }
-    crate::store::write_atomic(&real, &claudemd::appended(&body), 0o644)
-        .map_err(|e| format!("could not write {}: {e}", real.display()))?;
-    Ok(target)
 }
 
 #[cfg(test)]
@@ -133,39 +86,26 @@ mod tests {
         d
     }
 
-    /// The offer stands on a repo with no CLAUDE.md, and applying creates it.
+    /// A repo with no CLAUDE.md, or one that never said the words, is a repo
+    /// the offer stands on; the words arriving — however — withdraw it.
     #[test]
-    fn a_repo_without_the_file_is_offered_and_gets_one() {
+    fn the_words_arriving_withdraw_the_offer() {
         let repo = dir("fresh");
         let mut s = Sampler::default();
         assert!(s.refresh(&repo), "the first sample is always news");
         assert!(!s.status().present);
-        assert!(!s.status().exists);
+        assert_eq!(s.status().path, repo.join("CLAUDE.md").display().to_string());
 
-        let written = apply(&repo).expect("apply");
-        assert_eq!(written, repo.join("CLAUDE.md"));
-        assert_eq!(std::fs::read_to_string(&written).expect("read"), claudemd::SNIPPET);
-
-        s.invalidate();
-        assert!(s.refresh(&repo));
-        assert!(s.status().present, "the write must withdraw the offer");
-        assert!(s.status().exists);
-        let _ = std::fs::remove_dir_all(&repo);
-    }
-
-    /// Applying twice writes once: the marker the first pass left is what the
-    /// second one refuses on.
-    #[test]
-    fn applying_twice_writes_once() {
-        let repo = dir("twice");
         std::fs::write(repo.join("CLAUDE.md"), "# Rules\n").expect("seed");
-        apply(&repo).expect("first");
-        let once = std::fs::read_to_string(repo.join("CLAUDE.md")).expect("read");
-        apply(&repo).expect("second");
-        let twice = std::fs::read_to_string(repo.join("CLAUDE.md")).expect("read");
-        assert_eq!(once, twice);
-        assert_eq!(twice.matches("## mesimon").count(), 1, "{twice}");
-        assert!(twice.starts_with("# Rules\n\n"), "{twice}");
+        // The stamp moved, but the ANSWER did not: no marker, still offered,
+        // and `refresh` reports a delta only when the answer moves.
+        assert!(!s.refresh(&repo), "a file without the marker is not news");
+        assert!(!s.status().present, "a file without the marker still offers");
+
+        std::thread::sleep(std::time::Duration::from_millis(20));
+        std::fs::write(repo.join("CLAUDE.md"), claudemd::appended("# Rules\n")).expect("grow");
+        assert!(s.refresh(&repo));
+        assert!(s.status().present, "the marker must withdraw the offer");
         let _ = std::fs::remove_dir_all(&repo);
     }
 
@@ -183,8 +123,7 @@ mod tests {
         let mut s = Sampler::default();
         s.refresh(&repo);
         assert!(s.status().present);
-        // The path the dialog would name is still the root's, which is where
-        // an apply would write — the offer is simply not being made.
+        // The path doctor names is still the root's.
         assert!(s.status().path.ends_with("CLAUDE.md"));
         assert!(!s.status().path.contains(".claude"));
         let _ = std::fs::remove_dir_all(&repo);
@@ -199,23 +138,6 @@ mod tests {
         assert!(s.refresh(&repo));
         assert!(!s.refresh(&repo), "nothing moved, so nothing to say");
         assert!(!s.status().present);
-        let _ = std::fs::remove_dir_all(&repo);
-    }
-
-    /// A symlinked CLAUDE.md is followed: the link survives and the target is
-    /// what grew.
-    #[test]
-    fn a_symlinked_file_is_followed_not_replaced() {
-        let repo = dir("symlink");
-        let real = repo.join("dotfiles-claude.md");
-        std::fs::write(&real, "# Shared\n").expect("seed");
-        std::os::unix::fs::symlink(&real, repo.join("CLAUDE.md")).expect("symlink");
-
-        apply(&repo).expect("apply");
-        let meta = std::fs::symlink_metadata(repo.join("CLAUDE.md")).expect("stat");
-        assert!(meta.file_type().is_symlink(), "the link must survive the write");
-        let body = std::fs::read_to_string(&real).expect("read target");
-        assert!(body.starts_with("# Shared\n\n## mesimon"), "{body}");
         let _ = std::fs::remove_dir_all(&repo);
     }
 }

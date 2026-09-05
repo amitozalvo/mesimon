@@ -289,15 +289,18 @@ pub enum Command {
     SetMcpTools {
         on: bool,
     },
-    /// Answer the CLAUDE.md offer (T-217): write the snippet into the repo's
-    /// `CLAUDE.md`, or record that it is never to be offered again.
-    ///
-    /// The one command that writes a file the user tracks in git, which is
-    /// why it exists only behind a dialog that shows the exact bytes first,
-    /// and why declining and copying send nothing at all.
-    ClaudeMd {
-        action: ClaudeMdAction,
+    /// Turn the agent brief on or off for this board (T-224): `brief::TEXT`
+    /// in the system prompt of every claude mesimon starts here, through
+    /// `--append-system-prompt`. Per repo, persisted in `columns.toml`, read
+    /// at every spawn and wake; off by default, and the dialog that offers it
+    /// shows the text verbatim first. Local only — a tier that could write
+    /// its own system prompt is not one.
+    SetSystemPrompt {
+        on: bool,
     },
+    /// Answer the agent-brief offer with "never": stamp the board so the chip
+    /// and its menu row stop. Declining for now and copying send nothing.
+    IgnoreBriefOffer,
     /// Take the header's archive offer: archive exactly the tickets the
     /// suggestion prices (the offer's own candidate set, nothing broader).
     ArchiveAll,
@@ -512,18 +515,6 @@ impl DiffTarget {
     }
 }
 
-/// The two answers the CLAUDE.md dialog can send (T-217). Declining and
-/// copying are not here: both write nothing, so neither travels.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-pub enum ClaudeMdAction {
-    /// Append `claudemd::SNIPPET` to the repo's `CLAUDE.md`, creating it if it
-    /// is not there. A no-op if the marker is already present.
-    Apply,
-    /// Never offer it again on this board. `mesimon doctor` still prints it.
-    Ignore,
-}
-
 /// The ceiling on one `PromptSession`. A prompt is a sentence or a paragraph
 /// typed into a card-width field, not a document: what the board's Shift+Enter
 /// is for is "ask the agent a thing while looking at the board", and anything
@@ -622,11 +613,12 @@ impl Command {
             | ReloadShellEnv
             | GitFetch
             | SetAutomation { .. }
-            // Both are board-wide settings a person took a gesture to change,
-            // and one of them writes a file in the repo — the feed is where
-            // "who turned the agent tools off" gets answered later.
+            // Board-wide settings a person took a gesture to change — the
+            // feed is where "who turned the agent tools off" and "who turned
+            // the brief on" get answered later.
             | SetMcpTools { .. }
-            | ClaudeMd { .. }
+            | SetSystemPrompt { .. }
+            | IgnoreBriefOffer
             | KillSession { .. }
             | ResumeSession { .. }
             | SleepSession { .. }
@@ -1139,7 +1131,8 @@ pub struct ShellEnvStatus {
 }
 
 /// Whether the repo's `CLAUDE.md` already tells a session to read its ticket
-/// (T-217), and where the offer would write if it does not.
+/// (T-217). A user who wrote the instruction into their own file has done the
+/// thing the agent-brief offer (T-224) is for, and is not offered it.
 ///
 /// A FILESYSTEM fact, which is why it rides the snapshot rather than the board:
 /// the ignore stamp is board state (`Board::claude_md_ignored`) and travels with
@@ -1148,14 +1141,11 @@ pub struct ShellEnvStatus {
 /// CLAUDE.md can be a hundred kilobytes and a snapshot happens on every change.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeMdStatus {
-    /// The file the offer would write: `<repo>/CLAUDE.md`, whether or not it
-    /// exists yet. Empty before the first sample, which draws nothing.
+    /// `<repo>/CLAUDE.md`, whether or not it exists — the file `doctor` names.
+    /// Empty before the first sample, which offers nothing: an unknown must
+    /// never read as "missing".
     #[serde(default)]
     pub path: String,
-    /// The file exists at all. False makes the dialog say "creates" rather than
-    /// "appends to", and is the only difference between the two.
-    #[serde(default)]
-    pub exists: bool,
     /// `claudemd::MARKER` was found — here, or in `.claude/CLAUDE.md`. True
     /// withdraws the offer, however the words got there.
     #[serde(default)]

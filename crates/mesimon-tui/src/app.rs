@@ -225,12 +225,12 @@ pub enum Mode {
     /// be written, shown verbatim over the board, with four ways out. No
     /// `idx` — it is a question, not a list, and its answers are its keys.
     ///
-    /// The one modal confirmation in mesimon. Every other one is a chord tail
-    /// (`d`, `a`, `z`) or the `m` key's arm, which say their question in the
-    /// status line and draw nothing; none of them can show four lines of text,
-    /// and showing the exact bytes before writing a file the user tracks in
-    /// git is the whole point of this one.
-    ClaudeMd,
+    /// The agent-brief dialog, the one modal confirmation in mesimon. Every
+    /// other one is a chord tail (`d`, `a`, `z`) or the `m` key's arm, which
+    /// say their question in the status line and draw nothing; none of them
+    /// can show five lines of text, and showing the exact words before they
+    /// go into every agent's system prompt is the whole point of this one.
+    Brief,
     /// The note editor. A mode and not a second slot: it REPLACES the
     /// one-line composer (Tab carries the title over) and never coexists
     /// with a move, a menu or a picker, so `Mode` is where it belongs.
@@ -1646,6 +1646,29 @@ impl App {
         keymap::settings_items(&self.ctx()).iter().position(|m| m.verb == verb).unwrap_or(0)
     }
 
+    /// The agent brief's switch (T-224), shared by the offer's Enter and the
+    /// Settings row. Board state: the daemon persists it and the snapshot
+    /// brings it back, so nothing is flipped locally. The status says the
+    /// REACH, not just the state — a live pane keeps the argv it was born
+    /// with, and a user watching a running agent ignore its ticket after
+    /// turning this on has been told wrong otherwise.
+    fn set_system_prompt(&mut self, on: bool) -> Result<()> {
+        match self.client.request(Command::SetSystemPrompt { on })? {
+            Response::Err { message } => self.status = message,
+            _ => {
+                self.refresh()?;
+                self.status = if !self.board.mcp_tools {
+                    "agent brief saved ∙ inert until the agent tools are on".into()
+                } else if on {
+                    "agent brief on ∙ new claude sessions and wakes read their ticket first".into()
+                } else {
+                    "agent brief off ∙ new sessions and wakes get no system-prompt line".into()
+                };
+            }
+        }
+        Ok(())
+    }
+
     /// Write `prefs.json` — the one road every preference takes, so the bar
     /// and the write errors read the same whichever row set them. `Err` is
     /// the status line saying why `what` holds for this session only.
@@ -1893,7 +1916,7 @@ impl App {
             Mode::Archived { .. } => Scope::Archived,
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
-            Mode::ClaudeMd => Scope::ClaudeMd,
+            Mode::Brief => Scope::Brief,
             _ => match self.screen {
                 Screen::Diff => Scope::Diff,
                 Screen::Releases => Scope::Releases,
@@ -2060,11 +2083,12 @@ impl App {
             // daemon has answered yet (a build predating the field, or a
             // first sample still in flight), and an unknown must never read
             // as "missing" — that would offer to write a file on a guess.
-            claude_md_offer: !self.claude_md.path.is_empty()
+            system_prompt: self.board.system_prompt,
+            brief_offer: !self.claude_md.path.is_empty()
                 && !self.claude_md.present
                 && self.board.mcp_tools
+                && !self.board.system_prompt
                 && !self.board.claude_md_ignored,
-            claude_md_exists: self.claude_md.exists,
             merge_train: self.prefs.merge_train,
             merge_train_notice: self.prefs.merge_train_notice,
             merge_train_armed: self.automation.merge_train,
@@ -2624,28 +2648,34 @@ impl App {
                     }
                 }
             }
-            // The offer opens the dialog and does nothing else. Every road
-            // that writes runs from inside it, with the bytes on the screen.
-            Verb::ClaudeMdOffer => self.mode = Mode::ClaudeMd,
-            Verb::ClaudeMdCopy => {
-                // Cannot be verified: OSC 52 is write-only and a terminal may
-                // ignore it. So the status says what was sent, not that it
-                // arrived, and the dialog stays up with the text on it.
-                self.status = match crate::osc::copy_to_clipboard(mesimon_core::claudemd::SNIPPET) {
-                    Ok(()) => "snippet copied ∙ if your terminal allows it".into(),
+            // The brief's switch, from Settings (T-224): board state like the
+            // tools, so it goes to the daemon and comes back on the snapshot.
+            Verb::SystemPrompt => {
+                let on = !self.board.system_prompt;
+                self.set_system_prompt(on)?;
+            }
+            // The offer opens the dialog and does nothing else. The switch is
+            // only ever turned from inside it, with the words on the screen.
+            Verb::BriefOffer => self.mode = Mode::Brief,
+            Verb::BriefCopy => {
+                // The words on the screen, for a user who would rather put
+                // them somewhere of their own. Cannot be verified: OSC 52 is
+                // write-only and a terminal may ignore it. So the status says
+                // what was sent, not that it arrived, and the dialog stays
+                // up with the text on it.
+                self.status = match crate::osc::copy_to_clipboard(mesimon_core::brief::TEXT) {
+                    Ok(()) => "brief copied ∙ if your terminal allows it".into(),
                     Err(e) => format!("could not write to the terminal: {e}"),
                 };
             }
-            Verb::ClaudeMdIgnore => {
-                use mesimon_core::command::ClaudeMdAction;
-                match self.client.request(Command::ClaudeMd { action: ClaudeMdAction::Ignore })? {
+            Verb::BriefIgnore => {
+                match self.client.request(Command::IgnoreBriefOffer)? {
                     Response::Err { message } => self.status = message,
                     _ => {
                         self.mode = Mode::Normal;
                         self.refresh()?;
-                        // Names the way back, because "never" is a long time
-                        // and doctor is the only door left.
-                        self.status = "claude.md offer put away ∙ mesimon doctor still prints it"
+                        // Names the way back, because "never" is a long time.
+                        self.status = "offer put away ∙ Settings > Agent brief still turns it on"
                             .into();
                     }
                 }
@@ -3130,22 +3160,12 @@ impl App {
                 let verb = item.verb;
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
-            // The dialog's Enter: the one road that writes the file, and it
-            // runs with the bytes it is about still on the screen.
-            Scope::ClaudeMd => {
-                use mesimon_core::command::ClaudeMdAction;
-                let path = self.claude_md.path.clone();
-                match self.client.request(Command::ClaudeMd { action: ClaudeMdAction::Apply })? {
-                    Response::Err { message } => self.status = message,
-                    _ => {
-                        self.mode = Mode::Normal;
-                        self.refresh()?;
-                        // Names the file, because the user is about to want
-                        // to look at what landed in it.
-                        self.status = format!("added the mesimon section to {path}");
-                    }
-                }
-                Ok(())
+            // The dialog's Enter: the one road that turns the brief on from
+            // the offer, and it runs with the words it is about still on the
+            // screen. The Settings row is the other road, and the way off.
+            Scope::Brief => {
+                self.mode = Mode::Normal;
+                self.set_system_prompt(true)
             }
             Scope::Drawer => self.adopt_external(true),
             Scope::Archived => {
@@ -5665,21 +5685,15 @@ pub(crate) mod test_support {
                     self.pending.retain(|p| p.ticket != ticket);
                     Ok(Response::Ok)
                 }
-                // The daemon's two answers to the CLAUDE.md offer, in the one
-                // respect the client can see: an apply re-samples the file
-                // BEFORE it replies (`answer_claude_md` invalidates and
-                // refreshes), so the very next snapshot says the line is
-                // there, and "never" is a stamp on the board.
-                Command::ClaudeMd { action } => {
-                    match action {
-                        mesimon_core::command::ClaudeMdAction::Apply => {
-                            self.claude_md.exists = true;
-                            self.claude_md.present = true;
-                        }
-                        mesimon_core::command::ClaudeMdAction::Ignore => {
-                            self.board.claude_md_ignored = true;
-                        }
-                    }
+                // The daemon's two answers to the agent-brief offer, in the
+                // one respect the client can see: both are board state, so
+                // the very next snapshot carries them.
+                Command::SetSystemPrompt { on } => {
+                    self.board.system_prompt = on;
+                    Ok(Response::Ok)
+                }
+                Command::IgnoreBriefOffer => {
+                    self.board.claude_md_ignored = true;
                     Ok(Response::Ok)
                 }
                 Command::SeenTicket { id } => {
@@ -5793,7 +5807,6 @@ mod tests {
             automation: Default::default(),
             claude_md: mesimon_core::command::ClaudeMdStatus {
                 path: "/repo/kanban-tui/CLAUDE.md".into(),
-                exists: true,
                 present: false,
             },
             sent,
@@ -5805,33 +5818,38 @@ mod tests {
     }
 
     fn offered(app: &App) -> bool {
-        keymap::is_suggested(Verb::ClaudeMdOffer, &app.ctx())
+        keymap::is_suggested(Verb::BriefOffer, &app.ctx())
     }
 
-    /// Taking the offer withdraws it, in the same breath. The daemon
-    /// re-samples the file before it answers, so the refresh the Enter runs
-    /// already carries `present: true` — but `absorb` dropped the field on
-    /// the floor and the chip stood until the next launch (the report:
-    /// "not being dismissed after approve until mesimon restart").
+    /// Taking the offer turns the brief on and withdraws it, in the same
+    /// breath: the switch is board state, the Enter's refresh carries it, and
+    /// the chip comes off without a relaunch (T-217's report — "not being
+    /// dismissed after approve until mesimon restart" — was `absorb` dropping
+    /// a snapshot field; the brief rides the board, which never was dropped).
     #[test]
-    fn taking_the_claude_md_offer_withdraws_it() {
+    fn taking_the_brief_offer_turns_it_on_and_withdraws_it() {
         let mut app = app_offered_claude_md();
         assert!(offered(&app), "a sampled file without the line is offered");
-        app.mode = Mode::ClaudeMd;
+        app.mode = Mode::Brief;
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
-        assert!(app.claude_md.present, "the apply's own refresh must land the new sample");
+        assert!(app.board.system_prompt, "Enter is the switch");
         assert!(!offered(&app), "and the chip comes off without a relaunch");
-        assert!(app.status.contains("CLAUDE.md"), "{}", app.status);
+        assert!(app.status.contains("agent brief on"), "{}", app.status);
+        // The Settings row is the way off, and off re-offers nothing while
+        // "never" was not said — the offer is for a board that never chose.
+        app.dispatch(Verb::SystemPrompt, Key::Enter, Scope::Settings, &app.ctx()).unwrap();
+        assert!(!app.board.system_prompt);
+        assert!(offered(&app), "off again, never answered: the offer stands");
     }
 
     /// The other answer, on the road that always worked (the stamp is board
     /// state, and the board was never the field that got dropped) — asserted
     /// beside it so the pair cannot drift apart again.
     #[test]
-    fn putting_the_claude_md_offer_away_withdraws_it() {
+    fn putting_the_brief_offer_away_withdraws_it() {
         let mut app = app_offered_claude_md();
-        app.mode = Mode::ClaudeMd;
+        app.mode = Mode::Brief;
         press(&mut app, 'i');
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
         assert!(app.board.claude_md_ignored);

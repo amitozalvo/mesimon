@@ -712,13 +712,26 @@ pub struct Board {
     /// explicit `#[serde(default = ..)]` rather than `bool`'s own `false`.
     #[serde(default = "yes")]
     pub mcp_tools: bool,
-    /// The CLAUDE.md offer was declined for good (T-217). A stamp, in the
-    /// grain of `tags_seeded`: the offer is a header chip, so without
-    /// somewhere to record "never" it would stand in front of the menu
-    /// forever. `mesimon doctor` still prints the snippet — that is the way
-    /// back, and why "never" here can be total.
+    /// The agent-brief offer was declined for good (T-217, re-aimed T-224). A
+    /// stamp, in the grain of `tags_seeded`: the offer is a header chip, so
+    /// without somewhere to record "never" it would stand in front of the menu
+    /// forever. `mesimon doctor` still prints the brief and the Settings row
+    /// still turns it on — that is the way back, and why "never" here can be
+    /// total. The key keeps T-217's name on disk; renaming a persisted stamp
+    /// would re-offer to everyone who had answered.
     #[serde(default)]
     pub claude_md_ignored: bool,
+    /// Sessions mesimon starts carry `brief::TEXT` in their system prompt
+    /// (`brief::FLAG`, T-224). OFF by default — README promise 3 says mesimon
+    /// adds no token to a conversation, and this is the one exception a person
+    /// turns on, after a dialog has shown them the exact text. Per REPO like
+    /// `mcp_tools`, and honoured only while the tools are on (the sentence
+    /// names a tool). A plain serde default, no schema bump: a downgrade that
+    /// drops `system_prompt = true` sends LESS to the model, which is the safe
+    /// direction — the `mcp_tools` bump exists because dropping `false` sends
+    /// more.
+    #[serde(default)]
+    pub system_prompt: bool,
 }
 
 /// `Board::mcp_tools` defaults ON: a serde default has to be a function, and
@@ -743,6 +756,7 @@ impl Default for Board {
             tags_seeded: false,
             mcp_tools: true,
             claude_md_ignored: false,
+            system_prompt: false,
         }
     }
 }

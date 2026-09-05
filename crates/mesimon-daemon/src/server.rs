@@ -1162,7 +1162,8 @@ impl Daemon {
             Command::SeenTicket { id } => self.seen_ticket(id),
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
-            Command::ClaudeMd { action } => self.answer_claude_md(action),
+            Command::SetSystemPrompt { on } => self.set_system_prompt(on),
+            Command::IgnoreBriefOffer => self.ignore_brief_offer(),
             Command::ArchiveAll => {
                 let (archived, skipped) = self.archive_all();
                 if archived > 0 {
@@ -4540,41 +4541,35 @@ impl Daemon {
         Response::Ok
     }
 
-    /// Answer the CLAUDE.md offer (T-217): write the snippet, or stamp the
-    /// board so it is never offered again.
-    ///
-    /// Both roads need `columns.toml` writable — the stamp obviously, and the
-    /// apply because a write we could not record would offer itself again on
-    /// the next sample and look like it had failed. Declining and copying
-    /// never arrive here; they write nothing.
-    fn answer_claude_md(&mut self, action: mesimon_core::command::ClaudeMdAction) -> Response {
-        use mesimon_core::command::ClaudeMdAction;
+    /// The agent brief's switch (T-224): `brief::TEXT` on the argv of every
+    /// claude this board starts from now on, through `brief::FLAG`. Same
+    /// shape and same reach as `set_mcp_tools` — the NEXT spawn or wake is
+    /// what changes, a running pane's argv was fixed at exec — and it is
+    /// honoured only while the tools are on (`claude_argv`), because the
+    /// sentence names `get_ticket`.
+    fn set_system_prompt(&mut self, on: bool) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
-        match action {
-            // The receipt is `Ok`, not the path: the snapshot already carries
-            // it (`ClaudeMdStatus::path`), and it is the same string the
-            // dialog just showed. A second spelling of one fact is a second
-            // thing to keep in step.
-            ClaudeMdAction::Apply => match crate::claudemd::apply(&self.paths.repo_root) {
-                Ok(_) => {
-                    // Our own write moved the file; a same-millisecond write
-                    // of the same length would not, so drop the stamps rather
-                    // than trusting them.
-                    self.claude_md.invalidate();
-                    self.claude_md.refresh(&self.paths.repo_root);
-                    self.broadcast();
-                    Response::Ok
-                }
-                Err(message) => Response::Err { message },
-            },
-            ClaudeMdAction::Ignore => {
-                self.board.claude_md_ignored = true;
-                self.persist_and_notify();
-                Response::Ok
-            }
+        if self.board.system_prompt == on {
+            return Response::Ok;
         }
+        self.board.system_prompt = on;
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// "Never ask again" on the agent-brief offer: a stamp on the board, so
+    /// the chip and its menu row stop. Needs `columns.toml` writable, or the
+    /// offer would be back on the next restart and look like it had failed.
+    /// Declining for now and copying never arrive here; they write nothing.
+    fn ignore_brief_offer(&mut self) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        self.board.claude_md_ignored = true;
+        self.persist_and_notify();
+        Response::Ok
     }
 
     /// The tick wheel's half of a snooze: every ticket whose deadline has
@@ -5215,6 +5210,13 @@ impl Daemon {
             argv.push("--mcp-config".into());
             argv.push(self.mcp_config_json(id));
         }
+        // The agent brief (T-224): opt-in, and only beside the tools it
+        // names — a system prompt telling the model to call a tool it does
+        // not have would be the lie the switch exists to avoid.
+        if self.brief_on() {
+            argv.push(mesimon_core::brief::FLAG.into());
+            argv.push(mesimon_core::brief::TEXT.into());
+        }
         argv.push(identity_flag.to_string());
         argv.push(identity_value.to_string());
         // Replicate the user's own configured permission mode as an explicit
@@ -5228,6 +5230,12 @@ impl Daemon {
             argv.push(mode);
         }
         Ok(argv)
+    }
+
+    /// The brief rides the argv only while BOTH switches are on: the sentence
+    /// names `get_ticket`, and a session with no tools has nothing to call.
+    fn brief_on(&self) -> bool {
+        self.board.mcp_tools && self.board.system_prompt
     }
 
     /// The one resume builder (wake and takeover share it). D24: the argv
@@ -5263,6 +5271,15 @@ impl Daemon {
                         argv.push("--mcp-config".into());
                         argv.push(self.mcp_config_json(rec.id));
                     }
+                } else if a == mesimon_core::brief::FLAG {
+                    // The brief, on the same two rules (T-224): regenerated
+                    // rather than replayed, so a binary whose TEXT moved is
+                    // what a wake says; and dropped where the switch is off.
+                    let _ = it.next();
+                    if self.brief_on() {
+                        argv.push(mesimon_core::brief::FLAG.into());
+                        argv.push(mesimon_core::brief::TEXT.into());
+                    }
                 } else {
                     argv.push(a.clone());
                 }
@@ -5280,6 +5297,18 @@ impl Daemon {
                     .map(|i| (i + 2).min(argv.len()))
                     .unwrap_or(argv.len().min(1));
                 argv.splice(at..at, ["--mcp-config".to_string(), self.mcp_config_json(rec.id)]);
+            }
+            // And the brief both ways too, after the tools it names.
+            if self.brief_on() && !argv.iter().any(|a| a == mesimon_core::brief::FLAG) {
+                let at = argv
+                    .iter()
+                    .position(|a| a == "--mcp-config")
+                    .map(|i| (i + 2).min(argv.len()))
+                    .unwrap_or(argv.len().min(1));
+                argv.splice(
+                    at..at,
+                    [mesimon_core::brief::FLAG.to_string(), mesimon_core::brief::TEXT.to_string()],
+                );
             }
             return Ok(argv);
         }

@@ -668,48 +668,46 @@ fn golden_theme_picker_120() {
     golden("theme_picker_120x30", &render(&app, 120, 30));
 }
 
-/// The CLAUDE.md dialog: the destination named, the snippet verbatim on the
-/// elevated surface, and the four answers in the bottom edge. This golden is
-/// the promise the feature makes — what is on the screen is what gets written.
+/// The agent-brief dialog: the reach named, the text verbatim on the elevated
+/// surface, and the four answers in the bottom edge. This golden is the
+/// promise the feature makes — what is on the screen is what every claude
+/// mesimon starts will be told.
 #[test]
-fn golden_claude_md_120() {
+fn golden_brief_120() {
     let mut app = app_graphite(fixture_archived());
-    offer_claude_md(&mut app, true);
-    app.mode = Mode::ClaudeMd;
-    golden("claude_md_120x30", &render(&app, 120, 30));
+    offer_brief(&mut app);
+    app.mode = Mode::Brief;
+    golden("brief_120x30", &render(&app, 120, 30));
 }
 
-/// A board whose CLAUDE.md does not yet carry the line, so the offer stands.
-/// `exists` is the one fact the dialog's wording turns on.
-fn offer_claude_md(app: &mut App, exists: bool) {
+/// A board whose CLAUDE.md does not carry the line, so the offer stands.
+fn offer_brief(app: &mut App) {
     app.claude_md = mesimon_core::command::ClaudeMdStatus {
         path: "/repo/kanban-tui/CLAUDE.md".into(),
-        exists,
         present: false,
     };
 }
 
-/// The snippet reaches the screen unwrapped and unabridged. A dialog that
-/// reflowed it would be showing something other than what Enter writes, which
-/// is the one thing this surface may not do.
+/// The text reaches the screen unwrapped and unabridged, under a line that
+/// says who gets it and that nothing is written. A dialog that reflowed the
+/// text would be showing something other than what Enter sends, which is the
+/// one thing this surface may not do.
 #[test]
-fn the_dialog_shows_the_snippet_verbatim() {
+fn the_dialog_shows_the_brief_verbatim() {
     let mut app = app_graphite(fixture_archived());
-    offer_claude_md(&mut app, true);
-    app.mode = Mode::ClaudeMd;
+    offer_brief(&mut app);
+    app.mode = Mode::Brief;
     let lines = render(&app, 120, 30);
-    for want in mesimon_core::claudemd::SNIPPET.lines().filter(|l| !l.trim().is_empty()) {
+    for want in mesimon_core::brief::TEXT.lines().filter(|l| !l.trim().is_empty()) {
         assert!(
             lines.iter().any(|l| l.contains(want)),
-            "the snippet line `{want}` is not on screen whole:\n{}",
+            "the brief line `{want}` is not on screen whole:\n{}",
             lines.join("\n")
         );
     }
-    // And the file it would touch, with the verb that says whether it exists.
-    assert!(lines.iter().any(|l| l.contains("appends to") && l.contains("CLAUDE.md")));
-    offer_claude_md(&mut app, false);
-    let fresh = render(&app, 120, 30);
-    assert!(fresh.iter().any(|l| l.contains("creates")), "{}", fresh.join("\n"));
+    // The consent sentence: where it goes, and that it goes nowhere else.
+    assert!(lines.iter().any(|l| l.contains("system prompt") && l.contains("mesimon starts")));
+    assert!(lines.iter().any(|l| l.contains("nothing written to disk ∙ Settings turns it off")));
 }
 
 /// Every answer is taught in the frame's own edge, so the dialog says what it
@@ -717,14 +715,14 @@ fn the_dialog_shows_the_snippet_verbatim() {
 #[test]
 fn the_dialog_teaches_its_four_answers() {
     let mut app = app_graphite(fixture_archived());
-    offer_claude_md(&mut app, true);
-    app.mode = Mode::ClaudeMd;
+    offer_brief(&mut app);
+    app.mode = Mode::Brief;
     let lines = render(&app, 120, 30);
     let edge = lines
         .iter()
-        .find(|l| l.contains("add it"))
+        .find(|l| l.contains("turn on"))
         .unwrap_or_else(|| panic!("the bottom edge: {lines:#?}"));
-    for key in ["enter add it", "c copy", "i never ask again", "esc not now"] {
+    for key in ["enter turn on", "c copy", "i never ask again", "esc not now"] {
         assert!(edge.contains(key), "`{key}` missing from the edge: {edge}");
     }
 }
@@ -750,18 +748,18 @@ fn suggesting_app() -> App {
     app
 }
 
-/// Every clause of the offer, one at a time. Three of them are the feature's
-/// own logic; the fourth — an EMPTY path — is the one that matters most, since
+/// Every clause of the offer, one at a time. Four of them are the feature's
+/// own logic; the fifth — an EMPTY path — is the one that matters most, since
 /// an older daemon and a first sample still in flight both report it, and an
-/// unknown that read as "missing" would offer to write a file on a guess.
+/// unknown that read as "missing" would offer on a guess.
 #[test]
-fn the_offer_stands_only_when_all_four_clauses_hold() {
+fn the_offer_stands_only_when_every_clause_holds() {
     let mut app = app_graphite(fixture_archived());
     use mesimon_core::keymap::{is_suggested, Verb};
-    let offered = |a: &App| is_suggested(Verb::ClaudeMdOffer, &a.ctx());
+    let offered = |a: &App| is_suggested(Verb::BriefOffer, &a.ctx());
 
     assert!(!offered(&app), "an unsampled board offers nothing");
-    offer_claude_md(&mut app, true);
+    offer_brief(&mut app);
     assert!(offered(&app), "sampled, missing, tools on, not ignored");
 
     // The file already says it — however it got there.
@@ -769,10 +767,15 @@ fn the_offer_stands_only_when_all_four_clauses_hold() {
     assert!(!offered(&app));
     app.claude_md.present = false;
 
-    // The tools it names are switched off, so the snippet would be a lie.
+    // The tools it names are switched off, so the brief would be a lie.
     app.board.mcp_tools = false;
     assert!(!offered(&app));
     app.board.mcp_tools = true;
+
+    // Already on: there is nothing left to offer.
+    app.board.system_prompt = true;
+    assert!(!offered(&app));
+    app.board.system_prompt = false;
 
     // Answered "never".
     app.board.claude_md_ignored = true;
@@ -789,7 +792,7 @@ fn the_offer_stands_only_when_all_four_clauses_hold() {
 #[test]
 fn the_offer_reaches_the_menu_and_the_header() {
     let mut app = app_graphite(fixture_archived());
-    offer_claude_md(&mut app, true);
+    offer_brief(&mut app);
     let header = render(&app, 120, 30);
     assert!(
         header.iter().any(|l| l.contains("tell agents to read the ticket (esc)")),

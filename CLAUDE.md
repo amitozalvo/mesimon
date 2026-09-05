@@ -1042,8 +1042,11 @@ absent: both succeed), so no replay key. Authorized as `Mutate` on `Resource::Ti
 `tag_ticket`. The human's six tag commands stay in the never-tier because `SetTag` registers on
 the fly and the other five rewrite the registry. (STALE-MAP "An agent wears the user's tags".)
 
-**The tools can be switched OFF, and the board offers to tell CLAUDE.md they exist**
-(T-217, 2026-09-04). `Board.mcp_tools` is a per-REPO scalar in `columns.toml` beside
+**The tools can be switched OFF, and the board offers the AGENT BRIEF — one line in the system
+prompt of the claudes it starts** (T-217, 2026-09-04; re-aimed from CLAUDE.md to
+`--append-system-prompt` by T-224, 2026-09-05, user: "a better approach than modifying
+claude.md ∙ opt in ∙ tell the user verbatim what will be added, and that it's only for mesimon
+created sessions"). `Board.mcp_tools` is a per-REPO scalar in `columns.toml` beside
 `tags_seeded` (default ON; `COLUMNS_SCHEMA` 3 — a bump, not a serde default, because an older
 build dropping `mcp_tools = false` would hand every agent its tools back after the user took
 them away; `Board::Default` is hand-written for the same field). `claude_argv` omits
@@ -1053,21 +1056,26 @@ session takes to pick the switch up either way; a live pane keeps what it was bo
 `Command::SetMcpTools` (denied to agents: a tier that could switch itself off is not one), the
 Settings row `Agent tools: on|off`, and a `doctor` line. And because the layers are `MESIMON_TICKET`
 for the shell and `get_ticket` for the model, with nothing telling the model to USE the second
-one, `core/src/claudemd.rs::SNIPPET` is four lines mesimon offers to append to the repo's own
-`CLAUDE.md` — hard-wrapped to `WRAP` (56) because `Mode::ClaudeMd` shows it VERBATIM and
-`dialog::MAX_W` is 64, with `MESIMON_TICKET` itself as the marker (so applying twice is
-impossible and this repo is never offered anything). The dialog is mesimon's ONE modal
-confirmation — every other confirm is a chord tail or `m`'s arm, which draw nothing — and its
-four answers are `enter` add / `c` copy (OSC 52, `osc.rs::copy_to_clipboard`, write-only so it
-never claims success, and the one key that leaves the dialog up) / `i` never (stamps
-`Board::claude_md_ignored`) / `esc` not now. `doctor` prints the snippet whatever the stamp
-says — that is the door "never" does not close, and why `doctor::wrap` now wraps one PARAGRAPH
-at a time. The write canonicalizes first (a symlinked CLAUDE.md must not become a regular file)
-and is still atomic. **README promise 1 names this write** — reworded 2026-09-04 at the author's
-request, in the pass that also closed the two standing gaps (the `/tmp` runtime dir and the
-self-update's binary); the promise now separates what mesimon writes on its own from the three
-it writes only when asked, and the "What mesimon writes" table has a row for each.
-(STALE-MAP "mesimon offers the CLAUDE.md line" + "The write allowlist says what it does".)
+one, `core/src/brief.rs::TEXT` is the sentence mesimon offers to put in the SYSTEM PROMPT of every
+claude it starts here — `Board.system_prompt`, a per-repo scalar beside `mcp_tools` (plain serde
+default, no schema bump: dropping it sends LESS), OFF by default, `Command::SetSystemPrompt`
+(denied to agents), honoured by `claude_argv`/`resume_argv` only while `mcp_tools` is on
+(`Daemon::brief_on` — the sentence names `get_ticket`), regenerated on a wake like the MCP blob.
+Hard-wrapped to `claudemd::WRAP` (56) because `Mode::Brief` shows it VERBATIM and `dialog::MAX_W`
+is 64. The offer (`Verb::BriefOffer`, chip + menu row) stands while the brief is off, the repo's
+CLAUDE.md lacks the `MESIMON_TICKET` marker (`claudemd::Sampler`, `ClaudeMdStatus` — a user who
+wrote it themselves is never nagged, and this repo is offered nothing), the tools are on, and
+"never" was not said. The dialog is mesimon's ONE modal confirmation — every other confirm is a
+chord tail or `m`'s arm, which draw nothing — its first two lines say the REACH (claude sessions
+mesimon starts here, only those, nothing written to disk), and its four answers are `enter` turn
+on / `c` copy (the text itself, OSC 52, write-only so it never claims success, the one key that
+leaves the dialog up; `claudemd::SNIPPET` survives as the CLAUDE.md form `doctor` prints) / `i` never (stamps
+`Board::claude_md_ignored`, the key keeping T-217's name on disk) / `esc` not now. Settings row
+`Agent brief: on|off` is the other road and the way off; `doctor` prints the text whatever the
+stamp says. **The CLAUDE.md WRITE is gone** — `daemon/src/claudemd.rs` only samples now — and
+README promise 1 no longer names it; promise 3 names the brief as the one consented exception
+beside the tool registry. (STALE-MAP "mesimon offers the CLAUDE.md line" + "The write allowlist
+says what it does" + "The brief moves into the system prompt".)
 
 `mcp::agent_allows` is an **exhaustive match over `Command` with no `_` arm**: adding a wire
 command will not compile until someone decides whether an agent may send it. That is the

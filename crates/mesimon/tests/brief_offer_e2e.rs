@@ -1,11 +1,12 @@
-//! The CLAUDE.md offer and the agent-tools switch (T-217), end to end against
-//! a real daemon: the offer stands on a repo that never said the words, Enter
-//! writes the file, "never ask again" stamps the board, and turning the tools
-//! off withdraws the offer and survives a restart.
+//! The agent-brief offer and the two board switches (T-217, T-224), end to end
+//! against a real daemon: the offer stands on a repo that never said the
+//! words, Enter turns the brief on and persists it, "never ask again" stamps
+//! the board, turning the tools off is its own consent flag, and all three
+//! survive a restart.
 //!
-//! No tmux and no agent — both switches are board state and one file, so this
-//! one runs everywhere. The half that needs a pane (a spawn carrying no
-//! `--mcp-config`) lives in `mcp_e2e.rs`, where the stub agent already is.
+//! No tmux and no agent — every one of these is board state, so this one runs
+//! everywhere. The half that needs a pane (a spawn's argv carrying the flag,
+//! or not) lives in `brief_e2e.rs`, where the stub agent already is.
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
 // #[test], not the helpers beside them, so the D26 exemption is stated here.
@@ -13,8 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use mesimon_core::claudemd;
-use mesimon_core::command::{ClaudeMdAction, Command, Response};
+use mesimon_core::command::{Command, Response};
 
 mod common;
 use common::*;
@@ -28,8 +28,8 @@ fn status(resp: Response) -> mesimon_core::command::ClaudeMdStatus {
 }
 
 #[test]
-fn the_claude_md_offer_writes_once_and_can_be_put_away() {
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-claudemd-{}", std::process::id()));
+fn the_brief_offer_switches_persist_and_survive_a_restart() {
+    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-brief-offer-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
@@ -54,41 +54,35 @@ fn the_claude_md_offer_writes_once_and_can_be_put_away() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "claudemd".into() }),
+        c.request(Command::Hello { version: 1, client: "brief".into() }),
         Response::Hello { .. }
     ));
 
     // ---- a repo that never said the words ---------------------------------
     let s = status(c.request(Command::Snapshot));
     assert!(!s.present, "a fresh repo has nothing to say about MESIMON_TICKET");
-    assert!(!s.exists, "and no CLAUDE.md at all");
-    assert_eq!(s.path, md.display().to_string(), "the dialog names the file it would write");
+    assert_eq!(s.path, md.display().to_string(), "doctor names the file");
     let board = board_of(c.request(Command::Snapshot));
     assert!(board.mcp_tools, "the tools ship on");
+    assert!(!board.system_prompt, "the brief ships OFF: it is opt-in");
     assert!(!board.claude_md_ignored);
 
-    // ---- Enter writes it, once --------------------------------------------
-    assert!(matches!(c.request(Command::ClaudeMd { action: ClaudeMdAction::Apply }), Response::Ok));
-    let body = std::fs::read_to_string(&md).unwrap();
-    assert_eq!(body, claudemd::SNIPPET, "a missing file becomes the snippet alone");
-    let s = status(c.request(Command::Snapshot));
-    assert!(s.present, "the write withdraws the offer");
-    assert!(s.exists);
+    // ---- Enter turns the brief on; nothing on disk but the board ----------
+    assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
+    assert!(board_of(c.request(Command::Snapshot)).system_prompt);
+    assert!(!md.exists(), "the brief writes no CLAUDE.md");
+    let raw = std::fs::read_to_string(&cols).unwrap();
+    assert!(raw.contains("system_prompt = true"), "{raw}");
+    // Idempotent, and off is a switch too.
+    assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
+    assert!(matches!(c.request(Command::SetSystemPrompt { on: false }), Response::Ok));
+    assert!(!board_of(c.request(Command::Snapshot)).system_prompt);
+    assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
 
-    // A second Apply is a no-op, not a second copy: the marker it wrote is
-    // what refuses it.
-    assert!(matches!(c.request(Command::ClaudeMd { action: ClaudeMdAction::Apply }), Response::Ok));
-    assert_eq!(std::fs::read_to_string(&md).unwrap(), body, "applying twice writes once");
-
-    // ---- "never ask again" is a stamp on the board, not on the file -------
+    // ---- "never ask again" is a stamp on the board, not on any file --------
     std::fs::write(&md, "# House rules\n").unwrap();
-    // Let the mtime gate see a different file.
-    std::thread::sleep(Duration::from_millis(20));
     let before = std::fs::read_to_string(&md).unwrap();
-    assert!(matches!(
-        c.request(Command::ClaudeMd { action: ClaudeMdAction::Ignore }),
-        Response::Ok
-    ));
+    assert!(matches!(c.request(Command::IgnoreBriefOffer), Response::Ok));
     assert_eq!(std::fs::read_to_string(&md).unwrap(), before, "ignore touches no file");
     let board = board_of(c.request(Command::Snapshot));
     assert!(board.claude_md_ignored);
@@ -102,15 +96,16 @@ fn the_claude_md_offer_writes_once_and_can_be_put_away() {
     assert!(!board_of(c.request(Command::Snapshot)).mcp_tools);
     let raw = std::fs::read_to_string(&cols).unwrap();
     assert!(raw.contains("mcp_tools = false"), "{raw}");
-    // A scalar after a table is a TOML error; both new keys sit above.
+    // A scalar after a table is a TOML error; all three keys sit above.
     let table = raw.find("[[columns]]").expect("the columns table");
     assert!(raw.find("mcp_tools").unwrap() < table, "{raw}");
     assert!(raw.find("claude_md_ignored").unwrap() < table, "{raw}");
+    assert!(raw.find("system_prompt").unwrap() < table, "{raw}");
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
 
-    // ---- and both survive the restart --------------------------------------
+    // ---- and all three survive the restart ---------------------------------
     let daemon_repo = repo.clone();
     let daemon = std::thread::spawn(move || {
         let _ = mesimon_daemon::run_foreground(&daemon_repo);
@@ -122,14 +117,15 @@ fn the_claude_md_offer_writes_once_and_can_be_put_away() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "claudemd".into() }),
+        c.request(Command::Hello { version: 1, client: "brief".into() }),
         Response::Hello { .. }
     ));
     let board = board_of(c.request(Command::Snapshot));
     assert!(!board.mcp_tools, "a consent flag may not be lost to a restart");
-    assert!(board.claude_md_ignored, "and neither may 'never ask again'");
-    // The file it would write is still named, because doctor prints the
-    // snippet whatever the stamp says — the stamp only silences the board.
+    assert!(board.system_prompt, "and neither may the brief's");
+    assert!(board.claude_md_ignored, "nor 'never ask again'");
+    // The file is still named, because doctor prints the snippet whatever
+    // the stamp says — the stamp only silences the board.
     assert!(!status(c.request(Command::Snapshot)).path.is_empty());
 
     let _ = c.request(Command::Shutdown);
@@ -139,13 +135,15 @@ fn the_claude_md_offer_writes_once_and_can_be_put_away() {
     }
 }
 
-/// An agent may not reach either command — the tier is a compile-time match,
-/// and this is the runtime half of the same statement.
+/// An agent may not reach any of the three — the tier is a compile-time
+/// match, and this is the runtime half of the same statement. A tier that
+/// could write its own system prompt, or switch its tools back on, is not one.
 #[test]
-fn the_agent_tier_is_denied_both() {
+fn the_agent_tier_is_denied_all_three() {
     use mesimon_core::mcp::agent_allows;
     assert!(!agent_allows(&Command::SetMcpTools { on: false }));
     assert!(!agent_allows(&Command::SetMcpTools { on: true }));
-    assert!(!agent_allows(&Command::ClaudeMd { action: ClaudeMdAction::Apply }));
-    assert!(!agent_allows(&Command::ClaudeMd { action: ClaudeMdAction::Ignore }));
+    assert!(!agent_allows(&Command::SetSystemPrompt { on: true }));
+    assert!(!agent_allows(&Command::SetSystemPrompt { on: false }));
+    assert!(!agent_allows(&Command::IgnoreBriefOffer));
 }

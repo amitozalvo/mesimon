@@ -5371,3 +5371,60 @@ the feed; `tool_completed_is_inert_outside_a_held_permission` drops `EndTurn` fr
 pins the nested case; `tool_completed_recovers_tail_misreads` loses its `_but_not_stated_idle`
 half. `hook_e2e` gained a leg: Stop → REVIEW, then a bare `PostToolUse` (`tool_name: Bash`, no
 `agent_id`) → `Running` and IN PROGRESS through the real daemon.
+
+## The brief moves into the system prompt (T-224, 2026-09-05, user: "we should introduce this as a better approach than modifying claude.md ∙ opt in ∙ suggested instead of claude.md modification, user consent is enough ∙ tell the user verbatim what will be added, and that it's only for mesimon created sessions")
+
+**What changed.** T-217's offer wrote four lines into the repo's `CLAUDE.md`. The block above
+listed `--append-system-prompt` as refused on promise 3, and the author, asked what it was,
+chose it: a Claude Code flag that appends text to the model's system prompt for that session.
+It is the better home on every axis the CLAUDE.md road was weak on — it reaches ONLY the
+sessions mesimon starts (a CLAUDE.md speaks to every claude in the repo), it writes no file the
+user tracks in git, it cannot drift from the binary that spawned it, and it is one Settings row
+to turn off. So the offer now offers THAT, and the CLAUDE.md write is gone.
+
+**Consent is the whole design.** `Board.system_prompt` (`core/src/brief.rs::TEXT` on the argv
+as `brief::FLAG`) is OFF by default and turned on by exactly two gestures: Enter in the dialog
+that shows the text verbatim, or the Settings row `Agent brief: on|off`. The dialog's first two
+lines say the reach before the words — *adds to the system prompt of claude sessions mesimon
+starts here ∙ only those ∙ nothing is written to disk ∙ Settings turns it off* — because that
+sentence is what the user is consenting to. README promise 3 now names it as the one consented
+exception beside the tool registry, and promise 1 no longer names a CLAUDE.md write (the
+"Three more" is "Two more", the table lost its row). `mesimon doctor` prints the text whatever
+the switch says: on, so the user can see what every agent of theirs is told; off, so the offer
+is never a surprise.
+
+**Mechanics.** `Command::SetSystemPrompt { on }` (denied to agents — a tier that could write
+its own system prompt is not one) and `Command::IgnoreBriefOffer` replace `Command::ClaudeMd {
+action }`; `ClaudeMdAction` is gone. `claude_argv` pushes the pair after `--mcp-config`, and
+`resume_argv` regenerates it on a wake (a binary whose TEXT moved is what a wake says) and drops
+it where the switch is off, the MCP blob's two rules. **Only beside the tools** (`Daemon::
+brief_on` = `mcp_tools && system_prompt`): the sentence names `get_ticket`, and a system prompt
+telling the model to call a tool it does not have is the lie the switch exists to avoid; the
+Settings row's detail says so with the tools off. The scalar rides a plain serde default with
+no `COLUMNS_SCHEMA` bump — the inverse of `mcp_tools`'s argument: a downgrade that drops
+`system_prompt = true` sends LESS to the model, which is the safe direction. `ClaudeMdStatus`
+and the `Sampler` survive with one job: a user who wrote the words into their own CLAUDE.md is
+not offered the brief. `ClaudeMdStatus.exists` went with the "creates / appends to" wording.
+`Board::claude_md_ignored` keeps T-217's key on disk so nobody who answered "never" is re-asked.
+`claudemd::SNIPPET` survives as the CLAUDE.md FORM of the same instruction, printed by
+`doctor` for a user who would rather keep it in their own file; `c` in the dialog copies the
+text on the screen. The offer's five clauses: sampled, no marker, tools on, brief off, never not
+said.
+
+**Renames.** `Scope::ClaudeMd` → `Scope::Brief` (word `AGENT BRIEF`), `Mode::ClaudeMd` →
+`Mode::Brief`, `Verb::ClaudeMd{Offer,Copy,Ignore}` → `Verb::Brief{Offer,Copy,Ignore}`, new
+`Verb::SystemPrompt`, `Ctx::claude_md_offer` → `brief_offer` plus `Ctx::system_prompt`,
+`ui/claudemd.rs` → `ui/brief.rs`, golden `claude_md_120x30` → `brief_120x30`,
+`claudemd_e2e.rs` → `brief_offer_e2e.rs`. `daemon/src/claudemd.rs::apply` and its symlink and
+twice-writes tests are deleted with the road.
+
+**Tests.** `core/src/brief.rs`: the text fits the dialog and names mesimon and the tool.
+`daemon/src/claudemd.rs`: sampler only. `store.rs`: absent reads off, the default is off, the
+three scalars round-trip above the tables. `ui/tests.rs`: golden `brief_120x30`, the text on
+screen verbatim under the reach line, the four answers in the edge (`enter turn on ∙ c copy ∙
+i never ask again ∙ esc not now`), five clauses of the offer, golden `settings_120x30` grows the
+row. `app.rs`: Enter turns it on and withdraws the offer, off re-offers, `i` stamps.
+`brief_offer_e2e`: on/off/idempotent, persisted, no CLAUDE.md written, the stamp, all three
+switches survive a restart, the agent tier denied all three. `brief_e2e`: a real spawn's argv
+carries `FLAG` then `TEXT` verbatim after `--mcp-config`, never `--system-prompt`; no tools, no
+brief; switched off, gone.

@@ -407,21 +407,54 @@ fn agents(repo: &Path, verbose: bool) -> Section {
             );
         }
 
-        // Always printed, and always with the snippet when it is missing —
-        // including on a board that answered the offer with "never ask
-        // again". Doctor is deliberately the one door that stamp does not
-        // close, which is what makes "never" a safe thing to press.
+        // The agent brief (T-224): the one line mesimon puts in the system
+        // prompt of the sessions it starts, opt-in. Printed VERBATIM either
+        // way — on, so the user can see what every agent of theirs is told;
+        // off, so the offer is never a surprise.
+        let brief = mesimon_daemon::store::read_system_prompt(&paths);
+        if brief && on {
+            records.push(
+                rec(
+                    Level::Ok,
+                    "agent brief",
+                    "on ∙ in the system prompt of every claude mesimon starts here",
+                )
+                .advice(format!("The line, verbatim:\n\n{}\n", mesimon_core::brief::TEXT)),
+            );
+        } else if brief {
+            records.push(rec(Level::Note, "agent brief", "on, but inert while the agent tools are off").advice(
+                "The brief tells claude to call get_ticket, so it rides the argv only beside the tools. Turn the tools back on and the next spawn or wake carries both.",
+            ));
+        } else {
+            records.push(
+                rec(Level::Note, "agent brief", "off ∙ sessions get no system-prompt line").advice(format!(
+                    "A spawned session is often handed only the ticket's TITLE; its description lives in a note that only the get_ticket tool reaches, so agents skip it. The Esc menu's Settings > Agent brief row puts this line — and only this line — in the system prompt of the claude sessions mesimon starts in this repo:\n\n{}\n",
+                    mesimon_core::brief::TEXT,
+                )),
+            );
+        }
+
+        // And the CLAUDE.md road, for a user who would rather keep the words
+        // in their own file. Always printed with the snippet when it is
+        // missing — including on a board that answered the offer with "never
+        // ask again". Doctor is deliberately the one door that stamp does
+        // not close, which is what makes "never" a safe thing to press.
         let mut sampler = mesimon_daemon::claudemd::Sampler::default();
         sampler.refresh(&paths.repo_root);
         let md = sampler.status();
         if md.present {
             records.push(rec(Level::Ok, "claude.md", "tells sessions to read their ticket"));
+        } else if brief {
+            records.push(rec(
+                Level::Ok,
+                "claude.md",
+                "does not mention MESIMON_TICKET ∙ the agent brief covers it",
+            ));
         } else {
-            let file = if md.exists { "CLAUDE.md" } else { "CLAUDE.md (would be created)" };
             records.push(
-                rec(Level::Warn, "claude.md", format!("{file} does not mention MESIMON_TICKET"))
+                rec(Level::Note, "claude.md", "does not mention MESIMON_TICKET")
                     .advice(format!(
-                        "A spawned session is often handed only the ticket's TITLE; its description lives in a note that only the get_ticket tool reaches, so agents miss it. Add this to {}:\n\n{}\nThe Esc menu offers to write it for you.",
+                        "The alternative to the agent brief, if you would rather keep the words in your own file (it reaches every claude in the repo, not only mesimon's). Add this to {}:\n\n{}",
                         md.path,
                         mesimon_core::claudemd::SNIPPET,
                     )),

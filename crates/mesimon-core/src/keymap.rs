@@ -159,13 +159,13 @@ pub enum Scope {
     /// their own, so the menu proper stays the list of things to DO. Esc
     /// pops back to the menu, on the row that opened it.
     Settings,
-    /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
-    /// be written, shown verbatim, over the board. The one modal
-    /// confirmation in mesimon — every other one is a chord tail or the `m`
-    /// key's arm, and neither can show four lines of text. Enter and Esc are
-    /// the list dialogs' own `Act`/`Back`; `c` and `i` are its two extra
-    /// answers.
-    ClaudeMd,
+    /// The agent-brief offer's confirm dialog (T-217, re-aimed at the system
+    /// prompt by T-224): the text every claude mesimon starts would carry,
+    /// shown verbatim, over the board. The one modal confirmation in mesimon
+    /// — every other one is a chord tail or the `m` key's arm, and neither
+    /// can show five lines of text. Enter and Esc are the list dialogs' own
+    /// `Act`/`Back`; `c` and `i` are its two extra answers.
+    Brief,
     /// The release notes, reached from a menu row: `CHANGELOG.md` compiled
     /// into the binary (`relnotes.rs`), one painted band per release, read
     /// top to bottom. A screen, not a dialog — it is the one document in
@@ -199,7 +199,7 @@ impl Scope {
         Scope::Archived,
         Scope::Theme,
         Scope::Settings,
-        Scope::ClaudeMd,
+        Scope::Brief,
         Scope::Releases,
         Scope::Input,
         Scope::Editor,
@@ -217,7 +217,7 @@ impl Scope {
             | Scope::Archived
             | Scope::Theme
             | Scope::Settings
-            | Scope::ClaudeMd
+            | Scope::Brief
             | Scope::Releases => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
@@ -247,7 +247,7 @@ impl Scope {
             Scope::Archived => "ARCHIVED",
             Scope::Theme => "THEME",
             Scope::Settings => "SETTINGS",
-            Scope::ClaudeMd => "CLAUDE.MD",
+            Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
@@ -374,15 +374,22 @@ pub enum Verb {
     /// board (T-217). Board state, not a preference: it is per repo, it
     /// lives in `columns.toml`, and the daemon reads it at every spawn.
     McpTools,
-    /// The menu row that opens the CLAUDE.md dialog (T-217): the snippet
-    /// shown verbatim, with four ways out.
-    ClaudeMdOffer,
-    /// `c` in that dialog — the snippet to the terminal's clipboard. Writes
-    /// nothing and stamps nothing, so the dialog stays open behind it.
-    ClaudeMdCopy,
+    /// The Settings row under it (T-224): whether every claude mesimon
+    /// starts on this board carries `brief::TEXT` in its system prompt.
+    /// Board state like `McpTools`, and the switch the offer's dialog turns.
+    SystemPrompt,
+    /// The menu row that opens the agent-brief dialog (T-217/T-224): the
+    /// text shown verbatim, with four ways out.
+    BriefOffer,
+    /// `c` in that dialog — the text on the screen to the terminal's
+    /// clipboard, for a user who would rather put the words somewhere of
+    /// their own. Writes nothing and stamps nothing, so the dialog stays
+    /// open behind it.
+    BriefCopy,
     /// `i` in that dialog — never offer it again. `mesimon doctor` still
-    /// prints the snippet, which is what makes "never" affordable here.
-    ClaudeMdIgnore,
+    /// prints the brief and Settings still turns it on, which is what makes
+    /// "never" affordable here.
+    BriefIgnore,
     /// Re-read the user's shell startup files, so the environment new panes
     /// get is the one their terminal would give them.
     ReloadShellEnv,
@@ -626,13 +633,14 @@ pub struct Ctx {
     /// This board hands its sessions the MCP tool surface. Board state, per
     /// repo — the Settings row's label and detail are the only readers.
     pub mcp_tools: bool,
-    /// The repo's `CLAUDE.md` does not yet tell a session to read its ticket,
-    /// the tools it would name are on, and the offer was not answered with
-    /// "never". All three, because each one alone would offer noise.
-    pub claude_md_offer: bool,
-    /// That file exists at all. The dialog's Enter says `add it` or
-    /// `create it` off this, and nothing else reads it.
-    pub claude_md_exists: bool,
+    /// Sessions this board starts carry the agent brief in their system
+    /// prompt (T-224). Board state, per repo — the Settings row's label and
+    /// the offer read it.
+    pub system_prompt: bool,
+    /// The brief is off, the repo's `CLAUDE.md` does not say it either, the
+    /// tool it names is on, and the offer was not answered with "never". All
+    /// four, because each one alone would offer noise.
+    pub brief_offer: bool,
     // ---- the board's own checkout (T-124) ----
     /// There is a repository under the board at all — the checkout has been
     /// sampled. `v` on the board diffs its uncommitted work (T-221), and
@@ -2326,15 +2334,16 @@ static SETTINGS: &[Binding] = &[
 /// `c` writes nothing and stamps nothing — copying is not evidence of pasting
 /// — so it is the one key here that leaves the dialog standing. `i` is the
 /// only way to answer "never", and it is affordable exactly because
-/// `mesimon doctor` prints the snippet whatever the stamp says.
-static CLAUDE_MD: &[Binding] = &[
+/// `mesimon doctor` prints the brief whatever the stamp says and the Settings
+/// row still turns it on.
+static BRIEF: &[Binding] = &[
     Binding {
         keys: &[Key::Enter],
         verb: Verb::Act,
         show: "enter",
-        // Names the file's fate, not the key's: the dialog above already
-        // spells the path, and this is the half the user is deciding.
-        hint: |c| if c.claude_md_exists { "add it" } else { "create it" },
+        // The switch's fate, not the key's: the dialog above already says
+        // where the text goes, and this is the half the user is deciding.
+        hint: |_| "turn on",
         avail: always,
         class: Class::Plain,
         group: Group::Sessions,
@@ -2343,7 +2352,7 @@ static CLAUDE_MD: &[Binding] = &[
     },
     Binding {
         keys: &[Key::Char('c')],
-        verb: Verb::ClaudeMdCopy,
+        verb: Verb::BriefCopy,
         show: "c",
         hint: |_| "copy",
         avail: always,
@@ -2354,7 +2363,7 @@ static CLAUDE_MD: &[Binding] = &[
     },
     Binding {
         keys: &[Key::Char('i')],
-        verb: Verb::ClaudeMdIgnore,
+        verb: Verb::BriefIgnore,
         show: "i",
         hint: |_| "never ask again",
         avail: always,
@@ -2514,17 +2523,20 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.bulk_archive > 0,
         key: "",
     },
-    // The CLAUDE.md offer (T-217). Its row is the dialog's door, so the
-    // detail says what the dialog will show rather than what it will write —
-    // nothing is written until the bytes are on the screen.
+    // The agent-brief offer (T-217, re-aimed T-224). Its row is the dialog's
+    // door, so the detail says what the dialog will show rather than what it
+    // will do — nothing is switched until the text is on the screen.
     MenuItem {
-        verb: Verb::ClaudeMdOffer,
-        // The outcome, not the file: a CLAUDE.md cannot read anything, an
-        // agent can. The file is the mechanism and belongs in the detail,
-        // one line down, next to the promise that nothing is written blind.
+        verb: Verb::BriefOffer,
+        // The outcome, not the mechanism: a system prompt is how, an agent
+        // reading its ticket is what. The how belongs in the detail, one
+        // line down, next to the reach (only sessions mesimon starts) and
+        // the promise that nothing is switched blind.
         label: |_| "Tell agents to read the ticket".into(),
-        detail: |_| "adds four lines to CLAUDE.md ∙ you see them first".into(),
-        avail: |c| c.claude_md_offer,
+        detail: |_| {
+            "one line in the system prompt of claudes mesimon starts ∙ you see it first".into()
+        },
+        avail: |c| c.brief_offer,
         key: "",
     },
     MenuItem {
@@ -2714,6 +2726,32 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The agent brief (T-224): one sentence in the system prompt of every
+    // claude mesimon starts here, telling it to read its ticket first. Board
+    // state like the row above, off by default, and it needs the tools it
+    // names — so the row says so rather than offering a switch that does
+    // nothing.
+    MenuItem {
+        verb: Verb::SystemPrompt,
+        label: |c| {
+            if c.system_prompt {
+                "Agent brief: on".into()
+            } else {
+                "Agent brief: off".into()
+            }
+        },
+        detail: |c| {
+            if !c.mcp_tools {
+                "needs the agent tools on ∙ the brief names get_ticket".into()
+            } else if c.system_prompt {
+                "in every spawn's system prompt ∙ enter turns it off".into()
+            } else {
+                "one line in the system prompt: read the ticket first".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
 ];
 
 /// `3 agents`, `1 agent` — a count and its noun. Every suggestion carries a
@@ -2779,7 +2817,7 @@ static SUGGESTIONS: &[Suggestion] = &[
         // is never more urgent than a running system's news, and it is worth
         // more than a tidy-up. It has no key of its own — the dialog is the
         // whole of it, and a dialog is not something to hang a letter off.
-        verb: Verb::ClaudeMdOffer,
+        verb: Verb::BriefOffer,
         // Says what taking it GETS you. "claude.md misses the ticket line"
         // shipped first and was cut (author: "doesn't indicate well"): it
         // named a file the reader has no reason to care about yet, spent its
@@ -3467,7 +3505,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Archived => ARCHIVED,
         Scope::Theme => THEME,
         Scope::Settings => SETTINGS,
-        Scope::ClaudeMd => CLAUDE_MD,
+        Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
@@ -3668,7 +3706,7 @@ mod tests {
                 Scope::Archived => 12,
                 Scope::Theme => 13,
                 Scope::Settings => 14,
-                Scope::ClaudeMd => 15,
+                Scope::Brief => 15,
                 Scope::Releases => 16,
                 Scope::Input => 17,
                 Scope::Editor => 18,
@@ -4826,6 +4864,7 @@ mod tests {
                 // per repo — but it is a switch, and a switch belongs behind
                 // the same door. Last, so no existing row's index moves.
                 Verb::McpTools,
+                Verb::SystemPrompt,
             ]
         );
         // The notice row rides UNDER the train row (not at the end of the

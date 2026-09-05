@@ -3,7 +3,8 @@
 //! under the typed title before the owed Enter, so the agent's first prompt is
 //! the whole brief — and the record says so (`ticket_read`). A `get_ticket`
 //! from the agent stamps the same flag; a ticket without a description
-//! submits the title alone, as before.
+//! submits the title alone, as before. And the agent brief (`brief::TEXT`)
+//! rides the spawn's argv exactly while the board's switch is on.
 //!
 //! The stub agent appends every line it reads to a file (prompt_e2e's shape):
 //! `read` only returns on a newline, so a line in that file proves the text
@@ -132,6 +133,9 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
     let _ = c.request(Command::KillSession { id: plain });
 
     // ---- no description: the title alone, as before -----------------------
+    // With the agent brief switched on for this spawn: the flag and the text
+    // ride the argv, verbatim, right after the tools the text names.
+    assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
     let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "bare title".into() });
     let bare = c.board().tickets.into_iter().find(|t| t.title == "bare title").unwrap().id;
     let bsid = match c.request(Command::SpawnSession {
@@ -142,6 +146,15 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
         Response::Spawned { id, .. } => id,
         other => panic!("bare spawn failed: {other:?}"),
     };
+    {
+        use mesimon_core::brief;
+        let rec = c.board().sessions.into_iter().find(|s| s.id == bsid).unwrap();
+        let at = rec.argv.iter().position(|a| a == brief::FLAG).expect("the brief's flag");
+        assert_eq!(rec.argv[at + 1], brief::TEXT, "the text is the argv value, verbatim");
+        let tools = rec.argv.iter().position(|a| a == "--mcp-config").expect("--mcp-config");
+        assert!(tools < at, "the brief follows the tools it names: {:?}", rec.argv);
+        assert!(!rec.argv.iter().any(|a| a == "--system-prompt"), "append, never replace");
+    }
     std::thread::sleep(Duration::from_millis(700));
     hook_send_with(
         &hook_sock,
@@ -157,4 +170,35 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
     assert!(!rec.ticket_read, "no description means nothing was read");
     hook_send_with(&hook_sock, &bsid.to_string(), "UserPromptSubmit", None, r#"{}"#);
     let _ = c.request(Command::KillSession { id: bsid });
+
+    // ---- the brief is inert beside no tools, and gone when switched off ----
+    assert!(matches!(c.request(Command::SetMcpTools { on: false }), Response::Ok));
+    let no_tools = match c.request(Command::SpawnSession {
+        ticket: bare,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let rec = c.board().sessions.into_iter().find(|s| s.id == no_tools).unwrap();
+    assert!(
+        !rec.argv.iter().any(|a| a == mesimon_core::brief::FLAG),
+        "no tools, no brief: the text names get_ticket. {:?}",
+        rec.argv
+    );
+    let _ = c.request(Command::KillSession { id: no_tools });
+    assert!(matches!(c.request(Command::SetMcpTools { on: true }), Response::Ok));
+    assert!(matches!(c.request(Command::SetSystemPrompt { on: false }), Response::Ok));
+    let off = match c.request(Command::SpawnSession {
+        ticket: bare,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let rec = c.board().sessions.into_iter().find(|s| s.id == off).unwrap();
+    assert!(!rec.argv.iter().any(|a| a == mesimon_core::brief::FLAG), "{:?}", rec.argv);
+    let _ = c.request(Command::KillSession { id: off });
 }

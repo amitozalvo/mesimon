@@ -20,15 +20,11 @@ dogfooded daily, and it will change under you. The current version and its histo
    permissions are also the only thing between another user on this machine and the agent tool
    socket, because there is deliberately no token.
 
-   Three more, each only when you ask for it:
+   Two more, each only when you ask for it:
 
    - **Remote-tracking refs and objects**, if you turn on periodic fetching
      (`MESIMON_GIT_FETCH=<minutes>`) or press *Fetch origin* in the Esc menu. That fetch never
      writes `FETCH_HEAD`, never runs `gc`, and never touches your branches.
-   - **`<repo>/CLAUDE.md`**, if you take the *Tell agents to read the ticket* offer. The
-     dialog shows the exact lines before anything is written; enter appends those lines and
-     nothing else. mesimon never edits or removes what is already in that file, and never
-     touches it again once the lines are there.
    - **mesimon's own binary**, and the `mesimon-tmux` beside it where one exists, if you take an
      update offer. The download is checked against its published checksum first and refused
      without one.
@@ -45,7 +41,14 @@ dogfooded daily, and it will change under you. The current version and its histo
    It does give the sessions it spawns scoped board tools — read and move its ticket, read and
    write its notes, tag it from the tags you already made, and file a new ticket — so an agent
    can see which ticket it is on and what it is about. `mesimon doctor --mcp` prints the current
-   tool registry verbatim, and it is the only thing mesimon adds to model input.
+   tool registry verbatim.
+
+   And there is one line you can choose to add. The *agent brief* is off until you turn it on:
+   a five-line sentence in the system prompt of the claude sessions mesimon starts in this repo
+   — only those, never a session you started yourself — telling the agent to read its ticket
+   before it starts work. The dialog that offers it shows the exact text first, `mesimon doctor`
+   prints it, and *Settings › Agent brief* turns it off again. Together with the tool registry
+   it is everything mesimon adds to model input.
 
 ## Requirements
 
@@ -182,7 +185,6 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 | `~/.local/state/mesimon/prefs.json` | Your theme picks, one for a dark terminal and one for a light one. One per machine, not per repo. |
 | `/tmp/mesimon-<uid>/<project key>/` | The daemon, hook and private-tmux sockets, the daemon lock, and the environment file panes are launched with. 0700, because that file holds your shell's environment. Gone on reboot. |
 | Worktrees and `msmn/*` branches | Only ones it created, only for tickets you set to worktree mode. |
-| `<repo>/CLAUDE.md` | Four lines, appended, only if you take the offer and only after the dialog has shown them to you. Nothing already in the file is touched. |
 | mesimon's own binary | Replaced in place, only if you take an update offer, only after its published checksum verifies. |
 
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting

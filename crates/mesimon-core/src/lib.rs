@@ -10,6 +10,7 @@ pub mod attention;
 pub mod authorize;
 pub mod automove;
 pub mod board;
+pub mod brief;
 pub mod claudemd;
 pub mod command;
 pub mod diff;

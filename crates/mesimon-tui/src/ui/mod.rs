@@ -5,9 +5,9 @@
 //! in the five sanctioned places.
 
 mod board;
+mod brief;
 mod card;
 mod chrome;
-mod claudemd;
 mod dialog;
 pub(crate) mod diff;
 mod editor;
@@ -151,8 +151,8 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);
     }
-    if matches!(app.mode, Mode::ClaudeMd) {
-        claudemd::draw(f, app);
+    if matches!(app.mode, Mode::Brief) {
+        brief::draw(f, app);
     }
     if let Mode::Settings { idx } = &app.mode {
         menu::draw_settings(f, app, *idx);

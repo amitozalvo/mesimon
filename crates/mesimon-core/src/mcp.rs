@@ -555,7 +555,8 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // Writes a file the user tracks in git, and stamps a board-wide
         // "never ask again". The dialog that shows the bytes is a person's;
         // this is not a road an agent gets a share of.
-        | Command::ClaudeMd { .. }
+        | Command::SetSystemPrompt { .. }
+        | Command::IgnoreBriefOffer
         | Command::MoveTicket { .. }
         | Command::SpawnSession { .. }
         | Command::KillSession { .. }

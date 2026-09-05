@@ -74,9 +74,15 @@ struct ColumnsFile {
     /// field existed means "on", not "the user turned the tools off".
     #[serde(default = "yes")]
     mcp_tools: bool,
-    /// The CLAUDE.md offer was answered "never" (`Board::claude_md_ignored`).
+    /// The agent-brief offer was answered "never" (`Board::claude_md_ignored`;
+    /// the key keeps T-217's name so nobody is re-asked).
     #[serde(default)]
     claude_md_ignored: bool,
+    /// The agent brief is on (`Board::system_prompt`, T-224). Off by default
+    /// and a plain default with no schema bump: a build that drops it sends
+    /// LESS to the model, the safe direction — see the field on `Board`.
+    #[serde(default)]
+    system_prompt: bool,
     columns: Vec<Column>,
     /// The tag registry (v2). Another array of tables, so it may follow
     /// `columns` but must stay after every scalar.
@@ -347,6 +353,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
                                 claude_md_ignored: cf.claude_md_ignored,
+                                system_prompt: cf.system_prompt,
                                 ..Default::default()
                             };
                             return (b, false, false);
@@ -521,6 +528,18 @@ pub fn read_mcp_tools(paths: &Paths) -> bool {
     toml::from_str::<ColumnsFile>(&text).map(|cf| cf.mcp_tools).unwrap_or(true)
 }
 
+/// `Board::system_prompt` off the file, for `doctor`, on `read_mcp_tools`'s
+/// terms — except that anything unreadable answers `false`, the shipped
+/// default, for the inverse reason: reporting a system-prompt line ON for a
+/// repo that never asked for one would be the worse mistake.
+pub fn read_system_prompt(paths: &Paths) -> bool {
+    let path = paths.board_dir.join("board/columns.toml");
+    let Ok(text) = std::fs::read_to_string(&path) else {
+        return false;
+    };
+    toml::from_str::<ColumnsFile>(&text).map(|cf| cf.system_prompt).unwrap_or(false)
+}
+
 pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
     let cf = ColumnsFile {
         schema_version: COLUMNS_SCHEMA,
@@ -528,6 +547,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
+        system_prompt: board.system_prompt,
         columns: board.columns.clone(),
         tags: board.tags.clone(),
     };
@@ -1255,6 +1275,7 @@ order = "a0"
         let l = load(&paths).unwrap();
         assert!(l.board.mcp_tools, "an absent switch is not a switch turned off");
         assert!(!l.board.claude_md_ignored);
+        assert!(!l.board.system_prompt, "and an absent brief is a brief nobody turned on");
         assert!(!l.columns_write_barred, "a v2 file is still ours to write");
         cleanup(&dir, &paths);
     }
@@ -1267,6 +1288,7 @@ order = "a0"
         assert!(Board::default().mcp_tools);
         assert!(Board::with_default_columns().mcp_tools);
         assert!(!Board::default().claude_md_ignored);
+        assert!(!Board::default().system_prompt, "the brief is opt-in");
     }
 
     /// The stamp survives the round trip, so "never ask again" is never asked
@@ -1277,10 +1299,12 @@ order = "a0"
         let mut l = load(&paths).unwrap();
         l.board.mcp_tools = false;
         l.board.claude_md_ignored = true;
+        l.board.system_prompt = true;
         save_columns(&paths, &l.board).unwrap();
         let back = load(&paths).unwrap();
         assert!(!back.board.mcp_tools);
         assert!(back.board.claude_md_ignored);
+        assert!(back.board.system_prompt, "the brief's consent survives a restart");
         cleanup(&dir, &paths);
     }
 
@@ -1306,6 +1330,7 @@ order = "a0"
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
+            system_prompt: true,
             columns: vec![Column { name: "TODO".into(), order: "a0".into() }],
             tags: vec![
                 mesimon_core::board::Tag { name: "BUG".into(), group: 1, color: None },
@@ -1326,7 +1351,12 @@ order = "a0"
         // and round-tripped rather than dropped.
         assert!(!back.mcp_tools);
         assert!(back.claude_md_ignored);
+        assert!(back.system_prompt);
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
+        assert!(
+            text.find("system_prompt").expect("system_prompt on disk")
+                < text.find("[[columns]]").unwrap()
+        );
         let table = text.find("[[columns]]").expect("the columns table");
         assert!(scalars < table, "a scalar after a table is a TOML error:\n{text}");
         // The stamp is what stops an older build silently dropping the

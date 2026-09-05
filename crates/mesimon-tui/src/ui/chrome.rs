@@ -362,7 +362,7 @@ fn dialog_open(app: &App) -> bool {
                 | Mode::Theme { .. }
                 | Mode::Archived { .. }
                 | Mode::External { .. }
-                | Mode::ClaudeMd
+                | Mode::Brief
         )
         || (matches!(app.screen, Screen::Board)
             && matches!(&app.mode, Mode::Editor(ed) if ed.composing()))
