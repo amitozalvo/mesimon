@@ -209,6 +209,11 @@ impl TmuxBackend {
                 c.env(k, v);
             }
         }
+        // Unit tests own this socket directory. Do not read personal shell
+        // startup files; integration tests get the same isolation from their
+        // daemon subprocess environment. Production behavior is unchanged.
+        #[cfg(test)]
+        c.env("HOME", self.sock.parent().expect("test socket directory")).env("SHELL", "/bin/sh");
         if let Some(path) = &self.path {
             c.env("PATH", path);
         }
@@ -431,13 +436,17 @@ impl TmuxBackend {
 }
 
 #[cfg(test)]
+#[path = "../../../ci/test_support.rs"]
+mod test_support;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
-    fn shortdir() -> PathBuf {
-        let d = PathBuf::from(format!("/tmp/msmn-test-{}", std::process::id()));
-        std::fs::create_dir_all(&d).unwrap();
-        d
+    fn fixture(name: &str, sock: &str) -> test_support::Fixture {
+        let f = test_support::Fixture::new(name, &tmux_bin().to_string_lossy());
+        f.register(&f.dir, None, None, &f.dir.join(sock));
+        f
     }
 
     /// The separator is printable, because every tmux before 3.6 rewrites a
@@ -473,7 +482,8 @@ mod tests {
             eprintln!("tmux not installed; skipping");
             return;
         }
-        let dir = shortdir();
+        let f = fixture("backend-roundtrip", "t.sock");
+        let dir = f.dir.clone();
         let be = TmuxBackend::new(dir.join("t.sock"), &dir, None).unwrap();
         be.spawn("abc123", &PathBuf::from("/tmp"), &["sleep".into(), "60".into()]).unwrap();
         let snap = be.snapshot().unwrap();
@@ -487,7 +497,6 @@ mod tests {
         assert!(d.pane_dead);
         assert_eq!(d.dead_status, Some(7));
         be.kill_server().unwrap();
-        std::fs::remove_dir_all(dir).ok();
     }
 
     /// The measured tmux behaviour `set_path` rests on, pinned so a future
@@ -501,15 +510,14 @@ mod tests {
             eprintln!("tmux not installed; skipping");
             return;
         }
-        let dir = PathBuf::from(format!("/tmp/msmn-path-{}", std::process::id()));
-        std::fs::create_dir_all(&dir).unwrap();
+        let f = fixture("backend-env", "t.sock");
+        let dir = f.dir.clone();
         let mut be = TmuxBackend::new(dir.join("t.sock"), &dir, None).unwrap();
         be.set_path(Some("/CLIENT-SENTINEL/bin:/usr/bin:/bin".into()));
         be.spawn("envpr1", &PathBuf::from("/tmp"), &["/usr/bin/env".into()]).unwrap();
         std::thread::sleep(std::time::Duration::from_millis(400));
         let pane = be.capture_tail("envpr1", 200).unwrap().join("\n");
         be.kill_server().unwrap();
-        std::fs::remove_dir_all(&dir).ok();
 
         assert!(
             pane.contains("/CLIENT-SENTINEL/bin"),
@@ -519,7 +527,9 @@ mod tests {
 
     #[test]
     fn an_empty_path_override_is_refused_rather_than_breaking_every_lookup() {
-        let dir = shortdir();
+        // No tmux is started here, so no supervisor: a private dir is enough.
+        let dir = std::env::temp_dir().join(format!("msmn-path-refusal-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
         let mut be = TmuxBackend::new(dir.join("t2.sock"), &dir, None).unwrap();
         be.set_path(Some("   ".into()));
         assert!(be.path.is_none());
@@ -527,6 +537,6 @@ mod tests {
         assert_eq!(be.path.as_deref(), Some("/a/bin"));
         be.set_path(None);
         assert!(be.path.is_none());
-        std::fs::remove_dir_all(dir).ok();
+        std::fs::remove_dir_all(&dir).ok();
     }
 }

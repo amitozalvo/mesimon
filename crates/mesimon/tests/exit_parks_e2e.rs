@@ -25,19 +25,16 @@ fn leaving_claude_parks_the_session() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-exitpark-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("exitpark");
+    let dir = fixture.dir.clone();
     let repo = dir.join("repo");
     let projects = dir.join("claude-home").join("projects").join("msmn");
     std::fs::create_dir_all(&repo).unwrap();
     std::fs::create_dir_all(&projects).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
-    let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
-    let tmux_sock = paths.tmux_sock();
 
     // The user's own exit, as tmux sees it: the process leaves with status 0
     // and `pane-died` is the frame that reaches the daemon. Nothing here
@@ -47,14 +44,12 @@ fn leaving_claude_parks_the_session() {
     std::fs::write(&stub, "#!/bin/sh\nsleep 1\nexit 0\n").unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
-    std::env::set_var("MESIMON_CLAUDE_HOME", dir.join("claude-home"));
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_CLAUDE_HOME", dir.join("claude-home"));
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -151,8 +146,4 @@ fn leaving_claude_parks_the_session() {
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    kill_tmux(&tmux_sock);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }

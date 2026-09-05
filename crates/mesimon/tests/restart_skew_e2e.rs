@@ -16,13 +16,11 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::{Path, PathBuf};
-use std::process::{Child, Command};
+use std::path::Path;
 use std::time::{Duration, Instant};
 
 use mesimon_core::command::{Command as Cmd, Envelope, Response, PROTOCOL_VERSION};
 use mesimon_core::Principal;
-use mesimon_daemon::Paths;
 
 mod common;
 
@@ -56,57 +54,57 @@ fn wait_for(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
     done()
 }
 
-fn spawn_daemon_claiming(bin: &str, dir: &Path, build: &str) -> Child {
-    Command::new(bin)
-        .args(["daemon", "--repo"])
-        .arg(dir)
-        // Set on the CHILD only — the test process must not inherit it, or a
-        // replacement daemon would claim the same build and never converge.
-        .env("MESIMON_FAKE_BUILD", build)
-        // Only a daemon mesimon started for itself is ever restarted.
-        .env("MESIMON_DETACHED", "1")
-        .spawn()
-        .expect("spawn daemon")
+fn spawn_daemon_claiming(fixture: &common::TestFixture, dir: &Path, build: &str) -> common::support::TestProcess {
+    fixture.set_env("MESIMON_FAKE_BUILD", build);
+    fixture.set_env("MESIMON_DETACHED", "1");
+    let child = fixture.daemon(dir);
+    fixture.remove_env("MESIMON_FAKE_BUILD");
+    child
 }
 
 /// Stop whatever is listening and take the scratch tree down.
-fn teardown(sock: &Path, dir: &Path, state_dir: &Path) {
+fn teardown(sock: &Path) {
     if let Ok(mut s) = UnixStream::connect(sock) {
         let env = Envelope { principal: Principal::Local, command: Cmd::Shutdown };
         let _ = writeln!(s, "{}", serde_json::to_string(&env).unwrap());
     }
     wait_for(Duration::from_secs(5), || !sock.exists());
-    let _ = std::fs::remove_dir_all(dir);
-    let _ = std::fs::remove_dir_all(state_dir);
 }
 
-/// The client respawns with its own `current_exe()`, which in a test is the
-/// test binary — point it at the real one.
-fn point_respawn_at(bin: &str) {
-    // SAFETY: set before any daemon thread exists in this process, and both
-    // tests set the identical value.
-    unsafe { std::env::set_var("MESIMON_DAEMON_BIN", bin) };
+/// Exercise the real TUI client in a supervised process, so its replacement
+/// daemon inherits the fixture's fake shell/agent settings, not the user's rc.
+fn connect_client(fixture: &common::TestFixture, dir: &Path) {
+    fixture.set_env("MESIMON_DAEMON_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_TEST_REPO", dir);
+    fixture.spawn(vec![std::env::current_exe().unwrap().to_str().unwrap().into(),
+        "--exact".into(), "client_connect_fixture_helper".into(), "--ignored".into()])
+        .join().expect("isolated TUI client");
+}
+
+#[test]
+#[ignore = "subprocess helper; exercised by both restart-skew tests"]
+fn client_connect_fixture_helper() {
+    let dir = std::env::var("MESIMON_TEST_REPO").expect("fixture-only helper");
+    let _client = mesimon_tui::client::Client::connect(std::path::Path::new(&dir)).expect("connect");
 }
 
 #[test]
 fn newer_client_restarts_a_stale_daemon() {
-    let bin = env!("CARGO_BIN_EXE_mesimon");
-    let dir = PathBuf::from(format!("/tmp/msmn-e2e-skew-{}", std::process::id()));
+    let fixture = common::TestFixture::new("skew");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
-    let paths = Paths::for_repo(&dir).unwrap();
+    let paths = fixture.paths(&dir);
     let sock = paths.orch_sock();
     let _ = std::fs::remove_file(&sock);
 
-    let mut old = spawn_daemon_claiming(bin, &dir, "0.0.1");
+    let old = spawn_daemon_claiming(&fixture, &dir, "0.0.1");
     assert!(wait_for(Duration::from_secs(10), || sock.exists()), "daemon socket never appeared");
 
     let (old_pid, old_build) = hello(&sock).expect("hello from the stale daemon");
     assert_eq!(old_build, "0.0.1", "the stale daemon should report its fake build");
 
-    point_respawn_at(bin);
-
     // The whole point: constructing the client is what restarts the daemon.
-    let _client = mesimon_tui::client::Client::connect(&dir).expect("connect");
+    connect_client(&fixture, &dir);
 
     let (new_pid, new_build) = hello(&sock).expect("hello from the replacement daemon");
     assert_ne!(new_pid, old_pid, "a different process must be serving now");
@@ -123,7 +121,7 @@ fn newer_client_restarts_a_stale_daemon() {
         "the stale daemon did not exit"
     );
 
-    teardown(&sock, &dir, &paths.state_dir);
+    teardown(&sock);
 }
 
 /// The rule that stops a restart war: two TUIs of different builds on one repo
@@ -131,26 +129,25 @@ fn newer_client_restarts_a_stale_daemon() {
 /// forever. Only a strictly newer client acts.
 #[test]
 fn older_client_leaves_a_newer_daemon_alone() {
-    let bin = env!("CARGO_BIN_EXE_mesimon");
-    let dir = PathBuf::from(format!("/tmp/msmn-e2e-skew-new-{}", std::process::id()));
+    let fixture = common::TestFixture::new("skew-new");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
-    let paths = Paths::for_repo(&dir).unwrap();
+    let paths = fixture.paths(&dir);
     let sock = paths.orch_sock();
     let _ = std::fs::remove_file(&sock);
-    point_respawn_at(bin);
 
-    let mut newer = spawn_daemon_claiming(bin, &dir, "99.0.0");
+    let newer = spawn_daemon_claiming(&fixture, &dir, "99.0.0");
     assert!(wait_for(Duration::from_secs(10), || sock.exists()), "daemon socket never appeared");
     let (pid_before, build) = hello(&sock).expect("hello from the newer daemon");
     assert_eq!(build, "99.0.0");
 
-    let _client = mesimon_tui::client::Client::connect(&dir).expect("connect");
+    connect_client(&fixture, &dir);
 
     let (pid_after, build_after) = hello(&sock).expect("hello after connect");
     assert_eq!(pid_after, pid_before, "an older client must not restart a newer daemon");
     assert_eq!(build_after, "99.0.0", "the newer daemon must still be the one serving");
     assert!(newer.try_wait().ok().flatten().is_none(), "it must still be running");
 
-    teardown(&sock, &dir, &paths.state_dir);
+    teardown(&sock);
     let _ = newer.wait();
 }

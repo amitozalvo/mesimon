@@ -31,9 +31,11 @@ docker info >/dev/null 2>&1 || die "the docker daemon is not running" "open -a D
 # different-rustc build. The official image carries every patch version.
 rust_version=$(rustc -V | awk '{print $2}')
 image="rust:${rust_version}-bookworm"
+test_git_common=$(git rev-parse --path-format=absolute --git-common-dir)
 
-exec docker run --rm --platform linux/arm64 \
+exec docker run --rm --init --cpus 2 --memory 4g --platform linux/arm64 \
   -v "$PWD:/work:ro" \
+  -v "$test_git_common:$test_git_common:ro" \
   -v msmn-linux-registry:/usr/local/cargo/registry \
   -v msmn-linux-target:/target \
   -w /work \
@@ -42,14 +44,15 @@ exec docker run --rm --platform linux/arm64 \
   -e MESIMON_REQUIRE_TMUX=1 \
   -e MESIMON_CI=1 \
   -e SHELL=/bin/bash \
-  "$image" bash -c '
+  "$image" timeout --signal=TERM --kill-after=10s 900s bash -c '
     set -euo pipefail
     apt-get update -qq >/dev/null
-    apt-get install -y -qq tmux git procps >/dev/null
+    apt-get install -y -qq tmux git procps python3 >/dev/null
     # The worktree e2e commits; a container has no identity.
     git config --global user.email "ci@mesimon.invalid"
     git config --global user.name "mesimon ci"
+    git config --global --add safe.directory /work
     . /etc/os-release
     echo "$PRETTY_NAME, $(tmux -V), $(rustc -V)"
-    cargo test --workspace --locked "$@"
+    python3 -B ci/test-run.py -- cargo test --workspace --locked "$@"
   ' -- "$@"

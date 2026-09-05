@@ -5620,3 +5620,54 @@ the `sleep_eligible` refusal, the record field (an old `sessions.json` carrying 
 still loads — serde ignores what it does not know — and the next save drops it) and the rail's
 `pinned` badge. Nothing else read the flag. That is also what freed `P` for the peek without
 putting two verbs on one key across the screens.
+## Test resource ownership before a second runtime provider (2026-09-05)
+
+End-only cleanup and the in-process Harness were not sufficient: startup panic
+could precede construction of its guard; teardown could block forever joining a
+daemon thread; and a killed test process could leave detached tmux alive. The
+process-owning integration fixtures now register unique paths with a separate,
+deadline-bound Python supervisor before launch. Daemons are supervised subprocesses,
+fixture configuration is child-scoped, default agent executables are fake, and
+shell homes are private too: `/bin/sh -l` must not read a developer's `.profile`.
+The headless M1 wire test moved from the TUI crate to the binary's integrations so
+it can use the real daemon executable and the same harness. It tests no TUI code.
+
+The supervisor observes control-pipe loss, reaps owned children and tmux descendants,
+checks process identity and registered directory identity, and preserves a manifest
+on uncertain cleanup. Ordinary teardown also checks its exit status. Python 3 is
+a development/test dependency only; no Python code enters the shipped application.
+`ci/test-run.py` adds whole-command supervision, two-worker defaults, an overlap
+lock, required-tmux semantics, and an exact-fixture audit. CI/release test callers
+use it; the old CI glob of every Mesimon tmux socket was removed. If both owner and
+runner are forcibly killed, automatic cleanup is not promised: inspect the retained
+registry rather than signalling recycled PIDs or deleting changed paths.
+
+The restart-skew tests invoke their real TUI client in a child-only helper so the
+replacement daemon also inherits fixture settings, not personal shell rc files.
+That helper is ignored in ordinary discovery but explicitly executed by both
+restart tests. The existing live-release-network test remains opt-in.
+
+No runtime provider or production state format changed in this checkpoint.
+
+Linux validation also exposed a snooze e2e timing assumption: the test equated
+the scheduled deadline with the actual wake timestamp. The daemon deliberately
+stamps the tick that performs the wake. The test now bounds that timestamp between
+deadline and observation and requires it to match `woke_at`; it still checks the
+order, attention, persisted state, and deadline refusal. No snooze behavior changed.
+The Docker check mounts a worktree's common Git metadata read-only at its original
+path and caps the container at two CPUs, 4 GB RAM, and a 15-minute lifetime.
+
+Review before the merge (T-235, the same day) changed four things. The concurrency caps
+came off the default path: `.config/nextest.toml` keeps the slow and leak timeouts but no
+`test-threads`, and `ci/test-run.py` caps build jobs and test threads only under `--jobs N`
+— the two-worker default had turned the ~30 s parallel suite into 92 s and would have
+throttled the release gate's build with it. `TestFixture::new` panics on a daemon seam found
+in the test process (`common::DAEMON_SEAMS`), because the child's env is built from `set_env`
+and a `std::env::set_var`, the recipe until now, was dropped silently — a test on default
+timings passing for the wrong reason. A failing test echoes its children's `child-N.log`
+into the captured output before the supervisor removes the root, so the daemon's stderr is
+not lost with the fixture the way the in-process daemon's never was. And a clean audit
+removes its `/tmp/msmn-test-run-*` registry instead of leaving one per run; a failed one
+keeps it. The tester-facing TESTING.md carries none of this — it is CLAUDE.md's and
+AGENTS.md's. The rebase onto main proved the guard the same hour: T-227's second merge-train
+test had arrived with two `set_var`s before `Harness::boot` and now rides `boot_with_env`.

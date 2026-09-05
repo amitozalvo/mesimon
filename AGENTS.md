@@ -74,6 +74,16 @@ their text descriptive, bounded, and non-instructional.
 
 ## Build and verification
 
+Process-owning tests (the e2es and the tmux backend's) need Python 3 and tmux: each runs
+its daemon as a subprocess under `ci/test_guard.py`, which reaps it, its private tmux server
+and its dirs even when the test panics or is killed. `python3 -B ci/test-run.py [-- cargo test
+...]` is the bounded entry point (20-minute deadline, overlap lock, fixture audit; `--jobs N`
+caps concurrency, unbounded by default). Seams reach the daemon only through
+`Harness::boot_with_env` / `TestFixture::set_env`, never `std::env::set_var`. Report a
+timeout, a cleanup failure or a skipped test as what it is, never as a pass. Never sweep every
+Mesimon socket or kill by a broad process-name match: this agent may be inside the user's
+live board. Inspect the retained run registry if cleanup fails.
+
 Use the smallest relevant check while iterating, then the repository gates appropriate to the
 change:
 

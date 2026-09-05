@@ -20,23 +20,19 @@ use common::*;
 
 #[test]
 fn tags_round_trip_through_the_daemon_and_the_disk() {
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-tags-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("tags");
+    let dir = fixture.dir.clone();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
-    let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
 
     // This test builds the vocabulary from nothing; the starter tags a fresh
     // board is offered would sit in group 1 ahead of every name it registers.
-    std::env::set_var("MESIMON_NO_TAG_SEED", "1");
+    fixture.set_env("MESIMON_NO_TAG_SEED", "1");
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -188,11 +184,9 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     let _ = daemon.join();
     // This test builds the vocabulary from nothing; the starter tags a fresh
     // board is offered would sit in group 1 ahead of every name it registers.
-    std::env::set_var("MESIMON_NO_TAG_SEED", "1");
+    fixture.set_env("MESIMON_NO_TAG_SEED", "1");
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never reappeared");
@@ -279,7 +273,4 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    for d in [&dir, &state_dir, &rt_dir] {
-        sweep(d);
-    }
 }

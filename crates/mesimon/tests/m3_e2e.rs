@@ -48,17 +48,16 @@ fn m3_adoption_and_sleep() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-m3-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("m3");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
     let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
     let tmux_sock = paths.tmux_sock();
     let repo_canon = paths.repo_root.display().to_string();
 
@@ -89,18 +88,16 @@ fn m3_adoption_and_sleep() {
     .unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
-    std::env::set_var("MESIMON_CLAUDE_HOME", &claude_home);
-    std::env::set_var("MESIMON_SLEEP_MIN_AGE_MS", "0");
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_CLAUDE_HOME", &claude_home);
+    fixture.set_env("MESIMON_SLEEP_MIN_AGE_MS", "0");
     // 1 s guard cadence so the sleeping-survives-server-death regression below
     // fits in test time (real cadence 15 s).
-    std::env::set_var("MESIMON_SERVER_GUARD_TICKS", "4");
+    fixture.set_env("MESIMON_SERVER_GUARD_TICKS", "4");
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -159,9 +156,7 @@ fn m3_adoption_and_sleep() {
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
     let daemon_repo2 = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo2);
-    });
+    let daemon = fixture.daemon(&daemon_repo2);
     let deadline = Instant::now() + Duration::from_secs(5);
     loop {
         if sock.exists() {
@@ -420,8 +415,4 @@ fn m3_adoption_and_sleep() {
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 
-    kill_tmux(&tmux_sock);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }

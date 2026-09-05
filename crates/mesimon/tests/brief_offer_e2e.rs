@@ -29,24 +29,20 @@ fn status(resp: Response) -> mesimon_core::command::ClaudeMdStatus {
 
 #[test]
 fn the_brief_offer_switches_persist_and_survive_a_restart() {
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-brief-offer-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("brief-offer");
+    let dir = fixture.dir.clone();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
-    let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
     let cols = repo.join(".mesimon/board/columns.toml");
     // The daemon canonicalizes (`/tmp` is `/private/tmp` here), and the path
     // the snapshot reports is the canonical one.
     let md = paths.repo_root.join("CLAUDE.md");
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -113,9 +109,7 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
 
     // ---- and all three survive the restart ---------------------------------
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never came back");
@@ -136,9 +130,6 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    for d in [&dir, &state_dir, &rt_dir] {
-        sweep(d);
-    }
 }
 
 /// An agent may not reach any of the three — the tier is a compile-time

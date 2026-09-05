@@ -120,9 +120,13 @@ fn pending_of(c: &mut TestClient, ticket: ulid::Ulid) -> Vec<Pending> {
 #[test]
 fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
-    std::env::set_var("MESIMON_WT_REFRESH_TICKS", "4");
-    std::env::set_var("MESIMON_PANE_QUIET_MS", "600000");
-    let Some(h) = Harness::boot("train-manual", Some(STUB)) else { return };
+    let Some(h) = Harness::boot_with_env(
+        "train-manual",
+        Some(STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
     let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
     let repo = h.repo.clone();
     init_repo(&repo);
@@ -178,9 +182,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     // The flags (and the train) on a 1 s cadence; the quiet probe kept out.
-    std::env::set_var("MESIMON_WT_REFRESH_TICKS", "4");
-    std::env::set_var("MESIMON_PANE_QUIET_MS", "600000");
-    let Some(h) = Harness::boot("train", Some(STUB)) else { return };
+    let Some(h) = Harness::boot_with_env("train", Some(STUB), &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")]) else { return };
     let got = h.dir.join("got.txt");
     let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();

@@ -394,6 +394,7 @@ dependencies = [
  "anyhow",
  "libc",
  "mesimon-core",
+ "serde_json",
 ]
 
 [[package]]

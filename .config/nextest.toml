@@ -1,0 +1,8 @@
+# The second safety layer under the fixture supervisors (ci/test_guard.py): a
+# test that wedges is killed after four slow intervals, and a child still
+# holding the pipes after the test returned is reported as a LEAK. No thread
+# cap here — `cargo nextest run --workspace` stays the ~30 s parallel suite;
+# `ci/test-run.py --jobs N` is where a bounded run asks for one.
+[profile.default]
+slow-timeout = { period = "30s", terminate-after = 4 }
+leak-timeout = "2s"

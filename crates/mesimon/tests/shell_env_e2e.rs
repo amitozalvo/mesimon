@@ -66,8 +66,8 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-shellenv-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("shellenv");
+    let dir = fixture.dir.clone();
     let repo = dir.join("repo");
     let bin = dir.join("bin");
     std::fs::create_dir_all(&repo).unwrap();
@@ -86,12 +86,6 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
     std::os::unix::fs::PermissionsExt::set_mode(&mut perm, 0o755);
     std::fs::set_permissions(&claude, perm).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
-    let sock = paths.orch_sock();
-    let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
-    let tmux_sock = paths.tmux_sock();
-
     // A real rc file for the staleness clock to watch. Its CONTENTS are
     // irrelevant — the fake shell is standing in for what an rc does — but its
     // mtime is what `shell_env_stale` compares against, so it has to exist.
@@ -99,15 +93,16 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(home.join(".zshrc"), "# start\n").unwrap();
 
-    std::env::set_var("HOME", &home);
-    std::env::set_var("SHELL", &fake_shell);
-    std::env::set_var("MESIMON_CLAUDE_BIN", &claude);
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("HOME", &home);
+    fixture.set_env("SHELL", &fake_shell);
+    fixture.set_env("MESIMON_CLAUDE_BIN", &claude);
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    let paths = fixture.paths(&repo);
+    let sock = paths.orch_sock();
+    let tmux_sock = paths.tmux_sock();
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -216,8 +211,4 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
     let _ = c.request(Command::KillSession { id: sid });
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    kill_tmux(&tmux_sock);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }

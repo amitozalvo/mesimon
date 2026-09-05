@@ -33,26 +33,28 @@ fn m2_attention_headless() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-hook-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("hook");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
     let repo = dir.clone();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
     let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
     let tmux_sock = paths.tmux_sock();
 
     // The in-process daemon's current_exe() is the TEST binary, which has no
     // `hook` subcommand — point the pane-died notify at the real one.
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    // Child configuration must be complete before launch, not changed mid-test.
+    let stub = dir.join("claude-stub.sh");
+    std::fs::write(&stub, "#!/bin/sh\nexec sleep 120\n").unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -242,10 +244,6 @@ fn m2_attention_headless() {
 
     // Claude spawn: enters Spawning with a generated 0600 settings file.
     // The stub ignores its args and stays alive so reconcile sees a live pane.
-    let stub = dir.join("claude-stub.sh");
-    std::fs::write(&stub, "#!/bin/sh\nsleep 60\n").unwrap();
-    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
-    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
     let claude_sid = match c.request(Command::SpawnSession {
         ticket,
         kind: SessionKind::Claude,
@@ -478,8 +476,4 @@ fn m2_attention_headless() {
         "feed must carry automoves"
     );
 
-    kill_tmux(&tmux_sock);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }

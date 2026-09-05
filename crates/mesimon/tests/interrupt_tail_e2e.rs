@@ -27,18 +27,15 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-intrtail-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("intrtail");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
-    let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
-    let tmux_sock = paths.tmux_sock();
 
     // Post-interrupt Claude Code: the pane paints forever. Quiet never trips.
     let stub = dir.join("claude-stub.sh");
@@ -49,19 +46,17 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
     .unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
     // Prove the demote comes from the transcript, not byte silence: park the
     // pane-quiet threshold far beyond the test's horizon.
-    std::env::set_var("MESIMON_PANE_QUIET_MS", "600000");
+    fixture.set_env("MESIMON_PANE_QUIET_MS", "600000");
 
     let transcript = dir.join("transcript.jsonl");
     std::fs::write(&transcript, "").unwrap();
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -142,8 +137,4 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
-    kill_tmux(&tmux_sock);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }

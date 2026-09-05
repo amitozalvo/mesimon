@@ -120,7 +120,7 @@ step "tests (driven by the bundled tmux)"
 # Test what actually ships. The suite used to run against whatever tmux the
 # author had on PATH, which is precisely the variable bundling exists to
 # remove — so the bundled binary is the one that has to pass.
-MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 cargo test --workspace
+MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py -- cargo test --workspace
 
 step "tests on Linux (Docker, the distro's own tmux)"
 # The same suite on the platform the Linux artifacts are for, driven by the

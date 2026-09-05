@@ -12,6 +12,9 @@ mesimon-core.workspace = true
 anyhow.workspace = true
 libc = "0.2.189"
 
+[dev-dependencies]
+serde_json.workspace = true
+
 [lints]
 workspace = true
 

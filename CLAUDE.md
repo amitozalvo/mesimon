@@ -118,9 +118,22 @@ unreadable or newer-schema means ignored and rewritten, the inverse of the four 
 `Ctx::release_tag` is Ctx's first `String` (a version is not a word from a fixed set), which is
 why `..ctx` now needs a clone. (STALE-MAP "A released board asks whether a newer one exists".)
 
-E2e tests use per-test dirs `/tmp/msmn-e2e-*`; a test that panics before its cleanup leaks a
-private tmux server (plus an idle zsh). `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server`
-cleans one up.
+E2e tests each own a `/tmp/msmn-e2e-<name>-*` dir and run their daemon as a SUBPROCESS under a
+Python supervisor (`ci/test_guard.py`, spoken to from Rust by `ci/test_support.rs`; Python 3 is a
+test dependency only, nothing shipped uses it) that outlives a panicking or killed test and reaps
+the daemon, its private tmux server and the registered dirs — so nothing is left to sweep by hand.
+If one ever is, `tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server` still cleans it and its
+`owner.json` says what it owned; never sweep every mesimon socket or `pkill` by name, since a
+dogfooding session's own board is among them. `python3 -B ci/test-run.py [-- cargo test ...]` is
+the bounded entry point CI and the release gate use: a 20-minute deadline, an overlap lock, and an
+audit that every fixture reported `cleaned` (a failed audit keeps its `/tmp/msmn-test-run-*`
+registry; a clean one removes it). `--jobs N` caps build jobs and test threads; unbounded by
+default, so the plain cargo commands above stay the inner loop at their usual speed. The daemon's
+env is built PER CHILD (`TestFixture::set_env` / `Harness::boot_with_env`) and every `MESIMON_*`
+in the test process is dropped on the way, so a seam set with `std::env::set_var` never reaches
+it — `TestFixture::new` panics on one (`common::DAEMON_SEAMS`). A failing test echoes its
+children's `child-N.log` into the captured output before the fixture is torn down. A timeout, a
+cleanup failure or a skipped test is reported as what it is, never as a pass.
 
 **You may be running INSIDE mesimon** (dogfooding: a session spawned by the very daemon this repo
 builds). Everything still applies, plus:
@@ -178,9 +191,11 @@ the ground's. The picker, the prefs file and the goldens need nothing: rows come
 **An e2e test** (`crates/mesimon/tests/<name>_e2e.rs`): `mod common; use common::*;`, then
 `let Some(h) = Harness::boot("name", Some(STUB)) else { return };` — the daemon, the private
 tmux, the seams and the teardown are the harness's; `h.client("name")` speaks the wire,
-`hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam is set
-BEFORE `boot` (the daemon reads them once). Each test owns a `/tmp/msmn-e2e-*` dir and its own
-tmux socket, which is what lets nextest run them in parallel. `prompt_e2e.rs` is the exemplar.
+`hook_send` runs the real hook binary, `wait_until` polls. Any other `MESIMON_*` seam rides
+`Harness::boot_with_env(name, stub, &[(key, value)])` — the daemon is a child process, so a
+`std::env::set_var` in the test would never reach it, and the fixture panics on one. Each test
+owns a `/tmp/msmn-e2e-*` dir and its own tmux socket, which is what lets nextest run them in
+parallel. `prompt_e2e.rs` is the exemplar.
 
 **Text from a user or an agent** crosses one of two functions in `core/src/text.rs` at the
 boundary it crosses — `scrub_cells` before it is drawn, `scrub_text` before it leaves for

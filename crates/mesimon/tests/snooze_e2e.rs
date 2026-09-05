@@ -78,7 +78,12 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     let board = c.board();
     let t = board.ticket(napper).unwrap();
     assert!(t.is_woke(), "asked to be lit");
-    assert_eq!(t.entered_at.as_deref().and_then(mesimon_core::board::stamp_secs), Some(until));
+    // The 1 s tick records the ACTUAL wake time, not the scheduled deadline.
+    // Scheduling/IPC may cross a second boundary, especially in a container.
+    let entered = t.entered_at.as_deref().and_then(mesimon_core::board::stamp_secs)
+        .expect("the wake restarted its age");
+    assert!((until..=now_secs()).contains(&entered), "wake {entered} must follow deadline {until}");
+    assert_eq!(t.entered_at, t.woke_at, "age and attention refer to the same wake");
     assert_eq!(
         board.column_tickets("TODO").iter().map(|t| t.id).collect::<Vec<_>>(),
         vec![napper, stays],

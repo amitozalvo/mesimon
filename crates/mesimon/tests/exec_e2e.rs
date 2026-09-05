@@ -4,7 +4,7 @@
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use std::path::PathBuf;
+mod common;
 use std::process::Command;
 
 fn launcher() -> Command {
@@ -16,8 +16,8 @@ fn launcher() -> Command {
 
 #[test]
 fn the_launcher_applies_the_file_then_the_sets_then_execs() {
-    let dir = PathBuf::from(format!("/tmp/msmn-e2e-exec-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("exec");
+    let dir = fixture.dir.clone();
     let bin = dir.join("bin");
     std::fs::create_dir_all(&bin).unwrap();
     let probe = bin.join("msmn-probe");
@@ -50,5 +50,4 @@ fn the_launcher_applies_the_file_then_the_sets_then_execs() {
     let out = launcher().args(["--env", &file.display().to_string()]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
 
-    let _ = std::fs::remove_dir_all(&dir);
 }

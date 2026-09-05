@@ -23,18 +23,16 @@ fn a_card_reorders_inside_its_own_column() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-reorder-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("reorder");
+    let dir = fixture.dir.clone();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -95,5 +93,4 @@ fn a_card_reorders_inside_its_own_column() {
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    let _ = std::fs::remove_dir_all(&dir);
 }

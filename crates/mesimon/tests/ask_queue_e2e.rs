@@ -33,9 +33,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     // The quiet probe must not free the checkout under the test, and the
     // sleep floor must not refuse the sleep case.
-    std::env::set_var("MESIMON_PANE_QUIET_MS", "600000");
-    std::env::set_var("MESIMON_SLEEP_MIN_AGE_MS", "0");
-    let Some(h) = Harness::boot("askq", Some(STUB)) else { return };
+    let Some(h) = Harness::boot_with_env("askq", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000"), ("MESIMON_SLEEP_MIN_AGE_MS", "0")]) else { return };
     let got = h.dir.join("got.txt");
     let tmux_sock = h.paths.tmux_sock();
     let hook_sock = h.paths.hook_sock();

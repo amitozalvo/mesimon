@@ -55,8 +55,8 @@ fn the_checkout_stands_on_the_wire() {
         eprintln!("git not installed; skipping");
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-git-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("git");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
     let origin = dir.join("origin.git");
     let repo = dir.join("repo");
@@ -84,16 +84,13 @@ fn the_checkout_stands_on_the_wire() {
     git(&repo, &["push", "-q", "-u", "origin", "main"]);
     clone(&other);
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
-    let tmux_sock = paths.tmux_sock();
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-    std::env::set_var("MESIMON_CLAUDE_BIN", "/bin/true");
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", "/bin/true");
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -152,8 +149,4 @@ fn the_checkout_stands_on_the_wire() {
     // ---- cleanup ----------------------------------------------------------
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    let _ = Proc::new("tmux").args(["-S"]).arg(&tmux_sock).arg("kill-server").output();
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&paths.state_dir);
-    let _ = std::fs::remove_dir_all(&paths.rt_dir);
 }

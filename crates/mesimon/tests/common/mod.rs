@@ -1,5 +1,5 @@
 //! Shared e2e harness: the tmux precondition, the line-protocol client every
-//! test speaks to the in-process daemon with, and the `mesimon hook` sender.
+//! test speaks to a supervised daemon with, and the `mesimon hook` sender.
 //!
 //! Each e2e used to carry its own copy of the client (fifteen of them, byte
 //! identical structs, method sets that had drifted apart). A new e2e now
@@ -21,6 +21,95 @@ use std::path::PathBuf;
 use mesimon_core::board::{Board, SessionState};
 use mesimon_core::command::{Command, Envelope, Event, GraceItem, Resources, Response};
 use mesimon_core::Principal;
+
+#[path = "../../../../ci/test_support.rs"]
+pub mod support;
+
+/// The seams the daemon reads and an e2e sets. The child's environment is
+/// built by `set_env` / `Harness::boot_with_env`, and every `MESIMON_*` in the
+/// TEST PROCESS is dropped on the way — so `TestFixture::new` refuses to start
+/// while one of these is set there: a test that set it with
+/// `std::env::set_var` (the recipe until 2026-09-05) would otherwise run its
+/// daemon on default timings and pass, or fail, for the wrong reason.
+pub const DAEMON_SEAMS: &[&str] = &[
+    "MESIMON_ARCHIVE_SUGGEST_MS",
+    "MESIMON_CLAUDE_BIN",
+    "MESIMON_CLAUDE_HOME",
+    "MESIMON_DAEMON_BIN",
+    "MESIMON_DETACHED",
+    "MESIMON_FAKE_BUILD",
+    "MESIMON_HOOK_BIN",
+    "MESIMON_NO_TAG_SEED",
+    "MESIMON_PANE_QUIET_MS",
+    "MESIMON_PINGPONG_MS",
+    "MESIMON_SERVER_GUARD_TICKS",
+    "MESIMON_SLEEP_MIN_AGE_MS",
+    "MESIMON_WT_REFRESH_TICKS",
+];
+
+/// Test configuration is per child, never process-global. In particular a
+/// missing stub must not launch the developer's installed, authenticated agent.
+pub struct TestFixture {
+    pub dir: PathBuf,
+    owner: support::Fixture,
+    env: std::cell::RefCell<std::collections::BTreeMap<String, String>>,
+}
+
+impl TestFixture {
+    pub fn new(name: &str) -> Self {
+        let stray: Vec<&str> =
+            DAEMON_SEAMS.iter().copied().filter(|k| std::env::var_os(k).is_some()).collect();
+        assert!(
+            stray.is_empty(),
+            "{stray:?} is set in the test process, where the daemon (a child now) would never \
+             see it: pass it through Harness::boot_with_env or fixture.set_env instead"
+        );
+        let owner = support::Fixture::new(name, &mesimon_backend_tmux::tmux_bin().to_string_lossy());
+        let dir = owner.dir.clone();
+        let env = std::env::vars().filter(|(key, _)| {
+            !key.starts_with("MESIMON_")
+                || matches!(key.as_str(), "MESIMON_TMUX_BIN" | "MESIMON_CI" | "MESIMON_TEST_RUN")
+        }).collect();
+        let fixture = Self { dir, owner, env: std::cell::RefCell::new(env) };
+        let stub = fixture.dir.join("default-agent.sh");
+        std::fs::write(&stub, "#!/bin/sh\nexec sleep 120\n").unwrap();
+        std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        let shell_home = fixture.dir.join("home");
+        std::fs::create_dir(&shell_home).unwrap();
+        fixture.set_env("HOME", &shell_home);
+        fixture.set_env("SHELL", "/bin/sh");
+        fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+        fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
+        fixture.set_env("MESIMON_CLAUDE_HOME", fixture.dir.join("claude-home"));
+        fixture.set_env("CODEX_HOME", fixture.dir.join("codex-home"));
+        fixture
+    }
+
+    pub fn set_env(&self, key: &str, value: impl AsRef<std::ffi::OsStr>) {
+        self.env.borrow_mut().insert(key.into(), value.as_ref().to_str().expect("test env is UTF-8").into());
+    }
+
+    pub fn paths(&self, repo: &Path) -> mesimon_daemon::Paths {
+        let mut paths = mesimon_daemon::Paths::for_repo(repo).unwrap();
+        paths.state_dir = PathBuf::from(&self.env.borrow()["HOME"])
+            .join(".local/state/mesimon").join(&paths.proj16);
+        self.owner.register(repo, Some(&paths.state_dir), Some(&paths.rt_dir), &paths.tmux_sock());
+        paths
+    }
+
+    pub fn daemon(&self, repo: &Path) -> support::TestProcess {
+        self.spawn(vec![env!("CARGO_BIN_EXE_mesimon").into(), "daemon".into(),
+            "--repo".into(), repo.to_str().unwrap().into()])
+    }
+
+    pub fn spawn(&self, argv: Vec<String>) -> support::TestProcess {
+        self.owner.spawn(argv, self.env.borrow().clone())
+    }
+
+    pub fn remove_env(&self, key: &str) {
+        self.env.borrow_mut().remove(key);
+    }
+}
 
 /// True when the test may proceed.
 ///
@@ -238,111 +327,56 @@ pub fn kill_tmux(sock: &Path) {
     let _ = tmux(sock).arg("kill-server").output();
 }
 
-/// `remove_dir_all` that outlasts a pane still closing: under the parallel
-/// suite a plain remove raced the reaper and leaked the directory.
-pub fn sweep(dir: &Path) {
-    for _ in 0..20 {
-        if std::fs::remove_dir_all(dir).is_ok() || !dir.exists() {
-            return;
-        }
-        std::thread::sleep(Duration::from_millis(50));
-    }
-}
-
-/// One in-process daemon on a fresh repo, with the test seams set, torn
-/// down on drop (shutdown, tmux kill-server, sweep). A new e2e is
-/// `Harness::boot`, `client`, assertions.
+/// A subprocess daemon with an owner established before fallible startup.
 pub struct Harness {
-    /// `/tmp/msmn-e2e-<name>-<pid>`: the repo, the stub, anything the test writes.
     pub dir: PathBuf,
     pub repo: PathBuf,
     pub paths: mesimon_daemon::Paths,
-    /// The agent stub `MESIMON_CLAUDE_BIN` names, when one was given.
     pub stub: Option<PathBuf>,
-    daemon: Option<std::thread::JoinHandle<()>>,
-    /// Held for the harness's whole life, released after the teardown (the
-    /// last field drops last). The seams are process ENVIRONMENT variables
-    /// and `cargo test` runs a binary's tests as threads of one process, so
-    /// two harnesses booting at once raced on `MESIMON_CLAUDE_BIN`: one
-    /// daemon exec'd the stub the other test had just installed, or a path
-    /// its teardown had already swept (notes_e2e, 2026-09-03, ~40% of runs).
-    /// Nextest never sees it — one process per test — which is why the
-    /// release gate's `cargo test` found it and the inner loop did not.
-    _seams: std::sync::MutexGuard<'static, ()>,
+    fixture: TestFixture,
 }
 
-/// One harness at a time per test process; see `Harness::_seams`.
-static SEAMS: std::sync::Mutex<()> = std::sync::Mutex::new(());
-
 impl Harness {
-    /// `None` means tmux is missing and the test should return (a hard
-    /// failure under `MESIMON_REQUIRE_TMUX`). `stub` is the body of the agent
-    /// script; it lands at `<dir>/claude-stub.sh`, so a stub can keep files
-    /// beside itself with `$(dirname "$0")`. Any other `MESIMON_*` seam is
-    /// set by the test BEFORE booting — the daemon reads them once.
     pub fn boot(name: &str, stub: Option<&str>) -> Option<Self> {
-        if !require_tmux() {
-            return None;
-        }
-        // A sibling test that panicked while holding it poisons the lock;
-        // the seams it guards are still ours to set.
-        let seams = SEAMS.lock().unwrap_or_else(|e| e.into_inner());
-        let dir = PathBuf::from(format!("/tmp/msmn-e2e-{name}-{}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
+        Self::boot_with_env(name, stub, &[])
+    }
+
+    pub fn boot_with_env(name: &str, stub: Option<&str>, env: &[(&str, &str)]) -> Option<Self> {
+        if !require_tmux() { return None; }
+        let fixture = TestFixture::new(name);
+        let dir = fixture.dir.clone();
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
-        let _ = std::fs::remove_dir_all(&paths.state_dir);
-        let _ = std::fs::remove_dir_all(&paths.rt_dir);
-
-        std::env::set_var("SHELL", "/bin/sh");
-        std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-        std::env::set_var("MESIMON_CLAUDE_HOME", dir.join("claude-home"));
+        for (key, value) in env { fixture.set_env(key, value); }
         let stub = stub.map(|body| {
             let p = dir.join("claude-stub.sh");
             std::fs::write(&p, body).unwrap();
-            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755))
-                .unwrap();
-            std::env::set_var("MESIMON_CLAUDE_BIN", &p);
+            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            fixture.set_env("MESIMON_CLAUDE_BIN", &p);
             p
         });
-
-        let daemon_repo = repo.clone();
-        let daemon = std::thread::spawn(move || {
-            let _ = mesimon_daemon::run_foreground(&daemon_repo);
-        });
-        let sock = paths.orch_sock();
-        wait_until(Duration::from_secs(5), "the daemon socket", || sock.exists());
-        Some(Self { dir, repo, paths, stub, daemon: Some(daemon), _seams: seams })
+        let paths = fixture.paths(&repo);
+        let _daemon = fixture.daemon(&repo);
+        wait_until(Duration::from_secs(5), "the daemon socket", || paths.orch_sock().exists());
+        Some(Self { dir, repo, paths, stub, fixture })
     }
 
-    /// A connected client with the `Hello` done.
     pub fn client(&self, name: &str) -> TestClient {
         let mut c = TestClient::connect(&self.paths.orch_sock());
-        assert!(matches!(
-            c.request(Command::Hello { version: 1, client: name.into() }),
-            Response::Hello { .. }
-        ));
+        assert!(matches!(c.request(Command::Hello { version: 1, client: name.into() }), Response::Hello { .. }));
         c
     }
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        if let Some(mut c) =
-            TestClient::try_connect(&self.paths.orch_sock(), Duration::from_millis(300))
-        {
-            let _ = c.try_send(Principal::Local, Command::Shutdown);
+        if let Some(mut c) = TestClient::try_connect(&self.paths.orch_sock(), Duration::from_millis(100)) {
+            let _ = c.write.set_write_timeout(Some(Duration::from_millis(200)));
+            let env = Envelope { principal: Principal::Local, command: Command::Shutdown };
+            let _ = writeln!(c.write, "{}", serde_json::to_string(&env).unwrap());
         }
-        // A wedged daemon must fail the test, not hang it: no join under a panic.
-        if let Some(d) = self.daemon.take() {
-            if !std::thread::panicking() {
-                let _ = d.join();
-            }
-        }
-        kill_tmux(&self.paths.tmux_sock());
-        for d in [&self.dir, &self.paths.state_dir, &self.paths.rt_dir] {
-            sweep(d);
-        }
+        // The supervisor owns bounded termination and checked resource removal.
+        // It remains responsible if this process panics or is forcibly killed.
+        let _ = &self.fixture;
     }
 }

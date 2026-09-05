@@ -26,18 +26,15 @@ fn restart_recovers_state_from_the_transcript() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-restart-mid-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("restart-mid");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
-    let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
-    let tmux_sock = paths.tmux_sock();
 
     // Paints forever: the pane must read alive across the restart, and the
     // recovered Running must not trip the quiet probe during the assertions.
@@ -51,14 +48,12 @@ fn restart_recovers_state_from_the_transcript() {
     let transcript = dir.join("transcript.jsonl");
     std::fs::write(&transcript, "").unwrap();
 
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
 
     // --- Generation 1: spawn, reach Running via hooks, die mid-turn.
     let repo1 = repo.clone();
-    let daemon1 = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&repo1);
-    });
+    let daemon1 = fixture.daemon(&repo1);
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
         c.request(Command::Hello { version: 1, client: "restart".into() }),
@@ -96,9 +91,7 @@ fn restart_recovers_state_from_the_transcript() {
     // --- Generation 2: reconcile must be honest, then the tail must recover.
     let _ = std::fs::remove_file(&sock); // gen 1's socket file lingers
     let repo2 = repo.clone();
-    let daemon2 = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&repo2);
-    });
+    let daemon2 = fixture.daemon(&repo2);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "gen-2 socket never appeared");
@@ -143,10 +136,6 @@ fn restart_recovers_state_from_the_transcript() {
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon2.join().unwrap();
-    kill_tmux(&tmux_sock);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }
 
 /// The nudge-free case: the turn ENDED before the restart, so the transcript
@@ -158,19 +147,15 @@ fn restart_recovers_done_from_a_resting_transcript() {
     if !common::require_tmux() {
         return;
     }
-    let dir =
-        std::path::PathBuf::from(format!("/tmp/msmn-e2e-restart-rest-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("restart-rest");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
-    let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
-    let tmux_sock = paths.tmux_sock();
 
     let stub = dir.join("claude-stub.sh");
     std::fs::write(
@@ -189,15 +174,13 @@ fn restart_recovers_done_from_a_resting_transcript() {
     )
     .unwrap();
 
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
 
     // --- Generation 1: spawn, register the transcript, die while Running so
     // reconcile has no choice but Unknown.
     let repo1 = repo.clone();
-    let daemon1 = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&repo1);
-    });
+    let daemon1 = fixture.daemon(&repo1);
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
         c.request(Command::Hello { version: 1, client: "rest".into() }),
@@ -246,9 +229,7 @@ fn restart_recovers_done_from_a_resting_transcript() {
     // --- Generation 2: no hook will ever fire, the transcript never grows —
     // the backfill alone must land Idle{EndTurn} at Low.
     let repo2 = repo.clone();
-    let daemon2 = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&repo2);
-    });
+    let daemon2 = fixture.daemon(&repo2);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "gen-2 socket never appeared");
@@ -287,8 +268,4 @@ fn restart_recovers_done_from_a_resting_transcript() {
     let _ = c.request(Command::KillSession { id: sid });
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon2.join().unwrap();
-    kill_tmux(&tmux_sock);
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }

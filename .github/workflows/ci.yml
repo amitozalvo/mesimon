@@ -62,22 +62,13 @@ jobs:
       # a quiet day and its own commit, not a side effect of adding CI.
 
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: python3 -B ci/test-run.py -- cargo clippy --workspace --all-targets -- -D warnings
 
       - name: Duplicate dependency drift
         run: ./ci/check-dup-deps.sh
 
       - name: Test
-        run: cargo test --workspace
+        run: python3 -B ci/test-run.py -- cargo test --workspace
 
-      # Each e2e kills its private tmux server as its last statement, which is
-      # skipped when a test panics. Leaving servers behind would poison a
-      # self-hosted runner; on a fresh VM this is cheap insurance.
-      - name: Clean up leaked tmux servers
-        if: always()
-        run: |
-          for sock in /tmp/mesimon-*/*/tmux.sock; do
-            [ -S "$sock" ] || continue
-            echo "killing leaked server at $sock"
-            tmux -S "$sock" kill-server 2>/dev/null || true
-          done
+      - name: Test cleanup failure paths
+        run: python3 -B ci/test-run.py -- python3 -B -m unittest discover -s ci -p test_guard_test.py -v

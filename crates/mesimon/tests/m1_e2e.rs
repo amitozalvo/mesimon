@@ -1,4 +1,4 @@
-//! End-to-end: in-process daemon + real private tmux server + the wire protocol.
+//! End-to-end: supervised daemon + real private tmux server + the wire protocol.
 //! Covers the M1 acceptance except the interactive handover (manual check).
 
 // Integration-test crate: `allow-unwrap-in-tests` only reaches items marked
@@ -7,13 +7,12 @@
 
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
-use std::path::PathBuf;
 use std::time::Duration;
 
 use mesimon_core::board::SessionKind;
 use mesimon_core::command::{Command, Envelope, Response, PROTOCOL_VERSION};
 use mesimon_core::Principal;
-use mesimon_daemon::Paths;
+mod common;
 
 struct TestClient {
     write: UnixStream,
@@ -23,6 +22,8 @@ struct TestClient {
 impl TestClient {
     fn connect(sock: &std::path::Path) -> Self {
         let stream = UnixStream::connect(sock).expect("connect");
+        stream.set_read_timeout(Some(Duration::from_secs(5))).unwrap();
+        stream.set_write_timeout(Some(Duration::from_secs(5))).unwrap();
         let write = stream.try_clone().expect("clone");
         TestClient { write, read: BufReader::new(stream) }
     }
@@ -33,7 +34,7 @@ impl TestClient {
         let mut line = String::new();
         loop {
             line.clear();
-            self.read.read_line(&mut line).unwrap();
+            assert_ne!(self.read.read_line(&mut line).unwrap(), 0, "daemon disconnected");
             // Skip broadcast events (we never Subscribe here, but be tolerant).
             if let Ok(resp) = serde_json::from_str::<Response>(&line) {
                 return resp;
@@ -53,27 +54,20 @@ fn board_of(resp: Response) -> (mesimon_core::board::Board, Vec<mesimon_core::co
 fn m1_acceptance_headless() {
     // Skip locally, FAIL in CI: a machine without tmux would otherwise run
     // almost nothing and still report a green suite.
-    if std::process::Command::new("tmux").arg("-V").output().is_err() {
-        assert!(
-            std::env::var_os("MESIMON_REQUIRE_TMUX").is_none(),
-            "tmux is required (MESIMON_REQUIRE_TMUX=1) but is not installed",
-        );
-        eprintln!("tmux missing; skipping");
+    if !common::require_tmux() {
         return;
     }
 
     // Per-test dir (pid + name): two e2e binaries or tests must never share a
     // repo — the daemon flock would silently no-op the second one.
-    let dir = PathBuf::from(format!("/tmp/msmn-e2e-m1-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).unwrap();
-    let paths = Paths::for_repo(&dir).unwrap();
+    let fixture = common::TestFixture::new("m1");
+    let dir = fixture.dir.clone();
+    let paths = fixture.paths(&dir);
     let sock = paths.orch_sock();
     let _ = std::fs::remove_file(&sock);
 
     let repo = dir.clone();
-    let daemon = std::thread::spawn(move || {
-        mesimon_daemon::run_foreground(&repo).expect("daemon run");
-    });
+    let daemon = fixture.daemon(&repo);
 
     // Wait for the socket.
     for _ in 0..100 {
@@ -161,9 +155,7 @@ fn m1_acceptance_headless() {
     daemon.join().expect("daemon thread");
 
     let repo = dir.clone();
-    let daemon2 = std::thread::spawn(move || {
-        mesimon_daemon::run_foreground(&repo).expect("daemon rerun");
-    });
+    let daemon2 = fixture.daemon(&repo);
     for _ in 0..100 {
         if UnixStream::connect(&sock).is_ok() {
             break;
@@ -177,11 +169,5 @@ fn m1_acceptance_headless() {
     c.request(Command::Shutdown);
     daemon2.join().expect("daemon2 thread");
 
-    // Cleanup: private tmux server + dirs.
-    let _ = std::process::Command::new("tmux")
-        .args(["-S", paths.tmux_sock().to_str().unwrap(), "kill-server"])
-        .output();
-    std::fs::remove_dir_all(&dir).ok();
-    std::fs::remove_dir_all(&paths.state_dir).ok();
-    std::fs::remove_dir_all(&paths.rt_dir).ok();
+    // Fixture owner checks cleanup, including panic and killed-runner paths.
 }

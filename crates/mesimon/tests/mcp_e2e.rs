@@ -157,37 +157,34 @@ fn agent_board_tools_tier_and_collisions() {
     if !common::require_tmux() {
         return;
     }
-    let dir = std::path::PathBuf::from(format!("/tmp/msmn-e2e-mcp-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("mcp");
+    let dir = fixture.dir.clone();
     std::fs::create_dir_all(&dir).unwrap();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
 
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
+    let paths = fixture.paths(&repo);
     let sock = paths.orch_sock();
     let hook_sock = paths.hook_sock();
     let tmux_sock = paths.tmux_sock();
     let state_dir = paths.state_dir.clone();
-    let rt_dir = paths.rt_dir.clone();
 
     let stub = dir.join("claude-stub.sh");
     std::fs::write(&stub, "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do sleep 1; done\n").unwrap();
     std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
 
-    std::env::set_var("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
-    std::env::set_var("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
     // The no-undo window, widened past this test's wall clock so the guard is
     // certainly armed at every step. Its expiry is a `movegate` unit test —
     // sleeping out a real window here would only buy flakiness.
-    std::env::set_var("MESIMON_PINGPONG_MS", "600000");
+    fixture.set_env("MESIMON_PINGPONG_MS", "600000");
     // The registry is built by hand below, from nothing: decline the starter
     // tags a fresh board is otherwise offered.
-    std::env::set_var("MESIMON_NO_TAG_SEED", "1");
+    fixture.set_env("MESIMON_NO_TAG_SEED", "1");
 
     let daemon_repo = repo.clone();
-    let daemon = std::thread::spawn(move || {
-        let _ = mesimon_daemon::run_foreground(&daemon_repo);
-    });
+    let daemon = fixture.daemon(&daemon_repo);
     let deadline = Instant::now() + Duration::from_secs(5);
     while !sock.exists() {
         assert!(Instant::now() < deadline, "daemon socket never appeared");
@@ -605,11 +602,6 @@ fn agent_board_tools_tier_and_collisions() {
     drop(shim);
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
-    let _ =
-        Proc::new("tmux").args(["-S", &tmux_sock.display().to_string(), "kill-server"]).output();
-    let _ = std::fs::remove_dir_all(&dir);
-    let _ = std::fs::remove_dir_all(&state_dir);
-    let _ = std::fs::remove_dir_all(&rt_dir);
 }
 
 /// Run the real `mesimon gate` over a PreToolUse payload and return its stdout.

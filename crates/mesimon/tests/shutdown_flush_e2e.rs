@@ -16,7 +16,7 @@
 mod common;
 use common::*;
 
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command as Proc;
 use std::time::Duration;
 
@@ -97,22 +97,14 @@ fn sigterm_takes_the_shutdown_road() {
     if !require_tmux() {
         return;
     }
-    let dir = PathBuf::from(format!("/tmp/msmn-e2e-sigterm-{}", std::process::id()));
-    let _ = std::fs::remove_dir_all(&dir);
+    let fixture = common::TestFixture::new("sigterm");
+    let dir = fixture.dir.clone();
     let repo = dir.join("repo");
     std::fs::create_dir_all(&repo).unwrap();
-    let paths = mesimon_daemon::Paths::for_repo(&repo).unwrap();
-    let _ = std::fs::remove_dir_all(&paths.state_dir);
-    let _ = std::fs::remove_dir_all(&paths.rt_dir);
+    let paths = fixture.paths(&repo);
 
     // The real binary, as its own process: a signal needs a pid of its own.
-    let mut daemon = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
-        .args(["daemon", "--repo"])
-        .arg(&repo)
-        .env("SHELL", "/bin/sh")
-        .env("MESIMON_CLAUDE_HOME", dir.join("claude-home"))
-        .spawn()
-        .expect("spawn daemon");
+    let daemon = fixture.daemon(&repo);
     let sock = paths.orch_sock();
     wait_until(Duration::from_secs(10), "the daemon socket", || sock.exists());
 
@@ -126,14 +118,10 @@ fn sigterm_takes_the_shutdown_road() {
     let status = Proc::new("kill").arg("-TERM").arg(daemon.id().to_string()).status().unwrap();
     assert!(status.success(), "kill -TERM");
     let exit = daemon.wait().expect("daemon exit");
-    assert!(exit.success(), "a TERM is a clean exit, not a signal death: {exit:?}");
+    assert_eq!(exit, 0, "a TERM is a clean exit, not a signal death");
     assert!(!sock.exists(), "the shutdown road removes the socket");
 
     assert_eq!(column_on_disk(&repo, &key), "REVIEW", "the flushed EndTurn automoved");
     assert_eq!(session_state_on_disk(&paths.state_dir), "\"idle\"/\"end_turn\"");
 
-    kill_tmux(&paths.tmux_sock());
-    for d in [&dir, &paths.state_dir, &paths.rt_dir] {
-        sweep(d);
-    }
 }
