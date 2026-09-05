@@ -9,7 +9,56 @@ into the binary and shown by the Esc menu's "Release notes" row (`core/src/relno
 parses it; `cargo ut` checks every heading), and `ci/release.sh` lifts the tag's
 section out of it for the GitHub release body.
 
-## v0.1.0-alpha.13 — 2026-09-04
+## v0.1.0-alpha.14 — 2026-09-05
+
+- **The agent brief: one opt-in line in the system prompt.** A session mesimon starts is handed
+  the ticket's *title*. Its description and notes live behind the `get_ticket` tool, and nothing
+  told the model to use it — so people ended up typing "read the ticket" into every prompt.
+  alpha.13 offered to write four lines into your repo's `CLAUDE.md` saying so; that road is gone.
+  The sentence now rides `--append-system-prompt`, a better home: it reaches only the claudes
+  mesimon starts in this repo, writes nothing to a file you track, cannot drift from the binary,
+  and is one Settings row to turn off.
+
+  It is **off by default**, and it is never switched on blind. The header's offer and the
+  `Agent brief` row in Settings both open the same dialog, which shows the exact text and says
+  the reach before it — claude sessions mesimon starts here, only those, nothing written to
+  disk. Four answers: Enter turns it on, `c` copies the text, `i` never asks again, Esc not now.
+  Turning it off is one press. The line travels only while the agent tools are on, since it
+  names `get_ticket`, and a running session picks the change up on a sleep and a wake.
+  `mesimon doctor` prints the text whatever you answered.
+
+- **The brief travels with the title.** Agents skipped the ticket however politely they were
+  asked, so the words now go with the prompt. Shift+Enter — the gesture that mints a ticket,
+  starts an agent and presses its Enter for you — pastes the ticket's description under the
+  typed title, so the first prompt is the whole brief and a prompt cannot be skipped. Plain
+  Enter still types the title alone, because you are about to edit the box yourself. And the
+  ticket page says `description unread` for an agent that has taken a turn on a described ticket
+  without reading it either way.
+
+- **A board can be a workspace of repositories.** Point mesimon at a directory holding several
+  repos — nineteen under a three-file meta repo, in the case that prompted this — and every git
+  answer used to be about the wrapper: its branch, its (empty) change count, its diff. Now the
+  board counts them. The header reads `⎇ master ∙ 19 repos ∙ 214 changed`, summing the change
+  count across the root and every repo one level under it, and `v` opens one diff list across
+  the whole workspace with each repo's rows named by their repo. A root that is itself a
+  repository keeps its own branch and arrows whatever is nested inside it; a plain folder
+  holding exactly one repo simply *is* that repo, and says its branch. `mesimon doctor` prints
+  a `workspace` line.
+
+  Per-ticket worktrees do not span a workspace yet, so asking for one there is refused in words
+  rather than half-done, and the composer stops offering the choice.
+
+- **`t` takes a ticket off the merge train.** A worktree ticket the armed train was about to
+  fast-forward wore an owed mark and a `merge ∙ next` row, which read as a merge *you* had
+  queued; and the only way to keep the train off one branch was to drag the card out of REVIEW.
+  The row now says `auto-merge ∙ after T-3 +1`, and `t` — on the board or the ticket page —
+  flips the ticket to manual: no auto-merge, no rebase ask, `auto-merge ∙ off` on the card, and
+  `m` by hand still does both. `t` again puts it back.
+
+- **A turn that starts without a prompt shows up.** A `!` command in Claude Code puts its output
+  into the conversation and the model takes a turn on it — with no prompt submitted, and so with
+  nothing mesimon recognised as the start of work. The card wore no working mark and the ticket
+  sat in REVIEW for the whole turn. The first tool the agent runs now says the turn began.
 
 - **`v` on the board diffs the checkout.** The diff viewer used to open only from a ticket
   page, and only for tickets with their own worktree — which left the commonest case
@@ -29,18 +78,25 @@ section out of it for the GitHub release body.
   over: the board is the repository's screen, the ticket page is the ticket's. A worktree
   ticket's branch diff is still `space` then `v`, unchanged.
 
-- **mesimon offers the CLAUDE.md line.** A spawned session is often handed only the ticket's
-  *title* — its description lives in a note that only the `get_ticket` tool reaches, so agents
-  miss it and people end up typing "read the ticket" into every prompt. The board now offers to
-  add four lines to your repo's `CLAUDE.md` saying so. It shows them first: a dialog with the
-  exact text, and four answers — add it, copy it, not now, or never ask again. Nothing is
-  written without that keystroke, and `mesimon doctor` prints the same lines whatever you
-  answered.
-
 - **Agent tools can be switched off, per repo.** Settings has an `Agent tools` row (on by
   default). Off means sessions spawn with no `--mcp-config` at all: they cannot see which
   ticket they are on. Sessions already running keep what they were born with — sleep and wake
   one to pick the change up. `mesimon doctor` says which way the switch is set.
+
+- **`ctrl+]` on a mirrored layout.** On a Hebrew keyboard the bracket keys are swapped, so the
+  detach key emits Escape: the byte lands in the pane and interrupts the agent instead of
+  leaving it. `ctrl+5` has always been bound for exactly this, and the tmux status line has
+  been offering it all along. The README and `mesimon doctor` now say so, and suggest remapping
+  the keystroke in your terminal rather than remapping Escape — `^[` *is* Escape, and the rest
+  of the world needs it.
+
+- **Smaller.** A Settings row's subtitle no longer gets cut where it matters: the selected row's
+  detail scrolls once, on the same clock the card titles use, then rests truncated. The merge
+  train's word is gone from the header — it applies to attached worktree tickets, not to the
+  board, so `∙ train` beside `⎇ main` claimed a reach it does not have; the Settings row says
+  whether it is armed and the card says what is coming.
+
+## v0.1.0-alpha.13 — 2026-09-04
 
 - **`z` snoozes a ticket.** On a card or its page, `z` arms a ring — `1h · 4h · tomorrow 9:00 ·
   next Monday 9:00` — and a second `z` walks it; Enter snoozes, Esc or any stray key cancels.
