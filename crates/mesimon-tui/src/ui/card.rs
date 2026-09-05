@@ -450,7 +450,7 @@ pub(super) fn render(
             ];
             all.extend(spans);
             // Pad the interior so the surface paints the full card width.
-            let used: usize = all.iter().map(|s| s.content.width()).sum();
+            let used: usize = super::spans_width(&all);
             all.push(Span::raw(" ".repeat((ctx.width as usize).saturating_sub(used))));
             lines.push(Line::from(all).style(acc_style));
         };

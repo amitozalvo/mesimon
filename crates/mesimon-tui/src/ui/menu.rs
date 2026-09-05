@@ -137,8 +137,5 @@ fn draw_list(
 /// the reveal, and a list that reorders under the cursor cannot carry a
 /// half-scrolled clock onto somebody else's words.
 fn words_key(detail: &str) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    detail.hash(&mut h);
-    h.finish()
+    crate::text::hash64(detail)
 }

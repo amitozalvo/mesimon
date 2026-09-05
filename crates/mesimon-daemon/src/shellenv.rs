@@ -89,8 +89,7 @@ pub fn rc_stamp() -> u64 {
         .iter()
         .filter_map(|p| std::fs::metadata(p).ok())
         .filter_map(|m| m.modified().ok())
-        .filter_map(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis() as u64)
+        .filter_map(mesimon_core::clock::epoch_ms)
         .max()
         .unwrap_or(0)
 }

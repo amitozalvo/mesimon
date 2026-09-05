@@ -12,6 +12,7 @@ pub mod automove;
 pub mod board;
 pub mod brief;
 pub mod claudemd;
+pub mod clock;
 pub mod command;
 pub mod diff;
 pub mod fracindex;

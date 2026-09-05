@@ -93,7 +93,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     let mut spans = vec![chip(app, &word), Span::raw("  ".to_string())];
     spans.extend(breadcrumb(app, ink));
     if let Some(leaf) = leaf {
-        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        let used: usize = super::spans_width(&spans);
         spans.push(Span::styled(" > ".to_string(), Style::default().fg(ink.dim3)));
         let budget = (area.width as usize).saturating_sub(used + 4);
         spans.push(Span::styled(truncate(leaf, budget), Style::default().fg(ink.base)));
@@ -135,13 +135,13 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
             spans.push(Span::styled(format!(" ∙ {gib:.1}GiB"), theme.dim2()));
         }
         // What the board is, on the left. What it offers, on the right.
-        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        let used: usize = super::spans_width(&spans);
         // One cell of page padding at the right edge (06 §5.5), and never
         // less than a three-cell gap — a chip touching the state text reads
         // as part of it. Whatever is left is the chip's budget.
         let budget = (area.width as usize).saturating_sub(used + 4);
         let offer = suggestion_chip(app, budget);
-        let offer_w: usize = offer.iter().map(|s| s.content.width()).sum();
+        let offer_w: usize = super::spans_width(&offer);
         // The offer's cells and its gap are spoken for; the git clause takes
         // the rest, and gives its own parts up in order when that is tight.
         let reserved = if offer_w > 0 { offer_w + 4 } else { 1 };
@@ -154,7 +154,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // card's `merge ∙ after T-3` row), so both halves already have a home.
         let room = (area.width as usize).saturating_sub(used + reserved);
         let git = git_clause(app, room);
-        let git_w: usize = git.iter().map(|s| s.content.width()).sum();
+        let git_w: usize = super::spans_width(&git);
         spans.splice(git_at..git_at, git);
         let used = used + git_w;
         if offer_w > 0 {
@@ -238,7 +238,7 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
             })
             .unwrap_or_default()
     };
-    let hint_w: usize = hint.iter().map(|s| s.content.width()).sum();
+    let hint_w: usize = super::spans_width(&hint);
     // ` ⎇ ` is three cells; the arrows ride on the name.
     let fixed = 3 + state.width();
     let floor = name.width().min(GIT_BRANCH_FLOOR);
@@ -443,7 +443,7 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     };
     let width = width as usize;
     let pad_to = |spans: &mut Vec<Span<'static>>| {
-        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        let used: usize = super::spans_width(spans);
         spans.push(Span::raw(" ".repeat(width.saturating_sub(used))));
     };
     if !app.status.is_empty() {
@@ -467,14 +467,14 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         ));
         spans.push(Span::raw("  ".to_string()));
     }
-    let lead: usize = spans.iter().map(|s| s.content.width()).sum();
+    let lead: usize = super::spans_width(&spans);
     // The right cluster is reserved first: it is how everything else is found.
     let right = hint_spans(&right, &ctx, ink, width.saturating_sub(lead + 1));
-    let right_w: usize = right.iter().map(|s| s.content.width()).sum();
+    let right_w: usize = super::spans_width(&right);
     let reserved = if right_w == 0 { 1 } else { right_w + 4 };
     spans.extend(hint_spans(&own, &ctx, ink, width.saturating_sub(lead + reserved)));
     if right_w > 0 {
-        let used: usize = spans.iter().map(|s| s.content.width()).sum();
+        let used: usize = super::spans_width(&spans);
         spans.push(Span::raw(" ".repeat(width.saturating_sub(used + right_w + 1))));
         spans.extend(right);
     }

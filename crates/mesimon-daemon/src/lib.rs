@@ -84,7 +84,6 @@ pub fn spawn_detached(repo_root: &Path) -> Result<()> {
 pub fn exe_stamp() -> Option<mesimon_core::command::ExeStamp> {
     let exe = std::env::current_exe().ok()?;
     let md = std::fs::metadata(exe).ok()?;
-    let mtime_ms =
-        md.modified().ok()?.duration_since(std::time::UNIX_EPOCH).ok()?.as_millis() as u64;
+    let mtime_ms = mesimon_core::clock::epoch_ms(md.modified().ok()?)?;
     Some(mesimon_core::command::ExeStamp { mtime_ms, len: md.len() })
 }

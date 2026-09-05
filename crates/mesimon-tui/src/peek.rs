@@ -18,6 +18,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
+use std::rc::Rc;
 
 use mesimon_core::adopt::{classify_tail_record, tool_activity, user_prompt, TailEvent};
 use unicode_segmentation::UnicodeSegmentation;
@@ -160,10 +161,7 @@ fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
 
 /// A record's identity as a number the board can compare and keep.
 fn record_key(uuid: &str) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    uuid.hash(&mut h);
-    h.finish()
+    crate::text::hash64(uuid)
 }
 
 /// Read cache, one entry per transcript path. It was one slot — only the
@@ -176,29 +174,25 @@ pub(crate) struct PeekCache(RefCell<HashMap<String, Entry>>);
 struct Entry {
     len: u64,
     mtime_ms: u64,
-    peek: Peek,
+    peek: Rc<Peek>,
 }
 
 impl PeekCache {
     /// Sanitized preview of `path`, re-read only when the file's (len, mtime)
-    /// changed since the cached read.
-    pub(crate) fn peek(&self, path: &str) -> Option<Peek> {
+    /// changed since the cached read. Shared, not cloned: the board asks per
+    /// open card per frame, and the reply text is the bulk of it.
+    pub(crate) fn peek(&self, path: &str) -> Option<Rc<Peek>> {
         let meta = std::fs::metadata(path).ok()?;
         let len = meta.len();
-        let mtime_ms = meta
-            .modified()
-            .ok()
-            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-            .map(|d| d.as_millis() as u64)
-            .unwrap_or(0);
+        let mtime_ms = meta.modified().ok().and_then(mesimon_core::clock::epoch_ms).unwrap_or(0);
         let mut map = self.0.borrow_mut();
         if let Some(e) = map.get(path) {
             if e.len == len && e.mtime_ms == mtime_ms {
-                return Some(e.peek.clone());
+                return Some(Rc::clone(&e.peek));
             }
         }
         let raw = latest_preview(Path::new(path))?;
-        let peek = Peek {
+        let peek = Rc::new(Peek {
             text: raw.text.as_deref().map(sanitize),
             activity: raw.activity.map(|d| match d {
                 // A step title is a row, never a block: flatten it here.
@@ -206,10 +200,9 @@ impl PeekCache {
                 Doing::Thinking => Doing::Thinking,
             }),
             reply_key: raw.reply_key,
-        };
-        let out = peek.clone();
-        map.insert(path.to_string(), Entry { len, mtime_ms, peek });
-        Some(out)
+        });
+        map.insert(path.to_string(), Entry { len, mtime_ms, peek: Rc::clone(&peek) });
+        Some(peek)
     }
 
     /// Drop every entry whose path `keep` refuses — the scan calls it with
@@ -506,7 +499,7 @@ mod tests {
         .unwrap();
         let cache = PeekCache::default();
         let path = p.to_string_lossy().to_string();
-        let txt = |c: &PeekCache| c.peek(&path).and_then(|p| p.text);
+        let txt = |c: &PeekCache| c.peek(&path).and_then(|p| p.text.clone());
         assert_eq!(txt(&cache).as_deref(), Some("one"));
         assert_eq!(txt(&cache).as_deref(), Some("one"));
         let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();

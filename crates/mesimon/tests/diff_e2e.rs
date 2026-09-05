@@ -13,23 +13,10 @@
 mod common;
 use common::*;
 
-use std::path::Path;
 use std::process::Command as Proc;
 
 use mesimon_core::command::{Command, DiffTarget, Response};
-use mesimon_core::diff::{FileEntry, Render, Sign};
-
-fn git(repo: &Path, args: &[&str]) {
-    let out = Proc::new("git").arg("-C").arg(repo).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-}
-
-fn files(resp: &Response) -> Vec<FileEntry> {
-    match resp {
-        Response::DiffList { files, .. } => files.clone(),
-        other => panic!("expected DiffList, got {other:?}"),
-    }
-}
+use mesimon_core::diff::{Render, Sign};
 
 #[test]
 fn the_board_diffs_its_own_checkout() {
@@ -56,7 +43,7 @@ fn the_board_diffs_its_own_checkout() {
     std::fs::write(repo.join("fresh.md"), "# Fresh\n\nwritten by the agent\n").unwrap();
 
     let resp = c.request(Command::DiffList { target: DiffTarget::Checkout });
-    let listed = files(&resp);
+    let listed = files_of(&resp);
     match &resp {
         Response::DiffList { branch, base_oid, branch_oid, worktree_present, .. } => {
             assert_eq!(branch, "main");

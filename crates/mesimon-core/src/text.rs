@@ -6,6 +6,15 @@
 //! only one of them stripped the bidi overrides that reverse what a card
 //! shows.
 
+/// `1 repo` / `19 repos`: a count with its noun, the English plural by `s`.
+pub fn plural(n: usize, noun: &str) -> String {
+    if n == 1 {
+        format!("1 {noun}")
+    } else {
+        format!("{n} {noun}s")
+    }
+}
+
 /// Format characters that draw nothing and reorder or hide what is around
 /// them: zero-width spaces, joiners and marks (U+200B-200F), the bidi
 /// overrides (U+202A-202E), the word joiner, invisible operators and bidi

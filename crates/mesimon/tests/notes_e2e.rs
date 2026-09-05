@@ -9,9 +9,6 @@
 
 mod common;
 
-use std::io::{BufRead, BufReader, Write};
-use std::path::Path;
-use std::process::{Child, Command as Proc, Stdio};
 use std::time::{Duration, Instant};
 
 use common::*;
@@ -19,67 +16,6 @@ use mesimon_core::board::SessionKind;
 use mesimon_core::command::{Command, Response};
 use mesimon_core::Principal;
 use serde_json::{json, Value};
-
-/// The MCP shim, driven over its stdin the way Claude Code drives it.
-struct Shim {
-    child: Child,
-    stdin: std::process::ChildStdin,
-    stdout: BufReader<std::process::ChildStdout>,
-    next_id: u64,
-}
-
-impl Shim {
-    fn start(sock: &Path, session: uuid::Uuid) -> Self {
-        let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
-            .args(["mcp", "--sock"])
-            .arg(sock)
-            .args(["--session", &session.to_string()])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn mcp shim");
-        let stdin = child.stdin.take().unwrap();
-        let stdout = BufReader::new(child.stdout.take().unwrap());
-        Self { child, stdin, stdout, next_id: 1 }
-    }
-
-    fn rpc(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        let line = json!({"jsonrpc": "2.0", "id": id, "method": method, "params": params});
-        writeln!(self.stdin, "{line}").unwrap();
-        self.stdin.flush().unwrap();
-        let mut reply = String::new();
-        self.stdout.read_line(&mut reply).unwrap();
-        let v: Value = serde_json::from_str(&reply).expect("json-rpc reply");
-        assert_eq!(v["id"], id);
-        v
-    }
-
-    fn call(&mut self, name: &str, args: Value) -> Value {
-        self.rpc("tools/call", json!({"name": name, "arguments": args}))["result"].clone()
-    }
-
-    fn call_ok(&mut self, name: &str, args: Value) -> String {
-        let r = self.call(name, args);
-        assert_eq!(r["isError"], false, "{name} refused: {r}");
-        r["content"][0]["text"].as_str().unwrap().to_string()
-    }
-
-    fn call_err(&mut self, name: &str, args: Value) -> String {
-        let r = self.call(name, args);
-        assert_eq!(r["isError"], true, "{name} should refuse: {r}");
-        r["content"][0]["text"].as_str().unwrap().to_string()
-    }
-}
-
-impl Drop for Shim {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
-    }
-}
 
 #[test]
 fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
@@ -170,21 +106,22 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     assert!(names.contains(&"read_note") && names.contains(&"write_note"), "{names:?}");
 
     // get_ticket carries the description and lists the note.
-    let t: Value = serde_json::from_str(&shim.call_ok("get_ticket", json!({}))).unwrap();
+    let t: Value = serde_json::from_str(&shim.call_ok_text("get_ticket", json!({}))).unwrap();
     assert_eq!(t["description"], body);
     assert_eq!(t["notes"][0]["id"], desc.to_string());
     assert_eq!(t["notes"][0]["name"], "Why this");
     assert_eq!(t["notes"][0]["by"], "local");
 
     // read_note is the body itself, not JSON around it.
-    assert_eq!(shim.call_ok("read_note", json!({"note": desc.to_string()})), body);
+    assert_eq!(shim.call_ok_text("read_note", json!({"note": desc.to_string()})), body);
     let refused = shim.call_err("read_note", json!({"note": ulid::Ulid::nil().to_string()}));
     assert!(refused.contains("no such note"), "{refused}");
 
     // write_note creates, stamped with the session.
-    let r: Value =
-        serde_json::from_str(&shim.call_ok("write_note", json!({"text": "## Plan\n\n1. look"})))
-            .unwrap();
+    let r: Value = serde_json::from_str(
+        &shim.call_ok_text("write_note", json!({"text": "## Plan\n\n1. look"})),
+    )
+    .unwrap();
     let second: ulid::Ulid = r["note"].as_str().unwrap().parse().unwrap();
     let b = c.board();
     let notes = &b.tickets[0].notes;
@@ -195,7 +132,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     assert!(tdir.join("notes").join(format!("{second}.md")).is_file());
 
     // …and replaces, bumping the revision and the author.
-    shim.call_ok(
+    shim.call_ok_text(
         "write_note",
         json!({"note": desc.to_string(), "text": "# Why this, really\n\nnew"}),
     );
@@ -211,7 +148,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     // Empty text deletes; the file goes with the meta; the second note is
     // now the description.
     let r: Value = serde_json::from_str(
-        &shim.call_ok("write_note", json!({"note": desc.to_string(), "text": ""})),
+        &shim.call_ok_text("write_note", json!({"note": desc.to_string(), "text": ""})),
     )
     .unwrap();
     assert_eq!(r["deleted"], true);

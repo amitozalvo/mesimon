@@ -253,6 +253,98 @@ const INTERRUPT_TAG: &str = "[Request interrupted by user";
 /// single text block; a person typing those exact words as a prompt would be
 /// read the same way, and the cost is a cosmetic "interrupted" that the
 /// turn's next hook corrects.
+/// What one transcript record says about whether the turn it belongs to is
+/// OVER — the daemon's status-file probe reads the tail through this before
+/// calling a `status: idle` an interrupt. Current Claude Code (2.1.26x) writes
+/// no `turn_duration` record at all; a finished turn ends in an `assistant`
+/// record with `stop_reason: end_turn` and, once the Stop hooks ran, a
+/// `system`/`stop_hook_summary` — both carry `uuid` and `timestamp`. A `user`
+/// record (a tool result, or a prompt) or a mid-turn assistant record means
+/// the turn is open; the uuid-less latches and the attachment records say
+/// nothing either way (`Unsaid`), so a walk skips them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TurnEdge {
+    /// The turn finished, at this epoch ms (0 when the record has no
+    /// timestamp — a caller comparing against a spell start will refuse it).
+    Done(u64),
+    /// The turn is in flight (or was cut mid-stream).
+    Open,
+    /// This record says nothing about the turn.
+    Unsaid,
+}
+
+pub fn turn_edge(v: &Value) -> TurnEdge {
+    if v.get("uuid").is_none() {
+        return TurnEdge::Unsaid;
+    }
+    match v.get("type").and_then(Value::as_str) {
+        Some("system") => match v.get("subtype").and_then(Value::as_str) {
+            Some("stop_hook_summary" | "turn_duration") => {
+                TurnEdge::Done(record_ms(v).unwrap_or(0))
+            }
+            _ => TurnEdge::Unsaid,
+        },
+        Some("assistant") => {
+            let stop = v.get("message").and_then(|m| m.get("stop_reason")).and_then(Value::as_str);
+            let cut = v.get("isAbortedMidStream").and_then(Value::as_bool) == Some(true)
+                || v.get("interruptedByShutdown").and_then(Value::as_bool) == Some(true)
+                || is_interrupt(v);
+            if stop == Some("end_turn") && !cut {
+                TurnEdge::Done(record_ms(v).unwrap_or(0))
+            } else {
+                TurnEdge::Open
+            }
+        }
+        Some("user") => TurnEdge::Open,
+        _ => TurnEdge::Unsaid,
+    }
+}
+
+/// Epoch ms of a record's `timestamp` (`2026-09-05T16:56:32.998Z`).
+pub fn record_ms(v: &Value) -> Option<u64> {
+    v.get("timestamp").and_then(Value::as_str).and_then(iso_ms)
+}
+
+/// `YYYY-MM-DDTHH:MM:SS[.fff]Z` → epoch ms. UTC only, which is the only form
+/// Claude Code writes; anything else is `None` rather than a guess.
+pub fn iso_ms(s: &str) -> Option<u64> {
+    let s = s.strip_suffix('Z')?;
+    let (date, time) = s.split_once('T')?;
+    let mut d = date.split('-');
+    let (y, m, day): (i64, u32, u32) =
+        (d.next()?.parse().ok()?, d.next()?.parse().ok()?, d.next()?.parse().ok()?);
+    if d.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&day) {
+        return None;
+    }
+    let (hms, frac) = time.split_once('.').unwrap_or((time, ""));
+    let mut t = hms.split(':');
+    let (h, mi, sec): (u64, u64, u64) =
+        (t.next()?.parse().ok()?, t.next()?.parse().ok()?, t.next()?.parse().ok()?);
+    if t.next().is_some() || h > 23 || mi > 59 || sec > 60 {
+        return None;
+    }
+    let millis: u64 = match frac.len() {
+        0 => 0,
+        _ => {
+            let digits: String = frac.chars().take(3).collect();
+            if !digits.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            digits.parse::<u64>().ok()? * 10u64.pow(3 - digits.len() as u32)
+        }
+    };
+    // Howard Hinnant's days_from_civil, m as 1-12.
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = (y - era * 400) as u64;
+    let mp = (m as u64 + 9) % 12;
+    let doy = (153 * mp + 2) / 5 + day as u64 - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    let days = era * 146_097 + doe as i64 - 719_468;
+    let secs = days.checked_mul(86_400)?.checked_add((h * 3600 + mi * 60 + sec) as i64)?;
+    u64::try_from(secs).ok()?.checked_mul(1000)?.checked_add(millis)
+}
+
 fn is_interrupt(v: &Value) -> bool {
     if v.get("interruptedMessageId").is_some_and(|x| !x.is_null()) {
         return true;
@@ -479,5 +571,74 @@ mod tests {
 
         let v = val(r#"{"uuid":"u6","type":"user","message":{}}"#);
         assert_eq!(classify_tail_record(&v), TailEvent::Other);
+    }
+
+    #[test]
+    fn iso_ms_reads_claude_codes_timestamps() {
+        assert_eq!(iso_ms("2026-09-05T16:56:32.998Z"), Some(1_788_627_392_998));
+        assert_eq!(iso_ms("1970-01-01T00:00:00Z"), Some(0));
+        assert_eq!(iso_ms("2000-03-01T00:00:00.5Z"), Some(951_868_800_500));
+        assert_eq!(iso_ms("2026-09-05T16:56:32.998+03:00"), None, "only Z");
+        assert_eq!(iso_ms("2026-13-05T16:56:32Z"), None);
+        assert_eq!(iso_ms("not a time"), None);
+    }
+
+    #[test]
+    fn turn_edge_reads_the_end_of_a_turn_and_nothing_else() {
+        let j = |s: &str| serde_json::from_str::<Value>(s).unwrap();
+        // The two records a finished turn ends in on current Claude Code.
+        assert_eq!(
+            turn_edge(&j(
+                r#"{"uuid":"u","type":"assistant","timestamp":"2026-09-05T16:56:32.998Z","message":{"stop_reason":"end_turn","content":[{"type":"text","text":"done"}]}}"#
+            )),
+            TurnEdge::Done(1_788_627_392_998)
+        );
+        assert_eq!(
+            turn_edge(&j(
+                r#"{"uuid":"u","type":"system","subtype":"stop_hook_summary","timestamp":"2026-09-05T16:56:33.447Z"}"#
+            )),
+            TurnEdge::Done(1_788_627_393_447)
+        );
+        assert_eq!(
+            turn_edge(&j(r#"{"uuid":"u","type":"system","subtype":"turn_duration"}"#)),
+            TurnEdge::Done(0),
+            "no timestamp is a zero, never a guess"
+        );
+        // Mid-turn: a tool call, a tool result, a prompt, an abort.
+        assert_eq!(
+            turn_edge(&j(
+                r#"{"uuid":"u","type":"assistant","message":{"stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}"#
+            )),
+            TurnEdge::Open
+        );
+        assert_eq!(
+            turn_edge(&j(
+                r#"{"uuid":"u","type":"assistant","message":{"stop_reason":null,"content":[]}}"#
+            )),
+            TurnEdge::Open
+        );
+        assert_eq!(
+            turn_edge(&j(
+                r#"{"uuid":"u","type":"user","message":{"content":[{"type":"tool_result"}]}}"#
+            )),
+            TurnEdge::Open
+        );
+        assert_eq!(
+            turn_edge(&j(r#"{"uuid":"u","type":"user","message":{"content":"go"}}"#)),
+            TurnEdge::Open
+        );
+        assert_eq!(
+            turn_edge(&j(
+                r#"{"uuid":"u","type":"assistant","isAbortedMidStream":true,"message":{"stop_reason":"end_turn","content":[]}}"#
+            )),
+            TurnEdge::Open
+        );
+        // Silent: latches, attachments, other system records.
+        assert_eq!(turn_edge(&j(r#"{"type":"last-prompt"}"#)), TurnEdge::Unsaid);
+        assert_eq!(turn_edge(&j(r#"{"uuid":"u","type":"attachment"}"#)), TurnEdge::Unsaid);
+        assert_eq!(
+            turn_edge(&j(r#"{"uuid":"u","type":"system","subtype":"compact_boundary"}"#)),
+            TurnEdge::Unsaid
+        );
     }
 }

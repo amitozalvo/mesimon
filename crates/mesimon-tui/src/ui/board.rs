@@ -18,12 +18,7 @@ use crate::text::EditBuffer;
 
 use super::card::{self, CardCtx};
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+use mesimon_core::clock::now_ms;
 
 pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
     let cols = app.columns();
@@ -153,13 +148,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
             ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
             ranked.iter().find(|s| s.transcript_path.is_some()).and_then(|s| {
-                let mut pk = app.peek_cache.peek(s.transcript_path.as_deref()?)?;
+                let pk = app.peek_cache.peek(s.transcript_path.as_deref()?)?;
                 // The activity row is a claim about NOW: a parked, finished
                 // or waiting session's last tool call is history.
-                if s.state != SessionState::Running {
-                    pk.activity = None;
-                }
-                Some(pk)
+                Some(if s.state == SessionState::Running || pk.activity.is_none() {
+                    pk
+                } else {
+                    std::rc::Rc::new(crate::peek::Peek { activity: None, ..(*pk).clone() })
+                })
             })
         } else {
             None
@@ -180,7 +176,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             trail,
             mq,
             open,
-            peek.as_ref(),
+            peek.as_deref(),
             &painted,
             app.doomed(t.id),
             unseen,

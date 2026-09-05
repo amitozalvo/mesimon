@@ -12,8 +12,8 @@
 mod common;
 use common::*;
 
-use std::io::{BufRead, BufReader, Write};
-use std::process::{Child, Command as Proc, Stdio};
+use std::io::Write;
+use std::process::{Command as Proc, Stdio};
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::SessionKind;
@@ -27,84 +27,6 @@ fn notices_of(resp: &Response) -> Vec<String> {
     match resp {
         Response::Board { notices, .. } => notices.iter().map(|n| n.kind.clone()).collect(),
         other => panic!("expected board, got {other:?}"),
-    }
-}
-
-// ------------------------------------------- the shim, driven as Claude does
-
-/// The real `mesimon mcp` process, spoken to over stdin/stdout exactly the way
-/// Claude Code speaks to a stdio MCP server.
-struct Shim {
-    child: Child,
-    out: BufReader<std::process::ChildStdout>,
-    next_id: i64,
-}
-
-impl Shim {
-    fn start(sock: &std::path::Path, session: uuid::Uuid) -> Self {
-        let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
-            .args(["mcp", "--sock"])
-            .arg(sock)
-            .args(["--session", &session.to_string()])
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .spawn()
-            .expect("spawn mcp shim");
-        let out = BufReader::new(child.stdout.take().unwrap());
-        Self { child, out, next_id: 1 }
-    }
-
-    fn rpc(&mut self, method: &str, params: Value) -> Value {
-        let id = self.next_id;
-        self.next_id += 1;
-        let msg = json!({"jsonrpc":"2.0","id":id,"method":method,"params":params});
-        let stdin = self.child.stdin.as_mut().unwrap();
-        writeln!(stdin, "{msg}").unwrap();
-        stdin.flush().unwrap();
-        let mut line = String::new();
-        self.out.read_line(&mut line).expect("shim reply");
-        let v: Value = serde_json::from_str(&line).expect("shim reply is json");
-        assert_eq!(v["id"], json!(id), "reply id must match the request");
-        v
-    }
-
-    fn notify(&mut self, method: &str) {
-        let stdin = self.child.stdin.as_mut().unwrap();
-        writeln!(stdin, "{}", json!({"jsonrpc":"2.0","method":method})).unwrap();
-        stdin.flush().unwrap();
-    }
-
-    /// A tool call's parsed result body, asserting it was not an error.
-    fn call_ok(&mut self, name: &str, args: Value) -> Value {
-        let r = self.rpc("tools/call", json!({"name": name, "arguments": args}));
-        let result = &r["result"];
-        assert_eq!(result["isError"], false, "{name} failed: {result}");
-        serde_json::from_str(result["content"][0]["text"].as_str().unwrap()).unwrap()
-    }
-
-    /// A tool call that is refused. Returns the message the model sees.
-    fn call_err(&mut self, name: &str, args: Value) -> String {
-        let r = self.rpc("tools/call", json!({"name": name, "arguments": args}));
-        assert_eq!(r["result"]["isError"], true, "{name} unexpectedly succeeded: {r}");
-        r["result"]["content"][0]["text"].as_str().unwrap().to_string()
-    }
-
-    fn call_with_meta(&mut self, name: &str, args: Value, tool_use_id: &str) -> Value {
-        let r = self.rpc(
-            "tools/call",
-            json!({"name": name, "arguments": args,
-                   "_meta": {"claudecode/toolUseId": tool_use_id}}),
-        );
-        assert_eq!(r["result"]["isError"], false, "{name} failed: {r}");
-        serde_json::from_str(r["result"]["content"][0]["text"].as_str().unwrap()).unwrap()
-    }
-}
-
-impl Drop for Shim {
-    fn drop(&mut self) {
-        let _ = self.child.kill();
-        let _ = self.child.wait();
     }
 }
 

@@ -700,6 +700,70 @@ pub(crate) fn created_at_epoch_ms(s: &str) -> Option<u64> {
     u64::try_from(secs).ok().map(|s| s * 1000)
 }
 
+/// The cursor and deletion moves a text field answers to, whether it is the
+/// one-line `EditBuffer` or the multi-line `TextArea`: the note editor's
+/// keys dispatch on the focused field through this and nothing else.
+pub(crate) trait EditOps {
+    fn backspace(&mut self);
+    fn delete(&mut self);
+    fn delete_word_back(&mut self);
+    fn kill_to_start(&mut self);
+    fn left(&mut self);
+    fn right(&mut self);
+    fn word_left(&mut self);
+    fn word_right(&mut self);
+    fn home(&mut self);
+    fn end(&mut self);
+}
+
+macro_rules! edit_ops {
+    ($t:ty) => {
+        impl EditOps for $t {
+            fn backspace(&mut self) {
+                <$t>::backspace(self)
+            }
+            fn delete(&mut self) {
+                <$t>::delete(self)
+            }
+            fn delete_word_back(&mut self) {
+                <$t>::delete_word_back(self)
+            }
+            fn kill_to_start(&mut self) {
+                <$t>::kill_to_start(self)
+            }
+            fn left(&mut self) {
+                <$t>::left(self)
+            }
+            fn right(&mut self) {
+                <$t>::right(self)
+            }
+            fn word_left(&mut self) {
+                <$t>::word_left(self)
+            }
+            fn word_right(&mut self) {
+                <$t>::word_right(self)
+            }
+            fn home(&mut self) {
+                <$t>::home(self)
+            }
+            fn end(&mut self) {
+                <$t>::end(self)
+            }
+        }
+    };
+}
+edit_ops!(EditBuffer);
+edit_ops!(TextArea);
+
+/// A value's identity as one number — a document key the draw can compare
+/// and keep (`DefaultHasher`, stable within a run, which is all a key needs).
+pub(crate) fn hash64(v: impl std::hash::Hash) -> u64 {
+    use std::hash::{DefaultHasher, Hasher};
+    let mut h = DefaultHasher::new();
+    v.hash(&mut h);
+    h.finish()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

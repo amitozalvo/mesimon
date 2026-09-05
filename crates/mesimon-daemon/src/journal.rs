@@ -102,12 +102,7 @@ impl Journal {
     }
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
-}
+use mesimon_core::clock::now_ms;
 
 /// `2026-09-05T14:29:21.123Z` from Unix milliseconds — UTC, so two machines'
 /// journals compare, and no dependency for one line a day. Proleptic

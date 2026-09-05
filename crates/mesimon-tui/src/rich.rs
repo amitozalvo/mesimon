@@ -154,7 +154,7 @@ pub(crate) fn render_all(src: &str, width: usize, theme: &Theme) -> Vec<Line<'st
 /// the last row to make the cell if it has to.
 pub(crate) fn mark_cut(lines: &mut [Line<'static>], width: usize, theme: &Theme) {
     let Some(last) = lines.last_mut() else { return };
-    let w: usize = last.spans.iter().map(|s| s.content.width()).sum();
+    let w: usize = crate::ui::spans_width(&last.spans);
     if w >= width {
         clip(&mut last.spans, width.saturating_sub(1));
     }
@@ -695,7 +695,7 @@ impl Out<'_> {
         }
         let mut cur: Vec<Span<'static>> = lead;
         cur.retain(|s| !s.content.is_empty());
-        let mut w: usize = cur.iter().map(|s| s.content.width()).sum();
+        let mut w: usize = crate::ui::spans_width(&cur);
         let start = w;
         let mut first = true;
         // The space BETWEEN two words of one code span must be painted too,
@@ -1047,7 +1047,7 @@ mod tests {
                     let out = render(kitchen, width, 40, &t);
                     let ramp = [t.rest.base, t.rest.dim1, t.rest.dim2, t.rest.dim3];
                     for line in &out {
-                        let w: usize = line.spans.iter().map(|s| s.content.width()).sum();
+                        let w: usize = crate::ui::spans_width(&line.spans);
                         assert!(w <= width, "{profile:?} w={width}: line is {w} cells");
                         for s in &line.spans {
                             let m = s.style.add_modifier;

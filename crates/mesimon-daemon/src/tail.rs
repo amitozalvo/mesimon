@@ -7,7 +7,7 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use mesimon_core::adopt::{classify_tail_record, TailEvent};
+use mesimon_core::adopt::{classify_tail_record, turn_edge, TailEvent, TurnEdge};
 
 /// The last uuid-bearing record's classification — how a transcript nobody
 /// is streaming RESTED (daemon-restart recovery). Reads at most the final
@@ -16,6 +16,41 @@ use mesimon_core::adopt::{classify_tail_record, TailEvent};
 /// trailing user/attachment record to an older `turn_duration` would call a
 /// freshly-started turn "done".
 pub fn last_event(path: &Path) -> Option<TailEvent> {
+    for v in tail_records(path)? {
+        match classify_tail_record(&v) {
+            TailEvent::Latch => continue,
+            ev => return Some(ev),
+        }
+    }
+    None
+}
+
+/// Does the transcript say the turn that began at `since` (epoch ms) has
+/// FINISHED? The status-file probe asks this before it calls a `status: idle`
+/// an interrupt: Claude Code stamps `idle` at the end of every turn,
+/// milliseconds before its Stop hook fires, so a late or lost Stop otherwise
+/// reads as an Esc (simbly T-11, 2026-09-05: a relinked hook binary stalled
+/// 41 s in exec and a finished turn wore "interrupted"). Walks back from the
+/// end through `adopt::turn_edge`: the first record that speaks decides — a
+/// finished turn is `Done` at a stamp not older than the spell (the recordless
+/// Esc leaves the PREVIOUS turn's close as the last word, and that stamp is
+/// older), an open turn or a missing transcript is `false`.
+pub fn turn_done_since(path: &Path, since: u64) -> bool {
+    let Some(records) = tail_records(path) else { return false };
+    for v in records {
+        match turn_edge(&v) {
+            TurnEdge::Unsaid => continue,
+            TurnEdge::Open => return false,
+            TurnEdge::Done(at) => return at >= since,
+        }
+    }
+    false
+}
+
+/// The parsed records of the last 64 KiB, NEWEST first. The window may open
+/// mid-record, so the first line of a truncated read is dropped; a line that
+/// is not JSON is skipped (09 §4.3: never resync).
+fn tail_records(path: &Path) -> Option<Vec<serde_json::Value>> {
     let mut f = std::fs::File::open(path).ok()?;
     let len = f.metadata().ok()?.len();
     let start = len.saturating_sub(64 * 1024);
@@ -25,19 +60,16 @@ pub fn last_event(path: &Path) -> Option<TailEvent> {
     let text = String::from_utf8_lossy(&buf);
     let mut lines: Vec<&str> = text.lines().collect();
     if start > 0 && !lines.is_empty() {
-        lines.remove(0); // the window may open mid-record
+        lines.remove(0);
     }
-    for line in lines.iter().rev() {
-        if line.trim().is_empty() {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-        match classify_tail_record(&v) {
-            TailEvent::Latch => continue,
-            ev => return Some(ev),
-        }
-    }
-    None
+    Some(
+        lines
+            .iter()
+            .rev()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+            .collect(),
+    )
 }
 
 /// Per-session cursor, daemon-held, never persisted.
@@ -156,6 +188,35 @@ mod tests {
         )
         .unwrap();
         assert_eq!(last_event(&p), Some(TailEvent::TurnComplete));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    #[test]
+    fn turn_done_since_reads_a_finished_turn_and_refuses_an_older_one() {
+        let p = tmp("turndone");
+        // The shape current Claude Code writes: the closing assistant record,
+        // the stop-hook summary, then the uuid-less latches.
+        std::fs::write(
+            &p,
+            "{\"uuid\":\"u0\",\"type\":\"user\",\"timestamp\":\"2026-09-05T16:50:00.000Z\",\"message\":{\"content\":\"go\"}}\n\
+             {\"uuid\":\"u1\",\"type\":\"assistant\",\"timestamp\":\"2026-09-05T16:56:32.998Z\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"done\"}]}}\n\
+             {\"uuid\":\"u2\",\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"timestamp\":\"2026-09-05T16:56:33.447Z\"}\n\
+             {\"type\":\"agent-name\"}\n{\"type\":\"mode\"}\n",
+        )
+        .unwrap();
+        let close = 1_788_627_393_447;
+        assert!(turn_done_since(&p, close - 60_000), "a turn that began before the close is done");
+        assert!(turn_done_since(&p, close), "at the stamp itself");
+        assert!(
+            !turn_done_since(&p, close + 1),
+            "a turn begun after the close: the recordless Esc"
+        );
+        // A tool result after the close: the next turn is open.
+        let mut f = std::fs::OpenOptions::new().append(true).open(&p).unwrap();
+        writeln!(f, "{{\"uuid\":\"u3\",\"type\":\"user\",\"message\":{{\"content\":[{{\"type\":\"tool_result\"}}]}}}}").unwrap();
+        writeln!(f, "{{\"uuid\":\"u4\",\"type\":\"attachment\"}}").unwrap();
+        assert!(!turn_done_since(&p, close - 60_000));
+        assert!(!turn_done_since(Path::new("/nonexistent/x.jsonl"), 0));
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

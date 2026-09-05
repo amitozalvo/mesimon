@@ -267,8 +267,16 @@ pub enum Signal {
     /// first assistant output, the prompt handed back to the box — writes
     /// NOTHING to the transcript (spike S-E's case, seen live 2026-09-04),
     /// so PaneQuiet a minute later was its whole catch; the status file
-    /// flips at the keypress. Same row as PaneQuiet, same confidence.
-    StatusFileIdle,
+    /// flips at the keypress. Same row as PaneQuiet, same confidence — but
+    /// the file flips `idle` at the end of EVERY turn, milliseconds before
+    /// the Stop hook fires, so the probe races the hook on every turn and a
+    /// late or lost Stop read as an Esc (simbly T-11, 2026-09-05: a relinked
+    /// hook binary stalled 41 s in exec). `turn_done` is the transcript's
+    /// word (`tail::turn_done_since`): the turn that began this spell has
+    /// closed, so the row is `Idle{EndTurn}` rather than `Interrupted`.
+    StatusFileIdle {
+        turn_done: bool,
+    },
     /// Observe tier: derived from an adopted session's transcript tail.
     TranscriptHint {
         kind: TailHint,
@@ -757,9 +765,13 @@ impl Machine {
             // goes idle in the same second, and a probe on a 2 s cadence that
             // replaced the pending EndTurn turned a finished turn into
             // "interrupted" — which automove does not promote (2026-09-04).
-            Signal::PaneQuiet | Signal::StatusFileIdle => {
+            Signal::PaneQuiet | Signal::StatusFileIdle { .. } => {
                 if self.state == S::Running && self.pending.is_none() {
-                    Some((S::Idle { stop_reason: StopReason::Interrupted }, Confidence::Medium))
+                    let stop_reason = match sig {
+                        Signal::StatusFileIdle { turn_done: true } => StopReason::EndTurn,
+                        _ => StopReason::Interrupted,
+                    };
+                    Some((S::Idle { stop_reason }, Confidence::Medium))
                 } else {
                     None
                 }
@@ -1322,7 +1334,10 @@ mod tests {
         // The same row PaneQuiet owns: Running → Idle{Interrupted} at Medium
         // through the leave-settle, and nothing anywhere else.
         let mut mr = m(SessionState::Running);
-        assert!(mr.apply(&Signal::StatusFileIdle, 10_000).is_none(), "leave settles");
+        assert!(
+            mr.apply(&Signal::StatusFileIdle { turn_done: false }, 10_000).is_none(),
+            "leave settles"
+        );
         let c = mr.tick(10_000 + SETTLE_MS).expect("demote");
         assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Interrupted });
         assert_eq!(c.confidence, Confidence::Medium);
@@ -1334,7 +1349,31 @@ mod tests {
             SessionState::Sleeping,
         ] {
             let mut ma = m(s.clone());
-            assert!(ma.apply(&Signal::StatusFileIdle, 1000).is_none(), "moved from {s:?}");
+            assert!(
+                ma.apply(&Signal::StatusFileIdle { turn_done: false }, 1000).is_none(),
+                "moved from {s:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn status_file_idle_over_a_finished_turn_is_end_turn() {
+        // The transcript says the turn closed: the same row, the same
+        // settle, the same Medium — and EndTurn, which automove promotes
+        // (a late Stop then commits High over it, a lost one never needs to).
+        let mut mr = m(SessionState::Running);
+        assert!(mr.apply(&Signal::StatusFileIdle { turn_done: true }, 10_000).is_none());
+        let c = mr.tick(10_000 + SETTLE_MS).expect("demote");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(c.confidence, Confidence::Medium);
+        for s in [
+            SessionState::Idle { stop_reason: StopReason::Interrupted },
+            SessionState::Idle { stop_reason: StopReason::Background },
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::Spawning,
+        ] {
+            let mut ma = m(s.clone());
+            assert!(ma.apply(&Signal::StatusFileIdle { turn_done: true }, 1000).is_none(), "{s:?}");
         }
     }
 
@@ -1349,14 +1388,14 @@ mod tests {
         // Stop first, probe inside its settle: the stated EndTurn commits.
         let mut mr = m(SessionState::Running);
         assert!(mr.apply(&stop, 1000).is_none(), "leave settles");
-        assert!(mr.apply(&Signal::StatusFileIdle, 1500).is_none());
+        assert!(mr.apply(&Signal::StatusFileIdle { turn_done: false }, 1500).is_none());
         assert!(mr.apply(&Signal::PaneQuiet, 1600).is_none());
         let c = mr.tick(1000 + SETTLE_MS).expect("commit");
         assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
         assert_eq!(c.confidence, Confidence::High);
         // Probe first, Stop inside ITS settle: the stated word replaces it.
         let mut mr = m(SessionState::Running);
-        assert!(mr.apply(&Signal::StatusFileIdle, 1000).is_none());
+        assert!(mr.apply(&Signal::StatusFileIdle { turn_done: false }, 1000).is_none());
         assert!(mr.apply(&stop, 1500).is_none());
         let c = mr.tick(1500 + SETTLE_MS).expect("commit");
         assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
@@ -1711,7 +1750,7 @@ mod tests {
             .is_none());
         m.apply(&Signal::UserPromptSubmit, 10_000).expect("stated, and Idle → Running is instant");
         assert!(m.apply(&Signal::PaneQuiet, 11_000).is_none());
-        assert!(m.apply(&Signal::StatusFileIdle, 11_000).is_none());
+        assert!(m.apply(&Signal::StatusFileIdle { turn_done: false }, 11_000).is_none());
         assert!(m.tick(14_000).is_none());
         assert_eq!(*m.state(), SessionState::Running);
         // Terminal still passes.
@@ -1750,7 +1789,7 @@ mod tests {
         assert_eq!(c.confidence, Confidence::High);
         // The probes after the pin have nothing to demote.
         let later = t + FLAP_PIN_MS + 1000;
-        assert!(m.apply(&Signal::StatusFileIdle, later).is_none());
+        assert!(m.apply(&Signal::StatusFileIdle { turn_done: false }, later).is_none());
         assert!(m.apply(&Signal::PaneQuiet, later).is_none());
         assert!(m.tick(later + SETTLE_MS).is_none());
         assert_eq!(*m.state(), SessionState::Idle { stop_reason: StopReason::EndTurn });

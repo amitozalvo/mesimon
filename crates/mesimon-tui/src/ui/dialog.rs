@@ -96,7 +96,7 @@ pub(super) fn frame(
     if words.is_empty() {
         top.push(Span::styled(g.h.to_string().repeat(w - 2), rule));
     } else {
-        let used: usize = words.iter().map(|s| s.content.width()).sum();
+        let used: usize = super::spans_width(&words);
         top.push(Span::styled(format!("{} ", g.h), rule));
         top.extend(words);
         top.push(Span::styled(format!(" {}", g.h.to_string().repeat(w - 5 - used)), rule));
@@ -108,7 +108,7 @@ pub(super) fn frame(
     if words.is_empty() {
         bottom.push(Span::styled(g.h.to_string().repeat(w - 2), rule));
     } else {
-        let used: usize = words.iter().map(|s| s.content.width()).sum();
+        let used: usize = super::spans_width(&words);
         bottom.push(Span::styled(format!("{} ", g.h.to_string().repeat(w - 5 - used)), rule));
         bottom.extend(words);
         bottom.push(Span::styled(format!(" {}", g.h), rule));
@@ -166,10 +166,7 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
         return;
     }
     let idx = idx.min(archived.len() - 1);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let now = mesimon_core::clock::now_ms();
     let area = centred(f.area(), archived.len() as u16, MAX_W);
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner = frame(
@@ -192,8 +189,7 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
             None => t
                 .archived
                 .as_ref()
-                .and_then(|a| a.at.strip_prefix('@'))
-                .and_then(|s| s.parse::<u64>().ok())
+                .and_then(|a| mesimon_core::board::stamp_secs(&a.at))
                 .map(|secs| crate::text::age_slot(now, secs * 1000, false))
                 .unwrap_or_default(),
         };
@@ -219,10 +215,7 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
     if app.external.is_empty() {
         return;
     }
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let now = mesimon_core::clock::now_ms();
     let area = centred(f.area(), app.external.len() as u16 * 2, MAX_W);
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner = frame(

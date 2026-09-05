@@ -5783,3 +5783,149 @@ text has been emptied shows the placeholder `enter drops` where a fresh field sh
 claude` — 11 cells, inside the prompt row's budget at `MIN_COL` (20). The gesture is still
 taught only where it applies, on the one field whose blank Enter does something. Test
 `test_an_emptied_queued_ask_says_enter_drops` renders it at 120 and at `MIN_W`.
+
+## The second simplify pass (T-234, 2026-09-05)
+
+The same four-angle pass as 2026-09-01 (reuse, simplification, efficiency, altitude), over
+the 92 commits since it — 51 findings, about eight of them found twice. Nothing here changes
+what the board does; the tests, the goldens and the e2e suite ran unchanged (919 passed).
+
+**Applied.**
+- **One clock**: `mesimon-core::clock::{now_ms, now_secs, epoch_ms}` replaces eleven private
+  copies of the `SystemTime … UNIX_EPOCH … as_millis` idiom across the daemon and the TUI.
+- **One `plural`**: `text::plural` (was private to `keymap`); `workspace::repos_word` reads it.
+- **The snapshot road forks no git again.** `pending_items` and `train_pass` each forked
+  `rev-parse` per merge candidate on the writer thread, on every `Snapshot`, though the flag
+  worker's `for-each-ref` had every tip; `worktree::Flags.tip` now carries it and
+  `Daemon::wt_tip` holds it beside `wt_ahead`. The hand `m` keeps its one-shot fork.
+- **The PREVIEW zone renders its markdown once per document** (`App::rich_cache`,
+  `ui::ticket::rendered`, keyed like the page scroll on `(doc_key, width, flavor)`) instead of
+  parsing and wrapping the whole reply every frame — 60 fps through a glide.
+  `PeekCache::peek` hands out `Rc<Peek>`: the board asked per open card per frame and cloned
+  the reply text each time. `App::ctx()` no longer sorts every archived ticket to test
+  emptiness, and computes `subject`, `undo_target` and `tag_cell` once.
+- **One predicate for "mid-turn"**: `App::ticket_busy` and `merge_ticket`'s gate both read
+  `quiet::is_working` — the TUI still counted a `!` shell (so `m` was inert on the board while
+  the daemon would have merged), and neither counted `Idle{Background}` / an owed Enter, which
+  the train's gate already did. `Ctx::ticket_has_claude` is `Board::live_claude`.
+  `checkout_holders` / `board_busy` are one `working(cwd)`; the two quiet probes share
+  `probed_running`.
+- **One road back from the archive**: `Daemon::unarchive(id, land, needs_you)` serves the
+  restore (order kept, restamp only on a column change) and the snooze's wake (`Top`, restamped,
+  lit), which had been a second hand-rolled copy.
+- **One builder for mesimon's argv pairs**: `mesimon_flags` (the MCP blob, the brief) feeds
+  `claude_argv`, and `resume_argv` strips every owned pair and re-appends it behind
+  `--settings` — the same argv as before for everything `claude_argv` ever built, and the
+  drop / regenerate / insert rules stated once instead of three times.
+- **One paste**: `paste_to_ticket` (the pane lookup and the two refusal sentences) under
+  `merge_to_agent`, `note_to_agent` and `prompt_session`; the merge road's refusal now reads
+  `start or wake one first` like the other two.
+- `with_ticket` returns the `Response` (the eleven callers had each re-spelled `no such
+  ticket`; `no_such_ticket()` is the one literal); `seen_ticket` / `set_manual_merge` look the
+  ticket up once. The columns bar on a person's `CreateTicket` is judged inside
+  `create_ticket`, the depth the agent's mint already used. `read_columns_file` under the two
+  doctor readers; `git_bytes_ok` under `git_bytes` / `git_bytes_diff`; `Train::refused` gone
+  (it was `refusal(..).is_some()`).
+- TUI: `EditOps` (a trait both text fields implement) collapses nine `match ed.focus` arms in
+  `key_editor` into `ed.focused().<op>()`; `set_pref` is the four Settings toggles' tail;
+  `step` is the five list modes' clamp; `TagArm::new`; `Ground::word` (was spelled four
+  times); `text::hash64` under the four `DefaultHasher` helpers; `ui::spans_width` under 21
+  inline width sums; `eased` under the glide's and the dialog's identical curve; `Describe` is
+  `NoteEdit`'s arm (off the ticket page there is no rail row); the `^S` gate reads the board's
+  own `ticket_promptable` / `ticket_has_claude` — the editor's ticket IS the subject — so
+  `Ctx::editor_claude_paned` / `editor_seat_empty` are gone; prefs' `Loaded` derives
+  `Default`, its three bool setters (dead writes: `body()` rewrites every key) are fields.
+  Fixed on the way: a status line carrying 32 embedded spaces, and a doc comment saying
+  `KillSession` was unreachable from the TUI after `x` on a corpse started sending it.
+- E2e: `common::{git, init_repo, git_of, files_of, pending_of, Shim}` — the shim client and
+  the git helpers had been pasted into two and five test files respectively.
+
+**Deferred, by design (do not re-derive):**
+- The composer's four round-trips (`CreateTicket`, `SetWorkspace`, tags, `WriteNote`) vs the
+  agent's atomic `AgentCreateTicket` — a wire change; the partial-failure window is real.
+- The two owed-paste ledgers (`pending_prompt` + `pending_submit` + `submit_retry` vs
+  `inflight`) — one `owed` map keyed by session would be the design, not a cleanup.
+- `pane_reborn`'s tmux fork: passing `#{pane_id}` in the `pane-died` hook and matching by
+  pane identity is the deeper fix (a hook + record change).
+- One `Pager` for the diff, PREVIEW and RELEASES scroll states; the daemon computing
+  `ClaudeMdStatus.offer`; `Pending.action` as an enum — each a wire or structure change.
+- `snooze_blocked`'s hand-composed refusal sentence (move `sleep_eligible`'s pure clause
+  into core) and the four framed list dialogs (`themes`, `menu`, archived, drawer) sharing one
+  `dialog::list` — both fair, both touch goldens/status copy; next pass.
+- Efficiency items that change when something is read, not how: sampling git only while a
+  board is subscribed (a headless daemon forks `git status` per repo every 10 s), an mtime gate
+  on `probe_status_files`, a byte budget on `untracked_adds`, `PeekCache` throttling its
+  `metadata()` call, a per-frame `Ctx` built once in `ui::draw` (it is built 3–7 times).
+- `journal::iso_utc` via `gmtime_r` (correct as is; unsafe is the author's call);
+  `dialog::fit` vs `rich::clip` (they cut differently: `~` marker vs silent); `Journal` and
+  `FeedWriter` sharing a `RotatingFile`; `refresh_status_line` reusing its `attention_queue`
+  (the second call is `needs_you_count`, kept so the two numbers cannot disagree).
+
+## A ticket says who filed it (T-253, 2026-09-05)
+
+- **`Ticket.created_by`** is a new scalar after `created_at`: `local` for a person at the
+  composer, `agent:<session-uuid>` for an agent's `create_ticket` — `Principal::note_author`'s
+  vocabulary, so a ticket and its notes name an author the same way. `Daemon::mint_ticket`
+  takes the principal and every mint threads it (`create_ticket`, `agent_create_ticket`, the
+  drawer's import in `attach_external`). `#[serde(default, skip_serializing_if = empty)]`, no
+  `TICKET_SCHEMA` bump: an older build rewriting the file drops a word, not a behaviour. Empty
+  reads as UNKNOWN (`Ticket::agent_created` is false), never as a person.
+- **`Ticket.created_from: Option<Ulid>`** beside it is the ticket the agent was bound to when it
+  asked — `handle_agent`'s resolved binding, passed through `agent_create_ticket` to `mint_ticket`
+  (`None` on a person's mint). A fact of the file rather than a join against the session record,
+  which `delete_ticket` removes with the parent; a ULID, never a key, so a renumbered board cannot
+  point it at the wrong card.
+- **The ticket page's state row says `created 2d ago by claude on T-241`** on an agent's ticket —
+  the parent's key resolved from the board, dropped when that ticket is gone — and nothing
+  by a person's or a pre-field one — T-158 cut "created by you" as saying nothing in single-user
+  v0.1, and that decision stands; the clause carries the word only where it is information.
+  Before this the sole record of an agent's mint was the feed's coarse `agent` actor and, when a
+  description was passed, the note's author.
+- Not done: the card says nothing (line 1 has no room, see "The done mark decays once seen"),
+  `get_ticket` does not carry it, and the feed line is unchanged.
+
+## A late Stop is not an Esc (T-242, 2026-09-05)
+
+**What was seen.** simbly T-11's claude finished a long turn at 19:56:33 and the card read
+`interrupted` for the next 38 s, then went to REVIEW. The feed: the transcript's closing
+`end_turn` record and Claude Code's `stop_hook_summary` land at 19:56:33, Claude Code stamps its
+own `~/.claude/sessions/<pid>.json` `status: idle` 20 ms later, `probe_status_files` reads it at
+19:56:36 and commits `Idle{Interrupted}` Medium — the row built for the recordless Esc — and the
+`Stop` hook frame arrives at 19:57:14, 41 s late, committing `Idle{EndTurn}` High. Every earlier
+Stop of that session (twenty) had landed within 100 ms.
+
+**Why the hook was late.** Another mesimon session ran `cargo nextest run` in the mesimon
+checkout at 19:55:34, relinking `target/debug/mesimon` — the binary every hook execs — at
+19:55:46, with the 16 e2e tests running after it on a box at load 7.7. Every hook spawned after
+the relink stalled: the two sync `PostToolUse` hooks hit Claude Code's 2 s timeout and were
+LOST; the async `Stop` (no Claude timeout) delivered when exec finished. A `mesimon hook` that
+delivers after 41 s without tripping its own 500 ms self-abort spent those seconds before
+`main`, i.e. inside exec, and the unified log says where: AMFI notes the fresh binary has no
+CMS blob (the linker's ad-hoc signature), syspolicyd logs `Couldn't find a cached target …
+during malware scan` and opens an XProtect analysis connection every 6–8 s through the window,
+and the kernel logs an AppleSystemPolicy check against that path for ~37 new pids a second —
+the machine had 40 LEAKED e2e stub sessions (`claude-stub.sh` `sleep 1` loops from interrupt/m3/
+worktree runs, the oldest four days old) in 40 leaked private tmux servers, each forking once a
+second. So: a rebuilt, ad-hoc-signed binary's first execs are held for a malware scan, and under
+an exec storm the hold was tens of seconds. The same shape is why the first run of a freshly
+linked e2e binary fails its opening `wait_until` and passes on the rerun.
+
+**The gap, and the fix.** The session file flips `idle` at the end of EVERY turn, milliseconds
+before the Stop hook fires — the probe never distinguished "the turn closed and the hook is in
+flight" from "the prompt was handed back to the box". Now it asks the transcript first:
+`daemon/src/tail.rs::turn_done_since(path, since)` walks the last 64 KiB newest-first through
+`core/src/adopt.rs::turn_edge`, where an `assistant` record with `stop_reason: end_turn` or a
+`system`/`stop_hook_summary` (or `turn_duration`, which current Claude Code no longer writes)
+is `Done(at)`, a `user` record or a mid-turn/aborted assistant record is `Open`, and latches,
+attachments and other system records are `Unsaid` and skipped. `Done` at a stamp `>= since`
+(the Running spell's `state_changed_at`) rides `Signal::StatusFileIdle { turn_done: true }` →
+`Idle{EndTurn}` at Medium — the same row, the same leave-settle, and automove promotes Medium,
+so the card reaches REVIEW without the hook; a Stop that arrives later commits High over it,
+and a probe never overrides a pending stated leave (unchanged). The recordless Esc is intact:
+its last closing record is the PREVIOUS turn's, older than the spell, so `turn_done` is false
+and the row stays `Interrupted`. `adopt::iso_ms` parses Claude Code's `timestamp` (UTC `Z`
+only, no guess for anything else). E2e: the second test in `interrupt_status_e2e.rs` writes
+the closed turn and expects `EndTurn` Medium and REVIEW. Not done here: the leaked stubs and
+servers were left for the author (`tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server`
+each, never a sweep — real boards are among the sockets); the sync hooks' 2 s timeout stays.
+

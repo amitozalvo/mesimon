@@ -152,12 +152,7 @@ fn candidate(
     pid_files: &HashMap<uuid::Uuid, PidEntry>,
 ) -> Option<ExternalItem> {
     let meta = std::fs::metadata(path).ok()?;
-    let mtime_ms = meta
-        .modified()
-        .ok()?
-        .duration_since(std::time::UNIX_EPOCH)
-        .ok()
-        .map(|d| d.as_millis() as u64)?;
+    let mtime_ms = mesimon_core::clock::epoch_ms(meta.modified().ok()?)?;
 
     let head = read_head(path)?;
     let head = parse_transcript_head(&head)?;

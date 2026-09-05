@@ -27,7 +27,7 @@ pub struct Sampler {
     status: ClaudeMdStatus,
     /// `(len, mtime_ms)` of each file looked at, in `paths()` order. A file
     /// that is missing stamps `None`, so its arrival is a change too.
-    stamps: Vec<Option<(u64, u128)>>,
+    stamps: Vec<Option<(u64, u64)>>,
 }
 
 /// The files a marker may live in: the repo root's `CLAUDE.md`, and
@@ -38,14 +38,9 @@ fn paths(repo: &Path) -> [PathBuf; 2] {
     [repo.join("CLAUDE.md"), repo.join(".claude").join("CLAUDE.md")]
 }
 
-fn stamp(path: &Path) -> Option<(u64, u128)> {
+fn stamp(path: &Path) -> Option<(u64, u64)> {
     let meta = std::fs::metadata(path).ok()?;
-    let ms = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let ms = meta.modified().ok().and_then(mesimon_core::clock::epoch_ms).unwrap_or(0);
     Some((meta.len(), ms))
 }
 
@@ -60,7 +55,7 @@ impl Sampler {
     /// quiet otherwise — the road `gitstatus::sample` already takes.
     pub fn refresh(&mut self, repo: &Path) -> bool {
         let files = paths(repo);
-        let stamps: Vec<Option<(u64, u128)>> = files.iter().map(|p| stamp(p)).collect();
+        let stamps: Vec<Option<(u64, u64)>> = files.iter().map(|p| stamp(p)).collect();
         if stamps == self.stamps && !self.status.path.is_empty() {
             return false;
         }

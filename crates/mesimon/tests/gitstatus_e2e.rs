@@ -19,19 +19,6 @@ use std::time::{Duration, Instant};
 
 use mesimon_core::command::{Command, RepoGit, Response};
 
-fn git(repo: &std::path::Path, args: &[&str]) -> String {
-    let out = Proc::new("git").arg("-C").arg(repo).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
-
-fn git_of(resp: Response) -> RepoGit {
-    match resp {
-        Response::Board { git, .. } => git,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
-
 /// Poll the snapshot until `want` holds of its git state; the sample runs on
 /// the 10 s bucket, and a fetch press re-samples when it lands.
 fn wait_git(c: &mut TestClient, what: &str, mut want: impl FnMut(&RepoGit) -> bool) -> RepoGit {

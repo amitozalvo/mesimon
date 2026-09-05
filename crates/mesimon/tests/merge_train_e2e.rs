@@ -20,13 +20,7 @@ use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AutomationStatus, Command, Pending, Response, WorktreeItem};
-
-fn git(repo: &Path, args: &[&str]) -> String {
-    let out = Proc::new("git").arg("-C").arg(repo).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-    String::from_utf8_lossy(&out.stdout).into_owned()
-}
+use mesimon_core::command::{AutomationStatus, Command, Response, WorktreeItem};
 
 fn git_ok(repo: &Path, args: &[&str]) -> bool {
     Proc::new("git")
@@ -94,25 +88,6 @@ fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, Pa
     (id, sid, wt.branch, path)
 }
 
-/// A repository under the harness's bare directory, one commit on `main`.
-fn init_repo(repo: &Path) {
-    git(repo, &["init", "-q", "-b", "main"]);
-    git(repo, &["config", "user.email", "e2e@t"]);
-    git(repo, &["config", "user.name", "e2e"]);
-    std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
-    git(repo, &["add", "."]);
-    git(repo, &["commit", "-qm", "init"]);
-}
-
-fn pending_of(c: &mut TestClient, ticket: ulid::Ulid) -> Vec<Pending> {
-    match c.request(Command::Snapshot) {
-        Response::Board { pending, .. } => {
-            pending.into_iter().filter(|p| p.ticket == ticket).collect()
-        }
-        other => panic!("not a board: {other:?}"),
-    }
-}
-
 /// `t` on the card (T-227): a REVIEW ticket the armed train would merge is
 /// taken off it — the snapshot lists nothing owed, the flag is in the ticket
 /// file (a restart cannot re-arm it), and main does not move — and put back,
@@ -129,7 +104,7 @@ fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
     };
     let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
     let repo = h.repo.clone();
-    init_repo(&repo);
+    init_repo(&repo, "a.txt", "hello\n");
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train-manual");
     let (a, sa, branch_a, _) = ready(&mut c, "alpha");
@@ -158,7 +133,7 @@ fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
     assert!(automation_of(&mut c).merge_train);
     // Nothing is owed and nothing moves, through several passes.
     std::thread::sleep(Duration::from_millis(3000));
-    assert!(pending_of(&mut c, a).is_empty(), "a manual ticket is owed nothing");
+    assert!(pending_of(&mut c, Some(a)).is_empty(), "a manual ticket is owed nothing");
     assert!(
         !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]),
         "merged while off the train"
@@ -194,7 +169,7 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
     let repo = h.repo.clone();
     // The harness boots on a bare directory; the train needs a repository.
-    init_repo(&repo);
+    init_repo(&repo, "a.txt", "hello\n");
     let tmux_sock = h.paths.tmux_sock();
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train");

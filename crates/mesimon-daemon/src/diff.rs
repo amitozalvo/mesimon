@@ -28,22 +28,21 @@ const BINARY_SNIFF_BYTES: usize = 8000;
 
 /// Read-path git, bytes out. `--no-optional-locks` always.
 fn git_bytes(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
-    let out =
-        crate::git::git(repo).arg("--no-optional-locks").args(args).output().context("run git")?;
-    if !out.status.success() {
-        bail!("{}", String::from_utf8_lossy(&out.stderr).trim());
-    }
-    Ok(out.stdout)
+    git_bytes_ok(repo, args, |code| code == 0)
 }
 
 /// `git_bytes` for the `--no-index` road, where **exit 1 is success**: that is
 /// git's diff convention for "differences found", and every untracked file we
 /// ask about has some. Anything above 1 is still a failure.
 fn git_bytes_diff(repo: &Path, args: &[&str]) -> Result<Vec<u8>> {
+    git_bytes_ok(repo, args, |code| code <= 1)
+}
+
+fn git_bytes_ok(repo: &Path, args: &[&str], ok: impl Fn(i32) -> bool) -> Result<Vec<u8>> {
     let out =
         crate::git::git(repo).arg("--no-optional-locks").args(args).output().context("run git")?;
     match out.status.code() {
-        Some(0) | Some(1) => Ok(out.stdout),
+        Some(code) if ok(code) => Ok(out.stdout),
         _ => bail!("{}", String::from_utf8_lossy(&out.stderr).trim()),
     }
 }

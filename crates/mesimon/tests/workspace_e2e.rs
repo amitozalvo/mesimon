@@ -18,42 +18,11 @@
 mod common;
 use common::*;
 
-use std::path::Path;
 use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, WorkspaceStrategy};
-use mesimon_core::command::{Command, DiffTarget, RepoGit, Response};
-use mesimon_core::diff::FileEntry;
-
-fn git(repo: &Path, args: &[&str]) {
-    let out = Proc::new("git").arg("-C").arg(repo).args(args).output().unwrap();
-    assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
-}
-
-fn init_repo(dir: &Path, file: &str, body: &str) {
-    std::fs::create_dir_all(dir).unwrap();
-    git(dir, &["init", "-q", "-b", "main"]);
-    git(dir, &["config", "user.email", "e2e@t"]);
-    git(dir, &["config", "user.name", "e2e"]);
-    std::fs::write(dir.join(file), body).unwrap();
-    git(dir, &["add", "."]);
-    git(dir, &["commit", "-qm", "init"]);
-}
-
-fn git_of(resp: Response) -> RepoGit {
-    match resp {
-        Response::Board { git, .. } => git,
-        other => panic!("expected board, got {other:?}"),
-    }
-}
-
-fn files(resp: &Response) -> Vec<FileEntry> {
-    match resp {
-        Response::DiffList { files, .. } => files.clone(),
-        other => panic!("expected DiffList, got {other:?}"),
-    }
-}
+use mesimon_core::command::{Command, DiffTarget, Response};
 
 #[test]
 fn a_workspace_of_repos_stands_on_the_wire() {
@@ -110,7 +79,7 @@ fn a_workspace_of_repos_stands_on_the_wire() {
         }
         other => panic!("expected DiffList, got {other:?}"),
     }
-    let listed = files(&resp);
+    let listed = files_of(&resp);
     let paths: Vec<&str> = listed.iter().map(|f| f.path.as_str()).collect();
     assert_eq!(
         paths,

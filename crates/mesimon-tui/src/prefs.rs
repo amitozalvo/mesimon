@@ -73,21 +73,9 @@ const MERGE_TRAIN_KEY: &str = "merge_train";
 const MERGE_TRAIN_NOTICE_KEY: &str = "merge_train_notice";
 
 impl Prefs {
-    pub(crate) fn set_merge_train(&mut self, on: bool) {
-        self.merge_train = on;
-        self.doc.insert(MERGE_TRAIN_KEY.into(), Value::from(on));
-    }
-
-    pub(crate) fn set_merge_train_notice(&mut self, on: bool) {
-        self.merge_train_notice = on;
-        self.doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(on));
-    }
-
-    pub(crate) fn set_snooze_needs_you(&mut self, on: bool) {
-        self.snooze_needs_you = on;
-        self.doc.insert(SNOOZE_KEY.into(), Value::from(on));
-    }
-
+    // The three bools are plain fields: `body()` writes every one on each
+    // save. The week's day has a setter because its write is conditional —
+    // a foreign day in the file survives until a pick replaces it.
     pub(crate) fn set_week_start(&mut self, day: Weekday) {
         self.week_start = day;
         self.doc.insert(WEEK_START_KEY.into(), Value::from(day.key()));
@@ -107,7 +95,7 @@ impl Prefs {
         }
         // A pick replaces whatever the slot held, a name from a newer build
         // included — this is the one write that outranks it.
-        self.doc.insert(slot_key(g).into(), Value::from(f.name()));
+        self.doc.insert(g.word().into(), Value::from(f.name()));
     }
 
     fn body(&self) -> String {
@@ -140,13 +128,7 @@ impl Prefs {
     }
 }
 
-fn slot_key(g: Ground) -> &'static str {
-    match g {
-        Ground::Dark => "dark",
-        Ground::Light => "light",
-    }
-}
-
+#[derive(Default)]
 pub(crate) struct Loaded {
     pub prefs: Prefs,
     /// A newer build wrote it: read what is readable, write nothing back.
@@ -163,11 +145,16 @@ pub(crate) fn prefs_path() -> Option<PathBuf> {
     Some(PathBuf::from(home).join(".local/state/mesimon/prefs.json"))
 }
 
+/// The file where it lives, or the defaults where there is none — what
+/// every `doctor` line starts from.
+pub(crate) fn load_home() -> Loaded {
+    prefs_path().map(|p| load(&p)).unwrap_or_default()
+}
+
 pub(crate) fn load(path: &Path) -> Loaded {
-    let defaults = || Loaded { prefs: Prefs::default(), write_barred: false, notice: None };
     let text = match std::fs::read_to_string(path) {
         Ok(t) => t,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return defaults(),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Loaded::default(),
         Err(_) => return unreadable(),
     };
     let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&text) else {
@@ -230,11 +217,7 @@ pub(crate) fn save(path: &Path, prefs: &Prefs) -> anyhow::Result<()> {
 /// on: doctor runs in pipes, and an OSC 11 query there is exactly the tty
 /// write the query-hygiene rules forbid.
 pub fn doctor_line() -> String {
-    let loaded = prefs_path().map(|p| load(&p)).unwrap_or_else(|| Loaded {
-        prefs: Prefs::default(),
-        write_barred: false,
-        notice: None,
-    });
+    let loaded = load_home();
     let mut line =
         format!("dark: {} ∙ light: {}", loaded.prefs.dark.name(), loaded.prefs.light.name());
     if let Some(f) = std::env::var("MESIMON_THEME").ok().as_deref().and_then(Flavor::from_name) {
@@ -251,11 +234,7 @@ pub fn doctor_line() -> String {
 /// `mesimon doctor`'s `merge train` line: on or off, and whether it tells
 /// the agent after a merge. Fresh from the file, no daemon needed.
 pub fn train_doctor_line() -> String {
-    let loaded = prefs_path().map(|p| load(&p)).unwrap_or_else(|| Loaded {
-        prefs: Prefs::default(),
-        write_barred: false,
-        notice: None,
-    });
+    let loaded = load_home();
     let p = &loaded.prefs;
     if !p.merge_train {
         "off (Settings turns it on: merges quiet REVIEW branches, asks idle agents to rebase)"
@@ -268,7 +247,7 @@ pub fn train_doctor_line() -> String {
 }
 
 pub fn snooze_doctor_line() -> String {
-    let prefs = prefs_path().map(|p| load(&p).prefs).unwrap_or_default();
+    let prefs = load_home().prefs;
     let back = if prefs.snooze_needs_you {
         "a woken ticket returns with needs-you"
     } else {
@@ -354,7 +333,7 @@ mod tests {
         std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
         let mut l = load(&p);
         assert!(l.prefs.snooze_needs_you, "absent is the default: on");
-        l.prefs.set_snooze_needs_you(false);
+        l.prefs.snooze_needs_you = false;
         save(&p, &l.prefs).unwrap();
         let l = load(&p);
         assert!(!l.prefs.snooze_needs_you);
@@ -378,8 +357,8 @@ mod tests {
         let mut l = load(&p);
         assert!(!l.prefs.merge_train, "absent is the default: off");
         assert!(l.prefs.merge_train_notice, "absent is the default: on");
-        l.prefs.set_merge_train(true);
-        l.prefs.set_merge_train_notice(false);
+        l.prefs.merge_train = true;
+        l.prefs.merge_train_notice = false;
         save(&p, &l.prefs).unwrap();
         let mut l = load(&p);
         assert!(l.prefs.merge_train);

@@ -718,6 +718,9 @@ pub struct Flags {
     pub merged: bool,
     pub ahead: u32,
     pub needs_rebase: bool,
+    /// The branch's tip at the sample, so the snapshot road and the train
+    /// can key a refusal on it without a fork of their own.
+    pub tip: String,
 }
 
 /// Every binding's flags, sampled together, plus the base branch they were
@@ -783,7 +786,7 @@ pub fn compute_flags(repo: &Path, base: &str, inputs: &[FlagInput]) -> WtFlags {
                 }
                 None => (false, 0, false),
             };
-            Flags { ticket: i.ticket, merged, ahead, needs_rebase: !merged && !ff }
+            Flags { ticket: i.ticket, merged, ahead, needs_rebase: !merged && !ff, tip }
         })
         .collect();
     let conflicts = list_worktrees(repo).map(|rows| branch_conflicts(&rows)).unwrap_or_default();

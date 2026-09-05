@@ -23,7 +23,6 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
-use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::board::MAX_TAGS_PER_GROUP;
 
@@ -78,11 +77,6 @@ fn digit_of(group: u8) -> char {
     }
 }
 
-/// Display width of the spans built so far — where the next one starts.
-fn x_of(spans: &[Span<'static>]) -> usize {
-    spans.iter().map(|s| s.content.width()).sum()
-}
-
 /// One cell of a row, built before anything is placed: which cells are drawn
 /// depends on the total, and the total is not known until they all exist.
 #[derive(Default)]
@@ -96,7 +90,7 @@ struct Cell {
 
 impl Cell {
     fn width(&self) -> usize {
-        x_of(&self.spans)
+        super::spans_width(&self.spans)
     }
 
     fn push(&mut self, span: Span<'static>) {
@@ -261,7 +255,7 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
             if arm.row == row { theme.base().add_modifier(Modifier::BOLD) } else { theme.dim3() },
         )];
         let widths: Vec<usize> = cells.iter().map(Cell::width).collect();
-        let avail = (area.width as usize).saturating_sub(x_of(&spans));
+        let avail = (area.width as usize).saturating_sub(super::spans_width(&spans));
         // A row the cursor is not on has no cell to keep in view, so it is
         // anchored at its start: the digit's first tags are the ones a jump
         // will land on.
@@ -272,14 +266,14 @@ pub(super) fn draw(f: &mut Frame, area: Rect, app: &App) {
         }
         for cell in &cells[win.start..win.end] {
             if let Some(off) = cell.cursor {
-                cursor = Some(x_of(&spans) + off);
+                cursor = Some(super::spans_width(&spans) + off);
             }
             spans.extend(cell.spans.iter().cloned());
         }
         if win.end < cells.len() {
             spans.push(Span::styled(MORE.to_string(), theme.dim3()));
         }
-        let used = x_of(&spans);
+        let used = super::spans_width(&spans);
         let pad = (area.width as usize).saturating_sub(used);
         spans.push(Span::raw(" ".repeat(pad)));
         lines.push(Line::from(spans));

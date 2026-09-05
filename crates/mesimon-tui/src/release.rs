@@ -25,7 +25,7 @@
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::mpsc::{self, Receiver, Sender};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use semver::Version;
 use sha2::{Digest, Sha256};
@@ -590,9 +590,7 @@ fn write_stamp(p: &Path, latest: &str) {
     let _ = std::fs::write(p, body.to_string());
 }
 
-fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_millis() as u64).unwrap_or(0)
-}
+use mesimon_core::clock::now_ms;
 
 #[cfg(test)]
 mod tests {

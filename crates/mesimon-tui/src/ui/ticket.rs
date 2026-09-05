@@ -10,6 +10,9 @@ use mesimon_core::board::{NoteMeta, Provenance, SessionKind, SessionState};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
+use std::rc::Rc;
+
+use super::RichCache;
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
@@ -53,10 +56,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let Some(ticket) = app.board.ticket(ticket_id) else {
         return;
     };
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let now = mesimon_core::clock::now_ms();
     // ---- row 0: the header (chip + breadcrumb, `chrome::draw_header`);
     // row 2: the TITLE, the page's own headline (T-158 — it lived only in
     // the breadcrumb before). `r` edits it right here (hardware cursor,
@@ -111,14 +111,28 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // ---- row 3: the STATE line — column, time in that column (the card's
     // own age, `Ticket::column_since`), created age (short keys are hidden
     // from the UI for now, author 2026-08-30; "created by you" went with
-    // T-158 — single-user v0.1 says nothing by it). M4: the workspace joins
+    // T-158 — single-user v0.1 says nothing by it — and since T-253 the
+    // clause names the author only when it was NOT the person reading:
+    // `created 2d ago by claude on T-241` on a ticket an agent filed through
+    // `create_ticket` — `Ticket::created_by`, and `created_from` resolved to
+    // the parent's key while that ticket is still on the board). M4: the workspace joins
     // the line — the strategy word until a binding exists, then the branch
     // and its state (short keys resurface through the branch name).
     let here = created_at_epoch_ms(ticket.column_since())
         .map(|ms| format!(" {}", age_in_column(now, ms)))
         .unwrap_or_default();
+    let by = if ticket.agent_created() {
+        let on = ticket
+            .created_from
+            .and_then(|from| app.board.ticket(from))
+            .map(|parent| format!(" on {}", parent.short_key))
+            .unwrap_or_default();
+        format!(" by claude{on}")
+    } else {
+        String::new()
+    };
     let created = created_at_epoch_ms(&ticket.created_at)
-        .map(|ms| format!(" ∙ {}", age_created(now, ms)))
+        .map(|ms| format!(" ∙ {}{by}", age_created(now, ms)))
         .unwrap_or_default();
     let mut ident_spans = vec![
         Span::styled(format!(" {}", ticket.column.to_uppercase()), d2),
@@ -236,13 +250,13 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // ` ∙` separator was pushed before any chip was tried, so T-163's page
     // read `created 19m ago ∙ ∙ ⎇ msmn/…`, dogfood 2026-09-03). The clause
     // keeps a floor so a ticket wearing ten tags still says where it lives.
-    let wt_width: usize = wt_spans.iter().map(|s| s.content.width()).sum();
+    let wt_width: usize = super::spans_width(&wt_spans);
     // What the clause holds besides its first span (the branch name): the
     // merge state and detail, which are never cut — only the name gives.
     let wt_rest = wt_width.saturating_sub(wt_spans.first().map_or(0, |s| s.content.width()));
     let wt_reserve = wt_width.min(wt_rest + WT_BRANCH_FLOOR);
     if !ticket.tags.is_empty() {
-        let used: usize = ident_spans.iter().map(|s| s.content.width()).sum();
+        let used: usize = super::spans_width(&ident_spans);
         let mut budget = (area.width as usize).saturating_sub(used + wt_reserve + 4);
         // Each tag as a short painted chip carrying its name — the same paint
         // the card band uses, so the two surfaces agree at a glance.
@@ -270,7 +284,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // The branch name fits the room the rest of the row leaves, cut with the
     // `~` marker (never below its floor) rather than the line running off the
     // right edge — `truncate` never marks what fits.
-    let used: usize = ident_spans.iter().map(|s| s.content.width()).sum();
+    let used: usize = super::spans_width(&ident_spans);
     let room = (area.width as usize).saturating_sub(used + 1);
     if wt_width > room {
         if let Some(first) = wt_spans.first_mut() {
@@ -328,7 +342,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         .into_iter()
         .enumerate()
         .map(|(i, mut l)| {
-            let used: usize = l.spans.iter().map(|s| s.content.width()).sum();
+            let used: usize = super::spans_width(&l.spans);
             l.spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(used))));
             // Row 1 is the title row; lit, it takes the deletion ground.
             if doomed && i == 1 {
@@ -391,7 +405,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
             app,
             sel.map(|s| s.id),
-            peek.as_ref(),
+            peek.as_deref(),
             working,
             shell,
             note,
@@ -455,7 +469,7 @@ fn draw_preview(
         let keys = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::PageDown, &ctx)
             .map(|b| chrome::hint_spans(&[b], &ctx, &theme.rest, (area.width as usize) / 2))
             .unwrap_or_default();
-        let keys_w: usize = keys.iter().map(|s| s.content.width()).sum();
+        let keys_w: usize = super::spans_width(&keys);
         if keys_w > 0 {
             spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(8 + keys_w + 1))));
             spans.extend(keys);
@@ -500,7 +514,7 @@ fn draw_preview(
         // too long for the zone loses its top, never its end — until `{`
         // asks for the top, and then the window is the reader's.
         let key = session.map(|s| doc_key(s, None));
-        let shown = window(app, key, rows, budget, width, true);
+        let shown = window(app, key, &rows, budget, width, true);
         for row in shown {
             let mut spans = vec![Span::raw("   ")];
             spans.extend(row.spans);
@@ -517,8 +531,9 @@ fn draw_preview(
             Some(text) => {
                 let budget = (area.height as usize).saturating_sub(lines.len());
                 let width = (area.width as usize).saturating_sub(4);
-                let rows = crate::rich::render_all(text, width, theme);
-                let shown = window(app, Some(note_key(meta)), rows, budget, width, false);
+                let key = note_key(meta);
+                let rows = rendered(app, key, width, text);
+                let shown = window(app, Some(key), &rows, budget, width, false);
                 for row in shown {
                     let mut spans = vec![Span::raw("   ")];
                     spans.extend(row.spans);
@@ -540,8 +555,11 @@ fn draw_preview(
             // Keyed to the reply as well as the session: a page into this
             // reply must not open the next one halfway down.
             let key = session.map(|s| doc_key(s, Some(text)));
-            let rows = crate::rich::render_all(text, width, theme);
-            let shown = window(app, key, rows, budget, width, false);
+            let rows = match key {
+                Some(key) => rendered(app, key, width, text),
+                None => std::rc::Rc::new(crate::rich::render_all(text, width, theme)),
+            };
+            let shown = window(app, key, &rows, budget, width, false);
             for row in shown {
                 let mut spans = vec![Span::raw("   ")];
                 spans.extend(row.spans);
@@ -579,22 +597,13 @@ fn draw_preview(
 /// the session, and for an agent the reply itself (a shell's pane is one
 /// continuous stream, so new output does not make it a new document).
 fn doc_key(session: uuid::Uuid, reply: Option<&str>) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    session.hash(&mut h);
-    reply.hash(&mut h);
-    h.finish()
+    crate::text::hash64((session, reply))
 }
 
 /// A note's document key: the note and its revision, with a discriminant
 /// so it can never collide with a session's.
 fn note_key(meta: &NoteMeta) -> u64 {
-    use std::hash::{DefaultHasher, Hash, Hasher};
-    let mut h = DefaultHasher::new();
-    1u8.hash(&mut h);
-    meta.id.hash(&mut h);
-    meta.rev.hash(&mut h);
-    h.finish()
+    crate::text::hash64((1u8, meta.id, meta.rev))
 }
 
 /// The zone's window onto `rows`: honours the offset `{ }` asked for
@@ -606,10 +615,27 @@ fn note_key(meta: &NoteMeta) -> u64 {
 /// motion (`App::preview_glide`) the rows drawn are the glide's frame, on
 /// the way to the offset recorded — the record is where the reader is
 /// going, the glide is where the eye is.
+/// The zone's markdown, rendered once per document, width and theme and
+/// kept on `App::rich_cache`: `rich::render_all` parses and wraps the whole
+/// reply, and the draw runs at 60 fps through a glide only to keep a
+/// window of it. Keyed the way the page scroll is (`doc_key` / `note_key`).
+fn rendered(app: &App, key: u64, width: usize, text: &str) -> Rc<Vec<Line<'static>>> {
+    let flavor = app.theme.flavor;
+    let mut slot = app.rich_cache.borrow_mut();
+    if let Some(c) = slot.as_ref() {
+        if c.key == key && c.width == width && c.flavor == flavor {
+            return Rc::clone(&c.rows);
+        }
+    }
+    let rows = Rc::new(crate::rich::render_all(text, width, &app.theme));
+    *slot = Some(RichCache { key, width, flavor, rows: Rc::clone(&rows) });
+    rows
+}
+
 fn window(
     app: &App,
     key: Option<u64>,
-    rows: Vec<Line<'static>>,
+    rows: &[Line<'static>],
     budget: usize,
     width: usize,
     follows_tail: bool,
@@ -647,7 +673,7 @@ fn window(
         }
         None => offset,
     };
-    let mut shown: Vec<Line<'static>> = rows.into_iter().skip(at).take(budget).collect();
+    let mut shown: Vec<Line<'static>> = rows.iter().skip(at).take(budget).cloned().collect();
     if at + shown.len() < total {
         crate::rich::mark_cut(&mut shown, width, &app.theme);
     }

@@ -125,11 +125,7 @@ impl Train {
         self.refused.insert(ticket, (tip, base_tip, detail));
     }
 
-    /// Was a merge at exactly this `(tip, base tip)` refused already?
-    pub fn refused(&self, ticket: ulid::Ulid, tip: &str, base_tip: &str) -> bool {
-        self.refused.get(&ticket).is_some_and(|(t, b, _)| t == tip && b == base_tip)
-    }
-
+    /// The detail of a merge refused at exactly this `(tip, base tip)`.
     pub fn refusal(&self, ticket: ulid::Ulid, tip: &str, base_tip: &str) -> Option<&str> {
         self.refused
             .get(&ticket)
@@ -228,11 +224,11 @@ mod tests {
         let mut train = Train::default();
         let t = ulid::Ulid(1);
         train.refuse(t, "a".into(), "b".into(), "dirty".into());
-        assert!(train.refused(t, "a", "b"));
+        assert!(train.refusal(t, "a", "b").is_some());
         assert_eq!(train.refusal(t, "a", "b"), Some("dirty"));
-        assert!(!train.refused(t, "a2", "b"), "the branch moved");
-        assert!(!train.refused(t, "a", "b2"), "the base moved");
+        assert!(train.refusal(t, "a2", "b").is_none(), "the branch moved");
+        assert!(train.refusal(t, "a", "b2").is_none(), "the base moved");
         train.hand_touched(t);
-        assert!(!train.refused(t, "a", "b"));
+        assert!(train.refusal(t, "a", "b").is_none());
     }
 }

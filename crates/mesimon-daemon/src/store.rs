@@ -182,10 +182,7 @@ pub struct Loaded {
 /// The version is deliberately NOT in the name — the version is often exactly
 /// what could not be read.
 pub fn quarantine(path: &Path) -> Option<std::path::PathBuf> {
-    let ms = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis())
-        .unwrap_or(0);
+    let ms = mesimon_core::clock::now_ms();
     let stem = path.file_name()?.to_string_lossy().into_owned();
     // Millisecond resolution is not enough on its own: two files quarantined
     // in the same millisecond would land on one name and the second rename
@@ -528,11 +525,7 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
 /// default — doctor reporting "off" for a repo that never said so would be
 /// worse than saying nothing.
 pub fn read_mcp_tools(paths: &Paths) -> bool {
-    let path = paths.board_dir.join("board/columns.toml");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return true;
-    };
-    toml::from_str::<ColumnsFile>(&text).map(|cf| cf.mcp_tools).unwrap_or(true)
+    read_columns_file(paths).is_none_or(|cf| cf.mcp_tools)
 }
 
 /// `Board::system_prompt` off the file, for `doctor`, on `read_mcp_tools`'s
@@ -540,11 +533,14 @@ pub fn read_mcp_tools(paths: &Paths) -> bool {
 /// default, for the inverse reason: reporting a system-prompt line ON for a
 /// repo that never asked for one would be the worse mistake.
 pub fn read_system_prompt(paths: &Paths) -> bool {
-    let path = paths.board_dir.join("board/columns.toml");
-    let Ok(text) = std::fs::read_to_string(&path) else {
-        return false;
-    };
-    toml::from_str::<ColumnsFile>(&text).map(|cf| cf.system_prompt).unwrap_or(false)
+    read_columns_file(paths).is_some_and(|cf| cf.system_prompt)
+}
+
+/// `columns.toml` parsed, or `None` where it is missing or unreadable — the
+/// two doctor readers above decide what that answers.
+fn read_columns_file(paths: &Paths) -> Option<ColumnsFile> {
+    let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).ok()?;
+    toml::from_str::<ColumnsFile>(&text).ok()
 }
 
 pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
@@ -1003,6 +999,8 @@ by = "local"
             column: "DONE".into(),
             order: "a0".into(),
             created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
             entered_at: None,
             woke_at: None,
             manual_merge: false,
@@ -1049,6 +1047,8 @@ by = "local"
             column: "DONE".into(),
             order: "a0".into(),
             created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
             entered_at: None,
             woke_at: None,
             manual_merge: false,
@@ -1089,6 +1089,8 @@ by = "local"
             column: "DONE".into(),
             order: "a0".into(),
             created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
             entered_at: None,
             woke_at: None,
             manual_merge: false,
@@ -1143,6 +1145,8 @@ by = "local"
                 column: "DONE".into(),
                 order: "a0".into(),
                 created_at: "@0".into(),
+                created_by: String::new(),
+                created_from: None,
                 entered_at: None,
                 woke_at: None,
                 manual_merge: false,
@@ -1408,6 +1412,8 @@ by = "local"
             column: "TODO".into(),
             order: "a0".into(),
             created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
             entered_at: None,
             woke_at: None,
             manual_merge: false,
@@ -1419,5 +1425,46 @@ by = "local"
         let s = toml::to_string_pretty(&t).unwrap();
         let back: Ticket = toml::from_str(&s).unwrap();
         assert_eq!(back.workspace, Some(mesimon_core::board::WorkspaceStrategy::Worktree));
+    }
+
+    /// `created_by` (T-253) rides the file as a scalar, is omitted while
+    /// empty, and a file from before it reads back as unknown — not as a
+    /// person, which is what the ticket page's silence on a human ticket
+    /// would otherwise claim of every old one.
+    #[test]
+    fn created_by_roundtrips_and_an_old_file_reads_unknown() {
+        let mut t = Ticket {
+            id: ulid::Ulid(8),
+            short_key: "T-8".into(),
+            title: "filed".into(),
+            column: "TODO".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            workspace: None,
+            tags: Vec::new(),
+            notes: Vec::new(),
+            archived: None,
+        };
+        let old = toml::to_string_pretty(&t).unwrap();
+        assert!(!old.contains("created_by"), "empty is omitted:\n{old}");
+        let back: Ticket = toml::from_str(&old).unwrap();
+        assert!(back.created_by.is_empty());
+        assert!(!back.agent_created());
+
+        assert!(!old.contains("created_from"), "absent is omitted:\n{old}");
+        assert_eq!(back.created_from, None);
+
+        t.created_by = "agent:00000000-0000-0000-0000-000000000000".into();
+        t.created_from = Some(ulid::Ulid(241));
+        let s = toml::to_string_pretty(&t).unwrap();
+        let back: Ticket = toml::from_str(&s).unwrap();
+        assert!(back.agent_created());
+        assert_eq!(back.created_by, t.created_by);
+        assert_eq!(back.created_from, Some(ulid::Ulid(241)));
     }
 }

@@ -327,6 +327,21 @@ pub struct Ticket {
     /// Fractional index within the column.
     pub order: String,
     pub created_at: String,
+    /// Who minted the ticket, in [`crate::Principal::note_author`]'s words —
+    /// `local` for a person at the composer, `agent:<session-uuid>` for an
+    /// agent's `create_ticket` — so a ticket and its notes name an author the
+    /// same way (T-253, 2026-09-05). Empty on a ticket from before the field,
+    /// which reads as UNKNOWN, never as a person. A scalar, with the scalars.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub created_by: String,
+    /// The ticket the agent that filed this one was working on (T-253): the
+    /// caller's binding at `create_ticket`, a fact of the FILE rather than a
+    /// join against a session record a delete can take away. `None` on a
+    /// person's ticket and on one from before the field. A ULID, never a key:
+    /// the page resolves the key from the board and says nothing when that
+    /// ticket is gone too.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub created_from: Option<ulid::Ulid>,
     /// When the ticket entered its CURRENT column, same clock as `created_at`.
     /// Stamped at mint and by every column move — never by a reorder inside
     /// the column, a rename, a tag or a session — so the card's age is "time
@@ -615,6 +630,13 @@ pub enum WorkspaceStrategy {
 pub const DEFAULT_WORKSPACE: WorkspaceStrategy = WorkspaceStrategy::SharedCheckout;
 
 impl Ticket {
+    /// An agent minted this ticket (`created_by` is `agent:<uuid>`). A person's
+    /// ticket and a pre-field one both answer no: the page says who filed a
+    /// ticket only when it was not the person reading it.
+    pub fn agent_created(&self) -> bool {
+        self.created_by.starts_with("agent:")
+    }
+
     /// The stamp the board's age slot counts from: when the ticket entered
     /// its current column, or its creation where no move has stamped it yet.
     pub fn column_since(&self) -> &str {
@@ -1140,6 +1162,8 @@ mod tests {
             column: column.into(),
             order: order.into(),
             created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
             entered_at: None,
             woke_at: None,
             manual_merge: false,

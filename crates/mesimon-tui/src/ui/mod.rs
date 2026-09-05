@@ -29,6 +29,20 @@ use ratatui::Frame;
 use crate::app::{App, Mode, Screen};
 use crate::layout::{MIN_H, MIN_W};
 
+/// The cells a run of spans occupies.
+pub(crate) fn spans_width(spans: &[ratatui::text::Span<'_>]) -> usize {
+    use unicode_width::UnicodeWidthStr;
+    spans.iter().map(|s| s.content.width()).sum()
+}
+
+/// One rendered markdown document, kept across frames (`ticket::rendered`).
+pub(crate) struct RichCache {
+    pub key: u64,
+    pub width: usize,
+    pub flavor: crate::theme::Flavor,
+    pub rows: std::rc::Rc<Vec<Line<'static>>>,
+}
+
 pub fn draw(f: &mut Frame, app: &App) {
     // Paint the page ground first (a transparent ground would ride the
     // terminal's own theme under a mismatched palette).

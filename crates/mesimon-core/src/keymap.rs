@@ -762,14 +762,6 @@ pub struct Ctx {
     /// mirrored). Shift+Tab in the description editor sets it then — the
     /// composer's choice, a press late.
     pub workspace_open: bool,
-    /// The editor is on a ticket whose claude has a pane: `^S` saves and
-    /// tells it the note changed (`NoteToAgent`).
-    pub editor_claude_paned: bool,
-    /// The editor is on a ticket that holds NO claude at all (a Sleeping one
-    /// holds the seat): `^S` saves and starts one on the title, the way it
-    /// would on a ticket being composed (2026-09-04, "if no claude session
-    /// in ticket, treat like new").
-    pub editor_seat_empty: bool,
     /// The program `^g` hands the note's body to — the basename of
     /// `$VISUAL`, else `$EDITOR`, else `vi` — as the footer's word for it
     /// (`^g nvim`). Empty means no external editor is wired up (every test
@@ -2660,16 +2652,12 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // Which day "next week" starts on: the snooze ring's last rung.
     MenuItem {
         verb: Verb::WeekStart,
-        label: |c| {
-            if c.week_start_word.is_empty() {
-                "Week starts on Monday".into()
-            } else {
-                format!("Week starts on {}", c.week_start_word)
-            }
-        },
+        label: |c| format!("Week starts on {}", or(c.week_start_word, "Monday")),
         detail: |c| {
-            let day = if c.week_start_word.is_empty() { "Monday" } else { c.week_start_word };
-            format!("z's last rung: next {day} 9:00 ∙ enter cycles the day")
+            format!(
+                "z's last rung: next {} 9:00 ∙ enter cycles the day",
+                or(c.week_start_word, "Monday")
+            )
         },
         avail: always,
         key: "",
@@ -2769,13 +2757,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
 
 /// `3 agents`, `1 agent` — a count and its noun. Every suggestion carries a
 /// number, and `1 tickets` in the header would be the first thing seen.
-fn plural(n: usize, noun: &str) -> String {
-    if n == 1 {
-        format!("1 {noun}")
-    } else {
-        format!("{n} {noun}s")
-    }
-}
+use crate::text::plural;
 
 /// Whole GiB, or None below a tenth of one — a payoff that rounds to
 /// `~0.0GiB` is not a payoff, so the detail says it in words instead.
@@ -3269,11 +3251,23 @@ static EDITOR: &[Binding] = &[
         keys: &[Key::Ctrl('S')],
         verb: Verb::EditorSaveStart,
         show: "^S",
-        hint: |c| if c.editor_claude_paned { "save + tell claude" } else { "save + ask claude" },
+        // On a note the key follows who is on the ticket — the editor's
+        // ticket IS the subject, so the board's own two facts say it: a
+        // paned claude is told the note changed (`NoteToAgent`), a ticket
+        // with NO claude gets one started on the title the way a composed
+        // ticket would (2026-09-04, "if no claude session in ticket, treat
+        // like new"), and a Sleeping one — live, no pane — leaves it inert.
+        hint: |c| {
+            if !c.editor_composing && c.ticket_promptable {
+                "save + tell claude"
+            } else {
+                "save + ask claude"
+            }
+        },
         avail: |c| {
             c.editing
                 && c.rich_keys
-                && (c.editor_composing || c.editor_claude_paned || c.editor_seat_empty)
+                && (c.editor_composing || c.ticket_promptable || !c.ticket_has_claude)
         },
         class: Class::Plain,
         group: Group::Sessions,
@@ -3815,21 +3809,26 @@ mod tests {
         // told, an empty seat gets one started ("treat like new"), and a
         // Sleeping claude — neither paned nor an empty seat — leaves it
         // inert, the board's Shift+Enter's rule.
-        let paned =
-            Ctx { editing: true, editor_claude_paned: true, rich_keys: true, ..Default::default() };
+        let paned = Ctx {
+            editing: true,
+            ticket_has_claude: true,
+            ticket_promptable: true,
+            rich_keys: true,
+            ..Default::default()
+        };
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &paned), Some(Verb::EditorSaveStart));
         assert_eq!(
             hint_for(Scope::Editor, Verb::EditorSaveStart, &paned),
             Some(("^S", "save + tell claude"))
         );
-        let empty =
-            Ctx { editing: true, editor_seat_empty: true, rich_keys: true, ..Default::default() };
+        let empty = Ctx { editing: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &empty), Some(Verb::EditorSaveStart));
         assert_eq!(
             hint_for(Scope::Editor, Verb::EditorSaveStart, &empty),
             Some(("^S", "save + ask claude"))
         );
-        let asleep = Ctx { editing: true, rich_keys: true, ..Default::default() };
+        let asleep =
+            Ctx { editing: true, ticket_has_claude: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &asleep), None);
         assert_eq!(hint_for(Scope::Editor, Verb::EditorSaveStart, &asleep), None);
         // And the case is the atom: `^s` and `^S` never collapse in the name.

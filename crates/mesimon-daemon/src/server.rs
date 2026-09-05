@@ -291,6 +291,7 @@ pub struct Daemon {
     wt_merged: HashMap<ulid::Ulid, bool>,
     wt_ahead: HashMap<ulid::Ulid, u32>,
     wt_needs_rebase: HashMap<ulid::Ulid, bool>,
+    wt_tip: HashMap<ulid::Ulid, String>,
     wt_conflicts: Vec<String>,
     /// Bumped by every synchronous flag refresh; a worker's sample carries
     /// the value it started under and lands only if nothing bumped it since.
@@ -585,6 +586,7 @@ pub fn run(paths: Paths) -> Result<()> {
         wt_merged: HashMap::new(),
         wt_ahead: HashMap::new(),
         wt_needs_rebase: HashMap::new(),
+        wt_tip: HashMap::new(),
         wt_conflicts: Vec::new(),
         wt_gen: 0,
         wt_inflight: false,
@@ -876,11 +878,10 @@ struct QueuedAsk {
     queued_at: u64,
 }
 
-fn now_ms() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0)
+use mesimon_core::clock::{now_ms, now_secs};
+
+fn no_such_ticket() -> Response {
+    Response::Err { message: "no such ticket".into() }
 }
 
 /// The notice kind a failed shell-env capture stands under. One kind, replaced
@@ -1171,16 +1172,12 @@ impl Daemon {
                 self.subscribers.push(stream.clone());
                 Response::Ok
             }
-            // A barred columns.toml means next_key cannot be persisted, so a
-            // new ticket's short_key would regress on the next start and
-            // save_ticket would write over an existing ticket directory.
-            Command::CreateTicket { .. } if self.columns_barred => {
-                Response::Err { message: self.barred_message("columns") }
+            Command::CreateTicket { column, title } => {
+                self.create_ticket(&env.principal, column, title)
             }
-            Command::CreateTicket { column, title } => self.create_ticket(column, title),
-            Command::RenameTicket { id, title } => self
-                .with_ticket(id, |t| t.title = mesimon_core::board::sanitize_title(&title))
-                .unwrap_or(Response::Err { message: "no such ticket".into() }),
+            Command::RenameTicket { id, title } => {
+                self.with_ticket(id, |t| t.title = mesimon_core::board::sanitize_title(&title))
+            }
             Command::DeleteTicket { id, discard_worktree } => {
                 self.delete_ticket(id, discard_worktree)
             }
@@ -1296,7 +1293,7 @@ impl Daemon {
             },
             Command::PaneTail { session, lines } => self.pane_tail(session, lines),
             Command::AttachExternal { claude_session_id, ticket } => {
-                match self.attach_external(claude_session_id, ticket) {
+                match self.attach_external(&env.principal, claude_session_id, ticket) {
                     Ok(id) => {
                         self.persist_and_notify();
                         Response::Spawned { id, fresh: false }
@@ -1305,7 +1302,7 @@ impl Daemon {
                 }
             }
             Command::ResumeExternal { claude_session_id, ticket, confirm } => {
-                match self.attach_external(claude_session_id, ticket) {
+                match self.attach_external(&env.principal, claude_session_id, ticket) {
                     Ok(id) => {
                         // Attach stands even if the resume below is refused —
                         // the session is on the board as observe-only either way.
@@ -1547,6 +1544,17 @@ impl Daemon {
         changed
     }
 
+    /// The `Running` claudes the two quiet probes judge. The observe tier has
+    /// no pane of ours and its quiet detector is the transcript's
+    /// (`poll_tails`), so an adopted record without argv is left out.
+    fn probed_running(&self) -> impl Iterator<Item = &SessionRecord> {
+        self.board.sessions.iter().filter(|r| {
+            r.kind == SessionKind::Claude
+                && r.state == SessionState::Running
+                && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
+        })
+    }
+
     /// The Esc-interrupt catch (11 §11.7.3's interrupt row, spike S-E): a
     /// user interrupt fires no hook, so a `Running` pane of ours that has
     /// stopped painting past the quiet threshold is a turn that ended. One
@@ -1554,19 +1562,8 @@ impl Daemon {
     /// Demotion-only — promotion stays hooks-only, so a wrong verdict costs a
     /// cosmetic "idle" that the next real event corrects.
     fn probe_activity(&mut self) -> bool {
-        let cands: Vec<(uuid::Uuid, String)> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| {
-                r.kind == SessionKind::Claude
-                    && r.state == SessionState::Running
-                    // The observe tier has no pane of ours; its quiet detector
-                    // is the transcript's (poll_tails).
-                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
-            })
-            .map(|r| (r.id, r.sid16()))
-            .collect();
+        let cands: Vec<(uuid::Uuid, String)> =
+            self.probed_running().map(|r| (r.id, r.sid16())).collect();
         if cands.is_empty() {
             return false;
         }
@@ -1608,24 +1605,24 @@ impl Daemon {
     /// (`census::status_file_for`), then read in place.
     fn probe_status_files(&mut self) -> bool {
         let now = now_ms();
-        let cands: Vec<(uuid::Uuid, uuid::Uuid, u64)> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| {
-                r.kind == SessionKind::Claude
-                    && r.state == SessionState::Running
-                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
+        let cands: Vec<(uuid::Uuid, uuid::Uuid, u64, Option<std::path::PathBuf>)> = self
+            .probed_running()
+            .map(|r| {
+                (
+                    r.id,
+                    r.claude_session_id.unwrap_or(r.id),
+                    r.state_changed_at.unwrap_or(now),
+                    r.transcript_path.as_deref().map(std::path::PathBuf::from),
+                )
             })
-            .map(|r| (r.id, r.claude_session_id.unwrap_or(r.id), r.state_changed_at.unwrap_or(now)))
             .collect();
-        self.status_files.retain(|id, _| cands.iter().any(|(c, _, _)| c == id));
+        self.status_files.retain(|id, _| cands.iter().any(|(c, ..)| c == id));
         if cands.is_empty() {
             return false;
         }
         let home = crate::census::claude_home();
         let mut changed = false;
-        for (id, claude_id, since) in cands {
+        for (id, claude_id, since, transcript) in cands {
             let probe =
                 self.status_files.entry(id).or_insert(StatusProbe { path: None, looked_at: 0 });
             if probe.path.is_none() && now.saturating_sub(probe.looked_at) >= STATUS_FILE_RETRY_MS {
@@ -1647,9 +1644,11 @@ impl Daemon {
             if !idle {
                 continue;
             }
-            if let Some(change) =
-                self.machines.get_mut(&id).and_then(|m| m.apply(&Signal::StatusFileIdle, now))
-            {
+            // The file flips idle at the end of every turn, ahead of the
+            // Stop hook; the transcript says whether this is that or an Esc.
+            let turn_done = transcript.is_some_and(|t| crate::tail::turn_done_since(&t, since));
+            let signal = Signal::StatusFileIdle { turn_done };
+            if let Some(change) = self.machines.get_mut(&id).and_then(|m| m.apply(&signal, now)) {
                 changed |= self.apply_change(id, &change, None, Some("status"));
             }
         }
@@ -2341,7 +2340,7 @@ impl Daemon {
                         }
                         Response::AgentTicket { ticket: view }
                     }
-                    None => Response::Err { message: "no such ticket".into() },
+                    None => no_such_ticket(),
                 }
             }
             Command::AgentListBoard => {
@@ -2429,7 +2428,7 @@ impl Daemon {
                     }
                 }
                 let by = Principal::Agent { session };
-                let resp = self.agent_create_ticket(&by, title, column, description, tags);
+                let resp = self.agent_create_ticket(&by, ticket, title, column, description, tags);
                 if let (Some(key), Response::AgentCreated { key: short_key, column, .. }) =
                     (idempotency_key, &resp)
                 {
@@ -2463,6 +2462,7 @@ impl Daemon {
     fn agent_create_ticket(
         &mut self,
         by: &Principal,
+        from: ulid::Ulid,
         title: String,
         column: Option<String>,
         description: Option<String>,
@@ -2491,7 +2491,7 @@ impl Daemon {
             Ok(refs) => refs,
             Err(message) => return Response::Err { message },
         };
-        let id = self.mint_ticket(column.clone(), title);
+        let id = self.mint_ticket(by, Some(from), column.clone(), title);
         if !tags.is_empty() {
             if let Some(t) = self.board.ticket_mut(id) {
                 for r in tags {
@@ -2621,7 +2621,7 @@ impl Daemon {
             return Response::Err { message: format!("denied: {reason}") };
         }
         let Some(t) = self.board.ticket(ticket) else {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         };
         let def = match self.lookup_agent_tag(name, group) {
             Ok(def) => def,
@@ -2655,8 +2655,10 @@ impl Daemon {
         let changed = if remove { wearing } else { !wearing };
         if changed {
             let next = if remove { None } else { Some(def.name.clone()) };
-            if self.with_ticket(ticket, |t| t.set_tag(def.group, next)).is_none() {
-                return Response::Err { message: "no such ticket".into() };
+            if let err @ Response::Err { .. } =
+                self.with_ticket(ticket, |t| t.set_tag(def.group, next))
+            {
+                return err;
             }
             self.feed.board(by.actor(), "tag_ticket", Some(ticket));
         }
@@ -3102,11 +3104,7 @@ impl Daemon {
             let plan = self.train_plan();
             let waits_on = self.keys_of(&self.board_busy());
             for t in plan.merge {
-                let tip = self
-                    .worktrees
-                    .get(&t)
-                    .map(|b| worktree::branch_tip(&self.paths.repo_root, &b.branch))
-                    .unwrap_or_default();
+                let tip = self.wt_tip.get(&t).cloned().unwrap_or_default();
                 out.push(Pending {
                     ticket: t,
                     action: "merge".into(),
@@ -3487,29 +3485,46 @@ impl Daemon {
         self.broadcast();
     }
 
-    fn with_ticket(&mut self, id: ulid::Ulid, f: impl FnOnce(&mut Ticket)) -> Option<Response> {
-        let t = self.board.ticket_mut(id)?;
+    /// Edit one ticket, save it and broadcast; `no such ticket` when it is
+    /// not on the board.
+    fn with_ticket(&mut self, id: ulid::Ulid, f: impl FnOnce(&mut Ticket)) -> Response {
+        let Some(t) = self.board.ticket_mut(id) else { return no_such_ticket() };
         f(t);
         let t = t.clone();
         let _ = store::save_ticket(&self.paths, &t);
         self.broadcast();
-        Some(Response::Ok)
+        Response::Ok
     }
 
-    fn create_ticket(&mut self, column: String, title: String) -> Response {
+    fn create_ticket(&mut self, by: &Principal, column: String, title: String) -> Response {
+        // A barred columns.toml means next_key cannot be persisted, so a new
+        // ticket's short_key would regress on the next start and save_ticket
+        // would write over an existing ticket directory. Judged here, at the
+        // same depth as the agent's mint (`agent_create_ticket`).
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
         if !self.board.columns.iter().any(|c| c.name == column) {
             return Response::Err { message: format!("no such column: {column}") };
         }
         // A title is user text on a card row; scrubbed and bounded here, at
         // the boundary — the composer's own cap is a courtesy a client can lift.
         let title = mesimon_core::board::sanitize_title(&title);
-        let id = self.mint_ticket(column, title);
+        let id = self.mint_ticket(by, None, column, title);
         self.persist_and_notify();
         Response::Created { id }
     }
 
     /// Append a new ticket to `column` (caller validated the column).
-    fn mint_ticket(&mut self, column: String, title: String) -> ulid::Ulid {
+    /// `from` is the ticket the caller was bound to when it asked — an agent's
+    /// `create_ticket` — and `None` for a person, who is bound to nothing.
+    fn mint_ticket(
+        &mut self,
+        by: &Principal,
+        from: Option<ulid::Ulid>,
+        column: String,
+        title: String,
+    ) -> ulid::Ulid {
         self.board.next_key += 1;
         let last =
             self.board.column_tickets(&column).last().map(|t| t.order.clone()).unwrap_or_default();
@@ -3520,6 +3535,8 @@ impl Daemon {
             column,
             order: fracindex::between(&last, ""),
             created_at: now_iso(),
+            created_by: by.note_author(),
+            created_from: from,
             entered_at: Some(now_iso()),
             woke_at: None,
             manual_merge: false,
@@ -3536,7 +3553,7 @@ impl Daemon {
 
     fn delete_ticket(&mut self, id: ulid::Ulid, discard_worktree: bool) -> Response {
         let Some(pos) = self.board.tickets.iter().position(|t| t.id == id) else {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         };
         // M4 delete gate (defense in depth — the TUI prompts first): an
         // unmerged worktree must be merged or explicitly discarded.
@@ -3596,7 +3613,7 @@ impl Daemon {
 
     fn set_workspace(&mut self, id: ulid::Ulid, workspace: Option<WorkspaceStrategy>) -> Response {
         if self.board.ticket(id).is_none() {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         }
         // Locked once anything exists that the choice would relocate.
         if self.board.sessions.iter().any(|s| s.ticket == id) {
@@ -3605,10 +3622,7 @@ impl Daemon {
         if self.worktrees.contains_key(&id) {
             return Response::Err { message: "workspace locked — worktree exists".into() };
         }
-        match self.with_ticket(id, |t| t.workspace = workspace) {
-            Some(r) => r,
-            None => Response::Err { message: "no such ticket".into() },
-        }
+        self.with_ticket(id, |t| t.workspace = workspace)
     }
 
     /// Set or clear the ticket's tag on one axis. Sanitization happens HERE,
@@ -3619,7 +3633,7 @@ impl Daemon {
     /// `board.tickets` and so self-bars).
     fn set_tag(&mut self, id: ulid::Ulid, group: u8, name: Option<String>) -> Response {
         if self.board.ticket(id).is_none() {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         }
         if !(1..=10).contains(&group) {
             return Response::Err { message: "tag group must be 1-10".into() };
@@ -3640,10 +3654,7 @@ impl Daemon {
                 self.persist_columns();
             }
         }
-        match self.with_ticket(id, |t| t.set_tag(group, clean)) {
-            Some(r) => r,
-            None => Response::Err { message: "no such ticket".into() },
-        }
+        self.with_ticket(id, |t| t.set_tag(group, clean))
     }
 
     /// Put a name in the registry. Creating and wearing are separate gestures
@@ -3775,16 +3786,11 @@ impl Daemon {
         // A CLAUDE — a shell is pinned `Running` for the life of its pane
         // (D15), and an ff-merge never touches the worktree it sits in
         // (2026-09-04; it refused every `m` under a `!` shell before).
-        let busy = self.board.sessions.iter().any(|s| {
-            s.ticket == id
-                && s.kind == SessionKind::Claude
-                && matches!(
-                    s.state,
-                    SessionState::Spawning
-                        | SessionState::Running
-                        | SessionState::RequiresAction { .. }
-                )
-        });
+        let busy = self
+            .board
+            .sessions
+            .iter()
+            .any(|s| s.ticket == id && mesimon_core::quiet::is_working(s));
         if busy {
             return Response::Merge {
                 outcome: MergeOutcome::Refused,
@@ -3868,11 +3874,6 @@ impl Daemon {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
         let base = self.base_branch.clone().unwrap_or_else(|| "main".into());
-        let Some(rec) = self.board.pane_target(id) else {
-            return Response::Err {
-                message: "no live claude session on this ticket — open one first".into(),
-            };
-        };
         let text = match request {
             mesimon_core::command::MergeRequest::Rebase => format!(
                 "Rebase your current branch {branch} onto {base}, resolve any conflicts, \
@@ -3883,25 +3884,35 @@ impl Daemon {
                  contains this work."
             ),
         };
-        let sid = rec.sid16();
-        match self.backend.paste_text(&sid, &text) {
-            Ok(()) => {
-                // A delivered rebase ask is remembered against the base tip,
-                // by hand or by train: the train does not ask again until
-                // the base moves (2026-09-04).
-                if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
-                    self.train.record_ask(
-                        id,
-                        self.base_tip.clone(),
-                        now_ms(),
-                        by.is_human(),
-                        Instant::now(),
-                    );
-                }
-                Response::Ok
-            }
-            Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+        if let Err(message) = self.paste_to_ticket(id, &text) {
+            return Response::Err { message };
         }
+        // A delivered rebase ask is remembered against the base tip, by hand
+        // or by train: the train does not ask again until the base moves
+        // (2026-09-04).
+        if matches!(request, mesimon_core::command::MergeRequest::Rebase) {
+            self.train.record_ask(
+                id,
+                self.base_tip.clone(),
+                now_ms(),
+                by.is_human(),
+                Instant::now(),
+            );
+        }
+        Response::Ok
+    }
+
+    /// Words into the ticket's paned claude — `pane_target`, the one session
+    /// `board_enter` focuses — by bracketed paste, then a SEPARATE Enter (a
+    /// CR in the same byte burst is absorbed as pasted content, T-5). The
+    /// merge flow, a note's nudge and the board's ask all deliver through
+    /// here; what differs between them is whose words travel.
+    fn paste_to_ticket(&mut self, ticket: ulid::Ulid, text: &str) -> Result<(), String> {
+        let Some(rec) = self.board.pane_target(ticket) else {
+            return Err("no live claude session on this ticket — start or wake one first".into());
+        };
+        let sid = rec.sid16();
+        self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))
     }
 
     // ------------------------------------------------------------ merge train
@@ -3996,12 +4007,11 @@ impl Daemon {
         let by = Principal::Automation { rule: mesimon_core::train::RULE.into() };
         let now = now_ms();
         for t in plan.merge {
-            let tip = self
-                .worktrees
-                .get(&t)
-                .map(|b| worktree::branch_tip(&self.paths.repo_root, &b.branch))
-                .unwrap_or_default();
-            if self.train.refused(t, &tip, &self.base_tip) {
+            // The tip the flags were sampled at, like `base_tip` beside it:
+            // the refusal memory is keyed on the pair, and the snapshot road
+            // (`pending_items`) reads the same map, so neither forks git.
+            let tip = self.wt_tip.get(&t).cloned().unwrap_or_default();
+            if self.train.refusal(t, &tip, &self.base_tip).is_some() {
                 continue;
             }
             match self.merge_ticket(t, &by) {
@@ -4083,7 +4093,7 @@ impl Daemon {
     /// diff service's off-thread road exists for git, not for one small read.
     fn read_note(&self, ticket: ulid::Ulid, note: ulid::Ulid) -> Response {
         let Some(t) = self.board.ticket(ticket) else {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         };
         let Some(meta) = t.note(note) else {
             return Response::Err { message: "no such note".into() };
@@ -4112,7 +4122,7 @@ impl Daemon {
         let text = sanitize_note(&text);
         let blank = text.trim().is_empty();
         let Some(t) = self.board.ticket(ticket) else {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         };
         if let Some(id) = note {
             if t.note(id).is_none() {
@@ -4165,24 +4175,19 @@ impl Daemon {
     /// process, so it crosses `scrub_text`.
     fn note_to_agent(&mut self, ticket: ulid::Ulid, note: ulid::Ulid) -> Response {
         let Some(t) = self.board.ticket(ticket) else {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         };
         let Some(meta) = t.note(note) else {
             return Response::Err { message: "no such note".into() };
         };
         let name = mesimon_core::text::scrub_text(&meta.name);
-        let Some(rec) = self.board.pane_target(ticket) else {
-            return Response::Err {
-                message: "no live claude session on this ticket — start or wake one first".into(),
-            };
-        };
         let text = format!(
             "Note \"{name}\" on this ticket was just updated; read_note with id {note} \
              returns the new text."
         );
-        match self.backend.paste_text(&rec.sid16(), &text) {
+        match self.paste_to_ticket(ticket, &text) {
             Ok(()) => Response::Ok,
-            Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+            Err(message) => Response::Err { message },
         }
     }
 
@@ -4219,13 +4224,10 @@ impl Daemon {
         // ahead of it: the waiting words are theirs to drop, and they just
         // did (the TUI's status says so).
         self.forget_queued(ticket, "queued_ask_dropped", "local");
-        let Some(id) = self.prompt_target(ticket) else {
+        if self.prompt_target(ticket).is_none() {
             return self.prompt_sleeping(ticket, text);
-        };
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
-            return Response::Err { message: "no such session".into() };
-        };
-        match self.backend.paste_text(&rec.sid16(), &text) {
+        }
+        match self.paste_to_ticket(ticket, &text) {
             // The board's own picture of the session is now a turn behind:
             // the record still says `Idle` until the agent's `UserPromptSubmit`
             // hook lands, and that is the hook's to say, not ours. What we
@@ -4233,7 +4235,7 @@ impl Daemon {
             // the agent does, the same way it does for a prompt typed in the
             // pane.
             Ok(()) => Response::Ok,
-            Err(e) => Response::Err { message: format!("could not deliver: {e}") },
+            Err(message) => Response::Err { message },
         }
     }
 
@@ -4245,24 +4247,24 @@ impl Daemon {
     /// the grace band there, judged by their frozen state (conservative:
     /// they keep running for 30 s in the same tree).
     fn checkout_holders(&self, cwd: &str) -> Vec<ulid::Ulid> {
-        let inflight: std::collections::HashSet<ulid::Ulid> =
-            self.inflight.keys().copied().collect();
-        let mut out = mesimon_core::quiet::working_tickets(&self.board, &inflight, Some(cwd));
-        for g in self.grace.values() {
-            if g.sessions.iter().any(|s| s.cwd == cwd && mesimon_core::quiet::is_working(s)) {
-                out.push(g.ticket.id);
-            }
-        }
-        out
+        self.working(Some(cwd))
     }
 
     /// Every working ticket on the board — the merge train's gate.
     fn board_busy(&self) -> Vec<ulid::Ulid> {
+        self.working(None)
+    }
+
+    /// The working tickets, on one checkout (`Some(cwd)`) or the whole board.
+    fn working(&self, cwd: Option<&str>) -> Vec<ulid::Ulid> {
         let inflight: std::collections::HashSet<ulid::Ulid> =
             self.inflight.keys().copied().collect();
-        let mut out = mesimon_core::quiet::working_tickets(&self.board, &inflight, None);
+        let mut out = mesimon_core::quiet::working_tickets(&self.board, &inflight, cwd);
         for g in self.grace.values() {
-            if g.sessions.iter().any(mesimon_core::quiet::is_working) {
+            if g.sessions
+                .iter()
+                .any(|s| cwd.is_none_or(|c| s.cwd == c) && mesimon_core::quiet::is_working(s))
+            {
                 out.push(g.ticket.id);
             }
         }
@@ -4489,7 +4491,7 @@ impl Daemon {
     /// pane — archive means everything is already asleep.
     fn archive_ticket(&mut self, id: ulid::Ulid) -> Response {
         match self.board.ticket(id) {
-            None => return Response::Err { message: "no such ticket".into() },
+            None => return no_such_ticket(),
             Some(t) if t.is_archived() => {
                 return Response::Err { message: "already archived".into() }
             }
@@ -4499,12 +4501,9 @@ impl Daemon {
             return Response::Err { message: "sessions still awake — sleep them first".into() };
         }
         let at = now_iso();
-        let resp = self
-            .with_ticket(id, |t| {
-                t.archived =
-                    Some(Archived { at, by: "local".into(), until: None, needs_you: false })
-            })
-            .unwrap_or(Response::Err { message: "no such ticket".into() });
+        let resp = self.with_ticket(id, |t| {
+            t.archived = Some(Archived { at, by: "local".into(), until: None, needs_you: false })
+        });
         // Re-price now — a taken offer must not linger until the next bucket.
         self.archive_cache = self.archive_figures();
         resp
@@ -4526,7 +4525,7 @@ impl Daemon {
     /// stay asleep when the ticket returns, and `c` wakes them.
     fn snooze_ticket(&mut self, id: ulid::Ulid, until: u64, needs_you: bool) -> Response {
         match self.board.ticket(id) {
-            None => return Response::Err { message: "no such ticket".into() },
+            None => return no_such_ticket(),
             Some(t) if t.is_archived() => {
                 return Response::Err { message: "already archived".into() }
             }
@@ -4562,17 +4561,15 @@ impl Daemon {
             self.persist_sessions();
         }
         let at = now_iso();
-        let resp = self
-            .with_ticket(id, |t| {
-                t.woke_at = None;
-                t.archived = Some(Archived {
-                    at,
-                    by: "local".into(),
-                    until: Some(format!("@{until}")),
-                    needs_you,
-                });
-            })
-            .unwrap_or(Response::Err { message: "no such ticket".into() });
+        let resp = self.with_ticket(id, |t| {
+            t.woke_at = None;
+            t.archived = Some(Archived {
+                at,
+                by: "local".into(),
+                until: Some(format!("@{until}")),
+                needs_you,
+            });
+        });
         self.archive_cache = self.archive_figures();
         resp
     }
@@ -4582,11 +4579,8 @@ impl Daemon {
     /// the TUI can send it whenever it likes.
     fn seen_ticket(&mut self, id: ulid::Ulid) -> Response {
         match self.board.ticket(id) {
-            None => Response::Err { message: "no such ticket".into() },
             Some(t) if !t.is_woke() => Response::Ok,
-            Some(_) => self
-                .with_ticket(id, |t| t.woke_at = None)
-                .unwrap_or(Response::Err { message: "no such ticket".into() }),
+            _ => self.with_ticket(id, |t| t.woke_at = None),
         }
     }
 
@@ -4597,13 +4591,12 @@ impl Daemon {
     /// when nothing changes — no write, no broadcast.
     fn set_manual_merge(&mut self, id: ulid::Ulid, on: bool) -> Response {
         match self.board.ticket(id) {
-            None => return Response::Err { message: "no such ticket".into() },
+            None => return no_such_ticket(),
             Some(t) if t.manual_merge == on => return Response::Ok,
             Some(_) => {}
         }
         self.train.hand_touched(id);
         self.with_ticket(id, |t| t.manual_merge = on)
-            .unwrap_or(Response::Err { message: "no such ticket".into() })
     }
 
     /// Turn the agent tool surface on or off for this board (T-217).
@@ -4682,30 +4675,13 @@ impl Daemon {
             return false;
         }
         for id in due {
-            let Some(t) = self.board.ticket(id) else { continue };
-            let needs_you = t.archived.as_ref().is_some_and(|a| a.needs_you);
-            let col = if self.board.columns.iter().any(|c| c.name == t.column) {
-                t.column.clone()
-            } else {
-                match self.board.sorted_columns().first() {
-                    Some(c) => c.name.clone(),
-                    None => continue,
-                }
-            };
-            // `column_tickets` never lists an archived ticket, so the order is
-            // computed against the board it is about to rejoin.
-            let order = self.order_within(&col, id, &Position::Top);
-            self.moves.forget(id);
-            self.train.forget(id);
-            let stamp = now_iso();
-            if let Some(t) = self.board.ticket_mut(id) {
-                t.archived = None;
-                t.column = col;
-                t.order = order;
-                t.entered_at = Some(stamp.clone());
-                t.woke_at = needs_you.then_some(stamp);
-                let t = t.clone();
-                let _ = store::save_ticket(&self.paths, &t);
+            let needs_you = self
+                .board
+                .ticket(id)
+                .and_then(|t| t.archived.as_ref())
+                .is_some_and(|a| a.needs_you);
+            if self.unarchive(id, Some(Position::Top), needs_you).is_none() {
+                continue;
             }
             self.feed.board("automation", "snooze_woke", Some(id));
         }
@@ -4717,45 +4693,60 @@ impl Daemon {
     /// and `order` survived archival untouched.
     fn unarchive_ticket(&mut self, id: ulid::Ulid) -> Response {
         match self.board.ticket(id) {
-            None => return Response::Err { message: "no such ticket".into() },
+            None => return no_such_ticket(),
             Some(t) if !t.is_archived() => return Response::Err { message: "not archived".into() },
             Some(_) => {}
         }
-        // Guard the landing column (fixed template today; policies in M5).
-        let fallback = {
-            let t = self.board.ticket(id).expect("checked above");
-            if self.board.columns.iter().any(|c| c.name == t.column) {
-                None
-            } else {
-                self.board.sorted_columns().first().map(|c| c.name.clone()).map(|col| {
-                    let tail = self
-                        .board
-                        .column_tickets(&col)
-                        .last()
-                        .map(|t| t.order.clone())
-                        .unwrap_or_default();
-                    (col, fracindex::between(&tail, ""))
-                })
+        match self.unarchive(id, None, false) {
+            Some(()) => {
+                self.broadcast();
+                Response::Ok
             }
+            None => no_such_ticket(),
+        }
+    }
+
+    /// The one road back from the archive, for a restore and a snooze's wake
+    /// alike. The ticket lands in its own column where that still exists,
+    /// else the first (fixed template today; policies in M5); `land` says
+    /// where in it — `None` keeps the order it left with, `Some(Top)` is a
+    /// wake, fresh news that outranks what was there. `entered_at` restamps
+    /// whenever the ticket moves (a new column, or a landing asked for), and
+    /// `needs_you` lights it. The move gate and the train forget it: what
+    /// they remembered — a reversal to refuse, a blown fuse — describes a
+    /// board from before it left, and applying it to the first move back
+    /// would be a refusal nobody could explain. Saved, never broadcast: the
+    /// callers' clocks differ. `column_tickets` never lists an archived
+    /// ticket, so the order is computed against the board it rejoins.
+    fn unarchive(&mut self, id: ulid::Ulid, land: Option<Position>, needs_you: bool) -> Option<()> {
+        let t = self.board.ticket(id)?;
+        let col = if self.board.columns.iter().any(|c| c.name == t.column) {
+            t.column.clone()
+        } else {
+            self.board.sorted_columns().first()?.name.clone()
         };
-        // A ticket coming back from the archive starts clean: whatever the
-        // move gate remembered about it — a reversal to refuse, a blown fuse —
-        // describes a board state from before it left, and applying it to the
-        // ticket's first move back would be a refusal nobody could explain.
+        let moved = col != t.column;
+        let order = match &land {
+            Some(pos) => self.order_within(&col, id, pos),
+            None if moved => self.order_within(&col, id, &Position::Before(None)),
+            None => t.order.clone(),
+        };
         self.moves.forget(id);
         self.train.forget(id);
-        let now = now_iso();
-        self.with_ticket(id, |t| {
-            t.archived = None;
-            if let Some((col, order)) = fallback {
-                if t.column != col {
-                    t.entered_at = Some(now);
-                }
-                t.column = col;
-                t.order = order;
-            }
-        })
-        .unwrap_or(Response::Err { message: "no such ticket".into() })
+        let stamp = now_iso();
+        let t = self.board.ticket_mut(id)?;
+        t.archived = None;
+        t.column = col;
+        t.order = order;
+        if land.is_some() || moved {
+            t.entered_at = Some(stamp.clone());
+        }
+        if needs_you {
+            t.woke_at = Some(stamp);
+        }
+        let t = t.clone();
+        let _ = store::save_ticket(&self.paths, &t);
+        Some(())
     }
 
     fn expire_grace(&mut self) {
@@ -4828,6 +4819,7 @@ impl Daemon {
             self.wt_merged.remove(&ticket);
             self.wt_ahead.remove(&ticket);
             self.wt_needs_rebase.remove(&ticket);
+            self.wt_tip.remove(&ticket);
         }
         self.persist_worktrees();
         self.refresh_worktree_flags();
@@ -4859,7 +4851,7 @@ impl Daemon {
         submit_prompt: bool,
     ) -> Response {
         if self.board.ticket(ticket).is_none() {
-            return Response::Err { message: "no such ticket".into() };
+            return no_such_ticket();
         }
         // An archived ticket must not grow a live pane no board surface shows.
         if self.board.ticket(ticket).is_some_and(|t| t.is_archived()) {
@@ -5151,6 +5143,7 @@ impl Daemon {
             self.wt_merged.clear();
             self.wt_ahead.clear();
             self.wt_needs_rebase.clear();
+            self.wt_tip.clear();
             self.wt_conflicts.clear();
             return;
         }
@@ -5219,6 +5212,7 @@ impl Daemon {
             self.wt_merged.insert(f.ticket, f.merged);
             self.wt_ahead.insert(f.ticket, f.ahead);
             self.wt_needs_rebase.insert(f.ticket, f.needs_rebase);
+            self.wt_tip.insert(f.ticket, f.tip);
         }
         let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
         for tid in tickets {
@@ -5269,6 +5263,7 @@ impl Daemon {
     /// tail poller; the census preview seeds the card detail.
     fn attach_external(
         &mut self,
+        by: &Principal,
         claude_session_id: uuid::Uuid,
         ticket: Option<ulid::Ulid>,
     ) -> std::result::Result<uuid::Uuid, String> {
@@ -5326,7 +5321,7 @@ impl Daemon {
                     .or_else(|| item.preview.clone())
                     .unwrap_or_else(|| item.claude_session_id.to_string()[..8].to_string());
                 let title: String = title.chars().take(48).collect();
-                self.mint_ticket(column, title)
+                self.mint_ticket(by, None, column, title)
             }
         };
         let id = uuid::Uuid::new_v4();
@@ -5373,21 +5368,7 @@ impl Daemon {
             .map_err(|e| format!("hook settings: {e}"))?;
         let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
         let mut argv = vec![claude, "--settings".into(), settings.display().to_string()];
-        // The board's own switch (T-217). Off means the flag is not there at
-        // all — not an empty config, not a server with no tools: a session
-        // that was never told about mesimon cannot be told about it later,
-        // and that is the whole of what "off" is worth promising.
-        if self.board.mcp_tools {
-            argv.push("--mcp-config".into());
-            argv.push(self.mcp_config_json(id));
-        }
-        // The agent brief (T-224): opt-in, and only beside the tools it
-        // names — a system prompt telling the model to call a tool it does
-        // not have would be the lie the switch exists to avoid.
-        if self.brief_on() {
-            argv.push(mesimon_core::brief::FLAG.into());
-            argv.push(mesimon_core::brief::TEXT.into());
-        }
+        argv.extend(self.mesimon_flags(id));
         argv.push(identity_flag.to_string());
         argv.push(identity_value.to_string());
         // Replicate the user's own configured permission mode as an explicit
@@ -5409,78 +5390,67 @@ impl Daemon {
         self.board.mcp_tools && self.board.system_prompt
     }
 
+    /// The pairs mesimon itself puts on a claude's argv, as the board's two
+    /// switches stand now — one builder, so a spawn and a wake cannot differ.
+    /// `--mcp-config <blob>` (T-217): off means the flag is not there at all —
+    /// not an empty config, not a server with no tools: a session that was
+    /// never told about mesimon cannot be told about it later, and that is
+    /// the whole of what "off" is worth promising. Then the agent brief
+    /// (T-224): opt-in, and only beside the tools it names — a system prompt
+    /// telling the model to call a tool it does not have would be the lie
+    /// the switch exists to avoid.
+    fn mesimon_flags(&self, id: uuid::Uuid) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.board.mcp_tools {
+            out.push("--mcp-config".into());
+            out.push(self.mcp_config_json(id));
+        }
+        if self.brief_on() {
+            out.push(mesimon_core::brief::FLAG.into());
+            out.push(mesimon_core::brief::TEXT.into());
+        }
+        out
+    }
+
     /// The one resume builder (wake and takeover share it). D24: the argv
     /// array is the mechanism — resume restores neither `--settings` nor
     /// `--mcp-config` (09 §9), so we replay ours, swapping the identity flag.
     fn resume_argv(&self, rec: &SessionRecord) -> std::result::Result<Vec<String>, String> {
         let target = rec.claude_session_id.unwrap_or(rec.id);
         if !rec.argv.is_empty() {
-            // Swap the identity flag to `--resume <target>`. An existing
-            // `--resume` operand is rewritten too, never replayed verbatim:
-            // an in-app /resume may have moved the pane onto a different
-            // conversation since the argv was persisted (dogfood
-            // 2026-08-30: a verbatim replay of a stale target crash-looped
-            // "No conversation found" forever).
-            let mut argv = Vec::with_capacity(rec.argv.len() + 1);
+            // Every pair mesimon owns comes OUT of the persisted argv and goes
+            // back in fresh behind `--settings <path>`, laid the way
+            // `claude_argv` lays it. The identity becomes `--resume <target>`
+            // — an existing `--resume` operand is never replayed verbatim: an
+            // in-app /resume may have moved the pane onto a different
+            // conversation since the argv was persisted (dogfood 2026-08-30:
+            // a stale target crash-looped "No conversation found" forever).
+            // The MCP blob and the brief are rebuilt by the board's switches
+            // as they stand NOW, both ways (T-217, T-224): the blob names the
+            // mesimon binary by absolute path and a persisted argv outlives
+            // an install (`U` reloads onto a new binary), and a wake is the
+            // road a session takes to pick a switch up or drop it, since a
+            // live pane's argv was fixed at exec — "wake it to pick the
+            // setting up" must be true in both directions.
+            let owned = ["--session-id", "--resume", "--mcp-config", mesimon_core::brief::FLAG];
+            let mut argv = Vec::with_capacity(rec.argv.len() + 2);
             let mut it = rec.argv.iter();
             while let Some(a) = it.next() {
-                if a == "--session-id" || a == "--resume" {
+                if owned.contains(&a.as_str()) {
                     let _ = it.next();
-                    argv.push("--resume".into());
-                    argv.push(target.to_string());
-                } else if a == "--mcp-config" {
-                    // Regenerate rather than replay. The blob names the
-                    // mesimon binary by absolute path, and a persisted argv
-                    // outlives an install — `U` reloads onto a new binary and
-                    // a replayed blob would point the shim at the old one.
-                    //
-                    // And DROP it where the board's switch is off (T-217): a
-                    // wake is the road a session takes to pick the switch up,
-                    // since a live pane's argv was fixed at exec.
-                    let _ = it.next();
-                    if self.board.mcp_tools {
-                        argv.push("--mcp-config".into());
-                        argv.push(self.mcp_config_json(rec.id));
-                    }
-                } else if a == mesimon_core::brief::FLAG {
-                    // The brief, on the same two rules (T-224): regenerated
-                    // rather than replayed, so a binary whose TEXT moved is
-                    // what a wake says; and dropped where the switch is off.
-                    let _ = it.next();
-                    if self.brief_on() {
-                        argv.push(mesimon_core::brief::FLAG.into());
-                        argv.push(mesimon_core::brief::TEXT.into());
-                    }
                 } else {
                     argv.push(a.clone());
                 }
             }
-            // The switch travels both ways. A record born while the tools
-            // were off carries no flag to rewrite, so turning them back on
-            // would reach only sessions spawned afterwards — and "wake it to
-            // pick the setting up" would be true in one direction and a lie
-            // in the other. Inserted after `--settings <path>` so the argv
-            // reads the way `claude_argv` builds it.
-            if self.board.mcp_tools && !argv.iter().any(|a| a == "--mcp-config") {
-                let at = argv
-                    .iter()
-                    .position(|a| a == "--settings")
-                    .map(|i| (i + 2).min(argv.len()))
-                    .unwrap_or(argv.len().min(1));
-                argv.splice(at..at, ["--mcp-config".to_string(), self.mcp_config_json(rec.id)]);
-            }
-            // And the brief both ways too, after the tools it names.
-            if self.brief_on() && !argv.iter().any(|a| a == mesimon_core::brief::FLAG) {
-                let at = argv
-                    .iter()
-                    .position(|a| a == "--mcp-config")
-                    .map(|i| (i + 2).min(argv.len()))
-                    .unwrap_or(argv.len().min(1));
-                argv.splice(
-                    at..at,
-                    [mesimon_core::brief::FLAG.to_string(), mesimon_core::brief::TEXT.to_string()],
-                );
-            }
+            let at = argv
+                .iter()
+                .position(|a| a == "--settings")
+                .map(|i| (i + 2).min(argv.len()))
+                .unwrap_or(argv.len().min(1));
+            let mut ours = self.mesimon_flags(rec.id);
+            ours.push("--resume".into());
+            ours.push(target.to_string());
+            argv.splice(at..at, ours);
             return Ok(argv);
         }
         // Adopted with no argv of ours: build the full spawn argv fresh —
@@ -6100,8 +6070,8 @@ fn resting_hint(path: &std::path::Path, now: u64) -> Option<TailHint> {
     let quiet = std::fs::metadata(path)
         .ok()
         .and_then(|m| m.modified().ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| now.saturating_sub(d.as_millis() as u64))
+        .and_then(mesimon_core::clock::epoch_ms)
+        .map(|ms| now.saturating_sub(ms))
         .unwrap_or(u64::MAX);
     match crate::tail::last_event(path)? {
         TailEvent::TurnComplete => Some(TailHint::TurnComplete),
@@ -6165,13 +6135,6 @@ fn created_at_ms(created_at: &str) -> Option<u64> {
 /// How much of the description rides `get_ticket`. The whole of it is one
 /// `read_note` away; this keeps a routine call from carrying 32 KiB.
 const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
-
-fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
 
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.

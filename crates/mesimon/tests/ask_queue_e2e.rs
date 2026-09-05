@@ -18,14 +18,7 @@ use common::*;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionState};
-use mesimon_core::command::{Command, Pending, Response};
-
-fn pending_of(c: &mut TestClient) -> Vec<Pending> {
-    match c.request(Command::Snapshot) {
-        Response::Board { pending, .. } => pending,
-        other => panic!("not a board: {other:?}"),
-    }
-}
+use mesimon_core::command::{Command, Response};
 
 #[test]
 fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first() {
@@ -112,7 +105,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
         other => panic!("expected the ask to be parked: {other:?}"),
     }
-    let p = pending_of(&mut c);
+    let p = pending_of(&mut c, None);
     assert_eq!(p.len(), 1);
     assert_eq!(p[0].ticket, b);
     assert_eq!(p[0].action, "ask");
@@ -127,11 +120,11 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     });
     assert_eq!(text().lines().filter(|l| l.contains("mesimon-probe-51")).count(), 1);
     // In flight until B's agent acks it; the ack clears the entry.
-    let p = pending_of(&mut c);
+    let p = pending_of(&mut c, None);
     assert!(p.iter().any(|p| p.ticket == b && p.in_flight), "{p:?}");
     start(&mut c, sb);
     wait_until(Duration::from_secs(5), "the ack to clear the entry", || {
-        pending_of(&mut c).is_empty()
+        pending_of(&mut c, None).is_empty()
     });
     stop(&mut c, sb);
 
@@ -145,10 +138,10 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
         }),
         Response::Queued { .. }
     ));
-    assert_eq!(pending_of(&mut c).len(), 1);
+    assert_eq!(pending_of(&mut c, None).len(), 1);
     start(&mut c, sb);
     wait_until(Duration::from_secs(5), "the hand prompt to drop the ask", || {
-        pending_of(&mut c).is_empty()
+        pending_of(&mut c, None).is_empty()
     });
     stop(&mut c, sa);
     stop(&mut c, sb);
@@ -163,7 +156,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
             Response::Queued { .. }
         ));
     }
-    let p = pending_of(&mut c);
+    let p = pending_of(&mut c, None);
     assert_eq!(p.len(), 1);
     assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-54 second"));
     stop(&mut c, sa);
@@ -201,7 +194,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     ));
     assert!(matches!(c.request(Command::DropQueuedAsk { ticket: b }), Response::Ok));
     err_containing(c.request(Command::DropQueuedAsk { ticket: b }), "nothing queued");
-    assert!(pending_of(&mut c).is_empty());
+    assert!(pending_of(&mut c, None).is_empty());
     stop(&mut c, sa);
     std::thread::sleep(Duration::from_millis(2500));
     assert!(!text().contains("mesimon-probe-56"), "{:?}", text());
@@ -220,7 +213,7 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     ));
     assert!(matches!(c.request(Command::SleepSession { id: sb }), Response::Ok));
     c.await_state(sb, "sleeping", |s| *s == SessionState::Sleeping);
-    assert!(pending_of(&mut c).is_empty());
+    assert!(pending_of(&mut c, None).is_empty());
     // And a queued ask at a sleeping claude is refused, not parked.
     err_containing(
         c.request(Command::PromptSession { ticket: b, text: "later".into(), queued: true }),

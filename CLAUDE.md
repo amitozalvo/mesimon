@@ -475,7 +475,17 @@ OSC Tier A−): a `Running` Claude pane whose `#{window_activity}` goes quiet 60
 since 2026-09-04 the same row lands in ~2 s off Claude Code's own `~/.claude/sessions/<pid>.json`
 (`status: idle` stamped after the Running spell began; `probe_status_files`, STALE-MAP "The
 recordless Esc is caught by Claude's own session file"), because a quick Esc writes no
-transcript record at all. After a
+transcript record at all. **But that file flips `idle` at the end of EVERY turn, milliseconds
+before the Stop hook fires, so the probe races the hook on every turn** (T-242, 2026-09-05: a
+`cargo nextest run` in another session relinked the hook binary, macOS held the fresh unsigned
+binary's first execs in syspolicyd's malware scan for 41 s, and a finished simbly turn wore
+"interrupted" until the Stop landed). Now the probe reads the transcript tail first
+(`tail::turn_done_since` over `adopt::turn_edge`): a closing record — an `assistant` with
+`stop_reason: end_turn`, or the `stop_hook_summary` after it; current Claude Code writes no
+`turn_duration` — stamped at or after the Running spell means `Signal::StatusFileIdle { turn_done:
+true }` → `Idle{EndTurn}` at Medium (automove takes it to REVIEW; a late Stop then commits High over
+it); the previous turn's close is older than the spell, so the recordless Esc still reads
+`Interrupted`. E2e `interrupt_status_e2e` runs both (STALE-MAP "A late Stop is not an Esc"). After a
 daemon restart, our own Claude sessions sit at `Unknown{DaemonRestarted}` (reconcile never trusts
 stale claims) and borrow the observe tier while `Unknown`: the transcript tail re-derives state at
 Low confidence until a hook re-asserts. Sessions mesimon didn't spawn get no hooks and can never

@@ -297,15 +297,36 @@ pub struct Glide {
 /// screen gets one speed of motion, not a second one for scrolling.
 pub const GLIDE: Duration = GROW;
 
+/// How far a motion that began at `at` and lasts `over` has come, 0.0 to
+/// 1.0, `None` once landed. Eased out: it leaves fast and settles gently.
+fn eased(at: Instant, over: Duration) -> Option<f32> {
+    let t = at.elapsed().as_secs_f32() / over.as_secs_f32();
+    if t >= 1.0 {
+        return None;
+    }
+    Some(1.0 - (1.0 - t) * (1.0 - t))
+}
+
+/// A claude mid-turn or waiting on the user: Enter goes straight to it.
+fn is_hot(s: &mesimon_core::board::SessionRecord) -> bool {
+    s.kind == SessionKind::Claude
+        && matches!(s.state, SessionState::Running | SessionState::RequiresAction { .. })
+}
+
+/// One step through a list of `n` rows, clamped at both ends.
+fn step(idx: usize, n: usize, down: bool) -> usize {
+    if down {
+        (idx + 1).min(n.saturating_sub(1))
+    } else {
+        idx.saturating_sub(1)
+    }
+}
+
 impl Glide {
     /// How far along the turn is, 0.0 at `from` and 1.0 at rest; `None`
     /// once landed. Eased out, so the text leaves fast and settles gently.
     pub fn progress(&self) -> Option<f32> {
-        let t = self.at.elapsed().as_secs_f32() / GLIDE.as_secs_f32();
-        if t >= 1.0 {
-            return None;
-        }
-        Some(1.0 - (1.0 - t) * (1.0 - t))
+        eased(self.at, GLIDE)
     }
 
     /// The offset to show this frame, on the way from `from` to `to`.
@@ -361,12 +382,15 @@ impl Editor {
     /// once the motion is over (or never started). Eased out, so the panel
     /// leaves the card fast and settles gently.
     pub fn grow_progress(&self) -> Option<f32> {
-        let (_, at) = self.grow?;
-        let t = at.elapsed().as_secs_f32() / GROW.as_secs_f32();
-        if t >= 1.0 {
-            return None;
+        eased(self.grow?.1, GROW)
+    }
+
+    /// The one field the keys type into.
+    pub fn focused(&mut self) -> &mut dyn crate::text::EditOps {
+        match self.focus {
+            Field::Title => &mut self.title,
+            Field::Body => &mut self.body,
         }
-        Some(1.0 - (1.0 - t) * (1.0 - t))
     }
 
     pub fn dirty(&self) -> bool {
@@ -525,6 +549,14 @@ pub struct TagArm {
     pub naming: Option<(Naming, EditBuffer)>,
     /// `d` has been pressed once: the next one deletes the tag board-wide.
     pub forget_armed: bool,
+}
+
+impl TagArm {
+    /// The picker just opened: cursor at the grid's origin, nothing typed,
+    /// nothing armed.
+    pub fn new(ticket: Option<ulid::Ulid>) -> Self {
+        Self { ticket, row: 0, col: 0, naming: None, forget_armed: false }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -694,6 +726,9 @@ pub struct App {
     /// The page turn in motion, if one is (see `Glide`). Armed by the
     /// press, read and retired by the draw.
     pub preview_glide: Cell<Option<Glide>>,
+    /// The PREVIEW zone's markdown, rendered once per document and width
+    /// rather than once per frame (see `ui::ticket::rendered`).
+    pub rich_cache: std::cell::RefCell<Option<crate::ui::RichCache>>,
     /// Where the board last drew the cursor card — the composer's phantom
     /// card, or the ticket under the cursor — which is the rectangle Tab's
     /// dialog grows out of. Draw-side, like `preview_view`: the card's place
@@ -870,6 +905,7 @@ impl App {
             preview_scroll: Cell::new(None),
             preview_view: Cell::new(PreviewView::default()),
             preview_glide: Cell::new(None),
+            rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
             spin_epoch: Cell::new(None),
@@ -1100,10 +1136,7 @@ impl App {
         if let Some(e) = &g.fetch_error {
             parts.push(format!("fetch failed: {}", crate::text::truncate(e, 48)));
         } else if g.fetched_at_ms > 0 {
-            let now = std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_millis() as u64)
-                .unwrap_or(0);
+            let now = mesimon_core::clock::now_ms();
             let since = std::time::Duration::from_millis(now.saturating_sub(g.fetched_at_ms));
             parts.push(format!("fetched {}", crate::release::ago(since)));
         } else {
@@ -1625,10 +1658,7 @@ impl App {
     /// for the rest of the session — it is the more recent explicit choice —
     /// but the env var still pins the next launch, and the status says so.
     fn commit_theme(&mut self, flavor: Flavor) {
-        let slot = match self.ground {
-            Ground::Dark => "dark",
-            Ground::Light => "light",
-        };
+        let slot = self.ground.word();
         self.prefs.set(self.ground, flavor);
         let pinned = self.forced.take().is_some();
         // Back to the settings list, where the theme row now reads the pick.
@@ -1694,6 +1724,16 @@ impl App {
     /// Write `prefs.json` — the one road every preference takes, so the bar
     /// and the write errors read the same whichever row set them. `Err` is
     /// the status line saying why `what` holds for this session only.
+    /// One preference changed: apply it, save the file, and say so — the
+    /// Settings rows' shared tail.
+    fn set_pref(&mut self, word: &str, set: impl FnOnce(&mut crate::prefs::Prefs)) {
+        set(&mut self.prefs);
+        self.status = match self.save_prefs(word) {
+            Ok(()) => format!("{word} ∙ saved"),
+            Err(why) => why,
+        };
+    }
+
     fn save_prefs(&self, what: &str) -> Result<(), String> {
         match self.prefs_path.as_ref() {
             _ if self.prefs_write_barred => Err(format!(
@@ -1832,10 +1872,7 @@ impl App {
     /// Enter on the chord: resolve the preset to a deadline on the local
     /// clock at THIS press, send it, and say when the ticket comes back.
     fn snooze(&mut self, id: ulid::Ulid, preset: Preset) -> Result<()> {
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = mesimon_core::clock::now_secs();
         let Some(local) = crate::localtime::now_local() else {
             self.status = "the local clock would not answer ∙ not snoozed".into();
             return Ok(());
@@ -1952,15 +1989,7 @@ impl App {
     /// availability predicate and every state-dependent hint word, so the
     /// footer, the `?` overlay and the key dispatch cannot disagree.
     pub fn ctx(&self) -> Ctx {
-        let sel = self.selected_ticket().map(|t| t.id);
-        // On the ticket screen the "selected ticket" is the one being shown,
-        // not whatever the board cursor happens to sit on.
-        let subject = match &self.screen {
-            Screen::Ticket { ticket, .. } => Some(*ticket),
-            Screen::Diff => self.diff_ticket(),
-            Screen::Board => sel,
-            Screen::Releases => None,
-        };
+        let subject = self.subject();
         let sessions: Vec<&mesimon_core::board::SessionRecord> =
             subject.map(|t| self.rail_sessions(t)).unwrap_or_default();
         // The rail row under the cursor: a session, a note, or nothing. Every
@@ -1977,13 +2006,15 @@ impl App {
         };
         let wt = subject.and_then(|t| self.wt_item(t));
         let merge = subject.map(|t| self.merge_stage_word(t)).unwrap_or(None);
+        let undo = self.undo_target();
+        let tag_cell = self.tag_cell();
         Ctx {
             has_ticket: subject.is_some(),
             multi_column: self.columns().len() > 1,
             ticket_has_sessions: !sessions.is_empty(),
-            ticket_has_claude: sessions
-                .iter()
-                .any(|s| s.kind == SessionKind::Claude && s.state.is_live()),
+            // The daemon's spawn gate, the same fact: `live_claude` counts a
+            // parked one, which holds the seat.
+            ticket_has_claude: subject.is_some_and(|t| self.board.live_claude(t).is_some()),
             // A pane, not merely a session: `is_live()` counts a parked one,
             // and a prompt needs somewhere to be typed. Mirrors the daemon's
             // `prompt_target`, which is what actually picks the session.
@@ -1992,15 +2023,9 @@ impl App {
             ticket_archived: subject
                 .and_then(|t| self.board.ticket(t))
                 .is_some_and(|t| t.is_archived()),
-            ticket_hot: sessions.iter().any(|s| {
-                s.kind == SessionKind::Claude
-                    && matches!(
-                        s.state,
-                        SessionState::Running | SessionState::RequiresAction { .. }
-                    )
-            }),
-            can_undo: self.undo_target().is_some(),
-            undo_word: match self.undo_target() {
+            ticket_hot: sessions.iter().any(|s| is_hot(s)),
+            can_undo: undo.is_some(),
+            undo_word: match undo {
                 Some(LastUndo::Archive(_)) => "undo archive",
                 _ => "undo delete",
             },
@@ -2013,15 +2038,12 @@ impl App {
             bulk_sleep: self.resources.reclaim_sessions,
             bulk_sleep_bytes: self.resources.reclaim_bytes,
             bulk_archive: self.resources.archive_tickets,
-            has_archived: !self.board.archived_tickets().is_empty(),
+            has_archived: self.board.tickets.iter().any(|t| t.is_archived()),
             peek_on: self.peek,
             peek_all: self.peek_all,
             theme_name: self.theme.flavor.name(),
             theme_blurb: self.theme.flavor.blurb(),
-            theme_slot_word: match self.ground {
-                Ground::Dark => "dark",
-                Ground::Light => "light",
-            },
+            theme_slot_word: self.ground.word(),
             theme_pinned: self.forced.is_some(),
             preview_scrolls: self.preview_view.get().max > 0,
             update_ready: self.update_ready(),
@@ -2090,8 +2112,8 @@ impl App {
             ),
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
             tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
-            tag_on_entry: self.tag_cell().is_some(),
-            tag_worn: self.tag_cell().is_some_and(|(g, n, _)| {
+            tag_on_entry: tag_cell.is_some(),
+            tag_worn: tag_cell.is_some_and(|(g, n, _)| {
                 self.tag_subject().is_some_and(|t| t.iter().any(|t| t.group == g && t.name == n))
             }),
             tag_forget_armed: self.tag_armed.as_ref().is_some_and(|a| a.forget_armed),
@@ -2140,14 +2162,6 @@ impl App {
                 .is_some_and(|t| {
                     !self.board.sessions.iter().any(|s| s.ticket == t) && self.wt_item(t).is_none()
                 }),
-            editor_claude_paned: editor.is_some_and(|e| {
-                matches!(e.purpose, EditorPurpose::Note { ticket, .. }
-                    if self.board.pane_target(ticket).is_some())
-            }),
-            editor_seat_empty: editor.is_some_and(|e| {
-                matches!(e.purpose, EditorPurpose::Note { ticket, .. }
-                    if self.board.live_claude(ticket).is_none())
-            }),
             editor_word: self.editor_word,
             rich_keys: self.rich_keys,
         }
@@ -2369,7 +2383,10 @@ impl App {
                     };
                 }
             }
-            Verb::NoteEdit => {
+            // `Tab` on a card (`Describe`) is the description in the composer's
+            // dialog; off the ticket page there is no rail row, so it is
+            // `NoteEdit`'s road. The composer's own `Tab` lands in `key_input`.
+            Verb::NoteEdit | Verb::Describe => {
                 if let Some(ticket) = self.subject() {
                     let note = self.selected_note().or_else(|| {
                         self.board.ticket(ticket).and_then(|t| t.description()).map(|n| n.id)
@@ -2380,14 +2397,6 @@ impl App {
             Verb::NoteNew => {
                 if let Some(ticket) = self.subject() {
                     self.open_note_editor(ticket, None)?;
-                }
-            }
-            // `Tab` on a card: the description, in the composer's dialog. The
-            // composer's own `Tab` is the same verb and lands in `key_input`.
-            Verb::Describe => {
-                if let Some(ticket) = self.subject() {
-                    let note = self.board.ticket(ticket).and_then(|t| t.description()).map(|n| n.id);
-                    self.open_note_editor(ticket, note)?;
                 }
             }
             // `d` only arms. The second press is what deletes.
@@ -2420,8 +2429,7 @@ impl App {
                 if ticket.is_none() && !ctx.composing {
                     return Ok(());
                 }
-                self.tag_armed =
-                    Some(TagArm { ticket, row: 0, col: 0, naming: None, forget_armed: false });
+                self.tag_armed = Some(TagArm::new(ticket));
                 self.status.clear();
             }
             Verb::TagLeft | Verb::TagRight | Verb::TagUp | Verb::TagDown => {
@@ -2629,26 +2637,18 @@ impl App {
             }
             Verb::MergeTrain => {
                 let on = !self.prefs.merge_train;
-                self.prefs.set_merge_train(on);
                 let word = if on { "merge train on" } else { "merge train off" };
-                self.status = match self.save_prefs(word) {
-                    Ok(()) => format!("{word} ∙ saved"),
-                    Err(why) => why,
-                };
+                self.set_pref(word, |p| p.merge_train = on);
                 self.push_automation();
             }
             Verb::MergeTrainNotice => {
                 let on = !self.prefs.merge_train_notice;
-                self.prefs.set_merge_train_notice(on);
                 let word = if on {
                     "the train tells the agent after a merge"
                 } else {
                     "the train stays silent after a merge"
                 };
-                self.status = match self.save_prefs(word) {
-                    Ok(()) => format!("{word} ∙ saved"),
-                    Err(why) => why,
-                };
+                self.set_pref(word, |p| p.merge_train_notice = on);
                 self.push_automation();
             }
             // Board state, not a preference: it goes to the daemon and comes
@@ -2711,25 +2711,17 @@ impl App {
             }
             Verb::SnoozeQuiet => {
                 let on = !self.prefs.snooze_needs_you;
-                self.prefs.set_snooze_needs_you(on);
                 let word = if on {
                     "a woken ticket returns with needs-you"
                 } else {
                     "a woken ticket returns quietly"
                 };
-                self.status = match self.save_prefs(word) {
-                    Ok(()) => format!("{word} ∙ saved"),
-                    Err(why) => why,
-                };
+                self.set_pref(word, |p| p.snooze_needs_you = on);
             }
             Verb::WeekStart => {
                 let day = self.prefs.week_start.next();
-                self.prefs.set_week_start(day);
                 let word = format!("the week starts on {}", day.name());
-                self.status = match self.save_prefs(&word) {
-                    Ok(()) => format!("{word} ∙ saved"),
-                    Err(why) => why,
-                };
+                self.set_pref(&word, |p| p.set_week_start(day));
             }
             Verb::ReloadShellEnv => {
                 self.send(Command::ReloadShellEnv)?;
@@ -2737,7 +2729,7 @@ impl App {
                 // running process's environment cannot be changed, so a live
                 // pane keeps what it was born with and sleep/wake is the way
                 // an existing session picks the new one up.
-                self.status = "re-reading your shell environment ∙                                new and woken sessions get it"
+                self.status = "re-reading your shell environment ∙ new and woken sessions get it"
                     .into();
             }
             Verb::GitFetch => {
@@ -3103,44 +3095,35 @@ impl App {
                 let Mode::Menu { idx } = self.mode else {
                     return;
                 };
-                let n = keymap::menu_items(&self.ctx()).len();
-                let idx =
-                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                let idx = step(idx, keymap::menu_items(&self.ctx()).len(), down);
                 self.mode = Mode::Menu { idx };
             }
             Scope::Drawer => {
                 let Mode::External { idx } = self.mode else {
                     return;
                 };
-                let n = self.external.len();
-                let idx =
-                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                let idx = step(idx, self.external.len(), down);
                 self.mode = Mode::External { idx };
             }
             Scope::Archived => {
                 let Mode::Archived { idx } = self.mode else {
                     return;
                 };
-                let n = self.board.archived_tickets().len();
-                let idx =
-                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                let idx = step(idx, self.board.archived_tickets().len(), down);
                 self.mode = Mode::Archived { idx };
             }
             Scope::Settings => {
                 let Mode::Settings { idx } = self.mode else {
                     return;
                 };
-                let n = keymap::settings_items(&self.ctx()).len();
-                let idx =
-                    if down { (idx + 1).min(n.saturating_sub(1)) } else { idx.saturating_sub(1) };
+                let idx = step(idx, keymap::settings_items(&self.ctx()).len(), down);
                 self.mode = Mode::Settings { idx };
             }
             Scope::Theme => {
                 let Mode::Theme { idx } = self.mode else {
                     return;
                 };
-                let n = Flavor::ALL.len();
-                let idx = if down { (idx + 1).min(n - 1) } else { idx.saturating_sub(1) };
+                let idx = step(idx, Flavor::ALL.len(), down);
                 self.mode = Mode::Theme { idx };
                 // The cursor is the preview.
                 self.preview(Flavor::ALL[idx]);
@@ -3268,10 +3251,7 @@ impl App {
         };
         let ticket = t.id;
         let fresh = self.just_created.take() == Some(ticket);
-        let hot = self.rail_sessions(ticket).iter().position(|s| {
-            s.kind == SessionKind::Claude
-                && matches!(s.state, SessionState::Running | SessionState::RequiresAction { .. })
-        });
+        let hot = self.rail_sessions(ticket).iter().position(|s| is_hot(s));
         if let Some(rail_idx) = hot {
             let sid = self.rail_sessions(ticket)[rail_idx].id;
             self.focus_session(sid)?;
@@ -3644,13 +3624,7 @@ impl App {
                 // stays `Input`, so the half-typed title is untouched
                 // underneath and Esc comes back to it.
                 self.mode = Mode::Input { purpose, buffer };
-                self.tag_armed = Some(TagArm {
-                    ticket: None,
-                    row: 0,
-                    col: 0,
-                    naming: None,
-                    forget_armed: false,
-                });
+                self.tag_armed = Some(TagArm::new(None));
                 self.status = "1-9 pick a group ∙ esc done".into();
                 return Ok(());
             }
@@ -3774,13 +3748,7 @@ impl App {
             }
             Some(Verb::TagPrefix) => {
                 self.mode = Mode::Editor(ed);
-                self.tag_armed = Some(TagArm {
-                    ticket: None,
-                    row: 0,
-                    col: 0,
-                    naming: None,
-                    forget_armed: false,
-                });
+                self.tag_armed = Some(TagArm::new(None));
                 self.status = "1-9 pick a group ∙ esc done".into();
                 return Ok(());
             }
@@ -3826,46 +3794,17 @@ impl App {
             },
             Some(Verb::PageUp) => ed.body.page(-(EDITOR_PAGE as isize)),
             Some(Verb::PageDown) => ed.body.page(EDITOR_PAGE as isize),
-            Some(Verb::EditBackspace) if word => match ed.focus {
-                Field::Title => ed.title.delete_word_back(),
-                Field::Body => ed.body.delete_word_back(),
-            },
-            Some(Verb::EditBackspace) => match ed.focus {
-                Field::Title => ed.title.backspace(),
-                Field::Body => ed.body.backspace(),
-            },
-            Some(Verb::EditDeleteWord) => match ed.focus {
-                Field::Title => ed.title.delete_word_back(),
-                Field::Body => ed.body.delete_word_back(),
-            },
-            Some(Verb::EditKillToStart) => match ed.focus {
-                Field::Title => ed.title.kill_to_start(),
-                Field::Body => ed.body.kill_to_start(),
-            },
-            Some(Verb::EditDelete) => match ed.focus {
-                Field::Title => ed.title.delete(),
-                Field::Body => ed.body.delete(),
-            },
-            Some(Verb::EditLeft) => match (ed.focus, word) {
-                (Field::Title, true) => ed.title.word_left(),
-                (Field::Title, false) => ed.title.left(),
-                (Field::Body, true) => ed.body.word_left(),
-                (Field::Body, false) => ed.body.left(),
-            },
-            Some(Verb::EditRight) => match (ed.focus, word) {
-                (Field::Title, true) => ed.title.word_right(),
-                (Field::Title, false) => ed.title.right(),
-                (Field::Body, true) => ed.body.word_right(),
-                (Field::Body, false) => ed.body.right(),
-            },
-            Some(Verb::EditHome) => match ed.focus {
-                Field::Title => ed.title.home(),
-                Field::Body => ed.body.home(),
-            },
-            Some(Verb::EditEnd) => match ed.focus {
-                Field::Title => ed.title.end(),
-                Field::Body => ed.body.end(),
-            },
+            Some(Verb::EditBackspace) if word => ed.focused().delete_word_back(),
+            Some(Verb::EditBackspace) => ed.focused().backspace(),
+            Some(Verb::EditDeleteWord) => ed.focused().delete_word_back(),
+            Some(Verb::EditKillToStart) => ed.focused().kill_to_start(),
+            Some(Verb::EditDelete) => ed.focused().delete(),
+            Some(Verb::EditLeft) if word => ed.focused().word_left(),
+            Some(Verb::EditLeft) => ed.focused().left(),
+            Some(Verb::EditRight) if word => ed.focused().word_right(),
+            Some(Verb::EditRight) => ed.focused().right(),
+            Some(Verb::EditHome) => ed.focused().home(),
+            Some(Verb::EditEnd) => ed.focused().end(),
             _ => match code {
                 // An unhandled chord must never type its letter.
                 KeyCode::Char(_) if word => {}
@@ -4521,19 +4460,12 @@ impl App {
         self.worktrees.iter().find(|w| w.ticket == ticket)
     }
 
-    /// A session on this ticket is mid-turn — the daemon's quiet-tickets
-    /// predicate (server.rs merge_ticket), mirrored so the m flow can refuse
-    /// before arming rather than after the confirm press.
+    /// A claude on this ticket is mid-turn — `quiet::is_working`, the
+    /// daemon's quiet-tickets predicate (server.rs `merge_ticket`), so the m
+    /// flow can refuse before arming rather than after the confirm press. A
+    /// shell never counts: it is pinned `Running` for the life of its pane.
     pub(crate) fn ticket_busy(&self, ticket: ulid::Ulid) -> bool {
-        self.board.sessions.iter().any(|s| {
-            s.ticket == ticket
-                && matches!(
-                    s.state,
-                    SessionState::Spawning
-                        | SessionState::Running
-                        | SessionState::RequiresAction { .. }
-                )
-        })
+        self.board.sessions.iter().any(|s| s.ticket == ticket && mesimon_core::quiet::is_working(s))
     }
 
     /// Ticket `v` (M4b): enter the read-only diff viewer on the ticket's
@@ -5114,10 +5046,8 @@ impl App {
     /// transcript; a clean exit is `Sleeping` and never reaches this branch.
     /// Older corpses re-import through the drawer.
     ///
-    /// `Dismissed` is the one exit the rail hides, and it is currently
-    /// unreachable from the TUI: `Daemon::kill_session` mints it, but nothing
-    /// here sends `Command::KillSession` — `x` on a corpse goes to
-    /// `sleep_verb`, which refuses with "only idle sessions sleep".
+    /// `Dismissed` is the one exit the rail hides: `x` on a corpse mints it
+    /// (`sleep_verb` routes `Ctx::sel_dead` to `Command::KillSession`).
     pub fn rail_sessions(&self, ticket: ulid::Ulid) -> Vec<&mesimon_core::board::SessionRecord> {
         let corpse = self
             .board
@@ -5415,6 +5345,8 @@ pub(crate) mod test_support {
                         column,
                         order: "zzzz".into(),
                         created_at: "1970-01-01T00:00:00Z".into(),
+                        created_by: String::new(),
+                        created_from: None,
                         entered_at: None,
                         woke_at: None,
                         manual_merge: false,
@@ -5800,6 +5732,8 @@ mod tests {
             column: column.into(),
             order: order.into(),
             created_at: "1970-01-01T00:00:00Z".into(),
+            created_by: String::new(),
+            created_from: None,
             entered_at: None,
             woke_at: None,
             manual_merge: false,
@@ -8553,10 +8487,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.snooze_armed, None);
         let t = app.board.ticket(ulid::Ulid(1)).unwrap();
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = mesimon_core::clock::now_secs();
         let until = t.snooze_until_secs().expect("an archive with a deadline");
         assert!(until > now + 3600, "tomorrow 9:00 is more than an hour out");
         assert!(t.archived.as_ref().is_some_and(|a| a.needs_you), "the default is lit");
@@ -8665,10 +8596,7 @@ mod tests {
         let until = t.archived.as_ref().and_then(|a| a.until.as_deref()).expect("a deadline");
         // The deadline is a Sunday, 09:00 local, ahead of now.
         let until: u64 = until.trim_start_matches('@').parse().expect("@<secs>");
-        let now = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0);
+        let now = mesimon_core::clock::now_secs();
         assert!(until > now);
         let secs = libc::time_t::try_from(until).unwrap();
         let mut tm: libc::tm = unsafe { std::mem::zeroed() };

@@ -10,12 +10,7 @@
 
 use mesimon_core::snooze::LocalTime;
 
-fn epoch_now() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
+use mesimon_core::clock::now_secs as epoch_now;
 
 /// The moment `secs` in local time, or `None` when libc cannot say.
 fn local_of(secs: u64) -> Option<LocalTime> {

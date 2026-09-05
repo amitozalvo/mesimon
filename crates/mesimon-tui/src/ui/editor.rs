@@ -334,10 +334,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
     let theme = &app.theme;
     let dim1 = Style::default().fg(ink.dim1);
     let dim2 = Style::default().fg(ink.dim2);
-    let now = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_millis() as u64)
-        .unwrap_or(0);
+    let now = mesimon_core::clock::now_ms();
     let mut ctx_spans: Vec<Span<'static>> = Vec::new();
     let workspace_word = |workspace: Option<mesimon_core::board::WorkspaceStrategy>| match workspace
     {

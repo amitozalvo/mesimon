@@ -47,6 +47,8 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         order: order.into(),
         // Epoch-adjacent so the identity line's age renders a stable `>1y`.
         created_at: "1970-01-01T00:00:00Z".into(),
+        created_by: String::new(),
+        created_from: None,
         entered_at: None,
         woke_at: None,
         manual_merge: false,
@@ -1039,6 +1041,36 @@ fn golden_ticket_screen_120() {
     let mut app = app_graphite(fixture(true));
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     golden("ticket_120x30", &render(&app, 120, 30));
+}
+
+/// T-253: a ticket an agent filed says so on the state row, beside its
+/// created age; a person's ticket (and a pre-field one) says nothing by it.
+#[test]
+fn ticket_page_names_an_agent_creator() {
+    let mut app = app_graphite(fixture(true));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let before = render(&app, 120, 30).join("\n");
+    assert!(before.contains("created >1y ago"), "{before}");
+    assert!(!before.contains(" by claude"), "{before}");
+
+    let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
+    t.created_by = "agent:00000000-0000-0000-0000-000000000003".into();
+    let after = render(&app, 120, 30).join("\n");
+    assert!(after.contains("created >1y ago by claude"), "{after}");
+    assert!(!after.contains(" on T-"), "{after}");
+
+    // The parent ticket names itself by key while it is on the board…
+    let parent_key = app.board.ticket(ulid_n(4)).unwrap().short_key.clone();
+    let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
+    t.created_from = Some(ulid_n(4));
+    let with_parent = render(&app, 120, 30).join("\n");
+    assert!(with_parent.contains(&format!("by claude on {parent_key}")), "{with_parent}");
+
+    // …and a deleted parent takes its key with it, leaving the author.
+    app.board.tickets.retain(|t| t.id != ulid_n(4));
+    let orphaned = render(&app, 120, 30).join("\n");
+    assert!(orphaned.contains("created >1y ago by claude"), "{orphaned}");
+    assert!(!orphaned.contains(" on T-"), "{orphaned}");
 }
 
 #[test]

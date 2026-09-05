@@ -16,16 +16,9 @@ use mesimon_core::keymap::Scope;
 
 use crate::app::App;
 use crate::text::truncate;
-use crate::theme::{Flavor, Ground};
+use crate::theme::Flavor;
 
 use super::dialog;
-
-fn word(g: Ground) -> &'static str {
-    match g {
-        Ground::Dark => "dark",
-        Ground::Light => "light",
-    }
-}
 
 pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let theme = &app.theme;
@@ -54,7 +47,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
         let selected = i == idx;
         // The flavor's own ground sits where the menu puts a key: it is the
         // one fact a preview cannot show while the popup covers the board.
-        let tag = word(flavor.ground());
+        let tag = flavor.ground().word();
         let lead = "   ";
         let text = truncate(flavor.name(), inner_w.saturating_sub(tag.width() + lead.width() + 1));
         let pad = inner_w.saturating_sub(lead.width() + text.width() + tag.width() + 1);

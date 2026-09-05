@@ -148,11 +148,7 @@ pub fn nested_repos<'a>(
 /// `19 repos` — what the header and the diff screen call a workspace where
 /// they would name a branch. One word for both, so the two screens agree.
 pub fn repos_word(n: usize) -> String {
-    if n == 1 {
-        "1 repo".to_string()
-    } else {
-        format!("{n} repos")
-    }
+    crate::text::plural(n, "repo")
 }
 
 /// The `path = …` values of a `.gitmodules` file. A submodule's checkout can

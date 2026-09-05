@@ -55,6 +55,16 @@ pub(crate) enum Ground {
     Light,
 }
 
+impl Ground {
+    /// The slot's name — in `prefs.json`, the picker and the Settings row.
+    pub(crate) fn word(self) -> &'static str {
+        match self {
+            Ground::Dark => "dark",
+            Ground::Light => "light",
+        }
+    }
+}
+
 /// What the colour law asks of a palette. Four kinds because four shapes of
 /// screen exist: ink on paper (greys plus three registers), neutral ink on a
 /// COLOURED paper (the ground is a hue, the ink is not), a phosphor glow
