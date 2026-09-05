@@ -51,16 +51,22 @@ pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
     spans
 }
 
-/// The word for the screen the frame is drawn on — the header's chip.
-fn screen_word(app: &App) -> &'static str {
+/// The word for the screen the frame is drawn on — the header's chip. The
+/// ticket page's carries the ticket's KEY (T-233, 2026-09-05): `TICKET
+/// (T-12)` — the key is how a ticket is named in a prompt, a note or a
+/// commit, and the page's own title row spells only the title.
+fn screen_word(app: &App) -> String {
     match (&app.screen, &app.mode) {
         // The note editor covers its screen whole; the composer's editor is
         // a dialog over the board and the board is still the room.
-        (_, Mode::Editor(ed)) if !ed.composing() => "NOTE",
-        (Screen::Board, _) => "BOARD",
-        (Screen::Ticket { .. }, _) => "TICKET",
-        (Screen::Diff, _) => "DIFF",
-        (Screen::Releases, _) => "RELEASES",
+        (_, Mode::Editor(ed)) if !ed.composing() => "NOTE".into(),
+        (Screen::Board, _) => "BOARD".into(),
+        (Screen::Ticket { ticket, .. }, _) => match app.board.ticket(*ticket) {
+            Some(t) => format!("TICKET ({})", t.short_key),
+            None => "TICKET".into(),
+        },
+        (Screen::Diff, _) => "DIFF".into(),
+        (Screen::Releases, _) => "RELEASES".into(),
     }
 }
 
@@ -84,7 +90,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     let theme = &app.theme;
     let ink = &theme.rest;
     let word = screen_word(app);
-    let mut spans = vec![chip(app, word), Span::raw("  ".to_string())];
+    let mut spans = vec![chip(app, &word), Span::raw("  ".to_string())];
     spans.extend(breadcrumb(app, ink));
     if let Some(leaf) = leaf {
         let used: usize = spans.iter().map(|s| s.content.width()).sum();

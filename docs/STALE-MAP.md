@@ -5544,3 +5544,14 @@ way back, which is what makes the stamp affordable. The row's detail says `enter
 first`. Tests: `the_settings_row_turns_the_brief_on_through_the_dialog`, and the off-road
 assertion in `taking_the_brief_offer_turns_it_on_and_withdraws_it`; `brief_offer_e2e` asserts
 the stamp on off and that `i` leaves the switch alone.
+
+## The ticket page's chip names its ticket (T-233, 2026-09-05)
+
+The header chip on the ticket page reads `TICKET (T-12)` — the ticket's `short_key` in the
+chip's own parentheses — where it read `TICKET` alone (user: "add ticket id in title on ticket
+page"). The key is how a ticket is named everywhere off the screen (a prompt, a note, a commit
+message, `get_ticket`'s answer), and the page's own title row spells only the title, so a
+person on the page had to go back to the board to learn the key. `chrome::screen_word` now
+returns a `String` and reads the ticket on `Screen::Ticket`; every other screen's word is
+unchanged (`NOTE` keeps naming its ticket through the leaf; the diff's leaf stays the title).
+The fourteen ticket-page goldens moved on their header row and nowhere else.

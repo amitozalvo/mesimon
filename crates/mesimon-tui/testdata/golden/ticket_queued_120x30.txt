@@ -1,4 +1,4 @@
- TICKET   mesimon > kanban-tui
+ TICKET (T-5)   mesimon > kanban-tui
 
  Grapheme truncation
  REVIEW for >1y ∙ created >1y ago ∙ queued ∙ after T-3
