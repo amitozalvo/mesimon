@@ -422,10 +422,25 @@ pub(super) fn render(
     // on. Before this the row was gated on `peek.is_some()`, which is a claim
     // about the AGENT, and the commonest tagged card could never show it.
     let tag_row = open && !tags.is_empty();
-    if selected && (!sessions.is_empty() || tag_row || snooze.is_some() || owed_row.is_some()) {
-        let acc_style = if doomed { theme.delete_row() } else { theme.selected_row() };
-        let dim = Style::default().fg(theme.sel.dim1);
-        let quiet = Style::default().fg(theme.sel.dim2);
+    // The cursor card's accordion, or — under `P` (T-237) — a resting card
+    // open on its own ground: the tag row and the reply, on the resting ramp,
+    // no surface. The session list, the armed snooze and the owed row stay
+    // the cursor card's: they are about the selection, not the ticket.
+    let accordion =
+        selected && (!sessions.is_empty() || tag_row || snooze.is_some() || owed_row.is_some());
+    let opened = !selected && open && (tag_row || peek.is_some());
+    if accordion || opened {
+        let acc_style = if doomed {
+            theme.delete_row()
+        } else if selected {
+            theme.selected_row()
+        } else {
+            Style::default()
+        };
+        let ramp = if selected { &theme.sel } else { &theme.rest };
+        let dim = Style::default().fg(ramp.dim1);
+        let quiet = Style::default().fg(ramp.dim2);
+        let faint = Style::default().fg(ramp.dim3);
         let mut push = |spans: Vec<Span<'static>>| {
             let mut all = vec![
                 Span::styled(bar_ch.clone(), bar_style),
@@ -448,21 +463,15 @@ pub(super) fn render(
         // past a title that starts at the bar hung them in the air.
         // The armed snooze names its preset first: it is what the next key
         // does to this card, before what the card is.
-        if let Some(words) = snooze {
+        if let Some(words) = snooze.filter(|_| selected) {
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
-            push(vec![
-                Span::raw(" ".repeat(glyph_cells)),
-                Span::styled(words, Style::default().fg(theme.sel.dim3)),
-            ]);
+            push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
         }
         // What mesimon will do to this card next, and what it waits on —
         // the same slot, the same voice: `queued ∙ after T-12`.
-        if let Some(words) = owed_row {
+        if let Some(words) = owed_row.filter(|_| selected) {
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
-            push(vec![
-                Span::raw(" ".repeat(glyph_cells)),
-                Span::styled(words, Style::default().fg(theme.sel.dim3)),
-            ]);
+            push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
         }
         if tag_row {
             let mut row = vec![Span::raw(" ".repeat(glyph_cells))];
@@ -475,7 +484,7 @@ pub(super) fn render(
         // A single session duplicates line 1 (the aggregate glyph IS that
         // session, and its own age is the ticket page's) — its row adds
         // nothing, so only multi-session cards list.
-        let listed: &[&&SessionRecord] = if ranked.len() > 1 { &ranked } else { &[] };
+        let listed: &[&&SessionRecord] = if selected && ranked.len() > 1 { &ranked } else { &[] };
         for s in listed.iter().take(2) {
             let mark = glyphs::kind_mark(s.kind, tier);
             // The session's own name (OSC-0 title, same as the tmux status
@@ -516,7 +525,7 @@ pub(super) fn render(
                 Span::styled(format!(" {a:>3}"), quiet),
             ]);
         }
-        if ranked.len() > 2 {
+        if selected && ranked.len() > 2 {
             push(vec![Span::styled(format!("  +{} more", ranked.len() - 2), quiet)]);
         }
         // Peek rows: the latest assistant reply, wrapped inside the card's
@@ -536,11 +545,7 @@ pub(super) fn render(
                     crate::peek::Doing::Thinking => "thinking",
                 };
                 let row = crate::text::truncate(word, t_cells.saturating_sub(4));
-                let mark = if glyphs::pulse_lit(ctx.spin) {
-                    quiet
-                } else {
-                    Style::default().fg(theme.sel.dim3)
-                };
+                let mark = if glyphs::pulse_lit(ctx.spin) { quiet } else { faint };
                 push(vec![
                     Span::styled(format!("  {} ", glyphs::pulse(tier)), mark),
                     Span::styled(row, quiet),

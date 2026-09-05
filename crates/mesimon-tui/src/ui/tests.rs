@@ -2039,6 +2039,40 @@ fn golden_board_tags_peek_120() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
+/// `P` opens every card (T-237): the cursor is on the first column, and the
+/// reply still shows under the card in the second — on the resting ramp, no
+/// surface, the chips row above it — while the cursor card keeps its own
+/// accordion. The session list stays the cursor card's.
+#[test]
+fn golden_board_peek_all_120() {
+    let path = write_transcript(
+        "peek-all-golden",
+        &reply_record("Rebased onto main, tests green, ready to merge."),
+    );
+    let mut b = fixture_tagged();
+    attach_transcript(&mut b, &path);
+    let mut app = app_graphite(b);
+    app.cursor_col = 0;
+    app.cursor_row = 0;
+    app.peek = true;
+    app.peek_all = true;
+    let lines = render(&app, 120, 30);
+    let y = lines.iter().position(|l| l.contains("Rebased onto main")).expect("a reply row");
+    assert!(
+        !lines[y - 1].contains("Decay treatments"),
+        "the reply hangs under its own card, not the cursor card"
+    );
+    let buf = cells(&app, 120, 30);
+    let x = lines[y].find("Rebased").expect("reply") as u16;
+    assert_ne!(
+        Some(buf[(x, y as u16)].bg),
+        app.theme.selected_bg,
+        "a resting card's reply wears no cursor surface"
+    );
+    golden("board_peek_all_120x30", &lines);
+    let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
+}
+
 /// A session-less card's chips sit FLUSH under its title: there is no glyph
 /// column on that card, so the title starts at the bar and the row follows it
 /// (author 2026-09-01: "non session tickets tags line shouldn't be indent").

@@ -219,9 +219,6 @@ pub struct SessionRecord {
     /// (mesimon-spawned ones pass `--session-id id`, so the two coincide).
     #[serde(default)]
     pub claude_session_id: Option<uuid::Uuid>,
-    /// Manual override: never sleep this session (D23 guard, third part).
-    #[serde(default)]
-    pub pinned_awake: bool,
     /// The ticket title was typed into this session's box and is still
     /// waiting for its Enter. Spike T-5 arm C (2026-08-31): an Enter sent in
     /// the same breath as the text is swallowed by Claude's paste detection,
@@ -299,7 +296,6 @@ impl SessionRecord {
             confidence: Confidence::default(),
             provenance: Provenance::default(),
             claude_session_id: None,
-            pinned_awake: false,
             pending_submit: false,
             idle_teammates: Vec::new(),
             plan_note: None,
@@ -1134,7 +1130,6 @@ mod tests {
         let rec: SessionRecord = serde_json::from_str(m2).unwrap();
         assert_eq!(rec.provenance, Provenance::Spawned);
         assert!(rec.claude_session_id.is_none());
-        assert!(!rec.pinned_awake);
     }
 
     fn ticket(id: u128, column: &str, order: &str) -> Ticket {

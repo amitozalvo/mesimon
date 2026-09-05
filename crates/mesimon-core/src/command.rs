@@ -356,10 +356,6 @@ pub enum Command {
     /// sleep-safe tickets (2026-08-30 rescope — was board-wide; the key must
     /// sleep exactly what the suggestion names, nothing broader).
     ReclaimAll,
-    PinAwake {
-        id: uuid::Uuid,
-        pinned: bool,
-    },
     /// Exclusive-focus token (D22). Grants the attach argv for the handover.
     FocusStart {
         session: uuid::Uuid,
@@ -623,8 +619,7 @@ impl Command {
             | ResumeSession { .. }
             | SleepSession { .. }
             | WakeSession { .. }
-            | ReclaimAll
-            | PinAwake { .. } => m(Mutate, true, None),
+            | ReclaimAll => m(Mutate, true, None),
             // Moves are recorded by `place_ticket` itself, with the mover;
             // the rest are session plumbing the feed does not narrate.
             MoveTicket { .. }

@@ -13,6 +13,7 @@
                                  │                                                    │
                                  │ VIEW                                               │
                                  │   p         show replies                           │
+                                 │   P         show every reply                       │
                                  │                                                    │
                                  │ APP                                                │
                                  │   esc       menu                                   │
@@ -21,7 +22,6 @@
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
-
 
 
 

@@ -143,9 +143,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let trail = !held && moving == Some(t.id);
         let mq = if selected { Some(marquee_ms(t)) } else { None };
         // Is this card open? The `p` preference, or a quick-tag digit still
-        // inside its reveal. The card is open on this alone — the transcript
-        // below may or may not exist, and the tag row does not depend on it.
-        let open = selected && app.peek_showing(t.id);
+        // inside its reveal — on the cursor card; `P` opens every card
+        // (T-237). The card is open on this alone — the transcript below may
+        // or may not exist, and the tag row does not depend on it.
+        let open = app.peek_all || (selected && app.peek_showing(t.id));
         // Transcript peek: the cursor card's highest-precedence session that
         // has a transcript (bash never does) — read through the draw cache.
         let peek = if open {

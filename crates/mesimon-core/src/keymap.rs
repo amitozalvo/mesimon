@@ -301,6 +301,10 @@ pub enum Verb {
     /// one, so the second repeatable action is a variant and a match arm.
     Repeat,
     Peek,
+    /// `P` on the board: `p` widened from the cursor card to every card
+    /// (T-237). Shift never switches verbs — the same reply row, on every
+    /// card at once — and a second `P` narrows back to the cursor card.
+    PeekAll,
     /// Esc on the board — opens the menu below.
     Menu,
     ExternalDrawer,
@@ -336,7 +340,6 @@ pub enum Verb {
     ShellNew,
     Sleep,
     SleepAllDone,
-    Pin,
     // ---- ticket lifecycle ----
     /// `a` — arms the archive chord, or restores at once when the ticket is
     /// already archived.
@@ -600,6 +603,8 @@ pub struct Ctx {
     pub bulk_archive: usize,
     pub has_archived: bool,
     pub peek_on: bool,
+    /// `P` is showing every card's reply, not only the cursor card's.
+    pub peek_all: bool,
     /// The live theme's id (`Flavor::name`), for the menu row's label.
     pub theme_name: &'static str,
     /// Its one-line blurb, for the row's detail.
@@ -673,7 +678,6 @@ pub struct Ctx {
     pub sel_session: bool,
     pub sel_sleeping: bool,
     pub sel_dead: bool,
-    pub sel_pinned: bool,
     // ---- worktree ----
     pub has_worktree: bool,
     /// `m` would actually do something on the next press.
@@ -1419,6 +1423,27 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // Overlay-only, like `p` and for the same reason (T-237, user: "no
+        // need to hint this"). `P` IS shift-of-`p`: the same reply row,
+        // widened from the cursor card to every card on the board; pressing
+        // it again narrows back to the cursor card, never to nothing.
+        keys: &[Key::Char('P')],
+        verb: Verb::PeekAll,
+        show: "P",
+        hint: |c| {
+            if c.peek_all {
+                "replies on the cursor card only"
+            } else {
+                "show every reply"
+            }
+        },
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         // Overlay-only. The menu is not about the selection and the footer
         // now is; the header's suggestion chip already spells `(esc)` on the
         // occasions the menu has something to offer, and `?` names it the
@@ -1577,23 +1602,6 @@ static TICKET: &[Binding] = &[
         group: Group::Sessions,
         mutates: true,
         // Under the rail (T-158): the row it acts on is right above it.
-        prio: 0,
-    },
-    Binding {
-        keys: &[Key::Char('P')],
-        verb: Verb::Pin,
-        show: "P",
-        hint: |c| {
-            if c.sel_pinned {
-                "let it sleep"
-            } else {
-                "keep awake"
-            }
-        },
-        avail: |c| c.sel_session,
-        class: Class::Plain,
-        group: Group::Sessions,
-        mutates: true,
         prio: 0,
     },
     Binding {
@@ -4800,6 +4808,12 @@ mod tests {
             resolve(Scope::Editor, Key::Ctrl('S'), &composing_full),
             Some(Verb::EditorSaveStart)
         );
+        // `p` opens the cursor card's reply, `P` every card's (T-237): the
+        // same row, widened. The board's and nobody else's — the ticket page
+        // draws no cards, and `P` is unbound there since the pin went.
+        assert_eq!(resolve(Scope::Board, Key::Char('p'), &full), Some(Verb::Peek));
+        assert_eq!(resolve(Scope::Board, Key::Char('P'), &full), Some(Verb::PeekAll));
+        assert_eq!(resolve(Scope::Ticket, Key::Char('P'), &full), None);
         // `n` edits the note the cursor means, `N` forces a fresh one: same
         // target, harder — on both screens.
         for scope in [Scope::Board, Scope::Ticket] {

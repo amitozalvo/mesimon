@@ -709,7 +709,12 @@ which tag, and the stripe only has room for two. Several tags share the row long
 never an equal split (an equal split cut "BUG" to make room for a "STAGING" that then got cut
 anyway), nothing shrinks below three cells, and the tail drops rather than every name going
 illegible. The row is the TICKET's metadata, so an open card earns it with no session at all —
-gating it on `peek.is_some()` meant the commonest tagged card on the board could never show it.
+gating it on `peek.is_some()` meant the commonest tagged card on the board could never show it. **`P` opens every card** (T-237, 2026-09-05): `Verb::PeekAll`, board only,
+overlay-only like `p` (user: "no need to hint this") — `App::peek_all` implies `peek`, `P` off
+narrows back to the cursor card, `p` off takes both; a resting open card draws only its chips and
+its reply on the resting ramp with no surface (`card.rs`), the session list stays the cursor
+card's. The ticket page's `P` (the session pin, `PinAwake`/`pinned_awake`) was REMOVED the same
+hour at the user's ask (STALE-MAP "`P` opens every card, and the pin is gone").
 
 **And a quick-tag digit opens the card it tagged, for 1500 ms.** The stripe is one cell at rest
 and carries no words, so `cycle_tag` arms `App::tag_flash` and the card draws itself open —

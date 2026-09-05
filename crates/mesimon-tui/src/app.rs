@@ -648,6 +648,10 @@ pub struct App {
     /// Transcript peek (`p`): the cursor card also shows its latest assistant
     /// reply, read from the transcript at draw time (peek.rs).
     pub peek: bool,
+    /// `P` (T-237): every card shows its latest reply, not only the cursor
+    /// card. Implies `peek` — it is `p` widened, so `p` turning off takes
+    /// this with it and `P` turning off narrows back to the cursor card.
+    pub peek_all: bool,
     pub peek_cache: crate::peek::PeekCache,
     /// A quick-tag digit holds the card it tagged open for a moment (the
     /// ticket it landed on, and when). The stripe is one cell at rest and
@@ -855,6 +859,7 @@ impl App {
             menu_marquee: Cell::new(None),
             scroll_row: Cell::new(0),
             peek: false,
+            peek_all: false,
             peek_cache: crate::peek::PeekCache::default(),
             tag_flash: None,
             shell_tail: None,
@@ -2010,6 +2015,7 @@ impl App {
             bulk_archive: self.resources.archive_tickets,
             has_archived: !self.board.archived_tickets().is_empty(),
             peek_on: self.peek,
+            peek_all: self.peek_all,
             theme_name: self.theme.flavor.name(),
             theme_blurb: self.theme.flavor.blurb(),
             theme_slot_word: match self.ground {
@@ -2049,7 +2055,6 @@ impl App {
                 .is_some_and(|t| t.description().is_some()),
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
-            sel_pinned: selected.is_some_and(|s| s.pinned_awake),
             has_worktree: wt.is_some_and(|w| !w.branch.is_empty()),
             merge_actionable: merge.is_some(),
             merge_word: merge.unwrap_or("merge"),
@@ -2817,13 +2822,6 @@ impl App {
                 self.mode = Mode::Normal;
                 self.refresh()?;
             }
-            Verb::Pin => {
-                if let Some(sid) = self.selected_session() {
-                    let pinned = !ctx.sel_pinned;
-                    self.send(Command::PinAwake { id: sid, pinned })?;
-                    self.status = if pinned { "kept awake".into() } else { "free to sleep".into() };
-                }
-            }
             // ---- worktree --------------------------------------------------
             Verb::Merge => {
                 if let Some(id) = self.subject() {
@@ -2934,10 +2932,21 @@ impl App {
             // ---- view / lists ----------------------------------------------
             Verb::Peek => {
                 self.peek = !self.peek;
+                // `P` is `p` widened, so `p` going off takes it along.
+                self.peek_all &= self.peek;
                 self.status = if self.peek {
                     "showing the latest reply under the selected card".into()
                 } else {
                     "replies hidden".into()
+                };
+            }
+            Verb::PeekAll => {
+                self.peek_all = !self.peek_all;
+                self.status = if self.peek_all {
+                    self.peek = true;
+                    "showing the latest reply under every card".into()
+                } else {
+                    "showing the latest reply under the selected card".into()
                 };
             }
             Verb::ExternalDrawer => self.open_drawer()?,
@@ -7690,6 +7699,34 @@ mod tests {
         press(&mut app, '3');
         let arm = app.tag_armed.as_ref().expect("armed");
         assert_eq!((arm.row, arm.col), (2, 0));
+    }
+
+    /// `P` is `p` widened (T-237): it opens every card, and it implies the
+    /// cursor card's own peek, so `p` going off takes it along and `P`
+    /// going off narrows back to the cursor card rather than to nothing.
+    #[test]
+    fn shift_p_widens_the_peek_to_every_card() {
+        let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        assert!(!app.peek && !app.peek_all);
+        press(&mut app, 'P');
+        assert!(app.peek && app.peek_all, "every card, the cursor card included");
+        assert_eq!(app.status, "showing the latest reply under every card");
+        press(&mut app, 'P');
+        assert!(app.peek && !app.peek_all, "narrowed to the cursor card, not hidden");
+        press(&mut app, 'P');
+        press(&mut app, 'p');
+        assert!(!app.peek && !app.peek_all, "`p` off hides the lot");
+        assert_eq!(app.status, "replies hidden");
+        // Overlay-only, on the board alone: `?` names it, the footer never
+        // does (user: "no need to hint this").
+        assert!(!app.ctx().peek_on);
+        assert_eq!(
+            keymap::hint_for(Scope::Board, Verb::PeekAll, &app.ctx()),
+            Some(("P", "show every reply"))
+        );
+        assert!(!keymap::footer_items(Scope::Board, &app.ctx())
+            .iter()
+            .any(|b| b.verb == Verb::PeekAll));
     }
 
     /// A quick-tag digit opens the card it tagged, and then lets go. The

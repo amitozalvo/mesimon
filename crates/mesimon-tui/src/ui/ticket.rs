@@ -794,9 +794,6 @@ fn draw_rail(
             if s.provenance == Provenance::Adopted && s.argv.is_empty() {
                 badges.push("external");
             }
-            if s.pinned_awake {
-                badges.push("pinned");
-            }
             if matches!(s.state, SessionState::Exited { .. }) {
                 badges.push("enter resumes");
             }

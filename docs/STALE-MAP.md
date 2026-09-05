@@ -5595,3 +5595,28 @@ Rust's `sync_all` IS `fcntl(F_FULLFSYNC)` on macOS — ~3 ms a call, ~8 ms for t
 records on the author's board) on the writer thread. Not the hang; the comment now says what it
 costs and why the barrier stays.
 
+
+## `P` opens every card, and the pin is gone (T-237, 2026-09-05)
+
+`P` on the board is `p` widened (user: "shift+P to peak all ∙ no need to hint this"): every
+card carries its chips row and its latest reply, not only the cursor card's. `Verb::PeekAll`,
+board only — the ticket page draws no cards (user: "peak belongs to the board, not ticket
+page") — overlay-only like `p` (`?` names it, the footer never does), `Ctx::peek_all` for the
+hint. It IMPLIES the cursor card's own peek: `P` on sets `App::peek` too, `P` off narrows back
+to the cursor card rather than to nothing, and `p` off takes `peek_all` with it — shift never
+switches verbs, and the ladder is off / cursor / all. `ui/board.rs` opens a card on `peek_all ||
+(selected && peek_showing)`; in `card.rs` a resting card that is open draws ONLY the tag row and
+the reply, on the resting ramp with no surface — the session list, the armed snooze and the owed
+row stay the cursor card's accordion, since they are about the selection. The transcript is read
+through the same per-path `PeekCache`, so opening thirty cards is thirty cached tails. Golden
+`board_peek_all_120x30`; `shift_p_widens_the_peek_to_every_card` holds the ladder.
+
+**The session pin went with it** (user, the same hour: "remove pin, I don't think I ever used it
+and I don't know what it does"). `P` on the ticket page had been `Verb::Pin` → `Command::PinAwake`
+→ `SessionRecord.pinned_awake`, the D23 "third part" manual override that refused `x` and the
+bulk sweep on a pinned session (docs/14 §6.3, docs/16 — idea stock now). All of it is gone: the
+verb, the binding, `Ctx::sel_pinned`, the command and its two allowlist arms, the daemon handler,
+the `sleep_eligible` refusal, the record field (an old `sessions.json` carrying `pinned_awake`
+still loads — serde ignores what it does not know — and the next save drops it) and the rail's
+`pinned` badge. Nothing else read the flag. That is also what freed `P` for the peek without
+putting two verbs on one key across the screens.

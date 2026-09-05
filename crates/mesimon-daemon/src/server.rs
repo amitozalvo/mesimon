@@ -1285,16 +1285,6 @@ impl Daemon {
                 }
                 Response::Reclaimed { slept, skipped }
             }
-            Command::PinAwake { id, pinned } => {
-                match self.board.sessions.iter_mut().find(|s| s.id == id) {
-                    Some(rec) => {
-                        rec.pinned_awake = pinned;
-                        self.persist_and_notify();
-                        Response::Ok
-                    }
-                    None => Response::Err { message: "no such session".into() },
-                }
-            }
             // The agent tier, reached only via `handle_agent`. A local client
             // sending one of these is either confused or probing; either way
             // the answer is no, not "acts as the agent whose id you guessed".
@@ -4452,7 +4442,7 @@ impl Daemon {
     /// the bulk sweep's age floor, since a `z` is as deliberate as an `x` —
     /// and it is all-or-nothing: every pane on the ticket is judged BEFORE
     /// any is signalled, so a claude still working (or waiting on the user,
-    /// or pinned awake, or a shell with a live child) holds the ticket on
+    /// or a shell with a live child) holds the ticket on
     /// the board with nothing on it touched, in words that name it.
     /// `wake_snoozed` on the tick wheel is the other half; the sessions
     /// stay asleep when the ticket returns, and `c` wakes them.
@@ -5580,9 +5570,6 @@ impl Daemon {
         now: u64,
         enforce_floor: bool,
     ) -> std::result::Result<(), String> {
-        if rec.pinned_awake {
-            return Err("pinned awake".into());
-        }
         match (rec.kind, &rec.state) {
             (SessionKind::Claude, SessionState::Idle { .. }) => {}
             (SessionKind::Claude, _) => return Err("only idle sessions sleep".into()),

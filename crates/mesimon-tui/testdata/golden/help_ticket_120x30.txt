@@ -19,12 +19,12 @@
                                  │   s         shell                                  │
                                  │   S         another shell                          │
                                  │   x         sleep                                  │
-                                 │   P         keep awake                             │
                                  │                                                    │
                                  │ APP                                                │
                                  │   ?         keys                                   │
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
+
 
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

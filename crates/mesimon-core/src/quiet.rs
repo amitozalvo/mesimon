@@ -94,7 +94,6 @@ mod tests {
             confidence: Confidence::High,
             provenance: Provenance::Spawned,
             claude_session_id: None,
-            pinned_awake: false,
             pending_submit: false,
             idle_teammates: vec![],
             plan_note: None,

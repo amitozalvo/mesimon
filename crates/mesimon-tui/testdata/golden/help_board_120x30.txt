@@ -11,14 +11,14 @@
       │   enter     go to the agent                                                                              │
       │   space     ticket page                               VIEW                                               │
       │                                                         p         show replies                           │
-      │ TICKETS                                                                                                  │
-      │   o         new ticket                                APP                                                │
-      │   > <       move card, aiming                           esc       menu                                   │
-      │   HJKL      move card                                   q         quit                                   │
-      │   r         rename                                      ?         keys                                   │
-      │   tab       describe                                    ^L        redraw                                 │
-      │   n         note                                        ^Z        suspend mesimon                        │
-      │   ^t        tags                                                                                         │
+      │ TICKETS                                                 P         show every reply                       │
+      │   o         new ticket                                                                                   │
+      │   > <       move card, aiming                         APP                                                │
+      │   HJKL      move card                                   esc       menu                                   │
+      │   r         rename                                      q         quit                                   │
+      │   tab       describe                                    ?         keys                                   │
+      │   n         note                                        ^L        redraw                                 │
+      │   ^t        tags                                        ^Z        suspend mesimon                        │
       │   a         archive                                                                                      │
       │   z         snooze                                                                                       │
       │   d         delete                                                                                       │

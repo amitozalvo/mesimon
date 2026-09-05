@@ -567,7 +567,6 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::SleepSession { .. }
         | Command::WakeSession { .. }
         | Command::ReclaimAll
-        | Command::PinAwake { .. }
         | Command::FocusStart { .. }
         | Command::FocusEnd { .. }
         | Command::GateStatus
@@ -866,7 +865,6 @@ mod tests {
             Command::SleepSession { id: s },
             Command::WakeSession { id: s },
             Command::ReclaimAll,
-            Command::PinAwake { id: s, pinned: true },
             Command::FocusStart { session: s },
             Command::FocusEnd { session: s },
             Command::GateStatus,
