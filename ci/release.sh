@@ -116,11 +116,28 @@ step "bundled tmux"
 ./ci/build-tmux.sh
 [ -x vendor/tmux/tmux ] || die "vendor/tmux/tmux missing after build"
 
+step "link the test binaries"
+# Compiled before the bounded run below, so its deadline is spent on tests
+# and never on a relink.
+cargo test --workspace --no-run
+
 step "tests (driven by the bundled tmux)"
 # Test what actually ships. The suite used to run against whatever tmux the
 # author had on PATH, which is precisely the variable bundling exists to
 # remove — so the bundled binary is the one that has to pass.
-MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py -- cargo test --workspace
+#
+# Forty minutes, not the wrapper's twenty. A version bump relinks every crate
+# and all ~35 e2e binaries, and macOS holds an executable it has not seen
+# before on its first exec (XProtect, in syspolicyd) — ~30 s each here, one
+# after another under `cargo test`, which on 2026-09-05 ran alpha.15's gate
+# past 1200 s with every test green. The stall is paid once per binary and
+# nowhere else, so the deadline still catches a hang; it just leaves room
+# for a cold run. NOT warmed in parallel: thirty-six first execs at once
+# saturated the scanner for three minutes and every exec on the machine
+# waited behind them — both live boards' daemons logged a 48 s writer turn
+# stalled forking tmux, and their TUIs hung with them. Serial was measured
+# harmless to the boards; parallel was not.
+MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --timeout 2400 -- cargo test --workspace
 
 step "tests on Linux (Docker, the distro's own tmux)"
 # The same suite on the platform the Linux artifacts are for, driven by the

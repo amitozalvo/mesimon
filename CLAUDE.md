@@ -64,7 +64,7 @@ Linux targets (`x86_64`/`aarch64-unknown-linux-musl`, static, WSL2 is the Window
 road) are cross-linked here by the toolchain's own `rust-lld` (`ci/build-linux.sh`,
 no C in the dependency graph so no cross toolchain). The script is the gate — clean
 tree, tag == HEAD == workspace version, tag pushed, clippy, dup-dep drift, the full
-suite with `MESIMON_REQUIRE_TMUX=1`, the same suite on Linux in Docker (dies without
+suite with `MESIMON_REQUIRE_TMUX=1` (linked first, then run under a 40-minute deadline: macOS holds every freshly linked executable ~30 s on its first exec, and the serial suite ran past the wrapper's default 20 minutes on alpha.15 with every test green — NEVER warm the binaries in parallel, it stalls every exec on the machine and hung both live boards; STALE-MAP "The release gate leaves room for a cold run"), the same suite on Linux in Docker (dies without
 Docker, never skips — **but both Docker steps are PAUSED by the author since 2026-09-02
 until they say Windows/WSL2 is operational**: the script prints `SKIPPED` for each and
 `MESIMON_RELEASE_DOCKER=1` runs them; do not open Docker Desktop for a release) — then build, `codesign -v` (the macOS binary is deliberately NOT

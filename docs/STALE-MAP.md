@@ -5985,3 +5985,40 @@ rich.rs's "a terminal cannot follow a link" comments now say the zone cannot. Go
 description, which is where they are); directories as links; OSC 8 hyperlinks in the preview
 zone (SGR 4 stays the chip's, and an underline is not a link here). `~/` resolves through
 `$HOME`; a relative path joins the ticket's dir with `./` and `../` folded.
+
+
+## The release gate leaves room for a cold run (2026-09-06)
+
+Cutting v0.1.0-alpha.15, `ci/release.sh`'s test step ran past `ci/test-run.py`'s 1200 s
+deadline with every test green. A version bump relinks every crate and all ~35 e2e binaries, and
+macOS holds an executable it has not seen before on its first exec (XProtect, in syspolicyd): the
+audit registry's timestamps showed one e2e binary per 30–60 s of wall clock against 1–20 s of
+reported test time, and the rerun with the same binaries already judged took four minutes. The
+gate's suite is `cargo test --workspace`, which runs the e2e binaries one after another, so the
+stalls added up. (Inferred: the system log that would name the scan is closed to a non-root
+reader; a relinked `tags_e2e` alone took 24 s wall against 1.4 s of test time, and 1.8 s the
+second time.)
+
+**What was built.** `cargo test --workspace --no-run` before the wrapper, so the deadline is
+spent on tests and never on a relink, and `--timeout 2400` on the release's run. The stall is
+paid once per binary and nowhere else, so forty minutes still catches a hang.
+
+**What was built first and REVERTED the same hour.** A warm-up step that exec'd every test
+binary with `--list` at once. It took 3.5 min for thirty-six binaries of which two were fresh,
+and while it ran BOTH live boards hung: their daemons' journals each hold one `slow turn: tick
+took ~48000 ms ∙ slowest stage probe_activity` at that minute — the writer thread forking tmux,
+waiting behind the scanner like every other exec on the machine. The serial cold run of the
+first gate stalled no daemon (no slow turn in either journal for its twenty minutes). Serial
+first execs are harmless to the boards; parallel ones are not, and a gate must never cost a
+running board. **Do not warm test binaries in parallel on macOS.**
+
+**Why not nextest.** It would overlap the first execs the same way — the same saturation — and it
+changes what the gate runs (the hook, m3 and interrupt e2es have flaked under a full parallel run
+on a loaded box). The serial suite has been the thing passing; it stays.
+
+**Why not the machine.** System Settings → Privacy & Security → Developer Tools exempts an app's
+descendants from the Gatekeeper assessment, and the author added iTerm2 on 2026-09-05. A
+relinked `tags_e2e` still paid 22 s from a mesimon pane: the private tmux server is reparented
+to launchd, so nothing under it descends from iTerm2 for the responsible-process check. A gate
+that depends on a per-machine setting the machine cannot honour is no gate. Untried: adding the
+tmux binary itself to that list; running the gate from a plain iTerm2 tab.
