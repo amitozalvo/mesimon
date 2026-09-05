@@ -3170,6 +3170,45 @@ fn golden_ticket_description_120() {
     golden("ticket_description_120x30", &lines);
 }
 
+/// The state row says `description unread` exactly while there is something
+/// to have read, a claude that has had a turn, and no record of it reading
+/// (T-224). Reading it — `get_ticket`, or the composed spawn's paste — takes
+/// the clause off; a claude still launching has not skipped anything yet; a
+/// ticket with no description has nothing to skip.
+#[test]
+fn test_description_unread_follows_the_record() {
+    let row = |app: &App| {
+        render(app, 120, 30)
+            .into_iter()
+            .find(|l| l.contains("IN PROGRESS for"))
+            .expect("the state row")
+    };
+    let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    assert!(row(&app).contains("description unread"), "{}", row(&app));
+
+    // The record says it read the ticket.
+    let mut read = app_noted();
+    read.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    for s in read.board.sessions.iter_mut().filter(|s| s.ticket == ulid_n(3)) {
+        s.ticket_read = true;
+    }
+    assert!(!row(&read).contains("unread"), "{}", row(&read));
+
+    // Not yet prompted: nothing has been skipped.
+    let mut launching = app_noted();
+    launching.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    for s in launching.board.sessions.iter_mut().filter(|s| s.ticket == ulid_n(3)) {
+        s.state = SessionState::Spawning;
+    }
+    assert!(!row(&launching).contains("unread"), "{}", row(&launching));
+
+    // No description: nothing to read.
+    let mut bare = app_graphite(fixture(false));
+    bare.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    assert!(!row(&bare).contains("unread"), "{}", row(&bare));
+}
+
 #[test]
 fn golden_ticket_note_selected_120() {
     let mut app = app_noted();

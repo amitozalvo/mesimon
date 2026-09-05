@@ -52,6 +52,27 @@ impl SessionState {
     pub fn unknown() -> Self {
         SessionState::Unknown { reason: UnknownReason::NoSignal }
     }
+
+    /// A prompt has reached this session at least once: it is working, has
+    /// worked, or is parked after working. `Spawning`, an `Idle{Unknown}`
+    /// fresh off its `SessionStart`, `Unknown` and the dead states say
+    /// nothing either way, and the `description unread` clause on the ticket
+    /// page (T-224) reads this so it never accuses a session that has not
+    /// had its first turn yet.
+    pub fn has_prompted(&self) -> bool {
+        matches!(
+            self,
+            SessionState::Running
+                | SessionState::RequiresAction { .. }
+                | SessionState::Sleeping
+                | SessionState::Throttled
+                | SessionState::Idle {
+                    stop_reason: StopReason::EndTurn
+                        | StopReason::Interrupted
+                        | StopReason::Background
+                }
+        )
+    }
 }
 
 /// Why a session needs a human. Rank order lives in `attention::rank`.
@@ -228,6 +249,17 @@ pub struct SessionRecord {
     /// mints a fresh one.
     #[serde(default)]
     pub plan_note: Option<ulid::Ulid>,
+    /// This session has read its ticket (T-224, 2026-09-05): `get_ticket`
+    /// answered it, or the composed spawn pasted the description under the
+    /// title as its first prompt. The ticket page reads it the other way
+    /// round — a claude that has taken a turn on a ticket WITH a description
+    /// and never read it earns a `description unread` clause — so the skip
+    /// the user could not see before is on the page it matters on. Persisted
+    /// so a restart does not accuse a session that did read it; a pre-field
+    /// record reads false, which is the honest answer for a session nobody
+    /// watched.
+    #[serde(default)]
+    pub ticket_read: bool,
 }
 
 impl SessionRecord {
@@ -271,6 +303,7 @@ impl SessionRecord {
             pending_submit: false,
             idle_teammates: Vec::new(),
             plan_note: None,
+            ticket_read: false,
         }
     }
 

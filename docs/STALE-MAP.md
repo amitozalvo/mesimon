@@ -5221,3 +5221,61 @@ is the check that the copy split went in the right place. `diff_checkout_120x30`
 L1 law sweeps gained a checkout arm — each with a needle assertion, which the existing
 `install_diff` arms had never had.
 
+
+## The brief travels with the title (T-224, 2026-09-05, user: "claude.md prompt for agent to look at ticket are not aggressive enough, most agents skip reading ticket before executing" ∙ "do everything")
+
+**The bug, a day after T-217.** The CLAUDE.md snippet shipped as a hedged request — *"Call
+`get_ticket` before you start — the ticket's description and notes may carry context the prompt
+does not"* — and agents read it as optional: most still went straight from the title to the
+code. Four things were wrong at once, and all four moved:
+
+1. **The snippet is now imperative, first, and still honest.** `claudemd::SNIPPET`: *"FIRST,
+   before reading code or planning, call `get_ticket` and read the ticket's description and
+   notes: they are the brief, and the prompt is often only the ticket's title. Do not start work
+   without them."* It opens on the ORDER of events, names what is missed, and closes the door —
+   but it says *often* only the title, never *only*: an ask field or a prompt typed into the pane
+   is the user's own words, and T-217's rule stands (a CLAUDE.md that is wrong once is disbelieved
+   everywhere). Still five lines under `WRAP` 56; golden `claude_md_120x30` moved; the repo's own
+   CLAUDE.md copy was updated by hand (mesimon offers this repo nothing — the marker is there).
+2. **`get_ticket`'s description says the prompt is often only the title.** Tool text is the one
+   named exception to promise 3 and reaches every spawned session whether or not the CLAUDE.md
+   offer was taken, so the sentence *"The prompt that starts a session is often the ticket's title
+   alone; the description and notes here are the rest of the brief, so this is the first call of
+   a session"* lives there too — descriptive, inside `lint_tool_text` (no second person, no
+   imperatives, no shouting) and under `MAX_TOOL_BYTES`.
+3. **A prompt cannot be skipped: the composed spawn pastes the description under the title.**
+   On every road where mesimon presses the Enter (`SpawnSession { submit_prompt: true }` — the
+   composer's Shift+Enter, `^S` in the grown composer, the board's ask at an EMPTY seat), 
+   `spawn_session` still types the title (the fallback if the delivery gives up is unchanged) and
+   now also parks `notes[0]`'s body in `pending_prompt` as `Parked { text: "\n\n" + body, brief:
+   true }`; `deliver_pending_submit` presses nothing on the `SessionStart` edge while a paste is
+   parked, and the first tick of `retry_pending_submits` pastes it through `paste_text` — bracketed
+   paste, then a separate Enter — the wake-and-ask shape, never typed ahead (canonical-mode input
+   keeps 1 KiB until Claude sets raw mode). The plain-Enter road stays title-only: the user is
+   about to edit the box, and a 32 KiB description is not editable there. A wake-and-ask parks the
+   USER's words with `brief: false`; a description that is blank or unreadable parks nothing.
+   **README promise 3 names it**: what is submitted is the title followed by the description,
+   both the user's own words written for that ticket, nothing of mesimon's.
+4. **The skip is visible where it matters.** `SessionRecord.ticket_read` (`#[serde(default)]`,
+   persisted) is stamped by the brief's paste and by `AgentGetTicket` (a real delta, broadcast).
+   The ticket page's state row says ` ∙ description unread` — the value step, a nudge not an
+   alarm, beside the description it is about — for a claude that `has_prompted()` on a ticket
+   with a description and no stamp. `SessionState::has_prompted` is the new predicate: Running,
+   RequiresAction, Sleeping, Throttled, and Idle on EndTurn / Interrupted / Background — never
+   Spawning, `Idle{Unknown}` or `Unknown`, so a session that has not had its first turn is not
+   accused. A pre-field record reads false, which is the honest answer for a session nobody
+   watched. Goldens `ticket_description_120x30` and `ticket_note_selected_120x30` moved.
+
+**Refused, on the promise.** MCP `instructions` on `initialize` — Claude Code renders them into
+the system prompt, so it would work, and `initialize_answers_and_carries_no_instructions` refuses
+it for exactly that reason; hook stdout on `SessionStart`/`UserPromptSubmit` (`additionalContext`
+— breaks `mesimon hook`'s never-writes-stdout invariant and promise 3 outright); and
+`--append-system-prompt`, the same class.
+
+**Tests.** `core/src/claudemd.rs` unchanged in shape (marker + tool named, fits the dialog, twice
+is impossible). `core/src/mcp.rs`: the lint and the byte cap over the new sentence. `ui/tests.rs`:
+`test_description_unread_follows_the_record` — present, gone once read, gone while launching, gone
+without a description. `brief_e2e.rs`: the receipt stub reads the title line before the brief and
+the whole body arrives; `ticket_read` flips on the paste; a plain spawn flips it on `get_ticket`
+with the description in the answer; a ticket with no description submits the title alone and
+stamps nothing.

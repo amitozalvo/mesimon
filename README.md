@@ -38,7 +38,9 @@ dogfooded daily, and it will change under you. The current version and its histo
    `--fix`.
 3. **Zero prompt injection.** mesimon adds, removes and reorders exactly zero tokens of your
    conversation. It never prepends a system prompt, never appends a reminder, never rewrites what
-   you typed.
+   you typed. When you ask it to start an agent on a ticket and submit (Shift+Enter), what it
+   submits is the ticket's title followed by the ticket's description — both your own words,
+   written for that ticket, and nothing of mesimon's.
 
    It does give the sessions it spawns scoped board tools — read and move its ticket, read and
    write its notes, tag it from the tags you already made, and file a new ticket — so an agent

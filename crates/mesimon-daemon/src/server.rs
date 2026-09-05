@@ -201,7 +201,13 @@ pub struct Daemon {
     /// at 1 KiB until Claude sets raw mode. In memory beside `submit_retry`
     /// for the same reason it is: a restart drops the words rather than
     /// pasting them into a pane it no longer understands.
-    pending_prompt: HashMap<uuid::Uuid, String>,
+    ///
+    /// Since T-224 (2026-09-05) the composed spawn parks here too: the
+    /// ticket's DESCRIPTION, to be pasted under the typed title before the
+    /// owed Enter, so the agent's first prompt is the whole brief and not the
+    /// title alone. `Parked::brief` says which of the two it is, because only
+    /// the second stamps `SessionRecord::ticket_read`.
+    pending_prompt: HashMap<uuid::Uuid, Parked>,
     /// Asks parked until the ticket's CHECKOUT is quiet (2026-09-04, after
     /// five claudes in one checkout committed at once): the board's
     /// Shift+Enter with the field's toggle at `queued`. FIFO per checkout,
@@ -789,6 +795,15 @@ const INFLIGHT_MS: u64 = 10_000;
 /// a person typing there makes it active, and their half-sentence must not
 /// get mesimon's appended and submitted.
 const TRAIN_PANE_QUIET_MS: u64 = 5_000;
+
+/// Words waiting for a pane that reads (`Daemon::pending_prompt`). `brief`
+/// marks the composed spawn's paste of the ticket description (T-224): it is
+/// what stamps `ticket_read` on the record when it lands, where the board's
+/// ask at a sleeping claude — the user's own words — stamps nothing.
+struct Parked {
+    text: String,
+    brief: bool,
+}
 
 /// An ask parked until its checkout is quiet (see `Daemon::queued`).
 struct QueuedAsk {
@@ -2045,8 +2060,16 @@ impl Daemon {
             // separate Enter (`paste_text`, the T-5 shape). The presses that
             // follow are the ordinary retries; a paste is made once.
             match self.pending_prompt.remove(&id) {
-                Some(text) => {
+                Some(Parked { text, brief }) => {
                     let _ = self.backend.paste_text(&sid16, &text);
+                    // The brief went in with the first prompt: this session
+                    // has read its ticket, whatever it does with the tools.
+                    if brief {
+                        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                            rec.ticket_read = true;
+                            changed = true;
+                        }
+                    }
                 }
                 None => {
                     let _ = self.backend.send_enter(&sid16);
@@ -2222,7 +2245,20 @@ impl Daemon {
                     return Response::Err { message: format!("denied: {reason}") };
                 }
                 match self.agent_ticket_view(ticket) {
-                    Some(view) => Response::AgentTicket { ticket: view },
+                    Some(view) => {
+                        // The agent read its ticket: the page stops saying
+                        // it has not (T-224). A persisted fact, and a real
+                        // delta for the page to draw, so it is broadcast.
+                        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == session)
+                        {
+                            if !rec.ticket_read {
+                                rec.ticket_read = true;
+                                self.persist_sessions();
+                                self.broadcast();
+                            }
+                        }
+                        Response::AgentTicket { ticket: view }
+                    }
                     None => Response::Err { message: "no such ticket".into() },
                 }
             }
@@ -3945,6 +3981,16 @@ impl Daemon {
 
     // ------------------------------------------------------------ notes
 
+    /// The ticket's description — `notes[0]`'s body — when it has one with
+    /// words in it. Read on the writer thread like `read_note`; an unreadable
+    /// file is "no description", never a refused spawn.
+    fn description_body(&self, ticket: ulid::Ulid) -> Option<String> {
+        let t = self.board.ticket(ticket)?;
+        let meta = t.description()?;
+        let body = store::read_note(&self.paths, &t.short_key, meta.id).ok()?;
+        (!body.trim().is_empty()).then(|| body.trim_end().to_string())
+    }
+
     /// One note's body, whole, for the ticket page or an agent. The file is
     /// read on the writer thread: it is bounded at `NOTE_MAX_BYTES` and the
     /// diff service's off-thread road exists for git, not for one small read.
@@ -4321,7 +4367,7 @@ impl Daemon {
         };
         let resp = self.resume_session(id, false);
         if let Response::Spawned { .. } = &resp {
-            self.pending_prompt.insert(id, text);
+            self.pending_prompt.insert(id, Parked { text, brief: false });
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_submit = true;
             }
@@ -4797,6 +4843,22 @@ impl Daemon {
             {
                 if self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok() {
                     rec.pending_submit = submit_prompt;
+                    // And when mesimon is the one pressing Enter, the whole
+                    // brief goes with it (T-224, 2026-09-05): the ticket's
+                    // description — the user's own words, written for this
+                    // ticket — is parked to be PASTED under the title on the
+                    // first tick after `SessionStart`, the way a wake-and-ask
+                    // delivers its words (never typed ahead: canonical-mode
+                    // input keeps 1 KiB). Agents skipped `get_ticket` however
+                    // CLAUDE.md asked; a prompt cannot be skipped. The plain
+                    // Enter road stays title-only — the user is about to edit
+                    // the box, and a 32 KiB description is not editable there.
+                    if submit_prompt {
+                        if let Some(body) = self.description_body(ticket) {
+                            self.pending_prompt
+                                .insert(id, Parked { text: format!("\n\n{body}"), brief: true });
+                        }
+                    }
                 }
             }
         }

@@ -136,7 +136,10 @@ pub fn tools() -> Vec<Value> {
                             title, current column, workspace mode, branch, merge state, \
                             the column names move_ticket accepts, the tags it wears, \
                             every tag the board knows (allowed_tags), the description (its \
-                            first note) and the id, name and author of every note.",
+                            first note) and the id, name and author of every note. The \
+                            prompt that starts a session is often the ticket's title \
+                            alone; the description and notes here are the rest of the \
+                            brief, so this is the first call of a session.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
         }),
         json!({

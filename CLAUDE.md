@@ -3,9 +3,10 @@
 ## mesimon
 
 When `MESIMON_TICKET` is set, this session is working a
-mesimon ticket. Call `get_ticket` before you start — the
-ticket's description and notes may carry context the
-prompt does not.
+mesimon ticket. FIRST, before reading code or planning,
+call `get_ticket` and read the ticket's description and
+notes: they are the brief, and the prompt is often only
+the ticket's title. Do not start work without them.
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
@@ -512,7 +513,17 @@ control byte a legacy terminal sends is `^s`, another verb, so it is `rich_keys`
 types the ticket title into the agent's box and stops (zero token injection, a README promise).
 The composer's Shift+Enter is the one gesture that also presses Enter — it mints the ticket,
 spawns claude, submits the title as the first prompt, and stays on the board (no handover; the
-card is how you watch it). It travels as `Command::SpawnSession { submit_prompt }` →
+card is how you watch it). **And since T-224 (2026-09-05) the description goes with it**: on every
+road where mesimon presses the Enter (`submit_prompt`), `spawn_session` parks `notes[0]`'s body
+in `pending_prompt` as a `Parked { brief: true }` and the first tick after `SessionStart` pastes
+it under the typed title (`paste_text`, the wake-and-ask shape — never typed ahead), so the first
+prompt is the whole brief; the plain-Enter road stays title-only because the user is about to
+edit the box. Agents skipped `get_ticket` however CLAUDE.md asked (the snippet is now imperative
+and first, and `get_ticket`'s own description says the prompt is often only the title); a prompt
+cannot be skipped. The paste, or a `get_ticket`, stamps `SessionRecord.ticket_read`, and the
+ticket page's state row says `description unread` for a claude that has taken a turn on a
+described ticket without either (`SessionState::has_prompted`). README promise 3 names the paste.
+E2e `brief_e2e`. (STALE-MAP "The brief travels with the title".) It travels as `Command::SpawnSession { submit_prompt }` →
 `SessionRecord.pending_submit` → `send-keys Enter`, started on the
 `SessionStart{source: Startup}` frame and **repeated every 500 ms until the `UserPromptSubmit`
 ack** (`deliver_pending_submit` / `retry_pending_submits` / `ack_pending_submit`). The retry is

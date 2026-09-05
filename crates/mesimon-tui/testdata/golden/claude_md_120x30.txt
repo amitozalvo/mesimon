@@ -13,12 +13,12 @@
                            │   ## mesimon                                                   │
                            │                                                                │
                            │   When `MESIMON_TICKET` is set, this session is working a      │
-                           │   mesimon ticket. Call `get_ticket` before you start — the     │
-                           │   ticket's description and notes may carry context the         │
-                           │   prompt does not.                                             │
+                           │   mesimon ticket. FIRST, before reading code or planning,      │
+                           │   call `get_ticket` and read the ticket's description and      │
+                           │   notes: they are the brief, and the prompt is often only      │
+                           │   the ticket's title. Do not start work without them.          │
                            │                                                                │
                            ╰────── enter add it ∙ c copy ∙ i never ask again ∙ esc not now ─╯
-
 
 
 

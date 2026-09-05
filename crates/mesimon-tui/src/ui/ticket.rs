@@ -146,6 +146,19 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // Back from a snooze and not yet looked at: the page IS the look, so
         // the keypress that opened it is clearing the mark as this draws.
         ident_spans.push(Span::styled(" ∙ back from snooze".to_string(), d1));
+    } else if ticket.description().is_some()
+        && app
+            .board
+            .live_claude(ticket.id)
+            .is_some_and(|s| s.state.has_prompted() && !s.ticket_read)
+    {
+        // The ticket has a brief and its claude has taken a turn without
+        // reading it — neither `get_ticket` nor the composed spawn's paste
+        // (`SessionRecord::ticket_read`, T-224). The skip was invisible until
+        // the work came back wrong; here it sits next to the description it
+        // is about, in the value step: a nudge to Shift+Enter "read the
+        // ticket", not an alarm.
+        ident_spans.push(Span::styled(" ∙ description unread".to_string(), d1));
     }
     // The worktree clause is built aside so the tags can sit in front of it:
     // what a ticket IS reads before where its code lives (author 2026-09-01).

@@ -98,6 +98,7 @@ mod tests {
             pending_submit: false,
             idle_teammates: vec![],
             plan_note: None,
+            ticket_read: false,
         }
     }
 

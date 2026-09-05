@@ -23,10 +23,15 @@ pub const MARKER: &str = "MESIMON_TICKET";
 
 /// What gets appended, verbatim.
 ///
-/// **"may carry context the prompt does not"**, never "the prompt is only the
-/// title": only the composed spawn submits the title alone, and an ask field or a
-/// prompt typed into the pane is the user's own words. The stronger sentence would
-/// be false on the commonest road, and a CLAUDE.md that is wrong once is disbelieved
+/// Imperative, first, and honest (T-224, 2026-09-05). The first wording was a
+/// hedged request — *"Call `get_ticket` before you start — the ticket's description
+/// and notes may carry context the prompt does not"* — and agents read it as
+/// optional: most still skipped the ticket. So the sentence now opens on the ORDER
+/// of events (before reading code, before planning), says what is missed (the brief
+/// lives in the description and notes, the prompt is often only the title) and
+/// closes the door (do not start work without it). It still says **"often only the
+/// title"**, never "only the title": an ask field or a prompt typed into the pane is
+/// the user's own words, and a CLAUDE.md that is wrong once is disbelieved
 /// everywhere.
 ///
 /// Hard-wrapped at [`WRAP`] because the confirm dialog shows it VERBATIM and
@@ -36,9 +41,10 @@ pub const SNIPPET: &str = "\
 ## mesimon
 
 When `MESIMON_TICKET` is set, this session is working a
-mesimon ticket. Call `get_ticket` before you start — the
-ticket's description and notes may carry context the
-prompt does not.
+mesimon ticket. FIRST, before reading code or planning,
+call `get_ticket` and read the ticket's description and
+notes: they are the brief, and the prompt is often only
+the ticket's title. Do not start work without them.
 ";
 
 /// The column the snippet is authored to. The dialog's inner width is
