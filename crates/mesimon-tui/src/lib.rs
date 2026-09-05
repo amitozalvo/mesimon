@@ -12,6 +12,7 @@ mod glyphs;
 mod handover;
 mod layout;
 mod localtime;
+mod opener;
 mod osc;
 mod peek;
 mod prefs;
@@ -51,6 +52,8 @@ pub(crate) fn snooze_words(
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
+/// What `mesimon doctor` says about the link opener (`^k`, T-256).
+pub use opener::doctor_line as opener_status;
 /// What `mesimon doctor` says about the theme picks (`prefs.rs`).
 pub use prefs::doctor_line as theme_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
@@ -125,6 +128,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // The word the note editor's `^g` hint wears — set here and never in
     // `App::new`, so no test app ever reads the developer's `$EDITOR`.
     app.editor_word = external::word();
+    // What `^k` opens a URL with — same rule, same reason.
+    app.opener = opener::find();
     let result = event_loop(&mut terminal, &mut app);
     restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
@@ -222,6 +227,14 @@ fn event_loop(
             *terminal = init_terminal()?;
             handover::drain_stdin();
             app.external_edit_done(out)?;
+        }
+
+        // A link going outside the terminal (T-256): detached, no handover,
+        // the board stays up. Only a spawn that fails at once comes back.
+        if let Some(argv) = app.pending_open.take() {
+            if let Err(e) = opener::launch(&argv, None) {
+                app.status = format!("could not run {}: {e}", argv[0]);
+            }
         }
 
         if app.quit {

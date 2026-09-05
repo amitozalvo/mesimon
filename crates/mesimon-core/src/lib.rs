@@ -17,6 +17,7 @@ pub mod command;
 pub mod diff;
 pub mod fracindex;
 pub mod keymap;
+pub mod links;
 pub mod mcp;
 pub mod principal;
 pub mod quiet;

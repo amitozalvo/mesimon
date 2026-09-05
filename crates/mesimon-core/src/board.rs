@@ -793,6 +793,10 @@ pub const STARTER_GROUP: u8 = 1;
 /// D33i: the shipped default template.
 pub const DEFAULT_COLUMNS: [&str; 4] = ["TODO", "IN PROGRESS", "REVIEW", "DONE"];
 
+/// What every short key starts with: `T-12`. The mint, the on-disk recovery
+/// of the counter and the link recogniser (`links.rs`) all read it here.
+pub const KEY_PREFIX: &str = "T-";
+
 impl Board {
     pub fn with_default_columns() -> Self {
         let mut b = Board::default();
@@ -811,6 +815,13 @@ impl Board {
 
     pub fn ticket_mut(&mut self, id: ulid::Ulid) -> Option<&mut Ticket> {
         self.tickets.iter_mut().find(|t| t.id == id)
+    }
+
+    /// The ticket a short key names (`T-12`), archived or not. A key in a
+    /// note is the one way a ticket is referred to by hand, so this is the
+    /// link recogniser's resolver (T-256); everything else looks up by id.
+    pub fn ticket_by_key(&self, key: &str) -> Option<&Ticket> {
+        self.tickets.iter().find(|t| t.short_key == key)
     }
 
     /// The vocabulary of axis `group`, in registry order — which is creation

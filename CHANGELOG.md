@@ -11,6 +11,16 @@ section out of it for the GitHub release body.
 
 ## v0.1.0-alpha.14 — 2026-09-05
 
+- **`^k` lists a ticket's links, and opens one.** Whatever the ticket's notes point at — a
+  website, another ticket by its key (`T-12`), a file that exists in its checkout — is one row
+  of a small dialog over the board (the cursor card) or the ticket page: `jk` picks, Enter
+  opens, `c` copies, `^K` (ctrl+shift+k) opens the first with no dialog. A URL goes to the
+  browser (`open`, `xdg-open`, `wslview`, or `MESIMON_OPEN`), a text file to `$VISUAL`/`$EDITOR`
+  at its `:line`, any other file to the OS, a ticket to the cursor. The use case: a ticket bound
+  to a Jira issue, reached from the board without opening the card and copying the link. Links
+  are read from the notes on each press and never stored. `mesimon doctor` prints an `opener`
+  line.
+
 - **The agent brief: one opt-in line in the system prompt.** A session mesimon starts is handed
   the ticket's *title*. Its description and notes live behind the `get_ticket` tool, and nothing
   told the model to use it — so people ended up typing "read the ticket" into every prompt.

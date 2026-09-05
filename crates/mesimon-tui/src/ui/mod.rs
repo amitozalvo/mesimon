@@ -109,6 +109,9 @@ pub fn draw(f: &mut Frame, app: &App) {
                 app,
             );
         }
+        if let Mode::Links { links, idx, ticket } = &app.mode {
+            dialog::draw_links(f, app, *ticket, links, *idx);
+        }
         if app.help {
             help::draw(f, app);
         }
@@ -161,6 +164,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Mode::Archived { idx } = &app.mode {
         dialog::draw_archived(f, app, *idx);
+    }
+    if let Mode::Links { links, idx, ticket } = &app.mode {
+        dialog::draw_links(f, app, *ticket, links, *idx);
     }
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);

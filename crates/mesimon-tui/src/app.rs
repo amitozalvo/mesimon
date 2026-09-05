@@ -4,7 +4,7 @@
 //! SESSIONS rail now).
 
 use std::cell::Cell;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -237,6 +237,15 @@ pub enum Mode {
     Brief {
         from_settings: bool,
     },
+    /// The links dialog (T-256): what the ticket's notes point at, one row
+    /// each, over the board or the ticket page. The list is captured at
+    /// open — a snapshot mid-dialog cannot shrink it under the cursor — and
+    /// `idx` is the row. Enter opens, `c` copies, Esc or `^k` closes.
+    Links {
+        ticket: ulid::Ulid,
+        links: Vec<TicketLink>,
+        idx: usize,
+    },
     /// The note editor. A mode and not a second slot: it REPLACES the
     /// one-line composer (Tab carries the title over) and never coexists
     /// with a move, a menu or a picker, so `Mode` is where it belongs.
@@ -320,6 +329,46 @@ fn step(idx: usize, n: usize, down: bool) -> usize {
     } else {
         idx.saturating_sub(1)
     }
+}
+
+/// A path as a note wrote it, rooted: `~/` through `$HOME`, an absolute
+/// path as is, anything else under `dir`.
+fn resolve_link_path(dir: &Path, path: &str) -> PathBuf {
+    if let Some(rest) = path.strip_prefix("~/") {
+        if let Some(home) = std::env::var_os("HOME") {
+            return PathBuf::from(home).join(rest);
+        }
+    }
+    let p = Path::new(path);
+    if p.is_absolute() {
+        p.to_path_buf()
+    } else {
+        // `./a` and `a/../b` as the note wrote them, joined clean: what the
+        // opener is handed is the path a person would type.
+        let mut out = dir.to_path_buf();
+        for part in p.components() {
+            match part {
+                std::path::Component::CurDir => {}
+                std::path::Component::ParentDir => {
+                    out.pop();
+                }
+                other => out.push(other),
+            }
+        }
+        out
+    }
+}
+
+/// Git's rule, read at open time: no NUL in the first 8 KiB. Unreadable
+/// counts as not text, which sends it to the opener rather than into `vi`.
+fn file_is_text(path: &Path) -> bool {
+    use std::io::Read;
+    let Ok(mut f) = std::fs::File::open(path) else {
+        return false;
+    };
+    let mut head = [0u8; 8192];
+    let n = f.read(&mut head).unwrap_or(0);
+    mesimon_core::links::looks_text(&head[..n])
 }
 
 impl Glide {
@@ -414,6 +463,41 @@ impl Editor {
 pub enum RailRow<'a> {
     Session(&'a mesimon_core::board::SessionRecord),
     Note(&'a NoteMeta),
+}
+
+/// Where a link in a note goes (T-256), resolved against the live board
+/// and the disk when the list was built. A key that names no ticket and a
+/// path that is not a file are not links and never reach this.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LinkTarget {
+    Url(String),
+    Ticket(ulid::Ulid),
+    /// An existing file under the ticket's directory (its worktree when
+    /// attached, else the repo root), with the `:LINE` the note gave it.
+    File {
+        path: PathBuf,
+        line: Option<u32>,
+    },
+}
+
+/// One row of the links dialog: the markdown label when there was one,
+/// the target as written (`text` — what `c` copies) and where it goes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TicketLink {
+    pub label: Option<String>,
+    pub text: String,
+    pub target: LinkTarget,
+}
+
+impl TicketLink {
+    /// The row's kind word.
+    pub fn kind(&self) -> &'static str {
+        match self.target {
+            LinkTarget::Url(_) => "url",
+            LinkTarget::Ticket(_) => "ticket",
+            LinkTarget::File { .. } => "file",
+        }
+    }
 }
 
 /// One note's body as last fetched (`Command::ReadNote`). Keyed on the
@@ -758,6 +842,13 @@ pub struct App {
     /// That editor's name for the `^g` hint — `lib.rs` sets it from the
     /// environment; empty (every test app) leaves the key inert.
     pub editor_word: &'static str,
+    /// What opens a URL or a non-text file (`opener::find`) — `lib.rs` sets
+    /// it, never `App::new`, so no test app finds the developer's browser.
+    /// None means a link can be copied but not opened.
+    pub opener: Option<String>,
+    /// A link to open outside the terminal, parked for the main loop:
+    /// `[opener, target]`, launched detached (`opener::launch`).
+    pub pending_open: Option<Vec<String>>,
     pending_gate_then: Option<(uuid::Uuid, FocusOrigin)>,
     /// M4: `c` on an unprovisioned worktree ticket parks the spawn daemon-side
     /// (`Response::Provisioning`); this parks the focus half of that keypress.
@@ -915,6 +1006,8 @@ impl App {
             pending_attach_cwd: None,
             pending_external_edit: None,
             editor_word: "",
+            opener: None,
+            pending_open: None,
             pending_gate_then: None,
             pending_spawn_focus: None,
             focused_session_hint: None,
@@ -1976,6 +2069,7 @@ impl App {
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
             Mode::Brief { .. } => Scope::Brief,
+            Mode::Links { .. } => Scope::Links,
             _ => match self.screen {
                 Screen::Diff => Scope::Diff,
                 Screen::Releases => Scope::Releases,
@@ -2950,6 +3044,31 @@ impl App {
                     self.mode = Mode::Archived { idx: 0 };
                 }
             }
+            Verb::Links => self.open_links(),
+            Verb::LinkFirst => {
+                if let Some(ticket) = self.subject() {
+                    let links = self.fetch_links(ticket);
+                    match links.first() {
+                        Some(first) => self.open_link(first.clone()),
+                        None => self.status = self.no_links_status(ticket),
+                    }
+                }
+            }
+            Verb::LinkCopy => {
+                // The target as written, for a user who wants it somewhere
+                // of their own. OSC 52 is write-only, so the status says what
+                // was sent and the dialog stays up (the brief's `c`).
+                let text = match &self.mode {
+                    Mode::Links { links, idx, .. } => links.get(*idx).map(|l| l.text.clone()),
+                    _ => None,
+                };
+                if let Some(text) = text {
+                    self.status = match crate::osc::copy_to_clipboard(&text) {
+                        Ok(()) => "link copied ∙ if your terminal allows it".into(),
+                        Err(e) => format!("could not write to the terminal: {e}"),
+                    };
+                }
+            }
             Verb::ThemePick => {
                 let idx = Flavor::ALL.iter().position(|f| *f == self.theme.flavor).unwrap_or(0);
                 self.mode = Mode::Theme { idx };
@@ -3112,6 +3231,11 @@ impl App {
                 let idx = step(idx, self.board.archived_tickets().len(), down);
                 self.mode = Mode::Archived { idx };
             }
+            Scope::Links => {
+                if let Mode::Links { links, idx, .. } = &mut self.mode {
+                    *idx = step(*idx, links.len(), down);
+                }
+            }
             Scope::Settings => {
                 let Mode::Settings { idx } = self.mode else {
                     return;
@@ -3193,6 +3317,17 @@ impl App {
                 if let Some(id) = list.get(idx.min(list.len().saturating_sub(1))).copied() {
                     self.mode = Mode::Normal;
                     self.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+                }
+                Ok(())
+            }
+            Scope::Links => {
+                let Mode::Links { links, idx, .. } = &self.mode else {
+                    return Ok(());
+                };
+                let pick = links.get((*idx).min(links.len().saturating_sub(1))).cloned();
+                self.mode = Mode::Normal;
+                if let Some(link) = pick {
+                    self.open_link(link);
                 }
                 Ok(())
             }
@@ -5212,6 +5347,155 @@ impl App {
         self.refresh()
     }
 
+    // ---- links (T-256) ---------------------------------------------------
+
+    /// Where a relative path in this ticket's notes is rooted: its worktree
+    /// while one is attached (the `!` shell's rule), else the repo root.
+    fn link_dir(&self, ticket: ulid::Ulid) -> PathBuf {
+        self.wt_item(ticket)
+            .filter(|w| w.status == "attached")
+            .and_then(|w| w.path.clone())
+            .map(PathBuf::from)
+            .unwrap_or_else(|| self.repo_root.clone())
+    }
+
+    /// The links in this ticket's notes, from the bodies already fetched —
+    /// resolved now, against the live board and the disk: a key names a
+    /// ticket that exists and is not this one, a path is a file that
+    /// exists. Document order, description first; one row per target.
+    pub fn ticket_links(&self, ticket: ulid::Ulid) -> Vec<TicketLink> {
+        use mesimon_core::links::{extract, Found};
+        let Some(t) = self.board.ticket(ticket) else {
+            return Vec::new();
+        };
+        let dir = self.link_dir(ticket);
+        let mut out: Vec<TicketLink> = Vec::new();
+        for meta in &t.notes {
+            let Some(body) = self.note_text(meta) else {
+                continue;
+            };
+            for link in extract(body) {
+                let (text, target) = match link.target {
+                    Found::Url(u) => (u.clone(), LinkTarget::Url(u)),
+                    Found::Ticket(key) => match self.board.ticket_by_key(&key) {
+                        Some(other) if other.id != ticket => (key, LinkTarget::Ticket(other.id)),
+                        _ => continue,
+                    },
+                    Found::Path { path, line } => {
+                        let full = resolve_link_path(&dir, &path);
+                        if !full.is_file() {
+                            continue;
+                        }
+                        let text = match line {
+                            Some(n) => format!("{path}:{n}"),
+                            None => path,
+                        };
+                        (text, LinkTarget::File { path: full, line })
+                    }
+                };
+                if out.iter().any(|o| o.target == target) {
+                    continue;
+                }
+                out.push(TicketLink { label: link.label, text, target });
+            }
+        }
+        out
+    }
+
+    /// The keypress road: fetch every note body the cache lacks (the board
+    /// has none; the ticket page has the description), then list. Each
+    /// fetch is one small read on the daemon's writer thread — one to three
+    /// per ticket — through the same road `poll_notes` takes.
+    fn fetch_links(&mut self, ticket: ulid::Ulid) -> Vec<TicketLink> {
+        let metas: Vec<(ulid::Ulid, u64)> = self
+            .board
+            .ticket(ticket)
+            .map(|t| t.notes.iter().map(|n| (n.id, n.rev)).collect())
+            .unwrap_or_default();
+        for (id, rev) in metas {
+            let cached = self.notes.get(&id).is_some_and(|n| n.rev == rev && n.text.is_some());
+            if cached {
+                continue;
+            }
+            let text = match self.req(Command::ReadNote { ticket, note: id }) {
+                Response::Note { text, .. } => Some(crate::peek::sanitize(&text)),
+                _ => None,
+            };
+            self.remember_note(id, rev, text);
+        }
+        self.ticket_links(ticket)
+    }
+
+    fn no_links_status(&self, ticket: ulid::Ulid) -> String {
+        let key = self.board.ticket(ticket).map(|t| t.short_key.as_str()).unwrap_or("the ticket");
+        format!("no links in {key}")
+    }
+
+    /// `^k`: the LINKS dialog over the subject ticket. Nothing to list is a
+    /// status line, never an empty dialog (the archived list's rule).
+    fn open_links(&mut self) {
+        let Some(ticket) = self.subject() else {
+            return;
+        };
+        let links = self.fetch_links(ticket);
+        if links.is_empty() {
+            self.status = self.no_links_status(ticket);
+        } else {
+            self.mode = Mode::Links { ticket, links, idx: 0 };
+        }
+    }
+
+    /// Open one link. A URL goes to the opener, detached; a text file to the
+    /// user's editor on the terminal we give back (the `^g` road, with the
+    /// `!` shell's cwd so the editor's exit status is never judged); any
+    /// other file to the opener; a ticket to the cursor on the board, or to
+    /// its page when the cursor cannot reach it (archived) or we are already
+    /// on a page. The status says `opening`, never `opened`.
+    fn open_link(&mut self, link: TicketLink) {
+        match link.target {
+            LinkTarget::Url(url) => self.open_outside(url),
+            LinkTarget::File { path, line } => {
+                if file_is_text(&path) {
+                    let command = crate::external::command();
+                    let word = crate::external::word_of(&command);
+                    self.pending_attach = Some(crate::external::open_argv(&command, &path, line));
+                    self.pending_attach_cwd = path.parent().map(Path::to_path_buf);
+                    self.status = format!("{word} opens {}", link.text);
+                } else {
+                    self.open_outside(path.display().to_string());
+                }
+            }
+            LinkTarget::Ticket(id) => {
+                // Re-resolved from the live board: the note may be older
+                // than the ticket's deletion.
+                let Some(key) = self.board.ticket(id).map(|t| t.short_key.clone()) else {
+                    self.status = format!("{} is gone", link.text);
+                    return;
+                };
+                let on_board = matches!(self.screen, Screen::Board)
+                    && self.board.ticket(id).is_some_and(|t| !t.is_archived());
+                if on_board {
+                    self.select_ticket(id);
+                    self.status = format!("cursor on {key}");
+                } else {
+                    self.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+                }
+            }
+        }
+    }
+
+    fn open_outside(&mut self, target: String) {
+        match &self.opener {
+            Some(prog) => {
+                self.pending_open = Some(vec![prog.clone(), target.clone()]);
+                self.status = format!("opening {target}");
+            }
+            None => {
+                self.status = "no opener found ∙ MESIMON_OPEN names one ∙ c copies the link".into()
+            }
+        }
+    }
+
     /// Point the board cursor at a ticket (so Esc from the ticket screen lands on it).
     fn select_ticket(&mut self, ticket: ulid::Ulid) {
         let cols = self.columns();
@@ -5976,6 +6260,191 @@ mod tests {
             Mode::Editor(e) => e,
             other => panic!("not in the editor: {other:?}"),
         }
+    }
+
+    // ---- links (T-256) ---------------------------------------------------
+
+    const LINKED_NOTE: &str = "Mirrors [Jira](https://jira.test/browse/AB-1) and blocks T-2.\n\n\
+        See `src/a.rs:3`, missing/none.rs and T-1 itself (this ticket).";
+    const LINKED_NOTE_2: &str = "also T-3 (archived) and https://jira.test/browse/AB-1 again, \
+        plus ./blob.bin";
+
+    /// Ticket 1 with two linked notes; a repo dir holding `src/a.rs` (text)
+    /// and `blob.bin` (a NUL in it); ticket 3 archived. The expected rows, in
+    /// order: the Jira URL, T-2, `src/a.rs:3`, T-3, `./blob.bin` — the
+    /// missing file, the ticket's own key and the repeated URL never list.
+    fn app_with_links(name: &str) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>, PathBuf) {
+        // Per test, not per process: these run in parallel threads and a
+        // shared dir torn down by one is a vanished file for another.
+        let dir = std::env::temp_dir().join(format!("msmn-links-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("src")).unwrap();
+        std::fs::write(dir.join("src/a.rs"), "fn main() {}\n").unwrap();
+        std::fs::write(dir.join("blob.bin"), b"\x89PNG\0\0\0").unwrap();
+        let mut b = board_three_columns();
+        b.tickets[0].notes.push(note_meta(90, 1, "local"));
+        b.tickets[0].notes.push(note_meta(91, 1, "local"));
+        b.tickets[2].archived = Some(mesimon_core::board::Archived {
+            at: "@100".into(),
+            by: "local".into(),
+            until: None,
+            needs_you: false,
+        });
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut notes = std::collections::HashMap::new();
+        notes.insert(ulid::Ulid(90), LINKED_NOTE.to_string());
+        notes.insert(ulid::Ulid(91), LINKED_NOTE_2.to_string());
+        let fake = super::test_support::FakeTransport {
+            board: b,
+            grace: vec![],
+            external: vec![],
+            resources: Resources::default(),
+            shell_env: Default::default(),
+            claude_md: Default::default(),
+            git: Default::default(),
+            pending: Vec::new(),
+            automation: Default::default(),
+            sent: sent.clone(),
+            refuse_focus: false,
+            notes,
+        };
+        let app = App::new(Box::new(fake), dir.clone(), theme()).expect("fake transport snapshot");
+        (app, sent, dir)
+    }
+
+    fn links_of(app: &App) -> Vec<String> {
+        match &app.mode {
+            Mode::Links { links, .. } => links.iter().map(|l| l.text.clone()).collect(),
+            other => panic!("not in the links dialog: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ctrl_k_lists_the_links_of_the_cursor_card_in_order() {
+        let (mut app, sent, _dir) = app_with_links("order");
+        ctrl(&mut app, 'k');
+        // The board had no bodies: both notes were fetched, once each.
+        assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
+        assert_eq!(
+            links_of(&app),
+            ["https://jira.test/browse/AB-1", "T-2", "src/a.rs:3", "T-3", "./blob.bin"]
+        );
+        let Mode::Links { links, idx, ticket } = &app.mode else { unreachable!() };
+        assert_eq!((*idx, *ticket), (0, ulid::Ulid(1)));
+        assert_eq!(links[0].label.as_deref(), Some("Jira"));
+        assert_eq!(links[0].kind(), "url");
+        assert_eq!(links[1].kind(), "ticket");
+        assert_eq!(links[2].kind(), "file");
+        // The cache holds them now: a second open fetches nothing.
+        ctrl(&mut app, 'k');
+        assert!(matches!(app.mode, Mode::Normal));
+        ctrl(&mut app, 'k');
+        assert_eq!(sent.borrow().iter().filter(|c| c.contains("ReadNote")).count(), 2);
+    }
+
+    #[test]
+    fn enter_on_a_url_parks_the_opener_and_says_opening() {
+        let (mut app, _sent, _dir) = app_with_links("url");
+        app.opener = Some("open".into());
+        ctrl(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(
+            app.pending_open.as_deref(),
+            Some(&["open".to_string(), "https://jira.test/browse/AB-1".to_string()][..])
+        );
+        assert_eq!(app.status, "opening https://jira.test/browse/AB-1");
+        // No opener on this machine: the link is not lost, the status says how.
+        let (mut app, _sent, _dir) = app_with_links("url2");
+        ctrl(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.pending_open.is_none());
+        assert!(app.status.contains("MESIMON_OPEN"), "{}", app.status);
+    }
+
+    #[test]
+    fn a_text_file_goes_to_the_editor_and_a_binary_to_the_opener() {
+        let (mut app, _sent, dir) = app_with_links("file");
+        app.opener = Some("open".into());
+        ctrl(&mut app, 'k');
+        press(&mut app, 'j');
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let argv = app.pending_attach.clone().expect("the editor handover");
+        assert_eq!(argv.last().map(String::as_str), Some(dir.join("src/a.rs").to_str().unwrap()));
+        assert_eq!(argv[0], "/bin/sh");
+        assert_eq!(app.pending_attach_cwd.as_deref(), Some(dir.join("src").as_path()));
+        assert!(app.pending_open.is_none());
+        assert!(app.status.contains("opens src/a.rs:3"), "{}", app.status);
+        app.pending_attach = None;
+        ctrl(&mut app, 'k');
+        for _ in 0..4 {
+            press(&mut app, 'j');
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.pending_attach.is_none());
+        let bin = dir.join("blob.bin").display().to_string();
+        assert_eq!(app.pending_open.as_deref(), Some(&["open".to_string(), bin][..]));
+    }
+
+    #[test]
+    fn a_ticket_link_moves_the_cursor_or_opens_the_page() {
+        let (mut app, _sent, _dir) = app_with_links("ticket");
+        ctrl(&mut app, 'k');
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Board));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, 1), "T-2 is the second todo card");
+        assert_eq!(app.status, "cursor on T-2");
+        // An archived target has no card for the cursor: its page opens.
+        app.cursor_row = 0;
+        ctrl(&mut app, 'k');
+        for _ in 0..3 {
+            press(&mut app, 'j');
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid::Ulid(3)));
+        // From a page, a ticket link is the other ticket's page.
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        ctrl(&mut app, 'k');
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid::Ulid(2)));
+    }
+
+    #[test]
+    fn ctrl_shift_k_opens_the_first_link_and_degrades_to_the_dialog() {
+        let (mut app, _sent, _dir) = app_with_links("shiftk");
+        app.opener = Some("open".into());
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Char('K'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.pending_open.is_some());
+        // The legacy floor never reports the shift: the press is `^k`.
+        let (mut app, _sent, _dir) = app_with_links("shiftk2");
+        app.handle_key(KeyCode::Char('k'), KeyModifiers::CONTROL).unwrap();
+        assert!(matches!(app.mode, Mode::Links { .. }));
+        assert!(app.pending_open.is_none());
+    }
+
+    #[test]
+    fn a_ticket_with_no_links_says_so_and_esc_closes() {
+        let (mut app, _sent, _dir) = app_with_links("nolinks");
+        // The dialog closes on Esc and on the key that opened it.
+        ctrl(&mut app, 'k');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        // A ticket with no note has nothing to list: the key is inert there.
+        press(&mut app, 'j');
+        ctrl(&mut app, 'k');
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "");
+        // A note with no link in it is a status line, not an empty dialog.
+        app.board.tickets[1].notes.push(note_meta(92, 1, "local"));
+        app.remember_note(ulid::Ulid(92), 1, Some("nothing to follow here".into()));
+        ctrl(&mut app, 'k');
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.status, "no links in T-2");
     }
 
     #[test]

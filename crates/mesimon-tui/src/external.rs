@@ -96,13 +96,25 @@ pub fn edit_dir(repo_root: &Path) -> Result<PathBuf> {
 /// Git's form: through the shell, the command as `$0` and the file as `$1`,
 /// so an `$EDITOR` with flags or a path with a space in it both run.
 fn argv(command: &str, file: &Path) -> Vec<String> {
-    vec![
-        "/bin/sh".into(),
-        "-c".into(),
-        format!("{command} \"$@\""),
-        command.into(),
-        file.display().to_string(),
-    ]
+    open_argv(command, file, None)
+}
+
+/// The same form on a file of the user's own (a link in a note, T-256),
+/// at a line where the editor takes `+N` — vi's family, nano, emacs; any
+/// other program gets the path alone rather than a flag it may read as a
+/// file name.
+pub fn open_argv(command: &str, file: &Path, line: Option<u32>) -> Vec<String> {
+    let mut v = vec!["/bin/sh".into(), "-c".into(), format!("{command} \"$@\""), command.into()];
+    if let Some(n) = line.filter(|_| takes_plus_line(command)) {
+        v.push(format!("+{n}"));
+    }
+    v.push(file.display().to_string());
+    v
+}
+
+fn takes_plus_line(command: &str) -> bool {
+    let word = word_of(command);
+    matches!(word.as_str(), "vi" | "vim" | "nvim" | "view" | "nano" | "emacs" | "micro" | "vis")
 }
 
 /// Run outside raw mode / alt screen — the caller restores the terminal
@@ -151,6 +163,19 @@ fn back_to_body(original: &str, mut edited: String) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_link_opens_at_its_line_where_the_editor_takes_one() {
+        let f = std::path::Path::new("/repo/src/a.rs");
+        let vim = super::open_argv("nvim -u NONE", f, Some(42));
+        assert_eq!(&vim[3..], &["nvim -u NONE", "+42", "/repo/src/a.rs"]);
+        let code = super::open_argv("code --wait", f, Some(42));
+        assert_eq!(&code[3..], &["code --wait", "/repo/src/a.rs"]);
+        assert_eq!(
+            super::open_argv("vi", f, None).last().map(String::as_str),
+            Some("/repo/src/a.rs")
+        );
+    }
+
     use super::*;
 
     #[test]

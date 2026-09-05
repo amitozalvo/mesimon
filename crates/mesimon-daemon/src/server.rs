@@ -3530,7 +3530,7 @@ impl Daemon {
             self.board.column_tickets(&column).last().map(|t| t.order.clone()).unwrap_or_default();
         let t = Ticket {
             id: ulid::Ulid::new(),
-            short_key: format!("T-{}", self.board.next_key),
+            short_key: format!("{}{}", mesimon_core::board::KEY_PREFIX, self.board.next_key),
             title,
             column,
             order: fracindex::between(&last, ""),

@@ -3087,6 +3087,52 @@ fn app_noted() -> App {
     app
 }
 
+/// The links dialog over T-3 (T-256): three kinds of row, the cursor on the
+/// second. The list rides the mode, so no fetch and no disk.
+fn app_links() -> App {
+    use crate::app::{LinkTarget, TicketLink};
+    let mut app = app_noted();
+    app.mode = Mode::Links {
+        ticket: ulid_n(3),
+        links: vec![
+            TicketLink {
+                label: Some("the Jira ticket".into()),
+                text: "https://jira.example.com/browse/ABC-123".into(),
+                target: LinkTarget::Url("https://jira.example.com/browse/ABC-123".into()),
+            },
+            TicketLink { label: None, text: "T-1".into(), target: LinkTarget::Ticket(ulid_n(1)) },
+            TicketLink {
+                label: None,
+                text: "crates/mesimon-core/src/board.rs:42".into(),
+                target: LinkTarget::File {
+                    path: "/repo/crates/mesimon-core/src/board.rs".into(),
+                    line: Some(42),
+                },
+            },
+        ],
+        idx: 1,
+    };
+    app
+}
+
+#[test]
+fn golden_links_120() {
+    golden("links_120x30", &render(&app_links(), 120, 30));
+}
+
+/// The ticket page names `^k` on its state row while a fetched note holds
+/// a link — T-158's idiom, the key beside the description it reads — and
+/// never otherwise.
+#[test]
+fn the_ticket_page_names_the_links_key_only_when_there_are_links() {
+    let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let state_row = |app: &App| render(app, 120, 30)[3].clone();
+    assert!(!state_row(&app).contains("^k links"), "{}", state_row(&app));
+    app.remember_note(ulid_n(91), 1, Some("see https://a.test/x".into()));
+    assert!(state_row(&app).contains("∙ ^k links"), "{}", state_row(&app));
+}
+
 fn editor_on(purpose: crate::app::EditorPurpose, title: &str, body: &str) -> crate::app::Editor {
     crate::app::Editor::new(
         purpose,
@@ -3672,6 +3718,14 @@ fn test_no_drawn_structure() {
         },
         sweep(&arch),
         sweep(&picker),
+        {
+            let lines = sweep(&app_links());
+            assert!(
+                lines.iter().any(|l| l.contains("LINKS ∙ T-3")),
+                "the links dialog must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
         {
             let lines = sweep(&armed);
             assert!(

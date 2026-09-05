@@ -174,6 +174,16 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // ticket", not an alarm.
         ident_spans.push(Span::styled(" ∙ description unread".to_string(), d1));
     }
+    // The notes point somewhere (T-256): the key sits beside the description
+    // it reads, T-158's idiom — and only while a fetched body holds a link,
+    // so the row never names a key that would answer "no links".
+    if !app.ticket_links(ticket.id).is_empty() {
+        if let Some((show, word)) =
+            keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Links, &app.ctx())
+        {
+            ident_spans.push(Span::styled(format!(" ∙ {show} {word}"), d2));
+        }
+    }
     // The worktree clause is built aside so the tags can sit in front of it:
     // what a ticket IS reads before where its code lives (author 2026-09-01).
     let mut wt_spans = Vec::new();

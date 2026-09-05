@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use mesimon_core::board::{Board, Column, SessionRecord, Ticket};
+use mesimon_core::board::{Board, Column, SessionRecord, Ticket, KEY_PREFIX};
 use mesimon_core::command::Notice;
 use serde::{Deserialize, Serialize};
 
@@ -275,12 +275,14 @@ fn recover_next_key(tickets_dir: &Path, parsed: &[Ticket]) -> u64 {
         .into_iter()
         .flatten()
         .flatten()
-        .filter_map(|e| e.file_name().to_string_lossy().strip_prefix("T-")?.parse::<u64>().ok())
+        .filter_map(|e| {
+            e.file_name().to_string_lossy().strip_prefix(KEY_PREFIX)?.parse::<u64>().ok()
+        })
         .max()
         .unwrap_or(0);
     let from_parsed = parsed
         .iter()
-        .filter_map(|t| t.short_key.strip_prefix("T-")?.parse::<u64>().ok())
+        .filter_map(|t| t.short_key.strip_prefix(KEY_PREFIX)?.parse::<u64>().ok())
         .max()
         .unwrap_or(0);
     from_dirs.max(from_parsed)

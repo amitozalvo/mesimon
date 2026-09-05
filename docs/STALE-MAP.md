@@ -5929,3 +5929,59 @@ the closed turn and expects `EndTurn` Medium and REVIEW. Not done here: the leak
 servers were left for the author (`tmux -S /tmp/mesimon-501/<proj16>/tmux.sock kill-server`
 each, never a sweep — real boards are among the sockets); the sync hooks' 2 s timeout stays.
 
+## A ticket's notes carry its links (T-256, 2026-09-05)
+
+**Built.** `^k` on the board (the cursor card) or the ticket page opens a LINKS dialog over the
+ticket's notes — one row per target, `jk` / Enter / `c copy` / Esc, `^k` again closes — and
+`^K` (ctrl+shift+k) opens the first link with no dialog. Three kinds: a URL (`http(s)://`, bare
+or `[label](url)`), another ticket by its short key (`T-12`), and a file path that EXISTS under
+the ticket's directory (its worktree when attached, else the repo root), with a `:LINE` suffix
+kept. The recogniser is `core/src/links.rs::extract` — pure, unit-tested, document order, one row
+per target; a path is only a candidate there and a key only a key: `App::ticket_links` resolves
+both against the disk and the live board (`Board::ticket_by_key`, new; `board::KEY_PREFIX` names
+the `T-` that `mint_ticket` and `store::recover_next_key` spelled as a literal). The use case on
+the ticket: a card bound to a Jira issue, reached from the board without opening it.
+
+**Derived on every press, never persisted, never on the snapshot.** The recogniser will grow
+("more?"), and derived data on disk drifts from its deriver — `NoteMeta.name` gets away with it
+because it is trivial. So the TUI fetches the note bodies the cache lacks through the existing
+`Command::ReadNote` road (`App::fetch_links`; the board has none, the ticket page has the
+description) and reads them: no wire command, no daemon change, no schema bump. The cost is one
+to three small reads on the writer thread per press.
+
+**Opening.** A URL rides `App::pending_open` to `lib.rs`, which spawns the opener DETACHED
+(`tui/src/opener.rs::launch`: null stdio, reaped on a thread, no terminal handover) — the first
+process the TUI starts without giving the terminal up. The ladder is `MESIMON_OPEN` (also the
+seam: no test ever finds a browser, since `App::opener` is set in `lib.rs` like `editor_word`),
+then `open` on macOS, `wslview` under WSL, `xdg-open` on PATH; `doctor` prints it as `opener`.
+The status says `opening …`, never `opened` — the `asked`-not-`sent` rule. A FILE is judged by
+git's rule at open time (`links::looks_text`: no NUL in the first 8 KiB; user, 2026-09-05: "if
+editor appropriate use editor if not, os"): text goes to `$VISUAL`/`$EDITOR`/`vi` on the `^g`
+road (`external::open_argv`, `+LINE` only for vi's family, nano, emacs, micro), parked on
+`pending_attach` with the file's directory as cwd so the editor's exit status is never judged
+(the `!` shell's shape); anything else goes to the opener. A TICKET from the board moves the
+cursor (stay on the board); from a page, or when the target is archived and has no card, its
+page opens; a target deleted since the note was written is a status line (re-resolved at open,
+`undo_target`'s discipline).
+
+**Keys.** `Ctrl('k')` is bound on Board and Ticket (siblings, like `^t`, never Global),
+`avail: has_ticket && ticket_described`, `prio: 0` — overlay-only, the footer is the selection's;
+the ticket page's state row carries ` ∙ ^k links` while a fetched body holds one (T-158's idiom,
+`hint_for`; no count, since the page caches only two bodies). **`Key::Ctrl('K')` joins
+`OFF_FLOOR` on `^S`'s clause**: a legacy terminal sends the bare `^k`, which opens the
+dialog — the safe half of the same axis, Shift hardening the verb and never changing it —
+`ctrl_shift_k_is_inert_without_rich_keys`. `Scope::Links` is the archived list's three shapes
+plus `c` and the opening key as a second `Back`; nothing in it mutates (a link opening changes
+nothing the daemon owns). Nothing to list is a status line (`no links in T-12`), never an empty
+dialog. `Mode::Links` captures the list at open, so a snapshot mid-dialog cannot shrink it under
+the cursor.
+
+**Two markdown-link parsers now.** `rich.rs::link` draws a body and returns painted spans;
+`links.rs::markdown_link` reads one. They agree on `[label](target)` and share nothing else, and
+rich.rs's "a terminal cannot follow a link" comments now say the zone cannot. Goldens:
+`links_120x30`; `test_no_drawn_structure` sweeps the dialog.
+
+**Not built.** A link mark on the card; agents seeing links (`get_ticket` carries the
+description, which is where they are); directories as links; OSC 8 hyperlinks in the preview
+zone (SGR 4 stays the chip's, and an underline is not a link here). `~/` resolves through
+`$HOME`; a relative path joins the ticket's dir with `./` and `../` folded.

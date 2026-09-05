@@ -209,6 +209,63 @@ pub(super) fn draw_archived(f: &mut Frame, app: &App, idx: usize) {
     f.render_widget(Paragraph::new(lines), inner);
 }
 
+/// The links dialog (T-256): what the ticket's notes point at, one row per
+/// target — the kind word, then the markdown label if the note gave one,
+/// then the target as written (a ticket row names the ticket). Enter opens,
+/// `c` copies, and a row that will not fit is cut with `…`, never wrapped.
+pub(super) fn draw_links(
+    f: &mut Frame,
+    app: &App,
+    ticket: ulid::Ulid,
+    links: &[crate::app::TicketLink],
+    idx: usize,
+) {
+    let theme = &app.theme;
+    if links.is_empty() {
+        return;
+    }
+    let idx = idx.min(links.len() - 1);
+    let key = app.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+    let area = centred(f.area(), links.len() as u16, MAX_W);
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner = frame(
+        f,
+        app,
+        area,
+        None,
+        &theme.rest,
+        Edges {
+            title: title(&theme.rest, format!("LINKS ∙ {key} ∙ {}", links.len())),
+            tail: keys(app, Scope::Links, &theme.rest, inner_w.saturating_sub(4)),
+        },
+    );
+    let mut lines: Vec<Line> = Vec::new();
+    for (i, l) in links.iter().enumerate() {
+        let body = match (&l.target, &l.label) {
+            (crate::app::LinkTarget::Ticket(id), _) => {
+                let title = app.board.ticket(*id).map(|t| t.title.as_str()).unwrap_or("");
+                format!("{} ∙ {title}", l.text)
+            }
+            (_, Some(label)) => format!("{label} ∙ {}", l.text),
+            (_, None) => l.text.clone(),
+        };
+        let head = format!(" {:<6} {}", l.kind(), crate::text::one_line(&body));
+        let head = truncate(&head, inner_w);
+        let pad = inner_w.saturating_sub(head.width());
+        let style = if i == idx {
+            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else {
+            theme.base()
+        };
+        let row_style = if i == idx { theme.selected_row() } else { Style::default() };
+        lines.push(
+            Line::from(vec![Span::styled(head, style), Span::raw(" ".repeat(pad))])
+                .style(row_style),
+        );
+    }
+    f.render_widget(Paragraph::new(lines), inner);
+}
+
 /// The External drawer (19 §4): discovered foreign sessions, observe/resume.
 pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
     let theme = &app.theme;

@@ -256,6 +256,26 @@ it, so `ingest::plan_of` → `Daemon::record_plan` writes it through `write_note
 delete, `notes[0]` (so the description) on a ticket that had none. (STALE-MAP "An approved plan
 is the agent's note".)
 
+**A ticket's notes carry its LINKS, and `^k` opens one (T-256, 2026-09-05).** `core/src/links.rs::extract`
+reads a note body for URLs, ticket keys (`T-12`, `board::KEY_PREFIX`) and path candidates —
+pure, never persisted, never on the snapshot (derived data on disk drifts from its deriver) —
+and `App::ticket_links` resolves them against the live board (`Board::ticket_by_key`, the
+ticket's own key excluded) and the disk (a path must be a FILE under the ticket's dir: worktree
+when attached, else the repo root). `^k` on the board or the ticket page (`Verb::Links`, both
+scopes, `prio: 0`; the page's state row hints ` ∙ ^k links` while a fetched body holds one)
+fetches the bodies the cache lacks through `Command::ReadNote` (`App::fetch_links`) and opens
+`Mode::Links { ticket, links, idx }` / `Scope::Links` (`dialog::draw_links`, the archived list's
+shapes plus `c copy` and `^k` as `Back`); nothing to list is `no links in T-12`, never an empty
+dialog. `^K` (`Key::Ctrl('K')`, in `OFF_FLOOR` on `^S`'s clause, `rich_keys`-gated) opens the
+first with no dialog. Opening: a URL → `App::pending_open` → `lib.rs` → `opener::launch`,
+DETACHED (null stdio, reaped on a thread; ladder `MESIMON_OPEN` → `open` → `wslview` → `xdg-open`,
+`App::opener` set in `lib.rs` like `editor_word` so no test finds a browser; status `opening …`,
+never `opened`); a text file (git's NUL rule at open time, `links::looks_text`) → the `^g` road's
+editor via `external::open_argv` on `pending_attach` (`+LINE` for vi's family/nano/emacs/micro,
+cwd = the file's dir so the exit status is not judged); any other file → the opener; a ticket →
+the board cursor, or its page from a page or when archived. `doctor` prints `opener`. (STALE-MAP
+"A ticket's notes carry its links".)
+
 **A paste is ONE event, and only a text field takes it.** `init_terminal` arms bracketed paste,
 `App::tick` routes `Event::Paste` to `App::on_paste`, and `EditBuffer::paste` flattens it to one
 line (newlines are spaces, never Enters) under the field's byte `limit` — the same number the

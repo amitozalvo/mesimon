@@ -227,6 +227,9 @@ fn environment(verbose: bool) -> Section {
     records.push(rec(Level::Note, "theme", mesimon_tui::theme_status()));
     // The editor `^g` opens on a note, and which variable chose it.
     records.push(rec(Level::Note, "editor", mesimon_tui::editor_status()));
+    // What `^k` opens a link with (T-256): the platform's opener, or
+    // MESIMON_OPEN's; none is a note, since a link can still be copied.
+    records.push(rec(Level::Note, "opener", mesimon_tui::opener_status()));
     // How a snoozed ticket returns (T-74) — the third preference in the file.
     records.push(rec(Level::Note, "snooze", mesimon_tui::snooze_status()));
     // The merge train (2026-09-04): the one standing consent for mesimon to

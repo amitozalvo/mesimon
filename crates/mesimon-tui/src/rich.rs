@@ -176,7 +176,9 @@ struct Emph {
     code: bool,
     /// `~~struck~~` — dead text, said with value (dim3), never SGR 9.
     dead: bool,
-    /// The target half of a link: kept, because a terminal cannot follow one.
+    /// The target half of a link: kept, because the page cannot follow one
+    /// (`^k` lists the ticket's links and opens them, T-256 — this zone
+    /// only reads).
     url: bool,
 }
 
@@ -545,8 +547,10 @@ fn find_ticks(chars: &[char], from: usize, len: usize) -> Option<usize> {
 }
 
 /// `[label](url)` / `![alt](url)` → the label, then the target in `dim3`.
-/// The url is kept because nothing in a terminal can follow a link: dropping
-/// it would delete the only half the reader can act on.
+/// The url is kept because this zone cannot follow a link: dropping it would
+/// delete the half the reader can act on — by hand, or through `^k`, whose
+/// recogniser is `core/src/links.rs` (the same `[label](target)` rule,
+/// parsed again there because this walk returns painted spans).
 fn link(chars: &[char], i: usize, emph: Emph) -> Option<(Vec<Run>, usize)> {
     let open = if chars[i] == '!' { i + 1 } else { i };
     let close = (open + 1..chars.len()).find(|k| chars[*k] == ']')?;
@@ -1004,7 +1008,7 @@ mod tests {
         assert!(style_for(&out, "| key | state |").add_modifier.contains(Modifier::BOLD));
     }
 
-    /// A terminal cannot follow a link, so the target is the half worth
+    /// The zone cannot follow a link, so the target is the half worth
     /// keeping — quietly, one step below the body.
     #[test]
     fn a_link_keeps_its_target() {

@@ -171,6 +171,11 @@ pub enum Scope {
     /// top to bottom. A screen, not a dialog — it is the one document in
     /// mesimon that is only ever read, so it gets the whole terminal.
     Releases,
+    /// The links dialog (T-256): what the ticket's notes point at — URLs,
+    /// ticket keys, files — one row each, over the board or the ticket page.
+    /// `^k` opens it; Enter opens the row. A list dialog like the archived
+    /// one, and like it a list the board is not.
+    Links,
     /// Scope barrier: owns every key, inherits nothing.
     Input,
     /// The full-screen note editor (a title line over a multi-line markdown
@@ -183,7 +188,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 19] = [
+    pub const ALL: [Scope; 20] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -201,6 +206,7 @@ impl Scope {
         Scope::Settings,
         Scope::Brief,
         Scope::Releases,
+        Scope::Links,
         Scope::Input,
         Scope::Editor,
     ];
@@ -218,7 +224,8 @@ impl Scope {
             | Scope::Theme
             | Scope::Settings
             | Scope::Brief
-            | Scope::Releases => Some(Scope::Global),
+            | Scope::Releases
+            | Scope::Links => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
             | Scope::DeleteChord
@@ -249,6 +256,7 @@ impl Scope {
             Scope::Settings => "SETTINGS",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
+            Scope::Links => "LINKS",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
         }
@@ -309,6 +317,18 @@ pub enum Verb {
     Menu,
     ExternalDrawer,
     ArchivedList,
+    /// `^k` on the board or the ticket page: the LINKS dialog over the
+    /// ticket's notes (T-256). Nothing to list is a status line, never an
+    /// empty dialog — the archived list's rule.
+    Links,
+    /// `^K`: the first of those links, opened with no dialog. Shift hardens
+    /// the verb on one axis and never changes it — `^s`/`^S`'s shape — and
+    /// on the legacy floor the press arrives as `^k`, the safe half.
+    LinkFirst,
+    /// `c` in the links dialog: the row's target to the clipboard (OSC 52,
+    /// the brief dialog's road — write-only, so the dialog stays up and the
+    /// status never claims success).
+    LinkCopy,
     /// Open the settings submenu from the menu: the preferences, one level
     /// down, so a menu row is either an action or the door to the settings
     /// and never a toggle between actions.
@@ -1321,6 +1341,37 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The ticket's links (T-256): what its notes point at, listed. A
+        // Ctrl-letter like `^t`, and overlay-only like it — the footer is
+        // the selection's, and this is looked up. A ticket with no note has
+        // nothing to list, so the key is inert there; a noted ticket with no
+        // links gets a status line, not an empty dialog.
+        keys: &[Key::Ctrl('k')],
+        verb: Verb::Links,
+        show: "^k",
+        hint: |_| "links",
+        avail: |c| c.has_ticket && c.ticket_described,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        // Shift on the same axis: the first link, no dialog — the Jira
+        // ticket a card mirrors, one press from the board. Off the legacy
+        // floor on `^S`'s clause: a terminal without the kitty tier sends
+        // the bare `^k`, which opens the dialog, and that is the safe half.
+        keys: &[Key::Ctrl('K')],
+        verb: Verb::LinkFirst,
+        show: "^K",
+        hint: |_| "open first link",
+        avail: |c| c.has_ticket && c.ticket_described && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         // The picker's digit, reached without the picker: one press steps the
         // selected card along that group's tags and off the end back to
         // untagged. Overlay-only (`prio: 0`) on the Nudge precedent — it is an
@@ -1697,6 +1748,31 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
+        prio: 0,
+    },
+    Binding {
+        // The board's links key on the ticket's own page; the state row
+        // names it while the fetched notes hold a link (T-158's idiom).
+        keys: &[Key::Ctrl('k')],
+        verb: Verb::Links,
+        show: "^k",
+        hint: |_| "links",
+        avail: |c| c.ticket_described,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        // See the board's copy.
+        keys: &[Key::Ctrl('K')],
+        verb: Verb::LinkFirst,
+        show: "^K",
+        hint: |_| "open first link",
+        avail: |c| c.ticket_described && c.rich_keys,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
         prio: 0,
     },
     Binding {
@@ -2967,6 +3043,58 @@ static ARCHIVED: &[Binding] = &[
     },
 ];
 
+/// The links dialog (T-256): the archived list's shapes, plus `c copy`, plus
+/// `^k` as a second spelling of `Back` so the key that opened it closes it
+/// (the drawer's `e`, the archived list's `V`). `Act` does not mutate:
+/// nothing the daemon owns changes when a link opens.
+static LINKS: &[Binding] = &[
+    Binding {
+        // A vertical list takes ↓ ↑ and nothing sideways.
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "open",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('c')],
+        verb: Verb::LinkCopy,
+        show: "c",
+        hint: |_| "copy",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc, Key::Ctrl('k')],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 static INPUT: &[Binding] = &[
     Binding {
         keys: &[Key::Enter],
@@ -3514,6 +3642,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Settings => SETTINGS,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
+        Scope::Links => LINKS,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
     }
@@ -3715,8 +3844,9 @@ mod tests {
                 Scope::Settings => 14,
                 Scope::Brief => 15,
                 Scope::Releases => 16,
-                Scope::Input => 17,
-                Scope::Editor => 18,
+                Scope::Links => 17,
+                Scope::Input => 18,
+                Scope::Editor => 19,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -3833,6 +3963,34 @@ mod tests {
         assert_eq!(hint_for(Scope::Editor, Verb::EditorSaveStart, &asleep), None);
         // And the case is the atom: `^s` and `^S` never collapse in the name.
         assert_ne!(Key::Ctrl('s').to_string(), Key::Ctrl('S').to_string());
+    }
+
+    /// `^K` is `^k` hardened — the first link with no dialog — and on the
+    /// legacy floor the press ARRIVES as `^k`, which opens the dialog: the
+    /// same clause as `^S`, the same safe degradation. Both screens.
+    #[test]
+    fn ctrl_shift_k_is_inert_without_rich_keys() {
+        ambiguous_atoms_are_inert_without_rich_keys(Key::Ctrl('K'));
+        for scope in [Scope::Board, Scope::Ticket] {
+            let rich = Ctx {
+                has_ticket: true,
+                ticket_described: true,
+                rich_keys: true,
+                ..Default::default()
+            };
+            assert_eq!(resolve(scope, Key::Ctrl('K'), &rich), Some(Verb::LinkFirst), "{scope:?}");
+            assert_eq!(resolve(scope, Key::Ctrl('k'), &rich), Some(Verb::Links), "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::LinkFirst, &rich), Some(("^K", "open first link")));
+            let legacy = Ctx { rich_keys: false, ..rich.clone() };
+            assert_eq!(resolve(scope, Key::Ctrl('k'), &legacy), Some(Verb::Links), "{scope:?}");
+            // No note, nothing to list: both spellings inert.
+            let bare = Ctx { has_ticket: true, rich_keys: true, ..Default::default() };
+            assert_eq!(resolve(scope, Key::Ctrl('k'), &bare), None, "{scope:?}");
+            assert_eq!(resolve(scope, Key::Ctrl('K'), &bare), None, "{scope:?}");
+        }
+        // Inside the dialog the key that opened it closes it.
+        assert_eq!(resolve(Scope::Links, Key::Ctrl('k'), &Ctx::default()), Some(Verb::Back));
+        assert_eq!(resolve(Scope::Links, Key::Char('c'), &Ctx::default()), Some(Verb::LinkCopy));
     }
 
     /// The ambiguity clause itself: every binding on `atom` must be
@@ -4061,6 +4219,8 @@ mod tests {
         Key::ShiftEnter,
         // ctrl+shift+s: Shift+Enter's clause, `ctrl_shift_s_is_inert_without_rich_keys`.
         Key::Ctrl('S'),
+        // ctrl+shift+k: the same clause, `ctrl_shift_k_is_inert_without_rich_keys`.
+        Key::Ctrl('K'),
         Key::AltLeft,
         Key::AltRight,
         Key::AltUp,
@@ -5148,6 +5308,7 @@ mod tests {
             Scope::Theme,
             Scope::Settings,
             Scope::Releases,
+            Scope::Links,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");
