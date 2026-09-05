@@ -2305,8 +2305,12 @@ impl Daemon {
         };
         // Observe-only adopted records have no argv of ours and were never
         // launched with the tool config; a request claiming to be one is not
-        // something mesimon started.
-        if rec.provenance != Provenance::Spawned {
+        // something mesimon started. The predicate is the daemon's one
+        // definition of observe-only — adopted AND no argv — not provenance
+        // alone: a taken-over external session keeps `Adopted` for life, and
+        // its takeover argv carries `--mcp-config` like any spawn's (T-240:
+        // the tools were handed out and every call was refused).
+        if rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
             return Response::Err { message: "not a session mesimon spawned".into() };
         }
         if !rec.state.is_live() {

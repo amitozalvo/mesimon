@@ -19,6 +19,7 @@ use std::time::{Duration, Instant};
 
 use mesimon_core::board::{Provenance, SessionKind, SessionState, StopReason};
 use mesimon_core::command::{Command, Response};
+use mesimon_core::Principal;
 
 /// Poll snapshots until the session reaches a state, or panic at deadline.
 fn wait_state(
@@ -144,6 +145,12 @@ fn m3_adoption_and_sleep() {
     assert_eq!(board.tickets.len(), 2);
     // Observe-only records refuse focus.
     assert!(matches!(c.request(Command::FocusStart { session: obs }), Response::Err { .. }));
+    // And the agent tier: no argv of ours means no tool config was ever
+    // handed out, so a call claiming this record is nobody mesimon started.
+    assert!(matches!(
+        c.send(Principal::Agent { session: obs }, Command::AgentGetTicket),
+        Response::Err { .. }
+    ));
     // A second attach of the same claude session refuses (no orphan ticket).
     assert!(matches!(
         c.request(Command::AttachExternal { claude_session_id: foreign, ticket: None }),
@@ -192,6 +199,14 @@ fn m3_adoption_and_sleep() {
     assert_eq!(rec.state, SessionState::Spawning);
     assert!(rec.argv.iter().any(|a| a == "--resume"));
     assert!(rec.argv.iter().any(|a| a == "--settings"), "takeover must inject hooks");
+    assert!(rec.argv.iter().any(|a| a == "--mcp-config"), "takeover must inject the tools");
+    // T-240: a taken-over session keeps `Adopted` for life, and the gate on the
+    // agent tier once read provenance alone — so the tools it was just handed
+    // were refused on every call. The record is now one mesimon launched.
+    match c.send(Principal::Agent { session: obs }, Command::AgentGetTicket) {
+        Response::AgentTicket { ticket, .. } => assert_eq!(ticket.title, "foreign work in flight"),
+        other => panic!("a taken-over session must reach its tools, got {other:?}"),
+    }
     let deadline = Instant::now() + Duration::from_secs(3);
     loop {
         let logged = std::fs::read_to_string(&argv_log).unwrap_or_default();

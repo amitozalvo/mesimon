@@ -5747,3 +5747,25 @@ dependency-free), the threshold, the rotation and the silent failure.
 stage was waiting on (which tmux command, which git). A `hook` frame's own age (arrival minus
 the hook's timestamp) would show ingest lag, and a `client connected` line would show a TUI
 that dialled and gave up. Add them when a journal line asks for them, not before.
+
+## A taken-over session reaches its tools (T-240, 2026-09-05)
+
+**What was wrong.** `Daemon::handle_agent` gated the agent tier on `provenance != Spawned`,
+while every other place the daemon asks "is this observe-only?" — focus, sleep, the working
+set, the attach — asks `provenance == Adopted && argv.is_empty()`. A taken-over external
+session keeps `Provenance::Adopted` for life (nothing ever flips it: `resume_session` sets the
+argv and leaves provenance alone), and its takeover argv is built by the one `claude_argv`, so
+it carries `--mcp-config` keyed on the record's uuid like any spawn's. The shim called in as
+`Agent { session: rec.id }`, the record was found, and the gate answered `not a session mesimon
+spawned` — seven tools handed out, seven refused. The comment over the gate already named the
+right predicate ("no argv of ours and were never launched with the tool config"); the code under
+it tested something narrower.
+
+**What holds now.** The gate is the daemon's one observe-only predicate: adopted AND no argv.
+An observe-only record is still refused (no tool config was ever handed out, so a call claiming
+it is nobody mesimon started); a taken-over one passes and the `is_live()` check under it still
+catches an exited record. No provenance is rewritten — `Adopted` still means "the conversation
+began outside mesimon", which the badge word `external` reads. `m3_e2e` asserts both halves
+around its takeover: the agent call refused on the observe-only record, `--mcp-config` in the
+takeover argv, and `get_ticket` answering with the minted ticket's title afterwards; the same
+assertion fails on the old gate with the exact message the ticket reported.
