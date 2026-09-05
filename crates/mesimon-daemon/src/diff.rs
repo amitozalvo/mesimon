@@ -322,26 +322,30 @@ pub fn checkout_diff_list(root: &Path) -> Result<Response> {
     // and the list is its children's. A meta repo contributes its rows minus
     // the one `? child/` sighting git leaves for a nested repository it will
     // not descend into — that child's rows follow, under its name.
-    let (mut files, base_oid) = match checkout_entries(root) {
-        Ok((_, base, mut rows)) => {
+    let (root_branch, mut files, base_oid) = match checkout_entries(root) {
+        Ok((branch, base, mut rows)) => {
             rows.retain(|f| !repos.iter().any(|r| f.path.trim_end_matches('/') == r));
-            (rows, base)
+            (Some(branch), rows, base)
         }
-        Err(_) => (Vec::new(), String::new()),
+        Err(_) => (None, Vec::new(), String::new()),
     };
+    let mut child_branches = Vec::new();
     for name in &repos {
-        let Ok((_, _, rows)) = checkout_entries(&root.join(name)) else { continue };
+        let Ok((branch, _, rows)) = checkout_entries(&root.join(name)) else { continue };
+        child_branches.push(branch);
         files.extend(rows.into_iter().map(|mut f| {
             f.path = format!("{name}/{}", f.path);
             f.old_path = f.old_path.take().map(|old| format!("{name}/{old}"));
             f
         }));
     }
-    // One nested repo is the checkout and the identity row names its branch,
-    // as the header does; more than one is named by the count.
-    let branch = match &repos[..] {
-        [only] => crate::gitstatus::sample_one(&root.join(only)).branch,
-        _ => mesimon_core::workspace::repos_word(repos.len()),
+    // The identity row's word is the header's: the root's branch where the
+    // root is a repository, the one child's where a folder holds exactly
+    // one, else the count.
+    let branch = match (root_branch, &repos[..]) {
+        (Some(b), _) => b,
+        (None, [_]) => child_branches.pop().unwrap_or_default(),
+        (None, _) => mesimon_core::workspace::repos_word(repos.len()),
     };
     Ok(Response::DiffList {
         branch,
@@ -840,7 +844,7 @@ mod tests {
         let resp = checkout_diff_list(&root).unwrap();
         match &resp {
             Response::DiffList { branch, base_oid, branch_oid, worktree_present, .. } => {
-                assert_eq!(branch, "2 repos");
+                assert_eq!(branch, "main", "the root is a repo: its branch leads");
                 assert_eq!(base_oid.len(), 40, "the meta's HEAD");
                 assert!(branch_oid.is_empty() && *worktree_present);
             }
@@ -885,11 +889,12 @@ mod tests {
         std::fs::remove_dir_all(&root).ok();
     }
 
-    /// One nested repo is the checkout (author: "if one repo no need to show
-    /// '1 repo', show the branch"): the sample carries ITS branch and arrows,
-    /// the root's changes still count, and the list's word is that branch.
+    /// A root that is a repository keeps its own branch whatever is nested
+    /// under it (the mesimon checkout's `mt/` scratch repo sits on a branch
+    /// called `orphan`); only a FOLDER holding exactly one repo takes that
+    /// repo's branch — and never says `1 repo` (author 2026-09-05).
     #[test]
-    fn one_nested_repo_is_the_checkout() {
+    fn one_nested_repo_names_the_root_or_stands_in_for_a_folder() {
         let Some(root) = workspace_scratch("one") else { return };
         let run = |d: &Path, args: &[&str]| {
             let out = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
@@ -897,18 +902,31 @@ mod tests {
         };
         run(&root.join("web"), &["worktree", "remove", "--force", "../.wt-web"]);
         std::fs::remove_dir_all(root.join("web")).unwrap();
-        run(&root.join("api"), &["checkout", "-q", "-b", "feat"]);
+        run(&root.join("api"), &["checkout", "-q", "-b", "orphan"]);
         std::fs::write(root.join("api/server.ts"), "one\nCHANGED\n").unwrap();
         std::fs::write(root.join("CLAUDE.md"), "# ws\nmore\n").unwrap();
+        // The root is a repo: its branch, the child's changes still counted.
         let g = crate::gitstatus::sample(&root);
         assert_eq!(g.repos, vec!["api"]);
-        assert_eq!((g.branch.as_str(), g.changed), ("feat", 2), "{g:?}");
+        assert_eq!((g.branch.as_str(), g.changed), ("main", 2), "{g:?}");
+        assert_eq!(crate::gitstatus::branch_dir(&root, &g), root);
+        match checkout_diff_list(&root).unwrap() {
+            Response::DiffList { branch, files, .. } => {
+                assert_eq!(branch, "main");
+                let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
+                assert_eq!(paths, vec!["CLAUDE.md", "api/server.ts"]);
+            }
+            _ => unreachable!(),
+        }
+        // A folder of one: the child is the checkout.
+        std::fs::remove_dir_all(root.join(".git")).unwrap();
+        let g = crate::gitstatus::sample(&root);
+        assert_eq!((g.branch.as_str(), g.changed), ("orphan", 1), "{g:?}");
         assert_eq!(crate::gitstatus::branch_dir(&root, &g), root.join("api"));
         match checkout_diff_list(&root).unwrap() {
             Response::DiffList { branch, files, .. } => {
-                assert_eq!(branch, "feat");
-                let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
-                assert_eq!(paths, vec!["CLAUDE.md", "api/server.ts"]);
+                assert_eq!(branch, "orphan");
+                assert_eq!(files.len(), 1);
             }
             _ => unreachable!(),
         }

@@ -58,16 +58,19 @@ pub fn sample(root: &Path) -> RepoGit {
     if repos.is_empty() {
         return g;
     }
-    if let [only] = &repos[..] {
-        // One nested repo IS the checkout (author 2026-09-05: "if one repo no
-        // need to show '1 repo', show the branch"): its branch, arrows and
-        // upstream are the board's, the root's changes still count, and
-        // `repos` still names it so the diff and the fetch know where to go.
-        let mut child = sample_one(&root.join(only));
-        child.changed += g.changed;
-        child.sampled = true;
-        child.repos = repos;
-        return child;
+    // A root that is a repository keeps its own branch and arrows whatever
+    // is nested under it — the mesimon checkout carries `mt/`, a scratch
+    // repo on a branch called `orphan`, and for an hour the board called
+    // that the checkout (author 2026-09-05: "why does it say orphan and not
+    // main"). Only a FOLDER holding exactly one repo takes that repo's
+    // branch: there the child is the checkout, and `1 repo` says nothing.
+    if !g.sampled {
+        if let [only] = &repos[..] {
+            let mut child = sample_one(&root.join(only));
+            child.sampled = true;
+            child.repos = repos;
+            return child;
+        }
     }
     for name in &repos {
         g.changed += sample_one(&root.join(name)).changed;
@@ -77,12 +80,12 @@ pub fn sample(root: &Path) -> RepoGit {
     g
 }
 
-/// Where the checkout's branch lives: the root, or the one nested repo that
-/// stands in for it. The fetch runs there, because `branch.<b>.remote` is
-/// that repository's config, not the root's.
+/// Where the sampled branch lives: the root when it is a repository, else
+/// the one nested repo that stands in for it. The fetch runs there, because
+/// `branch.<b>.remote` is that repository's config.
 pub fn branch_dir(root: &Path, git: &RepoGit) -> std::path::PathBuf {
     match &git.repos[..] {
-        [only] => root.join(only),
+        [only] if !root.join(".git").exists() => root.join(only),
         _ => root.to_path_buf(),
     }
 }

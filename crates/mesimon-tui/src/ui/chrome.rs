@@ -187,16 +187,15 @@ const GIT_BRANCH_FLOOR: usize = 10;
 /// than lie.
 fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     let g = &app.git;
-    // A workspace (T-225) is named by its count where a checkout is named by
-    // its branch, and the root's own arrows stay off the row: they speak for
-    // the meta repo, which is not what the board is about. The count IS the
-    // board's — files changed across every repo under it. ONE nested repo is
-    // the checkout, and the sample already carries its branch and arrows.
-    let workspace = g.repos.len() > 1;
-    if !g.sampled || (g.branch.is_empty() && !workspace) {
+    // The sampled branch and its arrows lead: the root's where the root is a
+    // repository, the one nested repo's where a folder holds exactly one
+    // (T-225). A workspace of SEVERAL adds its count as a clause, and a
+    // folder of several — no branch of its own — is named by the count
+    // alone. The change count is the board's: files across every repo.
+    if !g.sampled || (g.branch.is_empty() && g.repos.is_empty()) {
         return Vec::new();
     }
-    let name = if workspace {
+    let name = if g.branch.is_empty() {
         mesimon_core::workspace::repos_word(g.repos.len())
     } else {
         g.branch.clone()
@@ -204,20 +203,25 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     let theme = &app.theme;
     let tier = theme.glyph_tier();
     let mut state = String::new();
-    if g.ahead > 0 && !workspace {
+    if g.ahead > 0 {
         state.push_str(&format!(" {}{}", crate::glyphs::ahead_mark(tier), g.ahead));
     }
-    if g.behind > 0 && !workspace {
+    if g.behind > 0 {
         state.push_str(&format!(" {}{}", crate::glyphs::behind_mark(tier), g.behind));
     }
-    let mut changed =
-        if g.changed > 0 { format!(" ∙ {} changed", g.changed) } else { String::new() };
+    let mut changed = String::new();
+    if g.repos.len() > 1 && !g.branch.is_empty() {
+        changed.push_str(&format!(" ∙ {}", mesimon_core::workspace::repos_word(g.repos.len())));
+    }
+    if g.changed > 0 {
+        changed.push_str(&format!(" ∙ {} changed", g.changed));
+    }
     // The key is spelled by `hint_spans` like every other hint — bold key,
     // dim word — because "a key looks like this wherever it is hinted" is
     // what makes one readable off the footer at all. Two spaces rather than
     // a fourth `∙`: the separator is for facts, and this is not one.
     let ctx = app.ctx();
-    let mut hint: Vec<Span<'static>> = if changed.is_empty() {
+    let mut hint: Vec<Span<'static>> = if g.changed == 0 {
         Vec::new()
     } else {
         keymap::binding_for(keymap::Scope::Board, keymap::Verb::OpenDiff, &ctx)

@@ -5517,11 +5517,18 @@ sum on the wire, the list and the file through the prefix, the refused spawn and
 worktree root. `CHANGELOG.md` was NOT edited: alpha.13 is tagged, and the next heading is the
 next release's to write.
 
-**One nested repo is the checkout** (author, an hour after the merge: "if one repo no need to
-show '1 repo', show the branch"). `gitstatus::sample` returns THAT repo's sample — its branch,
-arrows and upstream — with the root's changes added and `repos` still naming it, so the header
-reads `⎇ feat ↑2 ∙ 3 changed` and never `1 repo`; the diff list's word is the same branch; doctor
-labels the line `api: feat`; and the fetch runs in that repo (`gitstatus::branch_dir`), because
-`branch.<b>.remote` is its config and not the root's. `Ctx::multi_repo` stays true at one — a
-worktree of the root would still hold none of the code — and `repos_word` keeps its `1 repo`
-form for nothing but its own test. The header's `workspace` arm is now `repos.len() > 1`.
+**The root's branch leads; the count is a clause; `1 repo` is never said** (author, twice on
+2026-09-05: "if one repo no need to show '1 repo', show the branch", then — after an hour in
+which ONE nested repo was made the checkout — "why does it say orphan and not main": the mesimon
+checkout carries `mt/`, the leftover research scratch, a git repo of its own on a branch called
+`orphan`, and the board had adopted it). The rule now: a root that is a repository keeps its own
+branch, arrows and upstream whatever is nested under it, with the nested repos' changes still
+summed in; a workspace of SEVERAL adds ` ∙ 19 repos` as a clause after the arrows (`⎇ master ∙
+19 repos ∙ 214 changed`, the count dropping with the change count when the row is tight); a
+FOLDER — no repository at the root — holding exactly one repo takes that repo's branch, and
+holding several is named by the count alone. `gitstatus::branch_dir` says where the sampled
+branch lives (the root, or the one child under a folder), and the fetch runs there because
+`branch.<b>.remote` is that repository's config. The diff list's word follows the same rule,
+`doctor` labels the line `root: main` or `api: orphan`, and `Ctx::multi_repo` stays true at one
+— a worktree of the root would still hold none of the code. `repos_word` keeps its `1 repo`
+form for nothing but its own test.

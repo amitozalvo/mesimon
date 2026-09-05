@@ -105,7 +105,7 @@ fn a_workspace_of_repos_stands_on_the_wire() {
     let resp = c.request(Command::DiffList { target: DiffTarget::Checkout });
     match &resp {
         Response::DiffList { branch, base_oid, .. } => {
-            assert_eq!(branch, "2 repos", "the header's word, on the diff screen too");
+            assert_eq!(branch, "main", "the root is a repo: its branch leads, as on the header");
             assert_eq!(base_oid.len(), 40, "the meta's HEAD, for its own rows");
         }
         other => panic!("expected DiffList, got {other:?}"),

@@ -4318,10 +4318,9 @@ fn test_clipped_column_edge_peeks() {
     }
 }
 
-/// A workspace (T-225) — repositories nested under the root — is named on the
-/// header by its count where a checkout is named by its branch, with the
-/// change count summed across every repo and the root's own arrows left off:
-/// they speak for the meta repo, not the board.
+/// A workspace (T-225): the root's own branch and arrows lead, the count of
+/// repos nested under it is a clause, and the change count is summed across
+/// every repo. A folder of several has no branch and is named by the count.
 #[test]
 fn test_git_clause_names_a_workspace_by_its_count() {
     let mut app = app_graphite(fixture(false));
@@ -4331,13 +4330,14 @@ fn test_git_clause_names_a_workspace_by_its_count() {
     };
     assert!(app.ctx().multi_repo);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ 3 repos ∙ 7 changed  v diff"), "{head:?}");
-    assert!(!head.contains("↑") && !head.contains("master"), "{head:?}");
+    assert!(head.contains("⎇ master ↑2 ↓1 ∙ 3 repos ∙ 7 changed  v diff"), "{head:?}");
     // A folder of repos has no branch of its own and still speaks.
     app.git.branch.clear();
     app.git.upstream = None;
+    app.git.ahead = 0;
+    app.git.behind = 0;
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ 3 repos ∙ 7 changed"), "{head:?}");
+    assert!(head.contains("⎇ 3 repos ∙ 7 changed  v diff"), "{head:?}");
     // Clean: the count and its key go quiet, the workspace stays named.
     app.git.changed = 0;
     let head = &render(&app, 120, 30)[0];
@@ -4345,15 +4345,17 @@ fn test_git_clause_names_a_workspace_by_its_count() {
     golden("board_workspace_120x30", &render(&app, 120, 30));
 }
 
-/// One nested repo IS the checkout: the header names its branch and arrows,
-/// never `1 repo` (author 2026-09-05).
+/// One nested repo never reads `1 repo`: a root that is a repository keeps
+/// its own branch (the mesimon checkout's `mt/` scratch repo on `orphan`
+/// must not become the board's branch), and a folder of one carries that
+/// one's branch in the sample already (author 2026-09-05).
 #[test]
-fn test_git_clause_names_the_one_nested_repo_by_its_branch() {
+fn test_git_clause_never_says_one_repo() {
     let mut app = app_graphite(fixture(false));
     app.git =
-        mesimon_core::command::RepoGit { repos: vec!["api".into()], ..git_state("feat", 2, 0, 3) };
+        mesimon_core::command::RepoGit { repos: vec!["mt".into()], ..git_state("main", 2, 0, 3) };
     assert!(app.ctx().multi_repo, "a worktree of the root would still hold none of the code");
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ feat ↑2 ∙ 3 changed  v diff"), "{head:?}");
+    assert!(head.contains("⎇ main ↑2 ∙ 3 changed  v diff"), "{head:?}");
     assert!(!head.contains("repo"), "{head:?}");
 }

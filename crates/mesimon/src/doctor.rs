@@ -513,12 +513,14 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             Some(u) => format!("upstream {u}"),
             None => "no upstream".to_string(),
         };
-        // Whose branch: the root's on a workspace of several, the one nested
-        // repo's when it stands in for the checkout, unlabelled otherwise.
+        // Whose branch: the root's where the root is a repository with others
+        // nested under it, the one nested repo's where a folder holds exactly
+        // one, unlabelled on a plain checkout.
         let whose = match &g.repos[..] {
             [] => String::new(),
+            _ if repo.join(".git").exists() => "root: ".to_string(),
             [only] => format!("{only}: "),
-            _ => "root: ".to_string(),
+            _ => String::new(),
         };
         records.push(rec(Level::Ok, "branch", format!("{whose}{}, {upstream}, {fetch}", g.branch)));
     }

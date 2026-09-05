@@ -1184,11 +1184,15 @@ three-file meta repo (`.gitignore` = `*/`); every git answer there was about the
 `workspace::nested_repos`: a `.git` DIR is a repo of its own, a gitfile belongs to someone else,
 a declared submodule never counts; capped at `MAX_WORKSPACE_REPOS`) fills `RepoGit.repos`, and
 `gitstatus::sample(root)` sums `changed` across the root and every child (`sample_one` is the
-single-repo sample). The header names a workspace by its count — `⎇ 19 repos ∙ 214 changed  v
-diff`, `workspace::repos_word`, the root's own arrows left off — and board `v` is ONE list:
+single-repo sample). The header keeps the root's own branch and arrows and adds the count as a clause — `⎇ master ∙
+19 repos ∙ 214 changed  v diff`, `workspace::repos_word`; a FOLDER (no repo at the root) of one
+takes that one's branch, of several is named by the count; `1 repo` is never said (the mesimon
+checkout's `mt/` scratch repo on `orphan` must not become the board's branch) — and board `v` is
+ONE list:
 `checkout_diff_list` runs per repo, the root's rows bare, each child's prefixed `<repo>/`, and
 `checkout_diff_file` routes on the first path component against the CHILD's list. A folder of
-repos with no repo at the root still samples (branch empty). **A worktree ticket is refused in
+several repos with no repo at the root still samples (branch empty); `gitstatus::branch_dir` is
+where the sampled branch lives and where the fetch runs. **A worktree ticket is refused in
 words** at `resolve_spawn_cwd` (census asked there, not the cached sample) until workspace
 worktrees exist, and `Ctx::multi_repo` hides the composer's/editor's Shift+Tab workspace
 choice. `doctor` prints a `workspace` line. On the way past, `worktree::default_branch` stopped
