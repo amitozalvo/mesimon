@@ -577,6 +577,17 @@ fn daemon(repo: &Path, verbose: bool) -> Section {
         "state dir",
         redact(&paths.state_dir.display().to_string(), verbose),
     ));
+    // The daemon's journal (2026-09-05): what the process did — started,
+    // stopping and why, slow writer turns. The last stop is the one question
+    // a restarted board asks of the daemon before it.
+    let log = paths.daemon_log();
+    let last_stop = mesimon_daemon::journal::Journal::last_stop(&log)
+        .map_or_else(|| "no stop recorded".to_string(), |l| format!("last stop: {l}"));
+    records.push(rec(
+        Level::Note,
+        "daemon log",
+        format!("{} ∙ {last_stop}", redact(&log.display().to_string(), verbose)),
+    ));
 
     match daemon_hello(&paths.orch_sock()) {
         None => records.push(rec(Level::Ok, "daemon", "not running (starts with the board)")),

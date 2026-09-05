@@ -9,6 +9,7 @@ pub mod git;
 pub mod gitstatus;
 pub mod hook_settings;
 pub mod ingest;
+pub mod journal;
 pub mod movegate;
 pub mod paths;
 pub mod resources;

@@ -120,6 +120,12 @@ fn sigterm_takes_the_shutdown_road() {
     let exit = daemon.wait().expect("daemon exit");
     assert_eq!(exit, 0, "a TERM is a clean exit, not a signal death");
     assert!(!sock.exists(), "the shutdown road removes the socket");
+    // The journal names the reason and the end (2026-09-05): a clean exit
+    // that said nothing is what a four-minute daemon absence looked like.
+    let journal = std::fs::read_to_string(paths.daemon_log()).unwrap_or_default();
+    assert!(journal.contains(" started pid "), "journal has the start: {journal}");
+    assert!(journal.contains(" stopping: SIGTERM"), "journal names the reason: {journal}");
+    assert!(journal.contains(" stopped ∙ shutdown took "), "journal has the end: {journal}");
 
     assert_eq!(column_on_disk(&repo, &key), "REVIEW", "the flushed EndTurn automoved");
     assert_eq!(session_state_on_disk(&paths.state_dir), "\"idle\"/\"end_turn\"");

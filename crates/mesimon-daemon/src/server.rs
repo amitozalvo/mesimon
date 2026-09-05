@@ -171,6 +171,15 @@ pub struct Daemon {
     subscribers: Vec<Arc<Mutex<UnixStream>>>,
     focus: Option<uuid::Uuid>,
     shutting_down: bool,
+    /// `daemon.log`: started / stopping / stopped / slow turn (`journal`).
+    journal: crate::journal::Journal,
+    /// Each connection's Hello `client` string, by the writer `Arc`'s address,
+    /// so a `Shutdown` can be journalled with who asked. Pruned on ClientGone.
+    clients: HashMap<usize, String>,
+    /// When `begin_shutdown` ran, so `stopped` can say how long the flush took.
+    stop_started: Option<Instant>,
+    /// The slowest stage of the last tick, for the slow-turn line.
+    tick_slowest: (&'static str, Duration),
     /// Standing advisories about persisted state, rebuilt at startup and
     /// carried on every snapshot. Not transient: each one describes a
     /// condition still true on disk.
@@ -366,6 +375,18 @@ pub fn run(paths: Paths) -> Result<()> {
         return Ok(()); // another daemon owns this repo
     }
     std::fs::write(paths.lock_file(), format!("{}\n", std::process::id()))?;
+    let mut journal = crate::journal::Journal::open(&paths.daemon_log());
+    journal.line(&format!(
+        "started pid {} build {} exe {} repo {} {}",
+        std::process::id(),
+        env!("CARGO_PKG_VERSION"),
+        exe_stamp.map_or_else(
+            || "unknown".to_string(),
+            |s| format!("mtime {} len {}", s.mtime_ms, s.len)
+        ),
+        paths.repo_root.display(),
+        if std::env::var_os("MESIMON_DETACHED").is_some() { "detached" } else { "foreground" },
+    ));
 
     let sock_path = paths.orch_sock();
     let _ = std::fs::remove_file(&sock_path); // stale — we hold the lock
@@ -523,6 +544,10 @@ pub fn run(paths: Paths) -> Result<()> {
         subscribers: Vec::new(),
         focus: None,
         shutting_down: false,
+        journal,
+        clients: HashMap::new(),
+        stop_started: None,
+        tick_slowest: ("", Duration::ZERO),
         notices,
         exe_stamp,
         detached: std::env::var_os("MESIMON_DETACHED").is_some(),
@@ -606,13 +631,29 @@ pub fn run(paths: Paths) -> Result<()> {
     d.queue_shell_env_capture();
 
     for msg in rx {
+        // Every turn is timed and named BEFORE it runs (the message is
+        // consumed by it): a turn past `journal::SLOW_TURN` earns a line
+        // saying what it handled — the instrument a four-minute silence
+        // taught us to want (2026-09-05).
+        let started = Instant::now();
+        let what: std::borrow::Cow<'static, str> = match &msg {
+            Msg::Tick => "tick".into(),
+            Msg::Hook(f) => format!("hook {}", f.event).into(),
+            Msg::Request(env, ..) => format!("request {}", env.command.wire_name()).into(),
+            Msg::Provisioned(..) => "provisioned".into(),
+            Msg::ShellEnvCaptured(_) => "shell env captured".into(),
+            Msg::GitSampled(..) => "git sampled".into(),
+            Msg::ClientGone(_) => "client gone".into(),
+            Msg::WorktreeFlags(..) => "worktree flags".into(),
+        };
+        d.tick_slowest = ("", Duration::ZERO);
         match msg {
             // SIGTERM (`pkill -f "mesimon daemon"` after a rebuild) takes the
             // same road as `Shutdown`: the handler only raises a flag, and the
             // wheel — ≤250 ms away — is where it is honoured, on the writer
             // thread, with the machines in hand.
             Msg::Tick if TERM_REQUESTED.load(Ordering::Relaxed) => {
-                d.begin_shutdown();
+                d.begin_shutdown("SIGTERM");
                 break;
             }
             Msg::Tick => d.on_tick(),
@@ -631,10 +672,14 @@ pub fn run(paths: Paths) -> Result<()> {
                 }
             }
         }
+        let slowest = d.tick_slowest;
+        d.journal.slow_turn(started, &what, Some((slowest.0, slowest.1)));
     }
     let _ = d.feed.flush();
     let _ = std::fs::remove_file(d.paths.orch_sock());
     let _ = std::fs::remove_file(d.paths.hook_sock());
+    let took = d.stop_started.map_or(0, |t| t.elapsed().as_millis());
+    d.journal.line(&format!("stopped ∙ shutdown took {took} ms"));
     Ok(())
 }
 
@@ -977,6 +1022,13 @@ fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
 /// (a prompt is capped at 4 KiB before it is even sent); this is headroom.
 const ORCH_LINE_MAX_BYTES: u64 = 1 << 20;
 
+/// A connection's identity for the writer's own maps: the address of the
+/// `Arc` the connection thread shares with it (what `subscribers` and the
+/// train already compare by `Arc::ptr_eq`).
+fn conn_key(stream: &Arc<Mutex<UnixStream>>) -> usize {
+    Arc::as_ptr(stream) as usize
+}
+
 fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
     let writer = Arc::new(Mutex::new(match stream.try_clone() {
         Ok(s) => s,
@@ -1089,7 +1141,8 @@ impl Daemon {
         let feed_cmd = meta.logged.then(|| (env.command.wire_name(), meta.subject));
 
         let resp = match env.command {
-            Command::Hello { version, .. } => {
+            Command::Hello { version, client } => {
+                self.clients.insert(conn_key(stream), client);
                 if version != PROTOCOL_VERSION {
                     return Response::Err {
                         message: format!(
@@ -1228,7 +1281,12 @@ impl Daemon {
                 Response::Ok
             }
             Command::Shutdown => {
-                self.begin_shutdown();
+                let who = self
+                    .clients
+                    .get(&conn_key(stream))
+                    .cloned()
+                    .unwrap_or_else(|| "a client that sent no hello".to_string());
+                self.begin_shutdown(&format!("shutdown asked by {who}"));
                 Response::Ok
             }
             // Never reaches the writer — client_loop short-circuits these to
@@ -1324,75 +1382,88 @@ impl Daemon {
     /// margin; 10 attempts covers ~5 s of Claude startup.
     fn on_tick(&mut self) {
         self.ticks += 1;
+        // Every stage is timed and the slowest remembered, so a slow tick's
+        // journal line can name the probe that took the second.
+        macro_rules! stage {
+            ($name:literal, $e:expr) => {{
+                let t = Instant::now();
+                let r = $e;
+                let took = t.elapsed();
+                if took > self.tick_slowest.1 {
+                    self.tick_slowest = ($name, took);
+                }
+                r
+            }};
+        }
         if self.ticks % 4 == 0 {
-            self.expire_grace();
-            self.sweep_reaping();
-            self.process_teardowns();
+            stage!("expire_grace", self.expire_grace());
+            stage!("sweep_reaping", self.sweep_reaping());
+            stage!("process_teardowns", self.process_teardowns());
         }
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> =
             self.machines.iter_mut().filter_map(|(id, m)| m.tick(now).map(|c| (*id, c))).collect();
         let mut changed = false;
         for (id, change) in fired {
-            changed |= self.apply_change(id, &change, None, None);
+            changed |= stage!("apply_change", self.apply_change(id, &change, None, None));
         }
         if self.ticks % 4 == 0 {
-            changed |= self.probe_spawning();
-            changed |= self.probe_activity();
-            changed |= self.wake_snoozed(now / 1000);
+            changed |= stage!("probe_spawning", self.probe_spawning());
+            changed |= stage!("probe_activity", self.probe_activity());
+            changed |= stage!("wake_snoozed", self.wake_snoozed(now / 1000));
             // The queued asks' safety net: the edge above is the road, this
             // is the clock (a paste that never got its ack, a target that
             // went without a state change of its own).
-            changed |= self.sweep_queue();
-            changed |= self.expire_inflight(now);
-            changed |= self.drain_queue(now);
-            let a = self.archive_figures();
+            changed |= stage!("sweep_queue", self.sweep_queue());
+            changed |= stage!("expire_inflight", self.expire_inflight(now));
+            changed |= stage!("drain_queue", self.drain_queue(now));
+            let a = stage!("archive_figures", self.archive_figures());
             if a != self.archive_cache {
                 self.archive_cache = a;
                 changed = true;
             }
         }
         if self.ticks % TAIL_POLL_TICKS == 0 {
-            changed |= self.poll_tails();
-            changed |= self.probe_status_files();
-            changed |= self.refresh_titles();
+            changed |= stage!("poll_tails", self.poll_tails());
+            changed |= stage!("probe_status_files", self.probe_status_files());
+            changed |= stage!("refresh_titles", self.refresh_titles());
         }
         if self.ticks % RSS_TICKS == 0 {
-            changed |= self.refresh_rss();
+            changed |= stage!("refresh_rss", self.refresh_rss());
         }
         // The worktree flags on their own cadence (a seam for the train's
         // e2e), sampled on a worker; the train's pass runs when they land
         // (`on_worktree_flags`), on fresh flags.
         if self.ticks % wt_refresh_ticks() == 0 && !self.worktrees.is_empty() {
-            self.queue_worktree_flags();
+            stage!("queue_worktree_flags", self.queue_worktree_flags());
         }
         // The CLAUDE.md sample, on the same slow bucket but off the worktree
         // guard: a board with no worktrees still has a CLAUDE.md. Two `stat`s
         // unless something moved, so it costs the same as asking whether to
         // ask.
         if self.ticks % wt_refresh_ticks() == 0 {
-            changed |= self.claude_md.refresh(&self.paths.repo_root);
+            changed |= stage!("claude_md", self.claude_md.refresh(&self.paths.repo_root));
         }
-        // One tick off the writer's own burst above: the sample is a fork on
-        // a worker, but its spawn should not stack on the worktree flags.
         if self.ticks % RSS_TICKS == 1 {
             if !self.git_fetch_every.is_zero()
                 && self.git_last_fetch.is_none_or(|t| t.elapsed() >= self.git_fetch_every)
             {
                 self.git_fetch_wanted = true;
             }
-            self.queue_git_sample();
+            // One tick off the writer's own burst above: the sample is a fork on
+            // a worker, but its spawn should not stack on the worktree flags.
+            stage!("queue_git_sample", self.queue_git_sample());
         }
         if self.ticks % server_guard_ticks() == 0 {
-            changed |= self.guard_server();
+            changed |= stage!("guard_server", self.guard_server());
         }
-        changed |= self.retry_pending_submits(now);
+        changed |= stage!("retry_pending_submits", self.retry_pending_submits(now));
         if changed {
-            self.persist_sessions();
-            self.broadcast();
+            stage!("persist_sessions", self.persist_sessions());
+            stage!("broadcast", self.broadcast());
         }
         // ≤1 write() per wheel bucket, no fsync (14 §1.7).
-        let _ = self.feed.flush();
+        let _ = stage!("feed_flush", self.feed.flush());
     }
 
     /// The one shutdown road, for `Command::Shutdown` and SIGTERM alike.
@@ -1404,7 +1475,9 @@ impl Daemon {
     /// PROGRESS with its turn over (dogfood 2026-09-01, T-140). Committing
     /// runs the ordinary `apply_change` path, so the automove fires and the
     /// records are persisted before the socket goes.
-    fn begin_shutdown(&mut self) {
+    fn begin_shutdown(&mut self, why: &str) {
+        self.journal.line(&format!("stopping: {why}"));
+        self.stop_started = Some(Instant::now());
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> =
             self.machines.iter_mut().filter_map(|(id, m)| m.flush(now).map(|c| (*id, c))).collect();
@@ -3854,6 +3927,7 @@ impl Daemon {
     /// the train it armed stops: nobody is watching the board it drives.
     fn on_client_gone(&mut self, stream: &Arc<Mutex<UnixStream>>) {
         self.subscribers.retain(|s| !Arc::ptr_eq(s, stream));
+        self.clients.remove(&conn_key(stream));
         if self.train.owned_by(stream) {
             self.train.disarm();
             self.feed.board("automation", "merge_train_disarmed", None);

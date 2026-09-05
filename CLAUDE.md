@@ -94,7 +94,11 @@ lock-aware (2026-09-04):** `reexec` waits for the socket AND the daemon's flock 
 `LOCK_SH`, never taken), and no daemon at launch opens an EMPTY board on the reconnect cadence
 with the reason in the advisory row instead of exiting — a `U` during a parallel e2e run outran
 the old 2 s + 5 s and left twelve live sessions with no board (STALE-MAP "The reload waits for
-the daemon it asked to stop").
+the daemon it asked to stop"). **And the reload SPEAKS (2026-09-05):** `reexec` blanks the primary
+screen and prints `mesimon: reloading…`, and `run` holds a `client::LateWord` (`mesimon:
+connecting to the daemon…`, said only past 1 s) across the connect and the first snapshot — before
+this, tmux's stale `[detached …]` line was the only thing on screen for the whole connect, and a
+slow one under load read as a hang (STALE-MAP "The reload says what it is doing").
 
 **A RELEASED board also asks whether a newer one exists, and a dev board never does.**
 `update.rs` only ever fires for someone who already updated — on a released machine nothing moves
@@ -265,7 +269,12 @@ counterpart (the note editor's body): newlines kept, CRLF normalised, same byte 
 `GIT_*` targeting variables a dogfooding daemon inherits.
 
 **A daemon-side change** is not running until the daemon restarts: press `U` in the TUI, or
-kill it (the rebuild trap, below).
+kill it (the rebuild trap, below). **The daemon keeps a journal** (2026-09-05): `<state>/daemon.log`
+(`daemon/src/journal.rs`) — `started`, `stopping: <why>` (SIGTERM, or `shutdown asked by <Hello
+client>`), `stopped`, and `slow turn: <message> took N ms ∙ slowest stage <on_tick step>` for any
+writer turn past 1 s. It is the first file to read when a board went quiet; `doctor` prints its
+last stop. The feed is what the board did, the journal is what the process did (STALE-MAP "The
+daemon keeps a journal").
 
 ## Docs are research, not authority (demoted 2026-08-31)
 

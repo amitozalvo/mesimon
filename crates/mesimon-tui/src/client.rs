@@ -7,7 +7,7 @@
 use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::{Path, PathBuf};
-use std::sync::mpsc::{channel, Receiver, Sender, TryRecvError};
+use std::sync::mpsc::{channel, Receiver, RecvTimeoutError, Sender, TryRecvError};
 use std::time::{Duration, Instant};
 
 use anyhow::{bail, Context, Result};
@@ -250,6 +250,40 @@ pub fn await_daemon_gone(repo_root: &Path) -> bool {
     }
 }
 
+/// A sentence said only if a wait outlasts `delay`, on stderr, where
+/// `await_daemon_gone`'s already goes. Drop it when the wait ends: dropped in
+/// time, nothing is said; kept past the delay, it is said once.
+///
+/// It exists for the connect. From `run`'s connect to its `init_terminal`
+/// the PRIMARY screen is what the user sees, and after a `U` that screen
+/// holds whatever was last printed there — on a board that has been into a
+/// session, tmux's `[detached (from session …)]` line. On an idle box the
+/// connect is milliseconds and the line flashes; under two parallel e2e
+/// suites it ran for a minute and that line was the only thing on screen
+/// (dogfood 2026-09-05). A quick connect still says nothing, a slow one
+/// says what it is doing, and a stuck one says the same instead of looking
+/// dead.
+pub struct LateWord {
+    _cancel: Sender<()>,
+}
+
+impl LateWord {
+    pub fn new(delay: Duration, sentence: &'static str) -> Self {
+        Self::with(delay, move || eprintln!("{sentence}"))
+    }
+
+    fn with(delay: Duration, say: impl FnOnce() + Send + 'static) -> Self {
+        let (tx, rx) = channel::<()>();
+        std::thread::spawn(move || {
+            // The sender dropping ends the wait: `Disconnected`, not a word.
+            if rx.recv_timeout(delay) == Err(RecvTimeoutError::Timeout) {
+                say();
+            }
+        });
+        Self { _cancel: tx }
+    }
+}
+
 /// `open`, plus the at-most-one build-skew restart.
 ///
 /// Deliberate reversal of "never automatic" (STALE-MAP): a daemon running
@@ -430,6 +464,32 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Dropped inside its delay, a late word is never said; kept past it, it
+    /// is said exactly once. Driven by channels, not sleeps, so a loaded box
+    /// cannot make the quick one late.
+    #[test]
+    fn a_late_word_is_said_only_past_its_delay() {
+        let (said, heard) = channel::<&'static str>();
+        let quick = LateWord::with(Duration::from_secs(30), {
+            let said = said.clone();
+            move || {
+                let _ = said.send("quick");
+            }
+        });
+        drop(quick);
+        let slow = LateWord::with(Duration::from_millis(10), move || {
+            let _ = said.send("slow");
+        });
+        assert_eq!(heard.recv_timeout(Duration::from_secs(10)), Ok("slow"));
+        drop(slow);
+        // Every sender is gone once both threads have returned; the quick
+        // one's returned `Disconnected` the moment it was dropped.
+        assert!(matches!(
+            heard.recv_timeout(Duration::from_secs(10)),
+            Err(RecvTimeoutError::Disconnected)
+        ));
+    }
 
     /// The probe reads a daemon's exclusive flock as held, and its release
     /// as free — without ever taking the lock itself.

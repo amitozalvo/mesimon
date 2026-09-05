@@ -5671,3 +5671,79 @@ removes its `/tmp/msmn-test-run-*` registry instead of leaving one per run; a fa
 keeps it. The tester-facing TESTING.md carries none of this — it is CLAUDE.md's and
 AGENTS.md's. The rebase onto main proved the guard the same hour: T-227's second merge-train
 test had arrived with two `set_var`s before `Harness::boot` and now rides `boot_with_env`.
+
+## The reload says what it is doing (2026-09-05, user: "the whole screen is very unindicative because it says `[detached (from session …)]` and no indication of something that's loading or failed")
+
+**What happened.** Two `U` reloads on the simbly board in one afternoon, both while two other
+sessions ran a full parallel e2e suite each (a hundred daemons, tmux servers and stubs forking at
+once). The daemon side of the second one took two seconds — lock released at 17:29:21, the new
+client subscribed at 17:29:22, every hook frame in that minute landed — and the user still
+reported it as "stopped working", because what the screen showed was tmux's own
+`[detached (from session ab34b94f6b574cdd)]` line and nothing else. The first outage that day
+was real (a daemon unreachable for four minutes with thirty tool calls' hook frames dropped;
+cause not captured, a read-only Hello watchdog now sits beside it), but the two looked identical
+from the chair, which is the finding.
+
+**Why.** `run` returns from the event loop, `restore_terminal` leaves the alt screen, and the
+PRIMARY screen shows whatever was last printed there — on a board that has been into a session,
+tmux's detach line from the last `Ctrl+]`. `reexec` then waits for the old daemon's lock (silent
+for its first second) and execs; the new process runs the colour probe, loads prefs,
+`Client::connect` (a five-second spawn budget once the lock frees, a ten-second Hello, a possible
+build-skew restart of three plus eight seconds and another Hello) and `App::new`'s first snapshot
+(ten more) — ALL before `init_terminal`. On an idle box that is milliseconds and the stale line
+flashes; under load it is tens of seconds with a stale line as the only thing on screen. A slow
+connect and a dead client were indistinguishable.
+
+**What holds now.**
+- `reexec` blanks the primary screen first (`blank_primary_screen`, the road the attach already
+  takes) and prints `mesimon: reloading…`. `await_daemon_gone`'s `waiting for the daemon to
+  finish shutting down…` still follows after a second when the SHUTDOWN is what is slow.
+- `client::LateWord`: a sentence said once, on stderr, only if the wait it wraps outlasts its
+  delay; dropping it in time says nothing. `run` holds one — `mesimon: connecting to the
+  daemon…`, one second — across `Client::connect` and `App::new`, and drops it before
+  `init_terminal`. A quick reload flashes nothing new; a slow one names the wait; a stuck one
+  names it too and then opens the empty board with the `daemon_down` advisory, as before. Test:
+  `a_late_word_is_said_only_past_its_delay` (channels, not sleeps).
+
+**Not done.** The words are the primary-screen stopgap. The better home is the alt screen:
+enter it before connecting and draw the empty board with the advisory row while the connect
+runs — `Client::connect` already tolerates no daemon, so the plumbing exists; what stands in the
+way is that the colour probe and the kitty probe are ordered around `init_terminal` today. And
+the four-minute outage still has no captured cause; the daemon logs neither its start nor why it
+stopped, and a `daemon.log` line for each would have answered it.
+
+## The daemon keeps a journal (2026-09-05, user: "what do we do with the daemon.log from now?")
+
+**What happened.** The same afternoon as the reload words above: a daemon left for four minutes
+with a clean exit and nothing said why. `daemon.log` had been the detached spawn's stderr sink
+since alpha-1 and had never held a byte (no daemon ever panicked); the activity feed's `seq`
+restarting at 1 was the only trace of the restart, and a sequence names a start, never a reason.
+Three hours of forensics — transcripts, inodes, `sample`, `lsof`, the unified log — could not
+recover what one line would have said.
+
+**What holds now.** `daemon/src/journal.rs`: `daemon.log` is the daemon's own record of what the
+PROCESS did, where the feed is what the board did. Three kinds of line, UTC-stamped, written at
+once (rare, and a crash a moment later must still find them), rotated by size at 1 MiB to
+`daemon.log.1`:
+- `started pid … build … exe mtime … len … repo … detached|foreground`, written the moment the
+  flock is won (a loser writes nothing — under the reconnect cadence that would be a line every
+  400 ms).
+- `stopping: <why>` from `begin_shutdown(why)` — the one shutdown road — `SIGTERM`, or `shutdown
+  asked by <client>` where the client is the `Hello` string the connection sent
+  (`Daemon::clients`, keyed by the writer `Arc`'s address like `subscribers`, pruned on
+  `ClientGone`); then `stopped ∙ shutdown took N ms` after the sockets go.
+- `slow turn: <what> took N ms` for any writer-thread turn past `journal::SLOW_TURN` (1 s), named
+  before it runs (`tick`, `hook Stop`, `request snapshot`, …); a tick's line adds `∙ slowest stage
+  probe_activity 2100 ms`, from a `stage!` macro around every step of `on_tick`
+  (`Daemon::tick_slowest`). This is the instrument that names a blocking site without a watchdog.
+The stderr fd still points at the same file, so a panic lands beside the journal's lines (after a
+rotation it follows the old inode into `.1`; the cap makes that a once-a-year event). A journal
+that cannot open writes nothing and fails nothing. `mesimon doctor` prints a `daemon log` line:
+the path and the last `stopping:` line, or `no stop recorded`. E2e: `shutdown_flush_e2e` asserts
+the start, the `SIGTERM` reason and the end. Unit tests pin the calendar arithmetic (`iso_utc`,
+dependency-free), the threshold, the rotation and the silent failure.
+
+**Not done.** The journal says a turn was slow and which stage; it does not yet say what the
+stage was waiting on (which tmux command, which git). A `hook` frame's own age (arrival minus
+the hook's timestamp) would show ingest lag, and a `client connected` line would show a TUI
+that dialled and gave up. Add them when a journal line asks for them, not before.

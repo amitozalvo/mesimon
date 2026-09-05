@@ -92,8 +92,18 @@ pub fn run(repo_root: &Path) -> Result<()> {
         }
     }
 
+    // From here to `init_terminal` the primary screen is what shows, and
+    // after a `U` it holds whatever was last printed there (tmux's
+    // `[detached …]` line, on a board that has been into a session). The
+    // connect and the first snapshot are the whole wait; a second of it
+    // earns a sentence (`client::LateWord`).
+    let word = client::LateWord::new(
+        std::time::Duration::from_secs(1),
+        "mesimon: connecting to the daemon…",
+    );
     let client = Client::connect(repo_root)?;
     let mut app = App::new(Box::new(client), repo_root.to_path_buf(), theme)?;
+    drop(word);
     app.flavor_watch = detected.watch;
     app.ground = detected.ground;
     app.forced = detected.forced;
@@ -127,6 +137,14 @@ pub fn run(repo_root: &Path) -> Result<()> {
 /// path. The daemon was asked to shut down first; wait for it to be gone so
 /// the fresh TUI's connect-spawn doesn't race the old flock.
 fn reexec(repo_root: &Path) -> Result<()> {
+    // The primary screen is on display from here to the new client's first
+    // draw, and it still holds whatever was last printed there — tmux's
+    // `[detached (from session …)]` line, after any focus. Under a busy box
+    // that line sat alone for a minute and read as a hang (dogfood
+    // 2026-09-05). Blank it, as before an attach, and say what this is; the
+    // new client adds its own word if the connect runs long (`run`).
+    let _ = blank_primary_screen();
+    eprintln!("mesimon: reloading…");
     // Socket unlinked AND lock released, up to `HANDOVER_MAX` — the fresh
     // client only tolerates a few seconds of no daemon, and a shutdown
     // (every pending settle committed through automove) is not bounded by
