@@ -151,7 +151,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::Menu { idx } = &app.mode {
         menu::draw(f, app, *idx);
     }
-    if matches!(app.mode, Mode::Brief) {
+    if matches!(app.mode, Mode::Brief { .. }) {
         brief::draw(f, app);
     }
     if let Mode::Settings { idx } = &app.mode {

@@ -19,7 +19,7 @@
                            │   Agent tools: on                                              │
                            │     the seven board tools every spawn carries ∙ enter takes t~ │
                            │   Agent brief: off                                             │
-                           │     one line in the system prompt: read the ticket first       │
+                           │     one line: read the ticket first ∙ enter shows it first     │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 
 

@@ -1071,8 +1071,10 @@ mesimon starts here, only those, nothing written to disk), and its four answers 
 on / `c` copy (the text itself, OSC 52, write-only so it never claims success, the one key that
 leaves the dialog up; `claudemd::SNIPPET` survives as the CLAUDE.md form `doctor` prints) / `i` never (stamps
 `Board::claude_md_ignored`, the key keeping T-217's name on disk) / `esc` not now. Settings row
-`Agent brief: on|off` is the other road and the way off; `doctor` prints the text whatever the
-stamp says. **The CLAUDE.md WRITE is gone** — `daemon/src/claudemd.rs` only samples now — and
+`Agent brief: on|off` is the other road: OFF is one press (and stamps the offer answered — a
+person who turned it off is not re-asked), ON opens the SAME dialog (`Mode::Brief {
+from_settings: true }`, every answer returning to the row via `App::leave_brief`) so the words
+are never switched on blind; `doctor` prints the text whatever the stamp says. **The CLAUDE.md WRITE is gone** — `daemon/src/claudemd.rs` only samples now — and
 README promise 1 no longer names it; promise 3 names the brief as the one consented exception
 beside the tool registry. (STALE-MAP "mesimon offers the CLAUDE.md line" + "The write allowlist
 says what it does" + "The brief moves into the system prompt".)

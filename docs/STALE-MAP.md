@@ -5532,3 +5532,15 @@ branch lives (the root, or the one child under a folder), and the fetch runs the
 `doctor` labels the line `root: main` or `api: orphan`, and `Ctx::multi_repo` stays true at one
 — a worktree of the root would still hold none of the code. `repos_word` keeps its `1 repo`
 form for nothing but its own test.
+
+**Amended the same hour (user: "it doesn't say verbatim ∙ I wanted a prompt for confirmation and
+`c` for copy in that dialog ∙ if it suggests while off we need an option to ignore it").** The
+Settings row had turned the brief ON in one press, showing only its label. Now ON from Settings
+opens the SAME dialog (`Mode::Brief { from_settings: true }`) — text verbatim, `c copy`, `i never
+ask again` — and every answer returns to the row (`App::leave_brief`), which then reads `on`; OFF
+stays one press and STAMPS the offer answered (`set_system_prompt(false)` sets
+`claude_md_ignored`), so a person who turned it off is not offered it again — Settings is the
+way back, which is what makes the stamp affordable. The row's detail says `enter shows it
+first`. Tests: `the_settings_row_turns_the_brief_on_through_the_dialog`, and the off-road
+assertion in `taking_the_brief_offer_turns_it_on_and_withdraws_it`; `brief_offer_e2e` asserts
+the stamp on off and that `i` leaves the switch alone.

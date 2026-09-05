@@ -676,7 +676,7 @@ fn golden_theme_picker_120() {
 fn golden_brief_120() {
     let mut app = app_graphite(fixture_archived());
     offer_brief(&mut app);
-    app.mode = Mode::Brief;
+    app.mode = Mode::Brief { from_settings: false };
     golden("brief_120x30", &render(&app, 120, 30));
 }
 
@@ -696,7 +696,7 @@ fn offer_brief(app: &mut App) {
 fn the_dialog_shows_the_brief_verbatim() {
     let mut app = app_graphite(fixture_archived());
     offer_brief(&mut app);
-    app.mode = Mode::Brief;
+    app.mode = Mode::Brief { from_settings: false };
     let lines = render(&app, 120, 30);
     for want in mesimon_core::brief::TEXT.lines().filter(|l| !l.trim().is_empty()) {
         assert!(
@@ -716,7 +716,7 @@ fn the_dialog_shows_the_brief_verbatim() {
 fn the_dialog_teaches_its_four_answers() {
     let mut app = app_graphite(fixture_archived());
     offer_brief(&mut app);
-    app.mode = Mode::Brief;
+    app.mode = Mode::Brief { from_settings: false };
     let lines = render(&app, 120, 30);
     let edge = lines
         .iter()

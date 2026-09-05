@@ -2751,7 +2751,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             } else if c.system_prompt {
                 "in every spawn's system prompt ∙ enter turns it off".into()
             } else {
-                "one line in the system prompt: read the ticket first".into()
+                "one line: read the ticket first ∙ enter shows it first".into()
             }
         },
         avail: always,

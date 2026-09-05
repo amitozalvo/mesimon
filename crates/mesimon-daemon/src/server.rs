@@ -4558,6 +4558,12 @@ impl Daemon {
             return Response::Ok;
         }
         self.board.system_prompt = on;
+        // A person who turned it OFF has answered the question the offer
+        // asks: the chip does not come back to ask it again. Settings still
+        // turns it on, which is what makes the stamp affordable here too.
+        if !on {
+            self.board.claude_md_ignored = true;
+        }
         self.persist_and_notify();
         Response::Ok
     }

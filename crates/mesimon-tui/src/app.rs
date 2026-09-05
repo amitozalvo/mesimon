@@ -230,7 +230,13 @@ pub enum Mode {
     /// say their question in the status line and draw nothing; none of them
     /// can show five lines of text, and showing the exact words before they
     /// go into every agent's system prompt is the whole point of this one.
-    Brief,
+    /// Reached from the offer (chip or menu row) OR from the Settings row
+    /// when the brief is off — a switch that adds to a system prompt is never
+    /// thrown without the words on the screen — and `from_settings` is where
+    /// every answer returns to.
+    Brief {
+        from_settings: bool,
+    },
     /// The note editor. A mode and not a second slot: it REPLACES the
     /// one-line composer (Tab carries the title over) and never coexists
     /// with a move, a menu or a picker, so `Mode` is where it belongs.
@@ -1646,6 +1652,17 @@ impl App {
         keymap::settings_items(&self.ctx()).iter().position(|m| m.verb == verb).unwrap_or(0)
     }
 
+    /// Close the brief dialog onto whatever opened it: the Settings list, on
+    /// the row that did (which now reads the answer), or the board.
+    fn leave_brief(&mut self) {
+        self.mode = match self.mode {
+            Mode::Brief { from_settings: true } => {
+                Mode::Settings { idx: self.settings_row(Verb::SystemPrompt) }
+            }
+            _ => Mode::Normal,
+        };
+    }
+
     /// The agent brief's switch (T-224), shared by the offer's Enter and the
     /// Settings row. Board state: the daemon persists it and the snapshot
     /// brings it back, so nothing is flipped locally. The status says the
@@ -1916,7 +1933,7 @@ impl App {
             Mode::Archived { .. } => Scope::Archived,
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
-            Mode::Brief => Scope::Brief,
+            Mode::Brief { .. } => Scope::Brief,
             _ => match self.screen {
                 Screen::Diff => Scope::Diff,
                 Screen::Releases => Scope::Releases,
@@ -2651,13 +2668,19 @@ impl App {
             }
             // The brief's switch, from Settings (T-224): board state like the
             // tools, so it goes to the daemon and comes back on the snapshot.
+            // Off is one keypress; ON goes through the dialog, so the words
+            // are on the screen before they are in anyone's system prompt —
+            // the same consent the offer asks for, from the other door.
             Verb::SystemPrompt => {
-                let on = !self.board.system_prompt;
-                self.set_system_prompt(on)?;
+                if self.board.system_prompt {
+                    self.set_system_prompt(false)?;
+                } else {
+                    self.mode = Mode::Brief { from_settings: true };
+                }
             }
             // The offer opens the dialog and does nothing else. The switch is
             // only ever turned from inside it, with the words on the screen.
-            Verb::BriefOffer => self.mode = Mode::Brief,
+            Verb::BriefOffer => self.mode = Mode::Brief { from_settings: false },
             Verb::BriefCopy => {
                 // The words on the screen, for a user who would rather put
                 // them somewhere of their own. Cannot be verified: OSC 52 is
@@ -2673,7 +2696,7 @@ impl App {
                 match self.client.request(Command::IgnoreBriefOffer)? {
                     Response::Err { message } => self.status = message,
                     _ => {
-                        self.mode = Mode::Normal;
+                        self.leave_brief();
                         self.refresh()?;
                         // Names the way back, because "never" is a long time.
                         self.status = "offer put away ∙ Settings > Agent brief still turns it on"
@@ -3165,7 +3188,7 @@ impl App {
             // the offer, and it runs with the words it is about still on the
             // screen. The Settings row is the other road, and the way off.
             Scope::Brief => {
-                self.mode = Mode::Normal;
+                self.leave_brief();
                 self.set_system_prompt(true)
             }
             Scope::Drawer => self.adopt_external(true),
@@ -3217,6 +3240,7 @@ impl App {
             }
             // One level up, on the row that opened it.
             Scope::Settings => self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) },
+            Scope::Brief => self.leave_brief(),
             // The menu is the board's, so the notes always return there.
             Scope::Releases => {
                 self.releases = None;
@@ -5691,6 +5715,10 @@ pub(crate) mod test_support {
                 // the very next snapshot carries them.
                 Command::SetSystemPrompt { on } => {
                     self.board.system_prompt = on;
+                    // The daemon's rule: turning it off is an answer.
+                    if !on {
+                        self.board.claude_md_ignored = true;
+                    }
                     Ok(Response::Ok)
                 }
                 Command::IgnoreBriefOffer => {
@@ -5831,17 +5859,46 @@ mod tests {
     fn taking_the_brief_offer_turns_it_on_and_withdraws_it() {
         let mut app = app_offered_claude_md();
         assert!(offered(&app), "a sampled file without the line is offered");
-        app.mode = Mode::Brief;
+        app.mode = Mode::Brief { from_settings: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
         assert!(app.board.system_prompt, "Enter is the switch");
         assert!(!offered(&app), "and the chip comes off without a relaunch");
         assert!(app.status.contains("agent brief on"), "{}", app.status);
-        // The Settings row is the way off, and off re-offers nothing while
-        // "never" was not said — the offer is for a board that never chose.
+        // The Settings row is the way off — one press, no dialog — and a
+        // person who turned it off has answered: the chip does not return.
+        app.mode = Mode::Settings { idx: 0 };
         app.dispatch(Verb::SystemPrompt, Key::Enter, Scope::Settings, &app.ctx()).unwrap();
         assert!(!app.board.system_prompt);
-        assert!(offered(&app), "off again, never answered: the offer stands");
+        assert!(app.board.claude_md_ignored, "off from Settings is an answer");
+        assert!(!offered(&app), "so the offer does not come back");
+    }
+
+    /// The Settings row never turns the brief ON blind: it opens the same
+    /// dialog the offer does, and every answer there returns to the row.
+    #[test]
+    fn the_settings_row_turns_the_brief_on_through_the_dialog() {
+        let mut app = app_offered_claude_md();
+        app.mode = Mode::Settings { idx: 0 };
+        app.dispatch(Verb::SystemPrompt, Key::Enter, Scope::Settings, &app.ctx()).unwrap();
+        assert_eq!(app.mode, Mode::Brief { from_settings: true }, "on goes through the words");
+        assert!(!app.board.system_prompt, "nothing is switched before the dialog answers");
+        // Esc: back onto the row, nothing switched.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        let row = app.settings_row(Verb::SystemPrompt);
+        assert_eq!(app.mode, Mode::Settings { idx: row });
+        assert!(!app.board.system_prompt);
+        // Enter: switched, and back onto the row, which now reads `on`.
+        app.dispatch(Verb::SystemPrompt, Key::Enter, Scope::Settings, &app.ctx()).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.system_prompt);
+        assert_eq!(app.mode, Mode::Settings { idx: row });
+        // And `i` from the Settings road stamps and returns there too.
+        let mut again = app_offered_claude_md();
+        again.mode = Mode::Brief { from_settings: true };
+        press(&mut again, 'i');
+        assert!(again.board.claude_md_ignored);
+        assert_eq!(again.mode, Mode::Settings { idx: again.settings_row(Verb::SystemPrompt) });
     }
 
     /// The other answer, on the road that always worked (the stamp is board
@@ -5850,7 +5907,7 @@ mod tests {
     #[test]
     fn putting_the_brief_offer_away_withdraws_it() {
         let mut app = app_offered_claude_md();
-        app.mode = Mode::Brief;
+        app.mode = Mode::Brief { from_settings: false };
         press(&mut app, 'i');
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
         assert!(app.board.claude_md_ignored);

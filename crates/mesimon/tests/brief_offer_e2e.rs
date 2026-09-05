@@ -76,13 +76,19 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     // Idempotent, and off is a switch too.
     assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
     assert!(matches!(c.request(Command::SetSystemPrompt { on: false }), Response::Ok));
-    assert!(!board_of(c.request(Command::Snapshot)).system_prompt);
+    let board = board_of(c.request(Command::Snapshot));
+    assert!(!board.system_prompt);
+    assert!(board.claude_md_ignored, "turning it off is an answer: the offer stays down");
     assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
 
     // ---- "never ask again" is a stamp on the board, not on any file --------
     std::fs::write(&md, "# House rules\n").unwrap();
     let before = std::fs::read_to_string(&md).unwrap();
     assert!(matches!(c.request(Command::IgnoreBriefOffer), Response::Ok));
+    assert!(
+        board_of(c.request(Command::Snapshot)).system_prompt,
+        "the stamp leaves the switch alone"
+    );
     assert_eq!(std::fs::read_to_string(&md).unwrap(), before, "ignore touches no file");
     let board = board_of(c.request(Command::Snapshot));
     assert!(board.claude_md_ignored);
