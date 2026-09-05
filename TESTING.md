@@ -58,9 +58,10 @@ your agents; the second line does.
 
 Save yourself the typing:
 
-- **Linux and Intel Macs are unshipped.** The build is Apple Silicon only.
-- **There is no help screen.** The footer names the keys for whatever you are
-  looking at, and that is all there is so far.
+- **Published builds target Apple Silicon macOS and Linux on x86_64 or aarch64, including
+  WSL2.** Intel macOS remains unshipped.
+- **`?` opens the help screen.** The footer also names the keys for whatever you are
+  looking at.
 - **The docs corpus in `docs/` predates the code** and is not a user manual. It
   is a research record; large parts of it describe things that do not exist.
 - **State files can change format between alphas.** When that happens mesimon

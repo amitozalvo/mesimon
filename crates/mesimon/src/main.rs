@@ -54,8 +54,8 @@ fn arg_value(args: &[String], key: &str) -> Option<String> {
     args.iter().position(|a| a == key).and_then(|i| args.get(i + 1).cloned())
 }
 
-/// `0.1.0-alpha.1 (a1b2c3d, 2026-08-31)` — the string a bug report should
-/// carry (16 §8.1).
+/// `<version> (<git sha>, <build date>)` — the string a bug report should carry
+/// (16 §8.1).
 pub fn version_line() -> String {
     format!(
         "{} ({}, {})",
@@ -66,8 +66,11 @@ pub fn version_line() -> String {
 }
 
 fn print_help() {
-    println!(
-        "mesimon (me-si-MON) — a terminal kanban that orchestrates coding-agent sessions\n\n\
+    println!("{}", help_text());
+}
+
+fn help_text() -> &'static str {
+    "mesimon (me-si-MON) — a terminal kanban that orchestrates coding-agent sessions\n\n\
          usage:\n  mesimon              open the board for the current directory\n  \
          mesimon doctor [section]       diagnose the environment; prints fixes, applies none\n  \
          mesimon doctor --mcp           print everything mesimon adds to a session's model input\n  \
@@ -76,7 +79,22 @@ fn print_help() {
          spawned by Claude Code inside a mesimon session, never run by hand:\n  \
          mesimon hook   observer; reports one event, writes no stdout, exits 0\n  \
          mesimon gate   PreToolUse decider; refuses writes into paths mesimon owns\n  \
-         mesimon mcp    the board's MCP server (get_ticket, list_board, move_ticket)\n  \
-         mesimon exec   pane launcher; applies the captured shell environment, then execs\n"
-    );
+         mesimon mcp    the board's scoped MCP server; doctor --mcp shows current tools\n  \
+         mesimon exec   pane launcher; applies the captured shell environment, then execs"
+}
+
+#[cfg(test)]
+mod tests {
+    use super::help_text;
+
+    #[test]
+    fn help_points_to_the_canonical_mcp_disclosure() {
+        let help = help_text();
+        assert!(help.contains("mesimon doctor --mcp"));
+        assert!(help.contains("doctor --mcp shows current tools"));
+        for tool in mesimon_core::mcp::tools() {
+            let name = tool["name"].as_str().expect("every tool has a name");
+            assert!(!help.contains(name), "help duplicated the registered tool {name}");
+        }
+    }
 }

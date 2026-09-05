@@ -35,7 +35,7 @@ impl RuleId {
         match self {
             RuleId::BoardDir => {
                 "mesimon owns .mesimon/ — the board is edited through mesimon, not by writing \
-                 its files. Use the mesimon MCP tools (get_ticket, list_board, move_ticket)."
+                 its files. Use mesimon's scoped MCP tools instead."
             }
             RuleId::StateDir => {
                 "mesimon owns its state directory — sessions, worktree bindings and hook \

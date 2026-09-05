@@ -619,9 +619,11 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     println!();
 
     println!("what an agent may ask for");
-    println!("  get_ticket / list_board / move_ticket / read_note / write_note, bound to");
-    println!("  its own ticket. Notes are markdown files under .mesimon/, which the write");
-    println!("  gate below refuses, so the tool is the one road an agent has to them.");
+    println!("  The definitions above are complete and come from the same registry returned");
+    println!("  by tools/list. Ticket-scoped operations stay bound to the caller's ticket;");
+    println!("  a newly filed ticket starts no session. Notes are markdown files under");
+    println!("  .mesimon/, which the write gate below refuses, so a tool is the one road an");
+    println!("  agent has to them.");
     println!("  There is no tool, at any tier, to spawn or kill a session, delete or");
     println!("  archive or rename a ticket, merge a branch, or read a session, a");
     println!("  transcript or a cost. The daemon refuses those commands outright.");

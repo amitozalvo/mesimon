@@ -1,0 +1,108 @@
+# Mesimon development guide
+
+Mesimon is a Rust terminal kanban that coordinates coding-agent sessions through a
+per-repository daemon and a private tmux server. This file is the compact operating
+contract for Codex. `CLAUDE.md` contains Claude-specific history and deeper implementation
+notes; consult it when useful, but do not assume its milestone narrative is current.
+
+## Ticket context
+
+If `MESIMON_TICKET` is set and a Mesimon MCP `get_ticket` tool is available, call it before
+planning or editing. The ticket description and notes may contain context absent from the
+prompt. If the tool is unavailable, continue normally rather than treating that as a blocker.
+
+## Source of truth
+
+Use this precedence when sources disagree:
+
+1. Code and tests are the specification.
+2. `docs/STALE-MAP.md` is the durable design record of what shipped, what was refuted, and why.
+3. The promises in `README.md` bind product behavior.
+4. `docs/spikes/` contains measured evidence.
+5. The rest of `docs/` is pre-implementation research and idea stock, not authority. Recheck
+   its version numbers and external API claims before relying on them.
+
+For a behavioral change, update tests and append the resulting decision or deviation to
+`docs/STALE-MAP.md`. Avoid adding historical implementation detail to this file.
+
+## Architecture and invariants
+
+The workspace has five crates:
+
+- `mesimon`: the single binary and its TUI/daemon/hook/gate/MCP subcommand dispatch.
+- `mesimon-core`: pure models, commands, authorization, keymaps, and MCP definitions.
+- `mesimon-daemon`: persistence, session/worktree lifecycle, hooks, and the single writer.
+- `mesimon-backend-tmux`: all private-tmux interaction.
+- `mesimon-tui`: application state, terminal handling, and rendering.
+
+Preserve these boundaries:
+
+- The daemon's main thread is the only board-state mutator. Feed new asynchronous input to it
+  as messages; do not mutate state from listener or worker threads.
+- Every mutation crosses the core authorization chokepoint with a real principal and action.
+- The wire protocol is newline-delimited JSON over the per-repository Unix socket. The TUI
+  responds to a change notification by fetching a complete snapshot.
+- Git subprocesses in the daemon go through its scrubbed Git command helper; do not introduce
+  raw `Command::new("git")` calls there.
+- Server and client tmux commands must resolve the same Mesimon tmux binary. Mesimon's private
+  config deliberately has no prefix and detaches with `Ctrl+]` or `Ctrl+5`.
+- Keep `mesimon-core` free of I/O policy and keep authorization/persistence decisions out of
+  the MCP shim, which is an untrusted transport process.
+- Rendering changes must preserve the tested color and geometry laws. Regenerate goldens only
+  for deliberate visual changes and inspect their diffs.
+- `team/` is reserved for a future source-available tier. Do not mix it with Apache-2.0 core
+  code. `mt/` is research scratch, not project content.
+
+The README promises are hard constraints: Mesimon writes only to its documented allowlist,
+`doctor` diagnoses without applying configuration changes, and Mesimon never rewrites or adds
+to the user's conversation. MCP tool definitions are the explicit model-input surface; keep
+their text descriptive, bounded, and non-instructional.
+
+## Working agreement
+
+- Start by checking `git status`. Preserve user changes and concurrent work; do not overwrite,
+  revert, or reformat unrelated files.
+- If the branch starts with `msmn/`, it is an isolated ticket worktree. Commit finished work on
+  that branch because uncommitted work blocks Mesimon's merge and cleanup flow.
+- Rebase an `msmn/` branch only when asked. Never check out, merge into, or push `main` from a
+  ticket worktree; the user performs the fast-forward merge through Mesimon.
+- Do not use destructive Git commands unless the user explicitly requests them.
+- A daemon process keeps running after rebuilds. After daemon-side changes, use the TUI's `U`
+  handover or stop the old daemon cleanly before manual runtime verification.
+- Do not launch an interactive Mesimon board from a Mesimon-managed agent pane. Prefer tests;
+  perform explicitly requested manual TUI checks from an ordinary external terminal.
+
+## Build and verification
+
+Use the smallest relevant check while iterating, then the repository gates appropriate to the
+change:
+
+```sh
+cargo ut
+cargo test -p mesimon-core <test-filter>
+cargo test -p mesimon --test hook_e2e
+cargo nextest run --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+```
+
+`cargo ut` is the fast unit-test loop. `cargo nextest run --workspace` is the complete suite and
+runs the tmux-backed integration binaries in parallel. `cargo test --workspace` is valid but
+substantially slower because those binaries run sequentially.
+
+Tmux-backed tests create Unix sockets and detached processes. In a Codex sandbox they can fail
+with missing-socket, server, or pane errors even when the product is correct. When the symptom
+specifically indicates sandbox denial, rerun the exact necessary test command with
+command-scoped elevated permission. Do not weaken a test, disable the sandbox globally, or
+commit personal Codex configuration to make it pass.
+
+Additional targeted gates:
+
+- Deliberate TUI rendering change: `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui`, followed
+  by visual inspection of every golden diff.
+- Linux suite: `ci/test-linux.sh` (requires Docker).
+- Linux release artifacts: `ci/build-linux.sh`.
+- Release rehearsal: `ci/release.sh --dry-run`; follow the script's current Docker policy and
+  never publish as part of an ordinary development task.
+
+Before handing off, run `git diff --check` and report which checks ran, which were skipped, and
+why. Never turn a skipped tmux integration into an implied pass.

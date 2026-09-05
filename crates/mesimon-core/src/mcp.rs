@@ -36,9 +36,9 @@ pub const SUPPORTED_PROTOCOLS: [&str; 3] = ["2025-11-25", "2025-06-18", "2025-03
 ///
 /// 223 tokens was measured on an ~818-byte tool definition (docs/15 §1.4), so
 /// this cap is what keeps that measurement a ceiling rather than an average the
-/// budget merely hopes for. Three tools ≈ 670 tok on every request of every
-/// session, forever — deferred tool search is force-disabled for proxy and
-/// Bedrock/Vertex users, so 223/tool is the planning number, not 12.
+/// budget merely hopes for. `mesimon doctor --mcp` computes the current registry's
+/// total at 223 tokens per tool; deferred tool search is force-disabled for proxy
+/// and Bedrock/Vertex users, so that is the planning number, not 12.
 pub const MAX_TOOL_BYTES: usize = 820;
 
 /// JSON-RPC: the method is not implemented. Used for every method mesimon
