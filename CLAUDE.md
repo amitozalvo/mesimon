@@ -1,12 +1,5 @@
 # CLAUDE.md
 
-## mesimon
-
-When `MESIMON_TICKET` is set, this session is working a
-mesimon ticket. FIRST, before reading code or planning,
-call `get_ticket` and read the ticket's description and
-notes: they are the brief, and the prompt is often only
-the ticket's title. Do not start work without them.
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
 ## What this is
@@ -1064,7 +1057,7 @@ default, no schema bump: dropping it sends LESS), OFF by default, `Command::SetS
 Hard-wrapped to `claudemd::WRAP` (56) because `Mode::Brief` shows it VERBATIM and `dialog::MAX_W`
 is 64. The offer (`Verb::BriefOffer`, chip + menu row) stands while the brief is off, the repo's
 CLAUDE.md lacks the `MESIMON_TICKET` marker (`claudemd::Sampler`, `ClaudeMdStatus` — a user who
-wrote it themselves is never nagged, and this repo is offered nothing), the tools are on, and
+wrote it themselves is never nagged), the tools are on, and
 "never" was not said. The dialog is mesimon's ONE modal confirmation — every other confirm is a
 chord tail or `m`'s arm, which draw nothing — its first two lines say the REACH (claude sessions
 mesimon starts here, only those, nothing written to disk), and its four answers are `enter` turn
