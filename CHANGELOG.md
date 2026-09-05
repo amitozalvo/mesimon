@@ -9,7 +9,7 @@ into the binary and shown by the Esc menu's "Release notes" row (`core/src/relno
 parses it; `cargo ut` checks every heading), and `ci/release.sh` lifts the tag's
 section out of it for the GitHub release body.
 
-## v0.1.0-alpha.14 — 2026-09-05
+## v0.1.0-alpha.15 — 2026-09-05
 
 - **`^k` lists a ticket's links, and opens one.** Whatever the ticket's notes point at — a
   website, another ticket by its key (`T-12`), a file that exists in its checkout — is one row
@@ -20,6 +20,53 @@ section out of it for the GitHub release body.
   to a Jira issue, reached from the board without opening the card and copying the link. Links
   are read from the notes on each press and never stored. `mesimon doctor` prints an `opener`
   line.
+
+- **`P` opens every card.** `p` shows the cursor card's tags and its agent's latest reply; `P`
+  is the same thing for the whole board — every card carries its chip row and its reply, quietly,
+  while the cursor card keeps its full accordion. `P` implies `p`, `P` again narrows back to the
+  cursor card, `p` off takes both. Unhinted on purpose; `?` lists it. The ticket page's `P`,
+  which pinned a session awake against the automatic sleep, is gone.
+
+- **The reload says what it is doing, and the daemon keeps a journal.** `U` on a busy board
+  could read as "stopped working": the screen showed tmux's stale `[detached …]` line for the
+  whole reconnect. It now blanks the screen and says `mesimon: reloading…`, and a connect that
+  takes over a second says so. And when a board goes quiet there is finally something to read:
+  `<state>/daemon.log` records every start, every stop and why (`SIGTERM`, or which client asked),
+  and any writer turn that took over a second and which stage was slow. `mesimon doctor -v`
+  prints the last stop.
+
+- **A keypress no longer stalls every ten seconds.** On a board with a dozen worktrees, every
+  key that reached the daemon — a quick-tag digit, a move — could wait half a second once every
+  ten: the worktree flags were refreshed on the daemon's one writer thread, four git forks per
+  binding. The sample runs on a worker now; measured at 20 Hz, the worst stall went from 481 ms
+  to 57 ms.
+
+- **A late Stop is not an Esc.** Claude's own session file flips to `idle` at the end of every
+  turn, milliseconds before its Stop hook fires — and when the hook binary was held up (macOS
+  scanning a freshly linked one for 41 s, in the case that found this) a finished turn wore
+  `interrupted` until the hook landed. The probe now reads the transcript first: a turn whose
+  closing record is on disk lands as done, and the card moves to REVIEW at once. A real Esc,
+  which writes no record, still reads as interrupted.
+
+- **A ticket says who filed it.** The ticket page's state row reads `created 2d ago by claude on
+  T-241` for a ticket an agent minted through `create_ticket`, and the record carries the author
+  and the ticket it was filed from.
+
+- **A taken-over external session reaches the agent tools.** A session imported from the drawer
+  and then taken over kept being refused every `get_ticket` and `move_ticket`: the tier was gated
+  on how the session was born rather than on whether it was observe-only. It now reads the one
+  predicate the daemon uses for that — imported AND never relaunched — so a taken-over session
+  gets the tools its command line already carries.
+
+- **The ticket page's chip names the ticket.** The header reads `TICKET (T-12)` where it read
+  `TICKET`; the key is how a ticket is named off the screen, and the page's title row spells
+  only the title.
+
+- **Smaller.** The delivery row under a reopened queued ask read `queued  shift+tab ∙ blank
+  enter drops`, which a narrow column cut to `dr`. The clause is gone: an emptied field on a
+  waiting ask shows `enter drops` in the placeholder, where a fresh one shows `ask claude`.
+
+## v0.1.0-alpha.14 — 2026-09-05
 
 - **The agent brief: one opt-in line in the system prompt.** A session mesimon starts is handed
   the ticket's *title*. Its description and notes live behind the `get_ticket` tool, and nothing
