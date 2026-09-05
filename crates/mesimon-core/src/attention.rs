@@ -667,27 +667,37 @@ impl Machine {
             // Medium, so the miss self-heals.
             Signal::ToolCompleted { nested } => match &self.state {
                 S::RequiresAction { reason: Reason::Permission } => t(S::Running),
-                // A parked turn resumes when its OWN tool runs. The wake is a
-                // prompt only when a task notification delivers it; a
+                // The lead's OWN tool completing is stated proof its turn is
+                // alive, from ANY idle. A parked turn resumes on it: the wake
+                // is a prompt only when a task notification delivers it; a
                 // teammate's report arrives as a teammate message and fires
                 // no `UserPromptSubmit` at all (measured 2026-09-01, T-135:
                 // twenty minutes of the lead's tool frames streamed past a
                 // High `Idle{Background}` that only a prompt could leave).
-                // The frame is a stated event, so High. A NESTED completion
-                // is the teammate's work, not the lead's — the lead may well
-                // still be parked — and says nothing here.
-                S::Idle { stop_reason: StopReason::Background } if !nested => t(S::Running),
-                // A tool completing is stated proof the turn is alive — it
-                // outranks any INFERRED resting state (quiet-probe Medium,
-                // tail-hint Low) and the post-restart Unknown, and is the
-                // recovery probe_activity's "next real event corrects"
-                // promise relies on (dogfood 2026-08-30: a quiet-probe
-                // misfire, then a restart-tail StaleQuiet misread, each left
-                // a working session glyph-less on "idle" while PostToolUse
-                // frames streamed in). A hook-stated Idle stays inert — a
-                // background task's completion must not flip a real
-                // end_turn — and a straggler frame after a real Esc costs a
-                // cosmetic "working" the quiet probe re-demotes.
+                // And so does a FINISHED one (T-228, 2026-09-05): a `!` bash
+                // command in Claude Code puts its output into the conversation
+                // and the model takes a turn on it, and no `UserPromptSubmit`
+                // fires — the first frame of that turn is a `PostToolUse`,
+                // and holding a hook-stated `EndTurn` against it left the
+                // ticket in REVIEW with no working mark for three minutes,
+                // until a `PermissionDenied` happened to promote it. The rule
+                // this replaces — "a background task's completion must not
+                // flip a real end_turn" — guarded a frame that does not
+                // exist: a backgrounded shell's completion emits no
+                // `PostToolUse` (captured, T-135); its single frame is at
+                // launch. The frame is a stated event, so High. A NESTED
+                // completion is a subagent's or teammate's work, not the
+                // lead's — the lead may well still be parked, or done — and
+                // says nothing here. A straggler after a real end would cost
+                // a "working" the quiet probe re-demotes; none has been seen.
+                S::Idle { .. } if !nested => t(S::Running),
+                // Any completion, nested too, outranks an INFERRED resting
+                // state (quiet-probe Medium, tail-hint Low) and the
+                // post-restart Unknown — the recovery probe_activity's "next
+                // real event corrects" promise relies on (dogfood
+                // 2026-08-30: a quiet-probe misfire, then a restart-tail
+                // StaleQuiet misread, each left a working session glyph-less
+                // on "idle" while PostToolUse frames streamed in).
                 S::Idle { .. } if self.confidence != Confidence::High => t(S::Running),
                 S::Unknown { .. } => t(S::Running),
                 _ => None,
@@ -1040,10 +1050,40 @@ mod tests {
         let c = m.apply(&Signal::ToolCompleted { nested: false }, 2000).expect("resumes");
         assert_eq!(c.to, SessionState::Running);
         assert_eq!(c.confidence, Confidence::High);
-        // The other hook-stated Idle stays inert to a completion, as before:
-        // nothing is owed after a real end_turn.
-        let mut done = Machine::new(SessionState::Idle { stop_reason: StopReason::EndTurn }, 0);
-        assert!(done.apply(&Signal::ToolCompleted { nested: false }, 1000).is_none());
+    }
+
+    /// A turn that starts with no prompt at all: a `!` bash command in Claude
+    /// Code puts its output into the conversation and the model takes a turn
+    /// on it, and no `UserPromptSubmit` fires (captured 2026-09-05, T-228:
+    /// Stop 14:02:21, `<bash-input>` 14:04:08, then PostToolUse frames from
+    /// 14:04:34 that a High `Idle{EndTurn}` held inert — REVIEW, no working
+    /// mark, until a `PermissionDenied` three minutes on). The first frame of
+    /// that turn is the lead's own tool completing, and it is the turn.
+    #[test]
+    fn a_turn_resumed_without_a_prompt_shows_on_its_first_tool_frame() {
+        let mut m = m(SessionState::Running);
+        let stop = Signal::Stop {
+            stop_hook_active: false,
+            has_agent_id: false,
+            blocking_tasks: false,
+            teammates: 0,
+        };
+        assert!(m.apply(&stop, 1_000).is_none()); // leave settles
+        let c = m.tick(1_000 + SETTLE_MS).expect("settle to end_turn");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(m.confidence(), Confidence::High);
+        // A subagent's or teammate's tool says nothing about the lead.
+        assert!(m.apply(&Signal::ToolCompleted { nested: true }, 5_000).is_none());
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::EndTurn });
+        // The lead's own does, at once and stated.
+        let c =
+            m.apply(&Signal::ToolCompleted { nested: false }, 6_000).expect("the turn is alive");
+        assert_eq!(c.to, SessionState::Running);
+        assert_eq!(c.confidence, Confidence::High);
+        // ...and the next Stop ends it as any turn ends.
+        assert!(m.apply(&stop, 9_000).is_none());
+        let c = m.tick(9_000 + SETTLE_MS).expect("settle to end_turn again");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
     }
 
     /// The set survives a daemon restart through the record, or the next
@@ -1259,10 +1299,12 @@ mod tests {
     #[test]
     fn tool_completed_is_inert_outside_a_held_permission() {
         // A sibling's completion must not clear a Question/Plan, and
-        // mid-turn Running needs no re-assert.
+        // mid-turn Running needs no re-assert. (A hook-stated end_turn sat
+        // in this list until T-228: the lead's own completion after it IS
+        // the next turn — `a_turn_resumed_without_a_prompt_shows_on_its_
+        // first_tool_frame`; a nested one still says nothing there.)
         for state in [
             SessionState::Running,
-            SessionState::Idle { stop_reason: StopReason::EndTurn },
             SessionState::RequiresAction { reason: Reason::Question },
             SessionState::RequiresAction { reason: Reason::Plan },
         ] {
@@ -1270,6 +1312,9 @@ mod tests {
             assert_eq!(m1.apply(&Signal::ToolCompleted { nested: false }, 1_000), None);
             assert!(m1.pending.is_none(), "no pending leave from {state:?}");
         }
+        let mut done = m(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        assert_eq!(done.apply(&Signal::ToolCompleted { nested: true }, 1_000), None);
+        assert!(done.pending.is_none());
     }
 
     #[test]
@@ -1338,7 +1383,7 @@ mod tests {
     }
 
     #[test]
-    fn tool_completed_recovers_tail_misreads_but_not_stated_idle() {
+    fn tool_completed_recovers_tail_misreads() {
         // The restart path: Unknown{DaemonRestarted}, then the tail misreads
         // a long quiet tool run as StaleQuiet → Idle{Unknown} at Low. Either
         // rung recovers on the next completion frame.
@@ -1355,20 +1400,10 @@ mod tests {
             .apply(&Signal::ToolCompleted { nested: false }, 2_000)
             .expect("recover from tail idle");
         assert_eq!(c.to, SessionState::Running);
-
-        // A hook-stated end_turn (High) stays inert — a background task's
-        // completion must not flip a real turn end.
-        let mut done = m(SessionState::Running);
-        let stop = Signal::Stop {
-            stop_hook_active: false,
-            has_agent_id: false,
-            blocking_tasks: false,
-            teammates: 0,
-        };
-        assert!(done.apply(&stop, 1_000).is_none()); // leave settles
-        done.tick(1_000 + SETTLE_MS).expect("settle to end_turn");
-        assert_eq!(done.confidence(), Confidence::High);
-        assert!(done.apply(&Signal::ToolCompleted { nested: false }, 10_000).is_none());
+        // (A hook-stated end_turn used to stay inert here, against a
+        // background task's completion frame that turned out not to exist;
+        // `a_turn_resumed_without_a_prompt_shows_on_its_first_tool_frame`
+        // holds the rule that replaced it.)
     }
 
     #[test]

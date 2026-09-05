@@ -851,6 +851,17 @@ one is invisible at dim2 (which is why `waiting` has two) and three would claim 
 HERE. ASCII cannot borrow it — `| / - \` ARE the spinner — so it breathes, `o O`. Still no third
 speed. (STALE-MAP "A turn parked on background work is its own state".)
 
+**A turn that starts without a prompt shows on its first tool frame (T-228, 2026-09-05).** A
+`!` bash command in Claude Code puts its output into the conversation and the model takes a turn
+on it, and NO `UserPromptSubmit` fires — the feed showed a High `Idle{EndTurn}`, then three
+minutes of `PostToolUse` frames the machine held inert by the "a background task's completion
+must not flip a real end_turn" rule, and the ticket sat in REVIEW with no working mark until a
+`PermissionDenied` happened to promote it. T-135 had already measured that the guarded frame
+does not exist, so now the session's own non-nested `ToolCompleted` promotes ANY `Idle` to
+`Running` at High (automove brings the card back to IN PROGRESS); a nested one still says
+nothing about the lead. The mark lags the first tool's own duration, since the observer hooks
+no generic `PreToolUse`. (STALE-MAP "A turn that starts without a prompt".)
+
 **A ticket holds ONE claude, and the second seat is a shell** (2026-09-02). `spawn_session`
 refuses a `Claude` spawn when `Board::live_claude(ticket)` finds one (`is_live`, so a parked one
 holds the seat); resume and wake re-enter an existing record and are not gated, so older boards

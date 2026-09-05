@@ -202,6 +202,35 @@ fn m2_attention_headless() {
         std::thread::sleep(Duration::from_millis(100));
     }
 
+    // A turn that starts with no prompt at all (T-228, 2026-09-05): a `!`
+    // bash command in Claude Code puts its output into the conversation and
+    // the model takes a turn on it, and no `UserPromptSubmit` fires. The first
+    // frame of that turn is the lead's own PostToolUse, and it must read as
+    // working — the ticket comes back from REVIEW — where before it was held
+    // inert against a hook-stated end_turn and the card sat done for the
+    // whole turn.
+    hook_send_with(&hook_sock, &sid.to_string(), "Stop", None, r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(4), "end_turn automoves the ticket to REVIEW", || {
+        board_of(c.request(Command::Snapshot)).0.ticket(ticket).unwrap().column == "REVIEW"
+    });
+    hook_send_with(
+        &hook_sock,
+        &sid.to_string(),
+        "PostToolUse",
+        None,
+        r#"{"tool_name":"Bash","tool_input":{"command":"gcloud logging read"},"tool_response":{}}"#,
+    );
+    wait_until(
+        Duration::from_secs(4),
+        "a promptless turn's first tool frame reads as working and reopens the ticket",
+        || {
+            let (board, _) = board_of(c.request(Command::Snapshot));
+            let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
+            rec.state == SessionState::Running
+                && board.ticket(ticket).unwrap().column == "IN PROGRESS"
+        },
+    );
+
     // Absent socket must be silently fine (rule 7) — daemon-down is invisible.
     hook_send_with(
         &std::path::PathBuf::from("/tmp/msmn-no-such.sock"),

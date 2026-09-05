@@ -5325,3 +5325,49 @@ person's call, never the agent's whose branch it is. Feed line `set_manual_merge
 ticket's worktree being torn down (it stays set, harmless, and `t` is offered until it is cleared
 because `manual_merge` alone satisfies `avail`); a word on the card's line 1 (the owed mark is the
 every-card signal, and line 1 has no cell for a second right-hand mark — T-173's argument).
+
+## A turn that starts without a prompt shows on its first tool frame (T-228, 2026-09-05, user: "bug, ticket stayed in review and no running indication after user bash command (!) that caused the agent to run again")
+
+**Captured.** The daemon's own feed for the session, beside the transcript, at 14:02–14:07 local:
+
+- 14:02:21 `Stop` → `Idle{EndTurn}` High, automove to REVIEW. Correct.
+- 14:04:08 the user ran `! gcloud auth login` in Claude Code. The transcript holds a
+  `<bash-input>` record and a `<bash-stdout>` record, and then — with no user prompt between —
+  the assistant's next turn (a Bash call at 14:04:29). **No hook fired for the `!` input: no
+  `UserPromptSubmit`, nothing.** The feed between the Stop and 14:04:34 has one idle
+  `Notification` and nothing else.
+- 14:04:34 onward: the turn's `PostToolUse` frames stream in, seven of them over three minutes.
+  Every one was a `ToolCompleted { nested: false }` landing on a High `Idle{EndTurn}`, which the
+  machine held inert by the "a background task's completion must not flip a real end_turn" rule
+  (`target`'s `S::Idle { .. } if self.confidence != Confidence::High` arm). The ticket sat in
+  REVIEW with no working mark for the whole turn.
+- 14:07:29 a `PermissionDenied` (auto mode's deny path, `t(S::Running)` from anywhere) finally
+  promoted it, and the card said working for the last forty seconds of a three-minute turn.
+
+**The rule guarded a frame that does not exist.** The T-135 record (2026-09-01) had already
+measured it: a backgrounded shell's completion emits NO `PostToolUse` (its single frame is at
+launch, carrying `backgroundTaskId`), and its wake is a `<task-notification>` prompt. The one
+thing a non-nested `PostToolUse` can mean after a hook-stated end_turn is that the lead is taking
+a turn — and a turn can start without a prompt frame, as this one did. Claude Code's `!` bash
+mode is one road; the corpus had none listed.
+
+**Fix.** `Machine::target`'s `ToolCompleted` arm: `S::Idle { .. } if !nested => Running` at
+High, from ANY idle — `Background` (T-135's arm, now subsumed) and `EndTurn` alike — and the
+sub-High arm (inferred idles, nested completions too) stays under it. Automove then does what
+it does for a prompt: REVIEW → IN PROGRESS. A NESTED completion (`agent_id` set: a subagent's or
+teammate's tool) still says nothing about the lead, so a done lead whose teammates keep
+working is not re-opened by their frames. The flap pin passes it (High is stated).
+
+**Costs, named.** The working mark lags the tool's own duration, because the observer hooks no
+generic `PreToolUse` (the wide matcher would fork on every tool call; `PostToolUse` already
+does) — a `!`-started turn whose first tool runs a minute shows working a minute in. A
+straggler `PostToolUse` after a real Stop would read as a resumed turn and drag the card back to
+IN PROGRESS, where the quiet probe's `Idle{Interrupted}` would then leave it; none has been
+seen (a Stop fires after a further model round trip, seconds after the last tool), and the
+per-frame 500 ms hook self-abort bounds the reorder window.
+
+**Tests.** `attention::a_turn_resumed_without_a_prompt_shows_on_its_first_tool_frame` models
+the feed; `tool_completed_is_inert_outside_a_held_permission` drops `EndTurn` from its list and
+pins the nested case; `tool_completed_recovers_tail_misreads` loses its `_but_not_stated_idle`
+half. `hook_e2e` gained a leg: Stop → REVIEW, then a bare `PostToolUse` (`tool_name: Bash`, no
+`agent_id`) → `Running` and IN PROGRESS through the real daemon.
