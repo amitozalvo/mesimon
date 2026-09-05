@@ -5555,3 +5555,43 @@ person on the page had to go back to the board to learn the key. `chrome::screen
 returns a `String` and reads the ticket on `Screen::Ticket`; every other screen's word is
 unchanged (`NOTE` keeps naming its ticket through the leaf; the diff's leaf stays the title).
 The fourteen ticket-page goldens moved on their header row and nowhere else.
+
+## The worktree flags leave the writer thread (T-216, 2026-09-05)
+
+"Sometimes a tag digit hangs for a moment until it takes effect" (user). A digit is
+`App::cycle_tag`: a synchronous `SetTag`, then a synchronous snapshot, and the card repaints
+after both — so a keypress waits on whatever the daemon's single writer thread is doing.
+Every `wt_refresh_ticks()` (10 s) `on_tick` ran `refresh_worktree_flags` there: `branch_tip`
+of the base, then per binding `branch_tip` + `is_merged` + `ahead_count` + `ff_possible`, four
+git forks each. The author's board carried thirteen attached bindings — 53 forks, 675 ms
+measured idle — and a read-only snapshot probe at 20 Hz against the live daemon showed one
+stall of 443–481 ms every 10.1 s, the cadence exactly. Every e2e shrinks the cadence through
+`MESIMON_WT_REFRESH_TICKS` and none has thirteen bindings, so nothing had seen it.
+
+Two changes. **The sample is one function, `worktree::compute_flags`, in `2 + n` forks**: one
+`for-each-ref --format='%(refname) %(objectname)' refs/heads/` for every tip (the full refname,
+never `refname:short`, which git abbreviates differently beside a remote-tracking ref of the
+same name), then `rev-list --left-right --count <base>...<branch>` per binding — the left count
+is what base has that the branch lacks (zero ⇔ `ff_possible`), the right is what the branch
+has over base (`ahead_count`; zero ⇔ `is_merged`) — and the `worktree list` for conflicts.
+"Merged" still requires the tip to have moved off `base_oid` (the 2026-08-30 fresh-branch
+rule), and a branch git no longer has reads as the old helpers read it: not merged, nothing
+ahead, no fast-forward. `compute_flags_agrees_with_the_single_question_helpers` holds the four
+helpers and the one sample to the same answers on a scratch repo. **And the tick no longer
+takes the synchronous road**: `queue_worktree_flags` runs the sample on a worker (resolving
+`default_branch` there too when the cache is empty — a fetch empties it) and it lands as
+`Msg::WorktreeFlags(gen, flags)` → `on_worktree_flags`, which absorbs it and runs `train_pass`
+on it, as the tick did in one turn. `wt_gen` is bumped by every synchronous refresh (startup,
+a merge just made, a binding attached or torn down — the roads that must read fresh flags in
+the same turn keep `refresh_worktree_flags`, now `2 + n` forks itself) and a sample carrying an
+older generation is dropped: the flags on hand are newer than it. One sample in flight at a
+time (`wt_inflight`); the lazy unlock stays on the writer inside `absorb_worktree_flags`, the
+one git fork left there, and a rare one. Live after the change, same probe, same board: no
+stall over 100 ms in 35 s, max 57 ms (was 481).
+
+Found on the way and left alone: `store::write_atomic` said "NOT F_FULLFSYNC, ~170 µs", but
+Rust's `sync_all` IS `fcntl(F_FULLFSYNC)` on macOS — ~3 ms a call, ~8 ms for the temp + fsync
++ rename + dir-fsync shape, paid by every `save_ticket` and `save_sessions` (192 KB, 148
+records on the author's board) on the writer thread. Not the hang; the comment now says what it
+costs and why the barrier stays.
+

@@ -702,6 +702,94 @@ pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
         .unwrap_or(false)
 }
 
+/// One binding's question for `compute_flags`: the branch, and the base it
+/// was cut from (`Binding::base_oid`).
+#[derive(Debug, Clone)]
+pub struct FlagInput {
+    pub ticket: ulid::Ulid,
+    pub branch: String,
+    pub base_oid: String,
+}
+
+/// One binding's answer — the three flags the card and the train read.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Flags {
+    pub ticket: ulid::Ulid,
+    pub merged: bool,
+    pub ahead: u32,
+    pub needs_rebase: bool,
+}
+
+/// Every binding's flags, sampled together, plus the base branch they were
+/// judged against and its tip, and the branches checked out twice.
+#[derive(Debug, Clone, Default)]
+pub struct WtFlags {
+    pub base: String,
+    pub base_tip: String,
+    pub flags: Vec<Flags>,
+    pub conflicts: Vec<String>,
+}
+
+/// Every local branch's tip in one fork: `refs/heads/<name>` → oid. The
+/// full refname is asked for, not `refname:short`, which git abbreviates
+/// differently when a remote-tracking ref shares the name.
+fn branch_tips(repo: &Path) -> HashMap<String, String> {
+    git_read(repo, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"])
+        .map(|out| {
+            out.lines()
+                .filter_map(|l| {
+                    let (name, oid) = l.split_once(' ')?;
+                    Some((name.strip_prefix("refs/heads/")?.to_string(), oid.trim().to_string()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The merged / ahead / needs-rebase flags for every binding, judged
+/// against `base`, in `2 + n` git forks — read-only, `--no-optional-locks`,
+/// safe on any thread (T-216: the four-forks-per-binding form ran on the
+/// writer thread, and thirteen bindings held every keypress ~0.5 s once
+/// every 10 s).
+///
+/// `rev-list --left-right --count base...branch` answers three of the old
+/// four questions at once: the left count is what base has that the branch
+/// lacks (zero ⇔ `ff_possible`), the right is what the branch has that base
+/// lacks (`ahead_count`; zero ⇔ `is_merged`). "Merged" additionally needs
+/// the tip to have MOVED off the creation base — a fresh branch is trivially
+/// an ancestor of base, and that is "no work yet" (dogfood 2026-08-30). A
+/// branch git no longer has reads as the old helpers read it: not merged,
+/// nothing ahead, and no fast-forward, so needs-rebase.
+pub fn compute_flags(repo: &Path, base: &str, inputs: &[FlagInput]) -> WtFlags {
+    let tips = branch_tips(repo);
+    let base_tip = tips.get(base).cloned().unwrap_or_default();
+    let flags = inputs
+        .iter()
+        .filter(|i| !i.branch.is_empty())
+        .map(|i| {
+            let tip = tips.get(&i.branch).cloned().unwrap_or_default();
+            let counts = git_read(
+                repo,
+                &["rev-list", "--left-right", "--count", &format!("{base}...{}", i.branch)],
+            )
+            .ok()
+            .and_then(|s| {
+                let mut it = s.split_whitespace().map(|n| n.parse::<u32>().ok());
+                Some((it.next()??, it.next()??))
+            });
+            let (merged, ahead, ff) = match counts {
+                Some((behind, ahead)) => {
+                    (!tip.is_empty() && tip != i.base_oid && ahead == 0, ahead, behind == 0)
+                }
+                None => (false, 0, false),
+            };
+            Flags { ticket: i.ticket, merged, ahead, needs_rebase: !merged && !ff }
+        })
+        .collect();
+    let conflicts = list_worktrees(repo).map(|rows| branch_conflicts(&rows)).unwrap_or_default();
+    WtFlags { base: base.to_string(), base_tip, flags, conflicts }
+}
+
 /// Fast-forward `base` to the branch tip — the ONLY merge mesimon performs
 /// (callers verified `ff_possible`; non-ff goes through the agent-rebase
 /// stage instead, so history stays linear and tests ran on the merged state).
@@ -1121,5 +1209,64 @@ mod tests {
         assert_eq!(default_branch(&clone).unwrap(), "main");
         std::fs::remove_dir_all(&clone).ok();
         std::fs::remove_dir_all(&bare_src).ok();
+    }
+
+    /// `compute_flags` says what the four single-question helpers said, per
+    /// binding, in one sample: fresh is not merged, a commit is ahead, an
+    /// ancestor that moved is merged, a base that moved past needs a
+    /// rebase, and a branch git lost is nothing ahead and no fast-forward.
+    #[test]
+    fn compute_flags_agrees_with_the_single_question_helpers() {
+        let Some(repo) = scratch_repo("flags") else { return };
+        let run = |args: &[&str]| {
+            let ok = Command::new("git").arg("-C").arg(&repo).args(args).output().unwrap();
+            assert!(ok.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&ok.stderr));
+        };
+        let old_tip = branch_tip(&repo, "main");
+        run(&["branch", "work"]);
+        run(&["branch", "landed"]);
+        run(&["branch", "stale"]);
+        for b in ["work", "landed"] {
+            run(&["checkout", "-q", b]);
+            std::fs::write(repo.join(format!("{b}.txt")), b).unwrap();
+            run(&["add", "."]);
+            run(&["commit", "-qm", b]);
+        }
+        run(&["checkout", "-q", "main"]);
+        run(&["merge", "-q", "--ff-only", "landed"]);
+        // Cut from the tip main now stands on: no work, nothing to rebase.
+        run(&["branch", "fresh"]);
+        let new_tip = branch_tip(&repo, "main");
+        let inputs: Vec<FlagInput> = ["fresh", "work", "landed", "stale", "gone"]
+            .iter()
+            .enumerate()
+            .map(|(i, b)| FlagInput {
+                ticket: ulid::Ulid(i as u128 + 1),
+                branch: b.to_string(),
+                base_oid: if *b == "fresh" { new_tip.clone() } else { old_tip.clone() },
+            })
+            .collect();
+        let got = compute_flags(&repo, "main", &inputs);
+        assert_eq!(got.base_tip, branch_tip(&repo, "main"));
+        assert!(!got.base_tip.is_empty());
+        for (f, i) in got.flags.iter().zip(&inputs) {
+            assert_eq!(f.ticket, i.ticket);
+            let tip = branch_tip(&repo, &i.branch);
+            let merged =
+                !tip.is_empty() && tip != i.base_oid && is_merged(&repo, &i.branch, "main");
+            assert_eq!(f.merged, merged, "{} merged", i.branch);
+            assert_eq!(f.ahead, ahead_count(&repo, &i.branch, "main"), "{} ahead", i.branch);
+            let needs = !merged && !ff_possible(&repo, &i.branch, "main");
+            assert_eq!(f.needs_rebase, needs, "{} needs_rebase", i.branch);
+        }
+        let by =
+            |name: &str| got.flags[inputs.iter().position(|i| i.branch == name).unwrap()].clone();
+        assert!(!by("fresh").merged && by("fresh").ahead == 0 && !by("fresh").needs_rebase);
+        assert!(!by("work").merged && by("work").ahead == 1 && by("work").needs_rebase);
+        assert!(by("landed").merged && by("landed").ahead == 0);
+        assert!(!by("stale").merged && by("stale").ahead == 0 && by("stale").needs_rebase);
+        assert!(!by("gone").merged && by("gone").ahead == 0 && by("gone").needs_rebase);
+        assert!(got.conflicts.is_empty());
+        std::fs::remove_dir_all(&repo).ok();
     }
 }

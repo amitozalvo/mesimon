@@ -1204,7 +1204,7 @@ preference: the TUI pushes `Command::SetAutomation` on every toggle and from
 a pref that is off pushes nothing), and the daemon holds it in memory tied to the CONNECTION
 (`daemon/src/train.rs`, a `Weak` on the client's writer `Arc`; `Msg::ClientGone` from
 `client_loop` disarms it and prunes the subscription) — a closed board is a stopped train.
-`train_pass` runs after `refresh_worktree_flags` on its own bucket (`MESIMON_WT_REFRESH_TICKS`,
+`train_pass` runs when the worktree flags LAND — `on_worktree_flags`, since T-216 (2026-09-05) the flags are sampled on a worker (`queue_worktree_flags` → `worktree::compute_flags`, one `for-each-ref` + one `rev-list --left-right --count` per binding → `Msg::WorktreeFlags`, dropped if `refresh_worktree_flags`'s synchronous road ran meanwhile); the tick only queues the sample, on its own bucket (`MESIMON_WT_REFRESH_TICKS`,
 default `RSS_TICKS`) only while `board_busy()` is empty, and does ONE thing: ff-merge the first
 candidate of `core/src/train.rs::plan` (a REVIEW ticket, attached, ahead, ff-able, claude
 `Idle{EndTurn}` High|Medium or absent; board order) through `merge_ticket` under

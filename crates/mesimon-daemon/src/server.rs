@@ -156,6 +156,11 @@ enum Msg {
     /// A client's reader thread returned: its connection is closed. The
     /// merge train it may have armed disarms with it (2026-09-04).
     ClientGone(Arc<Mutex<UnixStream>>),
+    /// The worktree flags sampled on a worker (T-216) — one `for-each-ref`
+    /// and one `rev-list` per binding, off the writer thread. The `u64` is
+    /// the `wt_gen` the sample started under: a synchronous refresh in the
+    /// meantime (a merge, a teardown) makes it stale, and it is dropped.
+    WorktreeFlags(u64, worktree::WtFlags),
 }
 
 pub struct Daemon {
@@ -278,6 +283,11 @@ pub struct Daemon {
     wt_ahead: HashMap<ulid::Ulid, u32>,
     wt_needs_rebase: HashMap<ulid::Ulid, bool>,
     wt_conflicts: Vec<String>,
+    /// Bumped by every synchronous flag refresh; a worker's sample carries
+    /// the value it started under and lands only if nothing bumped it since.
+    wt_gen: u64,
+    /// A worker is out sampling the flags: the tick asks for no second one.
+    wt_inflight: bool,
     /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
     base_branch: Option<String>,
     /// Tickets whose grace expired while their panes were still reaping —
@@ -551,6 +561,8 @@ pub fn run(paths: Paths) -> Result<()> {
         wt_ahead: HashMap::new(),
         wt_needs_rebase: HashMap::new(),
         wt_conflicts: Vec::new(),
+        wt_gen: 0,
+        wt_inflight: false,
         base_branch: None,
         pending_teardown: Vec::new(),
         tx: tx.clone(),
@@ -609,6 +621,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
+            Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -1358,10 +1371,10 @@ impl Daemon {
             changed |= self.refresh_rss();
         }
         // The worktree flags on their own cadence (a seam for the train's
-        // e2e), and the train's pass right behind them, on fresh flags.
+        // e2e), sampled on a worker; the train's pass runs when they land
+        // (`on_worktree_flags`), on fresh flags.
         if self.ticks % wt_refresh_ticks() == 0 && !self.worktrees.is_empty() {
-            self.refresh_worktree_flags();
-            changed |= self.train_pass();
+            self.queue_worktree_flags();
         }
         // The CLAUDE.md sample, on the same slow bucket but off the worktree
         // guard: a board with no worktrees still has a CLAUDE.md. Two `stat`s
@@ -5043,10 +5056,29 @@ impl Daemon {
         }
     }
 
-    /// merged/conflict flags + lazy unlock, on the 10 s bucket while bindings
-    /// exist. One `worktree list` + one `merge-base` per binding — read-only,
-    /// `--no-optional-locks`.
+    /// The bindings as `compute_flags` wants them; empty when there are none
+    /// to judge, which is also when the flags are cleared rather than sampled.
+    fn wt_inputs(&self) -> Vec<worktree::FlagInput> {
+        self.worktrees
+            .iter()
+            .filter(|(_, b)| !b.branch.is_empty())
+            .map(|(t, b)| worktree::FlagInput {
+                ticket: *t,
+                branch: b.branch.clone(),
+                base_oid: b.base_oid.clone(),
+            })
+            .collect()
+    }
+
+    /// merged/ahead/needs-rebase/conflict flags, NOW, on the writer thread —
+    /// for the roads that must read them fresh in the same turn: startup,
+    /// a merge just made, a binding just attached or torn down. The tick
+    /// never takes this road (T-216): with thirteen bindings it was 53 git
+    /// forks, ~0.5 s, every 10 s, and every keypress in that window waited
+    /// on it — it asks `queue_worktree_flags` instead. `2 + n` forks since
+    /// the same change (`worktree::compute_flags`).
     fn refresh_worktree_flags(&mut self) {
+        self.wt_gen = self.wt_gen.wrapping_add(1);
         if self.worktrees.is_empty() {
             self.wt_merged.clear();
             self.wt_ahead.clear();
@@ -5058,31 +5090,74 @@ impl Daemon {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
         let Some(base) = self.base_branch.clone() else { return };
-        self.base_tip = worktree::branch_tip(&self.paths.repo_root, &base);
-        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
-        for tid in tickets {
-            let (branch, locked, attached) = {
-                let b = &self.worktrees[&tid];
-                (b.branch.clone(), b.locked, b.status == BindingStatus::Attached)
+        let flags = worktree::compute_flags(&self.paths.repo_root, &base, &self.wt_inputs());
+        self.absorb_worktree_flags(flags);
+    }
+
+    /// The tick's road: the same sample on a worker, landing as
+    /// `Msg::WorktreeFlags`. One at a time — a sample still out when the
+    /// next bucket comes round is simply the one that will land. The base
+    /// branch is resolved on the worker too when the cache is empty (a fetch
+    /// empties it), so its own forks leave the writer as well.
+    fn queue_worktree_flags(&mut self) {
+        if self.wt_inflight || self.worktrees.is_empty() {
+            return;
+        }
+        self.wt_inflight = true;
+        let gen = self.wt_gen;
+        let repo = self.paths.repo_root.clone();
+        let base = self.base_branch.clone();
+        let inputs = self.wt_inputs();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let Some(base) = base.or_else(|| worktree::default_branch(&repo).ok()) else {
+                let _ = tx.send(Msg::WorktreeFlags(gen, worktree::WtFlags::default()));
+                return;
             };
-            if branch.is_empty() {
+            let _ =
+                tx.send(Msg::WorktreeFlags(gen, worktree::compute_flags(&repo, &base, &inputs)));
+        });
+    }
+
+    /// A worker's sample landed. Stale (a synchronous refresh ran since it
+    /// started) means dropped: the flags on hand are newer than it. Fresh
+    /// means absorbed, then the train's pass on it — exactly what the tick
+    /// did in one turn before the sample left the writer thread.
+    fn on_worktree_flags(&mut self, gen: u64, flags: worktree::WtFlags) {
+        self.wt_inflight = false;
+        if gen != self.wt_gen || flags.base.is_empty() {
+            return;
+        }
+        if self.base_branch.is_none() {
+            self.base_branch = Some(flags.base.clone());
+        }
+        self.absorb_worktree_flags(flags);
+        if self.train_pass() {
+            self.persist_sessions();
+            self.broadcast();
+        }
+    }
+
+    /// Take a sample's answers, for the bindings still here, and release
+    /// the lock of any attached binding whose last session is gone (the
+    /// one git fork left on this road, and a rare one).
+    fn absorb_worktree_flags(&mut self, flags: worktree::WtFlags) {
+        self.base_tip = flags.base_tip;
+        self.wt_conflicts = flags.conflicts;
+        for f in flags.flags {
+            if !self.worktrees.contains_key(&f.ticket) {
                 continue;
             }
-            // "merged" means WORK landed: everything on the branch is in base
-            // AND the tip moved past the creation base. A fresh branch is
-            // trivially an ancestor of base — that is "no work yet", never
-            // "merged" (dogfood 2026-08-30).
-            let tip = worktree::branch_tip(&self.paths.repo_root, &branch);
-            let base_oid = self.worktrees[&tid].base_oid.clone();
-            let merged = !tip.is_empty()
-                && tip != base_oid
-                && worktree::is_merged(&self.paths.repo_root, &branch, &base);
-            self.wt_merged.insert(tid, merged);
-            self.wt_ahead.insert(tid, worktree::ahead_count(&self.paths.repo_root, &branch, &base));
-            self.wt_needs_rebase.insert(
-                tid,
-                !merged && !worktree::ff_possible(&self.paths.repo_root, &branch, &base),
-            );
+            self.wt_merged.insert(f.ticket, f.merged);
+            self.wt_ahead.insert(f.ticket, f.ahead);
+            self.wt_needs_rebase.insert(f.ticket, f.needs_rebase);
+        }
+        let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
+        for tid in tickets {
+            let (locked, attached) = {
+                let b = &self.worktrees[&tid];
+                (b.locked, b.status == BindingStatus::Attached)
+            };
             // Release the lock once the last session on the ticket is gone.
             if locked && attached {
                 let live = self.board.sessions.iter().any(|s| s.ticket == tid && s.state.is_live());
@@ -5095,9 +5170,6 @@ impl Daemon {
                 }
             }
         }
-        self.wt_conflicts = worktree::list_worktrees(&self.paths.repo_root)
-            .map(|rows| worktree::branch_conflicts(&rows))
-            .unwrap_or_default();
     }
 
     fn kill_session(&mut self, id: uuid::Uuid) -> Response {

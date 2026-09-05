@@ -120,11 +120,18 @@ pub(crate) const SHARED: u32 = 0o644;
 /// (`mesimon-tui/src/prefs.rs`), which wants the same crash-safety and no
 /// second copy of it.
 pub fn write_atomic(path: &Path, content: &str, mode: u32) -> Result<()> {
-    // 13 §13.9.1: temp + fsync + rename + directory fsync, measured at ~170 µs
-    // total. Without the fsync a crash between write and rename leaves a
-    // truncated file — precisely the malformed input `load` now has to
-    // quarantine, so this is the cheapest way to stop manufacturing them.
-    // NOT F_FULLFSYNC: doc 13 reserves that (2.09 ms, 51x) for boot_epoch.
+    // 13 §13.9.1: temp + fsync + rename + directory fsync. Without the fsync
+    // a crash between write and rename leaves a truncated file — precisely
+    // the malformed input `load` now has to quarantine, so this is the
+    // cheapest way to stop manufacturing them.
+    //
+    // Doc 13 measured ~170 µs and said "NOT F_FULLFSYNC" — but Rust's
+    // `sync_all` IS `fcntl(F_FULLFSYNC)` on macOS, and that is what this
+    // costs here: ~3 ms per call against ~0.1 ms for a bare `fsync(2)`,
+    // ~8 ms for the whole shape (measured 2026-09-05, T-216). A price paid
+    // on every `save_ticket` / `save_sessions`, on the writer thread; not
+    // the hang T-216 was (that was 53 git forks), and left as it is —
+    // the barrier is what makes the rename mean something on a power loss.
     //
     // `with_extension` REPLACES the extension, so the temp is `sessions.tmp`,
     // not `sessions.json.tmp` — deliberate: `load` reads exact names and the
