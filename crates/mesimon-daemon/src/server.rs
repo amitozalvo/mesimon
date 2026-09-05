@@ -3084,12 +3084,15 @@ impl Daemon {
         let fetch = std::mem::take(&mut self.git_fetch_wanted) && self.git_cache.upstream.is_some();
         self.git_fetching = fetch;
         let repo = self.paths.repo_root.clone();
+        // The one nested repo that stands in for the checkout (T-225) is
+        // where its branch's remote is configured.
+        let fetch_in = crate::gitstatus::branch_dir(&repo, &self.git_cache);
         let branch = self.git_cache.branch.clone();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
             let verdict = if fetch {
-                crate::gitstatus::remote_of(&repo, &branch)
-                    .map(|remote| crate::gitstatus::fetch(&repo, &remote))
+                crate::gitstatus::remote_of(&fetch_in, &branch)
+                    .map(|remote| crate::gitstatus::fetch(&fetch_in, &remote))
             } else {
                 None
             };

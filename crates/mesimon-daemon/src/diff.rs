@@ -337,8 +337,14 @@ pub fn checkout_diff_list(root: &Path) -> Result<Response> {
             f
         }));
     }
+    // One nested repo is the checkout and the identity row names its branch,
+    // as the header does; more than one is named by the count.
+    let branch = match &repos[..] {
+        [only] => crate::gitstatus::sample_one(&root.join(only)).branch,
+        _ => mesimon_core::workspace::repos_word(repos.len()),
+    };
     Ok(Response::DiffList {
-        branch: mesimon_core::workspace::repos_word(repos.len()),
+        branch,
         base_oid,
         branch_oid: String::new(),
         files,
@@ -876,6 +882,36 @@ mod tests {
         assert!(checkout_diff_file(&root, "api/page.tsx", 3).is_err());
         assert!(checkout_diff_file(&root, "api/../CLAUDE.md", 3).is_err());
         assert!(checkout_diff_file(&root, "vendored/lib.c", 3).is_err());
+        std::fs::remove_dir_all(&root).ok();
+    }
+
+    /// One nested repo is the checkout (author: "if one repo no need to show
+    /// '1 repo', show the branch"): the sample carries ITS branch and arrows,
+    /// the root's changes still count, and the list's word is that branch.
+    #[test]
+    fn one_nested_repo_is_the_checkout() {
+        let Some(root) = workspace_scratch("one") else { return };
+        let run = |d: &Path, args: &[&str]| {
+            let out = Command::new("git").arg("-C").arg(d).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        };
+        run(&root.join("web"), &["worktree", "remove", "--force", "../.wt-web"]);
+        std::fs::remove_dir_all(root.join("web")).unwrap();
+        run(&root.join("api"), &["checkout", "-q", "-b", "feat"]);
+        std::fs::write(root.join("api/server.ts"), "one\nCHANGED\n").unwrap();
+        std::fs::write(root.join("CLAUDE.md"), "# ws\nmore\n").unwrap();
+        let g = crate::gitstatus::sample(&root);
+        assert_eq!(g.repos, vec!["api"]);
+        assert_eq!((g.branch.as_str(), g.changed), ("feat", 2), "{g:?}");
+        assert_eq!(crate::gitstatus::branch_dir(&root, &g), root.join("api"));
+        match checkout_diff_list(&root).unwrap() {
+            Response::DiffList { branch, files, .. } => {
+                assert_eq!(branch, "feat");
+                let paths: Vec<String> = files.into_iter().map(|f| f.path).collect();
+                assert_eq!(paths, vec!["CLAUDE.md", "api/server.ts"]);
+            }
+            _ => unreachable!(),
+        }
         std::fs::remove_dir_all(&root).ok();
     }
 }

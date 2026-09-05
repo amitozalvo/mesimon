@@ -190,8 +190,9 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     // A workspace (T-225) is named by its count where a checkout is named by
     // its branch, and the root's own arrows stay off the row: they speak for
     // the meta repo, which is not what the board is about. The count IS the
-    // board's — files changed across every repo under it.
-    let workspace = !g.repos.is_empty();
+    // board's — files changed across every repo under it. ONE nested repo is
+    // the checkout, and the sample already carries its branch and arrows.
+    let workspace = g.repos.len() > 1;
     if !g.sampled || (g.branch.is_empty() && !workspace) {
         return Vec::new();
     }

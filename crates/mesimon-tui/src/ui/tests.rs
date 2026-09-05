@@ -4344,3 +4344,16 @@ fn test_git_clause_names_a_workspace_by_its_count() {
     assert!(head.contains("⎇ 3 repos   ") && !head.contains("v diff"), "{head:?}");
     golden("board_workspace_120x30", &render(&app, 120, 30));
 }
+
+/// One nested repo IS the checkout: the header names its branch and arrows,
+/// never `1 repo` (author 2026-09-05).
+#[test]
+fn test_git_clause_names_the_one_nested_repo_by_its_branch() {
+    let mut app = app_graphite(fixture(false));
+    app.git =
+        mesimon_core::command::RepoGit { repos: vec!["api".into()], ..git_state("feat", 2, 0, 3) };
+    assert!(app.ctx().multi_repo, "a worktree of the root would still hold none of the code");
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("⎇ feat ↑2 ∙ 3 changed  v diff"), "{head:?}");
+    assert!(!head.contains("repo"), "{head:?}");
+}

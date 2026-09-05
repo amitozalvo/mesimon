@@ -513,7 +513,13 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
             Some(u) => format!("upstream {u}"),
             None => "no upstream".to_string(),
         };
-        let whose = if g.repos.is_empty() { "" } else { "root: " };
+        // Whose branch: the root's on a workspace of several, the one nested
+        // repo's when it stands in for the checkout, unlabelled otherwise.
+        let whose = match &g.repos[..] {
+            [] => String::new(),
+            [only] => format!("{only}: "),
+            _ => "root: ".to_string(),
+        };
         records.push(rec(Level::Ok, "branch", format!("{whose}{}, {upstream}, {fetch}", g.branch)));
     }
     // A repo on the Windows drive reaches git through WSL's 9p bridge, where

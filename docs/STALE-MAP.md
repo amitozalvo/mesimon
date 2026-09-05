@@ -5516,3 +5516,12 @@ workspace keeps its name and loses the count and the key). E2e `workspace_e2e`: 
 sum on the wire, the list and the file through the prefix, the refused spawn and the untouched
 worktree root. `CHANGELOG.md` was NOT edited: alpha.13 is tagged, and the next heading is the
 next release's to write.
+
+**One nested repo is the checkout** (author, an hour after the merge: "if one repo no need to
+show '1 repo', show the branch"). `gitstatus::sample` returns THAT repo's sample — its branch,
+arrows and upstream — with the root's changes added and `repos` still naming it, so the header
+reads `⎇ feat ↑2 ∙ 3 changed` and never `1 repo`; the diff list's word is the same branch; doctor
+labels the line `api: feat`; and the fetch runs in that repo (`gitstatus::branch_dir`), because
+`branch.<b>.remote` is its config and not the root's. `Ctx::multi_repo` stays true at one — a
+worktree of the root would still hold none of the code — and `repos_word` keeps its `1 repo`
+form for nothing but its own test. The header's `workspace` arm is now `repos.len() > 1`.

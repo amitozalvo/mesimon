@@ -58,12 +58,33 @@ pub fn sample(root: &Path) -> RepoGit {
     if repos.is_empty() {
         return g;
     }
+    if let [only] = &repos[..] {
+        // One nested repo IS the checkout (author 2026-09-05: "if one repo no
+        // need to show '1 repo', show the branch"): its branch, arrows and
+        // upstream are the board's, the root's changes still count, and
+        // `repos` still names it so the diff and the fetch know where to go.
+        let mut child = sample_one(&root.join(only));
+        child.changed += g.changed;
+        child.sampled = true;
+        child.repos = repos;
+        return child;
+    }
     for name in &repos {
         g.changed += sample_one(&root.join(name)).changed;
     }
     g.sampled = true;
     g.repos = repos;
     g
+}
+
+/// Where the checkout's branch lives: the root, or the one nested repo that
+/// stands in for it. The fetch runs there, because `branch.<b>.remote` is
+/// that repository's config, not the root's.
+pub fn branch_dir(root: &Path, git: &RepoGit) -> std::path::PathBuf {
+    match &git.repos[..] {
+        [only] => root.join(only),
+        _ => root.to_path_buf(),
+    }
 }
 
 /// The root's immediate child directories that are repositories of their own
