@@ -64,7 +64,12 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     let on_disk = std::fs::read_to_string(&ticket_toml).unwrap();
     assert!(on_disk.contains(&format!("until = \"@{until}\"")), "{on_disk}");
     assert!(on_disk.contains("needs_you = true"), "{on_disk}");
-    assert!(on_disk.contains("schema_version = 3"), "{on_disk}");
+    // The current schema, whatever it is: the snooze rode the bump to 3 and
+    // every later field rides its own (T-227's `manual_merge` is 4).
+    assert!(
+        on_disk.contains(&format!("schema_version = {}", mesimon_daemon::store::TICKET_SCHEMA)),
+        "{on_disk}"
+    );
 
     // The tick wheel wakes it: back, first in TODO, lit, age restarted.
     wait_until(Duration::from_secs(8), "the snooze to wake", || {

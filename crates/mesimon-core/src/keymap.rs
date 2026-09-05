@@ -354,6 +354,9 @@ pub enum Verb {
     /// The menu row that flips whether a woken ticket returns lit
     /// (needs-you) or quietly; remembered in `prefs.json`.
     SnoozeQuiet,
+    /// `t` — take the ticket off the merge train, or put it back (T-227).
+    /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
+    ManualMerge,
     /// The Settings row that cycles the day a week starts on (Monday →
     /// Sunday → Saturday) — what the snooze ring's last rung means by "next
     /// week"; remembered in `prefs.json`.
@@ -720,6 +723,13 @@ pub struct Ctx {
     pub merge_train: bool,
     pub merge_train_notice: bool,
     pub merge_train_armed: bool,
+    /// The train can reach the subject ticket: an attached worktree binding
+    /// on it, and the train on (the preference, or the daemon saying it is
+    /// armed). What makes `t` worth offering (T-227).
+    pub train_reaches: bool,
+    /// The subject ticket wears `manual_merge`: the train leaves it alone,
+    /// and `t` puts it back on.
+    pub manual_merge: bool,
     // ---- editor ----
     /// The note editor is up. Every editor binding is gated on it.
     pub editing: bool,
@@ -1171,6 +1181,28 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The train's per-ticket door (T-227, user: "let the user cancel it
+        // per ticket easily"). One press takes the card off the train, the
+        // next puts it back; the card's `auto-merge ∙ next` row becomes
+        // `auto-merge ∙ off` and `m` is the only road for it. Hinted in the
+        // footer, on both screens, exactly while the train can reach the
+        // ticket or has been told not to: a key nobody is told about is not
+        // an easy cancel, and the hint is itself the indication that mesimon
+        // has plans for this branch. `t` is train; the user's "double esc"
+        // could not be it, since Esc is the menu here and `back` on the
+        // ticket page. A toggle, not a chord: both directions are visible on
+        // the card and reversible with the same key.
+        keys: &[Key::Char('t')],
+        verb: Verb::ManualMerge,
+        show: "t",
+        hint: |c| if c.manual_merge { "auto-merge" } else { "merge by hand" },
+        avail: |c| c.has_ticket && (c.train_reaches || c.manual_merge),
+        class: Class::Plain,
+        group: Group::Worktree,
+        mutates: true,
+        prio: 62,
+    },
+    Binding {
         // `Tab` on a card is the composer's `Tab` a ticket late: the card
         // grows into the description editor, the same dialog over the board
         // (2026-09-03, T-163). It took `needs you`'s key — the attention
@@ -1581,6 +1613,19 @@ static TICKET: &[Binding] = &[
         group: Group::Worktree,
         mutates: true,
         prio: 0,
+    },
+    Binding {
+        // The board's `t`, on the ticket page (T-227): same verb, same
+        // words, beside the `m` it hands the merge to.
+        keys: &[Key::Char('t')],
+        verb: Verb::ManualMerge,
+        show: "t",
+        hint: |c| if c.manual_merge { "auto-merge" } else { "merge by hand" },
+        avail: |c| c.has_ticket && (c.train_reaches || c.manual_merge),
+        class: Class::Plain,
+        group: Group::Worktree,
+        mutates: true,
+        prio: 62,
     },
     Binding {
         keys: &[Key::Char('r')],

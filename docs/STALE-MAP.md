@@ -5279,3 +5279,49 @@ without a description. `brief_e2e.rs`: the receipt stub reads the title line bef
 the whole body arrives; `ticket_read` flips on the paste; a plain spawn flips it on `get_ticket`
 with the description in the answer; a ticket with no description submits the title alone and
 stamps nothing.
+
+## A ticket can be taken off the merge train (T-227, 2026-09-05, user: "we need an indication that the worktree is going to be merged automatically by mesimon, and let the user cancel it per ticket easily (maybe double escape on ticket hover and inside ticket page?)")
+
+**What shipped.** `t` on the board and on the ticket page (`Verb::ManualMerge`, `Group::Worktree`,
+hinted in the footer at prio 62) flips `Ticket.manual_merge` through `Command::SetManualMerge {
+id, on }` → `Daemon::set_manual_merge` (`with_ticket`, a no-op when nothing changes, and
+`Train::hand_touched` on the way — a person's gesture on the ticket clears the fuse and the
+refusal memory, like a hand `m`). `core/src/train.rs::plan` skips a marked ticket on BOTH lists:
+no automatic merge and no rebase ask; `m` by hand still does both and the ticket page's identity
+row keeps offering it. The hint is `t merge by hand` while the train can reach the ticket
+(`Ctx::train_reaches`: an attached binding, and the preference OR the daemon's armed word — the
+reconcile lags the toggle by a snapshot and the key must not flicker across it) and `t
+auto-merge` while the mark is on (`Ctx::manual_merge`), so the door that closed is the door that
+reopens, whatever the train's own switch says in between.
+
+**The indication.** The owed row's train word became `auto-merge ∙ next` / `auto-merge ∙ after
+T-3 +1`: `merge ∙ next` read as a hand's merge coming up, and the row is the one place a card
+says the merge is mesimon's to make. The owed mark (`glyphs::queued`, every card) and the ticket
+page's state row are unchanged. A marked ticket owes nothing and wears no mark, but its row reads
+`auto-merge ∙ off` (`App::pending_row`'s else-branch, only over an attached binding) — a closed
+door with no sign is a ticket that silently never merges. The card is 22 cells at 120 columns, so
+`auto-merge ∙ after T-3 ~` gives up the count first; the ticket page carries it whole. Goldens
+`train_manual_120x30` and `ticket_train_manual_120x30`; `golden_train_120` now asserts the prefix.
+
+**Not double-Esc.** The user's suggested gesture could not be it: Esc is the menu on the board and
+`back` on the ticket page, and a chord on Esc would make a stray second press act — the inverse of
+what every chord tail here promises. `t` is *train*, free on both screens, and a TOGGLE rather
+than a two-press chord because both directions are visible on the card and reversible with the
+same key; the cancel direction is the safe one and the other only re-offers what the Settings row
+already opted into.
+
+**Persisted, and `TICKET_SCHEMA` is 4.** The train's memory is in-memory by design (a restart
+forgets and the board re-arms), which is exactly why the opt-out is NOT: a ticket the user took off
+the train must not climb back on when the daemon restarts. It is a scalar on the ticket
+(`#[serde(default, skip_serializing_if = "is_false")]`, after `woke_at`, before `workspace`),
+omitted while off, and the schema bump is the `mcp_tools` argument again — a v3 build would drop
+`manual_merge = true` on its next save and the re-armed train would merge a branch the user had
+taken off it. `mcp::agent_allows` denies the command: whether a branch lands on its own is the
+person's call, never the agent's whose branch it is. Feed line `set_manual_merge`. E2e
+`merge_train_e2e::a_ticket_taken_off_the_train_is_left_alone_until_put_back` (the file's
+`ready`/`init_repo` were lifted out of the first test for it).
+
+**Not done.** A board-wide "hold everything" (the Settings row IS that); the mark surviving a
+ticket's worktree being torn down (it stays set, harmless, and `t` is offered until it is cleared
+because `manual_merge` alone satisfies `avail`); a word on the card's line 1 (the owed mark is the
+every-card signal, and line 1 has no cell for a second right-hand mark — T-173's argument).

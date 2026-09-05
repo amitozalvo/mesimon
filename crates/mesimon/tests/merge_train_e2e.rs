@@ -20,7 +20,7 @@ use std::process::Command as Proc;
 use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionState, WorkspaceStrategy};
-use mesimon_core::command::{AutomationStatus, Command, Response, WorktreeItem};
+use mesimon_core::command::{AutomationStatus, Command, Pending, Response, WorktreeItem};
 
 fn git(repo: &Path, args: &[&str]) -> String {
     let out = Proc::new("git").arg("-C").arg(repo).args(args).output().unwrap();
@@ -66,6 +66,113 @@ fn wait_attached(c: &mut TestClient, ticket: ulid::Ulid) -> WorktreeItem {
     }
 }
 
+/// A worktree ticket with a spawned agent and one commit on its branch.
+fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
+    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: title.into() });
+    let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket: id,
+            kind: SessionKind::Claude,
+            submit_prompt: false
+        }),
+        Response::Provisioning
+    ));
+    let wt = wait_attached(c, id);
+    let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
+    wait_until(Duration::from_secs(15), "the parked spawn to land", || {
+        c.board().sessions.iter().any(|s| s.ticket == id)
+    });
+    let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
+    std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
+    git(&path, &["add", "."]);
+    git(&path, &["commit", "-qm", title]);
+    (id, sid, wt.branch, path)
+}
+
+/// A repository under the harness's bare directory, one commit on `main`.
+fn init_repo(repo: &Path) {
+    git(repo, &["init", "-q", "-b", "main"]);
+    git(repo, &["config", "user.email", "e2e@t"]);
+    git(repo, &["config", "user.name", "e2e"]);
+    std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
+    git(repo, &["add", "."]);
+    git(repo, &["commit", "-qm", "init"]);
+}
+
+fn pending_of(c: &mut TestClient, ticket: ulid::Ulid) -> Vec<Pending> {
+    match c.request(Command::Snapshot) {
+        Response::Board { pending, .. } => {
+            pending.into_iter().filter(|p| p.ticket == ticket).collect()
+        }
+        other => panic!("not a board: {other:?}"),
+    }
+}
+
+/// `t` on the card (T-227): a REVIEW ticket the armed train would merge is
+/// taken off it — the snapshot lists nothing owed, the flag is in the ticket
+/// file (a restart cannot re-arm it), and main does not move — and put back,
+/// after which the train finishes the job.
+#[test]
+fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    std::env::set_var("MESIMON_WT_REFRESH_TICKS", "4");
+    std::env::set_var("MESIMON_PANE_QUIET_MS", "600000");
+    let Some(h) = Harness::boot("train-manual", Some(STUB)) else { return };
+    let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
+    let repo = h.repo.clone();
+    init_repo(&repo);
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("train-manual");
+    let (a, sa, branch_a, _) = ready(&mut c, "alpha");
+    std::thread::sleep(Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(5), "A in REVIEW", || {
+        c.board().ticket(a).unwrap().column == "REVIEW"
+    });
+    // Off the train BEFORE it is armed: the person's choice comes first.
+    assert!(matches!(c.request(Command::SetManualMerge { id: a, on: true }), Response::Ok));
+    assert!(c.board().ticket(a).unwrap().manual_merge);
+    let ticket_file = h.paths.board_dir.join("board/tickets/T-1/ticket.toml");
+    let on_disk = std::fs::read_to_string(&ticket_file).unwrap();
+    assert!(on_disk.contains("manual_merge = true"), "persisted:\n{on_disk}");
+    assert!(
+        on_disk.starts_with(&format!("schema_version = {}", mesimon_daemon::store::TICKET_SCHEMA)),
+        "{on_disk}"
+    );
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    assert!(automation_of(&mut c).merge_train);
+    // Nothing is owed and nothing moves, through several passes.
+    std::thread::sleep(Duration::from_millis(3000));
+    assert!(pending_of(&mut c, a).is_empty(), "a manual ticket is owed nothing");
+    assert!(
+        !git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]),
+        "merged while off the train"
+    );
+    assert!(!feed().contains("merge_train_merged"));
+    assert!(feed().contains("set_manual_merge"), "the gesture is in the feed:\n{}", feed());
+    // Setting what is already set writes nothing.
+    assert!(matches!(c.request(Command::SetManualMerge { id: a, on: true }), Response::Ok));
+    // Back on: the next pass merges it.
+    assert!(matches!(c.request(Command::SetManualMerge { id: a, on: false }), Response::Ok));
+    assert!(!c.board().ticket(a).unwrap().manual_merge);
+    assert!(!std::fs::read_to_string(&ticket_file).unwrap().contains("manual_merge"));
+    wait_until(Duration::from_secs(15), "A to be merged once back on the train", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+    });
+    let _ = c.request(Command::Shutdown);
+}
+
 #[test]
 fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
@@ -79,43 +186,11 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
     let repo = h.repo.clone();
     // The harness boots on a bare directory; the train needs a repository.
-    git(&repo, &["init", "-q", "-b", "main"]);
-    git(&repo, &["config", "user.email", "e2e@t"]);
-    git(&repo, &["config", "user.name", "e2e"]);
-    std::fs::write(repo.join("a.txt"), "hello\n").unwrap();
-    git(&repo, &["add", "."]);
-    git(&repo, &["commit", "-qm", "init"]);
+    init_repo(&repo);
     let tmux_sock = h.paths.tmux_sock();
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train");
 
-    // A worktree ticket with a finished agent and one commit on its branch.
-    let ready = |c: &mut TestClient, title: &str| -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-        let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: title.into() });
-        let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
-        assert!(matches!(
-            c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),
-            Response::Ok
-        ));
-        assert!(matches!(
-            c.request(Command::SpawnSession {
-                ticket: id,
-                kind: SessionKind::Claude,
-                submit_prompt: false
-            }),
-            Response::Provisioning
-        ));
-        let wt = wait_attached(c, id);
-        let path = PathBuf::from(wt.path.clone().expect("an attached binding has a path"));
-        wait_until(Duration::from_secs(15), "the parked spawn to land", || {
-            c.board().sessions.iter().any(|s| s.ticket == id)
-        });
-        let sid = c.board().sessions.iter().find(|s| s.ticket == id).unwrap().id;
-        std::fs::write(path.join(format!("{title}.txt")), format!("{title}\n")).unwrap();
-        git(&path, &["add", "."]);
-        git(&path, &["commit", "-qm", title]);
-        (id, sid, wt.branch, path)
-    };
     let (a, sa, branch_a, _wt_a) = ready(&mut c, "alpha");
     let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
     // Both stubs reading before anything is pasted.

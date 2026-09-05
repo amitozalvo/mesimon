@@ -908,7 +908,8 @@ first `z`, so the chord never arms for a refused Enter). The sessions stay parke
 ticket returns; `c` wakes them. **The armed card blinks** — the title on `Theme::move_blink`,
 the move ghost's clock, board card and ticket-page title row alike; the delete's red flash is
 a deletion's.
-`TICKET_SCHEMA` is 3 (a v2 build would drop `until` and the ticket would sleep forever). The
+`TICKET_SCHEMA` was bumped to 3 for it (a v2 build would drop `until` and the ticket would sleep
+forever; it is 4 since T-227's `manual_merge`). The
 calendar rungs are pure arithmetic over `LocalTime` in `struct tm`'s conventions with the libc
 (`localtime_r`/`mktime`, `tm_isdst = -1`) in `tui/src/localtime.rs`. **The wake is the tick
 wheel's** (`Daemon::wake_snoozed`, the 1 s bucket): back at the TOP of its column
@@ -1181,7 +1182,14 @@ clause beside the checkout's own branch shipped for a day and was cut (author 20
 ever reaches ATTACHED worktree tickets, so a board-wide word claims more than it does. Armed-ness
 is the Settings row's to say and what it will do is the card's. `mesimon doctor` prints a
 `merge train` line. E2e `merge_train_e2e`. (STALE-MAP "The
-merge train".)
+merge train".) **And `t` takes one ticket off it (T-227, 2026-09-05)**: `Verb::ManualMerge` on
+the board and the ticket page flips `Ticket.manual_merge` (`Command::SetManualMerge`, denied to
+agents, `TICKET_SCHEMA` 4 so an older build cannot drop it and re-arm the merge) and
+`train::plan` skips a marked ticket on both lists — no auto-merge, no rebase ask, `m` by hand
+still does both. Hint `t merge by hand` while `Ctx::train_reaches` (attached binding, train
+pref OR armed), `t auto-merge` while marked; the owed row reads `auto-merge ∙ next` / `auto-merge
+∙ after T-3 +1` for a candidate and `auto-merge ∙ off` for a marked one (no owed mark: nothing is
+owed). Not Esc: that is the menu / `back`. (STALE-MAP "A ticket can be taken off the merge train".)
 
 **Test seams.** `MESIMON_CLAUDE_BIN` (stub agent binary), `MESIMON_HOOK_BIN` (hook binary path for
 the pane-died notify — required in e2e because the in-process daemon's `current_exe()` is the test

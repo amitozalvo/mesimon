@@ -344,6 +344,14 @@ pub struct Ticket {
     /// attention producer (T-74). A scalar, so it sits with the scalars.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub woke_at: Option<String>,
+    /// The merge train leaves this ticket alone (T-227): no automatic merge
+    /// and no rebase ask; `m` by hand still does both. The user's own
+    /// opt-out, so it persists — a restart re-arms the train, and a ticket
+    /// taken off it must not climb back on. Off by default (the train
+    /// reaches every attached worktree ticket unless told otherwise), and
+    /// omitted from the file while off. A scalar, with the scalars.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub manual_merge: bool,
     /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
     /// a column policy only defaults NEW tickets, M5). `None` = inherit the board
     /// default. Must stay after the scalar fields (TOML serialize order).
@@ -1125,6 +1133,7 @@ mod tests {
             created_at: "@0".into(),
             entered_at: None,
             woke_at: None,
+            manual_merge: false,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),

@@ -1741,11 +1741,19 @@ impl App {
     }
 
     /// The owed row's words (2026-09-04): what mesimon will do to this card
-    /// next and what it waits on — `queued ∙ after T-12`, `train ∙ merges
-    /// when quiet`. Names the first ticket still working and counts the rest,
-    /// so the row stays one row.
+    /// next and what it waits on — `queued ∙ after T-12`, `auto-merge ∙
+    /// after T-3 +1`. Names the first ticket still working and counts the
+    /// rest, so the row stays one row. A ticket taken off the train (T-227)
+    /// owes nothing and wears no mark, but the row still says so —
+    /// `auto-merge ∙ off` — because the door `t` closed is the same door it
+    /// reopens, and a closed door with no sign is a ticket that silently
+    /// never merges.
     pub(crate) fn pending_row(&self, ticket: ulid::Ulid) -> Option<String> {
-        let p = self.pending_of(ticket)?;
+        let Some(p) = self.pending_of(ticket) else {
+            let off = self.board.ticket(ticket).is_some_and(|t| t.manual_merge)
+                && self.wt_item(ticket).is_some_and(|w| w.status == "attached");
+            return off.then(|| "auto-merge ∙ off".to_string());
+        };
         let own = self.board.ticket(ticket).map(|t| t.short_key.as_str()).unwrap_or("");
         let others: Vec<&str> =
             p.waits_on.iter().map(String::as_str).filter(|k| *k != own).collect();
@@ -1761,8 +1769,10 @@ impl App {
             ("ask", _) if p.in_flight => "queued ∙ sending".into(),
             ("ask", None) => "queued ∙ sends next".into(),
             ("ask", Some(a)) => format!("queued ∙ {a}"),
-            ("merge", None) => "merge ∙ next".into(),
-            ("merge", Some(a)) => format!("merge ∙ {a}"),
+            // "auto-": the row is the one place a card says the merge is
+            // mesimon's to make, and `merge ∙ next` read as a hand's (T-227).
+            ("merge", None) => "auto-merge ∙ next".into(),
+            ("merge", Some(a)) => format!("auto-merge ∙ {a}"),
             ("rebase", None) => "rebase ask ∙ next".into(),
             ("rebase", Some(a)) => format!("rebase ask ∙ {a}"),
             (other, _) => other.to_string(),
@@ -2058,6 +2068,13 @@ impl App {
             merge_train: self.prefs.merge_train,
             merge_train_notice: self.prefs.merge_train_notice,
             merge_train_armed: self.automation.merge_train,
+            // The preference OR the daemon's word: the reconcile lags the
+            // toggle by a snapshot, and the key must not flicker across it.
+            train_reaches: wt.is_some_and(|w| w.status == "attached")
+                && (self.prefs.merge_train || self.automation.merge_train),
+            manual_merge: subject
+                .and_then(|t| self.board.ticket(t))
+                .is_some_and(|t| t.manual_merge),
             // Board-wide, because the ten digits share one binding and `avail`
             // never sees which one was pressed. A digit whose own group is
             // empty says so in the status line instead.
@@ -2542,6 +2559,26 @@ impl App {
             Verb::SnoozeCancel => {
                 self.snooze_armed = None;
                 self.status = "snooze cancelled".into();
+            }
+            // Ticket state, not a preference (T-227): the flag rides the
+            // ticket file and comes back on the snapshot, so the card's row
+            // and the hint relabel themselves off the answer.
+            Verb::ManualMerge => {
+                if let Some(id) = self.subject() {
+                    let on = !self.board.ticket(id).is_some_and(|t| t.manual_merge);
+                    let key = self.board.ticket(id).map(|t| t.short_key.clone()).unwrap_or_default();
+                    match self.client.request(Command::SetManualMerge { id, on })? {
+                        Response::Err { message } => self.status = message,
+                        _ => {
+                            self.refresh()?;
+                            self.status = if on {
+                                format!("{key} merges by hand ∙ t puts it back on the train")
+                            } else {
+                                format!("{key} is back on the train")
+                            };
+                        }
+                    }
+                }
             }
             Verb::MergeTrain => {
                 let on = !self.prefs.merge_train;
@@ -5326,6 +5363,7 @@ pub(crate) mod test_support {
                         created_at: "1970-01-01T00:00:00Z".into(),
                         entered_at: None,
                         woke_at: None,
+                        manual_merge: false,
                         workspace: None,
                         tags: Vec::new(),
                         notes: Vec::new(),
@@ -5712,6 +5750,7 @@ mod tests {
             created_at: "1970-01-01T00:00:00Z".into(),
             entered_at: None,
             woke_at: None,
+            manual_merge: false,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),
@@ -7160,8 +7199,8 @@ mod tests {
         assert_eq!(row(&mut app, vec!["T-3", &own], false, "ask"), "queued ∙ after T-3");
         assert_eq!(row(&mut app, vec!["T-3", "T-4", "T-5"], false, "ask"), "queued ∙ after T-3 +2");
         assert_eq!(row(&mut app, vec![], true, "ask"), "queued ∙ sending");
-        assert_eq!(row(&mut app, vec![], false, "merge"), "merge ∙ next");
-        assert_eq!(row(&mut app, vec!["T-3"], false, "merge"), "merge ∙ after T-3");
+        assert_eq!(row(&mut app, vec![], false, "merge"), "auto-merge ∙ next");
+        assert_eq!(row(&mut app, vec!["T-3"], false, "merge"), "auto-merge ∙ after T-3");
         assert_eq!(row(&mut app, vec![], false, "rebase"), "rebase ask ∙ next");
         assert_eq!(row(&mut app, vec!["T-3", "T-4"], false, "rebase"), "rebase ask ∙ after T-3 +1");
         app.pending.clear();

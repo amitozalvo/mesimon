@@ -1160,6 +1160,7 @@ impl Daemon {
                 self.snooze_ticket(id, until, needs_you)
             }
             Command::SeenTicket { id } => self.seen_ticket(id),
+            Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
             Command::ClaudeMd { action } => self.answer_claude_md(action),
             Command::ArchiveAll => {
@@ -3437,6 +3438,7 @@ impl Daemon {
             created_at: now_iso(),
             entered_at: Some(now_iso()),
             woke_at: None,
+            manual_merge: false,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),
@@ -4501,6 +4503,22 @@ impl Daemon {
                 .with_ticket(id, |t| t.woke_at = None)
                 .unwrap_or(Response::Err { message: "no such ticket".into() }),
         }
+    }
+
+    /// Take a ticket off the merge train, or put it back (T-227). The flag
+    /// is the ticket's and the planner reads it, so the next `pending_items`
+    /// already lists nothing for it; a person's gesture on the ticket also
+    /// clears the train's memory of it, the way a hand `m` does. A no-op
+    /// when nothing changes — no write, no broadcast.
+    fn set_manual_merge(&mut self, id: ulid::Ulid, on: bool) -> Response {
+        match self.board.ticket(id) {
+            None => return Response::Err { message: "no such ticket".into() },
+            Some(t) if t.manual_merge == on => return Response::Ok,
+            Some(_) => {}
+        }
+        self.train.hand_touched(id);
+        self.with_ticket(id, |t| t.manual_merge = on)
+            .unwrap_or(Response::Err { message: "no such ticket".into() })
     }
 
     /// Turn the agent tool surface on or off for this board (T-217).

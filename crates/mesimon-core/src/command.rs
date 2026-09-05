@@ -245,6 +245,16 @@ pub enum Command {
     SeenTicket {
         id: ulid::Ulid,
     },
+    /// Take a ticket off the merge train, or put it back (T-227, the `t`
+    /// key): `on` sets `Ticket::manual_merge`, and the train then neither
+    /// merges the branch nor asks its agent to rebase — `m` by hand still
+    /// does both. Persisted on the ticket, so a restart cannot re-arm it.
+    /// A person's gesture: an agent may not decide whether its own branch
+    /// lands on its own, so the tier never gets it.
+    SetManualMerge {
+        id: ulid::Ulid,
+        on: bool,
+    },
     /// Re-read the user's shell environment (the Esc menu's shell-env row).
     ///
     /// Deliberately explicit rather than automatic on an rc-file change: the
@@ -589,7 +599,8 @@ impl Command {
             | RestoreTicket { id }
             | ArchiveTicket { id }
             | UnarchiveTicket { id }
-            | SnoozeTicket { id, .. } => m(Mutate, true, Some(*id)),
+            | SnoozeTicket { id, .. }
+            | SetManualMerge { id, .. } => m(Mutate, true, Some(*id)),
             // A cursor landing is not news for the feed.
             SeenTicket { id } => m(Mutate, false, Some(*id)),
             // The ticket, never the text: the feed records that the user

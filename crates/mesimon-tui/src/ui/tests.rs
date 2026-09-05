@@ -49,6 +49,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         created_at: "1970-01-01T00:00:00Z".into(),
         entered_at: None,
         woke_at: None,
+        manual_merge: false,
         workspace: None,
         tags: Vec::new(),
         notes: Vec::new(),
@@ -2285,7 +2286,9 @@ fn golden_train_120() {
         "an armed train adds no word to the header:\n{}",
         lines[0]
     );
-    assert!(lines.iter().any(|l| l.contains("merge ∙ after T-3 +1")), "{}", lines.join("\n"));
+    // The card is 22 cells: the count is what the row gives up first
+    // (`auto-merge ∙ after T-3 ~`); the ticket page below carries it whole.
+    assert!(lines.iter().any(|l| l.contains("auto-merge ∙ after T-3")), "{}", lines.join("\n"));
     let mark = crate::glyphs::queued(crate::glyphs::Tier::Unicode, 0);
     // T-6's claude FAILED: the error mark outranks the owed one, so the card
     // keeps its `x` and only the open row would say what the train owes.
@@ -2295,6 +2298,74 @@ fn golden_train_120() {
         lines.join("\n")
     );
     golden("train_120x30", &render(&app, 120, 30));
+}
+
+/// A worktree ticket the train can reach offers `t merge by hand` in the
+/// footer (T-227); taken off the train it wears no owed mark, its row reads
+/// `auto-merge ∙ off`, the hint flips to `t auto-merge`, and the ticket page
+/// says the same beside the branch — with the row's full words, which the
+/// card cannot fit.
+#[test]
+fn golden_train_manual_120() {
+    let mut app = app_graphite(fixture(false));
+    app.automation.merge_train = true;
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(5),
+        branch: "msmn/T-5-grapheme-truncation".into(),
+        status: "attached".into(),
+        merged: false,
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-5-grapheme-truncation".into()),
+    }];
+    let candidate = mesimon_core::command::Pending {
+        ticket: ulid_n(5),
+        action: "merge".into(),
+        waits_on: vec!["T-3".into(), "T-4".into()],
+        text: None,
+        in_flight: false,
+    };
+    app.pending = vec![candidate.clone()];
+    app.cursor_col = 2;
+    app.cursor_row = 0;
+    let lines = render(&app, 120, 30);
+    assert!(lines.last().is_some_and(|l| l.contains("t merge by hand")), "{:?}", lines.last());
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("∙ auto-merge ∙ after T-3 +1")),
+        "{}",
+        lines.join("\n")
+    );
+    assert!(lines.last().is_some_and(|l| l.contains("t merge by hand")), "{:?}", lines.last());
+
+    // Off the train: the daemon lists nothing for it and the ticket says so.
+    app.screen = crate::app::Screen::Board;
+    app.pending.clear();
+    app.board.ticket_mut(ulid_n(5)).unwrap().manual_merge = true;
+    let lines = render(&app, 120, 30);
+    let mark = crate::glyphs::queued(crate::glyphs::Tier::Unicode, 0);
+    assert!(
+        lines.iter().any(|l| l.contains("Grapheme truncat") && !l.contains(mark)),
+        "nothing owed, no owed mark:\n{}",
+        lines.join("\n")
+    );
+    assert!(lines.iter().any(|l| l.contains("auto-merge ∙ off")), "{}", lines.join("\n"));
+    assert!(lines.last().is_some_and(|l| l.contains("t auto-merge")), "{:?}", lines.last());
+    golden("train_manual_120x30", &lines);
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("∙ auto-merge ∙ off")), "{}", lines.join("\n"));
+    golden("ticket_train_manual_120x30", &lines);
+    // The train switched off altogether: the mark stays (it is the
+    // ticket's), and so does the key that clears it.
+    app.automation.merge_train = false;
+    app.prefs.merge_train = false;
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("∙ auto-merge ∙ off")), "{}", lines.join("\n"));
+    assert!(lines.last().is_some_and(|l| l.contains("t auto-merge")), "{:?}", lines.last());
 }
 
 /// An empty field says what it is for, in the same words the key was hinted

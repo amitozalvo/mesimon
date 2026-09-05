@@ -38,8 +38,11 @@ pub const COLUMNS_SCHEMA: u32 = 3;
 /// and `woke_at` — for the same reason: a v2 build would drop the deadline
 /// on its next save and the ticket would sleep forever. The cost is the
 /// same trade: a v3 file is NOT loaded by a v2 build (a notice, and the
-/// ticket is absent there until the newer build is back).
-pub const TICKET_SCHEMA: u32 = 3;
+/// ticket is absent there until the newer build is back). v4 (T-227) added
+/// `manual_merge`, the ticket's opt-out from the merge train — the
+/// `mcp_tools` argument: a v3 build would drop it on its next save and the
+/// train, re-armed, would merge a branch the user had taken off it.
+pub const TICKET_SCHEMA: u32 = 4;
 pub const SESSIONS_SCHEMA: u32 = 1;
 
 fn schema_v1() -> u32 {
@@ -975,6 +978,7 @@ by = "local"
             created_at: "@0".into(),
             entered_at: None,
             woke_at: None,
+            manual_merge: false,
             workspace: None,
             tags: Vec::new(),
             notes: vec![mesimon_core::board::NoteMeta {
@@ -1020,6 +1024,7 @@ by = "local"
             created_at: "@0".into(),
             entered_at: None,
             woke_at: None,
+            manual_merge: false,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
@@ -1059,6 +1064,7 @@ by = "local"
             created_at: "@0".into(),
             entered_at: None,
             woke_at: None,
+            manual_merge: false,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
@@ -1112,6 +1118,7 @@ by = "local"
                 created_at: "@0".into(),
                 entered_at: None,
                 woke_at: None,
+                manual_merge: false,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
                 notes: Vec::new(),
@@ -1366,6 +1373,7 @@ by = "local"
             created_at: "@0".into(),
             entered_at: None,
             woke_at: None,
+            manual_merge: false,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
