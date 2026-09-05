@@ -429,5 +429,4 @@ fn m3_adoption_and_sleep() {
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
-
 }

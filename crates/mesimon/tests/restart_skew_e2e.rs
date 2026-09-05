@@ -54,7 +54,11 @@ fn wait_for(deadline: Duration, mut done: impl FnMut() -> bool) -> bool {
     done()
 }
 
-fn spawn_daemon_claiming(fixture: &common::TestFixture, dir: &Path, build: &str) -> common::support::TestProcess {
+fn spawn_daemon_claiming(
+    fixture: &common::TestFixture,
+    dir: &Path,
+    build: &str,
+) -> common::support::TestProcess {
     fixture.set_env("MESIMON_FAKE_BUILD", build);
     fixture.set_env("MESIMON_DETACHED", "1");
     let child = fixture.daemon(dir);
@@ -76,16 +80,23 @@ fn teardown(sock: &Path) {
 fn connect_client(fixture: &common::TestFixture, dir: &Path) {
     fixture.set_env("MESIMON_DAEMON_BIN", env!("CARGO_BIN_EXE_mesimon"));
     fixture.set_env("MESIMON_TEST_REPO", dir);
-    fixture.spawn(vec![std::env::current_exe().unwrap().to_str().unwrap().into(),
-        "--exact".into(), "client_connect_fixture_helper".into(), "--ignored".into()])
-        .join().expect("isolated TUI client");
+    fixture
+        .spawn(vec![
+            std::env::current_exe().unwrap().to_str().unwrap().into(),
+            "--exact".into(),
+            "client_connect_fixture_helper".into(),
+            "--ignored".into(),
+        ])
+        .join()
+        .expect("isolated TUI client");
 }
 
 #[test]
 #[ignore = "subprocess helper; exercised by both restart-skew tests"]
 fn client_connect_fixture_helper() {
     let dir = std::env::var("MESIMON_TEST_REPO").expect("fixture-only helper");
-    let _client = mesimon_tui::client::Client::connect(std::path::Path::new(&dir)).expect("connect");
+    let _client =
+        mesimon_tui::client::Client::connect(std::path::Path::new(&dir)).expect("connect");
 }
 
 #[test]

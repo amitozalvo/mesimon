@@ -32,7 +32,11 @@ fn wait_for_column(c: &mut TestClient, ticket: ulid::Ulid, want: &str, what: &st
 fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
     // The window, widened past the test's wall clock: the guard is certainly
     // armed at the moment that matters, so a pass means the rule yielded.
-    let Some(h) = Harness::boot_with_env("askpark", Some(STUB), &[("MESIMON_PINGPONG_MS", "600000")]) else { return };
+    let Some(h) =
+        Harness::boot_with_env("askpark", Some(STUB), &[("MESIMON_PINGPONG_MS", "600000")])
+    else {
+        return;
+    };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("askpark");
 

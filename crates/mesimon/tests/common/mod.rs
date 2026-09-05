@@ -64,16 +64,23 @@ impl TestFixture {
             "{stray:?} is set in the test process, where the daemon (a child now) would never \
              see it: pass it through Harness::boot_with_env or fixture.set_env instead"
         );
-        let owner = support::Fixture::new(name, &mesimon_backend_tmux::tmux_bin().to_string_lossy());
+        let owner =
+            support::Fixture::new(name, &mesimon_backend_tmux::tmux_bin().to_string_lossy());
         let dir = owner.dir.clone();
-        let env = std::env::vars().filter(|(key, _)| {
-            !key.starts_with("MESIMON_")
-                || matches!(key.as_str(), "MESIMON_TMUX_BIN" | "MESIMON_CI" | "MESIMON_TEST_RUN")
-        }).collect();
+        let env = std::env::vars()
+            .filter(|(key, _)| {
+                !key.starts_with("MESIMON_")
+                    || matches!(
+                        key.as_str(),
+                        "MESIMON_TMUX_BIN" | "MESIMON_CI" | "MESIMON_TEST_RUN"
+                    )
+            })
+            .collect();
         let fixture = Self { dir, owner, env: std::cell::RefCell::new(env) };
         let stub = fixture.dir.join("default-agent.sh");
         std::fs::write(&stub, "#!/bin/sh\nexec sleep 120\n").unwrap();
-        std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+        std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o700))
+            .unwrap();
         let shell_home = fixture.dir.join("home");
         std::fs::create_dir(&shell_home).unwrap();
         fixture.set_env("HOME", &shell_home);
@@ -86,20 +93,27 @@ impl TestFixture {
     }
 
     pub fn set_env(&self, key: &str, value: impl AsRef<std::ffi::OsStr>) {
-        self.env.borrow_mut().insert(key.into(), value.as_ref().to_str().expect("test env is UTF-8").into());
+        self.env
+            .borrow_mut()
+            .insert(key.into(), value.as_ref().to_str().expect("test env is UTF-8").into());
     }
 
     pub fn paths(&self, repo: &Path) -> mesimon_daemon::Paths {
         let mut paths = mesimon_daemon::Paths::for_repo(repo).unwrap();
         paths.state_dir = PathBuf::from(&self.env.borrow()["HOME"])
-            .join(".local/state/mesimon").join(&paths.proj16);
+            .join(".local/state/mesimon")
+            .join(&paths.proj16);
         self.owner.register(repo, Some(&paths.state_dir), Some(&paths.rt_dir), &paths.tmux_sock());
         paths
     }
 
     pub fn daemon(&self, repo: &Path) -> support::TestProcess {
-        self.spawn(vec![env!("CARGO_BIN_EXE_mesimon").into(), "daemon".into(),
-            "--repo".into(), repo.to_str().unwrap().into()])
+        self.spawn(vec![
+            env!("CARGO_BIN_EXE_mesimon").into(),
+            "daemon".into(),
+            "--repo".into(),
+            repo.to_str().unwrap().into(),
+        ])
     }
 
     pub fn spawn(&self, argv: Vec<String>) -> support::TestProcess {
@@ -342,16 +356,21 @@ impl Harness {
     }
 
     pub fn boot_with_env(name: &str, stub: Option<&str>, env: &[(&str, &str)]) -> Option<Self> {
-        if !require_tmux() { return None; }
+        if !require_tmux() {
+            return None;
+        }
         let fixture = TestFixture::new(name);
         let dir = fixture.dir.clone();
         let repo = dir.join("repo");
         std::fs::create_dir_all(&repo).unwrap();
-        for (key, value) in env { fixture.set_env(key, value); }
+        for (key, value) in env {
+            fixture.set_env(key, value);
+        }
         let stub = stub.map(|body| {
             let p = dir.join("claude-stub.sh");
             std::fs::write(&p, body).unwrap();
-            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+            std::fs::set_permissions(&p, std::os::unix::fs::PermissionsExt::from_mode(0o755))
+                .unwrap();
             fixture.set_env("MESIMON_CLAUDE_BIN", &p);
             p
         });
@@ -363,14 +382,19 @@ impl Harness {
 
     pub fn client(&self, name: &str) -> TestClient {
         let mut c = TestClient::connect(&self.paths.orch_sock());
-        assert!(matches!(c.request(Command::Hello { version: 1, client: name.into() }), Response::Hello { .. }));
+        assert!(matches!(
+            c.request(Command::Hello { version: 1, client: name.into() }),
+            Response::Hello { .. }
+        ));
         c
     }
 }
 
 impl Drop for Harness {
     fn drop(&mut self) {
-        if let Some(mut c) = TestClient::try_connect(&self.paths.orch_sock(), Duration::from_millis(100)) {
+        if let Some(mut c) =
+            TestClient::try_connect(&self.paths.orch_sock(), Duration::from_millis(100))
+        {
             let _ = c.write.set_write_timeout(Some(Duration::from_millis(200)));
             let env = Envelope { principal: Principal::Local, command: Command::Shutdown };
             let _ = writeln!(c.write, "{}", serde_json::to_string(&env).unwrap());

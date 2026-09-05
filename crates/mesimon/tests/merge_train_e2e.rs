@@ -182,7 +182,13 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     // The flags (and the train) on a 1 s cadence; the quiet probe kept out.
-    let Some(h) = Harness::boot_with_env("train", Some(STUB), &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")]) else { return };
+    let Some(h) = Harness::boot_with_env(
+        "train",
+        Some(STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
     let got = h.dir.join("got.txt");
     let text = || std::fs::read_to_string(&got).unwrap_or_default();
     let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();

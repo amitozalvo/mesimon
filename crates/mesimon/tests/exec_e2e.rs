@@ -49,5 +49,4 @@ fn the_launcher_applies_the_file_then_the_sets_then_execs() {
     // No command is a usage error, not a pane running nothing.
     let out = launcher().args(["--env", &file.display().to_string()]).output().unwrap();
     assert_eq!(out.status.code(), Some(2));
-
 }

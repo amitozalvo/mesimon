@@ -22,7 +22,11 @@ fn a_status_file_gone_idle_demotes_running_while_the_pane_still_paints() {
     // Post-interrupt Claude Code: the pane paints forever. Quiet never trips,
     // and the threshold is parked past the horizon to prove it is not this.
     const STUB: &str = "#!/bin/sh\ntrap 'exit 0' TERM\nwhile true; do echo tick; sleep 0.3; done\n";
-    let Some(h) = Harness::boot_with_env("intrstatus", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")]) else { return };
+    let Some(h) =
+        Harness::boot_with_env("intrstatus", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("intrstatus");
 

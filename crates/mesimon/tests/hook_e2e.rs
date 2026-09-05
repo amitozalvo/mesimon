@@ -475,5 +475,4 @@ fn m2_attention_headless() {
         feed.lines().any(|l| l.contains(r#""kind":"board""#) && l.contains("automove")),
         "feed must carry automoves"
     );
-
 }

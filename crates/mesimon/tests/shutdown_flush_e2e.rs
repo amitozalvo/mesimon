@@ -129,5 +129,4 @@ fn sigterm_takes_the_shutdown_road() {
 
     assert_eq!(column_on_disk(&repo, &key), "REVIEW", "the flushed EndTurn automoved");
     assert_eq!(session_state_on_disk(&paths.state_dir), "\"idle\"/\"end_turn\"");
-
 }
