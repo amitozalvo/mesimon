@@ -192,13 +192,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
         let edit_cursor = prompt_of(t).map(|(buf, queued)| {
-            let (line, x_off) = card::render_prompt(&ctx, buf);
+            let (line, x_off) = card::render_prompt(&ctx, buf, app.ticket_queued(t.id));
             lines.push(line);
             let at = lines.len() - 1;
             // The delivery row, where the ask can wait (2026-09-04): after
             // the field, so the cursor row is unchanged.
             if app.ask_queueable(t.id) {
-                lines.push(card::render_ask_mode(&ctx, queued, app.ticket_queued(t.id)));
+                lines.push(card::render_ask_mode(&ctx, queued));
             }
             (at, x_off)
         });

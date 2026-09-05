@@ -2431,6 +2431,43 @@ fn test_an_empty_prompt_field_names_itself() {
     );
 }
 
+/// A field reopened on a WAITING ask and emptied says what a blank Enter
+/// does (T-241): the delivery row used to carry ` ∙ blank enter drops` and a
+/// narrow column cut it to `dr`. The word lives in the placeholder now, and
+/// the delivery row is two words at any width.
+#[test]
+fn test_an_emptied_queued_ask_says_enter_drops() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = 0;
+    app.pending = vec![mesimon_core::command::Pending {
+        ticket: ulid_n(3),
+        action: "ask".into(),
+        waits_on: vec!["T-1".into()],
+        text: Some("commit it".into()),
+        in_flight: false,
+    }];
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: true },
+        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+    };
+    // The narrowest board there is: every column at MIN_COL.
+    for w in [120u16, crate::layout::MIN_W] {
+        let lines = render(&app, w, 30);
+        assert!(
+            lines.iter().any(|l| l.contains("› enter drops")),
+            "an emptied queued ask must say how it is dropped at {w}:\n{}",
+            lines.join("\n")
+        );
+        assert!(
+            !lines.iter().any(|l| l.contains("blank enter")),
+            "the delivery row no longer carries the clause at {w}:\n{}",
+            lines.join("\n")
+        );
+    }
+}
+
 /// The prompt row costs the card no width. It hangs under the frame rather
 /// than inside it, so nothing above it moves by a cell.
 #[test]

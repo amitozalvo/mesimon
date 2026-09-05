@@ -77,7 +77,16 @@ pub(super) fn render_edit(
 /// hanging under a card belongs to it and must not read as a second card.
 /// It also keeps the row clear of `tags::stack_full`, which paints the stripe
 /// of the lines above and knows nothing about this one.
-pub(super) fn render_prompt(ctx: &CardCtx, buffer: &EditBuffer) -> (Line<'static>, u16) {
+///
+/// `reopened` is a field opened on a WAITING ask (T-241): emptied, its
+/// placeholder says what a blank Enter does — `enter drops` — because the
+/// gesture is not one the footer teaches and the delivery row under the
+/// field has no room to say it on a narrow column.
+pub(super) fn render_prompt(
+    ctx: &CardCtx,
+    buffer: &EditBuffer,
+    reopened: bool,
+) -> (Line<'static>, u16) {
     let theme = ctx.theme;
     // `  › ` — indent, caret, space. The caret is what an empty field has to
     // show; without it the state is an empty row.
@@ -90,10 +99,8 @@ pub(super) fn render_prompt(ctx: &CardCtx, buffer: &EditBuffer) -> (Line<'static
         // An empty field says what it is for, in the same words the key was
         // hinted with. The hardware cursor sits on the first letter of it,
         // which is how every placeholder has ever worked.
-        spans.push(Span::styled(
-            truncate("ask claude", budget),
-            Style::default().fg(theme.sel.dim3),
-        ));
+        let word = if reopened { "enter drops" } else { "ask claude" };
+        spans.push(Span::styled(truncate(word, budget), Style::default().fg(theme.sel.dim3)));
     } else {
         spans.push(Span::styled(
             shown,
@@ -124,23 +131,18 @@ pub(super) fn render_workspace_selector(
 }
 
 /// The ask field's delivery row (2026-09-04): `now` or `queued`, Shift+Tab
-/// cycles — the composer's workspace row, for the field under a card. A
-/// field reopened on a WAITING ask also says how it is dropped, since the
-/// gesture (a blank Enter) is not one the footer teaches.
-pub(super) fn render_ask_mode(ctx: &CardCtx, queued: bool, reopened: bool) -> Line<'static> {
+/// cycles — the composer's workspace row, for the field under a card. It
+/// said ` ∙ blank enter drops` on a reopened ask until T-241 (2026-09-05):
+/// 39 cells, cut to `dr` on a narrow column. The emptied field's
+/// placeholder carries that word now (`render_prompt`).
+pub(super) fn render_ask_mode(ctx: &CardCtx, queued: bool) -> Line<'static> {
     let theme = ctx.theme;
     let word = if queued { "queued" } else { "now" };
-    let mut spans = vec![
+    let spans = vec![
         Span::raw("  "),
         Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
         Span::styled("  shift+tab".to_string(), Style::default().fg(theme.sel.dim2)),
     ];
-    if reopened {
-        spans.push(Span::styled(
-            " ∙ blank enter drops".to_string(),
-            Style::default().fg(theme.sel.dim2),
-        ));
-    }
     Line::from(spans).style(theme.selected_row())
 }
 

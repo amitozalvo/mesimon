@@ -4868,7 +4868,7 @@ SLOW cadence over a still or empty glyph slot only (`queued_over`); the cursor c
 carries `queued ∙ after T-12` (`+N`, `after its turn`, `sends next`, `sending`) in the snooze
 row's slot, and the ticket page's state row the same words. Shift+Enter on a queued ticket
 reopens the field on the words at `queued` (hint `edit the queued ask`); Esc keeps it, a blank
-Enter drops it (`DropQueuedAsk`, the row says `blank enter drops`) — no Esc-menu row, the menu
+Enter drops it (`DropQueuedAsk`; the emptied field's placeholder says `enter drops`, since T-241) — no Esc-menu row, the menu
 is for things not about the selection. E2e `ask_queue_e2e`.
 
 **Not done.** Persistence across a restart; per-column policy (M5); a wake-then-ask road for a
@@ -5769,3 +5769,17 @@ began outside mesimon", which the badge word `external` reads. `m3_e2e` asserts 
 around its takeover: the agent call refused on the observe-only record, `--mcp-config` in the
 takeover argv, and `get_ticket` answering with the minted ticket's title afterwards; the same
 assertion fails on the old gate with the exact message the ticket reported.
+
+## The ask's drop hint moves into the placeholder (T-241, 2026-09-05)
+
+**Refuted:** the delivery row under a reopened queued ask read `  queued  shift+tab ∙ blank enter
+drops` — 39 cells, built as fixed text and never measured against the card. A column narrower
+than that clipped it at the card's edge (`… blank enter dr`, the user's screenshot), and
+`MIN_COL` is 26, so the row could never fit on a tight board.
+
+**Built:** the clause is gone (user: "drop the hint"). `card::render_ask_mode` is two words at
+any width, and `card::render_prompt` takes `reopened`: a field opened on a WAITING ask whose
+text has been emptied shows the placeholder `enter drops` where a fresh field shows `ask
+claude` — 11 cells, inside the prompt row's budget at `MIN_COL` (20). The gesture is still
+taught only where it applies, on the one field whose blank Enter does something. Test
+`test_an_emptied_queued_ask_says_enter_drops` renders it at 120 and at `MIN_W`.
