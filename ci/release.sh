@@ -157,16 +157,14 @@ step "tests (driven by the bundled tmux)"
 # remove — so the bundled binary is the one that has to pass.
 #
 # Forty minutes, not the wrapper's twenty. A version bump relinks every crate
-# and all ~35 e2e binaries, and macOS holds an executable it has not seen
-# before on its first exec (XProtect, in syspolicyd) — ~30 s each here, one
-# after another under `cargo test`, which on 2026-09-05 ran alpha.15's gate
-# past 1200 s with every test green. The stall is paid once per binary and
-# nowhere else, so the deadline still catches a hang; it just leaves room
-# for a cold run. NOT warmed in parallel: thirty-six first execs at once
-# saturated the scanner for three minutes and every exec on the machine
-# waited behind them — both live boards' daemons logged a 48 s writer turn
-# stalled forking tmux, and their TUIs hung with them. Serial was measured
-# harmless to the boards; parallel was not.
+# and all ~36 e2e binaries, and macOS holds an executable it has not seen
+# before on its first exec while Gatekeeper walks the executable's DIRECTORY
+# — 0.4 s from a small deps/, 25–37 s from the 879k-entry one a week of
+# relinks had built (measured 2026-09-06; alpha.15's gate ran past 1200 s on
+# it with every test green, and thirty-six such walks at once stalled every
+# exec on the machine and hung both live boards). ci/prune-deps.py keeps
+# deps/ small now and the stamp above usually makes this step moot; the
+# room stays because a regrown deps/ would otherwise fail a green gate.
 MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --timeout 2400 -- cargo test --workspace
 fi
 

@@ -6382,9 +6382,22 @@ python3 -B ci/test-run.py --jobs 4` (nextest, parallel, bounded so the first-exe
 stampede the machine — 36 at once hung both live boards on alpha.15) → tag → push →
 `ci/release.sh`. Nothing is verified before the bump.
 
-**Not done.** The remedy is `cargo clean` (or a prune of `target/debug/deps`) and keeping the
-directory small — a `find deps -mtime +N -delete` on a cadence, or a fresh `--target-dir` for the
-suite; which one is the author's call, since a clean wipes 48 GB of cache and darkens the live
-board's hooks for the rebuild. Until it is done the stamp-skip is what saves the release its
-second run, and `--jobs 4` stays. `ci/__pycache__/test-run.cpython-314.pyc` is tracked in git and
-should not be.
+**The remedy, measured.** `cargo clean` removed 1,072,418 files / 84.8 GiB (four minutes of
+deleting), the rebuild took 13 s and linking every test binary 10 s — the 83 s relinks of the
+morning were the same directory tax on the linker — and a fresh e2e binary then exec'd in
+**0.34 s**. The whole suite through `ci/test-run.py` (nextest, the bundled tmux, first execs
+included) is **53 s** wall. The regrowth was then measured: a clippy pass adds ~230 entries, and
+ONE edit to a core crate plus a relink of the tests adds **6,570 files, every one a
+split-debuginfo `.rcgu.o`** named by a content hash — the old set is never removed. Of the
+13,255 loose objects after that edit, 5,687 were named by a current binary's `OSO` stabs and
+7,568 were orphans (none referenced-but-missing), so the orphan set is decidable from the
+binaries themselves. `ci/prune-deps.py` deletes exactly that set under cargo's own build lock
+(`target/debug/.cargo-lock`, so a link in progress is never robbed of an object), keeps every
+referenced object (which is what keeps file:line in a panic's backtrace), and advises `cargo
+clean` past 50k entries; `ci/test-run.py` runs it after every bounded check. `--jobs 4` is gone
+from the release order: at 0.4 s a scan, parallel first execs are harmless.
+
+**Not done.** Old-hash EXECUTABLES (a version bump changes every metadata hash) are kept by the
+prune because their objects are still "referenced" — by them; they are 36 files a release and
+the 50k advice catches the drift. `ci/__pycache__/test-run.cpython-314.pyc` is tracked in git
+and should not be.

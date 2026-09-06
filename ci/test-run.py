@@ -172,6 +172,11 @@ def main():
             shutil.rmtree(run, ignore_errors=True)
             print(f"Fixture audit clean ({len(manifests)} owners).", flush=True)
             stamp_pass(command, env)
+        # Every relink leaves its split-debuginfo objects behind and cargo
+        # collects none of them; a week of that made deps/ 879k entries and
+        # every fresh binary's first exec a 25 s Gatekeeper walk. Pruned
+        # here, after each run, under cargo's own lock (ci/prune-deps.py).
+        subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("prune-deps.py")), "--quiet"], check=False)
         os.close(lock)
     return result
 
