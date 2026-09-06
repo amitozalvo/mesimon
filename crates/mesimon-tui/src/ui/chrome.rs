@@ -227,10 +227,8 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     // what makes one readable off the footer at all. Two spaces rather than
     // a fourth `∙`: the separator is for facts, and this is not one.
     let ctx = app.ctx();
-    let mut hint: Vec<Span<'static>> = if g.changed == 0 {
-        Vec::new()
-    } else {
-        keymap::binding_for(keymap::Scope::Board, keymap::Verb::OpenDiff, &ctx)
+    let hint_for = |verb: keymap::Verb| -> Vec<Span<'static>> {
+        keymap::binding_for(keymap::Scope::Board, verb, &ctx)
             .map(|b| {
                 let mut out = vec![Span::raw("  ".to_string())];
                 out.extend(hint_spans(&[b], &ctx, &theme.rest, room));
@@ -238,11 +236,21 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
             })
             .unwrap_or_default()
     };
-    let hint_w: usize = super::spans_width(&hint);
+    let mut hint: Vec<Span<'static>> =
+        if g.changed == 0 { Vec::new() } else { hint_for(keymap::Verb::OpenDiff) };
+    // The terminal (T-273) opens the checkout this clause names, so its key
+    // sits here too — whatever the count, since a fetch or a push is what
+    // it is for — and it is the first rung given up when the row is tight.
+    let mut term = hint_for(keymap::Verb::Terminal);
+    let hint_w: usize = super::spans_width(&hint) + super::spans_width(&term);
     // ` ⎇ ` is three cells; the arrows ride on the name.
     let fixed = 3 + state.width();
     let floor = name.width().min(GIT_BRANCH_FLOOR);
     let mut name_room = room.saturating_sub(fixed + changed.width() + hint_w);
+    if name_room < floor {
+        term.clear();
+        name_room = room.saturating_sub(fixed + changed.width() + super::spans_width(&hint));
+    }
     if name_room < floor {
         hint.clear();
         name_room = room.saturating_sub(fixed + changed.width());
@@ -265,6 +273,7 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
         out.push(Span::styled(changed, theme.dim2()));
     }
     out.extend(hint);
+    out.extend(term);
     out
 }
 

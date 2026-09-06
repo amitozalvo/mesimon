@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter resume ∙ r rename ∙ d delete ∙ n describe                                             ? keys
+ jk select session ∙ enter resume ∙ ! terminal ∙ r rename ∙ d delete ∙ n describe                                ? keys

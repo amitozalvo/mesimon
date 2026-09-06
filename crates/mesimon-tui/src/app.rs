@@ -597,6 +597,15 @@ enum FocusOrigin {
     Ticket,
 }
 
+/// What a handover holds the focus token on: a ticket's session (and where
+/// the focus started), or the project's terminal (T-273) — no session, no
+/// origin: the return lands on the screen the key was pressed on.
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum FocusTarget {
+    Session(uuid::Uuid, FocusOrigin),
+    Terminal,
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputPurpose {
     /// New-ticket composer. `workspace` is the Shift+Tab selector below the
@@ -909,7 +918,7 @@ pub struct App {
     /// A link to open outside the terminal, parked for the main loop:
     /// `[opener, target]`, launched detached (`opener::launch`).
     pub pending_open: Option<Vec<String>>,
-    pending_gate_then: Option<(uuid::Uuid, FocusOrigin)>,
+    pending_gate_then: Option<FocusTarget>,
     /// M4: `c` on an unprovisioned worktree ticket parks the spawn daemon-side
     /// (`Response::Provisioning`); this parks the focus half of that keypress.
     /// The first refresh that shows the replayed session finishes it; any
@@ -917,7 +926,7 @@ pub struct App {
     pending_spawn_focus: Option<(ulid::Ulid, SessionKind)>,
     /// The session a running handover holds focus on (and where the focus
     /// started) — released on return.
-    focused_session_hint: Option<(uuid::Uuid, FocusOrigin)>,
+    focused_session_hint: Option<FocusTarget>,
     /// The ticket the composer just minted: its next plain Enter spawns claude
     /// straight away (the fresh-ticket fast path). Any other key closes the
     /// window — browsing away means the moment passed.
@@ -3125,7 +3134,7 @@ impl App {
                 Screen::Board => self.open_checkout_diff()?,
                 _ => {}
             },
-            Verb::WorktreeShell => self.worktree_shell(),
+            Verb::Terminal => self.open_terminal(),
             // ---- diff, and the release notes on the same keys -------------
             Verb::ScrollDown | Verb::ScrollUp => {
                 let dir: isize = if verb == Verb::ScrollDown { 1 } else { -1 };
@@ -4090,26 +4099,17 @@ impl App {
         self.drop_ghost(&cols, id, col, idx)
     }
 
-    /// `!` in the diff viewer: a shell in the worktree, at its root. Offered
-    /// on a branch diff only — a worktree is a directory that is hard to reach,
-    /// and on the checkout diff the user is already standing in it
-    /// (`Ctx::worktree_present` is what keeps the key inert there).
-    fn worktree_shell(&mut self) {
-        let Some(ticket) = self.diff_ticket() else {
-            return;
-        };
-        let present = self.diff.as_ref().is_some_and(|d| d.worktree_present);
-        let path = self.wt_item(ticket).and_then(|w| w.path.clone());
-        match (present, path) {
-            (true, Some(p)) => {
-                let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".into());
-                // Plain argv, no sh -c. Gate/focus hints stay None so
-                // after_handover leaves the diff screen alone.
-                self.pending_attach = Some(vec![shell]);
-                self.pending_attach_cwd = Some(PathBuf::from(p));
-            }
-            _ => self.status = "the worktree is gone — no directory to open".into(),
-        }
+    /// `!` (T-273): the project's terminal — a persistent shell on the
+    /// private tmux server, attached through the focus handover like a
+    /// session and released on the detach key. The SCREEN says which
+    /// directory (T-221's rule): the board is the repository's screen, so
+    /// the checkout; a ticket's page its attached worktree, else the
+    /// checkout; the diff its own target. The daemon owns the pane
+    /// (`Command::OpenTerminal`), so the same `!` finds the same shell from
+    /// every screen and after a reload.
+    fn open_terminal(&mut self) {
+        let grant = self.grant_for(FocusTarget::Terminal);
+        self.focus_target(FocusTarget::Terminal, grant);
     }
 
     /// The menu's `Release notes` row: the changelog this binary was built
@@ -5829,43 +5829,79 @@ impl App {
                 }
             }
         }
-        // GATE (D20): prove the unfocus key once before the first real focus.
+        self.focus_target(FocusTarget::Session(sid, origin), Command::FocusStart { session: sid });
+        Ok(())
+    }
+
+    /// The focus road every attach takes: GATE (D20) — prove the unfocus key
+    /// once before the first real focus — then the command that grants the
+    /// attach argv, parked for the main loop's handover with the target it
+    /// holds the token on, so `after_handover` knows what to release.
+    fn focus_target(&mut self, target: FocusTarget, grant: Command) {
         match self.req(Command::GateStatus) {
-            Response::Gate { passed: true, .. } => {
-                match self.req(Command::FocusStart { session: sid }) {
-                    Response::Attach { argv } => {
-                        self.pending_attach = Some(argv);
-                        self.focused_session_hint = Some((sid, origin));
-                    }
-                    Response::Err { message } => self.status = message,
-                    _ => {}
+            Response::Gate { passed: true, .. } => match self.req(grant) {
+                Response::Attach { argv } => {
+                    self.pending_attach = Some(argv);
+                    self.focused_session_hint = Some(target);
                 }
-            }
+                Response::Err { message } => self.status = message,
+                _ => {}
+            },
             Response::Gate { passed: false, attach_argv: Some(argv) } => {
                 self.pending_attach = Some(argv);
-                self.pending_gate_then = Some((sid, origin));
+                self.pending_gate_then = Some(target);
             }
             Response::Err { message } => self.status = message,
             _ => {}
         }
-        Ok(())
+    }
+
+    /// What grants the attach for a target — the gate's second half asks it
+    /// again once the ceremony is passed.
+    fn grant_for(&self, target: FocusTarget) -> Command {
+        match target {
+            FocusTarget::Session(sid, _) => Command::FocusStart { session: sid },
+            FocusTarget::Terminal => Command::OpenTerminal { ticket: self.terminal_ticket() },
+        }
+    }
+
+    /// Which ticket's worktree the terminal opens in from the current
+    /// screen, or None for the checkout.
+    fn terminal_ticket(&self) -> Option<ulid::Ulid> {
+        match self.screen {
+            Screen::Ticket { ticket, .. } => {
+                self.wt_item(ticket).filter(|w| w.path.is_some()).map(|_| ticket)
+            }
+            Screen::Diff => {
+                let branch =
+                    self.diff.as_ref().is_some_and(|d| d.is_branch() && d.worktree_present);
+                self.diff_ticket().filter(|_| branch)
+            }
+            _ => None,
+        }
     }
 
     /// Called by the main loop after a handover returns.
     pub fn after_handover(&mut self) -> Result<()> {
-        if let Some((sid, origin)) = self.pending_gate_then.take() {
+        if let Some(target) = self.pending_gate_then.take() {
             // Detaching from the gate session IS the proof (D20).
             self.send(Command::GatePassed)?;
-            match self.req(Command::FocusStart { session: sid }) {
+            match self.req(self.grant_for(target)) {
                 Response::Attach { argv } => {
                     self.pending_attach = Some(argv);
-                    self.focused_session_hint = Some((sid, origin));
+                    self.focused_session_hint = Some(target);
                     return Ok(());
                 }
                 Response::Err { message } => self.status = message,
                 _ => {}
             }
-        } else if let Some((sid, origin)) = self.focused_session_hint.take() {
+        } else if let Some(FocusTarget::Terminal) = self.focused_session_hint {
+            // The terminal is nobody's session: give the token back and
+            // stay where the key was pressed.
+            self.focused_session_hint = None;
+            self.send(Command::TerminalEnd)?;
+            return self.refresh();
+        } else if let Some(FocusTarget::Session(sid, origin)) = self.focused_session_hint.take() {
             self.send(Command::FocusEnd { session: sid })?;
             self.refresh()?;
             // Unfocus returns exactly where the focus started: board Enter
@@ -6202,6 +6238,9 @@ pub(crate) mod test_support {
                     } else {
                         Response::Attach { argv: vec!["tmux".into()] }
                     });
+                }
+                Command::OpenTerminal { .. } => {
+                    return Ok(Response::Attach { argv: vec!["tmux".into()] });
                 }
                 Command::MergeTicket { .. } => {
                     return Ok(Response::Merge {
@@ -9045,15 +9084,61 @@ mod tests {
         // Board-born focus lands back on the board…
         let (mut app, _sent, sid) = app_with_claude(SessionState::Running, false);
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-        app.focused_session_hint = Some((sid, FocusOrigin::Board));
+        app.focused_session_hint = Some(FocusTarget::Session(sid, FocusOrigin::Board));
         app.after_handover().unwrap();
         assert_eq!(app.screen, Screen::Board);
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
         // …ticket-born focus lands back on the ticket screen.
         let (mut app, _sent, sid) = app_with_claude(SessionState::Running, false);
-        app.focused_session_hint = Some((sid, FocusOrigin::Ticket));
+        app.focused_session_hint = Some(FocusTarget::Session(sid, FocusOrigin::Ticket));
         app.after_handover().unwrap();
         assert_eq!(app.screen, Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 });
+    }
+
+    /// `!` opens the SCREEN's directory (T-273): the board's is the checkout,
+    /// a ticket page's its attached worktree, else the checkout again — and
+    /// the return gives the token back and stays where the key was pressed,
+    /// since the terminal is nobody's session and has no origin to land on.
+    #[test]
+    fn the_terminal_opens_the_screens_directory_and_returns_to_it() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        press(&mut app, '!');
+        assert!(sent_contains(&sent, "OpenTerminal { ticket: None }"), "{:?}", sent.borrow());
+        assert_eq!(app.pending_attach, Some(vec!["tmux".to_string()]));
+        assert_eq!(app.focused_session_hint, Some(FocusTarget::Terminal));
+        app.pending_attach = None;
+        app.after_handover().unwrap();
+        assert!(sent_contains(&sent, "TerminalEnd"), "{:?}", sent.borrow());
+        assert_eq!(app.screen, Screen::Board);
+        assert!(app.focused_session_hint.is_none());
+
+        // A ticket page whose worktree is attached names its ticket, and the
+        // return lands back on the page.
+        let t = ulid::Ulid(1);
+        app.worktrees.push(WorktreeItem {
+            ticket: t,
+            branch: "msmn/T-1-x".into(),
+            status: "attached".into(),
+            merged: false,
+            conflict: false,
+            ahead: 0,
+            needs_rebase: false,
+            detail: None,
+            path: Some("/wt/T-1-x".into()),
+        });
+        app.screen = Screen::Ticket { ticket: t, rail_idx: 0 };
+        sent.borrow_mut().clear();
+        press(&mut app, '!');
+        assert!(sent_contains(&sent, "OpenTerminal { ticket: Some("), "{:?}", sent.borrow());
+        app.pending_attach = None;
+        app.after_handover().unwrap();
+        assert_eq!(app.screen, Screen::Ticket { ticket: t, rail_idx: 0 });
+
+        // No worktree on the ticket: the checkout again.
+        app.worktrees.clear();
+        sent.borrow_mut().clear();
+        press(&mut app, '!');
+        assert!(sent_contains(&sent, "OpenTerminal { ticket: None }"), "{:?}", sent.borrow());
     }
 
     #[test]

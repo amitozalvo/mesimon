@@ -14,6 +14,7 @@
                                  │   d         delete column                          │
                                  │                                                    │
                                  │ VIEW                                               │
+                                 │   !         terminal                               │
                                  │   p         show replies                           │
                                  │   P         show every reply                       │
                                  │                                                    │
@@ -24,7 +25,6 @@
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
-
 
 
  enter column settings ∙ o new ticket ∙ HJKL move column ∙ r rename column                            esc menu ∙ ? keys

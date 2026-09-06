@@ -583,6 +583,8 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::ReclaimAll
         | Command::FocusStart { .. }
         | Command::FocusEnd { .. }
+        | Command::OpenTerminal { .. }
+        | Command::TerminalEnd
         | Command::GateStatus
         | Command::GatePassed
         | Command::Shutdown
@@ -989,6 +991,8 @@ mod tests {
             Command::ReclaimAll,
             Command::FocusStart { session: s },
             Command::FocusEnd { session: s },
+            Command::OpenTerminal { ticket: Some(t) },
+            Command::TerminalEnd,
             Command::GateStatus,
             Command::GatePassed,
             Command::Shutdown,

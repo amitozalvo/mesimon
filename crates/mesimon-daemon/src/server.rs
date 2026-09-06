@@ -38,6 +38,26 @@ use crate::worktree::{self, Binding, BindingStatus};
 
 const GRACE_SECS: u64 = 9;
 const GATE_SESSION: &str = "msmn-gate";
+
+/// Who holds the exclusive focus token (D22): a ticket's session, or the
+/// project's terminal (T-273) — a named tmux session on the private server
+/// that belongs to no ticket, like the gate's.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum Focus {
+    Session(uuid::Uuid),
+    Terminal { ticket: Option<ulid::Ulid> },
+}
+
+/// The terminal's tmux session name: one per DIRECTORY, so the root's and each
+/// worktree's persist independently and an attach lands back in the same
+/// shell. Keyed by the ticket's ULID, not its key: teardown runs after the
+/// ticket left the board and the binding carries no key.
+fn terminal_name(ticket: Option<ulid::Ulid>) -> String {
+    match ticket {
+        None => "msmn-term".to_string(),
+        Some(id) => format!("msmn-term-{id}"),
+    }
+}
 /// The deadline wheel (11 §11.7.4 settle timers need finer than 1 s).
 const TICK_MS: u64 = 250;
 /// Every this-many ticks, check the private tmux server wholesale — pane-died
@@ -165,7 +185,7 @@ pub struct Daemon {
     backend: TmuxBackend,
     grace: HashMap<ulid::Ulid, GraceEntry>,
     subscribers: Vec<Arc<Mutex<UnixStream>>>,
-    focus: Option<uuid::Uuid>,
+    focus: Option<Focus>,
     shutting_down: bool,
     /// `daemon.log`: started / stopping / stopped / slow turn (`journal`).
     journal: crate::journal::Journal,
@@ -1290,7 +1310,14 @@ impl Daemon {
             Command::KillSession { id } => self.kill_session(id),
             Command::FocusStart { session } => self.focus_start(session),
             Command::FocusEnd { session } => {
-                if self.focus == Some(session) {
+                if self.focus == Some(Focus::Session(session)) {
+                    self.focus = None;
+                }
+                Response::Ok
+            }
+            Command::OpenTerminal { ticket } => self.open_terminal(ticket),
+            Command::TerminalEnd => {
+                if matches!(self.focus, Some(Focus::Terminal { .. })) {
                     self.focus = None;
                 }
                 Response::Ok
@@ -5174,6 +5201,10 @@ impl Daemon {
             let Some(b) = self.worktrees.remove(&ticket) else { continue };
             let merged = !b.branch.is_empty() && self.ticket_merged(ticket, &b.branch);
             if b.path.is_dir() {
+                // The worktree's terminal (T-273) stands in the directory
+                // about to go: it is no session of the ticket, so the reaper
+                // never saw it. Killed here, first — never remove a live cwd.
+                let _ = self.backend.kill_session(&terminal_name(Some(ticket)));
                 let _ = worktree::remove(&self.paths.repo_root, &b.path);
             }
             if !b.branch.is_empty() {
@@ -6332,8 +6363,8 @@ impl Daemon {
     }
 
     fn focus_start(&mut self, session: uuid::Uuid) -> Response {
-        if let Some(holder) = self.focus {
-            if holder != session {
+        if let Some(holder) = &self.focus {
+            if *holder != Focus::Session(session) {
                 return Response::Err { message: "another session is focused".into() };
             }
         }
@@ -6347,7 +6378,7 @@ impl Daemon {
             // Observe-only: no pane, no hooks, no input (19 §4 tier 2).
             return Response::Err { message: "external session — resume it to take over".into() };
         }
-        self.focus = Some(session);
+        self.focus = Some(Focus::Session(session));
         let sid16 = rec.sid16();
         let kind = rec.kind;
         let argv = self.backend.attach_argv(&sid16);
@@ -6379,7 +6410,13 @@ impl Daemon {
     /// flavors) popped out of the reversed bar; tmux chrome is backend-owned
     /// display, not the wire — the daemon still never styles a wire string.
     fn refresh_status_line(&mut self) {
-        let Some(focused) = self.focus else { return };
+        let Some(focus) = self.focus.clone() else { return };
+        // The terminal has no session on the board: the breadcrumb names
+        // the ticket whose worktree it stands in, or nothing at the root.
+        let (focused, terminal_ticket) = match focus {
+            Focus::Session(id) => (Some(id), None),
+            Focus::Terminal { ticket } => (None, ticket),
+        };
         let repo = tmux_text(
             &self
                 .paths
@@ -6389,12 +6426,11 @@ impl Daemon {
                 .unwrap_or_default(),
             32,
         );
-        let title = self
-            .board
-            .sessions
-            .iter()
-            .find(|s| s.id == focused)
-            .and_then(|s| self.board.ticket(s.ticket))
+        let title = focused
+            .and_then(|f| self.board.sessions.iter().find(|s| s.id == f))
+            .map(|s| s.ticket)
+            .or(terminal_ticket)
+            .and_then(|t| self.board.ticket(t))
             .map(|t| tmux_text(&t.title, 48))
             .unwrap_or_default();
         let queue = mesimon_core::attention::attention_queue(&self.board);
@@ -6404,7 +6440,8 @@ impl Daemon {
         // The user is looking at this pane: a `!1` that means "the session
         // you're inside" is noise, so the chip only shows when somewhere
         // ELSE needs them too.
-        let only_self = needs_you == 1 && queue.first().is_some_and(|s| s.id == focused);
+        let only_self =
+            needs_you == 1 && queue.first().is_some_and(|s| focused.is_some_and(|f| s.id == f));
         let attn = if needs_you > 0 && !only_self {
             // Painted chip, not bare fg: `noreverse` alone drops the segment
             // to the terminal's default background (illegible on light
@@ -6426,6 +6463,55 @@ impl Daemon {
         {
             self.last_status_left = Some(line);
         }
+    }
+
+    /// `!` (T-273): the project's terminal — the user's own shell in the
+    /// checkout root, or in a ticket's attached worktree, on the private tmux
+    /// server, persistent. Not a `SessionRecord`: a session belongs to a
+    /// ticket and every card, rail and quiet gate reads it as one, and the
+    /// terminal is a place to stand, not work on a ticket. The gate session
+    /// is the precedent — a named tmux session the board never lists. Alive
+    /// means reused (a `git pull` in flight is never lost; the pane outlives
+    /// the TUI and the daemon like every session does); a dead pane (`exit`
+    /// typed, `remain-on-exit`) is killed and respawned.
+    fn open_terminal(&mut self, ticket: Option<ulid::Ulid>) -> Response {
+        let want = Focus::Terminal { ticket };
+        if let Some(holder) = &self.focus {
+            if *holder != want {
+                return Response::Err { message: "another session is focused".into() };
+            }
+        }
+        // A worktree ticket lands in its worktree; any other ticket page is
+        // the checkout's. A worktree still being made is refused in words,
+        // never the root by surprise.
+        let (cwd, vars) = match ticket {
+            None => (self.paths.repo_root.clone(), Vec::new()),
+            Some(id) => match self.worktrees.get(&id) {
+                Some(b) if b.status == BindingStatus::Attached => {
+                    (b.path.clone(), self.session_vars(id, &b.path))
+                }
+                Some(_) => return Response::Err { message: "worktree not ready yet".into() },
+                None => (self.paths.repo_root.clone(), Vec::new()),
+            },
+        };
+        let name = terminal_name(ticket);
+        let alive = self
+            .backend
+            .snapshot()
+            .map(|s| s.iter().any(|p| p.session_name == name && !p.pane_dead))
+            .unwrap_or(false);
+        if !alive {
+            let _ = self.backend.kill_session(&name);
+            let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+            let launch = self.launch(&[shell], &vars);
+            if let Err(e) = self.backend.spawn(&name, &cwd, &launch) {
+                return Response::Err { message: format!("terminal spawn failed: {e}") };
+            }
+        }
+        self.focus = Some(want);
+        self.focus_label = "terminal".to_string();
+        self.refresh_status_line();
+        Response::Attach { argv: self.backend.attach_argv(&name) }
     }
 
     fn gate_status(&mut self) -> Response {

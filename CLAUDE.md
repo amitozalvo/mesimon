@@ -10,7 +10,8 @@ Pre-v0.1. Milestones M0 (spikes), M1 (walking skeleton), M2 (attention), M3 (ado
 resources), M3.5 (design foundation), M4a (per-ticket worktrees + the staged merge flow),
 and M4b (read-only diff viewer: `v` → `Screen::Diff`, from a ticket page or the board;
 DiffList/DiffFile served read-only off the writer thread on the connection threads; `!`
-shell-in-worktree; STALE-MAP "M4b read-only diff viewer shipped" records the deviations) are
+shell-in-worktree — since T-273 the project's TERMINAL, below; STALE-MAP "M4b read-only diff
+viewer shipped" records the deviations) are
 built, plus the M6 keymap pass (below). M4 spec:
 `~/.claude/plans/smooth-puzzling-sphinx.md`.
 The roadmap and execution state live in the auto-memory (`mesimon-project-state`) and
@@ -1048,9 +1049,9 @@ preference's write. E2e: `crates/mesimon/tests/snooze_e2e.rs`. (STALE-MAP "A tic
 snoozed".)
 
 Board-wide actions (external drawer, archived list, sleep-all, archive-all) deliberately have
-NO key, bar the two the header itself teaches (`U` reloads, `X` sleeps the done agents, `x`'s
-own shift widened to the column, since 2026-09-04 — both
-overlay-only, so the footer stays the selection's) — they live in the Esc menu (`ui/menu.rs`,
+NO key, bar the three the header itself teaches (`U` reloads, `X` sleeps the done agents, `x`'s
+own shift widened to the column, since 2026-09-04, and `!` the project's terminal since T-273 —
+all overlay-only, so the footer stays the selection's) — they live in the Esc menu (`ui/menu.rs`,
 rows from `keymap::menu_items`), because they are rare, are not about the selection, and a menu
 row has room to say what it will do. The board's footer names the door — `esc menu`, in the
 right cluster beside `? keys` (T-158).
@@ -1318,9 +1319,9 @@ diff), `avail: |c| c.git_repo` (= `RepoGit::sampled`, so it is inert with no rep
 header's own `∙ 3 changed`, the T-158 idiom the ticket rail's `c s x` and the PREVIEW heading's
 `{ } page` already use, so the footer stays the selection's. It rides the COUNT, so a clean
 checkout says nothing and `?` is where the key stays; and it is the FIRST rung the clause gives
-up when the row is tight (then the count, then the name truncates). `!` is offered only on a
-branch — `Ctx::worktree_present` ANDs the target — because a shell
-in the checkout is one you already have. **On the checkout an untracked file OPENS**: the daemon
+up when the row is tight (then the count, then the name truncates). `!` on the diff is the
+project's terminal on the diff's own target (T-273, below): the worktree's on a branch diff with
+its worktree present, the checkout's otherwise. **On the checkout an untracked file OPENS**: the daemon
 stamps the row `status = "A"` / `old_mode = "000000"` / `new_mode` from `symlink_metadata` and
 serves it from `git diff --no-index -- /dev/null <path>` (which exits 1 on differences, hence
 `git_bytes_diff`), so `diff_fetch`'s `status.is_empty()` skip and 08 §2's "not reviewable" copy
@@ -1330,6 +1331,39 @@ both needed no target condition at all. The list runs `-uall`, not `-unormal`, b
 can no longer be blob equality — it is "modes differ, both real file modes, no hunks, not
 binary", and the `000000` half is what keeps an empty add or delete from reading as a chmod.
 E2e: `crates/mesimon/tests/diff_e2e.rs`. (STALE-MAP "The board diffs its own checkout".)
+
+**`!` is the project's TERMINAL (T-273, 2026-09-06): a persistent shell on the private tmux
+server, in the checkout — `git fetch` / `pull` / `push` without leaving the board or opening a
+tab.** `Verb::Terminal` on the board, the ticket page and the diff, and the SCREEN says which
+directory (T-221's rule): the board is the repository's screen, so the checkout root; a ticket's
+page its ATTACHED worktree, else the checkout; the diff its own target (`App::terminal_ticket`).
+It is NOT a `SessionRecord` — a session belongs to a ticket (`SessionRecord.ticket` is a plain
+`Ulid`) and every card, rail, quiet gate and reaper reads it as one, and the terminal is a place
+to stand, not work on a ticket — but a named tmux session the way the first-run GATE's
+`msmn-gate` is: `msmn-term` for the root, `msmn-term-<ticket ulid>` for a worktree
+(`server.rs::terminal_name`; the ULID because teardown runs after the ticket left the board and
+the binding carries no key). `Command::OpenTerminal { ticket }` → `Daemon::open_terminal`: alive
+(listed, not `pane_dead`) is REUSED — a `git pull` in flight is never lost, and the pane outlives
+the TUI and the daemon like every session does; a dead pane (`exit` typed; `remain-on-exit`) is
+killed and respawned through `Daemon::launch` (the user's exports and PATH; a worktree's also
+gets `MESIMON_TICKET` / `MESIMON_WORKTREE_BRANCH` via `session_vars`, the root's no ticket
+variable). It answers `Response::Attach` and holds the focus token — `Daemon::focus` is
+`Option<Focus>` now, `Session(uuid)` | `Terminal { ticket }`, so a focused session keeps the
+terminal out and the terminal keeps `FocusStart` out — released by `Command::TerminalEnd`; the
+tmux status line's leaf reads `terminal`. Both commands are denied to agents. In the TUI the
+attach rides the focus road (`App::focus_target`: GATE first, then the grant, parked as
+`FocusTarget::Terminal` in the slots a session's `FocusTarget::Session(uuid, origin)` uses) and
+the return sends `TerminalEnd` and STAYS on the screen the key was pressed on — no origin, since
+nothing was selected. `process_teardowns` kills the worktree's terminal before `worktree::remove`
+(never remove a live cwd; the reaper never saw it because it is no session). Hints: the board's
+binding is `prio: 0` and `chrome::git_clause` draws ` ! terminal` after ` v diff` — whatever the
+change count, since a fetch is what a clean checkout wants — and it is the FIRST rung dropped
+when the row is tight (then `v diff`, then the count); the ticket page's footer reads `! terminal`
+/ `! terminal in worktree`, the diff's the same on `worktree_present`. Before T-273 `!` was the
+diff's `WorktreeShell`: `$SHELL` in the foreground through the handover, gone on return, inert
+on the checkout diff. `pending_attach_cwd` survives for the `^k` editor road only. E2e
+`terminal_e2e`, and the worktree case in `worktree_e2e`. (STALE-MAP "`!` is the project's
+terminal".)
 
 **A board on a WORKSPACE — repositories nested one level under the root — says so and diffs
 them together (T-225, 2026-09-05).** The author's simbly is nineteen independent repos under a

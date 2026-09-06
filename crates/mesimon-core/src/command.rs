@@ -417,6 +417,15 @@ pub enum Command {
     FocusEnd {
         session: uuid::Uuid,
     },
+    /// The project's TERMINAL (T-273): a persistent shell on the private
+    /// tmux server — the checkout root, or a ticket's attached worktree —
+    /// that is no session of any ticket. Takes the focus token like
+    /// `FocusStart` and answers with the attach argv; `TerminalEnd` gives
+    /// the token back.
+    OpenTerminal {
+        ticket: Option<ulid::Ulid>,
+    },
+    TerminalEnd,
     /// Has the GATE ceremony been passed on this machine?
     GateStatus,
     GatePassed,
@@ -690,6 +699,8 @@ impl Command {
             MoveTicket { .. }
             | FocusStart { .. }
             | FocusEnd { .. }
+            | OpenTerminal { .. }
+            | TerminalEnd
             | GatePassed
             | Shutdown
             | AgentMoveTicket { .. }

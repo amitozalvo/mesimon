@@ -6269,3 +6269,67 @@ the PR link. Tests: six units beside `compute_flags` (squash, rebase-merge, dura
 later commits on the same files, a commit after the merge, the fetch-only upstream case with a
 real bare remote, and the empty/missing negatives), `pr_merge_e2e`, golden
 `ticket_merged_upstream_120x30`.
+
+## `!` is the project's terminal (T-273, 2026-09-06)
+
+Asked for as "pressing `!` will attach a global tmux for the current mesimon project — git fetch /
+pull / push without the need to exit mesimon or create a tab; `!` on a worktree ticket page will
+open tmux on the worktree dir". Until now `!` was the diff viewer's `WorktreeShell` (M4b): `$SHELL`
+forked by the TUI in the FOREGROUND over the handover road, in the worktree, inert on the checkout
+diff ("a shell in the checkout is one you already have"), and gone the moment it returned — no
+tmux, no record, nothing to come back to.
+
+What shipped: `Verb::Terminal`, one verb on three screens, and the SCREEN says the directory
+(T-221's rule for `v`): the board opens the checkout root, a ticket's page its attached worktree
+(else the checkout), the diff its own target. The daemon owns the pane —
+`Command::OpenTerminal { ticket }` → `Daemon::open_terminal`, `Response::Attach`,
+`Command::TerminalEnd` — so the same `!` finds the same shell from every screen and after a
+reload.
+
+- **Not a `SessionRecord`.** `SessionRecord.ticket` is a plain `Ulid`, and every card, rail,
+  quiet gate (`checkout_holders`), reaper and worktree lock reads a session as a ticket's. Widening
+  it to an `Option` touches every `s.ticket ==` site and the back-compat fixtures for a thing that
+  is a place to stand, not work on a ticket. The precedent was already in the tree: the first-run
+  GATE's `msmn-gate`, a named tmux session on the private server that the board never lists and
+  `reconcile` returns as `foreign`, which the daemon never reads. The terminal is that with the
+  user's shell: `msmn-term` for the root, `msmn-term-<ticket ulid>` for a worktree
+  (`terminal_name`).
+- **One per DIRECTORY, persistent.** Alive (listed, not `pane_dead`) is reused, so a `git pull`
+  in flight survives a detach and a `U`; `exit` leaves a dead pane under `remain-on-exit`, and the
+  next `!` kills and respawns it — the gate's own rule. Spawned through `Daemon::launch`
+  (`mesimon exec --env`), so the shell has the user's exports and PATH; a worktree's also carries
+  `MESIMON_TICKET` / `MESIMON_WORKTREE_BRANCH` (`session_vars`), the root's no ticket variable —
+  it is global.
+- **The ULID in the name, not the key.** Teardown (`process_teardowns`) kills the worktree's
+  terminal before `worktree::remove` — never remove a live cwd, and the reaper never saw this pane
+  because it is no session — and it runs after the ticket left the board, over a
+  `worktree::Binding` that carries no key. A name derivable from the binding's own key alone is
+  what makes the kill unconditional.
+- **The focus token widened.** `Daemon::focus` was `Option<Uuid>`; it is `Option<Focus>` —
+  `Session(uuid)` | `Terminal { ticket }` — so a focused session keeps the terminal out, the
+  terminal keeps `FocusStart` out, and a second `!` while the terminal holds the token is
+  allowed (it is the same target). The status-line breadcrumb names the ticket whose worktree a
+  terminal stands in, or nothing at the root, with leaf `terminal`. In the TUI the same
+  widening is `FocusTarget::Session(uuid, origin)` | `Terminal` in `pending_gate_then` /
+  `focused_session_hint`, and `App::focus_target` is the one focus road (GATE, then the grant),
+  which `focus_session` now takes too. The terminal's return sends `TerminalEnd` and stays on
+  the screen the key was pressed on: no origin, because nothing was selected.
+- **A worktree still provisioning is refused in words** (`worktree not ready yet`), never the
+  root by surprise; a ticket page with no worktree is the checkout's, which is what a
+  shared-checkout ticket's shell would be anyway.
+- **Hints.** The board's binding is `prio: 0` and the header's git clause draws ` ! terminal`
+  after ` v diff` — the row that names the checkout it opens, T-158's idiom — whatever the change
+  count, since a fetch is what a clean checkout wants; it is the first rung dropped when the row
+  is tight, before `v diff`, before the count. The ticket page's footer reads `! terminal` /
+  `! terminal in worktree` (the rail's trailer names the rail's own sessions, and this is none of
+  them); the diff's the same on `worktree_present`, and the checkout diff now offers it.
+  `checkout_diff_says_uncommitted_and_offers_no_worktree_shell` became
+  `…_offers_the_checkout_terminal`; `WorktreeItem.path` still travels for the ticket page's
+  "has it a directory" and the `^k` road keeps `pending_attach_cwd`.
+- Agents are denied both commands (`agent_allows`). No `doctor` line: the terminal is transient
+  and `tmux ls` on the private socket says what exists.
+
+Tests: `terminal_e2e` (attach argv, one pane in the checkout, no record on the board, the token
+both ways, reuse, exit → respawn), the worktree case in `worktree_e2e` (in the worktree, killed at
+the discard teardown), `the_terminal_opens_the_screens_directory_and_returns_to_it` (app), the
+resolve test in `keymap.rs`, the three git-clause ladder tests, twenty goldens.

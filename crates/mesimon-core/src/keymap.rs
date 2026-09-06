@@ -505,7 +505,11 @@ pub enum Verb {
     ViewPrefix,
     Density,
     SwapPanes,
-    WorktreeShell,
+    /// `!` — the project's TERMINAL (T-273): the user's own shell on the
+    /// private tmux server, persistent, in the checkout root — or in the
+    /// ticket's worktree from a worktree ticket's page or branch diff. One
+    /// verb on three screens; the screen says which directory.
+    Terminal,
     // ---- move ----
     Drop,
     Cancel,
@@ -1310,6 +1314,24 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The project's terminal (T-273): a shell in the checkout, on the
+        // private tmux server, that outlives the visit — `git fetch` and
+        // `git push` without leaving the board or opening a tab. Hinted in
+        // the header's git clause beside `v diff`, the row that names the
+        // checkout it opens (T-158's idiom), so `prio: 0` keeps the footer
+        // the selection's. `always`: a board with no repository still has
+        // a directory to stand in.
+        keys: &[Key::Char('!')],
+        verb: Verb::Terminal,
+        show: "!",
+        hint: |_| "terminal",
+        avail: always,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         // The train's per-ticket door (T-227, user: "let the user cancel it
         // per ticket easily"). One press takes the card off the train, the
         // next puts it back; the card's `auto-merge ∙ next` row becomes
@@ -1721,6 +1743,23 @@ static TICKET: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // The project's terminal (T-273), from the ticket's page: in the
+        // ticket's worktree when it has one — the directory that is hard to
+        // reach — else the checkout. Not a session of the ticket (`s` is
+        // that): nothing joins the rail, and the shell is the same one the
+        // board's `!` finds. In the footer, since the rail's trailer names
+        // the rail's own sessions.
+        keys: &[Key::Char('!')],
+        verb: Verb::Terminal,
+        show: "!",
+        hint: |c| if c.has_worktree { "terminal in worktree" } else { "terminal" },
+        avail: always,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: false,
+        prio: 45,
+    },
+    Binding {
         keys: &[Key::Char('x')],
         verb: Verb::Sleep,
         show: "x",
@@ -2008,11 +2047,15 @@ static DIFF: &[Binding] = &[
         prio: 40,
     },
     Binding {
+        // The project's terminal (T-273) on the diff's own target: a branch
+        // diff with its worktree present opens the worktree's, the checkout
+        // diff the checkout's — the same directory the diff reads. Until
+        // T-273 this was `$SHELL` in the foreground, gone on return.
         keys: &[Key::Char('!')],
-        verb: Verb::WorktreeShell,
+        verb: Verb::Terminal,
         show: "!",
-        hint: |_| "shell here",
-        avail: |c| c.worktree_present,
+        hint: |c| if c.worktree_present { "terminal in worktree" } else { "terminal" },
+        avail: always,
         class: Class::Plain,
         group: Group::Worktree,
         mutates: false,
@@ -4802,10 +4845,12 @@ mod tests {
             assert_ne!(resolve(Scope::Board, Key::Char(sym), &ctx), Some(Verb::TagCycle), "{sym}");
             assert_ne!(resolve(Scope::Ticket, Key::Char(sym), &ctx), Some(Verb::TagCycle), "{sym}");
         }
-        // `!` is the diff screen's shell-in-worktree, and stays it: the atom
-        // Shift+1 really produces was spoken for before this feature existed.
-        let wt = Ctx { worktree_present: true, ..ctx.clone() };
-        assert_eq!(resolve(Scope::Diff, Key::Char('!'), &wt), Some(Verb::WorktreeShell));
+        // `!` is the project's terminal on every screen (T-273; before it, the
+        // diff's shell-in-worktree): the atom Shift+1 really produces was
+        // spoken for before this feature existed.
+        assert_eq!(resolve(Scope::Board, Key::Char('!'), &ctx), Some(Verb::Terminal));
+        assert_eq!(resolve(Scope::Ticket, Key::Char('!'), &ctx), Some(Verb::Terminal));
+        assert_eq!(resolve(Scope::Diff, Key::Char('!'), &ctx), Some(Verb::Terminal));
     }
 
     /// The picker owns its scope: it inherits nothing, so a key it does not

@@ -25,6 +25,21 @@ fn board_of(resp: Response) -> (Board, Vec<WorktreeItem>) {
     }
 }
 
+/// Every pane on the private server: `(session name, cwd, dead)`.
+fn list_panes(sock: &std::path::Path) -> Vec<(String, String, bool)> {
+    let out = tmux(sock)
+        .args(["list-panes", "-a", "-F", "#{session_name}|#{pane_current_path}|#{pane_dead}"])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .filter_map(|l| {
+            let mut it = l.splitn(3, '|');
+            Some((it.next()?.to_string(), it.next()?.to_string(), it.next()? == "1"))
+        })
+        .collect()
+}
+
 fn git(repo: &std::path::Path, args: &[&str]) -> String {
     let out = Proc::new("git").arg("-C").arg(repo).args(args).output().unwrap();
     assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
@@ -148,6 +163,20 @@ fn m4_worktree_lifecycle() {
         "cwd should be the worktree: {}",
         rec.cwd
     );
+    // The ticket's terminal (T-273) stands in the worktree too, as a named
+    // tmux session that is no session of the ticket: the board lists it
+    // nowhere, and the token goes back on `TerminalEnd`.
+    let term1 = format!("msmn-term-{t1}");
+    match c.request(Command::OpenTerminal { ticket: Some(t1) }) {
+        Response::Attach { argv } => assert_eq!(argv.last().map(String::as_str), Some(&*term1)),
+        other => panic!("expected the terminal's attach argv, got {other:?}"),
+    }
+    let panes = list_panes(&paths.tmux_sock());
+    let term = panes.iter().find(|(name, _, _)| *name == term1).expect("the terminal's pane");
+    assert_eq!(term.1, rec.cwd, "the terminal stands in the worktree");
+    let (b, _) = board_of(c.request(Command::Snapshot));
+    assert_eq!(b.sessions.len(), 1, "the terminal is no session: {:?}", b.sessions);
+    assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
     // Workspace is locked now.
     assert!(matches!(
         c.request(Command::SetWorkspace { id: t1, workspace: None }),
@@ -318,6 +347,15 @@ fn m4_worktree_lifecycle() {
         Response::Err { message } => assert!(message.contains("unmerged"), "{message}"),
         other => panic!("expected delete gate, got {other:?}"),
     }
+    // A terminal standing in the worktree (T-273) does not hold the teardown
+    // up and does not survive it: killed before the directory goes.
+    let term2 = format!("msmn-term-{t2}");
+    assert!(matches!(
+        c.request(Command::OpenTerminal { ticket: Some(t2) }),
+        Response::Attach { .. }
+    ));
+    assert!(list_panes(&paths.tmux_sock()).iter().any(|(name, _, _)| *name == term2));
+    assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
     assert!(matches!(
         c.request(Command::DeleteTicket { id: t2, discard_worktree: true }),
         Response::Ok
@@ -336,6 +374,10 @@ fn m4_worktree_lifecycle() {
         );
         std::thread::sleep(Duration::from_millis(300));
     }
+    assert!(
+        !list_panes(&paths.tmux_sock()).iter().any(|(name, _, _)| *name == term2),
+        "the worktree's terminal went with the worktree"
+    );
 
     // ---- cleanup ----------------------------------------------------------
     let _ = c.request(Command::Shutdown);

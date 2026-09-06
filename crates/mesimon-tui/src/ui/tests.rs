@@ -1519,7 +1519,7 @@ fn golden_checkout_diff_120() {
 /// The checkout diff is the same screen answering a different question, and
 /// the three places it has to say so (T-221).
 #[test]
-fn checkout_diff_says_uncommitted_and_offers_no_worktree_shell() {
+fn checkout_diff_says_uncommitted_and_offers_the_checkout_terminal() {
     let mut app = app_graphite(fixture(false));
     install_checkout_diff(&mut app);
     let rows = lines_of(&cells(&app, 120, 30));
@@ -1533,10 +1533,12 @@ fn checkout_diff_says_uncommitted_and_offers_no_worktree_shell() {
     assert!(!rows[2].contains(" vs "), "{}", rows[2]);
     assert!(!rows[2].contains("worktree evicted"), "{}", rows[2]);
 
-    // `!` opens a shell in a worktree, which is a directory that is hard to
-    // reach. Here the user is standing in it, so the key is not offered.
+    // `!` is the project's terminal on the diff's own target (T-273): here
+    // the checkout, so the hint says nothing of a worktree. (Before T-273 it
+    // was a foreground shell in the worktree and inert on this diff.)
     let footer = rows.last().unwrap();
-    assert!(!footer.contains("shell here"), "{footer}");
+    assert!(footer.contains("! terminal ∙"), "{footer}");
+    assert!(!footer.contains("in worktree"), "{footer}");
     assert!(footer.contains("q back"), "{footer}");
     assert_eq!(
         mesimon_core::keymap::resolve(
@@ -1544,7 +1546,7 @@ fn checkout_diff_says_uncommitted_and_offers_no_worktree_shell() {
             mesimon_core::keymap::Key::Char('!'),
             &app.ctx()
         ),
-        None
+        Some(mesimon_core::keymap::Verb::Terminal)
     );
 
     // Every row is uncommitted here, so `D` would be a letter on every line
@@ -4360,15 +4362,17 @@ fn test_git_clause_is_silent_until_sampled_and_quiet_in_sync() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 0, 0, 0);
     let head = &render(&app, 120, 30)[0];
-    // Nothing uncommitted, so nothing for `v` to open and no hint (T-221).
-    assert!(head.contains("kanban-tui ⎇ main   7 tickets"), "{head:?}");
+    // Nothing uncommitted, so nothing for `v` to open and no hint (T-221);
+    // the terminal's key stays, since a fetch is what a clean checkout
+    // wants (T-273).
+    assert!(head.contains("kanban-tui ⎇ main  ! terminal   7 tickets"), "{head:?}");
     app.git = git_state("main", 0, 3, 0);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ main ↓3   7 tickets"), "{head:?}");
+    assert!(head.contains("⎇ main ↓3  ! terminal   7 tickets"), "{head:?}");
     // A count is a thing to read, and the key that reads it rides beside it.
     app.git = git_state("main", 1, 0, 2);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ main ↑1 ∙ 2 changed  v diff   7 tickets"), "{head:?}");
+    assert!(head.contains("⎇ main ↑1 ∙ 2 changed  v diff  ! terminal   7 tickets"), "{head:?}");
     // Detached: the short oid stands in for the name, no arrows without an upstream.
     app.git = mesimon_core::command::RepoGit {
         detached: true,
@@ -4376,7 +4380,7 @@ fn test_git_clause_is_silent_until_sampled_and_quiet_in_sync() {
         ..git_state("a1b2c3d", 0, 0, 1)
     };
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ a1b2c3d ∙ 1 changed  v diff   7 tickets"), "{head:?}");
+    assert!(head.contains("⎇ a1b2c3d ∙ 1 changed  v diff  ! terminal   7 tickets"), "{head:?}");
 }
 
 /// The offer has first claim on the row. The clause gives its parts up in
@@ -4390,12 +4394,16 @@ fn test_git_clause_gives_way_to_the_offer() {
     app.git = git_state(long, 1, 0, 3);
     app.force_release_available("v0.1.0-alpha.5");
     let head = &render(&app, 160, 30)[0];
-    assert!(head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed  v diff   7 tickets")), "{head:?}");
+    assert!(
+        head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed  v diff  ! terminal   7 tickets")),
+        "{head:?}"
+    );
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "{head:?}");
     // The hint is the first rung down: a key is not a fact about the branch.
     let head = &render(&app, 110, 30)[0];
     assert!(head.contains("~ ↑1 ∙ 3 changed   7 tickets"), "the count outlives it: {head:?}");
     assert!(!head.contains("v diff"), "the hint goes first: {head:?}");
+    assert!(!head.contains("terminal"), "and the terminal's key before it: {head:?}");
     let head = &render(&app, 100, 30)[0];
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
     assert!(head.contains("⎇ msmn/T-124"), "the name is kept to its floor: {head:?}");
@@ -4405,11 +4413,11 @@ fn test_git_clause_gives_way_to_the_offer() {
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
     assert!(!head.contains('⎇'), "below the floor the clause stands aside whole: {head:?}");
     // With no offer the clause has the row: the name gives a little and the
-    // count stays, because the name is still above its floor.
+    // count and both keys stay, because the name is still above its floor.
     let mut app = app_graphite(fixture(false));
     app.git = git_state(long, 1, 0, 3);
     let head = &render(&app, 100, 30)[0];
-    assert!(head.contains("⎇ msmn/T-124-git-status-pull-push~ ↑1 ∙ 3 changed  v diff"), "{head:?}");
+    assert!(head.contains("⎇ msmn/T-124-git-stat~ ↑1 ∙ 3 changed  v diff  ! terminal"), "{head:?}");
 }
 
 /// The ASCII tier spells the clause with the card's own fallbacks.
@@ -4774,18 +4782,18 @@ fn test_git_clause_names_a_workspace_by_its_count() {
     };
     assert!(app.ctx().multi_repo);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ master ↑2 ↓1 ∙ 3 repos ∙ 7 changed  v diff"), "{head:?}");
+    assert!(head.contains("⎇ master ↑2 ↓1 ∙ 3 repos ∙ 7 changed  v diff  ! terminal"), "{head:?}");
     // A folder of repos has no branch of its own and still speaks.
     app.git.branch.clear();
     app.git.upstream = None;
     app.git.ahead = 0;
     app.git.behind = 0;
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ 3 repos ∙ 7 changed  v diff"), "{head:?}");
+    assert!(head.contains("⎇ 3 repos ∙ 7 changed  v diff  ! terminal"), "{head:?}");
     // Clean: the count and its key go quiet, the workspace stays named.
     app.git.changed = 0;
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ 3 repos   ") && !head.contains("v diff"), "{head:?}");
+    assert!(head.contains("⎇ 3 repos  ! terminal   ") && !head.contains("v diff"), "{head:?}");
     golden("board_workspace_120x30", &render(&app, 120, 30));
 }
 
