@@ -4403,10 +4403,7 @@ fn test_git_clause_gives_way_to_the_offer() {
     app.git = git_state(long, 1, 0, 3);
     app.force_release_available("v0.1.0-alpha.5");
     let head = &render(&app, 160, 30)[0];
-    assert!(
-        head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed  v diff   7 tickets")),
-        "{head:?}"
-    );
+    assert!(head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed  v diff   7 tickets")), "{head:?}");
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "{head:?}");
     // The hint is the first rung down: a key is not a fact about the branch.
     let head = &render(&app, 110, 30)[0];
@@ -4425,7 +4422,10 @@ fn test_git_clause_gives_way_to_the_offer() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state(long, 1, 0, 3);
     let head = &render(&app, 100, 30)[0];
-    assert!(head.contains("⎇ msmn/T-124-git-status-pull-push~ ↑1 ∙ 3 changed  v diff   7 tickets"), "{head:?}");
+    assert!(
+        head.contains("⎇ msmn/T-124-git-status-pull-push~ ↑1 ∙ 3 changed  v diff   7 tickets"),
+        "{head:?}"
+    );
 }
 
 /// The ASCII tier spells the clause with the card's own fallbacks.
