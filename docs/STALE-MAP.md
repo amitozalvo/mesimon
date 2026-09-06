@@ -6436,3 +6436,54 @@ header's clause are for what the SELECTION or the checkout's state makes possibl
 never changes is what `?` exists to list. `test_git_clause_gives_way_to_the_offer` lost its
 "terminal goes first" rung and `checkout_diff_says_uncommitted_and_offers_the_checkout_terminal`
 asserts the overlay's row instead of the footer's. Eighteen goldens lost the cluster.
+
+## The archive reclaims a landed worktree (T-278, 2026-09-06)
+
+Until now `archive_ticket` never touched `self.worktrees` ("reversible, binding + branch
+persist", the M4a block above): only a delete tore a worktree down, so the archive was where
+the disk went to hide — on 2026-09-06 the mesimon board held 16 worktrees, 29 GB, and 14 of
+them belonged to archived tickets whose branches were already ancestors of main, each carrying
+a ~2 GB `target/`. Reclaimed by hand that day; now by the archive.
+
+**The rule** (`Daemon::reclaim_on_archive`, the pure gate `worktree::reclaim_on_archive` with
+a unit test): a ticket archived through `archive_ticket` whose binding is `Attached` (or
+`Evicted` with a branch still to delete), whose branch is MERGED by the same oracle the card
+and the DONE gate answer with — `ticket_merged`: an ancestor of the base, or the sample's
+patch-id verdict (T-267), so a squashed PR counts — and on which nothing holds a pane (the
+archive gate already refuses an awake session) is pushed onto `pending_teardown`, the delete's
+own road. Unmerged work keeps its worktree exactly as before: the archive stays reversible
+for work that has not landed. **A snooze takes none of this** — a snooze is a return, and its
+ticket comes back to the same tree. `worktrees_barred` keeps everything standing (D26).
+
+**The teardown entry grew a reason** (`Teardown { ticket, why: Deleted { discard } |
+Archived, sids }`) because what stays behind differs. `process_teardowns` judges an archived
+ticket's again on its turn — still archived (a restore inside the tick cancels it), still
+merged (a T-273 terminal standing in the tree could have committed meanwhile) — then kills
+the terminal, removes the directory (single `--force`) and tries `branch -d`; `-D` stays
+behind the user's explicit discard, so git refuses a squash-merged branch and that is the
+conservative outcome. **The binding follows the branch**: where the branch went, the binding
+goes with it and the next spawn provisions fresh (the same name minted again off the base);
+where it survived, the binding stays `Evicted` — "directory removed, branch kept", the status's
+own meaning — and `queue_provision` replays it through `provision_existing`. Feed line
+`worktree_torn_down` / `worktree_torn_down:branch_kept`, actor `automation`.
+
+**A wake rebuilds the tree.** The ticket's sleeping and exited claudes keep their records, and
+their `cwd` is now a directory that does not exist; `resume_session` used to refuse that
+outright ("never silently relocate an agent"). Rebuilding the ticket's OWN worktree is not a
+relocation: on a `Worktree` ticket whose cwd is gone the wake goes through `resolve_spawn_cwd`
+like a first spawn — an attached binding is used at once, otherwise the wake is parked
+(`pending_resumes: Vec<PendingResume>`, replayed by `on_provisioned` beside the parked spawns,
+dropped on a failed provision) and answers `Response::Provisioning`; the record's `cwd` is
+restamped when the pane opens. `prompt_sleeping` parks the ask's words on the entry
+(`PendingResume.prompt`), and `Daemon::park_prompt` is the one place both roads land them. In
+the TUI the wake road and the ask both take a `Provisioning` arm (`provisioning worktree ∙
+claude wakes when ready`), and `settle_pending_spawn_focus` looks for a session with a PANE,
+not a live one — a Sleeping record `is_live`, and focusing it would have parked the same wake
+again every snapshot. A shared-checkout or adopted ticket keeps the old refusal.
+
+Deferred: the ARCHIVED row says nothing yet (with the binding dropped the row cannot tell a
+reclaimed worktree from one never provisioned; the feed line is the record), and a per-column
+setting for the rule (T-117's table) — it ships board-wide. `mesimon doctor` unchanged. E2e
+`archive_reclaim_e2e` (three tests: ff-merged → dir, branch and binding gone, restore + spawn
+provisions fresh; unmerged → untouched; squash-merged → dir gone, branch and `Evicted` binding
+kept, restore + wake rebuilds the tree with the record's cwd following).

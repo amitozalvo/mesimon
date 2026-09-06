@@ -1288,6 +1288,23 @@ pub fn remove(repo: &Path, wt: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The archive's reclaim gate (T-278): does an archived ticket's worktree go?
+/// Only a tree that exists to reclaim (`Attached`, or `Evicted` with the
+/// branch still to delete — a provision in flight or failed is nobody's to
+/// remove), only with a branch, only when its work has LANDED (`merged` is
+/// `ticket_merged`'s answer, the card's and the DONE gate's), only with
+/// nothing on the ticket holding a pane (the archive gate already refuses
+/// an awake session; said again here so the rule reads whole), and never
+/// while the bindings file is barred (D26: an unreadable file is no ground
+/// for an irreversible move). Unmerged work keeps its worktree.
+pub fn reclaim_on_archive(b: &Binding, merged: bool, awake: usize, barred: bool) -> bool {
+    matches!(b.status, BindingStatus::Attached | BindingStatus::Evicted)
+        && !b.branch.is_empty()
+        && merged
+        && awake == 0
+        && !barred
+}
+
 /// Step 5: `-d` (if-merged); the `-D` escalation is a separate explicit call.
 pub fn delete_branch(repo: &Path, branch: &str, force: bool) -> Result<()> {
     let flag = if force { "-D" } else { "-d" };
@@ -1297,6 +1314,37 @@ pub fn delete_branch(repo: &Path, branch: &str, force: bool) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn binding(status: BindingStatus, branch: &str) -> Binding {
+        Binding {
+            path: PathBuf::from("/nowhere"),
+            branch: branch.into(),
+            base_oid: String::new(),
+            branch_oid: String::new(),
+            status,
+            locked: false,
+        }
+    }
+
+    #[test]
+    fn archive_reclaims_only_a_landed_quiet_tree() {
+        let attached = binding(BindingStatus::Attached, "msmn/T-1-x");
+        assert!(reclaim_on_archive(&attached, true, 0, false), "merged, quiet: goes");
+        assert!(!reclaim_on_archive(&attached, false, 0, false), "unmerged work stays");
+        assert!(!reclaim_on_archive(&attached, true, 1, false), "a pane holds it");
+        assert!(!reclaim_on_archive(&attached, true, 0, true), "barred bindings: nothing moves");
+        // Evicted (dir already gone) still has a merged branch to delete.
+        assert!(reclaim_on_archive(&binding(BindingStatus::Evicted, "msmn/T-1-x"), true, 0, false));
+        // Nothing to reclaim: no branch, or a provision that is not a tree yet.
+        assert!(!reclaim_on_archive(&binding(BindingStatus::Attached, ""), true, 0, false));
+        for status in [
+            BindingStatus::Queued,
+            BindingStatus::Provisioning,
+            BindingStatus::Error { stage: "add".into(), message: "x".into() },
+        ] {
+            assert!(!reclaim_on_archive(&binding(status, "msmn/T-1-x"), true, 0, false));
+        }
+    }
 
     fn scratch_repo(name: &str) -> Option<PathBuf> {
         if !have_git() {

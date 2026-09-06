@@ -1266,7 +1266,15 @@ dir; pid-bearing locks + crash-safe sweep. Workspace is chosen ONCE, in the comp
 "rebase+test" to the agent (conflicts resolve in the worktree, tests run pre-main); merged →
 inject the notice. Delete gates on unmerged bindings (`d` then `D` discards, branch `-D`); DONE move
 blocked while unmerged; teardown waits for the reaper (never remove a live cwd), single
-`--force` only. Card mark `⎇ ⎇… ⎇↑ ⎇↓ ⎇✓ ⎇! ⎇x ⎇-`; sessions in worktrees carry
+`--force` only. **The archive reclaims a LANDED worktree (T-278, 2026-09-06)**: a ticket
+archived with its branch merged by `ticket_merged`'s oracle (ancestor or T-267's patch-id
+verdict) and nothing holding a pane goes down the same teardown road (`Teardown { why:
+Archived }`) — directory removed, `branch -d` tried, the binding dropped with the branch or
+kept `Evicted` where git refused (a squash), so a restore's spawn provisions fresh or replays;
+unmerged work keeps its tree, a snooze touches nothing, and a wake on a `Worktree` ticket
+whose cwd is gone re-provisions through `resolve_spawn_cwd` (`pending_resumes`,
+`Response::Provisioning`) instead of refusing. E2e `archive_reclaim_e2e` (STALE-MAP "The
+archive reclaims a landed worktree"). Card mark `⎇ ⎇… ⎇↑ ⎇↓ ⎇✓ ⎇! ⎇x ⎇-`; sessions in worktrees carry
 `MESIMON_WORKTREE_BRANCH` (every spawn carries `MESIMON_TICKET`, worktree or not — T-84), and
 spawns pass the user's own `permissions.defaultMode` as `--permission-mode` (fresh worktree
 paths lost it otherwise).

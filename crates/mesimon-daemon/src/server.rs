@@ -124,6 +124,36 @@ struct StatusProbe {
     looked_at: u64,
 }
 
+/// A worktree waiting to go (12 §12.6.1). `sids` are the panes the reaper
+/// still holds — the teardown waits for every one of them, since a
+/// directory a live process has as cwd is never removed.
+struct Teardown {
+    ticket: ulid::Ulid,
+    why: TeardownWhy,
+    sids: Vec<String>,
+}
+
+/// Why a worktree is going, which is what decides what stays behind.
+enum TeardownWhy {
+    /// The ticket left through the grace band: the binding goes with it,
+    /// and `discard` is the user's explicit `-D` on an unmerged branch.
+    Deleted { discard: bool },
+    /// The ticket was archived with its work landed (T-278): the directory
+    /// goes, `branch -d` is tried, and the binding stays `Evicted` exactly
+    /// while the branch survives, so a restore replays it.
+    Archived,
+}
+
+/// A wake parked behind a worktree being rebuilt (T-278): the record's cwd
+/// went with an archived worktree, and `on_provisioned` replays the resume.
+/// `prompt` is a Shift+Enter's words on a sleeping claude, parked with it.
+struct PendingResume {
+    ticket: ulid::Ulid,
+    session: uuid::Uuid,
+    confirm: bool,
+    prompt: Option<String>,
+}
+
 struct GraceEntry {
     ticket: Ticket,
     sessions: Vec<SessionRecord>,
@@ -302,6 +332,8 @@ pub struct Daemon {
     /// The bool is the request's `submit_prompt` — a parked Shift+Enter must
     /// still submit its prompt when the worktree finally lands.
     pending_spawns: Vec<(ulid::Ulid, SessionKind, bool)>,
+    /// Wakes parked behind provisioning (T-278), replayed beside the spawns.
+    pending_resumes: Vec<PendingResume>,
     /// merged/ahead/conflict flags, refreshed on the 10 s bucket while
     /// bindings exist.
     wt_merged: HashMap<ulid::Ulid, bool>,
@@ -328,9 +360,10 @@ pub struct Daemon {
     /// the ref a merged PR lands on (T-267). Resolved beside `base_branch`
     /// and forgotten with it, since a fetch can mint either.
     upstream_base: Option<Option<String>>,
-    /// Tickets whose grace expired while their panes were still reaping —
-    /// worktree teardown waits for the reaper (never remove a live cwd).
-    pending_teardown: Vec<(ulid::Ulid, bool, Vec<String>)>,
+    /// Worktrees on their way out — a deleted ticket's once its grace
+    /// expired, an archived ticket's once its work landed (T-278) — each
+    /// waiting for the reaper (never remove a live cwd).
+    pending_teardown: Vec<Teardown>,
     /// Writer-thread sender, cloned into provisioning threads.
     tx: Sender<Msg>,
     /// What restrains every mover that is not a person (T-84). See
@@ -611,6 +644,7 @@ pub fn run(paths: Paths) -> Result<()> {
             .unwrap_or_default(),
         worktrees,
         pending_spawns: Vec::new(),
+        pending_resumes: Vec::new(),
         wt_merged: HashMap::new(),
         wt_ahead: HashMap::new(),
         wt_needs_rebase: HashMap::new(),
@@ -4715,14 +4749,28 @@ impl Daemon {
             };
         };
         let resp = self.resume_session(id, false);
-        if let Response::Spawned { .. } = &resp {
-            self.pending_prompt.insert(id, Parked { text, brief: false });
-            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                rec.pending_submit = true;
+        match &resp {
+            Response::Spawned { .. } => self.park_prompt(id, text),
+            // The worktree is being rebuilt under the wake (T-278): the
+            // words ride the parked resume and land when it replays.
+            Response::Provisioning => {
+                if let Some(r) = self.pending_resumes.iter_mut().find(|r| r.session == id) {
+                    r.prompt = Some(text);
+                }
             }
-            self.persist_and_notify();
+            _ => {}
         }
         resp
+    }
+
+    /// Park an ask's words on a record whose pane is on its way: the first
+    /// tick after `SessionStart` pastes them (`deliver_pending_submit`).
+    fn park_prompt(&mut self, id: uuid::Uuid, text: String) {
+        self.pending_prompt.insert(id, Parked { text, brief: false });
+        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+            rec.pending_submit = true;
+        }
+        self.persist_and_notify();
     }
 
     fn restore_ticket(&mut self, id: ulid::Ulid) -> Response {
@@ -4747,8 +4795,9 @@ impl Daemon {
     }
 
     /// Archive: off the board, everything kept (ticket file, sleeping
-    /// sessions, worktree binding + branch). Gated on the ticket holding no
-    /// pane — archive means everything is already asleep.
+    /// sessions) — and the worktree too, unless its work has landed
+    /// (`reclaim_on_archive`). Gated on the ticket holding no pane —
+    /// archive means everything is already asleep.
     fn archive_ticket(&mut self, id: ulid::Ulid) -> Response {
         match self.board.ticket(id) {
             None => return no_such_ticket(),
@@ -4766,7 +4815,38 @@ impl Daemon {
         });
         // Re-price now — a taken offer must not linger until the next bucket.
         self.archive_cache = self.archive_figures();
+        self.reclaim_on_archive(id);
         resp
+    }
+
+    /// The archive is where the disk went to hide (T-278, 2026-09-06: 14 of
+    /// the board's 16 worktrees belonged to archived tickets whose branches
+    /// were already on main, ~2 GB of `target/` each). So an archived
+    /// ticket's worktree is torn down when its work has LANDED — merged by
+    /// the same oracle the card and the DONE gate answer with
+    /// (`ticket_merged`: an ancestor of the base, or the sample's patch-id
+    /// verdict, so a squashed PR counts) — and nothing on the ticket has a
+    /// pane, which the archive gate already holds. It goes down the delete's
+    /// own road (`process_teardowns`: after the reaper, the T-273 terminal
+    /// killed first, single `--force`, `branch -d` — never `-D`, which stays
+    /// behind the user's discard). Unmerged work keeps its worktree exactly
+    /// as before: the archive stays reversible for work that has not landed.
+    /// A snooze takes none of this — a snooze is a return.
+    fn reclaim_on_archive(&mut self, id: ulid::Ulid) {
+        let Some(b) = self.worktrees.get(&id) else { return };
+        let merged = !b.branch.is_empty() && self.ticket_merged(id, &b.branch);
+        let awake = self.board.ticket_awake_sessions(id);
+        if !worktree::reclaim_on_archive(b, merged, awake, self.worktrees_barred) {
+            return;
+        }
+        if self.pending_teardown.iter().any(|t| t.ticket == id) {
+            return;
+        }
+        self.pending_teardown.push(Teardown {
+            ticket: id,
+            why: TeardownWhy::Archived,
+            sids: vec![],
+        });
     }
 
     /// Snooze: an archive with a deadline (T-74). `archive_ticket`'s gates
@@ -5166,7 +5246,11 @@ impl Daemon {
                 // M4: worktree teardown waits for the reaper — never remove a
                 // directory a live process still has as cwd (12 §12.6.5).
                 if self.worktrees.contains_key(&id) {
-                    self.pending_teardown.push((id, g.discard_worktree, sids));
+                    self.pending_teardown.push(Teardown {
+                        ticket: id,
+                        why: TeardownWhy::Deleted { discard: g.discard_worktree },
+                        sids,
+                    });
                 }
             }
         }
@@ -5176,6 +5260,12 @@ impl Daemon {
     /// Teardown transaction (12 §12.6.1), once every pane of the ticket left
     /// the reaper: unlock → remove --force (single force; NEVER -f -f) →
     /// branch -d if merged, -D only under the user's discard confirmation.
+    /// An archived ticket's (T-278) is judged again here — still archived,
+    /// still merged (a terminal standing in the tree could have committed
+    /// meanwhile) — and keeps its binding as `Evicted` while the branch
+    /// survives (`branch -d` refuses a squash-merged one), so a restore
+    /// replays the same branch; a branch that went takes the binding with
+    /// it, and the next spawn provisions fresh.
     fn process_teardowns(&mut self) {
         if self.pending_teardown.is_empty() {
             return;
@@ -5184,7 +5274,7 @@ impl Daemon {
             .pending_teardown
             .iter()
             .enumerate()
-            .filter(|(_, (_, _, sids))| !sids.iter().any(|s| self.reaping.contains_key(s)))
+            .filter(|(_, t)| !t.sids.iter().any(|s| self.reaping.contains_key(s)))
             .map(|(i, _)| i)
             .collect();
         if ready.is_empty() {
@@ -5197,9 +5287,18 @@ impl Daemon {
             return;
         }
         for i in ready.into_iter().rev() {
-            let (ticket, discard, _) = self.pending_teardown.remove(i);
-            let Some(b) = self.worktrees.remove(&ticket) else { continue };
+            let Teardown { ticket, why, .. } = self.pending_teardown.remove(i);
+            let Some(b) = self.worktrees.get(&ticket).cloned() else { continue };
             let merged = !b.branch.is_empty() && self.ticket_merged(ticket, &b.branch);
+            let archived = matches!(why, TeardownWhy::Archived);
+            if archived {
+                let still_archived = self.board.ticket(ticket).is_some_and(|t| t.is_archived());
+                if !still_archived || !merged {
+                    // Restored before its turn, or no longer landed: the
+                    // archive's rule no longer holds, and the tree stays.
+                    continue;
+                }
+            }
             if b.path.is_dir() {
                 // The worktree's terminal (T-273) stands in the directory
                 // about to go: it is no session of the ticket, so the reaper
@@ -5208,13 +5307,31 @@ impl Daemon {
                 let _ = worktree::remove(&self.paths.repo_root, &b.path);
             }
             if !b.branch.is_empty() {
-                if merged {
-                    let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, false);
-                } else if discard {
-                    let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, true);
+                match why {
+                    _ if merged => {
+                        let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, false);
+                    }
+                    TeardownWhy::Deleted { discard: true } => {
+                        let _ = worktree::delete_branch(&self.paths.repo_root, &b.branch, true);
+                    }
+                    // Unmerged without discard: keep the branch (commits survive).
+                    TeardownWhy::Deleted { discard: false } | TeardownWhy::Archived => {}
                 }
-                // Unmerged without discard: keep the branch (commits survive).
             }
+            let branch_kept = !b.branch.is_empty()
+                && !worktree::branch_tip(&self.paths.repo_root, &b.branch).is_empty();
+            if archived && branch_kept {
+                if let Some(b) = self.worktrees.get_mut(&ticket) {
+                    b.status = BindingStatus::Evicted;
+                    b.locked = false;
+                }
+                self.feed.board("automation", "worktree_torn_down:branch_kept", Some(ticket));
+                continue;
+            }
+            if archived {
+                self.feed.board("automation", "worktree_torn_down", Some(ticket));
+            }
+            self.worktrees.remove(&ticket);
             self.wt_merged.remove(&ticket);
             self.wt_ahead.remove(&ticket);
             self.wt_needs_rebase.remove(&ticket);
@@ -5488,9 +5605,30 @@ impl Daemon {
                         self.feed.board("daemon", "spawn_replay_failed", Some(t));
                     }
                 }
+                // A wake parked behind the rebuild (T-278) replays the same
+                // way; the words a Shift+Enter parked with it land as
+                // `prompt_sleeping` would have landed them.
+                let (resumes, rest): (Vec<PendingResume>, Vec<PendingResume>) =
+                    self.pending_resumes.drain(..).partition(|r| r.ticket == ticket);
+                self.pending_resumes = rest;
+                for r in resumes {
+                    match self.resume_session(r.session, r.confirm) {
+                        Response::Spawned { .. } => {
+                            if let Some(text) = r.prompt {
+                                self.park_prompt(r.session, text);
+                            }
+                        }
+                        Response::Err { message } => {
+                            eprintln!("mesimon: parked wake replay failed: {message}");
+                            self.feed.board("daemon", "resume_replay_failed", Some(ticket));
+                        }
+                        _ => {}
+                    }
+                }
             }
             Err((stage, message)) => {
                 self.pending_spawns.retain(|(t, _, _)| *t != ticket);
+                self.pending_resumes.retain(|r| r.ticket != ticket);
                 if let Some(b) = self.worktrees.get_mut(&ticket) {
                     b.status = BindingStatus::Error { stage, message };
                 }
@@ -6052,14 +6190,44 @@ impl Daemon {
                 Err(message) => return Response::Err { message },
             },
         };
-        let (sid, cwd, ticket) =
+        let (sid, mut cwd, ticket) =
             (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()), rec.ticket);
+        let strategy = self
+            .board
+            .ticket(ticket)
+            .map(|t| t.workspace_strategy())
+            .unwrap_or(mesimon_core::board::DEFAULT_WORKSPACE);
         // M4: never silently relocate an agent — a removed worktree/cwd is an
-        // explicit refusal, not a fallback into the main checkout.
+        // explicit refusal, not a fallback into the main checkout. The one
+        // road that is not a relocation (T-278): a worktree ticket whose tree
+        // the archive reclaimed gets it rebuilt the way a first spawn does —
+        // the same branch where it survived, a fresh one off the base where
+        // `branch -d` took it — and the wake is parked behind the build.
         if !cwd.is_dir() {
-            return Response::Err {
-                message: format!("session's directory is gone ({}) — cannot resume", cwd.display()),
-            };
+            if strategy != WorkspaceStrategy::Worktree {
+                return Response::Err {
+                    message: format!(
+                        "session's directory is gone ({}) — cannot resume",
+                        cwd.display()
+                    ),
+                };
+            }
+            match self.resolve_spawn_cwd(ticket) {
+                Ok(Some(p)) => cwd = p,
+                Ok(None) => {
+                    if !self.pending_resumes.iter().any(|r| r.session == id) {
+                        self.pending_resumes.push(PendingResume {
+                            ticket,
+                            session: id,
+                            confirm,
+                            prompt: None,
+                        });
+                    }
+                    self.persist_and_notify();
+                    return Response::Provisioning;
+                }
+                Err(message) => return Response::Err { message },
+            }
         }
         if let Some(message) = self.spawn_gate() {
             return Response::Err { message };
@@ -6073,6 +6241,7 @@ impl Daemon {
         let now = now_ms();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.argv = argv;
+            rec.cwd = cwd.display().to_string();
             rec.state = SessionState::Spawning;
             rec.state_changed_at = Some(now);
             rec.waiting_since = None;

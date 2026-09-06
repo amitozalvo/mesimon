@@ -1183,10 +1183,13 @@ impl App {
             self.pending_spawn_focus = None;
             return Ok(());
         }
+        // `has_pane`, not `is_live`: a wake parked behind a rebuilt worktree
+        // (T-278) leaves a Sleeping record on the ticket, and focusing that
+        // would park the same wake again every snapshot.
         if let Some(sid) = self
             .rail_sessions(ticket)
             .iter()
-            .find(|s| s.kind == kind && s.state.is_live())
+            .find(|s| s.kind == kind && s.state.has_pane())
             .map(|s| s.id)
         {
             self.pending_spawn_focus = None;
@@ -5654,6 +5657,11 @@ impl App {
                     Response::Spawned { fresh: true, .. } => {
                         "nothing to resume ∙ started a fresh conversation ∙ asked".into()
                     }
+                    // Its worktree is being rebuilt under the wake (T-278);
+                    // the words ride the parked wake.
+                    Response::Provisioning => {
+                        "provisioning worktree ∙ claude wakes when ready ∙ asked".into()
+                    }
                     Response::Err { message } => message,
                     _ => String::new(),
                 };
@@ -5828,6 +5836,7 @@ impl App {
             let sleeping = matches!(rec.state, SessionState::Sleeping);
             let exited_claude =
                 rec.kind == SessionKind::Claude && matches!(rec.state, SessionState::Exited { .. });
+            let (ticket, kind) = (rec.ticket, rec.kind);
             if observe_only || sleeping || exited_claude {
                 let cmd = if sleeping && rec.kind == SessionKind::Bash {
                     Command::WakeSession { id: sid }
@@ -5855,6 +5864,15 @@ impl App {
                             self.resume_refused = Some(sid);
                         }
                         self.status = message;
+                        self.refresh()?;
+                        return Ok(());
+                    }
+                    // The archive reclaimed its worktree (T-278) and the
+                    // daemon is rebuilding it under the wake: the parked
+                    // focus finishes this keypress when the pane lands.
+                    Response::Provisioning => {
+                        self.status = "provisioning worktree ∙ claude wakes when ready".into();
+                        self.pending_spawn_focus = Some((ticket, kind));
                         self.refresh()?;
                         return Ok(());
                     }
