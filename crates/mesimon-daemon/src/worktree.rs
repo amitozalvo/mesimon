@@ -9,7 +9,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use anyhow::{bail, Context, Result};
 use mesimon_core::command::Notice;
@@ -313,6 +313,39 @@ pub fn default_branch(repo: &Path) -> Result<String> {
         }
     }
     Ok(git_read(repo, &["rev-parse", "--abbrev-ref", "HEAD"])?.trim().to_string())
+}
+
+/// The remote-tracking ref the base branch is mirrored by — `origin/main` —
+/// when git has one (T-267). A forge merges a PR THERE, and a fetch is the
+/// only thing that moves it, so it is the ref an upstream merge lands on
+/// while the user's own `main` stays where they left it.
+///
+/// The remote asked is the one the base branch tracks, then `origin`, then
+/// the only remote there is: `default_branch`'s ladder, for its reasons.
+pub fn upstream_base(repo: &Path, base: &str) -> Option<String> {
+    let mut remotes: Vec<String> = Vec::new();
+    let mut consider = |r: String| {
+        if !r.is_empty() && !remotes.contains(&r) {
+            remotes.push(r);
+        }
+    };
+    if let Some(r) = crate::gitstatus::remote_of(repo, base) {
+        consider(r);
+    }
+    consider("origin".into());
+    if let Ok(list) = git_read(repo, &["remote"]) {
+        let all: Vec<&str> = list.lines().map(str::trim).filter(|l| !l.is_empty()).collect();
+        if let [only] = all[..] {
+            consider(only.to_string());
+        }
+    }
+    for remote in &remotes {
+        let refname = format!("refs/remotes/{remote}/{base}");
+        if git_read(repo, &["rev-parse", "--verify", "--quiet", &refname]).is_ok() {
+            return Some(format!("{remote}/{base}"));
+        }
+    }
+    None
 }
 
 /// Provisioning stages 0/1/1b/2/5. Runs OFF the writer thread (add is ~1.8 s of
@@ -702,13 +735,243 @@ pub fn is_merged(repo: &Path, branch: &str, base: &str) -> bool {
         .unwrap_or(false)
 }
 
-/// One binding's question for `compute_flags`: the branch, and the base it
-/// was cut from (`Binding::base_oid`).
+/// Git config a user could set that would move a patch-id on ONE side of the
+/// comparison only, or break the read outright — pinned on the command line,
+/// where nothing can reach them (T-267). `diff.orderFile` naming a file that
+/// is gone is fatal to every diff; `log.follow` applies to `log` and never to
+/// `diff-tree`; the rest change the patch text.
+const GIT_PINS: [&str; 22] = [
+    "-c",
+    "diff.renames=false",
+    "-c",
+    "diff.noprefix=false",
+    "-c",
+    "diff.mnemonicPrefix=false",
+    "-c",
+    "diff.relative=false",
+    "-c",
+    "diff.context=3",
+    "-c",
+    "diff.interHunkContext=0",
+    "-c",
+    "diff.external=",
+    "-c",
+    "diff.orderFile=/dev/null",
+    "-c",
+    "core.abbrev=40",
+    "-c",
+    "log.follow=false",
+    "-c",
+    "log.showSignature=false",
+];
+
+/// The diff flags both sides of a patch-id comparison carry. `--no-renames`
+/// is the load-bearing one: rename detection is on by default, it changes the
+/// id, and its PAIRING depends on which paths are in the diff — so the path
+/// filter on the target side would flip it there and nowhere else.
+/// `--full-index` is for binaries, whose ids carry the abbreviated blob oids
+/// and would otherwise drift as the repo grows; `--no-ext-diff`/`--no-textconv`
+/// keep a user's own diff program from running on the daemon's worker thread.
+const DIFF_FLAGS: [&str; 10] = [
+    "-r",
+    "-p",
+    "--no-color",
+    "--no-renames",
+    "--no-textconv",
+    "--no-ext-diff",
+    "--full-index",
+    "--unified=3",
+    "--src-prefix=a/",
+    "--dst-prefix=b/",
+];
+
+/// `log`'s own: one compact header line per commit, which is what carries the
+/// commit id out through `patch-id`, and no signature or notes to be mistaken
+/// for a patch.
+const LOG_FLAGS: [&str; 5] = [
+    "--no-merges",
+    "--no-abbrev-commit",
+    "--no-notes",
+    "--no-show-signature",
+    "--pretty=tformat:commit %H",
+];
+
+/// How far before the branch's own last commit the target's history is
+/// walked. A squash lands AFTER the work it squashes, so the window only has
+/// to reach back over clock skew and a rebase or two; a week is generous and
+/// still turns hundreds of commits into a handful.
+const SINCE_SLACK_SECS: u64 = 7 * 24 * 3600;
+
+/// A hard stop on the walk, for a repository with a week of commits in it.
+const CONTENT_SCAN_MAX: &str = "500";
+
+/// Bindings that may run a fresh scan in one pass. A fetch moves the target
+/// and stales every memo at once; without this, thirteen bindings would scan
+/// together on the writer's own worker.
+const CONTENT_SCANS_PER_PASS: u32 = 2;
+
+/// `git` with the read-path options and the pinned config — the base of every
+/// command whose output a patch-id is taken of. `--literal-pathspecs` because
+/// the paths fed back as pathspecs are file names, and a file may be called
+/// `x[1].txt`.
+fn git_patch(repo: &Path) -> Command {
+    let mut c = crate::git::git(repo);
+    c.args(["--no-optional-locks", "--literal-pathspecs"]).args(GIT_PINS);
+    c
+}
+
+/// `git <args> | git patch-id --stable`, as `(patch id, commit id)` pairs.
+///
+/// A `log` stream names the commit each patch came from; a `diff-tree` stream
+/// has no header line and the second field is forty zeros, which the caller
+/// that uses that form ignores. An empty patch produces no line at all.
+/// Failure of either half is an empty answer: this decides a WORD on a card,
+/// never a write.
+fn patch_ids(repo: &Path, args: &[&str]) -> Vec<(String, String)> {
+    let Ok(mut left) = git_patch(repo)
+        .args(args)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+    else {
+        return Vec::new();
+    };
+    // The pipe's read end goes to the child, so nothing here has to drain it
+    // and the two cannot deadlock on each other.
+    let Some(out) = left.stdout.take() else {
+        let _ = left.wait();
+        return Vec::new();
+    };
+    let right = crate::git::git(repo)
+        .args(["patch-id", "--stable"])
+        .stdin(Stdio::from(out))
+        .stderr(Stdio::null())
+        .output();
+    let _ = left.wait();
+    let Ok(right) = right else { return Vec::new() };
+    String::from_utf8_lossy(&right.stdout)
+        .lines()
+        .filter_map(|l| {
+            let (id, commit) = l.split_once(' ')?;
+            Some((id.to_string(), commit.trim().to_string()))
+        })
+        .collect()
+}
+
+/// The commit on `target` that already carries this branch's work, when there
+/// is one (T-267) — the answer `merge-base --is-ancestor` cannot give.
+///
+/// A forge's "Squash and merge" lands ONE commit whose patch is the branch's
+/// whole diff, and none of the branch's own commits are ancestors of anything
+/// afterwards; a rebase-merge lands them rewritten. Either way the ahead
+/// count `compute_flags` reads says "not merged" forever, and the ticket goes
+/// on asking its agent to rebase work that is done.
+///
+/// Patch-ids are how git answers this itself (`git cherry`). The usual trick
+/// writes a dangling squash commit with `commit-tree` and asks `cherry` about
+/// it; mesimon writes NOTHING to the repository (README promise 1), so both
+/// sides are computed and compared here instead:
+///
+/// - **ours** — the branch as ONE patch (`mb..branch` in a single diff), which
+///   is what a squash lands
+/// - **theirs** — the target's commits since the merge base, filtered to the
+///   files the branch touched and to the week before the branch's last commit,
+///   which is what keeps this cheap on a busy base
+/// - **each** — the branch's commits one at a time, asked only when the first
+///   comparison missed, which is what a rebase-merge lands
+///
+/// Restricting the target side to our paths is not a narrowing of the
+/// comparison: `--stable` sums the file stanzas independently, so a squash
+/// that also touched a lockfile still matches the branch that did not.
+pub fn content_merged(repo: &Path, branch: &str, target: &str, tip_time: u64) -> Option<String> {
+    let mb = git_read(repo, &["merge-base", target, branch]).ok()?.trim().to_string();
+    if mb.is_empty() {
+        return None;
+    }
+    // NUL-separated and never rename-detected: `--name-only` quotes a
+    // non-ASCII path, and a rename would name only the destination, whose
+    // stanza could then never match ours.
+    let names = git_patch(repo)
+        .args(["diff-tree", "-r", "--no-commit-id", "--no-renames", "--name-only", "-z"])
+        .args([&mb, branch])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+        .unwrap_or_default();
+    let paths: Vec<String> =
+        names.split('\0').filter(|s| !s.is_empty()).map(String::from).collect();
+    if paths.is_empty() {
+        // A branch whose net change is nothing has no patch to look for.
+        return None;
+    }
+    let mut ours_argv: Vec<&str> = vec!["diff-tree"];
+    ours_argv.extend_from_slice(&DIFF_FLAGS);
+    ours_argv.extend_from_slice(&[&mb, branch]);
+    let ours = patch_ids(repo, &ours_argv).into_iter().next().map(|(id, _)| id);
+    let range = format!("{mb}..{target}");
+    let since = format!("--since=@{}", tip_time.saturating_sub(SINCE_SLACK_SECS));
+    let mut theirs_argv: Vec<&str> = vec!["log"];
+    theirs_argv.extend_from_slice(&DIFF_FLAGS);
+    theirs_argv.extend_from_slice(&LOG_FLAGS);
+    theirs_argv.extend_from_slice(&["--max-count", CONTENT_SCAN_MAX]);
+    if tip_time > 0 {
+        theirs_argv.push(&since);
+    }
+    theirs_argv.push(&range);
+    theirs_argv.push("--");
+    theirs_argv.extend(paths.iter().map(String::as_str));
+    let theirs = patch_ids(repo, &theirs_argv);
+    if theirs.is_empty() {
+        return None;
+    }
+    if let Some(id) = &ours {
+        if let Some((_, commit)) = theirs.iter().find(|(p, _)| p == id) {
+            return Some(commit.clone());
+        }
+    }
+    // Rebase-merge: every one of the branch's own patches is up there, and
+    // the newest of them is the commit to name. Asked only now, because a
+    // squash — the common case — has already answered above.
+    let mine_range = format!("{mb}..{branch}");
+    let mut mine_argv: Vec<&str> = vec!["log"];
+    mine_argv.extend_from_slice(&DIFF_FLAGS);
+    mine_argv.extend_from_slice(&LOG_FLAGS);
+    mine_argv.push(&mine_range);
+    let each: Vec<String> = patch_ids(repo, &mine_argv).into_iter().map(|(id, _)| id).collect();
+    if !each.is_empty() && each.iter().all(|id| theirs.iter().any(|(p, _)| p == id)) {
+        return theirs.iter().find(|(p, _)| *p == each[0]).map(|(_, c)| c.clone());
+    }
+    None
+}
+
+/// One binding's question for `compute_flags`: the branch, the base it was
+/// cut from (`Binding::base_oid`), and the last content-merge verdict so the
+/// patch scan runs only when a tip has actually moved (T-267).
 #[derive(Debug, Clone)]
 pub struct FlagInput {
     pub ticket: ulid::Ulid,
     pub branch: String,
     pub base_oid: String,
+    pub seen: Option<ContentSeen>,
+}
+
+/// Whether a branch's work is on the ref a merge would land it in — asked
+/// the expensive way, and remembered so it is not asked again. A verdict that
+/// NAMED a commit is permanent: that commit never leaves the target's
+/// history, so one `--is-ancestor` re-affirms it however far the target moves
+/// afterwards, and the scan runs once in the life of the branch.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ContentSeen {
+    pub branch_tip: String,
+    /// The ref it was judged against — `main` or `origin/main`.
+    pub target: String,
+    pub target_tip: String,
+    pub merged: bool,
+    /// The commit carrying the patch when patch equality is what found it,
+    /// empty when the branch is a plain ancestor of the target.
+    pub oid: String,
 }
 
 /// One binding's answer — the three flags the card and the train read.
@@ -721,6 +984,15 @@ pub struct Flags {
     /// The branch's tip at the sample, so the snapshot road and the train
     /// can key a refusal on it without a fork of their own.
     pub tip: String,
+    /// Where the work landed, when that is worth saying: `origin/main`, or
+    /// `main` where a squash and not a fast-forward is what put it there
+    /// (T-267). Empty for the ordinary ancestor merge, and while unmerged.
+    pub merged_in: String,
+    /// The commit on that ref carrying the branch's patch, when a squash or a
+    /// rebase-merge is what put it there. Empty for a plain ancestor merge.
+    pub merged_oid: String,
+    /// The verdict to remember for the next pass.
+    pub seen: Option<ContentSeen>,
 }
 
 /// Every binding's flags, sampled together, plus the base branch they were
@@ -733,20 +1005,111 @@ pub struct WtFlags {
     pub conflicts: Vec<String>,
 }
 
-/// Every local branch's tip in one fork: `refs/heads/<name>` → oid. The
-/// full refname is asked for, not `refname:short`, which git abbreviates
-/// differently when a remote-tracking ref shares the name.
-fn branch_tips(repo: &Path) -> HashMap<String, String> {
-    git_read(repo, &["for-each-ref", "--format=%(refname) %(objectname)", "refs/heads/"])
-        .map(|out| {
-            out.lines()
-                .filter_map(|l| {
-                    let (name, oid) = l.split_once(' ')?;
-                    Some((name.strip_prefix("refs/heads/")?.to_string(), oid.trim().to_string()))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
+/// Every local branch's tip and last commit time in one fork:
+/// `refs/heads/<name>` → `Tip`, and the upstream ref's own beside it when one
+/// was asked for (T-267 adds the second pattern, and the date the content
+/// scan's window hangs off, to the same fork). The full refname is asked for,
+/// not `refname:short`, which git abbreviates differently when a
+/// remote-tracking ref shares the name — and the upstream tip is returned
+/// separately rather than under `origin/main` in the map, where a local
+/// branch of that name would collide with it.
+fn branch_tips(repo: &Path, upstream: Option<&str>) -> (HashMap<String, Tip>, Tip) {
+    let up_ref = upstream.map(|u| format!("refs/remotes/{u}"));
+    let mut args = vec![
+        "for-each-ref",
+        "--format=%(refname) %(objectname) %(committerdate:unix)",
+        "refs/heads/",
+    ];
+    if let Some(r) = &up_ref {
+        args.push(r);
+    }
+    let mut tips: HashMap<String, Tip> = HashMap::new();
+    let mut up_tip = Tip::default();
+    if let Ok(out) = git_read(repo, &args) {
+        for line in out.lines() {
+            let mut parts = line.split(' ');
+            let (Some(name), Some(oid)) = (parts.next(), parts.next()) else { continue };
+            let tip = Tip {
+                oid: oid.to_string(),
+                time: parts.next().and_then(|t| t.trim().parse().ok()).unwrap_or(0),
+            };
+            if let Some(short) = name.strip_prefix("refs/heads/") {
+                tips.insert(short.to_string(), tip);
+            } else if up_ref.as_deref() == Some(name) {
+                up_tip = tip;
+            }
+        }
+    }
+    (tips, up_tip)
+}
+
+/// A ref's tip and the commit time on it.
+#[derive(Debug, Clone, Default)]
+struct Tip {
+    oid: String,
+    time: u64,
+}
+
+/// One binding's content question, so the verdict below reads as a sentence
+/// rather than as eight arguments.
+struct Scan<'a> {
+    repo: &'a Path,
+    branch: &'a str,
+    tip: &'a Tip,
+    target: &'a str,
+    target_tip: &'a str,
+    /// The target IS the local base, whose ancestry the counts have already
+    /// answered — so the verdict below asks git that question only where it
+    /// is a new one.
+    target_is_base: bool,
+}
+
+/// Has the branch's work landed on the target — as an ancestor, or as a patch
+/// a forge squashed or rebased on (T-267)? Three roads, cheapest first:
+///
+/// 1. a verdict that named a commit, re-affirmed with ONE `--is-ancestor`:
+///    permanent, and what keeps a merged ticket merged as the base runs on
+/// 2. a verdict whose three tips have not moved: free
+/// 3. the scan, under the pass's budget — a fetch stales every memo at once,
+///    and the sample must not turn into thirteen walks of the base's history
+fn content_verdict(
+    scan: &Scan,
+    seen: Option<&ContentSeen>,
+    budget: &mut u32,
+) -> Option<ContentSeen> {
+    let fresh = |merged: bool, oid: String| ContentSeen {
+        branch_tip: scan.tip.oid.clone(),
+        target: scan.target.to_string(),
+        target_tip: scan.target_tip.to_string(),
+        merged,
+        oid,
+    };
+    if let Some(s) = seen {
+        // A branch that has moved has work that may not be up there, whatever
+        // was true of the tip before it.
+        if s.branch_tip == scan.tip.oid {
+            if s.target == scan.target && s.target_tip == scan.target_tip {
+                return Some(s.clone());
+            }
+            if s.merged && !s.oid.is_empty() && is_merged(scan.repo, &s.oid, scan.target) {
+                return Some(fresh(true, s.oid.clone()));
+            }
+        }
+    }
+    if *budget == 0 {
+        // Not answered this pass: `None` leaves the old verdict standing —
+        // stale, so the next pass asks — where writing a fresh "no" here
+        // would look answered and never be asked again.
+        return None;
+    }
+    *budget -= 1;
+    if !scan.target_is_base && is_merged(scan.repo, scan.branch, scan.target) {
+        return Some(fresh(true, String::new()));
+    }
+    Some(match content_merged(scan.repo, scan.branch, scan.target, scan.tip.time) {
+        Some(oid) => fresh(true, oid),
+        None => fresh(false, String::new()),
+    })
 }
 
 /// The merged / ahead / needs-rebase flags for every binding, judged
@@ -763,9 +1126,39 @@ fn branch_tips(repo: &Path) -> HashMap<String, String> {
 /// an ancestor of base, and that is "no work yet" (dogfood 2026-08-30). A
 /// branch git no longer has reads as the old helpers read it: not merged,
 /// nothing ahead, and no fast-forward, so needs-rebase.
-pub fn compute_flags(repo: &Path, base: &str, inputs: &[FlagInput]) -> WtFlags {
-    let tips = branch_tips(repo);
-    let base_tip = tips.get(base).cloned().unwrap_or_default();
+///
+/// Ancestry is not the only way to be merged since T-267: a PR squashed or
+/// rebased into `origin/main` leaves every one of the branch's own commits
+/// behind, and the card would read "main moved" forever. `content_verdict`
+/// asks the second question — patch equality — against ONE target ref for
+/// the pass, and remembers the answer on `FlagInput::seen`, so the sample
+/// stays `2 + n` forks until a tip moves. `ahead` and `needs_rebase` keep
+/// meaning what they meant: they are about the LOCAL base, which is what a
+/// fast-forward here would move.
+pub fn compute_flags(
+    repo: &Path,
+    base: &str,
+    upstream: Option<&str>,
+    inputs: &[FlagInput],
+) -> WtFlags {
+    let (tips, upstream_tip) = branch_tips(repo, upstream);
+    let base = base.to_string();
+    let base_tip = tips.get(&base).cloned().unwrap_or_default();
+    // ONE target for the pass (T-267): the ref a merged PR lands on where
+    // there is one holding everything the local base holds, else the local
+    // base itself. The condition answers the other case for free — a squash
+    // merged HERE and not pushed leaves the base ahead of the upstream, and
+    // the base is then what to look in.
+    let (target, target_tip) = match upstream {
+        Some(u)
+            if !upstream_tip.oid.is_empty()
+                && (base_tip.oid.is_empty() || is_merged(repo, &base, u)) =>
+        {
+            (u.to_string(), upstream_tip.oid.clone())
+        }
+        _ => (base.clone(), base_tip.oid.clone()),
+    };
+    let mut budget = CONTENT_SCANS_PER_PASS;
     let flags = inputs
         .iter()
         .filter(|i| !i.branch.is_empty())
@@ -780,17 +1173,58 @@ pub fn compute_flags(repo: &Path, base: &str, inputs: &[FlagInput]) -> WtFlags {
                 let mut it = s.split_whitespace().map(|n| n.parse::<u32>().ok());
                 Some((it.next()??, it.next()??))
             });
-            let (merged, ahead, ff) = match counts {
+            let (ancestor, ahead, ff) = match counts {
                 Some((behind, ahead)) => {
-                    (!tip.is_empty() && tip != i.base_oid && ahead == 0, ahead, behind == 0)
+                    (!tip.oid.is_empty() && tip.oid != i.base_oid && ahead == 0, ahead, behind == 0)
                 }
                 None => (false, 0, false),
             };
-            Flags { ticket: i.ticket, merged, ahead, needs_rebase: !merged && !ff, tip }
+            // The work can be up there without the commits being: a squashed
+            // or rebased PR. Asked only where ancestry said no and the branch
+            // has work at all — and, in the steady state, answered with no
+            // fork at all. `merged_in` stays empty for the ordinary merge,
+            // an ancestor of the checkout's own default branch, which the
+            // ticket page has always called just `merged`; it is filled only
+            // where the ref or the commit is news.
+            let mut merged_in = String::new();
+            let mut merged_oid = String::new();
+            let mut seen = None;
+            if !ancestor && !tip.oid.is_empty() && tip.oid != i.base_oid {
+                let scan = Scan {
+                    repo,
+                    branch: &i.branch,
+                    tip: &tip,
+                    target: &target,
+                    target_tip: &target_tip,
+                    target_is_base: target == base,
+                };
+                match content_verdict(&scan, i.seen.as_ref(), &mut budget) {
+                    Some(verdict) => {
+                        if verdict.merged {
+                            merged_in = verdict.target.clone();
+                            merged_oid = verdict.oid.clone();
+                        }
+                        seen = Some(verdict);
+                    }
+                    // Out of budget: carry the old verdict, claim nothing.
+                    None => seen = i.seen.clone(),
+                }
+            }
+            let merged = ancestor || !merged_in.is_empty();
+            Flags {
+                ticket: i.ticket,
+                merged,
+                ahead,
+                needs_rebase: !merged && !ff,
+                tip: tip.oid,
+                merged_in,
+                merged_oid,
+                seen,
+            }
         })
         .collect();
     let conflicts = list_worktrees(repo).map(|rows| branch_conflicts(&rows)).unwrap_or_default();
-    WtFlags { base: base.to_string(), base_tip, flags, conflicts }
+    WtFlags { base, base_tip: base_tip.oid, flags, conflicts }
 }
 
 /// Fast-forward `base` to the branch tip — the ONLY merge mesimon performs
@@ -1214,6 +1648,267 @@ mod tests {
         std::fs::remove_dir_all(&bare_src).ok();
     }
 
+    /// A shell over one scratch repo: run git, commit a file, ask the flags.
+    struct Repo {
+        dir: PathBuf,
+    }
+
+    impl Repo {
+        fn new(name: &str) -> Option<Self> {
+            scratch_repo(name).map(|dir| Repo { dir })
+        }
+        fn run(&self, args: &[&str]) {
+            let out = Command::new("git").arg("-C").arg(&self.dir).args(args).output().unwrap();
+            assert!(out.status.success(), "git {args:?}: {}", String::from_utf8_lossy(&out.stderr));
+        }
+        fn commit(&self, file: &str, body: &str, msg: &str) {
+            std::fs::write(self.dir.join(file), body).unwrap();
+            self.run(&["add", "."]);
+            self.run(&["commit", "-qm", msg]);
+        }
+        /// The flags for one branch, judged against `main` (and an upstream
+        /// where the test made one), starting from `seen`.
+        fn flags(&self, branch: &str, upstream: Option<&str>, seen: Option<ContentSeen>) -> Flags {
+            let base_oid = branch_tip(&self.dir, "main");
+            let inputs = vec![FlagInput {
+                ticket: ulid::Ulid(1),
+                branch: branch.to_string(),
+                base_oid,
+                seen,
+            }];
+            let got = compute_flags(&self.dir, "main", upstream, &inputs);
+            got.flags.into_iter().next().expect("one binding, one answer")
+        }
+    }
+
+    impl Drop for Repo {
+        fn drop(&mut self) {
+            std::fs::remove_dir_all(&self.dir).ok();
+        }
+    }
+
+    /// The ticket's case (T-267): the PR was squashed, so not one of the
+    /// branch's commits is an ancestor of anything — and the work is still up
+    /// there. `is_merged` says no and must; the flags say yes and name the
+    /// commit that carries it.
+    #[test]
+    fn a_squash_merged_branch_reads_merged() {
+        let Some(r) = Repo::new("squash") else { return };
+        // Two commits on the branch, so the squash is a real one.
+        r.run(&["checkout", "-q", "-b", "work"]);
+        r.commit("b.txt", "one\n", "b");
+        r.commit("c.txt", "two\n", "c");
+        // A branch nobody merged, cut from the same place.
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["checkout", "-q", "-b", "other"]);
+        r.commit("d.txt", "other\n", "d");
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["merge", "-q", "--squash", "work"]);
+        r.run(&["commit", "-qm", "work (#12)"]);
+
+        assert!(!is_merged(&r.dir, "work", "main"), "a squash leaves no ancestor behind");
+        let landed = content_merged(&r.dir, "work", "main", 0).expect("the patch is on main");
+        assert_eq!(landed, branch_tip(&r.dir, "main"), "the squash commit is what carries it");
+
+        let f = r.flags("work", None, None);
+        assert!(f.merged, "the branch reads merged");
+        assert_eq!(f.merged_in, "main");
+        assert_eq!(f.merged_oid, landed);
+        assert!(!f.needs_rebase, "and stops asking for a rebase");
+        assert!(f.ahead > 0, "its own commits are still ahead — that is the point");
+
+        let other = r.flags("other", None, None);
+        assert!(!other.merged && other.needs_rebase, "the branch nobody merged is untouched");
+        assert!(content_merged(&r.dir, "other", "main", 0).is_none());
+    }
+
+    /// The other forge button: every commit replayed on the base. The
+    /// combined patch matches nothing there, so the per-commit road is what
+    /// answers.
+    #[test]
+    fn a_rebase_merged_branch_reads_merged() {
+        let Some(r) = Repo::new("rebase-merge") else { return };
+        r.run(&["checkout", "-q", "-b", "work"]);
+        r.commit("b.txt", "one\n", "b");
+        r.commit("c.txt", "two\n", "c");
+        let picks = [
+            branch_tip(&r.dir, "work"),
+            String::from_utf8_lossy(
+                &Command::new("git")
+                    .arg("-C")
+                    .arg(&r.dir)
+                    .args(["rev-parse", "work~1"])
+                    .output()
+                    .unwrap()
+                    .stdout,
+            )
+            .trim()
+            .to_string(),
+        ];
+        r.run(&["checkout", "-q", "main"]);
+        // Main moves first, which is what makes the replayed commits new
+        // objects rather than the very ones the branch holds.
+        r.commit("z.txt", "elsewhere\n", "z");
+        r.run(&["cherry-pick", &picks[1]]);
+        r.run(&["cherry-pick", &picks[0]]);
+
+        assert!(!is_merged(&r.dir, "work", "main"));
+        assert!(content_merged(&r.dir, "work", "main", 0).is_some(), "each patch is up there");
+        assert!(r.flags("work", None, None).merged);
+    }
+
+    /// The durability the memo buys: the base runs on over the very files the
+    /// branch touched, and the ticket stays merged. Cold (no memo) it is the
+    /// window that must still hold it; warm it is one `--is-ancestor` on the
+    /// commit already named, whatever the target's tip is now.
+    #[test]
+    fn a_squash_stays_merged_as_the_base_runs_on() {
+        let Some(r) = Repo::new("durable") else { return };
+        r.run(&["checkout", "-q", "-b", "work"]);
+        r.commit("b.txt", "one\n", "b");
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["merge", "-q", "--squash", "work"]);
+        r.run(&["commit", "-qm", "work (#12)"]);
+        let first = r.flags("work", None, None);
+        assert!(first.merged && !first.merged_oid.is_empty());
+
+        for n in 0..3 {
+            r.commit("b.txt", &format!("one\nand {n}\n"), &format!("after {n}"));
+        }
+        let cold = r.flags("work", None, None);
+        assert!(cold.merged, "the squash is still in the base's history");
+        let warm = r.flags("work", None, first.seen.clone());
+        assert!(warm.merged, "and the verdict re-affirms without a scan");
+        assert_eq!(warm.merged_oid, first.merged_oid);
+    }
+
+    /// A verdict is reused while nothing moved, and dropped the moment the
+    /// branch does: work committed after the merge is work that has not
+    /// landed.
+    #[test]
+    fn a_commit_after_the_merge_reads_unmerged_again() {
+        let Some(r) = Repo::new("moved") else { return };
+        r.run(&["checkout", "-q", "-b", "work"]);
+        r.commit("b.txt", "one\n", "b");
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["merge", "-q", "--squash", "work"]);
+        r.run(&["commit", "-qm", "work (#12)"]);
+        let merged = r.flags("work", None, None);
+        assert!(merged.merged);
+        assert_eq!(
+            r.flags("work", None, merged.seen.clone()).seen,
+            merged.seen,
+            "reused as it was"
+        );
+
+        r.run(&["checkout", "-q", "work"]);
+        r.commit("e.txt", "more\n", "e");
+        r.run(&["checkout", "-q", "main"]);
+        let after = r.flags("work", None, merged.seen);
+        assert!(!after.merged, "the branch has work the base does not");
+    }
+
+    /// The whole point of the upstream half: the PR is merged on the forge
+    /// and the user only FETCHES. Local `main` never moves, and the ticket
+    /// still reads merged — into `origin/main`, which is what the page says.
+    #[test]
+    fn an_upstream_squash_is_found_after_a_fetch() {
+        let Some(r) = Repo::new("upstream") else { return };
+        let bare =
+            r.dir.parent().unwrap().join(format!("msmn-wt-upstream-{}.git", std::process::id()));
+        std::fs::remove_dir_all(&bare).ok();
+        let init = Command::new("git")
+            .args(["init", "-q", "--bare", "-b", "main"])
+            .arg(&bare)
+            .output()
+            .unwrap();
+        assert!(init.status.success());
+        r.run(&["remote", "add", "origin", &bare.display().to_string()]);
+        r.run(&["push", "-q", "-u", "origin", "main"]);
+        r.run(&["checkout", "-q", "-b", "work"]);
+        r.commit("b.txt", "one\n", "b");
+        // The forge's squash: made away from this checkout and pushed, so
+        // local `main` is exactly where the user left it.
+        r.run(&["checkout", "-q", "-b", "pr", "main"]);
+        r.run(&["merge", "-q", "--squash", "work"]);
+        r.run(&["commit", "-qm", "work (#12)"]);
+        r.run(&["push", "-q", "origin", "pr:main"]);
+        r.run(&["checkout", "-q", "main"]);
+        r.run(&["branch", "-qD", "pr"]);
+        r.run(&["fetch", "-q", "origin"]);
+
+        assert_eq!(upstream_base(&r.dir, "main").as_deref(), Some("origin/main"));
+        assert!(!is_merged(&r.dir, "work", "main"), "local main knows nothing about it");
+        let f = r.flags("work", Some("origin/main"), None);
+        assert!(f.merged, "but origin/main carries the patch");
+        assert_eq!(f.merged_in, "origin/main");
+        assert!(!f.merged_oid.is_empty());
+        assert!(
+            !r.flags("work", None, None).merged,
+            "and without the upstream there is nothing to find: local main never moved"
+        );
+        std::fs::remove_dir_all(&bare).ok();
+    }
+
+    /// A fetch stales every memo at once, so a pass scans a couple of
+    /// bindings and leaves the rest for the next one — and the ones it left
+    /// keep NO verdict, or they would look answered and never be asked again.
+    #[test]
+    fn a_pass_scans_a_budget_of_bindings_and_the_rest_wait() {
+        let Some(r) = Repo::new("budget") else { return };
+        let branches = ["one", "two", "three"];
+        for b in branches {
+            r.run(&["checkout", "-q", "-b", b, "main"]);
+            r.commit(&format!("{b}.txt"), b, b);
+            r.run(&["checkout", "-q", "main"]);
+            r.run(&["merge", "-q", "--squash", b]);
+            r.run(&["commit", "-qm", &format!("{b} (#1)")]);
+        }
+        let base_oid = branch_tip(&r.dir, "main");
+        let inputs: Vec<FlagInput> = branches
+            .iter()
+            .enumerate()
+            .map(|(i, b)| FlagInput {
+                ticket: ulid::Ulid(i as u128 + 1),
+                branch: b.to_string(),
+                base_oid: base_oid.clone(),
+                seen: None,
+            })
+            .collect();
+        let first = compute_flags(&r.dir, "main", None, &inputs);
+        let merged = first.flags.iter().filter(|f| f.merged).count();
+        assert_eq!(
+            merged, CONTENT_SCANS_PER_PASS as usize,
+            "the pass spends its budget and no more"
+        );
+        assert!(
+            first.flags.iter().any(|f| !f.merged && f.seen.is_none()),
+            "and the one it skipped remembers nothing"
+        );
+        // The next pass, carrying what the first learned, finishes the job.
+        let inputs: Vec<FlagInput> = inputs
+            .into_iter()
+            .zip(&first.flags)
+            .map(|(i, f)| FlagInput { seen: f.seen.clone(), ..i })
+            .collect();
+        let second = compute_flags(&r.dir, "main", None, &inputs);
+        assert!(
+            second.flags.iter().all(|f| f.merged),
+            "every branch is merged: {:?}",
+            second.flags
+        );
+    }
+
+    /// Nothing to find, and nothing to crash on.
+    #[test]
+    fn content_merge_says_no_where_there_is_nothing_to_say_yes_to() {
+        let Some(r) = Repo::new("nothing") else { return };
+        r.run(&["checkout", "-q", "-b", "empty"]);
+        assert!(content_merged(&r.dir, "empty", "main", 0).is_none(), "no work, no patch");
+        assert!(content_merged(&r.dir, "work-that-is-not-there", "main", 0).is_none());
+        assert!(content_merged(&r.dir, "main", "refs/remotes/origin/nope", 0).is_none());
+    }
+
     /// `compute_flags` says what the four single-question helpers said, per
     /// binding, in one sample: fresh is not merged, a commit is ahead, an
     /// ancestor that moved is merged, a base that moved past needs a
@@ -1247,16 +1942,22 @@ mod tests {
                 ticket: ulid::Ulid(i as u128 + 1),
                 branch: b.to_string(),
                 base_oid: if *b == "fresh" { new_tip.clone() } else { old_tip.clone() },
+                seen: None,
             })
             .collect();
-        let got = compute_flags(&repo, "main", &inputs);
+        let got = compute_flags(&repo, "main", None, &inputs);
         assert_eq!(got.base_tip, branch_tip(&repo, "main"));
         assert!(!got.base_tip.is_empty());
         for (f, i) in got.flags.iter().zip(&inputs) {
             assert_eq!(f.ticket, i.ticket);
             let tip = branch_tip(&repo, &i.branch);
-            let merged =
-                !tip.is_empty() && tip != i.base_oid && is_merged(&repo, &i.branch, "main");
+            // Ancestry is not the only way to be merged since T-267, so the
+            // oracle is both questions — none of these five branches was
+            // squashed, so the second one answers no throughout.
+            let merged = !tip.is_empty()
+                && tip != i.base_oid
+                && (is_merged(&repo, &i.branch, "main")
+                    || content_merged(&repo, &i.branch, "main", 0).is_some());
             assert_eq!(f.merged, merged, "{} merged", i.branch);
             assert_eq!(f.ahead, ahead_count(&repo, &i.branch, "main"), "{} ahead", i.branch);
             let needs = !merged && !ff_possible(&repo, &i.branch, "main");

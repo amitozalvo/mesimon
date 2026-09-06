@@ -288,6 +288,14 @@ pub struct Daemon {
     wt_ahead: HashMap<ulid::Ulid, u32>,
     wt_needs_rebase: HashMap<ulid::Ulid, bool>,
     wt_tip: HashMap<ulid::Ulid, String>,
+    /// Where a branch's work landed and the commit carrying it, when a squash
+    /// or a rebase-merge is what put it there (T-267) — the words the ticket
+    /// page says beside the branch.
+    wt_merged_in: HashMap<ulid::Ulid, String>,
+    wt_merged_oid: HashMap<ulid::Ulid, String>,
+    /// The last content-merge verdict per binding, handed back to the next
+    /// sample so the patch scan runs only when a tip moved.
+    wt_content: HashMap<ulid::Ulid, worktree::ContentSeen>,
     wt_conflicts: Vec<String>,
     /// Bumped by every synchronous flag refresh; a worker's sample carries
     /// the value it started under and lands only if nothing bumped it since.
@@ -296,6 +304,10 @@ pub struct Daemon {
     wt_inflight: bool,
     /// Cached default-branch name (origin/HEAD → main/master/trunk → HEAD).
     base_branch: Option<String>,
+    /// Cached remote-tracking ref for it (`origin/main`), where git has one:
+    /// the ref a merged PR lands on (T-267). Resolved beside `base_branch`
+    /// and forgotten with it, since a fetch can mint either.
+    upstream_base: Option<Option<String>>,
     /// Tickets whose grace expired while their panes were still reaping —
     /// worktree teardown waits for the reaper (never remove a live cwd).
     pending_teardown: Vec<(ulid::Ulid, bool, Vec<String>)>,
@@ -583,10 +595,14 @@ pub fn run(paths: Paths) -> Result<()> {
         wt_ahead: HashMap::new(),
         wt_needs_rebase: HashMap::new(),
         wt_tip: HashMap::new(),
+        wt_merged_in: HashMap::new(),
+        wt_merged_oid: HashMap::new(),
+        wt_content: HashMap::new(),
         wt_conflicts: Vec::new(),
         wt_gen: 0,
         wt_inflight: false,
         base_branch: None,
+        upstream_base: None,
         pending_teardown: Vec::new(),
         tx: tx.clone(),
         moves: MoveGate::new(),
@@ -3046,6 +3062,8 @@ impl Daemon {
                 }
                 .into(),
                 merged: self.wt_merged.get(tid).copied().unwrap_or(false),
+                merged_in: self.wt_merged_in.get(tid).cloned().unwrap_or_default(),
+                merged_oid: self.wt_merged_oid.get(tid).cloned().unwrap_or_default(),
                 conflict: !b.branch.is_empty() && self.wt_conflicts.contains(&b.branch),
                 ahead: self.wt_ahead.get(tid).copied().unwrap_or(0),
                 needs_rebase: self.wt_needs_rebase.get(tid).copied().unwrap_or(false),
@@ -3260,8 +3278,11 @@ impl Daemon {
                     self.git_fetch_error = None;
                     // A fetch can mint `refs/remotes/origin/HEAD` (git ≥ 2.48
                     // follows the remote's HEAD), which is the first rung of
-                    // `default_branch`'s ladder: let it be asked again.
+                    // `default_branch`'s ladder: let it be asked again — and
+                    // the same fetch is what moves `origin/main`, so its ref
+                    // is re-asked with it (T-267).
                     self.base_branch = None;
+                    self.upstream_base = None;
                 }
                 Err(e) => self.git_fetch_error = Some(e),
             }
@@ -3732,13 +3753,39 @@ impl Daemon {
         Response::Ok
     }
 
-    fn ticket_merged(&self, _id: ulid::Ulid, branch: &str) -> bool {
+    fn ticket_merged(&self, id: ulid::Ulid, branch: &str) -> bool {
         // Fresh check on gate paths (the 10 s cache may lag a just-made merge).
         let base = self
             .base_branch
             .clone()
             .or_else(|| worktree::default_branch(&self.paths.repo_root).ok());
-        base.map(|b| worktree::is_merged(&self.paths.repo_root, branch, &b)).unwrap_or(false)
+        if base.is_some_and(|b| worktree::is_merged(&self.paths.repo_root, branch, &b)) {
+            return true;
+        }
+        // A PR squashed into the base is the SAMPLE's answer (T-267): the
+        // patch scan behind it is too big for a keypress. An ff merge made
+        // here is caught fresh above; a squash made here is a bucket's wait,
+        // never a wrong answer. The branch tip is re-read so a commit since
+        // the verdict drops it, and the target can only ever gain commits,
+        // so a stale tip there cannot turn a merge back into a non-merge.
+        // The gates and the card must answer alike: a ticket the board calls
+        // merged must not then be refused DONE.
+        self.wt_content.get(&id).is_some_and(|seen| {
+            seen.merged
+                && !seen.branch_tip.is_empty()
+                && seen.branch_tip == worktree::branch_tip(&self.paths.repo_root, branch)
+        })
+    }
+
+    /// The ref a merged PR lands on (`origin/main`), asked once and kept: the
+    /// outer `Option` is whether it has been asked, the inner whether there is
+    /// one, so a repo with no remote is not re-asked every bucket. Forgotten
+    /// with `base_branch` after a fetch — the one thing that can mint it.
+    fn upstream_ref(&mut self, base: &str) -> Option<String> {
+        if self.upstream_base.is_none() {
+            self.upstream_base = Some(worktree::upstream_base(&self.paths.repo_root, base));
+        }
+        self.upstream_base.clone().flatten()
     }
 
     fn set_workspace(&mut self, id: ulid::Ulid, workspace: Option<WorkspaceStrategy>) -> Response {
@@ -3947,10 +3994,20 @@ impl Daemon {
                 detail: "no commits on the branch yet — nothing to merge".into(),
             };
         }
-        if worktree::is_merged(&self.paths.repo_root, &branch, &base) {
+        // The gate's own oracle, so `m` never offers to merge — or to rebase
+        // — a branch the card already calls merged: a PR squashed into
+        // `origin/main` is merged without being an ancestor of anything
+        // (T-267), and the ff check below would answer "main moved" there.
+        if self.ticket_merged(id, &branch) {
+            let landed = self
+                .wt_merged_in
+                .get(&id)
+                .filter(|s| !s.is_empty())
+                .cloned()
+                .unwrap_or_else(|| base.clone());
             return Response::Merge {
                 outcome: MergeOutcome::AlreadyMerged,
-                detail: format!("{branch} is already in {base}"),
+                detail: format!("{branch} is already in {landed}"),
             };
         }
         // ff-only policy: base moved past the branch → the agent rebases +
@@ -5131,6 +5188,9 @@ impl Daemon {
             self.wt_ahead.remove(&ticket);
             self.wt_needs_rebase.remove(&ticket);
             self.wt_tip.remove(&ticket);
+            self.wt_merged_in.remove(&ticket);
+            self.wt_merged_oid.remove(&ticket);
+            self.wt_content.remove(&ticket);
         }
         self.persist_worktrees();
         self.refresh_worktree_flags();
@@ -5440,6 +5500,7 @@ impl Daemon {
                 ticket: *t,
                 branch: b.branch.clone(),
                 base_oid: b.base_oid.clone(),
+                seen: self.wt_content.get(t).cloned(),
             })
             .collect()
     }
@@ -5458,6 +5519,9 @@ impl Daemon {
             self.wt_ahead.clear();
             self.wt_needs_rebase.clear();
             self.wt_tip.clear();
+            self.wt_merged_in.clear();
+            self.wt_merged_oid.clear();
+            self.wt_content.clear();
             self.wt_conflicts.clear();
             return;
         }
@@ -5465,8 +5529,15 @@ impl Daemon {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
         let Some(base) = self.base_branch.clone() else { return };
-        let flags = worktree::compute_flags(&self.paths.repo_root, &base, &self.wt_inputs());
-        self.absorb_worktree_flags(flags);
+        let upstream = self.upstream_ref(&base);
+        let flags = worktree::compute_flags(
+            &self.paths.repo_root,
+            &base,
+            upstream.as_deref(),
+            &self.wt_inputs(),
+        );
+        // The callers of this road broadcast on their own terms.
+        let _ = self.absorb_worktree_flags(flags);
     }
 
     /// The tick's road: the same sample on a worker, landing as
@@ -5482,6 +5553,7 @@ impl Daemon {
         let gen = self.wt_gen;
         let repo = self.paths.repo_root.clone();
         let base = self.base_branch.clone();
+        let upstream = self.upstream_base.clone();
         let inputs = self.wt_inputs();
         let tx = self.tx.clone();
         std::thread::spawn(move || {
@@ -5489,8 +5561,11 @@ impl Daemon {
                 let _ = tx.send(Msg::WorktreeFlags(gen, worktree::WtFlags::default()));
                 return;
             };
-            let _ =
-                tx.send(Msg::WorktreeFlags(gen, worktree::compute_flags(&repo, &base, &inputs)));
+            // The upstream ref leaves the writer thread with the base, and on
+            // the same terms: asked here when the cache has no answer yet.
+            let upstream = upstream.unwrap_or_else(|| worktree::upstream_base(&repo, &base));
+            let flags = worktree::compute_flags(&repo, &base, upstream.as_deref(), &inputs);
+            let _ = tx.send(Msg::WorktreeFlags(gen, flags));
         });
     }
 
@@ -5506,9 +5581,15 @@ impl Daemon {
         if self.base_branch.is_none() {
             self.base_branch = Some(flags.base.clone());
         }
-        self.absorb_worktree_flags(flags);
-        if self.train_pass() {
+        let changed = self.absorb_worktree_flags(flags);
+        let acted = self.train_pass();
+        if acted {
             self.persist_sessions();
+        }
+        // A merge made somewhere else — a squash on a forge, a `git pull` in
+        // another terminal — moves no session and fires no hook, so the
+        // sample's own delta is the only thing that can tell the board.
+        if changed || acted {
             self.broadcast();
         }
     }
@@ -5516,17 +5597,35 @@ impl Daemon {
     /// Take a sample's answers, for the bindings still here, and release
     /// the lock of any attached binding whose last session is gone (the
     /// one git fork left on this road, and a rare one).
-    fn absorb_worktree_flags(&mut self, flags: worktree::WtFlags) {
+    fn absorb_worktree_flags(&mut self, flags: worktree::WtFlags) -> bool {
+        // Whether any of it is NEWS — what the board would draw differently.
+        // The tick's road broadcasts on that and nothing else: a fetch that
+        // lands a merge moves no session and fires no hook, so without this
+        // the mark waited for the next thing to happen (T-267).
+        let mut changed = self.base_tip != flags.base_tip || self.wt_conflicts != flags.conflicts;
         self.base_tip = flags.base_tip;
         self.wt_conflicts = flags.conflicts;
         for f in flags.flags {
             if !self.worktrees.contains_key(&f.ticket) {
                 continue;
             }
-            self.wt_merged.insert(f.ticket, f.merged);
-            self.wt_ahead.insert(f.ticket, f.ahead);
-            self.wt_needs_rebase.insert(f.ticket, f.needs_rebase);
-            self.wt_tip.insert(f.ticket, f.tip);
+            changed |= self.wt_merged.insert(f.ticket, f.merged) != Some(f.merged);
+            changed |= self.wt_ahead.insert(f.ticket, f.ahead) != Some(f.ahead);
+            changed |=
+                self.wt_needs_rebase.insert(f.ticket, f.needs_rebase) != Some(f.needs_rebase);
+            changed |= self.wt_tip.insert(f.ticket, f.tip.clone()) != Some(f.tip);
+            changed |= self.wt_merged_in.insert(f.ticket, f.merged_in.clone()) != Some(f.merged_in);
+            changed |=
+                self.wt_merged_oid.insert(f.ticket, f.merged_oid.clone()) != Some(f.merged_oid);
+            // The memo is the sampler's own working note, never the board's.
+            match f.seen {
+                Some(seen) => {
+                    self.wt_content.insert(f.ticket, seen);
+                }
+                None => {
+                    self.wt_content.remove(&f.ticket);
+                }
+            }
         }
         let tickets: Vec<ulid::Ulid> = self.worktrees.keys().copied().collect();
         for tid in tickets {
@@ -5546,6 +5645,7 @@ impl Daemon {
                 }
             }
         }
+        changed
     }
 
     fn kill_session(&mut self, id: uuid::Uuid) -> Response {

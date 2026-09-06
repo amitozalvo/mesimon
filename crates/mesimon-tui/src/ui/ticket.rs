@@ -36,6 +36,7 @@ const RAIL_W: u16 = 30;
 /// tag chips: enough for ` ∙ ⎇ msmn/T-163~`, so a heavily tagged ticket
 /// still names where its code lives.
 const WT_BRANCH_FLOOR: usize = 16;
+
 /// The description block's ceiling in rows; the zone below still has to
 /// read. A third of the body, and never more than this.
 const DESC_MAX_ROWS: usize = 8;
@@ -47,6 +48,24 @@ pub(super) fn author_word(by: &str) -> &'static str {
         "claude"
     } else {
         "you"
+    }
+}
+
+/// Where the branch's work landed, in words (T-267). A plain fast-forward
+/// into the checkout's own default branch stays the bare `merged` it has
+/// always been — that is the ref the whole page is already about. Anything
+/// else names the ref, because the user did not do it here: a PR squashed
+/// into `origin/main` shows up after a fetch, and the commit carrying it is
+/// named so it can be looked at (`git show 1a2b3c4`).
+fn merged_word(w: &mesimon_core::command::WorktreeItem) -> String {
+    if w.merged_in.is_empty() {
+        return "merged".to_string();
+    }
+    let short = &w.merged_oid[..w.merged_oid.len().min(7)];
+    if short.is_empty() {
+        format!("merged into {}", w.merged_in)
+    } else {
+        format!("merged into {} as {short}", w.merged_in)
     }
 }
 
@@ -206,7 +225,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         } else if w.conflict {
             " ∙ branch shared!".to_string()
         } else if w.merged {
-            format!(" ∙ merged{offer}")
+            format!(" ∙ {}{offer}", merged_word(w))
         } else if w.status != "attached" {
             format!(" ∙ {}", w.status)
         } else if w.needs_rebase {

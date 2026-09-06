@@ -1,0 +1,30 @@
+ TICKET (T-5)   mesimon > kanban-tui
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago ∙ ⎇ msmn/T-5-graph~ ∙ merged into origin/main as 1a2b3c4 ∙ m tell the agent it merged
+
+
+                                                                                           SESSIONS                  1
+
+                                                                                          ✓ ✻ claude               >1y
+                                                                                           s shell ∙ x sleep
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ jk select session ∙ enter focus ∙ v diff ∙ r rename ∙ d delete ∙ n describe                                     ? keys

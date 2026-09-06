@@ -1080,8 +1080,21 @@ pub struct WorktreeItem {
     pub branch: String,
     /// Status word: queued | provisioning | attached | evicted | error.
     pub status: String,
-    /// Branch tip is an ancestor of the default branch.
+    /// The branch's work is on the default branch — its tip an ancestor of
+    /// it, or its patch already up there under a squash or a rebase-merge
+    /// somebody made on a forge (T-267).
     pub merged: bool,
+    /// Where it landed, when that is worth saying: `origin/main`, or `main`
+    /// where a squash and not a fast-forward is what put it there. Empty for
+    /// the ordinary ancestor merge — the word for that is just `merged` —
+    /// and empty while unmerged.
+    #[serde(default)]
+    pub merged_in: String,
+    /// The commit on that ref carrying the branch's patch, when patch
+    /// equality is what found it. Empty for a plain ancestor merge — there
+    /// is no one commit to name.
+    #[serde(default)]
+    pub merged_oid: String,
     /// Duplicate-branch blocker (12 §12.6.7): another worktree holds this
     /// branch — commits will delete each other.
     pub conflict: bool,

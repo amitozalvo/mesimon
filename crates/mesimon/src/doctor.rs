@@ -554,6 +554,25 @@ fn git_section(repo: &Path, verbose: bool) -> Section {
         };
         records.push(rec(Level::Ok, "branch", format!("{whose}{}, {upstream}, {fetch}", g.branch)));
     }
+    // Which ref a ticket's branch is judged merged against (T-267). A PR
+    // squashed on a forge lands on the remote-tracking ref and on nothing
+    // else until you pull, so the answer is worth printing beside the fetch.
+    if let Ok(base) = mesimon_daemon::worktree::default_branch(repo) {
+        let (word, advice) = match mesimon_daemon::worktree::upstream_base(repo, &base) {
+            Some(up) => (
+                format!("{base}, or {up} once fetched"),
+                "A worktree branch reads merged when its work is on either one: its tip an \
+                 ancestor, or its patch already there under a squash or a rebase-merge. A \
+                 fetch is what makes a merge someone else made visible.",
+            ),
+            None => (
+                format!("{base} (no remote-tracking ref)"),
+                "A worktree branch reads merged when its work is on it: its tip an ancestor, \
+                 or its patch already there under a local squash merge.",
+            ),
+        };
+        records.push(rec(Level::Ok, "merge base", word).advice(advice));
+    }
     // A repo on the Windows drive reaches git through WSL's 9p bridge, where
     // every operation is many times slower — and worktrees, the diff viewer
     // and the merge flow shell out to git constantly. Only WSL mounts drives

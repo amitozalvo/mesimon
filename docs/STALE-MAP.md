@@ -6174,3 +6174,98 @@ the transcript's does not. Tests: `a_textless_tool_call_is_a_tool_in_flight` (ad
 `transcript_hints_are_always_low_and_silent` (attention), `last_event_reads_a_trailing_tool_call_as_in_flight`
 (tail). Not done: no e2e — the shape needs a restart mid-tool with a stub that holds a tool open,
 and the three unit tests pin the whole road but the wiring.
+
+## A branch merged upstream reads merged (T-267, 2026-09-06, user: "at work I don't merge to main. I use PR ∙ when PR is merged and local is fetched / pulled, I want the ticket to at least show that the worktree is considered merged ∙ PR merge can be squashed, so that's a thing to know")
+
+**The bug.** M4's merged test was one line of the spec — "branch tip ancestor of default branch
+(`merge-base --is-ancestor`)" — and `compute_flags` says the same thing in its counts: merged ⇔
+nothing ahead. A pull request **squashed** on a forge leaves not one of the branch's commits
+behind, so both answers are no, forever. The author's work board therefore showed every landed
+ticket as `⎇↓ main moved`, offered `m ask the agent to rebase` on work that was done, would have
+had the merge train ask for that rebase on a loop, and refused DONE with "worktree unmerged".
+The base is also a LOCAL branch name, and the squash lands on `refs/remotes/origin/main` — so a
+board where the user fetches rather than pulls could not see it even in principle.
+
+**The rule now has two clauses.** Ancestry, as before; or the branch's **patch** is already on
+the target — which is how git itself answers this (`git cherry`). The target is one ref per
+pass: `origin/main` where there is one holding everything the local base holds, else the local
+base. That condition answers the other case for free: a squash merged here and not pushed leaves
+the base ahead of the upstream, and the base is then what to look in.
+
+**It writes nothing, and that is the design constraint, not an accident.** The usual trick is
+`git commit-tree` on the branch's tree to mint a dangling squash commit and hand it to `git
+cherry`; that writes a loose object into the repository, which README promise 1 does not allow
+and no user asked for. So `worktree::content_merged` computes both sides itself and compares
+patch-ids: **ours** (the branch as one patch, `mb..branch` in a single `diff-tree`) against
+**theirs** (`log -p` over the target since the merge base), and only if that misses, **each** of
+the branch's own commits against the same set — which is what a rebase-merge lands. Restricting
+the target side to the files the branch touched is not a narrowing: `patch-id --stable` sums the
+file stanzas independently, so a squash that also touched a lockfile still matches a branch that
+did not.
+
+**Three things were measured, not assumed** (the design was pressure-tested against git 2.50.1
+before it was built):
+
+- **`--no-renames` must be on both sides.** Rename detection is on by default, it changes the
+  id, and its pairing depends on which paths are in the diff — so the path filter on the target
+  side would flip it there and nowhere else. The path list is read with `diff-tree --name-only
+  -z --no-renames` and fed back under `--literal-pathspecs`, because `--name-only` quotes a
+  non-ASCII path and a file may be called `x[1].txt`.
+- **Four config knobs are asymmetric or fatal**, so `GIT_PINS` pins them on the command line:
+  `diff.orderFile` naming a file that is gone kills every diff (and `-c diff.orderFile=` is
+  equally fatal — it is `/dev/null`), `log.follow` reaches `log` and never `diff-tree`,
+  `log.abbrevCommit` turns the commit-id column into forty zeros, and a `format.pretty` with an
+  unindented body lets a commit message quoting a patch split one commit into two ids. The
+  `log` side therefore pins `--pretty=tformat:commit %H` and `--no-abbrev-commit`.
+  `--full-index` is for binaries, whose ids carry abbreviated blob oids and would otherwise
+  drift as the repo grows.
+- **A window into a growing history expires.** The first cut walked the newest 200 commits, and
+  the reviewer's measurement is what killed it: `--max-count` takes the NEWEST N, so the squash
+  falls out of the window once the base runs on, and a merged ticket would silently read
+  unmerged again. Two answers, both kept: the walk is anchored to a WEEK before the branch's own
+  last commit (`--since=@…`, from `%(committerdate:unix)` added to the `for-each-ref` that was
+  already being made — on a busy repo that is hundreds of candidates down to a handful), and a
+  verdict that NAMED a commit is re-affirmed forever with one `merge-base --is-ancestor` on that
+  commit, because a squash commit never leaves the target's history.
+
+**The cost stays where T-216 put it.** `ContentSeen` rides `FlagInput`/`Flags` in and out of the
+sample, so the steady state is the same `2 + n` forks and three string comparisons; a fetch
+moves the target and stales every memo at once, so `CONTENT_SCANS_PER_PASS` (2) caps how many
+bindings may re-scan in one pass — a merge noticed 20 s late is invisible, thirteen walks of the
+base's history on the worker are not. A branch whose tip moved is re-scanned outright: work
+committed after the merge is work that has not landed.
+
+**One flag, so everything downstream followed with no code.** `merged` is what the card's `⎇✓`,
+`App::merge_stage`, `train::plan`'s skip and the ticket page all read, so the mark, the train and
+the `m` offer changed together. The two gates — DONE (`requires_merge`) and delete — go through
+`ticket_merged`, which now asks ancestry fresh and then falls back to the sample's verdict with
+the branch tip re-read; **the gates must answer as the card does**, or a ticket that says merged
+is refused DONE. `merge_ticket` was routed through the same oracle, so `m` says "already in
+origin/main" instead of "main moved — rebase first". Teardown needed nothing: it deletes a merged
+branch with `git branch -d`, git refuses that for a squashed branch, and the branch survives —
+which is the conservative outcome, and `-D` still needs the user's explicit discard.
+
+**And the sample had to learn to speak.** `on_worktree_flags` broadcast only when the merge
+train had acted, so the flags could change on the tick and reach no board until the next thing
+happened — which was survivable while every flag moved on the back of a commit or a hook, and is
+not survivable for a merge made somewhere else: a fetch that lands a squash moves no session and
+fires no hook. `absorb_worktree_flags` now returns whether any of what the board draws actually
+changed (the memo is the sampler's own working note and does not count), and the tick's road
+broadcasts on that, the way `on_git_sampled` already did for the header's own clause.
+
+**The words.** The card says only `⎇✓`: the mark already means "this branch's work is in main",
+and line 1 has no room for a second one. The ticket page's state row is where the news goes —
+`∙ merged` stays exactly as it was for an ancestor of the checkout's own default branch, and
+anything else names the ref and the commit: `∙ merged into origin/main as 1a2b3c4`. `merged_in`
+is empty for the ordinary merge for that reason. `mesimon doctor` prints a `merge base` line.
+
+**Not done.** No forge integration — no `gh`, no `glab`, no PR state, no push, by the author's
+choice ("I don't necessarily want gitlab / github / pr integration"). The verdict lives in
+memory, so a daemon restart re-scans (bounded by the same window). A merge older than the window
+that mesimon never saw is not found — the safe way round. Two free corroborating signals were
+found and left on the table: the branch's remote-tracking ref disappearing after `fetch --prune`
+(what "delete branch on merge" leaves behind), and `--grep='(#N)'` where a ticket's notes carry
+the PR link. Tests: six units beside `compute_flags` (squash, rebase-merge, durability across
+later commits on the same files, a commit after the merge, the fetch-only upstream case with a
+real bare remote, and the empty/missing negatives), `pr_merge_e2e`, golden
+`ticket_merged_upstream_120x30`.

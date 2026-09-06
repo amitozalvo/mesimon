@@ -1269,6 +1269,41 @@ spawns pass the user's own `permissions.defaultMode` as `--permission-mode` (fre
 paths lost it otherwise).
 E2e: `crates/mesimon/tests/worktree_e2e.rs` (the one e2e with a real git repo).
 
+**A branch merged UPSTREAM reads merged, squash and all (T-267, 2026-09-06).** M4's merged test
+was ancestry alone (`merge-base --is-ancestor`, and `compute_flags`'s "nothing ahead"), so a PR
+squashed on a forge — which leaves not one of the branch's commits behind — read `⎇↓ main moved`
+forever, asked its agent to rebase finished work, and was refused DONE. The rule now has a second
+clause: the branch's PATCH is already on the target, compared by `patch-id` the way `git cherry`
+does it (`worktree::content_merged`: ours = the branch as one `diff-tree` patch, theirs = `log -p`
+over the target since the merge base filtered to the branch's own files, each = the branch's
+commits one at a time for a rebase-merge). **It writes nothing** — the usual `commit-tree` +
+`git cherry` trick would put a loose object in the repo, which README promise 1 does not allow.
+The target is ONE ref per pass: `origin/main` where there is one holding everything the local base
+holds (`worktree::upstream_base`, `Daemon::upstream_ref`, forgotten with `base_branch` after a
+fetch), else the local base — so a squash merged here and not pushed still lands in the right
+place. Three measured traps live in the code: `--no-renames` on BOTH sides (the path filter would
+flip rename detection on one only), `GIT_PINS` on the command line (`diff.orderFile` gone is fatal,
+`log.follow` reaches `log` and not `diff-tree`, `log.abbrevCommit` zeroes the commit column), and
+the WINDOW — `--max-count` takes the newest N, so the walk is anchored a week before the branch's
+own last commit (`--since=@…` off `%(committerdate:unix)`, added to the `for-each-ref` that was
+already being made) and a verdict that NAMED a commit is re-affirmed forever by one
+`--is-ancestor` on it (`ContentSeen`, memoised on `FlagInput::seen`/`Flags::seen`;
+`CONTENT_SCANS_PER_PASS` caps a fetch's stampede at two bindings a pass). Everything downstream
+reads the one `merged` flag, so the card's `⎇✓`, `train::plan`'s skip and `App::merge_stage`
+followed with no code; the DONE and delete gates go through `ticket_merged`, which asks ancestry
+fresh and then the sample's verdict with the tip re-read — **the gates must answer as the card
+does**. `merge_ticket` takes the same oracle ("already in origin/main", never "main moved").
+Teardown is unchanged and conservative: `branch -d` on a squashed branch is refused by git, so the
+branch survives unless the user discards it. `absorb_worktree_flags` now returns whether anything
+the board DRAWS changed and `on_worktree_flags` broadcasts on it (it broadcast only when the train
+acted): a merge made elsewhere moves no session and fires no hook, so the sample's own delta is the
+only thing that can tell the board. The card says only `⎇✓`; the ticket page's state row
+says `∙ merged` for an ordinary ancestor merge and `∙ merged into origin/main as 1a2b3c4`
+otherwise (`ui/ticket.rs::merged_word`, `WorktreeItem.merged_in`/`merged_oid`, both serde-default,
+`merged_in` empty for the ordinary case). Timeliness is the user's: an upstream merge shows after
+a fetch, which stays opt-in. `doctor` prints a `merge base` line. E2e `pr_merge_e2e`.
+(STALE-MAP "A branch merged upstream reads merged".)
+
 **The diff viewer has two targets, and the SCREEN says which (T-221, 2026-09-04).**
 `Command::DiffTarget` is `Ticket { id }` (the worktree branch, `BASE...BRANCH` through a
 `worktree::Binding` — what this ticket changed) or `Checkout` (the board's own repo, `git diff

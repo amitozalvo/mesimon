@@ -296,6 +296,8 @@ fn install_diff(app: &mut App) {
         branch: "msmn/T-3-fix-osc-11-detection".into(),
         status: "attached".into(),
         merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
         conflict: false,
         ahead: 2,
         needs_rebase: false,
@@ -1767,6 +1769,8 @@ fn golden_card_branch_line_120() {
         branch: "msmn/T-3-fix-osc-11-detection".into(),
         status: "attached".into(),
         merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
         conflict: false,
         ahead: 2,
         needs_rebase: false,
@@ -1788,6 +1792,8 @@ fn golden_card_branch_line_120() {
 fn the_worktree_glyph_holds_one_column() {
     use unicode_width::UnicodeWidthStr;
     let wt = |id: u128, ahead: u32, merged: bool| mesimon_core::command::WorktreeItem {
+        merged_in: String::new(),
+        merged_oid: String::new(),
         ticket: ulid_n(id),
         branch: format!("msmn/T-{id}"),
         status: "attached".into(),
@@ -1826,6 +1832,8 @@ fn a_provisioning_ticket_launches_too() {
         branch: "msmn/T-1-decay-treatments".into(),
         status: status.into(),
         merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
         conflict: false,
         ahead: 0,
         needs_rebase: false,
@@ -2561,6 +2569,58 @@ fn golden_train_120() {
     golden("train_120x30", &render(&app, 120, 30));
 }
 
+/// A pull request merged somewhere else (T-267): the branch is not an
+/// ancestor of anything, and the ticket page still says the work landed —
+/// naming the ref, because the user did not merge it here, and the commit
+/// that carries it, because a squash is one commit and it can be looked at.
+/// The card says only `⎇✓`: the mark already means this, and line 1 has no
+/// room for a second word.
+#[test]
+fn golden_merged_upstream_120() {
+    let mut app = app_graphite(fixture(false));
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(5),
+        branch: "msmn/T-5-grapheme-truncation".into(),
+        status: "attached".into(),
+        merged: true,
+        merged_in: "origin/main".into(),
+        merged_oid: "1a2b3c4d5e6f708192a3b4c5d6e7f8091a2b3c4d".into(),
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-5-grapheme-truncation".into()),
+    }];
+    app.cursor_col = 2;
+    app.cursor_row = Some(0);
+    let board = render(&app, 120, 30);
+    let check = crate::glyphs::branch_mark(crate::glyphs::Tier::Unicode);
+    assert!(
+        board.iter().any(|l| l.contains(&format!("{check}✓"))),
+        "the card wears the merged mark:\n{}",
+        board.join("\n")
+    );
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("merged into origin/main as 1a2b3c4")),
+        "the page names where it landed:\n{}",
+        lines.join("\n")
+    );
+    golden("ticket_merged_upstream_120x30", &lines);
+
+    // A merge made here is still the bare word: `main` is the ref the whole
+    // page is already about, and there is no one commit to name.
+    app.worktrees[0].merged_in.clear();
+    app.worktrees[0].merged_oid.clear();
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("∙ merged") && !l.contains("merged into")),
+        "{}",
+        lines.join("\n")
+    );
+}
+
 /// A worktree ticket the train can reach offers `t merge by hand` in the
 /// footer (T-227); taken off the train it wears no owed mark, its row reads
 /// `auto-merge ∙ off`, the hint flips to `t auto-merge`, and the ticket page
@@ -2575,6 +2635,8 @@ fn golden_train_manual_120() {
         branch: "msmn/T-5-grapheme-truncation".into(),
         status: "attached".into(),
         merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
         conflict: false,
         ahead: 2,
         needs_rebase: false,
@@ -2739,6 +2801,8 @@ fn the_state_row_never_shows_an_empty_tag_bullet() {
         branch: "msmn/T-3-tab-to-open-description-editing-like-ticket-composer-drop-ta".into(),
         status: "attached".into(),
         merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
         conflict: false,
         ahead: 2,
         needs_rebase: false,
