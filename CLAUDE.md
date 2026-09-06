@@ -41,7 +41,8 @@ cargo clippy --workspace --all-targets -- -D warnings # the release gate's exact
 cargo run                            # TUI for cwd; `cargo run -- daemon --repo <path>` runs the daemon foreground
 ci/test-linux.sh                     # the whole suite on Linux (Docker, Debian 12, the DISTRO's tmux 3.3a); ~90 s warm. Docker Desktop must be up — SAY SO before `open -a Docker`
 ci/build-linux.sh                    # the two Linux release binaries, cross-linked from this Mac (static musl, rust-lld, no Docker)
-ci/release.sh --dry-run              # the full release gate, minus the upload
+MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3 -B ci/test-run.py --jobs 4  # the RELEASE's suite, once, on a clean committed tree: stamps target/suite-passed.json
+ci/release.sh --dry-run              # the full release gate, minus the upload; honours the stamp and skips its own suite
 ```
 
 **mesimon ships its own tmux** (alpha-2): `ci/build-tmux.sh` builds a static tmux 3.6a
@@ -65,7 +66,7 @@ Linux targets (`x86_64`/`aarch64-unknown-linux-musl`, static, WSL2 is the Window
 road) are cross-linked here by the toolchain's own `rust-lld` (`ci/build-linux.sh`,
 no C in the dependency graph so no cross toolchain). The script is the gate — clean
 tree, tag == HEAD == workspace version, tag pushed, clippy, dup-dep drift, the full
-suite with `MESIMON_REQUIRE_TMUX=1` (linked first, then run under a 40-minute deadline: macOS holds every freshly linked executable ~30 s on its first exec, and the serial suite ran past the wrapper's default 20 minutes on alpha.15 with every test green — NEVER warm the binaries in parallel, it stalls every exec on the machine and hung both live boards; STALE-MAP "The release gate leaves room for a cold run"), the same suite on Linux in Docker (dies without
+suite with `MESIMON_REQUIRE_TMUX=1` (linked first, then run under a 40-minute deadline: macOS holds every freshly linked executable ~30 s on its first exec, and the serial suite ran past the wrapper's default 20 minutes on alpha.15 with every test green — NEVER warm the binaries in parallel, it stalls every exec on the machine and hung both live boards; STALE-MAP "The release gate leaves room for a cold run"). **Since alpha.16 the gate honours a STAMPED pass instead of re-running it** (2026-09-06): `ci/test-run.py` writes `target/suite-passed.json` after a clean FULL-workspace run on a CLEAN tree — HEAD sha, the tmux that drove it by path and sha256 — and `release.sh` skips its link+test steps only when the stamp names HEAD and the BUNDLED tmux by hash (`MESIMON_RELEASE_RETEST=1` runs them anyway). So the release order is: bump + CHANGELOG → commit → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux python3 -B ci/test-run.py --jobs 4` (nextest, once, on the commit that ships) → tag → push → `ci/release.sh`. Never verify before the bump too: the bump relinks every crate and the run is thrown away. The hold was MEASURED that day: a fresh 6 MB e2e binary takes 25 s on first exec with `user 0.00 sys 0.00` (blocked, not working), 0 s on the second, a byte-identical copy at a new path 0.25 s (cached by content), a hello-world 0.47 s (it scales with the binary — a content scan of an `adhoc,linker-signed` Mach-O). Apple's knob for that is Privacy & Security → Developer Tools for the terminal; STALE-MAP "The release gate honours a stamped pass"), the same suite on Linux in Docker (dies without
 Docker, never skips — **but both Docker steps are PAUSED by the author since 2026-09-02
 until they say Windows/WSL2 is operational**: the script prints `SKIPPED` for each and
 `MESIMON_RELEASE_DOCKER=1` runs them; do not open Docker Desktop for a release) — then build, `codesign -v` (the macOS binary is deliberately NOT

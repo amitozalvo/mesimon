@@ -8,6 +8,7 @@ Python 3 is a test dependency only; the shipped binary does not use it.
 """
 import argparse
 import fcntl
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,6 +18,41 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+STAMP = Path("target/suite-passed.json")
+
+
+def stamp_pass(command, env):
+    """Record a clean FULL-workspace run so ci/release.sh can accept it as its
+    gate instead of running the same suite a second time, serially, paying
+    macOS's first-exec hold on every freshly linked e2e binary (~25 s each,
+    36 of them — alpha.16's gate spent ~25 minutes on 2.5 minutes of tests).
+
+    The stamp names what the run proved and nothing more: the commit, that
+    the tree was clean (so the commit IS what ran), and which tmux drove it,
+    by path and by hash — the release honours it only for the bundled one.
+    A partial command (one crate, one e2e) never stamps."""
+    if "--workspace" not in command:
+        return
+    if not (command[:1] == ["cargo"] and command[1:2] and command[1] in ("test", "nextest")):
+        return
+    try:
+        sha = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True, check=True).stdout.strip()
+        dirty = subprocess.run(["git", "status", "--porcelain"], capture_output=True, text=True, check=True).stdout
+    except (subprocess.CalledProcessError, OSError):
+        return
+    if dirty:
+        print("Suite passed on a dirty tree: not stamped (the commit is not what ran).", flush=True)
+        return
+    tmux = shutil.which(env.get("MESIMON_TMUX_BIN", "tmux"))
+    if not tmux:
+        return
+    tmux = str(Path(tmux).resolve())
+    digest = hashlib.sha256(Path(tmux).read_bytes()).hexdigest()
+    STAMP.parent.mkdir(parents=True, exist_ok=True)
+    STAMP.write_text(json.dumps(dict(sha=sha, tmux=tmux, tmux_sha256=digest, at=int(time.time())), indent=2) + "\n")
+    print(f"Suite passed at {sha[:7]} against {tmux}; stamped {STAMP}.", flush=True)
 
 
 def main():
@@ -135,6 +171,7 @@ def main():
             # Evidence is for a failure; a clean pass leaves nothing in /tmp.
             shutil.rmtree(run, ignore_errors=True)
             print(f"Fixture audit clean ({len(manifests)} owners).", flush=True)
+            stamp_pass(command, env)
         os.close(lock)
     return result
 

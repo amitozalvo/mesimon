@@ -6333,3 +6333,42 @@ Tests: `terminal_e2e` (attach argv, one pane in the checkout, no record on the b
 both ways, reuse, exit → respawn), the worktree case in `worktree_e2e` (in the worktree, killed at
 the discard teardown), `the_terminal_opens_the_screens_directory_and_returns_to_it` (app), the
 resolve test in `keymap.rs`, the three git-clause ladder tests, twenty goldens.
+
+## The release gate honours a stamped pass (2026-09-06, user: "doesn't make sense to me how long all this takes (it's not the first time I'm talking about this, hurting us a lot)")
+
+**What it cost.** alpha.16's gate spent ~25 minutes in `cargo test --workspace` for ~2.5 minutes of
+tests, and the turn before it verified the tree twice — once before the version bump and once
+after, because the bump relinks every crate — so one suite ran three times. The 40-minute deadline
+alpha.15 added was a budget for the wait, not a fix for it.
+
+**What the wait is, measured.** A freshly linked 6 MB e2e binary takes **25 s** on its first exec
+with `user 0.00 sys 0.00` — the process is held before it runs, not working — and **0 s** on the
+second. A byte-identical copy at a new path: 0.25 s, so the verdict is cached by content and a
+relink is always a fresh one. A hello-world C binary: 0.47 s, so it scales with the binary — a
+content scan of an `adhoc,linker-signed` Mach-O on first launch, which is the class macOS 14+
+hands to XProtect. The unified log shows nothing from `syspolicyd` without root. Apple's knob for
+exactly this is *Privacy & Security → Developer Tools* for the terminal (the responsible app —
+iTerm2 here, since the tmux server is reparented to launchd and inherits it); the author was
+asked to add it and the 25 s measurement is to be re-run after.
+
+**The change.** `ci/test-run.py::stamp_pass` writes `target/suite-passed.json` after a clean run
+of a FULL-workspace `cargo test`/`nextest` on a CLEAN tree: HEAD's sha, the tmux that drove it
+(`MESIMON_TMUX_BIN` resolved) by path and sha256, and the time. A partial command never stamps
+and a dirty tree says so and does not (the commit is not what ran). `ci/release.sh` honours the
+stamp only when it names HEAD and the BUNDLED tmux by hash — a run on the homebrew tmux, or a
+vendor tmux rebuilt since, is refused — and then skips the link and test steps with a step line
+saying so; `MESIMON_RELEASE_RETEST=1` runs them regardless. The gate's meaning is unchanged: the
+whole suite, at exactly the commit that ships, on the tmux that ships. What changed is that it is
+proved once. Verified in a scratch git repo: partial command → no stamp; clean tree → stamp;
+dirty tree → refused; the release's compare honours the match and refuses another HEAD, another
+tmux path, and the same path with another hash.
+
+**The release order now.** Bump + CHANGELOG → commit → `MESIMON_TMUX_BIN=$PWD/vendor/tmux/tmux
+python3 -B ci/test-run.py --jobs 4` (nextest, parallel, bounded so the first-exec scans do not
+stampede the machine — 36 at once hung both live boards on alpha.15) → tag → push →
+`ci/release.sh`. Nothing is verified before the bump.
+
+**Not done.** The Developer Tools exemption is unverified until the author adds the terminal; if
+it removes the hold, `--jobs 4` can go and the stamp is worth the two minutes of tests rather than
+the twenty-five of waiting. `ci/__pycache__/test-run.cpython-314.pyc` is tracked in git and should
+not be.

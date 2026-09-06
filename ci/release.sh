@@ -27,6 +27,9 @@
 # Usage:  ci/release.sh              build, verify, package, publish
 #         ci/release.sh --dry-run    everything except the upload
 #         MESIMON_RELEASE_DOCKER=1 ci/release.sh   with the Docker steps
+#         MESIMON_RELEASE_RETEST=1 ci/release.sh   run the suite here even when
+#                                                  ci/test-run.py has stamped a
+#                                                  pass at HEAD on the bundled tmux
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -116,6 +119,33 @@ step "bundled tmux"
 ./ci/build-tmux.sh
 [ -x vendor/tmux/tmux ] || die "vendor/tmux/tmux missing after build"
 
+# The suite may already have run at this very commit, against this very tmux:
+# ci/test-run.py stamps a clean full-workspace pass with the HEAD it ran at
+# (clean tree, so the commit is what ran) and the tmux that drove it, by
+# hash. Running it again here proves nothing the stamp does not, and costs
+# the serial first-exec hold on 36 freshly linked e2e binaries — ~25 minutes
+# on alpha.16 for 2.5 minutes of tests. The gate is unchanged: the whole
+# suite, at exactly this commit, on the bundled tmux. MESIMON_RELEASE_RETEST=1
+# runs it here regardless.
+stamp="target/suite-passed.json"
+suite_done=0
+if [ "${MESIMON_RELEASE_RETEST:-0}" != "1" ] && [ -r "$stamp" ]; then
+  want_sha=$(git rev-parse HEAD)
+  want_tmux="$(cd vendor/tmux && pwd -P)/tmux"
+  want_hash=$(shasum -a 256 "$want_tmux" | cut -d' ' -f1)
+  if python3 -c '
+import json, sys
+s = json.load(open(sys.argv[1]))
+sys.exit(0 if (s.get("sha"), s.get("tmux"), s.get("tmux_sha256")) == tuple(sys.argv[2:5]) else 1)
+' "$stamp" "$want_sha" "$want_tmux" "$want_hash"; then
+    suite_done=1
+  fi
+fi
+
+if [ "$suite_done" = "1" ]; then
+  step "tests (already passed at $(git rev-parse --short HEAD) on the bundled tmux — stamp honoured)"
+  echo "ci/test-run.py stamped a clean full-workspace pass at this commit; MESIMON_RELEASE_RETEST=1 re-runs it here"
+else
 step "link the test binaries"
 # Compiled before the bounded run below, so its deadline is spent on tests
 # and never on a relink.
@@ -138,6 +168,7 @@ step "tests (driven by the bundled tmux)"
 # stalled forking tmux, and their TUIs hung with them. Serial was measured
 # harmless to the boards; parallel was not.
 MESIMON_TMUX_BIN="$PWD/vendor/tmux/tmux" MESIMON_REQUIRE_TMUX=1 python3 -B ci/test-run.py --timeout 2400 -- cargo test --workspace
+fi
 
 step "tests on Linux (Docker, the distro's own tmux)"
 # The same suite on the platform the Linux artifacts are for, driven by the
