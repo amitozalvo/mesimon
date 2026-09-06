@@ -17,7 +17,12 @@
 //! human's `m` is the road from there. A Sleeping claude is the user's
 //! parking and never a candidate; `Interrupted` was their Esc. And a ticket
 //! marked `manual_merge` (T-227, the `t` key) is on neither list: the user
-//! took it off the train, and `m` is the only road for it.
+//! took it off the train, and `m` is the only road for it. Neither is one
+//! with a raised hand (T-107): an agent that ended its turn asking for a
+//! person is saying a person looks before this goes anywhere, and merging it
+//! — or asking it to rebase — would be the automation answering a question
+//! addressed to somebody else. The hand also outlasts the ask: lowering it is
+//! the person's gesture, so the skip lasts exactly as long as the question.
 
 use std::collections::{HashMap, HashSet};
 
@@ -89,7 +94,7 @@ pub fn plan(input: &Input) -> Plan {
     for col in input.board.sorted_columns() {
         for t in input.board.column_tickets(&col.name) {
             let Some(f) = input.flags.get(&t.id) else { continue };
-            if !f.attached || f.conflict || f.merged || t.manual_merge {
+            if !f.attached || f.conflict || f.merged || t.manual_merge || t.hand_raised() {
                 continue;
             }
             let seat = seat(input.board, t.id);
@@ -341,6 +346,37 @@ mod tests {
             t.manual_merge = false;
         }
         assert_eq!(run(&b, &flags).merge, vec![ulid::Ulid(1)], "back on the train");
+    }
+
+    /// A raised hand (T-107) is on neither list either: an agent that ended
+    /// its turn asking for a person is asking for a person, and merging its
+    /// branch — or telling it to rebase — would be the automation answering.
+    /// The skip lasts exactly as long as the hand, which only a person lowers.
+    #[test]
+    fn a_ticket_with_a_raised_hand_is_on_neither_list() {
+        let mut b = board();
+        b.tickets.push(ticket(1, REVIEW, "a"));
+        b.tickets.push(ticket(2, IN_PROGRESS, "a"));
+        b.sessions.push(claude(1, idle(), Confidence::High));
+        b.sessions.push(claude(2, idle(), Confidence::High));
+        let flags: HashMap<_, _> =
+            [(ulid::Ulid(1), flags(2, false)), (ulid::Ulid(2), flags(1, true))]
+                .into_iter()
+                .collect();
+        assert_eq!(run(&b, &flags).merge, vec![ulid::Ulid(1)]);
+        for t in b.tickets.iter_mut() {
+            t.raised = Some(crate::board::Raised {
+                at: "@1".into(),
+                by: "agent:x".into(),
+                reason: "is this the right layer?".into(),
+            });
+        }
+        let p = run(&b, &flags);
+        assert!(p.merge.is_empty() && p.rebase.is_empty(), "{p:?}");
+        for t in b.tickets.iter_mut() {
+            t.raised = None;
+        }
+        assert_eq!(run(&b, &flags).merge, vec![ulid::Ulid(1)], "answered: back on the train");
     }
 
     #[test]

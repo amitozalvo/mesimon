@@ -650,6 +650,18 @@ pub struct Ticket {
     /// scalar fields (TOML serialize order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceStrategy>,
+    /// An agent asked for a person and has not been answered (T-107): the
+    /// SECOND ticket-level producer of the saturated colour, beside
+    /// `woke_at`. A fact about the ticket rather than about the session, so
+    /// it outlives the turn that raised it, the session being slept, and a
+    /// daemon restart — which is the whole reason it is not a
+    /// `RequiresAction` reason. Lowered by the person: leaving the ticket's
+    /// page, or any prompt reaching its claude.
+    ///
+    /// A TOML table, so it sits with the tables — after `workspace` (a
+    /// scalar) and before `[[tags]]`; a scalar serialized after it errors.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub raised: Option<Raised>,
     /// Tags, at most one per group (a group is an axis: kind, environment…).
     /// Must stay after every scalar — this serializes as `[[tags]]`, an array
     /// of tables, and a scalar after a table errors. Tables may follow tables,
@@ -873,6 +885,39 @@ pub fn sanitize_column_name(raw: &str) -> Option<String> {
     nonblank(cap_bytes(&scrub_cells(raw, false), COLUMN_NAME_MAX_BYTES))
 }
 
+/// The longest a raised hand's reason may be, in bytes (T-107). One line on
+/// the cursor card and one clause on the ticket page's state row — the mark
+/// is a POINTER and the transcript is the record, so the bound is a card
+/// row's worth of words rather than a note's.
+pub const RAISE_REASON_MAX_BYTES: usize = 160;
+
+/// The daemon-side boundary for a raised hand's reason: agent text on a card
+/// row, `sanitize_title`'s rule at a card row's size. Only ever removes.
+/// `None` for a reason that is blank once scrubbed — a hand with nothing to
+/// say is the bare `!` this tool exists to improve on.
+pub fn sanitize_reason(raw: &str) -> Option<String> {
+    use crate::text::{cap_bytes, nonblank, scrub_cells};
+    nonblank(cap_bytes(&scrub_cells(raw, false), RAISE_REASON_MAX_BYTES))
+}
+
+/// The `[raised]` table on a ticket (T-107): an agent asked for a person.
+///
+/// Presence IS the mark — the card lights, `needs_you_count` includes it,
+/// the merge train leaves the ticket alone — and it comes off whole, because
+/// the words are a pointer at a conversation that still holds them.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Raised {
+    /// When the hand went up, same clock as `created_at` (`@<unix secs>`).
+    pub at: String,
+    /// Who asked, in [`crate::Principal::note_author`]'s words — always
+    /// `agent:<session-uuid>` today, since no person's gesture raises one.
+    #[serde(default)]
+    pub by: String,
+    /// One line, why. Sanitized and capped by [`sanitize_reason`], and never
+    /// empty: a hand is raised WITH words or not at all.
+    pub reason: String,
+}
+
 /// The `[archived]` table on a ticket. Presence = off the board.
 ///
 /// A SNOOZE is an archive with a deadline (T-74): `until` set means the
@@ -966,6 +1011,12 @@ impl Ticket {
     /// Returned from a snooze and not yet seen: wears needs-you on its own.
     pub fn is_woke(&self) -> bool {
         self.woke_at.is_some()
+    }
+
+    /// An agent asked for a person and nobody has answered yet (T-107): the
+    /// other ticket-level way to wear needs-you.
+    pub fn hand_raised(&self) -> bool {
+        self.raised.is_some()
     }
 
     /// This ticket's tag on axis `group`, if it wears one. At most one per
@@ -1672,11 +1723,32 @@ impl Board {
         self.tickets.iter().filter(|t| t.is_woke() && !t.is_archived()).collect()
     }
 
-    /// The `!N` count: sessions in the attention set plus tickets a snooze
-    /// woke with needs-you. The header chip and the tmux status line both
-    /// read this, so the number is one number.
+    /// Tickets whose agent asked for a person and has not been answered
+    /// (T-107). `woke_tickets`' rule: an archived one never counts.
+    pub fn raised_tickets(&self) -> Vec<&Ticket> {
+        self.tickets.iter().filter(|t| t.hand_raised() && !t.is_archived()).collect()
+    }
+
+    /// Every ticket that needs the user, by any of the three roads: an
+    /// attention-set session on it, a snooze that woke it (T-74), or an
+    /// agent's raised hand (T-107). A SET, because the roads overlap — a
+    /// woken ticket whose claude is also at a permission prompt is one
+    /// ticket needing one person, and counting it twice made `!N` a number
+    /// nothing on screen could be matched against.
+    pub fn needs_you_tickets(&self) -> std::collections::HashSet<ulid::Ulid> {
+        crate::attention::attention_queue(self)
+            .iter()
+            .map(|s| s.ticket)
+            .chain(self.woke_tickets().iter().map(|t| t.id))
+            .chain(self.raised_tickets().iter().map(|t| t.id))
+            .collect()
+    }
+
+    /// The `!N` count: tickets needing the user, counted once each. The
+    /// header chip and the tmux status line both read this, so the number is
+    /// one number.
     pub fn needs_you_count(&self) -> usize {
-        crate::attention::attention_queue(self).len() + self.woke_tickets().len()
+        self.needs_you_tickets().len()
     }
 
     /// Sessions of the ticket that hold (or should hold) a pane. The archive
@@ -1782,6 +1854,7 @@ mod tests {
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),
@@ -1825,6 +1898,63 @@ mod tests {
         assert_eq!(b.woke_tickets().len(), 1, "an archived ticket never counts, a woke one does");
         assert_eq!(b.needs_you_count(), 1);
         assert_eq!(stamp_secs("@7"), Some(7));
+    }
+
+    /// A raised hand (T-107) is a table on the ticket, absent while no hand
+    /// is up, and it lights the same count a snooze's wake does.
+    #[test]
+    fn a_raised_hand_roundtrips_and_counts() {
+        let plain = ticket(1, "TODO", "a");
+        let json = serde_json::to_string(&plain).expect("serializes");
+        assert!(!json.contains("raised"), "absent, not empty: {json}");
+        assert!(!plain.hand_raised());
+
+        let mut t = ticket(2, "REVIEW", "b");
+        t.raised = Some(Raised {
+            at: "@20".into(),
+            by: "agent:00000000-0000-0000-0000-000000000000".into(),
+            reason: "which auth provider?".into(),
+        });
+        let json = serde_json::to_string(&t).expect("serializes");
+        let back: Ticket = serde_json::from_str(&json).expect("parses");
+        assert!(back.hand_raised());
+        assert_eq!(back.raised.as_ref().map(|r| r.reason.as_str()), Some("which auth provider?"));
+
+        // A ticket from before the field reads as no hand, never as a broken
+        // one: the whole board must not fall over an older file. (The TOML
+        // shape — `[raised]` with the tables, since a scalar after a table
+        // errors — is pinned in the daemon's store tests, beside the snooze's.)
+        let older = r#"{"id":"00000000000000000000000001","short_key":"T-1","title":"t",
+                        "column":"TODO","order":"a","created_at":"@0"}"#;
+        let old: Ticket = serde_json::from_str(older).expect("an older ticket still parses");
+        assert!(!old.hand_raised());
+
+        let mut b = Board::default();
+        b.tickets.push(t);
+        assert_eq!(b.raised_tickets().len(), 1);
+        assert_eq!(b.needs_you_count(), 1);
+
+        // An archived ticket is off the board, so its hand is not counted —
+        // `woke_tickets`' rule, and the reason `agent_raise_hand` refuses one.
+        b.tickets[0].archived =
+            Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
+        assert!(b.raised_tickets().is_empty());
+        assert_eq!(b.needs_you_count(), 0);
+    }
+
+    /// `!N` counts TICKETS, not roads to them: a ticket that is both back
+    /// from a snooze and holding a raised hand needs one person once.
+    #[test]
+    fn the_needs_you_count_never_counts_a_ticket_twice() {
+        let mut t = ticket(1, "TODO", "a");
+        t.woke_at = Some("@20".into());
+        t.raised =
+            Some(Raised { at: "@21".into(), by: "agent:x".into(), reason: "which one?".into() });
+        let mut b = Board::default();
+        b.tickets.push(t);
+        assert_eq!(b.woke_tickets().len(), 1);
+        assert_eq!(b.raised_tickets().len(), 1);
+        assert_eq!(b.needs_you_count(), 1, "one ticket, one person, one number");
         assert_eq!(stamp_secs("7"), None);
     }
 

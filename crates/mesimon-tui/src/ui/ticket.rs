@@ -175,6 +175,20 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .map(|until| format!(" ∙ wakes {}", crate::text::until_word(now, until * 1000)))
             .unwrap_or_default();
         ident_spans.push(Span::styled(format!(" ∙ archived{wakes}{how}"), d1));
+    } else if let Some(r) = ticket.raised.as_ref() {
+        // An agent asked for a person (T-107). The page is where the ask is
+        // answered, so the row says when it went up and repeats the words
+        // the card had room for only one line of — and unlike the snooze
+        // mark this one survives the arrival: it is lowered on the way OUT,
+        // which is what gives the sentence time to be read.
+        let when = created_at_epoch_ms(&r.at)
+            .map(|ms| match age_slot(now, ms, false).as_str() {
+                "now" => " just now".to_string(),
+                age => format!(" {age} ago"),
+            })
+            .unwrap_or_default();
+        ident_spans.push(Span::styled(format!(" ∙ claude asked{when}"), d1));
+        ident_spans.push(Span::styled(format!(" ∙ {}", crate::text::one_line(&r.reason)), d1));
     } else if ticket.is_woke() {
         // Back from a snooze and not yet looked at: the page IS the look, so
         // the keypress that opened it is clearing the mark as this draws.

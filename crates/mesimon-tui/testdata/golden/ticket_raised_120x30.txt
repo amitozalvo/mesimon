@@ -1,0 +1,30 @@
+ TICKET (T-5)   mesimon > kanban-tui  !1
+
+ Grapheme truncation
+ REVIEW for >1y ∙ created >1y ago ∙ claude asked >1y ago ∙ Auth0 or cookie?
+
+
+                                                                                           SESSIONS                  1
+
+                                                                                          ✓ ✻ claude               >1y
+                                                                                           s shell ∙ x sleep
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

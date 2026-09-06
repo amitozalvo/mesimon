@@ -269,7 +269,8 @@ dropped into the draft composing (`^s` still mints). The hint names the program 
 `$EDITOR` and the key is inert there. `mesimon doctor` prints an `editor` line. (STALE-MAP "A note
 opens in the user's own editor".) The ticket page draws the description under the identity line and
 lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. Agents
-get `read_note`/`write_note` (seven tools now, with `create_ticket` and `tag_ticket`) and
+get `read_note`/`write_note` (eight tools now, with `create_ticket`, `tag_ticket` and
+`raise_hand`) and
 `get_ticket` carries the description. Adding a
 field to `NoteMeta` is `#[serde(default)]` like everything else. (STALE-MAP "Notes: files under
 the ticket".) **An approved plan is the agent's note** (2026-09-03): the `PostToolUse` frame
@@ -1045,8 +1046,8 @@ calendar rungs are pure arithmetic over `LocalTime` in `struct tm`'s conventions
 (`localtime_r`/`mktime`, `tm_isdst = -1`) in `tui/src/localtime.rs`. **The wake is the tick
 wheel's** (`Daemon::wake_snoozed`, the 1 s bucket): back at the TOP of its column
 (`Position::Top`), `entered_at` restamped, the move gate forgetting it, feed line `snooze_woke`,
-no broadcast of its own. **A woken ticket with `needs_you` sets `Ticket.woke_at` — the one
-TICKET-level producer of the saturated colour**: `card::render` wraps `card_glyph` with `!` in
+no broadcast of its own. **A woken ticket with `needs_you` sets `Ticket.woke_at` — one of the two
+TICKET-level producers of the saturated colour** (the other is T-107's raised hand): `card::render` wraps `card_glyph` with `!` in
 `Register::Attn`, `card::needs_you(ticket, sessions)` feeds the badge and the spine, and
 `Board::needs_you_count()` is the header chip's AND the tmux status line's number. The mark
 comes off on a KEYPRESS that leaves the cursor on it (`App::ack_woke` at the end of `on_key` →
@@ -1126,7 +1127,7 @@ sessions_write_barred }`, and every save goes through `persist_columns`/`persist
 `state.is_live()` for working-set membership and `state.has_pane()` for pane existence —
 `Sleeping` is live-but-parked (no pane, no process; the attention machine latches until wake).
 
-**The agent tier (T-84): seven tools, and three named movers.** Every Claude session
+**The agent tier (T-84): eight tools, and three named movers.** Every Claude session
 mesimon spawns also carries `--mcp-config '<inline JSON>'` naming `mesimon mcp` — a stdio shim
 that forwards each `tools/call` to `orch.sock` as `Envelope { principal: Agent { session } }`.
 The config is written to NO file (no `.mcp.json`, no `~/.claude.json`, no `settings.local.json`,
@@ -1138,7 +1139,7 @@ already relies on. The shim is untrusted (it runs in the agent's process tree) a
 policy.
 
 Tools: `get_ticket`, `list_board`, `move_ticket`, `read_note`, `write_note`, `create_ticket`,
-`tag_ticket`. **No tool takes a ticket id** — the ticket comes from the session binding, so there is no
+`tag_ticket`, `raise_hand`. **No tool takes a ticket id** — the ticket comes from the session binding, so there is no
 ownership check to get wrong. `to_column` is a plain string validated server-side, never an
 `enum`, because column names are the user's words and an enum would inject them into every
 request forever. `core/src/mcp.rs` holds the tool definitions, the description lint (no second
@@ -1170,6 +1171,37 @@ groupmate that came off travels back as `replaced`. Both roads share `Daemon::lo
 absent: both succeed), so no replay key. Authorized as `Mutate` on `Resource::Ticket`; feed line
 `tag_ticket`. The human's six tag commands stay in the never-tier because `SetTag` registers on
 the fly and the other five rewrite the registry. (STALE-MAP "An agent wears the user's tags".)
+
+**`raise_hand` (T-107) is the one tool that reaches the LOUD register, and it reaches one card:
+its own.** Before it, an agent ending an ordinary turn produced no attention at all — `Stop` →
+`Idle{EndTurn}` → automove to REVIEW — so "I finished the refactor" and "I cannot proceed until
+somebody chooses an auth provider" looked identical on a board of twenty tickets. (Claude Code's
+own `AskUserQuestion` does light a card, at rank 2, but it FREEZES the turn on a modal in the
+pane; this is the same message with the turn over.) `Command::AgentRaiseHand { reason }` →
+`Daemon::agent_raise_hand` writes `Ticket.raised: Option<Raised { at, by, reason }>` — a
+`[raised]` table with the tables, after `workspace`, before `[[tags]]` — `AgentTools::Annotate`
+(it writes on the caller's own ticket), Mutate on `Resource::Ticket`, refused on an archived
+ticket, feed line `raise_hand`, `reason` REQUIRED and capped at 160 bytes by
+`board::sanitize_reason` (the mark is a pointer, the transcript is the record; the receipt says
+what was kept). The description cannot spell the product's own phrase — `lint_tool_text` bans
+`"you "`, which "needs-you mark" contains — so it says "waiting on a person".
+
+**It is the ticket's, not the session's, and that is the whole design**: the `Stop` that lands
+moments after the call would wipe a `RequiresAction` reason, the 15-minute stale demote would
+drop it, D28 pins the ranks, and a restart re-derives every session as `Unknown{DaemonRestarted}`
+— the turn ENDING is exactly what must not clear it. Lowered only by a person: leaving the
+ticket's page (`App::ack_hand` → `Command::LowerHand`, never-tier), or any `UserPromptSubmit` on
+that claude (`lower_hand_on`, beside `asked_by_hand`/`ack_owed`). Unlike `woke_at` the board
+CURSOR lowers nothing (a glance is not an answer) and the page lowers it on the way OUT (clearing
+on arrival would blank the row before it could be read). `train::plan` skips a ticket with a hand
+up on both lists — a person looks before the branch goes anywhere — which also keeps the train's
+own merged-notice from clearing the hand it should respect. The `!` outranks the session glyph as
+the woke mark does; the reason draws on the CURSOR card only, in the snooze/owed row's slot, and
+on the ticket page's state row (`∙ claude asked 4m ago ∙ …`). No new key, no `Ctx` field, no
+`TICKET_SCHEMA` bump (a dropped hand loses an alert, not recoverable state). `needs_you_count`
+became a count of TICKETS on the way past (`Board::needs_you_tickets`): the three roads overlap,
+and `!2` for one ticket matched nothing on screen. E2e `raise_hand_e2e`, goldens `board_raised_*`
+/ `ticket_raised_*`. (STALE-MAP "An agent can ask for the user".)
 
 **The tools can be switched OFF, and the board offers the AGENT BRIEF — one line in the system
 prompt of the claudes it starts** (T-217, 2026-09-04; re-aimed from CLAUDE.md to

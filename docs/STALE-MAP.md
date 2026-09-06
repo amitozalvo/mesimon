@@ -6571,3 +6571,91 @@ is behind it. The goldens are colourless so none drifted, and `test_attn_provena
 folded-board clause still holds — a spine only exists in a column the cursor is not in, and the
 cell it paints is the column's own. `the_folded_column_paints_its_needs_you_mark` pins bg, fg
 and weight over `Flavor::ALL`.
+
+## An agent can ask for the user (T-107, 2026-09-06)
+
+The loud register — the `!` glyph, the one saturated colour, the header's `!N`, the tmux status
+line — had two producers: a session in the attention set (`attention::rank` 0–8, every one of
+them hook-derived) and `Ticket::woke_at`, the snooze that asked to be seen. An agent ending an
+ordinary turn produced neither: `Stop` → `Idle{EndTurn}` → automove to REVIEW, the unread done
+mark, and nothing else. So on a board with twenty tickets and six agents, **"I finished the
+refactor" and "I cannot proceed until somebody chooses an auth provider" looked identical**, and
+the only way to tell them apart was to open every REVIEW card — the exact cost the board exists
+to remove.
+
+Claude Code's own `AskUserQuestion` already lights a card (`Signal::PreToolUse{AskUserQuestion}`
+→ `RequiresAction{Question}`, rank 2), and it is the wrong shape for this: it FREEZES the turn on
+a modal in the pane, holds the agent's context open, and takes its answer only there. The
+non-blocking case — the turn is over, a person is owed a decision — had no channel at all.
+
+**`raise_hand` is the eighth MCP tool**, `AgentTools::Annotate` (it writes on the caller's own
+ticket, like a note and a tag), one required argument: `reason`, one line. It reaches exactly one
+card — its own — and it is the only tool that reaches the loud register at all.
+
+**The mark is the TICKET's, not the session's** (`Ticket::raised: Option<Raised { at, by,
+reason }>`, a `[raised]` table with the tables, after `workspace` and before `[[tags]]`). A
+`Reason` on `RequiresAction` was the obvious home and is wrong four times over: the `Stop` that
+lands moments after the call would wipe it (the tool is called at the END of a turn — that is the
+whole use case), the 15-minute stale demote would drop it silently, D28 pins the ranks forever,
+and a daemon restart re-derives every session as `Unknown{DaemonRestarted}`. **The turn ending is
+precisely what must not clear a raised hand**, which rules the session-state road out entirely.
+As a ticket field it also survives the session being slept, killed or replaced, and it is on
+disk, so a board that comes back an hour later still knows somebody is waiting.
+
+**It is lowered by the person, never by the asker.** Three roads: leaving the ticket's PAGE
+(`App::ack_hand`, `Command::LowerHand`), any `UserPromptSubmit` on that ticket's claude (hooked
+beside `moves.asked_by_hand` / `ack_owed`, the one place every prompt road already ends), and the
+ticket leaving the board. `LowerHand` is in the never-tier: an agent that could take its own mark
+down could raise one every turn and clear it before anybody looked, and more simply, being
+answered is not something the asker declares.
+
+Two deliberate departures from `woke_at`, whose machinery this otherwise reuses whole:
+
+- **The board cursor does not lower it.** `ack_woke` fires on every keypress that lands the cursor
+  on a card, which is right for a snooze's return — novelty, discharged by a glance. An
+  unanswered question is not discharged by a glance, and `!N` is only worth reading if it means
+  "tickets waiting on an answer from me".
+- **The page lowers it on the way OUT, not on the way in.** Clearing on arrival would blank the
+  state row on the very frame the page draws, and the words are the reason the mark carries
+  words at all. `App::on_key` captures the page's ticket before `handle_key` and compares after.
+
+**The words.** Required rather than optional: a bare mark makes the user open the ticket to learn
+anything, and requiring the line is the one honest way to ask the model whether it has something
+to say — tool text may describe and may never instruct. Capped at `RAISE_REASON_MAX_BYTES` (160)
+through `board::sanitize_reason`, `sanitize_title`'s idiom at a card row's size: the mark is a
+POINTER and the transcript is the record, which is also why lowering it takes the words with it.
+The receipt returns what was kept, so a trimmed line says so where the model can see it. Drawn on
+the CURSOR card only, in the context row the snooze preset and the owed row share (`dim1`, a step
+brighter than either — it is the agent's own sentence, not chrome), and on the ticket page's state
+row as `∙ claude asked 4m ago ∙ <reason>`.
+
+**The description could not use the product's own phrase.** `lint_tool_text` bans the substring
+`"you "`, and "needs-you mark" contains it. The text says "waiting on a person" and "the board's
+attention count" instead — the lint is right, and the model needs what the tool does, not the
+product's vocabulary. 539 of `MAX_TOOL_BYTES`' 820; the surface is now 4264 bytes, ~1784 tokens.
+
+**A raised hand takes the ticket off the merge train** (one clause in `train::plan`, beside
+`manual_merge`): an agent that ended its turn asking for a person is saying a person looks before
+this goes anywhere, and merging the branch — or asking it to rebase — would be the automation
+answering a question addressed to somebody else. That also closes the one collision the
+lower-on-prompt rule would otherwise have: the daemon cannot tell its own paste's ack from a line
+the user typed (the queued ask states the same limit), and the train's merged-notice was the one
+delivery that would have mattered. It cannot reach a raised hand now.
+
+**`needs_you_count` counts TICKETS.** It was `attention_queue().len() + woke_tickets().len()`,
+which double-counted a woken ticket whose claude was also at a permission prompt — one ticket
+needing one person, shown as `!2`, matching nothing on screen. `Board::needs_you_tickets()` is
+the set, `sort_column` reads the same one, and `card::needs_you` agrees with it term for term.
+
+No `TICKET_SCHEMA` bump. The doctrine on the constant is "bump when an older build dropping the
+field would WIDEN something or lose what cannot be recovered" (`mcp_tools`, `manual_merge`, the
+snooze deadline). A dropped hand loses an alert whose content is still in the transcript and
+whose ticket is still in REVIEW; barring every board's writes to protect an alert costs more than
+the alert.
+
+Deliberately out: no retract (a hand is lowered by the person; a `!` that clears itself is one
+the user learns to distrust), no new key (opening and leaving the page is already the gesture),
+no notification out of band (the tmux status line's `!N` picks it up for free). Goldens
+`board_raised_120x30` / `ticket_raised_120x30`; the L3 colour law sweeps it over `Flavor::ALL`
+(`test_attn_provenance_raised`, and `attn_stays_on_the_card` is the woke law's helper generalised
+to take the lit card's title). E2e `raise_hand_e2e`, tier coverage in `agent_tools_e2e`.

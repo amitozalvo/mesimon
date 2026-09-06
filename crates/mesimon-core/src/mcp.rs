@@ -104,7 +104,7 @@ pub fn lint_tool_text(s: &str) -> Result<(), String> {
 
 // ------------------------------------------------------------------- tools
 
-/// The complete tool surface. Seven tools, and there is deliberately no tool
+/// The complete tool surface. Eight tools, and there is deliberately no tool
 /// to spawn a session, kill a session, delete a ticket, archive a ticket,
 /// rename a ticket, change a workspace, merge a branch, read a transcript, read
 /// a cost, or grant anything. A tool that does not exist cannot be granted by
@@ -129,6 +129,22 @@ pub fn lint_tool_text(s: &str) -> Result<(), String> {
 /// one language, and nothing an agent does fills an axis or lands on the
 /// wrong one. Which names exist, what each axis means and what colour each
 /// wears are the user's, through the picker.
+///
+/// `raise_hand` (T-107) is the one tool that reaches the LOUD register — the
+/// `!` mark, the one saturated colour, the header's count, the tmux status
+/// line — and it reaches exactly one card: the caller's own. It exists
+/// because the board could not tell "I finished the refactor" from "I cannot
+/// proceed until somebody chooses an auth provider": both end a turn, both
+/// land in REVIEW, and only one of them is waiting on a person. Claude Code's
+/// own `AskUserQuestion` already lights a card, but it FREEZES the turn on a
+/// modal in the pane; this is the same message with the turn over and the
+/// answer owed whenever the user likes.
+///
+/// The `reason` is required rather than optional on purpose. A mark with no
+/// words makes the user open the ticket to learn anything at all, which is
+/// the cost the board exists to remove — and requiring it is also the one
+/// honest way to ask the model whether it has something to say, given that
+/// tool text may describe and may never instruct.
 pub fn tools() -> Vec<Value> {
     vec![
         json!({
@@ -271,6 +287,26 @@ pub fn tools() -> Vec<Value> {
                 "additionalProperties": false,
             },
         }),
+        json!({
+            "name": "raise_hand",
+            "description": "Marks this session's ticket as waiting on a person: the card \
+                            lights on the mesimon board and the board's attention count \
+                            includes it until the ticket is opened or its next prompt \
+                            arrives. For a turn that ends on a question, a decision, or a \
+                            blocker a person has to settle; an ordinary finished turn \
+                            already reads as done.",
+            "inputSchema": {
+                "type": "object",
+                "properties": {
+                    "reason": {
+                        "type": "string",
+                        "description": "One line, the words shown on the card.",
+                    },
+                },
+                "required": ["reason"],
+                "additionalProperties": false,
+            },
+        }),
     ]
 }
 
@@ -324,6 +360,9 @@ pub enum ToolCall {
         name: String,
         group: Option<u8>,
         remove: bool,
+    },
+    RaiseHand {
+        reason: String,
     },
 }
 
@@ -435,6 +474,21 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
             };
             Ok(ToolCall::TagTicket { name, group, remove })
         }
+        "raise_hand" => {
+            // A blank reason is an error the model can read, never a silent
+            // success: a mark with no words is the thing this tool exists to
+            // improve on, and the daemon would refuse it a moment later.
+            let reason = args
+                .get("reason")
+                .and_then(Value::as_str)
+                .ok_or("raise_hand requires a reason string")?
+                .trim()
+                .to_string();
+            if reason.is_empty() {
+                return Err("reason is empty".into());
+            }
+            Ok(ToolCall::RaiseHand { reason })
+        }
         other => Err(format!("unknown tool: {other}")),
     }
 }
@@ -461,7 +515,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Seven tools, seven commands.
+        // The tier. Eight tools, eight commands.
         Command::AgentGetTicket
         | Command::AgentListBoard
         | Command::AgentMoveTicket { .. }
@@ -482,7 +536,14 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // ticket and on nothing else: the registry — the vocabulary, the axes,
         // the colours — is never written on this path, which is what keeps
         // `SetTag` below in the never-tier while this is in. See there.
-        | Command::AgentTagTicket { .. } => true,
+        | Command::AgentTagTicket { .. }
+        // Asking for a person on the caller's own ticket (T-107). A MUTATE on
+        // that ticket and nothing else, and the only channel an agent has
+        // into the loud register — one card, its own. What it CANNOT do is
+        // take the mark off: a hand is lowered by the person it was raised
+        // for (`LowerHand`, below), which is what keeps `!N` a number the
+        // user can trust.
+        | Command::AgentRaiseHand { .. } => true,
 
         // Everything below is the never-tier. An agent may not spawn or kill a
         // session, delete or archive or rename a ticket, change a workspace,
@@ -537,6 +598,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // user's to clear: both are the person's gestures.
         | Command::SnoozeTicket { .. }
         | Command::SeenTicket { .. }
+        // The other half of `AgentRaiseHand`. An agent that could lower its
+        // own hand could raise one on every turn and take it down before
+        // anybody looked; more simply, being answered is not something the
+        // asker gets to declare.
+        | Command::LowerHand { .. }
         // Whether a branch lands on its own is the person's call, never the
         // agent's whose branch it is.
         | Command::SetManualMerge { .. }
@@ -603,15 +669,18 @@ pub fn agent_allows(cmd: &Command) -> bool {
 
 /// The tier each tool needs (T-117): a column's `agent_tools` says how far
 /// up this ladder a claude on a ticket there may reach. `Read` is the three
-/// that look, `Annotate` adds the two that write on the caller's own ticket,
-/// `Full` the two that touch the board — a move, a new card. `None` is a
+/// that look, `Annotate` adds the three that write on the caller's own ticket
+/// — a note, a tag, a raised hand — `Full` the two that touch the board: a
+/// move, a new card. `None` is a
 /// command no tier ever admits, which `agent_allows` refuses first anyway.
 pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
     Some(match cmd {
         Command::AgentGetTicket | Command::AgentListBoard | Command::AgentReadNote { .. } => {
             AgentTools::Read
         }
-        Command::AgentWriteNote { .. } | Command::AgentTagTicket { .. } => AgentTools::Annotate,
+        Command::AgentWriteNote { .. }
+        | Command::AgentTagTicket { .. }
+        | Command::AgentRaiseHand { .. } => AgentTools::Annotate,
         Command::AgentMoveTicket { .. } | Command::AgentCreateTicket { .. } => AgentTools::Full,
         _ => return None,
     })
@@ -621,7 +690,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
 pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
     Some(match name {
         "get_ticket" | "list_board" | "read_note" => AgentTools::Read,
-        "write_note" | "tag_ticket" => AgentTools::Annotate,
+        "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" => AgentTools::Full,
         _ => return None,
     })
@@ -660,7 +729,7 @@ mod tests {
         assert_eq!(names(AgentTools::Read), ["get_ticket", "list_board", "read_note"]);
         assert_eq!(
             names(AgentTools::Annotate),
-            ["get_ticket", "list_board", "read_note", "write_note", "tag_ticket"]
+            ["get_ticket", "list_board", "read_note", "write_note", "tag_ticket", "raise_hand"]
         );
         assert_eq!(tools_for(AgentTools::Full).len(), tools().len(), "full is everything");
         for t in tools() {
@@ -678,6 +747,7 @@ mod tests {
                 Command::AgentTagTicket { name: "x".into(), group: None, remove: false },
                 "tag_ticket",
             ),
+            (Command::AgentRaiseHand { reason: "x".into() }, "raise_hand"),
             (
                 Command::AgentMoveTicket { to_column: "X".into(), idempotency_key: None },
                 "move_ticket",
@@ -708,9 +778,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_seven_tools() {
+    fn exactly_eight_tools() {
         let t = tools();
-        assert_eq!(t.len(), 7);
+        assert_eq!(t.len(), 8);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -721,9 +791,23 @@ mod tests {
                 "read_note",
                 "write_note",
                 "create_ticket",
-                "tag_ticket"
+                "tag_ticket",
+                "raise_hand"
             ]
         );
+    }
+
+    /// The words are the whole point (T-107), so a call without them is an
+    /// error the model can read rather than a mark with nothing under it.
+    #[test]
+    fn raise_hand_parses_and_refuses() {
+        assert_eq!(
+            parse_tool_call("raise_hand", &json!({ "reason": "  which auth provider?  " })),
+            Ok(ToolCall::RaiseHand { reason: "which auth provider?".into() })
+        );
+        assert!(parse_tool_call("raise_hand", &json!({})).is_err(), "reason is required");
+        assert!(parse_tool_call("raise_hand", &json!({ "reason": "   " })).is_err());
+        assert!(parse_tool_call("raise_hand", &json!({ "reason": 7 })).is_err());
     }
 
     #[test]
@@ -923,7 +1007,7 @@ mod tests {
     /// command an agent may send that no tool can reach would be a hole nobody
     /// is looking at.
     #[test]
-    fn the_tier_is_exactly_seven_commands() {
+    fn the_tier_is_exactly_eight_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentListBoard,
@@ -938,6 +1022,7 @@ mod tests {
                 idempotency_key: None,
             },
             Command::AgentTagTicket { name: "x".into(), group: None, remove: false },
+            Command::AgentRaiseHand { reason: "x".into() },
         ];
         for c in &allowed {
             assert!(agent_allows(c), "{c:?} should be in the tier");

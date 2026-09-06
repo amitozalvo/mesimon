@@ -240,12 +240,15 @@ pub(super) fn render(
     // in-flight binding IS a parked spawn, and nothing else queues one. So
     // the card carries the same slow arc it will carry a moment later, and
     // Shift+Enter is answered on the frame after the press either way.
-    // A ticket back from a snooze that asked to be lit (T-74) wears the
-    // needs-you mark with no session behind it — the one ticket-level
-    // producer of the saturated colour, cleared by the keypress that lands
-    // the cursor on it. It outranks the sessions' glyph the way a waiting
-    // session outranks a working one: someone asked to be told.
-    let glyph = if ticket.is_woke() {
+    // A ticket back from a snooze that asked to be lit (T-74), or one whose
+    // agent raised its hand (T-107), wears the needs-you mark with no
+    // session state behind it — the two ticket-level producers of the
+    // saturated colour. It outranks the sessions' glyph the way a waiting
+    // session outranks a working one: someone asked to be told. A raised
+    // hand therefore covers the spinner while its agent works on, which is
+    // right — the question is owed whatever the pane is doing, and the
+    // ticket page still says what the session is at.
+    let glyph = if ticket.is_woke() || ticket.hand_raised() {
         Some(('!', Register::Attn))
     } else {
         glyphs::card_glyph(sessions, tier, ctx.spin).or_else(|| {
@@ -438,8 +441,17 @@ pub(super) fn render(
     // open on its own ground: the tag row and the reply, on the resting ramp,
     // no surface. The session list, the armed snooze and the owed row stay
     // the cursor card's: they are about the selection, not the ticket.
-    let accordion =
-        selected && (!sessions.is_empty() || tag_row || snooze.is_some() || owed_row.is_some());
+    // Why this card is lit, in the agent's own words (T-107). The cursor
+    // card only: every other card wears the bare mark, because a card row is
+    // the scarcest thing on the board and one open card at a time is what
+    // the accordion is for.
+    let raised_row = ticket.raised.as_ref().map(|r| r.reason.as_str());
+    let accordion = selected
+        && (!sessions.is_empty()
+            || tag_row
+            || snooze.is_some()
+            || owed_row.is_some()
+            || raised_row.is_some());
     let opened = !selected && open && (tag_row || peek.is_some());
     if accordion || opened {
         let acc_style = if doomed {
@@ -478,6 +490,13 @@ pub(super) fn render(
         if let Some(words) = snooze.filter(|_| selected) {
             let words = truncate(words, t_cells.saturating_sub(glyph_cells));
             push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, faint)]);
+        }
+        // Why the mark is up. A step brighter than the rows either side of
+        // it, because this is the agent's own sentence rather than chrome —
+        // and it is the answer to the question the `!` just asked.
+        if let Some(words) = raised_row.filter(|_| selected) {
+            let words = truncate(words, t_cells.saturating_sub(glyph_cells));
+            push(vec![Span::raw(" ".repeat(glyph_cells)), Span::styled(words, dim)]);
         }
         // What mesimon will do to this card next, and what it waits on —
         // the same slot, the same voice: `queued ∙ after T-12`.
@@ -584,11 +603,13 @@ pub(super) fn render(
     lines
 }
 
-/// Does this card need you — a usable-confidence attention session, or the
-/// ticket itself back from a snooze that asked to be seen (T-74)? The one
-/// predicate the off-screen `!N` badge and the collapsed spine read.
+/// Does this card need you — a usable-confidence attention session, the
+/// ticket itself back from a snooze that asked to be seen (T-74), or an
+/// agent's raised hand (T-107)? The one predicate the off-screen `!N` badge
+/// and the collapsed spine read, and it agrees with `Board::needs_you_count`
+/// term for term.
 pub(super) fn needs_you(ticket: &Ticket, sessions: &[&SessionRecord]) -> bool {
-    ticket.is_woke() || is_waiting(sessions)
+    ticket.is_woke() || ticket.hand_raised() || is_waiting(sessions)
 }
 
 /// Does this ticket currently hold a usable-confidence attention session?

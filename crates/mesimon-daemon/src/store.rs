@@ -1092,6 +1092,48 @@ by = "local"
         assert!(!s.contains("until") && !s.contains("needs_you") && !s.contains("woke_at"), "{s}");
     }
 
+    /// `[raised]` is a TABLE (T-107), so it belongs with the tables: after
+    /// every scalar and before `[[tags]]`. A scalar serialized after a table
+    /// errors outright, which is what makes the serializer the judge here.
+    #[test]
+    fn a_raised_hand_serializes_with_the_tables() {
+        let t = Ticket {
+            id: ulid::Ulid(11),
+            short_key: "T-11".into(),
+            title: "asked".into(),
+            column: "REVIEW".into(),
+            order: "a0".into(),
+            created_at: "@0".into(),
+            created_by: String::new(),
+            created_from: None,
+            entered_at: None,
+            woke_at: None,
+            manual_merge: false,
+            raised: Some(mesimon_core::board::Raised {
+                at: "@1788046500".into(),
+                by: "agent:00000000-0000-0000-0000-000000000000".into(),
+                reason: "which auth provider?".into(),
+            }),
+            // A worktree strategy is a scalar and sits before it; a tag is a
+            // table and sits after. Both present, so the order is real.
+            workspace: Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout),
+            tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
+            notes: Vec::new(),
+            archived: None,
+        };
+        let f = TicketFile { schema_version: TICKET_SCHEMA, ticket: t.clone() };
+        let s = toml::to_string_pretty(&f).expect("a scalar after a table would error here");
+        assert!(s.find("[raised]").unwrap() < s.find("[[tags]]").unwrap(), "{s}");
+        let back: TicketFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.ticket.raised, t.raised);
+        assert!(back.ticket.hand_raised());
+        // No hand, no key — an older build's file and this one agree.
+        let mut plain = f;
+        plain.ticket.raised = None;
+        let s = toml::to_string_pretty(&plain).unwrap();
+        assert!(!s.contains("raised"), "{s}");
+    }
+
     /// `[[notes]]` is another array of tables: after `[[tags]]`, before
     /// `[archived]`. The serializer that writes the file is the judge.
     #[test]
@@ -1108,6 +1150,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace: None,
             tags: Vec::new(),
             notes: vec![mesimon_core::board::NoteMeta {
@@ -1156,6 +1199,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
@@ -1198,6 +1242,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
@@ -1254,6 +1299,7 @@ by = "local"
                 entered_at: None,
                 woke_at: None,
                 manual_merge: false,
+                raised: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
                 notes: Vec::new(),
@@ -1580,6 +1626,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             notes: Vec::new(),
@@ -1608,6 +1655,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),

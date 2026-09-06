@@ -226,7 +226,8 @@ fn agent_board_tools_tier_and_collisions() {
             "read_note",
             "write_note",
             "create_ticket",
-            "tag_ticket"
+            "tag_ticket",
+            "raise_hand"
         ]
     );
 

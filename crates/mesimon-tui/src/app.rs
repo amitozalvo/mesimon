@@ -1562,10 +1562,13 @@ impl App {
         self.pending_spawn_focus = None;
         self.status.clear();
         self.merge_note.clear();
+        // The page a raised hand may be standing on, before the key moves us.
+        let page = self.ticket_page();
         for (code, mods) in keys {
             self.handle_key(code, mods)?;
         }
         self.ack_woke()?;
+        self.ack_hand(page)?;
         Ok(true)
     }
 
@@ -2191,6 +2194,40 @@ impl App {
             self.status = message;
         }
         self.refresh()
+    }
+
+    /// The ticket page a raised hand was read on has been LEFT: the mark
+    /// comes off (T-107). `was` is the page's ticket from before the key was
+    /// handled, so the test is "we were on it and no longer are" — leaving
+    /// for the board, for the pane, for the diff, all the same departure.
+    ///
+    /// On the way OUT rather than on the way in, which is the deliberate
+    /// difference from `ack_woke`: clearing on arrival would blank the state
+    /// row on the very frame the page draws, and the agent's sentence is the
+    /// whole reason the mark carries words. Walking the BOARD cursor past a
+    /// lit card lowers nothing at all — a snooze return is novelty and a
+    /// glance discharges it, an unanswered question is not.
+    fn ack_hand(&mut self, was: Option<ulid::Ulid>) -> Result<()> {
+        let Some(id) = was else { return Ok(()) };
+        if self.ticket_page() == Some(id) {
+            return Ok(());
+        }
+        if !self.board.ticket(id).is_some_and(|t| t.hand_raised()) {
+            return Ok(());
+        }
+        if let Response::Err { message } = self.req(Command::LowerHand { id }) {
+            self.status = message;
+        }
+        self.refresh()
+    }
+
+    /// The ticket whose PAGE is open, and only that — the board's cursor and
+    /// a diff's subject are not a page. `subject()`'s narrower sibling.
+    fn ticket_page(&self) -> Option<ulid::Ulid> {
+        match &self.screen {
+            Screen::Ticket { ticket, .. } => Some(*ticket),
+            _ => None,
+        }
     }
 
     /// A text field owns the keyboard: the composer, a rename, or a tag name.
@@ -6301,6 +6338,7 @@ pub(crate) mod test_support {
                         entered_at: None,
                         woke_at: None,
                         manual_merge: false,
+                        raised: None,
                         workspace,
                         tags: Vec::new(),
                         notes: Vec::new(),
@@ -6667,6 +6705,15 @@ pub(crate) mod test_support {
                         None => Ok(Response::Err { message: "no such ticket".into() }),
                     }
                 }
+                Command::LowerHand { id } => {
+                    match self.board.tickets.iter_mut().find(|t| t.id == id) {
+                        Some(t) => {
+                            t.raised = None;
+                            Ok(Response::Ok)
+                        }
+                        None => Ok(Response::Err { message: "no such ticket".into() }),
+                    }
+                }
                 _ => Ok(Response::Ok),
             }
         }
@@ -6730,6 +6777,7 @@ mod tests {
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace: None,
             tags: Vec::new(),
             notes: Vec::new(),
@@ -10252,6 +10300,41 @@ mod tests {
         app.on_key(KeyCode::Char('k'), KeyModifiers::NONE).unwrap();
         assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().is_woke());
         assert_eq!(app.board.needs_you_count(), 0);
+    }
+
+    /// A raised hand (T-107) is lowered by LEAVING the ticket's page, and by
+    /// nothing the board cursor does. The two halves are one test because
+    /// the second is what the first is for: an ask discharged by a cursor
+    /// walking past is an ask nobody read.
+    #[test]
+    fn a_raised_hand_survives_the_board_and_is_lowered_by_leaving_its_page() {
+        let mut b = board_three_columns();
+        for id in [1u128, 2] {
+            b.tickets.iter_mut().find(|t| t.id == ulid::Ulid(id)).unwrap().raised =
+                Some(mesimon_core::board::Raised {
+                    at: "@100".into(),
+                    by: "agent:x".into(),
+                    reason: "which auth provider?".into(),
+                });
+        }
+        let mut app = App::for_test(b, theme());
+        assert_eq!(app.board.needs_you_count(), 2);
+        // Walking the cursor over both cards lowers neither — this is the
+        // whole difference from the woke mark above.
+        app.on_key(KeyCode::Char('j'), KeyModifiers::NONE).unwrap();
+        app.on_key(KeyCode::Char('k'), KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.needs_you_count(), 2, "a glance is not an answer");
+        // Opening the page does not lower it either: the row has to be
+        // readable on the frame it draws.
+        app.on_key(KeyCode::Char(' '), KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid::Ulid(1)));
+        assert!(app.board.ticket(ulid::Ulid(1)).unwrap().hand_raised(), "still up while read");
+        // Leaving it does.
+        app.on_key(KeyCode::Char('q'), KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Board));
+        assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().hand_raised(), "read, and lowered");
+        assert!(app.board.ticket(ulid::Ulid(2)).unwrap().hand_raised(), "the other is untouched");
+        assert_eq!(app.board.needs_you_count(), 1);
     }
 
     /// The menu row flips the preference and the next snooze carries it.

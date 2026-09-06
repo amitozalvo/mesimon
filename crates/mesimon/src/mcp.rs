@@ -132,6 +132,7 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::TagTicket { name, group, remove } => {
             Command::AgentTagTicket { name, group, remove }
         }
+        ToolCall::RaiseHand { reason } => Command::AgentRaiseHand { reason },
     };
     let env = Envelope { principal: Principal::Agent { session }, command };
     match ask(sock, &env) {
@@ -158,6 +159,11 @@ fn render(resp: Response) -> Value {
         })),
         Response::AgentTagged { tags, replaced, board_version } => {
             text(&json!({ "tags": tags, "replaced": replaced, "board_version": board_version }))
+        }
+        // The words as the board KEPT them: scrubbed and capped, so a line
+        // that came back short says so where the model can see it.
+        Response::AgentRaised { reason, board_version } => {
+            text(&json!({ "reason": reason, "board_version": board_version }))
         }
         // The body as the text block itself: markdown inside a JSON string is
         // a worse read, and the metadata already travels in `get_ticket`.
@@ -241,9 +247,12 @@ mod tests {
     }
 
     #[test]
-    fn tools_list_returns_the_seven() {
+    fn tools_list_returns_the_whole_tier() {
         let r = line(json!({"jsonrpc":"2.0","id":2,"method":"tools/list"})).unwrap();
-        assert_eq!(r["result"]["tools"].as_array().unwrap().len(), 7);
+        assert_eq!(
+            r["result"]["tools"].as_array().unwrap().len(),
+            mesimon_core::mcp::tools().len()
+        );
     }
 
     /// The receipt is what the ticket wears now, so the model sees the

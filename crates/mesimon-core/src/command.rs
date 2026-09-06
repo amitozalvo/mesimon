@@ -250,6 +250,18 @@ pub enum Command {
     SeenTicket {
         id: ulid::Ulid,
     },
+    /// The person is done with a raised hand (`Ticket::raised`, T-107): the
+    /// mark comes off. Sent when the ticket's page is LEFT — the page is the
+    /// look, and lowering on the way out rather than on the way in is what
+    /// lets the reason be read. A no-op on a ticket holding no hand, so the
+    /// TUI may send it whenever it likes.
+    ///
+    /// Deliberately not folded into `SeenTicket`: that one fires on every
+    /// keypress that lands the board cursor on a card, and a hand discharged
+    /// by `j`-ing past it would be a hand nobody read.
+    LowerHand {
+        id: ulid::Ulid,
+    },
     /// Take a ticket off the merge train, or put it back (T-227, the `t`
     /// key): `on` sets `Ticket::manual_merge`, and the train then neither
     /// merges the branch nor asks its agent to rebase — `m` by hand still
@@ -550,6 +562,21 @@ pub enum Command {
         #[serde(default)]
         remove: bool,
     },
+    /// Ask for a person on the caller's own ticket (`raise_hand`, T-107):
+    /// the card wears the needs-you mark and `!N` counts it until somebody
+    /// deals with it. The one channel an agent has into the loud register,
+    /// and it reaches ONE card — its own.
+    ///
+    /// Deliberately not a `SessionState::RequiresAction` reason: the `Stop`
+    /// that follows the tool call moments later would wipe it, the 15-minute
+    /// stale demote would drop it silently, and a daemon restart re-derives
+    /// every session as `Unknown{DaemonRestarted}`. The turn ending is the
+    /// one thing that must NOT clear a raised hand, so it is the ticket's.
+    AgentRaiseHand {
+        /// One line, why. Required: a bare mark makes the user open the
+        /// ticket to learn anything at all.
+        reason: String,
+    },
 }
 
 fn default_diff_context() -> u32 {
@@ -662,8 +689,9 @@ impl Command {
             | UnarchiveTicket { id }
             | SnoozeTicket { id, .. }
             | SetManualMerge { id, .. } => m(Mutate, true, Some(*id)),
-            // A cursor landing is not news for the feed.
-            SeenTicket { id } => m(Mutate, false, Some(*id)),
+            // A cursor landing is not news for the feed, and neither is
+            // walking off the page a raised hand was read on.
+            SeenTicket { id } | LowerHand { id } => m(Mutate, false, Some(*id)),
             // Chrome over the panes, not the board's history: the feed says
             // what the board did, and where the status line sits is neither.
             SetStatusLine { .. } => m(Mutate, false, None),
@@ -719,7 +747,8 @@ impl Command {
             // Logged by `handle_agent` with the agent as actor.
             | AgentWriteNote { .. }
             | AgentCreateTicket { .. }
-            | AgentTagTicket { .. } => m(Mutate, false, None),
+            | AgentTagTicket { .. }
+            | AgentRaiseHand { .. } => m(Mutate, false, None),
         }
     }
 }
@@ -957,6 +986,13 @@ pub enum Response {
         tags: Vec<AgentTagView>,
         #[serde(default)]
         replaced: Option<String>,
+        #[serde(default)]
+        board_version: u64,
+    },
+    /// AgentRaiseHand's receipt: the words as the board kept them (scrubbed
+    /// and capped, so a long line comes back short) and when they go away.
+    AgentRaised {
+        reason: String,
         #[serde(default)]
         board_version: u64,
     },

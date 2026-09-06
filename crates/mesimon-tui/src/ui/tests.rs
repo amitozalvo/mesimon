@@ -52,6 +52,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         entered_at: None,
         woke_at: None,
         manual_merge: false,
+        raised: None,
         workspace: None,
         tags: Vec::new(),
         notes: Vec::new(),
@@ -213,6 +214,21 @@ fn fixture_woke() -> Board {
     let mut b = fixture(false);
     if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(4)) {
         t.woke_at = Some("@100".into());
+    }
+    b
+}
+
+/// The calm fixture with T-5's agent asking for a person (T-107): its turn
+/// is over (`Idle{EndTurn}`, so the card would wear the done mark) and the
+/// hand is up, which is exactly the pair the tool exists to tell apart.
+fn fixture_raised() -> Board {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(5)) {
+        t.raised = Some(mesimon_core::board::Raised {
+            at: "@100".into(),
+            by: "agent:00000000-0000-0000-0000-000000000000".into(),
+            reason: "Auth0 or cookie?".into(),
+        });
     }
     b
 }
@@ -465,6 +481,35 @@ fn golden_waiting_board_120() {
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     golden("board_waiting_120x30", &render(&app, 120, 30));
+}
+
+/// A raised hand (T-107): the mark replaces the done mark on the card, and
+/// the cursor card carries the agent's own sentence in the context row the
+/// snooze preset and the owed row share.
+#[test]
+fn golden_raised_board_120() {
+    let mut app = app_graphite(fixture_raised());
+    app.cursor_col = 2;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].contains("!1"), "the header counts it: {}", lines[0]);
+    assert!(
+        lines.iter().any(|l| l.contains("Auth0 or cookie?")),
+        "the cursor card says why: {lines:?}"
+    );
+    golden("board_raised_120x30", &lines);
+}
+
+/// The same hand from the ticket page: the state row says who asked, when,
+/// and what they asked. The page is where it is answered, and the mark is
+/// lowered on the way OUT, so the row is still here while it is being read.
+#[test]
+fn golden_ticket_raised_120() {
+    let mut app = app_graphite(fixture_raised());
+    app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("claude asked") && l.contains("Auth0")), "{lines:?}");
+    golden("ticket_raised_120x30", &lines);
 }
 
 /// An Esc-interrupted agent on an otherwise sessionless card: the card
@@ -3287,6 +3332,20 @@ fn test_attn_provenance_woke() {
     assert!(lines.iter().any(|l| l.contains('!')), "the folded column must show the mark");
 }
 
+/// L3 for the other ticket-level producer (T-107): a raised hand lights the
+/// card and the header count with no attention SESSION behind it — T-5's
+/// claude is idle after an end of turn — and the saturated colour appears
+/// nowhere else. The same sweep the snooze's wake gets.
+#[test]
+fn test_attn_provenance_raised() {
+    for flavor in Flavor::ALL {
+        attn_stays_on_the_card(flavor, fixture_raised(), "Grapheme truncation");
+    }
+    let app = app_graphite(fixture_raised());
+    let lines = render(&app, 120, 30);
+    assert!(lines[0].contains("!1"), "the header must count the raised hand: {}", lines[0]);
+}
+
 /// T-271: the spine's `!` is the needs-you row's own inverted treatment —
 /// the cell is PAINTED `attn` with `attn_ink` on it, not a coloured stroke
 /// on the ground. One cell is the smallest mark the board makes, and a
@@ -3318,20 +3377,23 @@ fn the_folded_column_paints_its_needs_you_mark() {
 }
 
 fn attn_stays_on_the_waiting_card(flavor: Flavor, board: Board) {
+    attn_stays_on_the_card(flavor, board, "Adopt drawer import");
+}
+
+/// The L3 law, over whichever card earned the colour: the saturated register
+/// appears on the header's count and on that card's own rows, and nowhere
+/// else on the board. The producer is the caller's — an attention session, a
+/// snooze's wake (T-74), a raised hand (T-107) — and the law is one law.
+fn attn_stays_on_the_card(flavor: Flavor, board: Board, title: &str) {
     let theme = Theme::new(flavor, Profile::TrueColor);
     let attn = theme.attn;
     let mut app = App::for_test(board, theme);
-    app.cursor_col = 0; // cursor away from the waiting card
+    app.cursor_col = 0; // cursor away from the lit card
     let buf = cells(&app, 120, 30);
-    // Rows that legally carry attn: the header (0) and the rows of the card
-    // whose title is "Adopt drawer import".
+    // Rows that legally carry attn: the header (0) and the lit card's own.
     let lines = render(&app, 120, 30);
-    let card_rows: Vec<usize> = lines
-        .iter()
-        .enumerate()
-        .filter(|(_, l)| l.contains("Adopt drawer import"))
-        .map(|(y, _)| y)
-        .collect();
+    let card_rows: Vec<usize> =
+        lines.iter().enumerate().filter(|(_, l)| l.contains(title)).map(|(y, _)| y).collect();
     assert!(!card_rows.is_empty());
     let legal: Vec<usize> = card_rows.iter().flat_map(|y| [*y, *y + 1]).chain([0usize]).collect();
     let mut seen_attn = false;

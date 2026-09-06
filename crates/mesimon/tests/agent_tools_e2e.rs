@@ -67,14 +67,14 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         args[i + 1].as_str().unwrap().to_string()
     };
 
-    // ---- full: today's behaviour, seven tools -------------------------------
+    // ---- full: today's behaviour, the whole surface -------------------------
     let t_full = create(&mut c, "TODO", "full");
     let s_full = spawn(&mut c, t_full);
     assert_eq!(blob_tools(&mut c, s_full), "full");
     let mut shim = Shim::start(&sock, s_full);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
-    assert_eq!(listed(&mut shim).len(), 7);
+    assert_eq!(listed(&mut shim).len(), mesimon_core::mcp::tools().len());
 
     // ---- read: three listed, the rest refused by the daemon -----------------
     tier_of(&mut c, "TODO", AgentTools::Read);
@@ -105,6 +105,15 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
         Response::Err { message } => assert!(message.contains("read"), "{message}"),
         other => panic!("a read column admits no note: {other:?}"),
     }
+    // A raised hand writes on the caller's own ticket, so it sits on the
+    // same rung as a note (T-107) and a read column refuses it too.
+    match c.send(
+        Principal::Agent { session: s_read },
+        Command::AgentRaiseHand { reason: "which one?".into() },
+    ) {
+        Response::Err { message } => assert!(message.contains("read"), "{message}"),
+        other => panic!("a read column admits no raised hand: {other:?}"),
+    }
     // The live `full` session in the same column is narrowed too — the tier
     // is the column's NOW, not the spawn's.
     match c.send(
@@ -123,6 +132,13 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
             Command::AgentWriteNote { note: None, text: "now allowed".into() },
         ),
         Response::NoteWritten { .. }
+    ));
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: s_read },
+            Command::AgentRaiseHand { reason: "now allowed".into() },
+        ),
+        Response::AgentRaised { .. }
     ));
     match c.send(
         Principal::Agent { session: s_read },

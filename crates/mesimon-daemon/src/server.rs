@@ -1292,6 +1292,7 @@ impl Daemon {
                 self.snooze_ticket(id, until, needs_you)
             }
             Command::SeenTicket { id } => self.seen_ticket(id),
+            Command::LowerHand { id } => self.lower_hand(id),
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
@@ -1435,7 +1436,8 @@ impl Daemon {
             | Command::AgentReadNote { .. }
             | Command::AgentWriteNote { .. }
             | Command::AgentCreateTicket { .. }
-            | Command::AgentTagTicket { .. } => {
+            | Command::AgentTagTicket { .. }
+            | Command::AgentRaiseHand { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
         };
@@ -2044,6 +2046,10 @@ impl Daemon {
                     // Our own paste's ack, or the user talking to the agent
                     // while an ask waited — which drops it (2026-09-04).
                     dirty |= self.ack_owed(t);
+                    // A raised hand has been answered (T-107). Same road,
+                    // same reasoning: whoever typed, the agent is no longer
+                    // waiting on a person.
+                    dirty |= self.lower_hand_on(t);
                 }
             }
             let machine = self
@@ -2564,7 +2570,11 @@ impl Daemon {
                 let by = Principal::Agent { session };
                 self.agent_tag_ticket(&by, ticket, &name, group, remove)
             }
-            // Unreachable: `agent_allows` above admits exactly seven commands.
+            Command::AgentRaiseHand { reason } => {
+                let by = Principal::Agent { session };
+                self.agent_raise_hand(&by, ticket, &reason)
+            }
+            // Unreachable: `agent_allows` above admits exactly eight commands.
             _ => Response::Err { message: "not available to an agent session".into() },
         }
     }
@@ -2797,6 +2807,56 @@ impl Daemon {
         // when there was a different one there.
         let replaced = if remove || wearing { None } else { before };
         Response::AgentTagged { tags, replaced, board_version: self.board_version }
+    }
+
+    /// `raise_hand`, for an agent (T-107): put the needs-you mark on the
+    /// caller's own ticket, with one line saying why.
+    ///
+    /// A MUTATE on that ticket and nothing else — the card lights, `!N`
+    /// counts it, the merge train leaves it alone — and the mark is the
+    /// TICKET's, not the session's, so the `Stop` that lands moments after
+    /// this call cannot wipe it and a daemon restart cannot forget it.
+    ///
+    /// Raising a hand that is already up REPLACES the words: an agent that
+    /// learns more about what it is stuck on says the newer thing, and a
+    /// second card is not what it asked for. Nothing is written and nothing
+    /// is broadcast when the words did not change.
+    fn agent_raise_hand(&mut self, by: &Principal, ticket: ulid::Ulid, reason: &str) -> Response {
+        if let Decision::Deny { reason } =
+            authorize(by, &Action::Mutate, &Resource::Ticket { id: ticket })
+        {
+            return Response::Err { message: format!("denied: {reason}") };
+        }
+        let Some(t) = self.board.ticket(ticket) else {
+            return no_such_ticket();
+        };
+        // An archived ticket is off the board, so there is no card to light
+        // and nothing would ever lower the hand. Said in words rather than
+        // stored against a day the ticket comes back.
+        if t.is_archived() {
+            return Response::Err {
+                message: "this ticket is archived — nothing on the board would show the mark"
+                    .into(),
+            };
+        }
+        let Some(reason) = mesimon_core::board::sanitize_reason(reason) else {
+            return Response::Err { message: "reason is empty once sanitized".into() };
+        };
+        if t.raised.as_ref().is_some_and(|r| r.reason == reason) {
+            return Response::AgentRaised { reason, board_version: self.board_version };
+        }
+        let raised = mesimon_core::board::Raised {
+            at: now_iso(),
+            by: by.note_author(),
+            reason: reason.clone(),
+        };
+        if let err @ Response::Err { .. } =
+            self.with_ticket(ticket, |t| t.raised = Some(raised.clone()))
+        {
+            return err;
+        }
+        self.feed.board(by.actor(), "raise_hand", Some(ticket));
+        Response::AgentRaised { reason, board_version: self.board_version }
     }
 
     /// Remember a mutating tool call's result so a retry replays it.
@@ -3753,6 +3813,7 @@ impl Daemon {
             entered_at: Some(now_iso()),
             woke_at: None,
             manual_merge: false,
+            raised: None,
             workspace,
             tags: Vec::new(),
             notes: Vec::new(),
@@ -4925,6 +4986,36 @@ impl Daemon {
         }
     }
 
+    /// The person is done with a raised hand (T-107): the mark comes off.
+    /// A no-op — no write, no broadcast — on a ticket holding none, so the
+    /// TUI can send it on every departure from a ticket page.
+    fn lower_hand(&mut self, id: ulid::Ulid) -> Response {
+        match self.board.ticket(id) {
+            Some(t) if !t.hand_raised() => Response::Ok,
+            _ => self.with_ticket(id, |t| t.raised = None),
+        }
+    }
+
+    /// The other road down: a prompt reached the ticket's agent, so whatever
+    /// it was waiting for, it has been given. Returns whether anything
+    /// changed — the caller is already inside a hook turn and owns the
+    /// persist and the broadcast.
+    ///
+    /// The daemon cannot tell its own paste's ack from a line the user typed
+    /// (the queued ask states the same limit), so a prompt mesimon delivers
+    /// also lowers the hand. The one delivery that would have mattered — the
+    /// merge train's notice — cannot reach a raised hand at all: `train::plan`
+    /// skips the ticket for as long as one is up.
+    fn lower_hand_on(&mut self, ticket: ulid::Ulid) -> bool {
+        let Some(t) = self.board.ticket_mut(ticket) else { return false };
+        if t.raised.take().is_none() {
+            return false;
+        }
+        let t = t.clone();
+        let _ = store::save_ticket(&self.paths, &t);
+        true
+    }
+
     /// Take a ticket off the merge train, or put it back (T-227). The flag
     /// is the ticket's and the planner reads it, so the next `pending_items`
     /// already lists nothing for it; a person's gesture on the ticket also
@@ -5135,12 +5226,7 @@ impl Daemon {
         if self.board.column(column).is_none() {
             return Response::Err { message: format!("no such column: {column}") };
         }
-        let needs_you: std::collections::HashSet<ulid::Ulid> =
-            mesimon_core::attention::attention_queue(&self.board)
-                .iter()
-                .map(|s| s.ticket)
-                .chain(self.board.woke_tickets().iter().map(|t| t.id))
-                .collect();
+        let needs_you = self.board.needs_you_tickets();
         let touched = self.board.sort_column(column, by, &needs_you);
         for id in touched {
             if let Some(t) = self.board.ticket(id) {
