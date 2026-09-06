@@ -527,7 +527,13 @@ starts no second; never on a move, an agent's `create_ticket`, a wake, an unarch
 brief is read at PASTE time (`retry_pending_submits` reads `description_body` when `Parked.brief`),
 so a description written after the spawn still travels, and the composer's workspace rides
 `CreateTicket { workspace }`. `DeleteColumn` refuses live tickets (`move its N tickets first`) and
-the last column; `SortColumn` is one-shot. The six commands are local-only (`agent_allows`),
+the last column; `SortColumn` is one-shot and `SortBy` is its five orders — newest arrival,
+oldest, key, needs-you first, and **`Tag` (T-283), which is the PICKER's row order**: a group's
+row is its registry entries as the flat `Board.tags` holds them, `MoveTag` is the only thing that
+arranges it, so carrying a tag left in `^t` raises its cards. Axis 1 decides and axis 2 breaks its
+ties (a `[u8; 10]` of row indices, compared lexicographically); an axis a ticket wears nothing on
+ranks `u8::MAX`, so the untagged sink; `Tag` is LAST in `SortBy::ALL` because the dialog's row
+opens on `ALL[0]` and the goldens read `Sort now: newest first`. The six commands are local-only (`agent_allows`),
 `Mutate` on the board, barred under `columns_barred`. `mesimon doctor` prints a `columns` line.
 **In the TUI** the column HEADER is a cursor position (`App::cursor_row: Option<usize>`, `None`;
 an empty column IS its header — `App::on_header`, `Ctx::on_header`): Enter opens

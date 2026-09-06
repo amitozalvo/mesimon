@@ -478,11 +478,23 @@ pub enum SortBy {
     Key,
     /// Needs-you first, each half keeping its order.
     NeedsYouFirst,
+    /// Clumped by tag, in the order the PICKER's rows draw (T-283) — which
+    /// is registry order, and `MoveTag` is what arranges it. Axis 1 decides,
+    /// axis 2 breaks its ties, and so on; an axis a ticket wears nothing on
+    /// sorts after every tag on it, so the untagged fall to the bottom.
+    Tag,
 }
 
 impl SortBy {
-    pub const ALL: [SortBy; 4] =
-        [SortBy::NewestArrival, SortBy::OldestArrival, SortBy::Key, SortBy::NeedsYouFirst];
+    /// `Tag` is LAST on purpose: the dialog's row opens on `ALL[0]` and the
+    /// column-settings goldens read `Sort now: newest first`.
+    pub const ALL: [SortBy; 5] = [
+        SortBy::NewestArrival,
+        SortBy::OldestArrival,
+        SortBy::Key,
+        SortBy::NeedsYouFirst,
+        SortBy::Tag,
+    ];
 
     pub fn word(self) -> &'static str {
         match self {
@@ -490,6 +502,7 @@ impl SortBy {
             Self::OldestArrival => "oldest first",
             Self::Key => "by key",
             Self::NeedsYouFirst => "needs-you first",
+            Self::Tag => "by tag",
         }
     }
 
@@ -1442,6 +1455,51 @@ impl Board {
             SortBy::OldestArrival => ids.sort_by_key(|&id| key_of(id).0),
             SortBy::Key => ids.sort_by_key(|&id| key_of(id).1),
             SortBy::NeedsYouFirst => ids.sort_by_key(|&id| !key_of(id).2),
+            SortBy::Tag => {
+                // A group's row is its registry entries in the order the flat
+                // registry holds them (`group_entries`), and the picker's
+                // `HJKL` is the only thing that arranges it — so this sorts by
+                // the order the user put the picker in, never by the name. The
+                // rank is the row index, taken once here rather than out of a
+                // `group_entries` Vec per comparison.
+                const GROUPS: usize = 10; // `move_tag`'s `1..=10`
+                let mut rank: std::collections::HashMap<(u8, &str), u8> =
+                    std::collections::HashMap::new();
+                let mut filled = [0u8; GROUPS];
+                for t in &self.tags {
+                    let Some(seen) =
+                        (t.group as usize).checked_sub(1).and_then(|i| filled.get_mut(i))
+                    else {
+                        continue;
+                    };
+                    let at = *seen;
+                    *seen = seen.saturating_add(1);
+                    rank.insert((t.group, t.name.as_str()), at);
+                }
+                // `[u8; GROUPS]` compares lexicographically, which IS "axis 1
+                // decides, axis 2 breaks its ties". `u8::MAX` is "wears
+                // nothing on this axis", so the untagged land at the bottom.
+                ids.sort_by_key(|&id| {
+                    let t = self.ticket(id).expect("id from column_tickets");
+                    let mut k = [u8::MAX; GROUPS];
+                    for r in &t.tags {
+                        // A group outside 1-10 is skipped, never indexed: the
+                        // field is a `u8` precisely so a value from a newer
+                        // daemon cannot break the client.
+                        let Some(cell) =
+                            (r.group as usize).checked_sub(1).and_then(|i| k.get_mut(i))
+                        else {
+                            continue;
+                        };
+                        // A reference whose registry entry has gone still
+                        // sorts as TAGGED — after every real tag, before the
+                        // untagged. `tint_of`'s reasoning: it is not nothing.
+                        *cell =
+                            rank.get(&(r.group, r.name.as_str())).copied().unwrap_or(u8::MAX - 1);
+                    }
+                    k
+                });
+            }
         }
         let mut touched = Vec::new();
         let mut prev = String::new();
@@ -2533,6 +2591,71 @@ mod tests {
         for t in b.column_tickets("TODO") {
             assert!(t.entered_at.is_some() || t.id == ulid::Ulid(3), "a sort is not a move");
         }
+    }
+
+    /// T-283. The three decisions in one test: the tags sort in the PICKER's
+    /// row order and never by name, every axis counts with 1 deciding, and a
+    /// ticket wearing nothing on an axis falls below every tag on it.
+    #[test]
+    fn sort_column_by_tag_follows_the_picker_row() {
+        let mut b = template_board();
+        // Registered out of alphabetical order on purpose: FEATURE is the row's
+        // first cell, so its cards must come out first.
+        b.register_tag(1, "FEATURE").unwrap();
+        b.register_tag(1, "BUG").unwrap();
+        b.register_tag(2, "RESEARCH").unwrap();
+        b.register_tag(2, "QUESTION").unwrap();
+        for id in 1..=5u128 {
+            b.tickets.push(ticket(id, "TODO", &format!("{id}")));
+        }
+        fn tag(b: &mut Board, id: u128, group: u8, name: &str) {
+            let t = b.tickets.iter_mut().find(|t| t.id == ulid::Ulid(id)).expect("ticket");
+            t.set_tag(group, Some(name.to_string()));
+        }
+        tag(&mut b, 1, 1, "BUG");
+        tag(&mut b, 2, 1, "FEATURE");
+        tag(&mut b, 2, 2, "QUESTION");
+        tag(&mut b, 3, 1, "FEATURE");
+        tag(&mut b, 3, 2, "RESEARCH");
+        tag(&mut b, 5, 2, "RESEARCH"); // nothing on axis 1, something on axis 2
+        let order =
+            |b: &Board| -> Vec<u128> { b.column_tickets("TODO").iter().map(|t| t.id.0).collect() };
+        assert_eq!(order(&b), [1, 2, 3, 4, 5], "manual order to start");
+        let none = std::collections::HashSet::new();
+
+        b.sort_column("TODO", SortBy::Tag, &none);
+        assert_eq!(
+            order(&b),
+            [3, 2, 1, 5, 4],
+            "FEATURE's cards first because FEATURE is the row's first cell (not because \
+             B sorts before F), RESEARCH ahead of QUESTION inside them for the same reason, \
+             then BUG, then the axis-1 untagged — T-5 above T-4 because it at least wears \
+             something on axis 2"
+        );
+
+        // The payoff: carry FEATURE right in the picker and its clump sinks.
+        b.move_tag(1, "FEATURE", 1, 1).unwrap();
+        assert_eq!(b.group_tags(1), ["BUG", "FEATURE"]);
+        b.sort_column("TODO", SortBy::Tag, &none);
+        assert_eq!(order(&b), [1, 3, 2, 5, 4], "the cards followed the row");
+
+        // Ties keep the order they are in: two cards that wear exactly the
+        // same tags stay in the order the column already had them.
+        tag(&mut b, 2, 2, "RESEARCH");
+        b.sort_column("TODO", SortBy::Tag, &none);
+        assert_eq!(order(&b), [1, 3, 2, 5, 4], "same tags, previous order kept");
+        assert!(b.sort_column("TODO", SortBy::Tag, &none).is_empty(), "a no-op touches nothing");
+        for t in b.column_tickets("TODO") {
+            assert!(t.entered_at.is_none(), "a sort is not a move");
+        }
+
+        // A board with no vocabulary at all has nothing to say: every card
+        // ranks the same, and a stable sort leaves them where they were.
+        let mut bare = template_board();
+        bare.tickets.push(ticket(7, "TODO", "b"));
+        bare.tickets.push(ticket(8, "TODO", "a"));
+        bare.sort_column("TODO", SortBy::Tag, &none);
+        assert_eq!(order(&bare), [8, 7]);
     }
 
     #[test]

@@ -10202,6 +10202,19 @@ mod tests {
         assert_eq!(app.ctx().col_sort_word, "oldest first");
         press(&mut app, 'l');
         assert_eq!(app.ctx().col_sort_word, "by key");
+        // The ring is `SortBy::ALL`, and `by tag` (T-283) is its last rung:
+        // stepping past it comes back to where the row opens.
+        press(&mut app, 'l');
+        assert_eq!(app.ctx().col_sort_word, "needs-you first");
+        press(&mut app, 'l');
+        assert_eq!(app.ctx().col_sort_word, "by tag");
+        press(&mut app, 'l');
+        assert_eq!(app.ctx().col_sort_word, "newest first", "the ring wraps");
+        press(&mut app, 'h');
+        assert_eq!(app.ctx().col_sort_word, "by tag", "and backwards too");
+        press(&mut app, 'h');
+        press(&mut app, 'h');
+        assert_eq!(app.ctx().col_sort_word, "by key");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "SortColumn { column: \"todo\", by: Key }"), "{sent:?}");
         assert!(app.status.contains("sorted todo"), "{}", app.status);

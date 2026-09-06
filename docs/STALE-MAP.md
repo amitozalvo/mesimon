@@ -6815,3 +6815,56 @@ it to ask.
 Nothing daemon-side moved: no `Command`, no `Snapshot` field, no schema, no e2e. The
 `pending_notify` seam is `pending_open`'s — drained in `lib.rs::event_loop`, detached spawn or
 one escape to our own stdout, between draws, nothing on screen moved.
+
+## A column sorts by the picker's row (T-283, 2026-09-06)
+
+T-117 gave the column settings dialog a `Sort now` row with four one-shot orders — newest
+arrival, oldest, by key, needs-you first — and none of them could see a tag. On a board with a
+real vocabulary that is the order you actually want: every bug together, every feature together,
+so a column of thirty cards can be read by kind rather than by arrival. The only way to get it
+was `HJKL`, one card at a time.
+
+The gap was one variant wide, and the reason is worth recording: `SortBy` is a one-shot ORDER,
+not a column setting. Nothing keeps a column sorted afterwards, every gesture keeps working, and
+the value never reaches the disk — it lives in `Command::SortColumn` and the TUI's
+`Mode::ColumnSettings.sort` and nowhere else. So there was no `ColumnSettings` field to add, no
+`COLUMNS_SCHEMA` question to answer, and no daemon change at all: `Daemon::sort_column`,
+`agent_allows`' never-tier arm, the `Sort now` row and its `h`/`l` cycle are already generic over
+`SortBy`. The whole feature is `SortBy::Tag` plus one arm in `Board::sort_column`.
+
+**The order is the PICKER's row, not the name.** A group's row is its registry entries in the
+order the flat `Board.tags` vec holds them (`group_entries`; `group_tags`' doc comment already
+called this "stable order, config order, never by recency"), and `MoveTag { to_index }` — the
+picker's `HJKL` — is the one thing that arranges it. Sorting alphabetically would have ignored
+the only ordering the user can already control; sorting by the row means carrying BUG left in
+`^t` raises its cards, which makes the picker the place the sort is configured and needs no
+second concept. Registry rank is taken once per sort into a `HashMap<(u8, &str), u8>` by walking
+`self.tags` with a per-group counter — that IS `group_entries`' index, without allocating a `Vec`
+per comparison.
+
+**Every axis, group 1 deciding.** The key is `[u8; 10]`, one row-index per group, compared
+lexicographically — which is exactly "axis 1 decides, axis 2 breaks its ties, and so on". That
+needed no parameter on the command and degenerates to "axis 1 only" on a one-axis board, so the
+alternative (a group argument on `SortColumn`, or a fixed axis 1) bought nothing. A group outside
+`1..=10` is skipped rather than indexed: `TagRef.group` is a `u8` precisely so a value from a
+newer daemon cannot break a client, and a sort is not the place to start panicking on one.
+
+**Untagged last, by construction.** An axis a ticket wears nothing on ranks `u8::MAX`, so it
+falls below every tag on that axis — the shape `NeedsYouFirst` already has, where the half that
+matters rises. A `TagRef` whose registry entry has gone ranks `u8::MAX - 1`: after every real tag
+but before the untagged, because it IS tagged — the same reasoning as `tint_of`'s hash fallback,
+which exists so a card never renders a colourless band. `sort_by_key` is stable, so ties (two
+cards wearing the same tags, or two untagged ones) keep the order the column already had, which
+is the promise `sort_column`'s doc comment already made.
+
+**`Tag` is appended to `SortBy::ALL`, never inserted.** The dialog's row opens on `ALL[0]` and
+the `column_settings_*` goldens read `Sort now: newest first`; putting the new rung anywhere but
+last would have churned two goldens and the TUI test that steps `l` twice to reach `by key`, for
+nothing. If those goldens ever do diff on this row, the fix is the order in `ALL`, not
+`MESIMON_UPDATE_GOLDEN=1`.
+
+Pinned by `sort_column_by_tag_follows_the_picker_row` (`core/src/board.rs` — registers `FEATURE`
+before `BUG` so a pass by name would fail, checks axis 2 breaking a tie, checks the untagged
+sinking and ties holding, then moves a tag along the row and asserts the cards followed), the
+extended `the_sort_row_steps_on_l_and_runs_on_enter` (the ring reaches `by tag` and wraps), and
+the wire + disk round trip at the end of `tags_e2e`.

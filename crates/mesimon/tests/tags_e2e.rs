@@ -1,7 +1,9 @@
 //! Tags (T-83) end to end against a real daemon: `SetTag` replaces within a
 //! group and clears with `None`, the name is sanitized at the boundary, a bad
 //! group is refused, the tags survive the disk round-trip, and `[[tags]]`
-//! lands before `[archived]` in the file that gets written.
+//! lands before `[archived]` in the file that gets written — and a column
+//! sorted `by tag` (T-283) comes out in the order the picker's row draws,
+//! which carrying a tag along that row is what changes.
 //!
 //! No tmux and no agent — tags are pure board state, so this one runs
 //! everywhere.
@@ -12,7 +14,7 @@
 
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::MAX_TAGS_PER_GROUP;
+use mesimon_core::board::{SortBy, MAX_TAGS_PER_GROUP};
 use mesimon_core::command::{Command, Response};
 
 mod common;
@@ -278,6 +280,77 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     assert!(cols.contains("group = 7"), "the registry recorded the new axis:\n{cols}");
     let raw = std::fs::read_to_string(&ticket_toml).unwrap();
     assert!(raw.contains("group = 7"), "the wearer's file followed:\n{raw}");
+
+    // ---- a column sorts by the picker's row (T-283) ------------------------
+    // Axis 6 is free, and the two names are registered out of alphabetical
+    // order on purpose: what the sort follows is the ROW, and `MoveTag` is
+    // the only thing that arranges it.
+    assert!(matches!(
+        c.request(Command::AddColumn { name: "SORT".into(), after: None }),
+        Response::Ok
+    ));
+    for name in ["LATE", "EARLY"] {
+        assert!(matches!(
+            c.request(Command::RegisterTag { group: 6, name: name.into() }),
+            Response::Ok
+        ));
+    }
+    let mut made: Vec<ulid::Ulid> = Vec::new();
+    for title in ["one", "two", "three"] {
+        match c.request(Command::CreateTicket {
+            column: "SORT".into(),
+            title: title.into(),
+            workspace: None,
+        }) {
+            Response::Created { id, .. } => made.push(id),
+            other => panic!("create: {other:?}"),
+        }
+    }
+    let (one, two, three) = (made[0], made[1], made[2]);
+    assert!(matches!(
+        c.request(Command::SetTag { id: one, group: 6, name: Some("EARLY".into()) }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.request(Command::SetTag { id: two, group: 6, name: Some("LATE".into()) }),
+        Response::Ok
+    ));
+    let sorted = |c: &mut TestClient| -> Vec<ulid::Ulid> {
+        board_of(c.request(Command::Snapshot)).column_tickets("SORT").iter().map(|t| t.id).collect()
+    };
+    assert_eq!(sorted(&mut c), vec![one, two, three], "creation order to start");
+    assert!(matches!(
+        c.request(Command::SortColumn { column: "SORT".into(), by: SortBy::Tag }),
+        Response::Ok
+    ));
+    assert_eq!(
+        sorted(&mut c),
+        vec![two, one, three],
+        "LATE first because it is the row's first cell, not because L sorts before E — \
+         and the untagged card sinks"
+    );
+
+    // Carry EARLY to the head of the row and its cards rise with it. This is
+    // the whole feature: the picker is where the order is chosen.
+    assert!(matches!(
+        c.request(Command::MoveTag { group: 6, name: "EARLY".into(), to_group: 6, to_index: 0 }),
+        Response::Ok
+    ));
+    let was = board_of(c.request(Command::Snapshot)).ticket(one).unwrap().order.clone();
+    assert!(matches!(
+        c.request(Command::SortColumn { column: "SORT".into(), by: SortBy::Tag }),
+        Response::Ok
+    ));
+    assert_eq!(sorted(&mut c), vec![one, two, three], "the cards followed the row");
+    // And the new order reached the disk, not just the snapshot.
+    let board = board_of(c.request(Command::Snapshot));
+    let t = board.ticket(one).unwrap();
+    assert_ne!(t.order, was, "the fractional index was rewritten");
+    let raw = std::fs::read_to_string(
+        repo.join(".mesimon/board/tickets").join(&t.short_key).join("ticket.toml"),
+    )
+    .unwrap();
+    assert!(raw.contains(&format!("order = \"{}\"", t.order)), "the file followed:\n{raw}");
 
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
