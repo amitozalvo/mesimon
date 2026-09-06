@@ -20,6 +20,7 @@ pub mod fracindex;
 pub mod keymap;
 pub mod links;
 pub mod mcp;
+pub mod notify;
 pub mod principal;
 pub mod quiet;
 pub mod reconcile;

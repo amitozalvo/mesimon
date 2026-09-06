@@ -63,6 +63,16 @@ impl ShellTail {
 /// for; they differ exactly while the card's done mark stays calm
 /// (`card.rs` greys it once seen). `session` and `path` say WHICH
 /// transcript that is: a different one starts a fresh entry.
+/// What the board last SAID about one session (T-282) — three states, not
+/// the whole `SessionState`, because only two transitions are worth
+/// interrupting somebody for and everything else is the third.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NotifyMark {
+    NeedsYou,
+    Done,
+    Other,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct Spoke {
     pub(crate) session: uuid::Uuid,
@@ -219,6 +229,13 @@ pub enum Mode {
     /// keeps the list open (the row relabels itself), Esc returns to the
     /// menu on the row that opened it.
     Settings {
+        idx: usize,
+    },
+    /// The notifications list, one level under Settings (T-282). `idx` is
+    /// the cursor over `keymap::notify_items`; like the Settings list it
+    /// STAYS open when a row is chosen, and Esc returns to the Settings row
+    /// that opened it.
+    Notifications {
         idx: usize,
     },
     /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
@@ -918,6 +935,33 @@ pub struct App {
     /// A link to open outside the terminal, parked for the main loop:
     /// `[opener, target]`, launched detached (`opener::launch`).
     pub pending_open: Option<Vec<String>>,
+    /// The two notification ladders (T-282), resolved by `lib.rs` — never
+    /// `App::new`, the rule `opener` follows, so no test app and no golden
+    /// ever makes a noise or raises a banner.
+    pub notify: Option<crate::notify::Channels>,
+    /// One coalesced notification, parked for the main loop the way
+    /// `pending_open` is: the spawn-and-forget seam, no terminal handover.
+    pub pending_notify: Option<mesimon_core::notify::Post>,
+    /// What the board has already said about each session, so that only a
+    /// RISING edge speaks — the state is TUI-local and derived, like the
+    /// spoke marks, because nothing on the wire knows what has been said.
+    notify_seen: std::collections::HashMap<uuid::Uuid, NotifyMark>,
+    /// The same for the two session-less producers: tickets a snooze woke
+    /// lit (T-74) and tickets whose agent has its hand up (T-107). Two sets,
+    /// not one, because a ticket can be lit by both and a hand going up on
+    /// an already-woken ticket is news — it arrives with words.
+    notify_woke: std::collections::HashSet<ulid::Ulid>,
+    notify_raised: std::collections::HashSet<ulid::Ulid>,
+    /// The first snapshot SEEDS and says nothing. A board that has just
+    /// opened — or just reloaded on `U` — must not announce its backlog.
+    notify_primed: bool,
+    notify_batch: mesimon_core::notify::Coalescer,
+    /// Whether anybody is looking (`notify::Presence`): the terminal's own
+    /// focus reports, and the keyboard when it makes none.
+    presence: mesimon_core::notify::Presence,
+    /// The board's own monotonic clock, for the two above. Monotonic on
+    /// purpose — a wall clock that jumps must not open or close a window.
+    started: Instant,
     pending_gate_then: Option<FocusTarget>,
     /// M4: `c` on an unprovisioned worktree ticket parks the spawn daemon-side
     /// (`Response::Provisioning`); this parks the focus half of that keypress.
@@ -1113,6 +1157,16 @@ impl App {
             diff_two_pane: Cell::new(true),
             daemon_down: false,
             last_reconnect: None,
+            // None: `lib.rs` resolves the ladders, so a test app is mute.
+            notify: None,
+            pending_notify: None,
+            notify_seen: Default::default(),
+            notify_woke: Default::default(),
+            notify_raised: Default::default(),
+            notify_primed: false,
+            notify_batch: Default::default(),
+            presence: Default::default(),
+            started: Instant::now(),
         };
         if daemon_down {
             app.note_daemon_down();
@@ -1283,6 +1337,9 @@ impl App {
             status_top,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
+        // Before the overwrite: the only place both boards exist at once,
+        // and `absorb` is the one road every snapshot lands through.
+        self.scan_notify(&board);
         self.board = board;
         self.grace = grace;
         self.external = external;
@@ -1299,6 +1356,161 @@ impl App {
         self.clamp_cursor();
         self.leave_pinned_column(was.as_deref());
         self.clamp_screen();
+    }
+
+    /// The board's own monotonic clock, in milliseconds — what the coalescer
+    /// and the presence rule are told (T-282). Monotonic on purpose: a wall
+    /// clock that steps back would hold a notification for hours.
+    fn now_ms(&self) -> u64 {
+        self.started.elapsed().as_millis() as u64
+    }
+
+    /// The two rising edges worth interrupting somebody for (T-282), read off
+    /// the incoming snapshot against what the board last said.
+    ///
+    /// **needs-you** is all three roads to the saturated colour:
+    /// `attention::attention_queue` (the rank 0–8 set at usable confidence),
+    /// `Board::woke_tickets` (T-74) and `Board::raised_tickets` (T-107).
+    /// Those are the three `Board::needs_you_tickets` collects, so a banner
+    /// and the `!N` chip cannot disagree about what needs you. **A turn
+    /// finished** is `Idle{EndTurn}`, the state automove reads to move a card
+    /// to REVIEW, so the ding and the card move say the same thing.
+    ///
+    /// Two guards keep it from crying wolf. `Idle{EndTurn}` counts only at
+    /// High or Medium confidence — the bar the attention queue itself uses —
+    /// because after a daemon restart every session is `Unknown` and the
+    /// transcript tail re-derives a finished turn at LOW for each one, which
+    /// would be a burst of "finished" for turns that ended long ago. And the
+    /// first snapshot only SEEDS: an opening board announces no backlog.
+    fn scan_notify(&mut self, next: &Board) {
+        use mesimon_core::notify::Event;
+        if !self.prefs.notify {
+            // Off is off, and re-arming it seeds afresh rather than saying
+            // everything that happened while nobody was listening.
+            self.notify_seen.clear();
+            self.notify_woke.clear();
+            self.notify_raised.clear();
+            self.notify_batch.clear();
+            self.notify_primed = false;
+            return;
+        }
+        let mut marks: std::collections::HashMap<uuid::Uuid, NotifyMark> = Default::default();
+        let mut events: Vec<Event> = Vec::new();
+        for rec in mesimon_core::attention::attention_queue(next) {
+            marks.insert(rec.id, NotifyMark::NeedsYou);
+            if self.notify_seen.get(&rec.id) == Some(&NotifyMark::NeedsYou) {
+                continue;
+            }
+            // The reason the card prints, so the banner says the same word.
+            let word = match &rec.state {
+                SessionState::RequiresAction { reason } => {
+                    mesimon_core::attention::reason_word(*reason)
+                }
+                _ => "",
+            };
+            if let Some(t) = next.ticket(rec.ticket) {
+                events.push(Event::needs_you(t.id, t.short_key.clone(), word));
+            }
+        }
+        for rec in &next.sessions {
+            if marks.contains_key(&rec.id) {
+                continue;
+            }
+            let done = matches!(
+                rec.state,
+                SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+            ) && matches!(
+                rec.confidence,
+                mesimon_core::board::Confidence::High | mesimon_core::board::Confidence::Medium
+            );
+            marks.insert(rec.id, if done { NotifyMark::Done } else { NotifyMark::Other });
+            if !done || !self.prefs.notify_done {
+                continue;
+            }
+            if self.notify_seen.get(&rec.id) == Some(&NotifyMark::Done) {
+                continue;
+            }
+            if let Some(t) = next.ticket(rec.ticket) {
+                events.push(Event::turn_done(t.id, t.short_key.clone()));
+            }
+        }
+        let mut woke: std::collections::HashSet<ulid::Ulid> = Default::default();
+        for t in next.woke_tickets() {
+            woke.insert(t.id);
+            if !self.notify_woke.contains(&t.id) {
+                // A snooze has nobody to quote, so no words beside it.
+                events.push(Event::needs_you(t.id, t.short_key.clone(), ""));
+            }
+        }
+        // A raised hand carries the agent's OWN sentence (T-107), and that
+        // sentence is the reason to interrupt somebody: "I finished the
+        // refactor" and "I cannot proceed until somebody picks an auth
+        // provider" are exactly what a banner exists to tell apart.
+        let mut raised: std::collections::HashSet<ulid::Ulid> = Default::default();
+        for t in next.raised_tickets() {
+            raised.insert(t.id);
+            if !self.notify_raised.contains(&t.id) {
+                let why = t.raised.as_ref().map(|r| r.reason.clone()).unwrap_or_default();
+                events.push(Event::needs_you(t.id, t.short_key.clone(), why));
+            }
+        }
+        self.notify_seen = marks;
+        self.notify_woke = woke;
+        self.notify_raised = raised;
+        if !self.notify_primed {
+            self.notify_primed = true;
+            return;
+        }
+        let now = self.now_ms();
+        for e in events {
+            self.notify_batch.offer(e, now);
+        }
+    }
+
+    /// The coalescer's beat: at most one notification per window, and the
+    /// focus rule applied to it. Suppression takes the BANNER only — the
+    /// sound plays either way, because a chime while you are reading the
+    /// board is a cue and a banner over the card it duplicates is noise.
+    fn poll_notify(&mut self) {
+        if self.pending_notify.is_some() || !self.notify_batch.holding() {
+            return;
+        }
+        let now = self.now_ms();
+        let title = self.notify_title();
+        let Some(mut post) = self.notify_batch.due(
+            now,
+            &title,
+            self.prefs.notify_sound_needs_you,
+            self.prefs.notify_sound_done,
+        ) else {
+            return;
+        };
+        if !self.prefs.notify_focused && self.presence.focused(now) {
+            post.title.clear();
+            post.body.clear();
+        }
+        if post.is_silent() {
+            return;
+        }
+        self.pending_notify = Some(post);
+    }
+
+    /// Which board is talking. A user with two of them open has to be told,
+    /// and the checkout's own directory name is what they call it.
+    fn notify_title(&self) -> String {
+        self.repo_root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .filter(|n| !n.is_empty())
+            .unwrap_or_else(|| "mesimon".into())
+    }
+
+    /// A Settings row's sound preview: the ring's cursor IS the preview, the
+    /// theme picker's own rule.
+    fn preview_sound(&mut self, s: mesimon_core::notify::Sound) {
+        if !s.is_off() {
+            self.pending_notify = Some(mesimon_core::notify::Post::sound_only(s));
+        }
     }
 
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
@@ -1440,6 +1652,16 @@ impl App {
                 self.mode = Mode::Settings { idx: n - 1 };
             }
         }
+        // The same for the notifications list, where the rows genuinely do
+        // come and go: turning it off retires four of the five.
+        if let Mode::Notifications { idx } = self.mode {
+            let n = keymap::notify_items(&self.ctx()).len();
+            if n == 0 {
+                self.mode = Mode::Normal;
+            } else if idx >= n {
+                self.mode = Mode::Notifications { idx: n - 1 };
+            }
+        }
         // A note editor on a ticket that vanished has nowhere to save to.
         if let Mode::Editor(Editor { purpose: EditorPurpose::Note { ticket, .. }, .. }) = &self.mode
         {
@@ -1526,6 +1748,9 @@ impl App {
         // The spoke marks: a redraw, never a snapshot — nothing on the wire
         // knows what an agent said, only its transcript does.
         dirty |= self.poll_spoke();
+        // The coalescer's beat. Not a redraw and not a snapshot — the only
+        // thing on this line that leaves the terminal.
+        self.poll_notify();
         // The loop redraws once per tick, so the poll timeout is the frame
         // rate: 100 ms paces the spinner, and a panel in motion gets a
         // shorter one for the few frames it takes to settle.
@@ -1538,6 +1763,17 @@ impl App {
             // Bracketed paste (armed by `lib.rs::init_terminal`): the whole
             // clipboard as one event, never as keystrokes.
             TermEvent::Paste(text) => return Ok(self.on_paste(&text)? || dirty),
+            // The terminal saying whether anybody is looking (T-282, armed by
+            // `lib.rs::init_terminal`). From the first one of these on, it is
+            // the only source the presence rule consults.
+            TermEvent::FocusGained => {
+                self.presence.saw_focus(true, self.now_ms());
+                return Ok(dirty);
+            }
+            TermEvent::FocusLost => {
+                self.presence.saw_focus(false, self.now_ms());
+                return Ok(dirty);
+            }
             _ => return Ok(dirty),
         };
         if key.kind != KeyEventKind::Press {
@@ -1556,6 +1792,10 @@ impl App {
             crate::osc::Feed::Swallowed => return Ok(false),
             crate::osc::Feed::Pass(keys) => keys,
         };
+        // A key is a person (T-282). It stands in for focus on a terminal
+        // that reports none — after the swallow, because our own colour
+        // query's late reply is the one thing on stdin that is not the user.
+        self.presence.saw_key(self.now_ms());
         // Any keypress abandons a parked spawn-focus: the user moved on, and
         // yanking them into a session mid-thought is worse than not focusing.
         // (A new `c` re-arms it below; the session itself still spawns.)
@@ -2281,6 +2521,7 @@ impl App {
             Mode::Archived { .. } => Scope::Archived,
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
+            Mode::Notifications { .. } => Scope::Notifications,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             // Naming a column IS a text field (the tag picker's rule), and
@@ -2473,6 +2714,11 @@ impl App {
             snooze_needs_you: self.prefs.snooze_needs_you,
             status_top: self.prefs.status_top,
             week_start_word: self.prefs.week_start.name(),
+            notify: self.prefs.notify,
+            notify_done: self.prefs.notify_done,
+            notify_focused: self.prefs.notify_focused,
+            notify_sound_needs_you: self.prefs.notify_sound_needs_you.name(),
+            notify_sound_done: self.prefs.notify_sound_done.name(),
             mcp_tools: self.board.mcp_tools,
             // Every clause, and the first is `path`: an empty one means no
             // daemon has answered yet (a build predating the field, or a
@@ -3118,6 +3364,55 @@ impl App {
                     }
                 }
             }
+            // Notifications (T-282). The door, then its five rows — every
+            // one of them through `set_pref`, the tail every preference
+            // takes.
+            Verb::Notifications => self.mode = Mode::Notifications { idx: 0 },
+            Verb::NotifyToggle => {
+                let on = !self.prefs.notify;
+                let word = if on {
+                    "notifications on ∙ while this board is open"
+                } else {
+                    "notifications off"
+                };
+                self.set_pref(word, |p| p.notify = on);
+                if !on {
+                    // Whatever was held is not owed to anybody now.
+                    self.notify_batch.clear();
+                }
+            }
+            Verb::NotifyDone => {
+                let on = !self.prefs.notify_done;
+                let word = if on {
+                    "also when a turn finishes"
+                } else {
+                    "only when an agent needs you"
+                };
+                self.set_pref(word, |p| p.notify_done = on);
+            }
+            // The cursor IS the preview, the theme picker's rule: the ring
+            // moves and the sound it landed on plays.
+            Verb::NotifySoundNeedsYou => {
+                let s = self.prefs.notify_sound_needs_you.next();
+                let word = format!("needs-you sound: {}", s.name());
+                self.set_pref(&word, |p| p.set_sound_needs_you(s));
+                self.preview_sound(s);
+            }
+            Verb::NotifySoundDone => {
+                let s = self.prefs.notify_sound_done.next();
+                let word = format!("finished-turn sound: {}", s.name());
+                self.set_pref(&word, |p| p.set_sound_done(s));
+                self.preview_sound(s);
+            }
+            Verb::NotifyFocused => {
+                let on = !self.prefs.notify_focused;
+                let word = if on {
+                    "the banner shows even while the board is focused"
+                } else {
+                    "the banner is quiet while the board is focused"
+                };
+                self.set_pref(word, |p| p.notify_focused = on);
+            }
             Verb::SnoozeQuiet => {
                 let on = !self.prefs.snooze_needs_you;
                 let word = if on {
@@ -3633,6 +3928,13 @@ impl App {
                 let idx = step(idx, keymap::settings_items(&self.ctx()).len(), down);
                 self.mode = Mode::Settings { idx };
             }
+            Scope::Notifications => {
+                let Mode::Notifications { idx } = self.mode else {
+                    return;
+                };
+                let idx = step(idx, keymap::notify_items(&self.ctx()).len(), down);
+                self.mode = Mode::Notifications { idx };
+            }
             // Up/down select; left/right reach only the sort row (the
             // binding's gate) and step the order it will use.
             Scope::ColumnSettings => {
@@ -3703,6 +4005,20 @@ impl App {
                 };
                 let ctx = self.ctx();
                 let items = keymap::settings_items(&ctx);
+                let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
+                    return Ok(());
+                };
+                let verb = item.verb;
+                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+            }
+            // The same, one level down: the row relabels itself and the
+            // list stays, and turning the first row off retires four.
+            Scope::Notifications => {
+                let Mode::Notifications { idx } = self.mode else {
+                    return Ok(());
+                };
+                let ctx = self.ctx();
+                let items = keymap::notify_items(&ctx);
                 let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
                     return Ok(());
                 };
@@ -3790,6 +4106,9 @@ impl App {
             }
             // One level up, on the row that opened it.
             Scope::Settings => self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) },
+            Scope::Notifications => {
+                self.mode = Mode::Settings { idx: self.settings_row(Verb::Notifications) }
+            }
             Scope::ColumnSettings => {
                 let from_menu = matches!(&self.mode, Mode::ColumnSettings { from_menu: true, .. });
                 self.mode = if from_menu {
@@ -10607,5 +10926,325 @@ mod tests {
         assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().is_archived());
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
+    }
+    // ---- notifications (T-282) ------------------------------------------
+    //
+    // `App::notify` is None in every one of these, which is what `lib.rs`
+    // alone ever sets — so the assertion is on `pending_notify`, the parked
+    // request, and no test on this machine makes a sound or raises a banner.
+
+    use mesimon_core::board::{Confidence, Reason, StopReason};
+    use mesimon_core::notify::Sound;
+
+    /// A board with notifications on and one claude on ticket 1, seeded past
+    /// the first snapshot so the next `absorb` is a real edge.
+    fn app_notifying(state: SessionState) -> (App, uuid::Uuid) {
+        let (mut app, _, sid) = app_with_claude(state, false);
+        app.prefs.notify = true;
+        // The seeding pass: whatever the board already holds is not news.
+        app.absorb(snap_of(app.board.clone()));
+        app.poll_notify();
+        assert_eq!(app.pending_notify, None, "an opening board announces no backlog");
+        (app, sid)
+    }
+
+    fn snap_of(board: Board) -> Snapshot {
+        Snapshot { board, ..Default::default() }
+    }
+
+    /// Past the coalescing window. The board's clock is `started.elapsed()`,
+    /// so ageing the start is how a test gets to the next thing it may say.
+    fn past_the_window(app: &mut App) {
+        let w = Duration::from_millis(mesimon_core::notify::WINDOW_MS + 1);
+        app.started = app.started.checked_sub(w).expect("a young clock");
+    }
+
+    /// Move the one session to `state` at `confidence` and let the board look.
+    fn look(app: &mut App, sid: uuid::Uuid, state: SessionState, confidence: Confidence) {
+        let mut board = app.board.clone();
+        if let Some(rec) = board.sessions.iter_mut().find(|s| s.id == sid) {
+            rec.state = state;
+            rec.confidence = confidence;
+        }
+        app.absorb(snap_of(board));
+        app.poll_notify();
+    }
+
+    /// The first snapshot SEEDS. A board that opens with three blocked agents
+    /// on it must not raise three banners for things that happened while it
+    /// was closed — and `U` restarts the process, so a reload is that case.
+    #[test]
+    fn an_opening_board_announces_no_backlog() {
+        let (mut app, _, _) =
+            app_with_claude(SessionState::RequiresAction { reason: Reason::Permission }, false);
+        app.prefs.notify = true;
+        app.absorb(snap_of(app.board.clone()));
+        app.poll_notify();
+        assert_eq!(app.pending_notify, None);
+        // …and it stays seeded: the same board again is still not news.
+        app.absorb(snap_of(app.board.clone()));
+        app.poll_notify();
+        assert_eq!(app.pending_notify, None);
+    }
+
+    #[test]
+    fn an_agent_that_starts_needing_you_is_announced_once() {
+        let (mut app, sid) = app_notifying(SessionState::Running);
+        look(
+            &mut app,
+            sid,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            Confidence::High,
+        );
+        let post = app.pending_notify.take().expect("a banner");
+        assert_eq!(post.body, "T-1 needs you ∙ PERMISSION", "the word the card prints");
+        assert_eq!(post.title, "kanban-tui", "the board's own name, so two boards are told apart");
+        assert_eq!(post.sound, Sound::Glass);
+        // Still blocked is not news again — the ticket already needs you.
+        look(
+            &mut app,
+            sid,
+            SessionState::RequiresAction { reason: Reason::Question },
+            Confidence::High,
+        );
+        assert_eq!(app.pending_notify, None);
+    }
+
+    #[test]
+    fn a_finished_turn_is_announced_and_the_row_turns_it_off() {
+        let (mut app, sid) = app_notifying(SessionState::Running);
+        look(
+            &mut app,
+            sid,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            Confidence::High,
+        );
+        let post = app.pending_notify.take().expect("a chime");
+        assert_eq!(post.body, "T-1 finished a turn");
+        assert_eq!(post.sound, Sound::Tink, "the quieter of the two");
+
+        let (mut app, sid) = app_notifying(SessionState::Running);
+        app.prefs.notify_done = false;
+        look(
+            &mut app,
+            sid,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            Confidence::High,
+        );
+        assert_eq!(app.pending_notify, None, "the row took that half away");
+        // …and the other half still speaks.
+        look(
+            &mut app,
+            sid,
+            SessionState::RequiresAction { reason: Reason::Plan },
+            Confidence::High,
+        );
+        assert!(app.pending_notify.is_some(), "only the finished half was turned off");
+    }
+
+    /// After a daemon restart every session is `Unknown` and the transcript
+    /// tail re-derives a finished turn at LOW for each one. Those turns ended
+    /// long ago; announcing them would be a burst of stale chimes.
+    #[test]
+    fn a_low_confidence_finish_is_not_news() {
+        let (mut app, sid) = app_notifying(SessionState::Unknown { reason: Default::default() });
+        look(
+            &mut app,
+            sid,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            Confidence::Low,
+        );
+        assert_eq!(app.pending_notify, None);
+        // The next real turn still lands.
+        look(&mut app, sid, SessionState::Running, Confidence::High);
+        look(
+            &mut app,
+            sid,
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            Confidence::High,
+        );
+        assert!(app.pending_notify.is_some());
+    }
+
+    /// Looking at the board takes the BANNER and leaves the sound: the card is
+    /// already saying it in the one saturated colour, so the banner would be
+    /// noise — but a chime is still a cue.
+    #[test]
+    fn focus_takes_the_banner_and_leaves_the_sound() {
+        let (mut app, sid) = app_notifying(SessionState::Running);
+        app.presence.saw_focus(true, app.now_ms());
+        look(
+            &mut app,
+            sid,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            Confidence::High,
+        );
+        let post = app.pending_notify.take().expect("a sound");
+        assert_eq!(post.body, "", "no banner over the card that already says it");
+        assert_eq!(post.sound, Sound::Glass, "the sound is not what focus takes");
+
+        // The row that turns the suppression off.
+        let (mut app, sid) = app_notifying(SessionState::Running);
+        app.prefs.notify_focused = true;
+        app.presence.saw_focus(true, app.now_ms());
+        look(
+            &mut app,
+            sid,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            Confidence::High,
+        );
+        assert_eq!(app.pending_notify.take().expect("a banner").body, "T-1 needs you ∙ PERMISSION");
+    }
+
+    /// A silenced sound and a suppressed banner leave nothing to say, and
+    /// nothing is what is said — never an empty notification.
+    #[test]
+    fn a_suppressed_banner_with_no_sound_says_nothing() {
+        let (mut app, sid) = app_notifying(SessionState::Running);
+        app.prefs.notify_sound_needs_you = Sound::Off;
+        app.presence.saw_focus(true, app.now_ms());
+        look(
+            &mut app,
+            sid,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            Confidence::High,
+        );
+        assert_eq!(app.pending_notify, None);
+    }
+
+    #[test]
+    fn off_says_nothing_and_turning_it_back_on_seeds_afresh() {
+        let (mut app, _, sid) = app_with_claude(SessionState::Running, false);
+        look(
+            &mut app,
+            sid,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            Confidence::High,
+        );
+        assert_eq!(app.pending_notify, None, "off is off");
+        // Turning it on mid-session does not then say what it missed.
+        app.prefs.notify = true;
+        app.absorb(snap_of(app.board.clone()));
+        app.poll_notify();
+        assert_eq!(app.pending_notify, None, "the first look after arming seeds");
+    }
+
+    /// T-74's session-less half: a snooze that woke a ticket lit is the one
+    /// ticket-level producer of needs-you, and it has no reason word.
+    #[test]
+    fn a_woken_ticket_is_announced_once() {
+        let (mut app, _sid) = app_notifying(SessionState::Running);
+        let mut board = app.board.clone();
+        board.tickets[0].woke_at = Some("@1000".into());
+        app.absorb(snap_of(board.clone()));
+        app.poll_notify();
+        assert_eq!(app.pending_notify.take().expect("a banner").body, "T-1 needs you");
+        app.absorb(snap_of(board));
+        app.poll_notify();
+        assert_eq!(app.pending_notify, None, "still woken is not woken again");
+    }
+
+    /// T-107's producer: an agent that asked for a person at the end of a
+    /// turn. Its own sentence rides the banner, because that sentence is the
+    /// whole reason to interrupt somebody rather than let them find the card.
+    #[test]
+    fn a_raised_hand_is_announced_with_the_agents_own_words() {
+        let (mut app, _sid) = app_notifying(SessionState::Running);
+        let mut board = app.board.clone();
+        board.tickets[0].raised = Some(mesimon_core::board::Raised {
+            at: "@1000".into(),
+            by: "agent:x".into(),
+            reason: "cannot proceed until somebody picks an auth provider".into(),
+        });
+        app.absorb(snap_of(board.clone()));
+        app.poll_notify();
+        assert_eq!(
+            app.pending_notify.take().expect("a banner").body,
+            "T-1 needs you ∙ cannot proceed until somebody picks an auth provider"
+        );
+        // Still up is not up again — it stays lit until a person lowers it.
+        app.absorb(snap_of(board.clone()));
+        app.poll_notify();
+        assert_eq!(app.pending_notify, None);
+        // Lowered and raised again IS news: the words may be different.
+        board.tickets[0].raised = None;
+        app.absorb(snap_of(board.clone()));
+        past_the_window(&mut app);
+        app.poll_notify();
+        assert_eq!(app.pending_notify, None, "lowering says nothing");
+        board.tickets[0].raised = Some(mesimon_core::board::Raised {
+            at: "@2000".into(),
+            by: "agent:x".into(),
+            reason: "the migration needs a decision".into(),
+        });
+        app.absorb(snap_of(board));
+        app.poll_notify();
+        assert_eq!(
+            app.pending_notify.take().expect("a banner").body,
+            "T-1 needs you ∙ the migration needs a decision"
+        );
+    }
+
+    /// Every road to the saturated colour is a road to a notification: what
+    /// the header counts and what the board says out loud are one set.
+    #[test]
+    fn every_road_to_needs_you_is_a_road_to_a_banner() {
+        let (mut app, sid) = app_notifying(SessionState::Running);
+        let mut board = app.board.clone();
+        // A session at a prompt, a snooze that woke, and a raised hand — on
+        // three different tickets, so the count is three.
+        if let Some(rec) = board.sessions.iter_mut().find(|s| s.id == sid) {
+            rec.state = SessionState::RequiresAction { reason: Reason::Permission };
+            rec.confidence = Confidence::High;
+        }
+        board.tickets[1].woke_at = Some("@1000".into());
+        board.tickets[2].raised = Some(mesimon_core::board::Raised {
+            at: "@1000".into(),
+            by: "agent:x".into(),
+            reason: "which provider".into(),
+        });
+        assert_eq!(board.needs_you_count(), 3, "the header's own number");
+        app.absorb(snap_of(board));
+        app.poll_notify();
+        let body = app.pending_notify.take().expect("a banner").body;
+        assert_eq!(body, "3 agents need you ∙ T-1 T-2 T-3", "one line, all three");
+    }
+
+    /// The ring's cursor IS the preview — the theme picker's rule.
+    #[test]
+    fn a_sound_row_plays_what_it_names() {
+        let mut app = app_three_columns();
+        app.prefs.notify = true;
+        app.mode = Mode::Notifications { idx: 0 };
+        let ctx = app.ctx();
+        app.dispatch(Verb::NotifySoundNeedsYou, Key::Enter, Scope::Notifications, &ctx)
+            .expect("the row");
+        assert_eq!(app.prefs.notify_sound_needs_you, Sound::Ping, "the ring moved");
+        let post = app.pending_notify.take().expect("the preview");
+        assert!(post.body.is_empty(), "a preview is a sound, not a banner");
+        assert_eq!(post.sound, Sound::Ping, "and it is the one the row now names");
+    }
+
+    /// The door and the list: Enter opens it, Esc lands back on the row that
+    /// did, and the four rows under the switch appear only while it is on.
+    #[test]
+    fn the_notifications_door_opens_and_pops_back() {
+        let mut app = app_three_columns();
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::Notifications) };
+        let enter = |app: &mut App| {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
+        };
+        enter(&mut app);
+        assert!(matches!(app.mode, Mode::Notifications { idx: 0 }), "{:?}", app.mode);
+        assert_eq!(keymap::notify_items(&app.ctx()).len(), 1, "off, the list is its switch");
+        enter(&mut app);
+        assert!(app.prefs.notify, "the first row is the switch");
+        assert_eq!(keymap::notify_items(&app.ctx()).len(), 5);
+        app.on_key(KeyCode::Esc, KeyModifiers::NONE).expect("esc");
+        assert_eq!(
+            app.mode,
+            Mode::Settings { idx: app.settings_row(Verb::Notifications) },
+            "back onto the row that opened it"
+        );
     }
 }

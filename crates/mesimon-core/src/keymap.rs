@@ -159,6 +159,14 @@ pub enum Scope {
     /// their own, so the menu proper stays the list of things to DO. Esc
     /// pops back to the menu, on the row that opened it.
     Settings,
+    /// The notifications list, one level under Settings (T-282). Five rows
+    /// on the same surface with the same three shapes: whether the board
+    /// says anything out loud, which of the two moments, and the two sounds.
+    /// Its own door because `draw_list` sizes a dialog at two lines a row
+    /// and does not scroll — Settings is already at the edge of a `MIN_H`
+    /// terminal, and five more rows there would be five rows nobody can
+    /// reach.
+    Notifications,
     /// The agent-brief offer's confirm dialog (T-217, re-aimed at the system
     /// prompt by T-224): the text every claude mesimon starts would carry,
     /// shown verbatim, over the board. The one modal confirmation in mesimon
@@ -194,7 +202,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 21] = [
+    pub const ALL: [Scope; 22] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -210,6 +218,7 @@ impl Scope {
         Scope::Archived,
         Scope::Theme,
         Scope::Settings,
+        Scope::Notifications,
         Scope::Brief,
         Scope::Releases,
         Scope::Links,
@@ -230,6 +239,7 @@ impl Scope {
             | Scope::Archived
             | Scope::Theme
             | Scope::Settings
+            | Scope::Notifications
             | Scope::Brief
             | Scope::Releases
             | Scope::Links
@@ -262,6 +272,7 @@ impl Scope {
             Scope::Archived => "ARCHIVED",
             Scope::Theme => "THEME",
             Scope::Settings => "SETTINGS",
+            Scope::Notifications => "NOTIFICATIONS",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
@@ -421,6 +432,23 @@ pub enum Verb {
     /// Sunday → Saturday) — what the snooze ring's last rung means by "next
     /// week"; remembered in `prefs.json`.
     WeekStart,
+    /// The Settings row that opens the notifications list (T-282) — a door,
+    /// like Settings itself is a door in the menu.
+    Notifications,
+    /// Its five rows. The first is the master switch: off means the board
+    /// says nothing out loud, and the other four are not offered.
+    NotifyToggle,
+    /// Whether a turn LANDING is one of the two moments, or only a blocked
+    /// agent is.
+    NotifyDone,
+    /// The two sound rings, each cycled by Enter — and each PLAYS the sound
+    /// it names as you walk it, the theme picker's rule that the cursor is
+    /// the preview.
+    NotifySoundNeedsYou,
+    NotifySoundDone,
+    /// Whether the banner also shows while the board's own terminal has
+    /// focus. The sound plays either way; this row is only the banner.
+    NotifyFocused,
     /// The Settings row that turns the merge train on or off (2026-09-04):
     /// while every claude is idle, mesimon fast-forwards finished REVIEW
     /// branches and asks idle agents whose branch fell behind to rebase;
@@ -809,6 +837,16 @@ pub struct Ctx {
     /// last rung and the Settings row agree on the word. Empty in a bare
     /// `Ctx` (the row falls to a plain label); `App::ctx` always sets it.
     pub week_start_word: &'static str,
+    /// The notification preferences (T-282), each one row's word. `notify`
+    /// gates the other four: an off list is a single row.
+    pub notify: bool,
+    pub notify_done: bool,
+    pub notify_focused: bool,
+    /// The two sound names — `notify::Sound::name()`, so the row, `doctor`
+    /// and the ring agree on the spelling. Empty in a bare `Ctx`;
+    /// `App::ctx` always sets them.
+    pub notify_sound_needs_you: &'static str,
+    pub notify_sound_done: &'static str,
     /// The merge train preference (the row's word), and whether the daemon
     /// says it is ARMED — the row's detail says `arming…` between the two.
     pub merge_train: bool,
@@ -2887,6 +2925,33 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
     // Where the tmux status line sits over an agent's pane (T-264). A
     // preference the daemon is told, like the train: it owns the server.
+    // Notifications (T-282). A door, not a switch — five rows do not fit in
+    // this list, and the list under it is where they say what they will do.
+    // Third, with the other two preferences about what the board shows YOU:
+    // `draw_list` does not scroll and this list already outruns a 20-row
+    // terminal, so a door appended last would be the row nobody can reach.
+    MenuItem {
+        verb: Verb::Notifications,
+        label: |c| {
+            if c.notify {
+                "Notifications: on".into()
+            } else {
+                "Notifications: off".into()
+            }
+        },
+        detail: |c| {
+            if c.notify {
+                format!(
+                    "a banner and a sound when an agent needs you ∙ {} ∙ enter opens them",
+                    or(c.notify_sound_needs_you, "Glass")
+                )
+            } else {
+                "the board says nothing outside its own window ∙ enter opens them".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::StatusLine,
         label: |c| {
@@ -3053,6 +3118,93 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     },
 ];
 
+/// The notifications list, one level under Settings (T-282).
+///
+/// Five rows, each one idea, in the order somebody would meet them: whether
+/// at all, then which moments, then what they sound like, then the one
+/// exception about the banner. Rows two to five are gated on the first, so
+/// the list is a single row until it is turned on — the `MergeTrainNotice`
+/// shape, which is what keeps a preference list from offering settings for
+/// a thing that is off.
+pub static NOTIFY_ITEMS: &[MenuItem] = &[
+    MenuItem {
+        verb: Verb::NotifyToggle,
+        label: |c| {
+            if c.notify {
+                "Notifications: on".into()
+            } else {
+                "Notifications: off".into()
+            }
+        },
+        // Off names the reach, because a channel out of the board is a thing
+        // to consent to and not a thing to discover afterwards.
+        detail: |c| {
+            if c.notify {
+                "an OS banner and a sound ∙ only while this board is open ∙ enter turns them off"
+                    .into()
+            } else {
+                "an OS banner and a sound when an agent needs you ∙ enter turns them on".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::NotifyDone,
+        label: |c| {
+            if c.notify_done {
+                "Also when a turn finishes".into()
+            } else {
+                "Only when an agent needs you".into()
+            }
+        },
+        detail: |c| {
+            if c.notify_done {
+                "the card's ✔ ∙ enter keeps it to the blocked ones".into()
+            } else {
+                "a blocked agent only ∙ enter says a landed turn too".into()
+            }
+        },
+        avail: |c| c.notify,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::NotifySoundNeedsYou,
+        label: |c| {
+            format!("Sound when an agent needs you: {}", or(c.notify_sound_needs_you, "Glass"))
+        },
+        detail: |_| "enter cycles the ring and plays what it names".into(),
+        avail: |c| c.notify,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::NotifySoundDone,
+        label: |c| format!("Sound when a turn finishes: {}", or(c.notify_sound_done, "Tink")),
+        detail: |_| "a quieter one, so the two are told apart without looking".into(),
+        avail: |c| c.notify && c.notify_done,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::NotifyFocused,
+        label: |c| {
+            if c.notify_focused {
+                "Banner while the board is focused: shown".into()
+            } else {
+                "Banner while the board is focused: quiet".into()
+            }
+        },
+        detail: |c| {
+            if c.notify_focused {
+                "a banner over the board that already says it ∙ enter quiets it".into()
+            } else {
+                "the card already says so ∙ the sound plays either way ∙ enter shows it".into()
+            }
+        },
+        avail: |c| c.notify,
+        key: "",
+    },
+];
+
 /// `3 agents`, `1 agent` — a count and its noun. Every suggestion carries a
 /// number, and `1 tickets` in the header would be the first thing seen.
 use crate::text::plural;
@@ -3154,6 +3306,11 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
 /// filter is the menu's so a conditional preference costs nothing later.
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     SETTINGS_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+}
+
+/// The notifications list's rows that apply right now (T-282).
+pub fn notify_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
+    NOTIFY_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
 }
 
 fn yes_no(b: bool) -> &'static str {
@@ -4116,7 +4273,10 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Drawer => DRAWER,
         Scope::Archived => ARCHIVED,
         Scope::Theme => THEME,
-        Scope::Settings => SETTINGS,
+        // The same three shapes: a list dialog's keys are the list's, and
+        // which list Enter is choosing in is the mode's to know, not the
+        // keymap's.
+        Scope::Settings | Scope::Notifications => SETTINGS,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
@@ -4320,12 +4480,13 @@ mod tests {
                 Scope::Archived => 12,
                 Scope::Theme => 13,
                 Scope::Settings => 14,
-                Scope::Brief => 15,
-                Scope::Releases => 16,
-                Scope::Links => 17,
-                Scope::ColumnSettings => 18,
-                Scope::Input => 19,
-                Scope::Editor => 20,
+                Scope::Notifications => 15,
+                Scope::Brief => 16,
+                Scope::Releases => 17,
+                Scope::Links => 18,
+                Scope::ColumnSettings => 19,
+                Scope::Input => 20,
+                Scope::Editor => 21,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -5600,6 +5761,11 @@ mod tests {
             [
                 Verb::ThemePick,
                 Verb::Peek,
+                // A door, like the Settings row itself: five rows do not fit
+                // in this list, so they live one level further down. Up here
+                // with the other two rows about what the board shows YOU,
+                // and because this list already outruns a short terminal.
+                Verb::Notifications,
                 Verb::StatusLine,
                 Verb::SnoozeQuiet,
                 Verb::WeekStart,

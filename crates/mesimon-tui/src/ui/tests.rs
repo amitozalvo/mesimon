@@ -672,6 +672,37 @@ fn golden_settings_120() {
     golden("settings_120x30", &render(&app, 120, 30));
 }
 
+/// The notifications list, one level under Settings (T-282), turned ON so
+/// all five rows draw: the master switch, the two moments, the two sounds
+/// and the focus exception. `NOTIFICATIONS` in the frame's top edge and the
+/// list's own keys in its bottom one.
+#[test]
+fn golden_notifications_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.prefs.notify = true;
+    app.mode = Mode::Notifications { idx: 0 };
+    golden("notifications_120x30", &render(&app, 120, 30));
+}
+
+/// Off, the list is a SINGLE row: four settings for a thing that is not
+/// happening are four rows saying nothing.
+#[test]
+fn the_notifications_list_is_one_row_while_it_is_off() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Notifications { idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("Notifications: off")),
+        "the master switch is always there: {lines:#?}"
+    );
+    for absent in ["Sound when an agent needs you", "Also when a turn finishes", "focused"] {
+        assert!(
+            !lines.iter().any(|l| l.contains(absent)),
+            "{absent} is offered for a thing that is off: {lines:#?}"
+        );
+    }
+}
+
 /// A subtitle wider than the dialog reveals itself on the selected row, the
 /// way an overlong card title and an overlong rail name do. A preference's
 /// detail is where it says what it will do, so the half past the `~` is the
@@ -681,8 +712,9 @@ fn the_settings_subtitle_marquees() {
     let mut app = app_graphite(fixture_archived());
     // The merge train's row: the longest detail in the list, and off by
     // default, which is the sentence that explains the standing consent.
-    // Sixth, after theme, replies, status line, snooze and the week's day.
-    app.mode = Mode::Settings { idx: 5 };
+    // Seventh, after theme, replies, notifications, status line, snooze and
+    // the week's day.
+    app.mode = Mode::Settings { idx: 6 };
     let row = |lines: &[String]| -> String {
         lines
             .iter()

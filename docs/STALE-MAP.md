@@ -6706,3 +6706,112 @@ Deliberately out: no expiry on the refusal (a doomed ff-merge every minute forev
 header word (the train still has no board-wide clause — the notice is a condition, not a state).
 Golden `train_blocked_120x30`; e2e
 `merge_train_e2e::a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean`.
+
+## The board says it out loud (T-282, 2026-09-06, user: "notifications (OS + sound effects)")
+
+D15 is the decision this refutes, and it is worth saying exactly which half. `00-DECISIONS.md`
+§D15, `11` §11.8.1 and `07` §2016 all say the same thing — *do not build a notification channel;
+ship `mesimon watch --json` and let the user pipe it to the one they already chose* — with two
+sanctioned opt-ins (`notify.attention_bell`, `notify.osc_request_attention`). The corpus's
+REASONING was right and is kept whole below. Its CONCLUSION assumed the composable primitive
+would ship; `watch --json` does not exist, so the board's quiet was total: an agent blocked on a
+permission prompt was invisible from any other window, and the only remedy was to keep looking
+at the board.
+
+**What fires.** Two rising edges, both read off the snapshot in `App::absorb` — the one road
+every snapshot lands through, and the only place the old board and the new one exist at once.
+`Board::needs_you_tickets`' three roads are *needs you* — an attention-set session (rank 0–8 at
+High|Medium), a snooze that woke a ticket (T-74), an agent's raised hand (T-107) — so a banner
+and the `!N` chip are the same set and cannot disagree. The words beside it are
+`attention::reason_word` for a session, the word the card prints; nothing for a snooze, which has
+nobody to quote; and for a raised hand the AGENT'S OWN SENTENCE. That last one is why
+`Event::why` is a `String` where a hint would be a `&'static str`: T-107 exists because "I
+finished the refactor" and "I cannot proceed until somebody picks an auth provider" looked
+identical on a board of twenty cards, and a banner that drops the sentence reintroduces exactly
+that. T-107's own block says a raised hand takes "no notification out of band"; that was true
+the hour it was written, and this is the out-of-band channel arriving.
+`Idle{EndTurn}` is *a turn finished*, the state automove reads to move a card to REVIEW, so the
+ding and the card move say the same thing. Two guards, both measured against real failure
+shapes rather than imagined: **`EndTurn` counts only at High|Medium** because after a daemon
+restart every session is `Unknown` and the transcript tail re-derives a finished turn at LOW for
+each one — a burst of chimes for turns that ended hours ago; and **the first snapshot only
+SEEDS** (`App::notify_primed`), because `U` restarts the process and an opening board must not
+announce its own backlog. `App::spoke` (T-173) detects "the agent said something new" and was
+the rival: it is transcript-bound (a 1 s poll, `pane_target` only) and cursor-coupled, where the
+state edge arrives on the same snapshot as the needs-you edge and lets ONE differ serve both.
+
+**Where it lives: the client.** `Change.attention_added` (`attention.rs`) is computed, deduped
+against the 30 s re-emit suppression, and still has no consumer — a ready daemon-side hook, and
+the wrong one. The daemon has no terminal, so the OSC rung is unreachable from it and the focus
+rule unanswerable; a headless daemon raising banners for a board nobody has open is a surprise;
+and client-side is zero wire commands, zero schema fields, zero daemon state and no e2e. A
+closed board is a silent one, `train.rs`'s posture.
+
+**What survives of D15, as constraints rather than a veto.** Default OFF, and the master switch
+is a preference nobody's update turns on for them. **Coalesced** — `core/src/notify.rs`'s
+`Coalescer`, at most one post per `WINDOW_MS` (5 s) carrying the aggregate, the window rolling
+from the last thing SAID so a quiet board speaks at once and a busy one settles: twenty agents
+finishing together are `20 agents finished ∙ T-1 T-2 T-3 T-4 +16`, and that multiplication is
+the whole thing D15 was written about. **Quiet while you are looking**, below. What is NOT kept
+is the conclusion: the user asked for the channel, and the tool that already had every fact
+needed to coalesce it was the board.
+
+**The focus rule is the user's own wording** — "banner suppressed, sound plays, opt out in
+notification settings". So suppression takes the BANNER only: the card is already saying it in
+the one saturated colour, and a banner over the card it duplicates is noise, but a chime is
+still a cue. `notify::Presence` answers it, and its fallback DIRECTION is the design: a terminal
+that reports focus (DECSET 1004, `EnableFocusChange` in `init_terminal`) is simply believed; one
+that never does falls back to **keystroke presence** (a key inside `KEY_PRESENCE_MS`, 30 s), the
+gate Claude Code itself uses; with no evidence at all it answers "away", so the banner fires.
+Silence is the failure that would make the feature look broken, and it is the one this cannot
+fall into.
+
+**Two ladders, no new crate.** `opener.rs`'s shape throughout — env var, then the platform's
+program, then a rung that always exists — resolved once in `lib.rs::run` and never `App::new`,
+so no test app and no golden makes a noise. Banner: `MESIMON_NOTIFY` (`off` | `osc` | a program)
+→ `terminal-notifier` → `osascript` on macOS → `notify-send` on Linux → **OSC 9** to our own
+stdout, the rung that cannot fail to resolve; on a terminal that draws it the banner comes from
+the terminal, on one that does not nothing happens, and an outer tmux of the user's own swallows
+it — which is why a helper outranks it. No DCS wrap: the board is not inside mesimon's private
+server (`15`, crossing ⑩). Sound: `MESIMON_SOUND` → `afplay` → `paplay` / `pw-play` /
+`canberra-gtk-play` → the terminal bell. A crate was never in question: `notify-rust` reaches
+`mac-notification-sys` and dbus, and `ci/build-linux.sh` cross-links with `rust-lld` precisely
+because there is no C in the dependency graph — `osc.rs`'s hand-rolled base64 already records
+the same rule for the same reason.
+
+**The words ride argv, never a program's source.** `osascript` takes a PROGRAM, and the board's
+title is a directory name the user chose, so the script is the constant
+`-e 'on run argv' -e 'display notification (item 2 of argv) with title (item 1 of argv)' -e 'end run'`
+and the words go past it as arguments — `workspace.rs`'s "argv arrays always". Every field
+crosses `text::scrub_text` first, the boundary function for text leaving for another process,
+which is also what makes the OSC rung safe: the ESC and BEL it strips are exactly what would
+close the sequence early. Verified live, not only in a unit test: a body of
+`" & (do shell script "echo pwned") & "` renders as literal text.
+
+**Its own door, and why the row moved.** `menu.rs::draw_list` sizes a dialog at two lines a row
+and DOES NOT SCROLL (`dialog::centred` clamps to `screen.height - 2`), and Settings already
+outran a 20-row terminal at ten rows — at 80x20 it draws eight. Five more rows there would have
+been five nobody can reach, so notifications are a submenu (`Scope::Notifications`,
+`Mode::Notifications`, `keymap::NOTIFY_ITEMS`, the same `draw_list`), the move the preferences
+themselves made out of the Esc menu. The door was first appended LAST per `SETTINGS_ITEMS`' own
+convention and that put it in the clipped region — the feature's own entrance unreachable on a
+short terminal — so it sits third instead, with the two other rows about what the board shows
+YOU; `the_settings_subtitle_marquees` moved from idx 5 to 6 with it. **The parent list's
+clipping is untouched and is now one row worse**: a windowing `draw_list` (the tag row's rule,
+where the cell under the cursor is always drawn) is its own ticket.
+
+Five rows, rows 2–5 gated on the first (`MergeTrainNotice`'s shape): the switch, `Also when a
+turn finishes`, the two sound rings, and `Banner while the board is focused`. **A sound row
+PLAYS what it names as you cycle it** — the theme picker's rule that the cursor is the preview,
+delivered as a `Post` with an empty body down the same seam. Two sounds because the user asked
+for the two events to be distinguishable without looking: `Sound` is a six-name ring plus off,
+macOS's own filenames (`Glass` needs-you, `Tink` finished), collapsing on Linux to the three
+freedesktop events that theme actually ships — honest about what is there rather than pretending
+six. Five `prefs.json` keys, the two names taking the week-start shape (a name a newer build
+wrote survives) and the three bools the unconditional one. `doctor`'s `notifications` line names
+the rungs even while it is off, because "would it work if I turned it on" is what somebody reads
+it to ask.
+
+Nothing daemon-side moved: no `Command`, no `Snapshot` field, no schema, no e2e. The
+`pending_notify` seam is `pending_open`'s — drained in `lib.rs::event_loop`, detached spawn or
+one escape to our own stdout, between draws, nothing on screen moved.

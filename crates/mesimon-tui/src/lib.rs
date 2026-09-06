@@ -12,6 +12,7 @@ mod glyphs;
 mod handover;
 mod layout;
 mod localtime;
+mod notify;
 mod opener;
 mod osc;
 mod peek;
@@ -28,8 +29,9 @@ use std::path::Path;
 
 use anyhow::Result;
 use ratatui::crossterm::event::{
-    DisableBracketedPaste, DisableMouseCapture, EnableBracketedPaste, KeyboardEnhancementFlags,
-    PopKeyboardEnhancementFlags, PushKeyboardEnhancementFlags,
+    DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
+    EnableFocusChange, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
+    PushKeyboardEnhancementFlags,
 };
 use ratatui::crossterm::execute;
 use ratatui::crossterm::terminal::{
@@ -52,6 +54,9 @@ pub(crate) fn snooze_words(
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
+/// What `mesimon doctor` says about notifications (T-282): whether they
+/// are on, which rungs of the two ladders answered, and both sounds.
+pub use notify::doctor_line as notify_status;
 /// What `mesimon doctor` says about the link opener (`^k`, T-256).
 pub use opener::doctor_line as opener_status;
 /// What `mesimon doctor` says about the theme picks (`prefs.rs`).
@@ -134,6 +139,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.editor_word = external::word();
     // What `^k` opens a URL with — same rule, same reason.
     app.opener = opener::find();
+    // Which rung of each notification ladder answered (T-282) — same rule
+    // again, so no test app and no golden ever raises a banner or a sound.
+    app.notify = Some(notify::find());
     let result = event_loop(&mut terminal, &mut app);
     restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
@@ -241,6 +249,18 @@ fn event_loop(
             }
         }
 
+        // One coalesced notification (T-282), on the same seam: detached
+        // spawn or one escape to our own stdout, between draws, nothing on
+        // screen moved. A board with no resolved channel says nothing, which
+        // is every test app.
+        if let Some(post) = app.pending_notify.take() {
+            if let Some(ch) = app.notify.as_ref() {
+                if let Err(e) = notify::post(ch, &post) {
+                    app.status = format!("could not notify: {e}");
+                }
+            }
+        }
+
         if app.quit {
             return Ok(());
         }
@@ -258,7 +278,11 @@ fn init_terminal() -> Result<Term> {
     // multi-line paste into the composer is one title and a paste on the
     // board is inert, instead of both being typed as keystrokes (the
     // newline was an Enter, and it saved). `App::on_paste` takes it.
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste)?;
+    // Focus reporting (DECSET 1004): the terminal says when somebody looks
+    // away, which is what decides whether a notification is a banner or only
+    // a sound (T-282). A terminal that ignores it sends nothing and the
+    // presence rule falls back to the keyboard — never to silence.
+    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
     // Kitty keyboard protocol, disambiguate tier only: it is what makes
     // Shift+Enter distinguishable from Enter (board: force the ticket
     // screen). The support probe is a terminal query, so it runs once per
@@ -293,7 +317,13 @@ fn restore_terminal() -> Result<()> {
         execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
     }
     disable_raw_mode()?;
-    execute!(std::io::stdout(), DisableBracketedPaste, DisableMouseCapture, LeaveAlternateScreen)?;
+    execute!(
+        std::io::stdout(),
+        DisableBracketedPaste,
+        DisableFocusChange,
+        DisableMouseCapture,
+        LeaveAlternateScreen
+    )?;
     Ok(())
 }
 

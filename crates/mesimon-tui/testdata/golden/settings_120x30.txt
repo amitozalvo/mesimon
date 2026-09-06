@@ -2,12 +2,13 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
 
-   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
-                           ╭─ SETTINGS ─────────────────────────────────────────────────────╮
-   Keymap validator       >│   Theme: graphite                                              │
-                           │     dark, the default ∙ for a dark terminal                    │
+   Decay treatments       >╭─ SETTINGS ─────────────────────────────────────────────────────╮
+                           │   Theme: graphite                                              │
+   Keymap validator       >│     dark, the default ∙ for a dark terminal                    │
                            │   Show agent replies                                         p │
                            │     the latest reply under the selected card                   │
+                           │   Notifications: off                                           │
+                           │     the board says nothing outside its own window ∙ enter ope~ │
                            │   Status line at the bottom                                    │
                            │     tmux's bar over an agent's pane ∙ enter moves it up        │
                            │   Snooze returns with needs-you                                │
@@ -23,7 +24,6 @@
                            │   Default column: TODO                                         │
                            │     where an agent's create_ticket lands unplaced ∙ enter cyc~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

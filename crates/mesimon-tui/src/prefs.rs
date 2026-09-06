@@ -23,6 +23,7 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Map, Value};
 
+use mesimon_core::notify::Sound;
 use mesimon_core::snooze::Weekday;
 
 use crate::theme::{Flavor, Ground};
@@ -54,6 +55,26 @@ pub(crate) struct Prefs {
     /// default bottom. Off by default; the TUI pushes it to the daemon, which
     /// owns the server and never reads this file.
     pub status_top: bool,
+    /// The board says it out loud (T-282): an OS banner and a sound when an
+    /// agent needs you. OFF by default and deliberately — the board is quiet
+    /// on purpose, and a channel out is a thing the user asks for, never a
+    /// thing an update starts doing. Nothing else in this group is read
+    /// while it is off.
+    pub notify: bool,
+    /// Also when a turn finishes (`Idle{EndTurn}`), not only when an agent is
+    /// blocked. On by default: it is the half that answers "can I go do
+    /// something else", and the needs-you half is on already.
+    pub notify_done: bool,
+    /// Show the banner even while the board's own terminal has focus. Off by
+    /// default — the card is already saying it in the one saturated colour,
+    /// and a banner over the board it duplicates is noise. The SOUND plays
+    /// either way; this row is only about the banner.
+    pub notify_focused: bool,
+    /// The sound for a blocked agent, and the sound for a turn landing. Two,
+    /// so the difference is audible without looking. `Sound::Off` is a rung
+    /// of each ring, so either can be silenced on its own.
+    pub notify_sound_needs_you: Sound,
+    pub notify_sound_done: Sound,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -68,6 +89,11 @@ impl Default for Prefs {
             merge_train: false,
             merge_train_notice: true,
             status_top: false,
+            notify: false,
+            notify_done: true,
+            notify_focused: false,
+            notify_sound_needs_you: Sound::Glass,
+            notify_sound_done: Sound::Tink,
             doc: Map::new(),
         }
     }
@@ -78,6 +104,11 @@ const WEEK_START_KEY: &str = "week_start";
 const MERGE_TRAIN_KEY: &str = "merge_train";
 const MERGE_TRAIN_NOTICE_KEY: &str = "merge_train_notice";
 const STATUS_TOP_KEY: &str = "status_line_top";
+const NOTIFY_KEY: &str = "notify";
+const NOTIFY_DONE_KEY: &str = "notify_done";
+const NOTIFY_FOCUSED_KEY: &str = "notify_focused";
+const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = "notify_sound_needs_you";
+const NOTIFY_SOUND_DONE_KEY: &str = "notify_sound_done";
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -86,6 +117,19 @@ impl Prefs {
     pub(crate) fn set_week_start(&mut self, day: Weekday) {
         self.week_start = day;
         self.doc.insert(WEEK_START_KEY.into(), Value::from(day.key()));
+    }
+
+    /// The two sound names take the week's shape rather than the bools': a
+    /// name from a newer build's ring survives in the file until a pick here
+    /// replaces it.
+    pub(crate) fn set_sound_needs_you(&mut self, s: Sound) {
+        self.notify_sound_needs_you = s;
+        self.doc.insert(NOTIFY_SOUND_NEEDS_YOU_KEY.into(), Value::from(s.key()));
+    }
+
+    pub(crate) fn set_sound_done(&mut self, s: Sound) {
+        self.notify_sound_done = s;
+        self.doc.insert(NOTIFY_SOUND_DONE_KEY.into(), Value::from(s.key()));
     }
 
     pub(crate) fn for_ground(&self, g: Ground) -> Flavor {
@@ -123,6 +167,22 @@ impl Prefs {
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
         doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
         doc.insert(STATUS_TOP_KEY.into(), Value::from(self.status_top));
+        doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
+        doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
+        doc.insert(NOTIFY_FOCUSED_KEY.into(), Value::from(self.notify_focused));
+        for (key, s) in [
+            (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
+            (NOTIFY_SOUND_DONE_KEY, self.notify_sound_done),
+        ] {
+            // A sound this build does not know is a newer build's pick; like
+            // a foreign theme name, the default it read as is not written
+            // over it.
+            let foreign =
+                doc.get(key).and_then(Value::as_str).is_some_and(|v| Sound::from_key(v).is_none());
+            if !foreign {
+                doc.insert(key.into(), Value::from(s.key()));
+            }
+        }
         // A day this build does not know is a newer build's; like a foreign
         // theme name, the default it read as is not written over it.
         let foreign = doc
@@ -177,6 +237,14 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let merge_train_notice =
         doc.get(MERGE_TRAIN_NOTICE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let status_top = doc.get(STATUS_TOP_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
+    let notify_focused = doc.get(NOTIFY_FOCUSED_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let sound = |key: &str, fallback: Sound| {
+        doc.get(key).and_then(Value::as_str).and_then(Sound::from_key).unwrap_or(fallback)
+    };
+    let notify_sound_needs_you = sound(NOTIFY_SOUND_NEEDS_YOU_KEY, Sound::Glass);
+    let notify_sound_done = sound(NOTIFY_SOUND_DONE_KEY, Sound::Tink);
     let week_start = doc
         .get(WEEK_START_KEY)
         .and_then(Value::as_str)
@@ -190,6 +258,11 @@ pub(crate) fn load(path: &Path) -> Loaded {
         merge_train,
         merge_train_notice,
         status_top,
+        notify,
+        notify_done,
+        notify_focused,
+        notify_sound_needs_you,
+        notify_sound_done,
         doc,
     };
     if schema > SCHEMA {
@@ -307,6 +380,51 @@ mod tests {
         let text = std::fs::read_to_string(&p).unwrap();
         assert!(text.contains("\"schema_version\":1"));
         assert!(text.ends_with('\n'));
+    }
+
+    /// The notification group (T-282): every key round-trips, and the file
+    /// says the defaults out loud so a hand edit has something to edit.
+    #[test]
+    fn the_notification_preferences_round_trip() {
+        let p = scratch("notify");
+        let mut prefs = Prefs::default();
+        assert!(!prefs.notify, "off by default, and deliberately");
+        assert!(prefs.notify_done);
+        assert!(!prefs.notify_focused);
+        prefs.notify = true;
+        prefs.notify_done = false;
+        prefs.notify_focused = true;
+        prefs.set_sound_needs_you(Sound::Hero);
+        prefs.set_sound_done(Sound::Off);
+        save(&p, &prefs).unwrap();
+        let l = load(&p);
+        assert!(l.prefs.notify);
+        assert!(!l.prefs.notify_done);
+        assert!(l.prefs.notify_focused);
+        assert_eq!(l.prefs.notify_sound_needs_you, Sound::Hero);
+        assert_eq!(l.prefs.notify_sound_done, Sound::Off);
+        assert!(l.notice.is_none());
+    }
+
+    /// A sound name this build does not know is a newer build's pick: it
+    /// reads as the default and survives a save of something else — the
+    /// week's day rule, and the theme slots' before it.
+    #[test]
+    fn an_unknown_sound_falls_back_and_survives_a_save() {
+        let p = scratch("notify-unknown");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(
+            &p,
+            r#"{"schema_version":1,"notify_sound_needs_you":"Klaxon","notify_sound_done":"Tink"}"#,
+        )
+        .unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.notify_sound_needs_you, Sound::Glass, "the default stands in");
+        l.prefs.set_sound_done(Sound::Purr);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["notify_sound_needs_you"], "Klaxon", "not written over");
+        assert_eq!(v["notify_sound_done"], "Purr", "and the pick landed");
     }
 
     /// A name this build does not know falls to that slot's default — and

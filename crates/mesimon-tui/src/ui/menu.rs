@@ -34,6 +34,13 @@ pub(super) fn draw_settings(f: &mut Frame, app: &App, idx: usize) {
     draw_list(f, app, idx, "SETTINGS", Scope::Settings, &items);
 }
 
+/// The notifications list, one level under it (T-282): the same surface
+/// again, its own name and its own rows.
+pub(super) fn draw_notify(f: &mut Frame, app: &App, idx: usize) {
+    let items = keymap::notify_items(&app.ctx());
+    draw_list(f, app, idx, "NOTIFICATIONS", Scope::Notifications, &items);
+}
+
 /// The column settings dialog (T-117): thirteen rows at one line each, the
 /// selected row's detail on the last inner line — `draw_list`'s two lines a
 /// row would not fit `layout::MIN_H`. The Name row is a text field while

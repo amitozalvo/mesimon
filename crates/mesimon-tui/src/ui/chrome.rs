@@ -384,6 +384,7 @@ fn dialog_open(app: &App) -> bool {
             app.mode,
             Mode::Menu { .. }
                 | Mode::Settings { .. }
+                | Mode::Notifications { .. }
                 | Mode::Theme { .. }
                 | Mode::Archived { .. }
                 | Mode::External { .. }

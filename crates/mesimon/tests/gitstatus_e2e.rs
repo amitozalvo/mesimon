@@ -105,7 +105,12 @@ fn the_checkout_stands_on_the_wire() {
     git(&repo, &["commit", "-qm", "two"]);
     // A fetch press re-samples at once (the tick would take up to 10 s).
     assert!(matches!(c.request(Command::GitFetch), Response::Ok));
-    let g = wait_git(&mut c, "ahead 1", |g| g.ahead == 1);
+    // `ahead == 1` alone is satisfied by the ORDINARY tick's sample — the
+    // local commit moved that number, and the sample rides the same bucket
+    // the worktree flags do (T-289 shortened it). Waiting on that sample and
+    // then asserting `fetched_at_ms` is a race the fetch loses under load,
+    // so wait for the sample the FETCH produced: the one after it landed.
+    let g = wait_git(&mut c, "ahead 1 after the fetch", |g| g.ahead == 1 && !g.fetching);
     assert_eq!(g.behind, 0);
     assert!(g.fetched_at_ms > 0, "the file remote answered: {g:?}");
     assert!(g.fetch_error.is_none(), "{g:?}");

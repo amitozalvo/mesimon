@@ -237,6 +237,9 @@ fn environment(verbose: bool) -> Section {
     records.push(rec(Level::Note, "merge train", mesimon_tui::train_status()));
     // Where the private tmux server's status line sits over a pane (T-264).
     records.push(rec(Level::Note, "status line", mesimon_tui::status_line_status()));
+    // What the board says outside its own window (T-282): whether it is on,
+    // and which rung of each ladder would answer if it were.
+    records.push(rec(Level::Note, "notifications", mesimon_tui::notify_status()));
 
     records.push(match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => rec(Level::Ok, "HOME", redact(&h, verbose)),

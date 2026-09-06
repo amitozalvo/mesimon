@@ -1090,6 +1090,44 @@ status line's side is one of those rows (T-264, 2026-09-06)**: `Status line at t
 `App::reconcile_status_line` pushes the preference whenever they differ, either way, on the
 train's back-off. E2e `status_line_e2e`. (STALE-MAP "The tmux status line can sit at the top".)
 
+**The board says it out loud, and only while it is open (T-282, 2026-09-06, user: "notifications
+(OS + sound effects)").** D15 said never build a notification channel and ship `watch --json`
+instead; that primitive never shipped, so the quiet was total. What is kept of D15 is its
+reasoning — default OFF, coalesced, said by the CLIENT, quiet while you are looking — and what
+is not is its conclusion. Two rising edges, both read off the snapshot in `App::absorb` (the one
+road every snapshot lands through, and the only place both boards exist at once):
+`Board::needs_you_tickets`' three roads are *needs you* — an attention-set session, a snooze
+that woke (T-74), a raised hand (T-107) — so the banner and the `!N` chip are one set; the words
+beside it are `attention::reason_word` for a session and the AGENT'S OWN SENTENCE for a raised
+hand, which is why `notify::Event::why` is a `String` and not the `&'static str` a hint is.
+`Idle{EndTurn}` is *a turn finished*, the state automove reads. Two guards: **`EndTurn` only at High|Medium**
+(after a daemon restart the tail re-derives every finished turn at LOW — a burst of stale
+chimes) and **the first snapshot only SEEDS** (`notify_primed`; `U` restarts the process and an
+opening board must not announce its backlog). `core/src/notify.rs` is the pure half —
+`Coalescer` (one post per `WINDOW_MS` 5 s carrying the aggregate, the window rolling from the
+last thing SAID, so `20 agents finished ∙ T-1 T-2 T-3 T-4 +16`), the wording, the `Sound` ring,
+and `Presence`, whose fallback DIRECTION is the design: a terminal that reports focus (DECSET
+1004, `EnableFocusChange`) is believed, one that does not falls back to keystroke presence
+(`KEY_PRESENCE_MS` 30 s), and no evidence at all reads as AWAY — silence is the failure it
+cannot fall into. Focus suppresses the BANNER only; the sound plays either way, and a Settings
+row opts out. `tui/src/notify.rs` is the I/O half, `opener.rs`'s ladder shape twice over
+(`MESIMON_NOTIFY` `off`|`osc`|a program → `terminal-notifier` → `osascript` → `notify-send` →
+**OSC 9** to our own stdout, the rung that always resolves; `MESIMON_SOUND` → `afplay` →
+`paplay`/`pw-play`/`canberra-gtk-play` → the bell), resolved in `lib.rs::run` and NEVER
+`App::new`, so no test app makes a noise. No crate: `notify-rust` reaches ObjC and dbus and
+`ci/build-linux.sh` cross-links with `rust-lld` only because nothing in the graph is C. The words
+ride **argv, never a program's source** (`osascript -e 'on run argv' …`, `workspace.rs`'s rule)
+and every field crosses `text::scrub_text`, which is also what makes the OSC rung safe. It is a
+SUBMENU (`Scope::Notifications`, `keymap::NOTIFY_ITEMS`, the same `draw_list`) because that
+function does not scroll and Settings already outruns a 20-row terminal — the row sits THIRD, not
+last, because last is inside the clipped region; `the_settings_subtitle_marquees` moved to idx 6
+with it. Five rows, 2–5 gated on the first; the two sound rows PLAY what they name as you cycle
+(the theme picker's rule that the cursor is the preview). Five `prefs.json` keys, the two sound
+names taking the week-start shape. Nothing daemon-side moved — no `Command`, no `Snapshot` field,
+no schema, no e2e — and `pending_notify` rides `pending_open`'s seam in `lib.rs::event_loop`.
+`doctor` prints a `notifications` line naming the rungs even while it is off. Goldens
+`notifications_120x30`, `settings_120x30`. (STALE-MAP "The board says it out loud".)
+
 `?` (`ui/help.rs`) renders `keymap::overlay` and is the complete answer for the current
 screen and state.
 
