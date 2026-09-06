@@ -9,6 +9,49 @@ into the binary and shown by the Esc menu's "Release notes" row (`core/src/relno
 parses it; `cargo ut` checks every heading), and `ci/release.sh` lifts the tag's
 section out of it for the GitHub release body.
 
+## v0.1.0-alpha.16 — 2026-09-06
+
+- **Columns own their automations.** A column was a name and an order, and everything it did
+  was hard-coded against the four template names. Now every column carries its own settings,
+  reached by putting the cursor on its header and pressing Enter: what an agent starting or
+  finishing work moves into it, whether it needs a merged worktree before a ticket may land,
+  whether the merge train reaches it, whether idle sessions there are offered sleep, which
+  workspace a ticket created there gets, whether the column is pinned as a spine, which
+  `--permission-mode` its claudes start under, how much of the agent tool tier they get
+  (`off · read · annotate · full`, enforced at every call), and whether creating a ticket there
+  starts claude on it. On the header, `r` renames — a transaction across every ticket file, so
+  a renamed column keeps its cards — `HJKL` reorders, `d d` deletes (refused while tickets are
+  in it), and `O` adds one. An empty column is its own header, so a board with a fresh column
+  is still navigable. `mesimon doctor` prints a `columns` line.
+
+- **A branch merged upstream reads merged, squash and all.** If you work through pull requests
+  rather than merging locally, every finished ticket read `⎇↓ main moved` forever: mesimon
+  asked whether the branch's tip was an ancestor of main, and a squashed PR leaves not one of
+  the branch's commits behind. So the card would not go green, `m` offered to rebase work that
+  was done, the merge train would have asked for that rebase on a loop, and the DONE column
+  refused the ticket. The question now has a second half — is the branch's *patch* already up
+  there, which is how git answers this itself — and it is asked against `origin/main` where
+  there is one, so a merge made on the forge shows up as soon as you fetch. The ticket page
+  says `∙ merged into origin/main as 1a2b3c4`; a merge you made here is still the bare
+  `merged`. Nothing is written to your repository to find this out, and the fetch that surfaces
+  it stays opt-in. `mesimon doctor` prints a `merge base` line.
+
+- **The tmux status line can sit at the top.** A Settings row, applied to the running server as
+  well as the next one — so the pane's own status bar stops sharing the bottom edge with the
+  board's footer.
+
+- **A queued ask drains in board order.** An ask waiting for a quiet checkout used to go in the
+  order the asks were made; it now follows the board — column order, then top to bottom, the
+  merge train's own walk — so moving a card up the column moves its ask up the queue, and the
+  `+N` on a card falls as it rises.
+
+- **A reload mid-tool no longer reads as a dead turn.** A tool in flight keeps the transcript
+  still for its whole duration, so a daemon restart during a three-minute `cargo` call read the
+  quiet as a finished turn and the card went idle. A trailing tool call is now read as what it
+  is: work in progress.
+
+- **Smaller.** The detach hint spells its keys the way the footer does.
+
 ## v0.1.0-alpha.15 — 2026-09-05
 
 - **`^k` lists a ticket's links, and opens one.** Whatever the ticket's notes point at — a
