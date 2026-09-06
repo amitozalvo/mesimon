@@ -384,6 +384,7 @@ fn dialog_open(app: &App) -> bool {
                 | Mode::Archived { .. }
                 | Mode::External { .. }
                 | Mode::Brief { .. }
+                | Mode::ColumnSettings { .. }
         )
         || (matches!(app.screen, Screen::Board)
             && matches!(&app.mode, Mode::Editor(ed) if ed.composing()))
@@ -402,7 +403,10 @@ fn mode_word(app: &App) -> Option<&'static str> {
         // keys, so the word must name the scope the hints came from.
         _ if app.tag_armed.is_some() => Scope::TagChord.word(),
         Mode::Input { purpose: InputPurpose::Create { .. }, .. } => "NEW",
-        Mode::Input { purpose: InputPurpose::Rename { .. }, .. } => "RENAME",
+        Mode::Input {
+            purpose: InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. },
+            ..
+        } => "RENAME",
         // Not "PROMPT": the mode word is what the text will DO, and every
         // other field here saves something to the board. This one leaves
         // mesimon entirely.
@@ -411,6 +415,8 @@ fn mode_word(app: &App) -> Option<&'static str> {
         // note's editor is a screen of its own, named by the header.
         Mode::Editor(e) if e.composing() => "NEW",
         Mode::Editor(_) => return None,
+        // The column dialog's name field (T-117).
+        Mode::ColumnSettings { naming: Some(_), .. } => "NAME",
         _ => scope.word(),
     };
     let resting = matches!(

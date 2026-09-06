@@ -177,6 +177,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if let Mode::Settings { idx } = &app.mode {
         menu::draw_settings(f, app, *idx);
     }
+    if matches!(app.mode, Mode::ColumnSettings { .. }) {
+        menu::draw_column(f, app);
+    }
     if let Mode::Theme { idx } = &app.mode {
         themes::draw(f, app, *idx);
     }

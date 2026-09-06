@@ -176,6 +176,12 @@ pub enum Scope {
     /// `^k` opens it; Enter opens the row. A list dialog like the archived
     /// one, and like it a list the board is not.
     Links,
+    /// The column settings dialog (T-117): one column's every setting in a
+    /// list of its own, reached from the column's header or the menu. The
+    /// Settings list's shapes, plus `h`/`l` on its sort row. Its Name row
+    /// is a text field while it is being typed in, and then the scope is
+    /// `Input`.
+    ColumnSettings,
     /// Scope barrier: owns every key, inherits nothing.
     Input,
     /// The full-screen note editor (a title line over a multi-line markdown
@@ -188,7 +194,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 20] = [
+    pub const ALL: [Scope; 21] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -207,6 +213,7 @@ impl Scope {
         Scope::Brief,
         Scope::Releases,
         Scope::Links,
+        Scope::ColumnSettings,
         Scope::Input,
         Scope::Editor,
     ];
@@ -225,7 +232,8 @@ impl Scope {
             | Scope::Settings
             | Scope::Brief
             | Scope::Releases
-            | Scope::Links => Some(Scope::Global),
+            | Scope::Links
+            | Scope::ColumnSettings => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
             | Scope::DeleteChord
@@ -257,6 +265,7 @@ impl Scope {
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
+            Scope::ColumnSettings => "COLUMN",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
         }
@@ -337,6 +346,29 @@ pub enum Verb {
     /// picked once and lived with, the same argument that took `p` off the
     /// footer.
     ThemePick,
+    // ---- columns (T-117) ----
+    /// Open the column settings dialog on the cursor's column: Enter on a
+    /// column header, or the menu's row.
+    ColumnSettings,
+    /// `O`: a new column after the cursor's, named first in the same dialog.
+    AddColumn,
+    /// The dialog's rows. Each is a toggle or a cycle that KEEPS the dialog
+    /// open and relabels off the snapshot — the Settings list's rule — bar
+    /// `ColumnName` (the name edited in place), `SortColumn` (one-shot) and
+    /// `DeleteColumn` (armed by its first Enter).
+    ColumnName,
+    ColumnCollapse,
+    SortColumn,
+    ColumnWorkspace,
+    ColumnClaudeMode,
+    ColumnTools,
+    ColumnAutoRun,
+    ColumnOnWorking,
+    ColumnOnDone,
+    ColumnRequiresMerge,
+    ColumnReclaim,
+    ColumnTrain,
+    DeleteColumn,
     /// Open the release notes from the menu. Same argument, read even less
     /// often: what changed is a question for after an update, not a key.
     ReleaseNotes,
@@ -377,6 +409,11 @@ pub enum Verb {
     /// The menu row that flips whether a woken ticket returns lit
     /// (needs-you) or quietly; remembered in `prefs.json`.
     SnoozeQuiet,
+    /// The Settings row that moves the private tmux server's status line
+    /// between the bottom of an agent's pane and the top (T-264);
+    /// remembered in `prefs.json`, pushed to the daemon, which owns the
+    /// server.
+    StatusLine,
     /// `t` — take the ticket off the merge train, or put it back (T-227).
     /// Flips `Ticket::manual_merge` through `Command::SetManualMerge`.
     ManualMerge,
@@ -751,6 +788,9 @@ pub struct Ctx {
     pub snooze_word: &'static str,
     /// A woken ticket returns lit (the preference; the menu row flips it).
     pub snooze_needs_you: bool,
+    /// The tmux status line sits at the top of a pane (the preference; the
+    /// Settings row flips it).
+    pub status_top: bool,
     /// The day the week starts on — `snooze::Weekday::name()`, so the ring's
     /// last rung and the Settings row agree on the word. Empty in a bare
     /// `Ctx` (the row falls to a plain label); `App::ctx` always sets it.
@@ -788,6 +828,45 @@ pub struct Ctx {
     /// app, so a developer's own `$EDITOR` never reaches a golden), and the
     /// key is inert and unhinted.
     pub editor_word: &'static str,
+    // ---- the column under the cursor (T-117) ----
+    /// The board cursor rests on a column HEADER — `k` off the top card, or
+    /// an empty column, whose only position is its header. No ticket is
+    /// selected, so every ticket verb stands down, and four verbs take the
+    /// column as their subject instead: Enter (its settings), `r` (rename),
+    /// `HJKL` (move the column), `d` (delete). The hint word switches on
+    /// this; the column NAME is not a hint (a hint is a `&'static str`) and
+    /// goes in the status line and the dialog's title.
+    pub on_header: bool,
+    /// The column settings dialog's rows read the column they are on off
+    /// these (a `MenuItem` label is a plain `fn(&Ctx)`, so the column is
+    /// mirrored here rather than captured). `col_name` and the two rule
+    /// targets are the user's own words, so they are `String`s; the rest are
+    /// words from a fixed set.
+    pub col_name: String,
+    /// The dialog is on a column that does not exist yet (`O`): only the
+    /// Name row stands.
+    pub col_new: bool,
+    /// The cursor is on the dialog's `Sort now` row, where `h`/`l` step the
+    /// order and Enter runs it.
+    pub col_on_sort: bool,
+    pub col_sort_word: &'static str,
+    pub col_collapsed: bool,
+    pub col_workspace_word: &'static str,
+    pub col_claude_mode_word: &'static str,
+    /// What `inherit` resolves to — the user's own default mode, off the
+    /// snapshot. Empty when unknown.
+    pub col_inherit_mode: String,
+    pub col_tools_word: &'static str,
+    pub col_auto_run: bool,
+    pub col_on_working: String,
+    pub col_on_done: String,
+    pub col_requires_merge: bool,
+    pub col_reclaim: bool,
+    pub col_train_word: &'static str,
+    /// The dialog's Delete row was chosen once: the next Enter on it sends.
+    pub col_delete_armed: bool,
+    /// Live tickets in the dialog's column: a delete is refused while any.
+    pub col_live: usize,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -970,15 +1049,18 @@ static BOARD: &[Binding] = &[
         verb: Verb::Act,
         show: "enter",
         // Enter is "get me working": it focuses a live agent when there is
-        // one, and the hint says which it will be BEFORE the press.
+        // one, and the hint says which it will be BEFORE the press. On a
+        // column header it opens the column's settings (T-117).
         hint: |c| {
-            if c.ticket_hot {
+            if c.on_header {
+                "column settings"
+            } else if c.ticket_hot {
                 "go to the agent"
             } else {
                 "ticket page"
             }
         },
-        avail: |c| c.has_ticket,
+        avail: |c| c.has_ticket || c.on_header,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -1147,7 +1229,9 @@ static BOARD: &[Binding] = &[
         ],
         verb: Verb::Nudge,
         show: "HJKL",
-        hint: |_| "move card",
+        // The same entry moves the COLUMN when the cursor is on its header
+        // (T-117): one nudge, the thing under the cursor, one step.
+        hint: |c| if c.on_header { "move column" } else { "move card" },
         avail: |c| c.can_nudge,
         class: Class::Plain,
         group: Group::Ticket,
@@ -1174,11 +1258,27 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // `o` mints a card in the column; `O` mints a COLUMN after it (T-117)
+        // — the same act one level wider, the way `x`/`X` widen the sleep.
+        // Overlay-only: a footer cell teaching it everywhere would crowd the
+        // selection's keys, and `?` and the menu's `Add a column` row both
+        // name it.
+        keys: &[Key::Char('O')],
+        verb: Verb::AddColumn,
+        show: "O",
+        hint: |_| "new column",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
         keys: &[Key::Char('r')],
         verb: Verb::Rename,
         show: "r",
-        hint: |_| "rename",
-        avail: |c| c.has_ticket,
+        hint: |c| if c.on_header { "rename column" } else { "rename" },
+        avail: |c| c.has_ticket || c.on_header,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
@@ -1317,7 +1417,7 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('X')],
         verb: Verb::SleepAllDone,
         show: "X",
-        hint: |_| "sleep the agents in done",
+        hint: |_| "sleep the finished agents",
         avail: |c| c.bulk_sleep > 0,
         class: Class::Plain,
         group: Group::Sessions,
@@ -1437,8 +1537,8 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('d')],
         verb: Verb::DeletePrefix,
         show: "d",
-        hint: |_| "delete",
-        avail: |c| c.has_ticket,
+        hint: |c| if c.on_header { "delete column" } else { "delete" },
+        avail: |c| c.has_ticket || c.on_header,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -2013,7 +2113,7 @@ static DELETE: &[Binding] = &[
         keys: &[Key::Char('d')],
         verb: Verb::Delete,
         show: "d",
-        hint: |_| "delete ticket",
+        hint: |c| if c.on_header { "delete column" } else { "delete ticket" },
         avail: always,
         class: Class::Grace,
         group: Group::Ticket,
@@ -2589,7 +2689,7 @@ static MENU_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::SleepAllDone,
-        label: |c| format!("Sleep {} in done", plural(c.bulk_sleep, "agent")),
+        label: |c| format!("Sleep {} on finished tickets", plural(c.bulk_sleep, "agent")),
         detail: |c| match gib(c.bulk_sleep_bytes) {
             Some(g) => format!("frees ~{g:.1}GiB ∙ they wake where they left off"),
             None => "frees their memory ∙ they wake where they left off".into(),
@@ -2599,8 +2699,11 @@ static MENU_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ArchiveAllDone,
-        label: |c| format!("Archive {} in done", plural(c.bulk_archive, "ticket")),
-        detail: |_| "clears the column ∙ restore any of them later".into(),
+        label: |c| {
+            let noun = if c.bulk_archive == 1 { "ticket" } else { "tickets" };
+            format!("Archive {} finished {noun}", c.bulk_archive)
+        },
+        detail: |_| "the columns that offer it ∙ restore any of them later".into(),
         avail: |c| c.bulk_archive > 0,
         key: "",
     },
@@ -2633,6 +2736,29 @@ static MENU_ITEMS: &[MenuItem] = &[
         detail: |_| "off the board, still here".into(),
         avail: |c| c.has_archived,
         key: "",
+    },
+    // The columns (T-117): the cursor's column's settings, and a new one. The
+    // settings row has no key on its right edge: the board's Enter is `Act`,
+    // and the header's own footer teaches `enter column settings`.
+    MenuItem {
+        verb: Verb::ColumnSettings,
+        label: |c| {
+            if c.col_name.is_empty() {
+                "Column settings".into()
+            } else {
+                format!("Column settings: {}", c.col_name)
+            }
+        },
+        detail: |_| "name, sort, workspace, claude mode, tools, automations".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::AddColumn,
+        label: |_| "Add a column".into(),
+        detail: |_| "after the cursor's column ∙ name it first".into(),
+        avail: always,
+        key: "O",
     },
     // The door to the preferences. Never a suggestion — a setting is not
     // something worth doing right now — and it names what is behind it, so
@@ -2704,6 +2830,27 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         detail: |_| "the latest reply under the selected card".into(),
         avail: always,
         key: "p",
+    },
+    // Where the tmux status line sits over an agent's pane (T-264). A
+    // preference the daemon is told, like the train: it owns the server.
+    MenuItem {
+        verb: Verb::StatusLine,
+        label: |c| {
+            if c.status_top {
+                "Status line at the top".into()
+            } else {
+                "Status line at the bottom".into()
+            }
+        },
+        detail: |c| {
+            if c.status_top {
+                "tmux's bar over an agent's pane ∙ enter moves it down".into()
+            } else {
+                "tmux's bar over an agent's pane ∙ enter moves it up".into()
+            }
+        },
+        avail: always,
+        key: "",
     },
     // How a snoozed ticket comes back.
     MenuItem {
@@ -2934,6 +3081,200 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     SETTINGS_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
 }
 
+fn yes_no(b: bool) -> &'static str {
+    if b {
+        "yes"
+    } else {
+        "no"
+    }
+}
+
+fn on_off(b: bool) -> &'static str {
+    if b {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+/// The column settings dialog's rows (T-117): one column's every setting,
+/// every automation the daemon runs on a ticket there among them — this
+/// list is what "no magic" means. `MenuItem`s, so `ui/menu.rs` draws them
+/// and the menu laws read them; the column is mirrored onto `Ctx`'s `col_*`
+/// fields. A new column (`O`) has only its Name row until it exists.
+static COLUMN_ITEMS: &[MenuItem] = &[
+    MenuItem {
+        verb: Verb::ColumnName,
+        label: |c| {
+            if c.col_new || c.col_name.is_empty() {
+                "Name".into()
+            } else {
+                format!("Name: {}", c.col_name)
+            }
+        },
+        detail: |c| {
+            if c.col_new {
+                "type it ∙ enter adds the column after the cursor's".into()
+            } else {
+                "enter edits it in place ∙ every ticket in it follows".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnCollapse,
+        label: |c| format!("Collapsed: {}", yes_no(c.col_collapsed)),
+        detail: |_| "a one-cell spine until the cursor enters it".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::SortColumn,
+        label: |c| format!("Sort now: {}", or(c.col_sort_word, "newest first")),
+        detail: |_| "h l pick the order ∙ enter sorts the cards once".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnWorkspace,
+        label: |c| {
+            format!("Workspace for new tickets: {}", or(c.col_workspace_word, "board default"))
+        },
+        detail: |_| "the composer starts here ∙ shift+tab still changes it".into(),
+        avail: |c| !c.col_new && !c.multi_repo,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnClaudeMode,
+        label: |c| {
+            if c.col_claude_mode_word.is_empty() || c.col_claude_mode_word == "inherit" {
+                format!("Claude mode: inherit ({})", or(&c.col_inherit_mode, "unset"))
+            } else {
+                format!("Claude mode: {}", c.col_claude_mode_word)
+            }
+        },
+        detail: |_| "--permission-mode for a claude started here ∙ a wake picks a change up".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnTools,
+        label: |c| format!("Agent tools: {}", or(c.col_tools_word, "full")),
+        detail: |c| {
+            if !c.mcp_tools {
+                "agent tools are off for this board (Settings)".into()
+            } else {
+                match c.col_tools_word {
+                    "read only" => {
+                        "get_ticket, list_board, read_note ∙ enforced on every call".into()
+                    }
+                    "notes + tags" => {
+                        "read, plus write_note and tag_ticket ∙ no move, no create".into()
+                    }
+                    "off" => "no tools at all ∙ a claude here cannot see its ticket".into(),
+                    _ => "every tool: move_ticket and create_ticket too".into(),
+                }
+            }
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnAutoRun,
+        label: |c| format!("Start claude on creation: {}", on_off(c.col_auto_run)),
+        detail: |_| "a ticket you create here gets claude on its brief, submitted".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnOnWorking,
+        label: |c| {
+            if c.col_on_working.is_empty() {
+                "When claude starts working: stay".into()
+            } else {
+                format!("When claude starts working: move to {}", c.col_on_working)
+            }
+        },
+        detail: |_| "enter cycles the other columns, then stay".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnOnDone,
+        label: |c| {
+            if c.col_on_done.is_empty() {
+                "When claude ends a turn: stay".into()
+            } else {
+                format!("When claude ends a turn: move to {}", c.col_on_done)
+            }
+        },
+        detail: |_| "enter cycles the other columns, then stay".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnRequiresMerge,
+        label: |c| format!("Entry needs a merged branch: {}", yes_no(c.col_requires_merge)),
+        detail: |_| "a card with unmerged work is refused at the door".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnReclaim,
+        label: |c| format!("Offer sleep + archive here: {}", yes_no(c.col_reclaim)),
+        detail: |_| "the header's sleep and archive chips, X and Z, price this column".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnTrain,
+        label: |c| format!("Merge train: {}", or(c.col_train_word, "off")),
+        detail: |c| {
+            if !c.merge_train {
+                "needs the merge train on (Settings)".into()
+            } else {
+                match c.col_train_word {
+                    "auto-merge" => {
+                        "ff-merges finished branches here, asks idle agents to rebase".into()
+                    }
+                    "rebase asks" => "asks an idle agent here to rebase when the base moves".into(),
+                    _ => "the train does not look here".into(),
+                }
+            }
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::DeleteColumn,
+        label: |_| "Delete column".into(),
+        detail: |c| {
+            if c.col_delete_armed {
+                "enter again deletes it".into()
+            } else if c.col_live > 0 {
+                format!(
+                    "move its {} first",
+                    if c.col_live == 1 {
+                        "ticket".to_string()
+                    } else {
+                        format!("{} tickets", c.col_live)
+                    }
+                )
+            } else {
+                "the column goes ∙ nothing else does".into()
+            }
+        },
+        avail: |c| !c.col_new,
+        key: "",
+    },
+];
+
+/// The column dialog's rows that apply right now.
+pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
+    COLUMN_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+}
+
 /// The menu rows that apply right now.
 pub fn menu_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     // Suggested rows float to the top, in suggestion order, so Esc followed by
@@ -3047,6 +3388,67 @@ static ARCHIVED: &[Binding] = &[
 /// `^k` as a second spelling of `Back` so the key that opened it closes it
 /// (the drawer's `e`, the archived list's `V`). `Act` does not mutate:
 /// nothing the daemon owns changes when a link opens.
+/// The column settings dialog (T-117): the Settings list's shapes on one
+/// column — `jk` selects, Enter does the row (a toggle advances, the sort
+/// runs, the delete arms then sends), Esc goes back — plus `h`/`l` on the
+/// `Sort now` row only, where they step the order the next Enter will use.
+/// The order is local to the dialog and costs no wire, and the two keys are
+/// gated on the row so they are inert and unhinted everywhere else.
+static COLUMN: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Char('h'), Key::Left, Key::Char('l'), Key::Right],
+        verb: Verb::CursorLeft,
+        show: "h l",
+        hint: |_| "other order",
+        avail: |c| c.col_on_sort,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |c| {
+            if c.col_on_sort {
+                "sort now"
+            } else if c.col_delete_armed {
+                "delete it"
+            } else {
+                "choose"
+            }
+        },
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 static LINKS: &[Binding] = &[
     Binding {
         // A vertical list takes ↓ ↑ and nothing sideways.
@@ -3643,6 +4045,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
+        Scope::ColumnSettings => COLUMN,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
     }
@@ -3845,8 +4248,9 @@ mod tests {
                 Scope::Brief => 15,
                 Scope::Releases => 16,
                 Scope::Links => 17,
-                Scope::Input => 18,
-                Scope::Editor => 19,
+                Scope::ColumnSettings => 18,
+                Scope::Input => 19,
+                Scope::Editor => 20,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -4828,6 +5232,83 @@ mod tests {
         // A stray key inside the chord resolves to nothing, so the handler
         // cancels rather than acting.
         assert_eq!(resolve(Scope::DeleteChord, Key::Char('x'), &ctx), None);
+        // On a column header the same chord deletes the COLUMN (T-117), and
+        // says so; the discard form needs a worktree, which a header lacks.
+        let header = Ctx { on_header: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('d'), &header), Some(Verb::DeletePrefix));
+        assert_eq!(
+            hint_for(Scope::Board, Verb::DeletePrefix, &header),
+            Some(("d", "delete column"))
+        );
+        assert_eq!(
+            hint_for(Scope::DeleteChord, Verb::Delete, &header),
+            Some(("d", "delete column"))
+        );
+        assert_eq!(resolve(Scope::DeleteChord, Key::Char('D'), &header), None);
+    }
+
+    /// The column dialog's `Sort now` row owns `h` and `l` (T-117): they step
+    /// the order and Enter runs it, and on every other row the two keys are
+    /// inert and unhinted, so the list's vertical shape stays a list.
+    #[test]
+    fn the_sort_row_owns_h_and_l() {
+        let sort = Ctx { col_on_sort: true, ..Default::default() };
+        let other = Ctx::default();
+        assert_eq!(resolve(Scope::ColumnSettings, Key::Char('l'), &sort), Some(Verb::CursorRight));
+        assert_eq!(resolve(Scope::ColumnSettings, Key::Char('h'), &sort), Some(Verb::CursorLeft));
+        assert_eq!(resolve(Scope::ColumnSettings, Key::Right, &sort), Some(Verb::CursorRight));
+        assert_eq!(resolve(Scope::ColumnSettings, Key::Char('l'), &other), None);
+        assert_eq!(hint_for(Scope::ColumnSettings, Verb::CursorLeft, &other), None);
+        assert_eq!(hint_for(Scope::ColumnSettings, Verb::Act, &sort), Some(("enter", "sort now")));
+        assert_eq!(hint_for(Scope::ColumnSettings, Verb::Act, &other), Some(("enter", "choose")));
+        let armed = Ctx { col_delete_armed: true, ..Default::default() };
+        assert_eq!(
+            hint_for(Scope::ColumnSettings, Verb::Act, &armed),
+            Some(("enter", "delete it"))
+        );
+        // A new column has its Name row and nothing else until it exists.
+        let fresh = Ctx { col_new: true, ..Default::default() };
+        let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
+        assert_eq!(rows, vec![Verb::ColumnName]);
+        assert_eq!(column_items(&other).len(), COLUMN_ITEMS.len());
+        assert_eq!(
+            column_items(&Ctx { multi_repo: true, ..Default::default() }).len(),
+            COLUMN_ITEMS.len() - 1,
+            "a workspace board offers no worktree choice"
+        );
+    }
+
+    /// A column header is a cursor position (T-117): over an empty column it
+    /// adds exactly the four column verbs — settings, rename, move, delete —
+    /// and nothing a ticket needs, so `x`, `a`, `z`, tags, `c`, `s` and the
+    /// rest stay as inert as they are on an empty column.
+    #[test]
+    fn a_header_offers_exactly_the_column_verbs() {
+        let header =
+            Ctx { on_header: true, multi_column: true, can_nudge: true, ..Default::default() };
+        let empty = Ctx { on_header: false, can_nudge: false, ..header.clone() };
+        let mut added: Vec<Verb> = Vec::new();
+        for b in bindings(Scope::Board) {
+            if (b.avail)(&header) && !(b.avail)(&empty) {
+                added.push(b.verb);
+            }
+        }
+        added.sort_by_key(|v| format!("{v:?}"));
+        assert_eq!(added, vec![Verb::Act, Verb::DeletePrefix, Verb::Nudge, Verb::Rename]);
+        assert_eq!(hint_for(Scope::Board, Verb::Act, &header), Some(("enter", "column settings")));
+        assert_eq!(hint_for(Scope::Board, Verb::Rename, &header), Some(("r", "rename column")));
+        assert_eq!(hint_for(Scope::Board, Verb::Nudge, &header), Some(("HJKL", "move column")));
+        let shown: Vec<&str> = footer_items(Scope::Board, &header).iter().map(|b| b.show).collect();
+        for k in ["enter", "r", "HJKL", "o"] {
+            assert!(shown.contains(&k), "{k} belongs on a header's footer: {shown:?}");
+        }
+        for k in ["x", "a", "z", "tab", "^t", "c", "s", "space", "> <", "shift+enter", "1-0"] {
+            assert!(!shown.contains(&k), "{k} needs a ticket: {shown:?}");
+        }
+        // And on a header the ticket verbs are inert, not merely unhinted.
+        for k in [Key::Char('x'), Key::Char('a'), Key::Char('z'), Key::Char('c'), Key::Char('s')] {
+            assert_eq!(resolve(Scope::Board, k, &header), None, "{k:?}");
+        }
     }
 
     /// Archiving takes two presses; restoring takes one. The chord tail binds
@@ -4967,6 +5448,10 @@ mod tests {
             resolve(Scope::Editor, Key::Ctrl('S'), &composing_full),
             Some(Verb::EditorSaveStart)
         );
+        // `o` mints a card in the column, `O` mints a column after it (T-117)
+        // — the same act one level wider, the way `x`/`X` widen the sleep.
+        assert_eq!(resolve(Scope::Board, Key::Char('o'), &full), Some(Verb::OpenTicket));
+        assert_eq!(resolve(Scope::Board, Key::Char('O'), &full), Some(Verb::AddColumn));
         // `p` opens the cursor card's reply, `P` every card's (T-237): the
         // same row, widened. The board's and nobody else's — the ticket page
         // draws no cards, and `P` is unbound there since the pin went.
@@ -4994,7 +5479,7 @@ mod tests {
         );
         assert_eq!(
             hint_for(Scope::Board, Verb::SleepAllDone, &full),
-            Some(("X", "sleep the agents in done"))
+            Some(("X", "sleep the finished agents"))
         );
         // And `z` is the card's own zzz (T-74), with nothing on its shift:
         // snoozing a ticket and sleeping a column's agents are two verbs,
@@ -5020,6 +5505,8 @@ mod tests {
             Verb::ArchivedList,
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
+            Verb::ColumnSettings,
+            Verb::AddColumn,
             Verb::Settings,
             Verb::ReleaseNotes,
             Verb::Help,
@@ -5035,6 +5522,7 @@ mod tests {
             [
                 Verb::ThemePick,
                 Verb::Peek,
+                Verb::StatusLine,
                 Verb::SnoozeQuiet,
                 Verb::WeekStart,
                 Verb::MergeTrain,
@@ -5198,7 +5686,7 @@ mod tests {
             theme_slot_word: "dark",
             ..Default::default()
         };
-        for m in MENU_ITEMS.iter().chain(SETTINGS_ITEMS) {
+        for m in MENU_ITEMS.iter().chain(SETTINGS_ITEMS).chain(COLUMN_ITEMS) {
             let label = (m.label)(&ctx);
             assert!(!label.is_empty(), "{:?} has no label", m.verb);
             // A label built from a Ctx value can end up a stem — "Install "
@@ -5309,6 +5797,7 @@ mod tests {
             Scope::Settings,
             Scope::Releases,
             Scope::Links,
+            Scope::ColumnSettings,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");

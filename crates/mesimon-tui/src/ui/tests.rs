@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, Mode, Screen};
+use crate::app::{App, InputPurpose, Mode, Screen};
 use crate::theme::{Flavor, Profile, Theme};
 
 fn ulid_n(n: u128) -> ulid::Ulid {
@@ -63,7 +63,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
 fn fixture(waiting: bool) -> Board {
     let mut b = Board::default();
     for (i, name) in ["todo", "in progress", "review", "done"].iter().enumerate() {
-        b.columns.push(Column { name: (*name).into(), order: format!("{i}") });
+        b.columns.push(Column::new(*name, format!("{i}")));
     }
     b.tickets.push(ticket(1, "T-1", "Decay treatments", "todo", "a"));
     b.tickets.push(ticket(2, "T-2", "Keymap validator", "todo", "b"));
@@ -453,7 +453,7 @@ fn install_releases(app: &mut App) {
 fn golden_calm_board_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     golden("board_calm_120x30", &render(&app, 120, 30));
 }
 
@@ -461,7 +461,7 @@ fn golden_calm_board_120() {
 fn golden_waiting_board_120() {
     let mut app = app_graphite(fixture(true));
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     golden("board_waiting_120x30", &render(&app, 120, 30));
 }
 
@@ -478,7 +478,7 @@ fn golden_interrupted_board_120() {
     ));
     let mut app = app_graphite(b);
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     golden("board_interrupted_120x30", &render(&app, 120, 30));
 }
 
@@ -493,7 +493,7 @@ fn golden_move_ghost_120() {
 fn golden_empty_board_120() {
     let mut b = Board::default();
     for (i, name) in ["todo", "in progress", "review", "done"].iter().enumerate() {
-        b.columns.push(Column { name: (*name).into(), order: format!("{i}") });
+        b.columns.push(Column::new(*name, format!("{i}")));
     }
     let app = app_graphite(b);
     golden("board_empty_120x30", &render(&app, 120, 30));
@@ -634,7 +634,8 @@ fn the_settings_subtitle_marquees() {
     let mut app = app_graphite(fixture_archived());
     // The merge train's row: the longest detail in the list, and off by
     // default, which is the sentence that explains the standing consent.
-    app.mode = Mode::Settings { idx: 4 };
+    // Sixth, after theme, replies, status line, snooze and the week's day.
+    app.mode = Mode::Settings { idx: 5 };
     let row = |lines: &[String]| -> String {
         lines
             .iter()
@@ -981,8 +982,8 @@ fn test_suggested_rows_lead_the_menu_and_wear_the_mark() {
     let marked: Vec<&String> = lines.iter().skip(1).filter(|l| l.contains('◦')).collect();
     assert_eq!(marked.len(), 3, "one marked row per chip: {marked:?}");
     assert!(marked[0].contains("Restart on the new build"), "{marked:?}");
-    assert!(marked[1].contains("Sleep 3 agents in done"), "{marked:?}");
-    assert!(marked[2].contains("Archive 2 tickets in done"), "{marked:?}");
+    assert!(marked[1].contains("Sleep 3 agents on finished tickets"), "{marked:?}");
+    assert!(marked[2].contains("Archive 2 finished tickets"), "{marked:?}");
     // The chip named the first of them and nothing else.
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("◦ update ready"), "{head:?}");
@@ -1010,15 +1011,171 @@ fn golden_help_empty_column_120() {
     let lines = render(&app, 120, 30);
     // The user's rule, asserted and not merely pictured: with no card under
     // the cursor, nothing that needs one is offered — in the footer or the
-    // overlay, because both read the same predicate.
-    for absent in ["move card", "rename", "archive", "delete", "start claude"] {
+    // overlay, because both read the same predicate. An empty column IS its
+    // header (T-117), so the column's own verbs are what is offered instead.
+    for absent in ["move card", "archive", "start claude", "delete ticket", "ticket page"] {
         assert!(
             !lines.iter().any(|l| l.contains(absent)),
             "{absent:?} offered with an empty column selected"
         );
     }
     assert!(lines.iter().any(|l| l.contains("new ticket")), "creating must always be offered");
+    for present in ["rename column", "move column", "column settings", "delete column"] {
+        assert!(lines.iter().any(|l| l.contains(present)), "{present:?} is the header's");
+    }
     golden("help_empty_column_120x30", &lines);
+}
+
+/// The cursor on a column header (T-117): the header wears the cursor bar,
+/// no card is selected, and the footer offers the column's verbs.
+#[test]
+fn golden_board_header_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    let lines = render(&app, 120, 30);
+    let foot = lines.last().unwrap();
+    for present in ["column settings", "rename column", "move column"] {
+        assert!(foot.contains(present), "{present:?} missing from {foot:?}");
+    }
+    assert!(!foot.contains("describe"), "{foot:?}");
+    golden("board_header_120x30", &lines);
+}
+
+/// `r` on a header: the name edited in place in the header row, the badges
+/// standing down, the mode chip saying RENAME.
+#[test]
+fn golden_board_header_rename_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    press(&mut app, 'r');
+    assert!(matches!(
+        &app.mode,
+        Mode::Input { purpose: InputPurpose::RenameColumn { name }, .. } if name == "in progress"
+    ));
+    for c in " now".chars() {
+        press(&mut app, c);
+    }
+    let lines = render(&app, 120, 30);
+    assert!(lines[2].contains("in progress now"), "{:?}", lines[2]);
+    golden("board_header_rename_120x30", &lines);
+}
+
+/// A column that does something wears the one mark after its count.
+#[test]
+fn golden_board_header_automated_120() {
+    let mut board = fixture(false);
+    board.columns[0].settings.auto_run = true;
+    board.columns[1].settings.on_done = Some("review".into());
+    let app = app_graphite(board);
+    let lines = render(&app, 120, 30);
+    assert!(lines[2].contains('→'), "{:?}", lines[2]);
+    golden("board_header_automated_120x30", &lines);
+}
+
+/// The column settings dialog over the board (T-117): thirteen rows, the
+/// selected row's detail under them, `esc back` in its edge.
+#[test]
+fn golden_column_settings_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("COLUMN ∙ IN PROGRESS")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("Claude mode: inherit (auto)")), "{lines:?}");
+    golden("column_settings_120x30", &lines);
+}
+
+/// The dialog's Name row as a text field: the mode chip says NAME, the edge
+/// says save/cancel, the row shows the buffer.
+#[test]
+fn golden_column_settings_naming_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    let enter = |app: &mut App| {
+        app.handle_key(
+            ratatui::crossterm::event::KeyCode::Enter,
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        )
+        .unwrap()
+    };
+    enter(&mut app);
+    enter(&mut app);
+    for c in " now".chars() {
+        press(&mut app, c);
+    }
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("Name: in progress now")), "{lines:?}");
+    assert!(lines.last().unwrap().contains("NAME"), "{:?}", lines.last());
+    golden("column_settings_naming_120x30", &lines);
+}
+
+/// `O`: the dialog on a column that does not exist yet — the Name row alone.
+#[test]
+fn golden_column_add_120() {
+    let mut app = app_graphite(fixture(false));
+    press(&mut app, 'O');
+    for c in "qa".chars() {
+        press(&mut app, c);
+    }
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("NEW COLUMN")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("Name: qa")), "{lines:?}");
+    golden("column_add_120x30", &lines);
+}
+
+/// The `?` overlay on a column header: the column's verbs and none of a
+/// ticket's.
+#[test]
+fn golden_help_header_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    app.help = true;
+    let lines = render(&app, 120, 30);
+    for present in
+        ["column settings", "rename column", "move column", "delete column", "new column"]
+    {
+        assert!(lines.iter().any(|l| l.contains(present)), "{present:?}");
+    }
+    for absent in ["describe", "start claude", "archive", "snooze"] {
+        assert!(!lines.iter().any(|l| l.contains(absent)), "{absent:?}");
+    }
+    golden("help_header_120x30", &lines);
+}
+
+/// The composer on a column with a workspace default says so on its row.
+#[test]
+fn golden_composer_column_default_120() {
+    let mut board = fixture(false);
+    board.columns[0].settings.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
+    let mut app = app_graphite(board);
+    press(&mut app, 'o');
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("worktree (column default)")), "{lines:?}");
+    golden("composer_column_default_120x30", &lines);
+}
+
+/// A column pinned collapsed is a spine at 120 columns, where every column
+/// would otherwise expand; the cursor entering it expands it.
+#[test]
+fn golden_board_pinned_120() {
+    let mut board = fixture(false);
+    board.columns[3].settings.collapsed = true;
+    let mut app = app_graphite(board);
+    let lines = render(&app, 120, 30);
+    assert!(!lines[2].contains("DONE"), "pinned: {:?}", lines[2]);
+    golden("board_pinned_120x30", &lines);
+    app.cursor_col = 3;
+    let lines = render(&app, 120, 30);
+    assert!(lines[2].contains("DONE"), "the cursor expands it: {:?}", lines[2]);
 }
 
 #[test]
@@ -1617,8 +1774,43 @@ fn golden_card_branch_line_120() {
         path: Some("/wt/T-3-fix-osc-11-detection".into()),
     }];
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     golden("board_worktree_120x30", &render(&app, 120, 30));
+}
+
+/// The worktree mark is right-aligned against the fixed age slot, so its
+/// WIDTH is its glyph's column: a state char beside the branch glyph pulls
+/// the glyph one cell left, and a clean attached worktree — the one arm with
+/// nothing to report — used to render one cell narrower and sit a column
+/// right of every other card's, with the freed cell handed back to the
+/// title. The board reads down a column, so the anchor is the glyph.
+#[test]
+fn the_worktree_glyph_holds_one_column() {
+    use unicode_width::UnicodeWidthStr;
+    let wt = |id: u128, ahead: u32, merged: bool| mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(id),
+        branch: format!("msmn/T-{id}"),
+        status: "attached".into(),
+        merged,
+        conflict: false,
+        ahead,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/x".into()),
+    };
+    let mut app = app_graphite(fixture(false));
+    // T-3 and T-4 share IN PROGRESS, so the two cards sit one above the other.
+    app.worktrees = vec![wt(3, 2, false), wt(4, 0, false)];
+    let mark = crate::glyphs::branch_mark(crate::glyphs::Tier::Unicode);
+    let col = |l: &str| l.find(mark).map(|b| l[..b].width());
+    let cols: Vec<usize> = render(&app, 120, 30).iter().filter_map(|l| col(l)).collect();
+    assert_eq!(cols.len(), 2, "expected both worktree cards to draw a mark");
+    assert_eq!(cols[0], cols[1], "the ahead and the clean mark sit in different columns");
+    // And the state char never widens the slot past its neighbour's.
+    app.worktrees = vec![wt(3, 0, true), wt(4, 0, false)];
+    let cols: Vec<usize> = render(&app, 120, 30).iter().filter_map(|l| col(l)).collect();
+    assert_eq!(cols.len(), 2);
+    assert_eq!(cols[0], cols[1], "the merged and the clean mark sit in different columns");
 }
 
 /// Shift+Enter on a worktree ticket parks the spawn while the worktree is
@@ -1753,7 +1945,7 @@ fn test_an_open_card_runs_the_tags_down_its_stripe() {
     attach_transcript(&mut b, &path);
     let mut app = app_graphite(b);
     app.cursor_col = 1; // T-3 "Fix OSC-11 detection": BUG + STAGING
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.peek = true;
     let at = |group: u8, name: &str| {
         app.theme.pip_at(
@@ -1798,7 +1990,7 @@ fn test_an_open_card_runs_the_tags_down_its_stripe() {
 fn test_the_card_state_sets_the_tag_loudness() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
-    app.cursor_row = 0; // "Decay treatments" (FTR) is the cursor card
+    app.cursor_row = Some(0); // "Decay treatments" (FTR) is the cursor card
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
     let tint = app.board.tag_def(1, "FTR").expect("registered").tint() as usize;
@@ -1830,7 +2022,7 @@ fn test_the_card_state_sets_the_tag_loudness() {
         "a sleeping ticket wears its tag at the ordinary resting level"
     );
     // Move the cursor off, and the same card steps down to rest.
-    app.cursor_row = 1;
+    app.cursor_row = Some(1);
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
     assert_eq!(
@@ -1850,7 +2042,7 @@ fn test_the_card_state_sets_the_tag_loudness() {
 fn test_an_untagged_block_ladders_too() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 0;
-    app.cursor_row = 0; // "Decay treatments": no sessions, and the cursor card
+    app.cursor_row = Some(0); // "Decay treatments": no sessions, and the cursor card
     let buf = cells(&app, 120, 30);
     let lines = render(&app, 120, 30);
     let bar = |needle: &str, lines: &[String], buf: &ratatui::buffer::Buffer, x: u16| {
@@ -1939,11 +2131,11 @@ fn test_the_second_tag_costs_no_width() {
     for peek in [false, true] {
         let mut two = app_graphite(fixture_tagged());
         two.cursor_col = 1;
-        two.cursor_row = 0;
+        two.cursor_row = Some(0);
         two.peek = peek;
         let mut one = app_graphite(fixture_tagged());
         one.cursor_col = 1;
-        one.cursor_row = 0;
+        one.cursor_row = Some(0);
         one.peek = peek;
         one.board.ticket_mut(ulid_n(3)).expect("ticket").set_tag(2, None);
         // The peek row names the tags, so it legitimately differs; every
@@ -1968,7 +2160,7 @@ fn test_the_peek_names_the_tags() {
     attach_transcript(&mut b, &path);
     let mut app = app_graphite(b);
     app.cursor_col = 1; // T-3 "Fix OSC-11 detection": BUG + STAGING
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.peek = true;
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
@@ -1993,7 +2185,7 @@ fn test_the_peek_names_the_tags() {
 fn test_a_quick_tag_names_the_tag_on_a_session_less_card() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
-    app.cursor_row = 0; // T-1 "Decay treatments": wears FTR, has no session.
+    app.cursor_row = Some(0); // T-1 "Decay treatments": wears FTR, has no session.
     let card = |a: &App| {
         let lines = render(a, 120, 30);
         let title = lines.iter().position(|l| l.contains("Decay treatments")).expect("card");
@@ -2031,7 +2223,7 @@ fn test_a_crowded_peek_row_names_them_all() {
     }
     let mut app = app_graphite(b);
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.peek = true;
     let lines = render(&app, 120, 30);
     let title = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card");
@@ -2065,7 +2257,7 @@ fn golden_board_tags_peek_120() {
     attach_transcript(&mut b, &path);
     let mut app = app_graphite(b);
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.peek = true;
     golden("board_tags_peek_120x30", &render(&app, 120, 30));
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
@@ -2085,7 +2277,7 @@ fn golden_board_peek_all_120() {
     attach_transcript(&mut b, &path);
     let mut app = app_graphite(b);
     app.cursor_col = 0;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.peek = true;
     app.peek_all = true;
     let lines = render(&app, 120, 30);
@@ -2112,7 +2304,7 @@ fn golden_board_peek_all_120() {
 fn golden_board_tags_peek_sessionless_120() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.peek = true;
     let lines = render(&app, 120, 30);
     let y = lines.iter().position(|l| l.contains("Decay treatments")).expect("card");
@@ -2129,7 +2321,7 @@ fn golden_tag_chord_120() {
     // because mesimon seeds no vocabulary and a bare digit would mean nothing.
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.tag_armed = Some(crate::app::TagArm {
         ticket: Some(ulid_n(3)),
         row: 0,
@@ -2146,7 +2338,7 @@ fn golden_tag_forget_armed_120() {
     // and the first one names the blast radius before asking for the second.
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.tag_armed = Some(crate::app::TagArm {
         ticket: Some(ulid_n(3)),
         row: 0,
@@ -2162,7 +2354,7 @@ fn golden_tag_naming_120() {
     // Naming a new tag: the tail falls silent and the row becomes a field.
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "HOTFIX".chars() {
         buffer.insert(c);
@@ -2225,7 +2417,7 @@ fn golden_prompt_field_120() {
     app.rich_keys = true;
     // T-3, in progress, with a live claude on it.
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "rebase onto main".chars() {
         buffer.insert(c);
@@ -2258,7 +2450,7 @@ fn golden_prompt_field_queued_120() {
     let mut app = app_graphite(fixture(false));
     app.rich_keys = true;
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let mut buffer = crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES);
     for c in "commit what you have".chars() {
         buffer.insert(c);
@@ -2306,7 +2498,7 @@ fn golden_queued_open_120() {
     let mut app = app_graphite(fixture(false));
     app.pending = vec![pending_ask(5, &["T-3"])];
     app.cursor_col = 2;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("queued ∙ after T-3")), "{}", lines.join("\n"));
     golden("board_queued_open_120x30", &render(&app, 120, 30));
@@ -2348,7 +2540,7 @@ fn golden_train_120() {
         },
     ];
     app.cursor_col = 2;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let lines = render(&app, 120, 30);
     assert!(
         !lines[0].contains("train") && !lines[0].contains("merge"),
@@ -2398,7 +2590,7 @@ fn golden_train_manual_120() {
     };
     app.pending = vec![candidate.clone()];
     app.cursor_col = 2;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let lines = render(&app, 120, 30);
     assert!(lines.last().is_some_and(|l| l.contains("t merge by hand")), "{:?}", lines.last());
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
@@ -2444,7 +2636,7 @@ fn test_an_empty_prompt_field_names_itself() {
     let mut app = app_graphite(fixture(false));
     app.rich_keys = true;
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
@@ -2472,7 +2664,7 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
     let mut app = app_graphite(fixture(false));
     app.rich_keys = true;
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.pending = vec![mesimon_core::command::Pending {
         ticket: ulid_n(3),
         action: "ask".into(),
@@ -2507,7 +2699,7 @@ fn test_the_prompt_field_moves_no_text() {
     let mut app = app_graphite(fixture(false));
     app.rich_keys = true;
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let before = render(&app, 120, 30);
     app.mode = Mode::Input {
         purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
@@ -2891,7 +3083,7 @@ fn golden_peek_board_120() {
         Some(path.to_string_lossy().into_owned());
     let mut app = app_graphite(b);
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     app.peek = true;
     golden("board_peek_120x30", &render(&app, 120, 30));
     let _ = std::fs::remove_dir_all(&dir);
@@ -2910,9 +3102,9 @@ fn golden_mono_board_120() {
 fn test_single_session_card_hides_session_row() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1; // "in progress"
-    app.cursor_row = 1; // T-4: exactly one (claude) session
-                        // The columns only — the footer legitimately names `c claude` now that
-                        // hints come from the keymap, and that is not an accordion row.
+    app.cursor_row = Some(1); // T-4: exactly one (claude) session
+                              // The columns only — the footer legitimately names `c claude` now that
+                              // hints come from the keymap, and that is not an accordion row.
     let body = |app: &App| -> Vec<String> {
         let lines = render(app, 120, 30);
         lines[..lines.len() - 1].to_vec()
@@ -2922,7 +3114,7 @@ fn test_single_session_card_hides_session_row() {
         "single-session accordion must not repeat the session as a row"
     );
     // Two sessions still list both rows (cursor_row 0 is T-3: claude + bash).
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let lines = body(&app);
     assert!(lines.iter().any(|l| l.contains("claude")) && lines.iter().any(|l| l.contains("bash")));
 }
@@ -3342,7 +3534,7 @@ fn the_description_dialog_grows_out_of_the_card() {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 0;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let before = render(&app, 120, 30);
     let card_row =
         before.iter().position(|l| l.contains("Decay treatments")).expect("T-1 is on the board");
@@ -3699,6 +3891,21 @@ fn test_no_drawn_structure() {
     arch.mode = Mode::Archived { idx: 0 };
     let mut picker = app_graphite(fixture(false));
     picker.mode = Mode::Theme { idx: 2 };
+    // The cursor on a column header (T-117): its bar is a painted cell, and
+    // the automation mark is outside the banned range.
+    let mut header = app_graphite(fixture(false));
+    header.board.columns[1].settings.on_done = Some("review".into());
+    header.cursor_col = 1;
+    header.cursor_row = None;
+    let mut coldlg = app_graphite(fixture(false));
+    coldlg.cursor_col = 1;
+    coldlg.cursor_row = None;
+    coldlg
+        .handle_key(
+            ratatui::crossterm::event::KeyCode::Enter,
+            ratatui::crossterm::event::KeyModifiers::NONE,
+        )
+        .unwrap();
     let mut armed = app_graphite(fixture_woke());
     armed.cursor_col = 0;
     armed
@@ -3718,6 +3925,22 @@ fn test_no_drawn_structure() {
         },
         sweep(&arch),
         sweep(&picker),
+        {
+            let lines = sweep(&header);
+            assert!(
+                lines.iter().any(|l| l.contains("column settings")),
+                "the header cursor must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
+        {
+            let lines = sweep(&coldlg);
+            assert!(
+                lines.iter().any(|l| l.contains("COLUMN ∙ IN PROGRESS")),
+                "the column dialog must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
         {
             let lines = sweep(&app_links());
             assert!(
@@ -4009,7 +4232,7 @@ fn test_done_mark_decays_once_seen() {
     seed_spoke(&mut app, ulid_n(5));
     assert_eq!(done_mark(&app), (DONE_UNREAD.into(), calm), "unread: heavy, calm");
     app.cursor_col = 2;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     assert_eq!(done_mark(&app).0, DONE, "the cursor card is seen as it is drawn");
     // Every flavor keeps the colour step: the two are different tokens by law.
     for flavor in Flavor::ALL {
@@ -4399,8 +4622,8 @@ fn test_move_trail_is_semi_transparent() {
 fn test_clipped_column_edge_peeks() {
     let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     let mut b = Board::default();
-    b.columns.push(Column { name: "todo".into(), order: "0".into() });
-    b.columns.push(Column { name: "done".into(), order: "1".into() });
+    b.columns.push(Column::new("todo", "0"));
+    b.columns.push(Column::new("done", "1"));
     for i in 0..12u128 {
         b.tickets.push(ticket(
             i + 1,
@@ -4446,7 +4669,7 @@ fn test_clipped_column_edge_peeks() {
     // visible card is the ghost, blank-separated, and the cursor card holds
     // full value.
     app.cursor_col = 0;
-    app.cursor_row = 11;
+    app.cursor_row = Some(11);
     let scrolled = rows(&app, 20);
     assert!(scrolled.len() < 12, "still clipped after scrolling to the tail");
     let (ty, tfg) = *scrolled.first().unwrap();
@@ -4460,14 +4683,14 @@ fn test_clipped_column_edge_peeks() {
     // Mid-column cursor: both edges peek at once (scroll reset first — the
     // Cell carries the tail scroll from the case above).
     app.scroll_row.set(0);
-    app.cursor_row = 6;
+    app.cursor_row = Some(6);
     let mid = rows(&app, 20);
     assert_eq!(mid.first().unwrap().1, theme.rest.dim3, "top ghost with a mid cursor");
     assert_eq!(mid.last().unwrap().1, theme.rest.dim3, "bottom ghost with a mid cursor");
 
     // Whole: nothing fades.
     app.cursor_col = 1;
-    app.cursor_row = 0;
+    app.cursor_row = Some(0);
     let whole = rows(&app, 40);
     assert_eq!(whole.len(), 12, "40 rows fit the whole column");
     for (_, fg) in &whole {

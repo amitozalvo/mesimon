@@ -1,7 +1,9 @@
 //! The board's ask can WAIT for a quiet checkout (2026-09-04), end to end:
 //! two claudes in the shared checkout, one mid-turn; an ask queued at the
 //! other is parked, lands the moment the first one's turn settles, and is
-//! dropped when the user talks to the agent ahead of it.
+//! dropped when the user talks to the agent ahead of it. The second test
+//! queues two and sorts them by moving the cards (T-263): the queue is in
+//! board order, top first, never first-come.
 //!
 //! The stub agent appends every line it reads to one file beside itself —
 //! both panes share it, and every probe is unique, so what is asserted is
@@ -39,8 +41,16 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     let mut c = h.client("askq");
     let text = || std::fs::read_to_string(&got).unwrap_or_default();
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "holder".into() });
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "waiter".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "holder".into(),
+        workspace: None,
+    });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "waiter".into(),
+        workspace: None,
+    });
     let board = c.board();
     let a = board.tickets.iter().find(|t| t.title == "holder").expect("a").id;
     let b = board.tickets.iter().find(|t| t.title == "waiter").expect("b").id;
@@ -222,6 +232,136 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     stop(&mut c, sa);
     std::thread::sleep(Duration::from_millis(2500));
     assert!(!text().contains("mesimon-probe-57"), "{:?}", text());
+
+    let _ = c.request(Command::Shutdown);
+}
+
+/// Two asks wait on one checkout; the card higher in its column goes first,
+/// and a move while they wait re-sorts them (T-263). `waits_on` names the
+/// holder and then the asks ahead, so the row's `+N` falls as a card rises.
+#[test]
+fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) = Harness::boot_with_env(
+        "askq-order",
+        Some(STUB),
+        &[("MESIMON_PANE_QUIET_MS", "600000"), ("MESIMON_SLEEP_MIN_AGE_MS", "0")],
+    ) else {
+        return;
+    };
+    let got = h.dir.join("got.txt");
+    let tmux_sock = h.paths.tmux_sock();
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("askq-order");
+    let text = || std::fs::read_to_string(&got).unwrap_or_default();
+
+    for title in ["holder", "upper", "lower"] {
+        let _ = c.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: title.into(),
+            workspace: None,
+        });
+    }
+    let board = c.board();
+    let id = |title: &str| board.tickets.iter().find(|t| t.title == title).expect(title).id;
+    let (a, x, y) = (id("holder"), id("upper"), id("lower"));
+    let key = |t| board.ticket(t).unwrap().short_key.clone();
+    let (a_key, x_key, y_key) = (key(a), key(x), key(y));
+
+    let spawn = |c: &mut TestClient, ticket| match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    let (sa, sx, sy) = (spawn(&mut c, a), spawn(&mut c, x), spawn(&mut c, y));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        let panes = tmux(&tmux_sock)
+            .args(["list-panes", "-a", "-F", "#{pane_pid}"])
+            .output()
+            .map(|o| String::from_utf8_lossy(&o.stdout).lines().count())
+            .unwrap_or(0);
+        if panes >= 3 {
+            break;
+        }
+        assert!(Instant::now() < deadline, "the stub agents never got their panes");
+        std::thread::sleep(Duration::from_millis(100));
+    }
+    std::thread::sleep(Duration::from_millis(500));
+
+    let start = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+    };
+    let stop = |c: &mut TestClient, sid: uuid::Uuid| {
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    };
+    for sid in [sa, sx, sy] {
+        start(&mut c, sid);
+        stop(&mut c, sid);
+    }
+    // Both waiters idle in one column now (automove parked them); put
+    // `upper` above `lower` by hand so the starting order is stated, not
+    // inherited from who finished last.
+    let col = c.board().ticket(y).unwrap().column.clone();
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: x, column: col.clone(), before: Some(y) }),
+        Response::Ok
+    ));
+
+    // The holder works; `lower` asks first, `upper` second — and `upper`
+    // is still ahead, because the board says so.
+    start(&mut c, sa);
+    for (t, probe) in [(y, "mesimon-probe-61 lower"), (x, "mesimon-probe-62 upper")] {
+        assert!(matches!(
+            c.request(Command::PromptSession { ticket: t, text: probe.into(), queued: true }),
+            Response::Queued { .. }
+        ));
+    }
+    let waits = |c: &mut TestClient, t| pending_of(c, Some(t)).remove(0).waits_on;
+    assert_eq!(waits(&mut c, x), vec![a_key.clone()]);
+    assert_eq!(waits(&mut c, y), vec![a_key.clone(), x_key.clone()]);
+    let order: Vec<ulid::Ulid> = pending_of(&mut c, None).iter().map(|p| p.ticket).collect();
+    assert_eq!(order, vec![x, y], "the snapshot lists them in board order");
+
+    // The user sorts while they wait: `lower` moves above `upper`.
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: y, column: col, before: Some(x) }),
+        Response::Ok
+    ));
+    assert_eq!(waits(&mut c, y), vec![a_key.clone()]);
+    assert_eq!(waits(&mut c, x), vec![a_key.clone(), y_key.clone()]);
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(!text().contains("mesimon-probe-6"), "parked words must not land: {:?}", text());
+
+    // The holder settles: the TOP card's ask goes, the other keeps waiting
+    // on it until its agent has acked and finished.
+    stop(&mut c, sa);
+    wait_until(Duration::from_secs(10), "the top ask to land", || {
+        text().contains("mesimon-probe-61 lower")
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        !text().contains("mesimon-probe-62"),
+        "the lower card's ask jumped the queue: {:?}",
+        text()
+    );
+    assert_eq!(waits(&mut c, x), vec![y_key.clone()]);
+    start(&mut c, sy);
+    stop(&mut c, sy);
+    wait_until(Duration::from_secs(10), "the second ask to land", || {
+        text().contains("mesimon-probe-62 upper")
+    });
+    start(&mut c, sx);
+    wait_until(Duration::from_secs(5), "the ack to clear the entry", || {
+        pending_of(&mut c, None).is_empty()
+    });
+    stop(&mut c, sx);
 
     let _ = c.request(Command::Shutdown);
 }

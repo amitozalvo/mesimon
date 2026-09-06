@@ -40,7 +40,11 @@ fn asking_again_after_parking_by_hand_moves_the_card_to_in_progress() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("askpark");
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "test".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "test".into(),
+        workspace: None,
+    });
     let ticket = c.board().tickets.first().expect("ticket").id;
     let sid = match c.request(Command::SpawnSession {
         ticket,

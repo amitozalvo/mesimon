@@ -114,6 +114,13 @@ pub struct TmuxBackend {
     /// The `PATH` every tmux invocation runs with, when the daemon has
     /// captured a fresher one than its own — see [`TmuxBackend::set_path`].
     path: Option<String>,
+    /// Kept so the conf can be re-rendered when a rendered preference moves
+    /// (see [`TmuxBackend::set_status_position`]).
+    pane_died_cmd: Option<String>,
+    /// Where the status line sits (T-264): the Settings preference as the
+    /// daemon last heard it. Bottom until told otherwise — tmux's default,
+    /// so a daemon that was never told changes nothing.
+    status_top: bool,
 }
 
 impl TmuxBackend {
@@ -128,8 +135,36 @@ impl TmuxBackend {
         }
         std::fs::create_dir_all(conf_dir)?;
         let conf = conf_dir.join("tmux.conf");
-        std::fs::write(&conf, conf::render(pane_died_cmd))?;
-        Ok(Self { sock, conf, path: None })
+        std::fs::write(&conf, conf::render(pane_died_cmd, false))?;
+        Ok(Self {
+            sock,
+            conf,
+            path: None,
+            pane_died_cmd: pane_died_cmd.map(str::to_string),
+            status_top: false,
+        })
+    }
+
+    /// Where the status line sits, as last set.
+    pub fn status_top(&self) -> bool {
+        self.status_top
+    }
+
+    /// Move the status line to the top or the bottom of every pane (T-264).
+    ///
+    /// Both roads at once, because a running server never re-reads its conf:
+    /// the conf is re-rendered so the NEXT server comes up on the right side,
+    /// and a live server gets the `set-option`. No server is not a failure —
+    /// the conf carries the word until one starts — and the value is held
+    /// either way, so the snapshot reports what was asked, not what tmux
+    /// happened to be running.
+    pub fn set_status_position(&mut self, top: bool) -> Result<()> {
+        self.status_top = top;
+        std::fs::write(&self.conf, conf::render(self.pane_died_cmd.as_deref(), top))?;
+        if self.server_alive() {
+            self.run(&["set-option", "-g", "status-position", conf::status_position(top)])?;
+        }
+        Ok(())
     }
 
     /// Point every subsequent tmux invocation at a different `PATH`.
@@ -375,7 +410,10 @@ impl TmuxBackend {
         self.run(&["set-option", "-g", "status-left-length", "120"])?;
         self.run(&["set-option", "-g", "status-left", text])?;
         // Live servers predate conf wording changes; keep the right side in step.
-        self.run(&["set-option", "-g", "status-right", " Ctrl+]/^5 back  "])?;
+        self.run(&["set-option", "-g", "status-right", conf::STATUS_RIGHT])?;
+        // And the side (T-264): a server that outlived the daemon holding the
+        // preference converges on what this daemon holds, on the first focus.
+        self.run(&["set-option", "-g", "status-position", conf::status_position(self.status_top)])?;
         // Live servers also predate the C-5 bind (extended-keys makes Ctrl+5 a
         // distinct key, so the C-] bind alone doesn't catch it).
         self.run(&["bind-key", "-T", "root", "C-5", "detach-client"])?;

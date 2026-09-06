@@ -20,6 +20,7 @@
 
 use serde_json::{json, Value};
 
+use crate::board::AgentTools;
 use crate::command::Command;
 
 /// The server name, and therefore the `mcp__mesimon__*` tool prefix the model
@@ -552,11 +553,24 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // deciding its own tier, which is the one thing this match exists to
         // stop. It cannot see the flag either: no tool reports it.
         | Command::SetMcpTools { .. }
+        // Where the status line sits over the user's own panes: chrome, and
+        // theirs. An agent moving it would be redecorating a screen it is
+        // not looking at.
+        | Command::SetStatusLine { .. }
         // Writes a file the user tracks in git, and stamps a board-wide
         // "never ask again". The dialog that shows the bytes is a person's;
         // this is not a road an agent gets a share of.
         | Command::SetSystemPrompt { .. }
         | Command::IgnoreBriefOffer
+        // The column lifecycle (T-117): a tier that could add a column,
+        // rename its own, or rewrite its own column's `agent_tools` would be
+        // writing its own tier.
+        | Command::AddColumn { .. }
+        | Command::RenameColumn { .. }
+        | Command::DeleteColumn { .. }
+        | Command::ReorderColumn { .. }
+        | Command::SetColumnSettings { .. }
+        | Command::SortColumn { .. }
         | Command::MoveTicket { .. }
         | Command::SpawnSession { .. }
         | Command::KillSession { .. }
@@ -581,9 +595,111 @@ pub fn agent_allows(cmd: &Command) -> bool {
     }
 }
 
+/// The tier each tool needs (T-117): a column's `agent_tools` says how far
+/// up this ladder a claude on a ticket there may reach. `Read` is the three
+/// that look, `Annotate` adds the two that write on the caller's own ticket,
+/// `Full` the two that touch the board — a move, a new card. `None` is a
+/// command no tier ever admits, which `agent_allows` refuses first anyway.
+pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
+    Some(match cmd {
+        Command::AgentGetTicket | Command::AgentListBoard | Command::AgentReadNote { .. } => {
+            AgentTools::Read
+        }
+        Command::AgentWriteNote { .. } | Command::AgentTagTicket { .. } => AgentTools::Annotate,
+        Command::AgentMoveTicket { .. } | Command::AgentCreateTicket { .. } => AgentTools::Full,
+        _ => return None,
+    })
+}
+
+/// The same table by tool NAME, for the shim's `tools/list`.
+pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
+    Some(match name {
+        "get_ticket" | "list_board" | "read_note" => AgentTools::Read,
+        "write_note" | "tag_ticket" => AgentTools::Annotate,
+        "move_ticket" | "create_ticket" => AgentTools::Full,
+        _ => return None,
+    })
+}
+
+/// Whether `tier` admits `cmd`. `Off` admits nothing.
+pub fn tier_admits(tier: AgentTools, cmd: &Command) -> bool {
+    tier_needed_by(cmd).is_some_and(|need| tier >= need)
+}
+
+/// `tools()` narrowed to what `tier` admits — what the shim lists, so a
+/// session in a `read` column is never shown a `move_ticket` it would be
+/// refused. `Full` is `tools()` whole.
+pub fn tools_for(tier: AgentTools) -> Vec<Value> {
+    tools()
+        .into_iter()
+        .filter(|t| {
+            t["name"].as_str().and_then(tier_needed_by_tool).is_some_and(|need| tier >= need)
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The tier table (T-117): every tool sits on exactly one rung, `Off`
+    /// lists and admits nothing, and each rung admits by name exactly what
+    /// it admits by command.
+    #[test]
+    fn the_tier_table_covers_every_tool_once() {
+        let names = |tier| -> Vec<String> {
+            tools_for(tier).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
+        };
+        assert!(names(AgentTools::Off).is_empty());
+        assert_eq!(names(AgentTools::Read), ["get_ticket", "list_board", "read_note"]);
+        assert_eq!(
+            names(AgentTools::Annotate),
+            ["get_ticket", "list_board", "read_note", "write_note", "tag_ticket"]
+        );
+        assert_eq!(tools_for(AgentTools::Full).len(), tools().len(), "full is everything");
+        for t in tools() {
+            let name = t["name"].as_str().unwrap();
+            assert!(tier_needed_by_tool(name).is_some(), "{name} is on no rung");
+        }
+        assert_eq!(tier_needed_by_tool("nope"), None);
+        // By name and by command agree, for every command an agent may send.
+        let calls = [
+            (Command::AgentGetTicket, "get_ticket"),
+            (Command::AgentListBoard, "list_board"),
+            (Command::AgentReadNote { note: ulid::Ulid::nil() }, "read_note"),
+            (Command::AgentWriteNote { note: None, text: "x".into() }, "write_note"),
+            (
+                Command::AgentTagTicket { name: "x".into(), group: None, remove: false },
+                "tag_ticket",
+            ),
+            (
+                Command::AgentMoveTicket { to_column: "X".into(), idempotency_key: None },
+                "move_ticket",
+            ),
+            (
+                Command::AgentCreateTicket {
+                    title: "x".into(),
+                    column: None,
+                    description: None,
+                    tags: vec![],
+                    idempotency_key: None,
+                },
+                "create_ticket",
+            ),
+        ];
+        for (cmd, name) in &calls {
+            assert_eq!(tier_needed_by(cmd), tier_needed_by_tool(name), "{name}");
+            for tier in [AgentTools::Off, AgentTools::Read, AgentTools::Annotate, AgentTools::Full]
+            {
+                assert_eq!(
+                    tier_admits(tier, cmd),
+                    names(tier).iter().any(|n| n == name),
+                    "{name} at {tier:?}"
+                );
+            }
+        }
+        assert!(!tier_admits(AgentTools::Full, &Command::Snapshot), "never-tier stays never");
+    }
 
     #[test]
     fn exactly_seven_tools() {
@@ -833,7 +949,7 @@ mod tests {
             Command::Hello { version: 1, client: "x".into() },
             Command::Snapshot,
             Command::Subscribe,
-            Command::CreateTicket { column: "TODO".into(), title: "t".into() },
+            Command::CreateTicket { column: "TODO".into(), title: "t".into(), workspace: None },
             Command::RenameTicket { id: t, title: "t".into() },
             Command::DeleteTicket { id: t, discard_worktree: true },
             Command::SetWorkspace { id: t, workspace: None },
@@ -851,6 +967,12 @@ mod tests {
             Command::SeenTicket { id: t },
             Command::SetManualMerge { id: t, on: true },
             Command::ArchiveAll,
+            Command::AddColumn { name: "QA".into(), after: None },
+            Command::RenameColumn { name: "QA".into(), to: "QC".into() },
+            Command::DeleteColumn { name: "QA".into() },
+            Command::ReorderColumn { name: "QA".into(), before: None },
+            Command::SetColumnSettings { name: "QA".into(), settings: Default::default() },
+            Command::SortColumn { column: "QA".into(), by: crate::board::SortBy::Key },
             Command::MoveTicket { id: t, column: "DONE".into(), before: None },
             Command::SpawnSession {
                 ticket: t,

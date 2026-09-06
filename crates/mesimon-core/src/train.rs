@@ -4,7 +4,9 @@
 //! it asked; what comes back is what the train WOULD do, in board order,
 //! and the pass takes the first of it once the board is quiet.
 //!
-//! Two lists. `merge`: a REVIEW ticket — where automove lands a finished
+//! Two lists — and which columns each reads is the column's own `train`
+//! setting (T-117): `Merge` is where the template's REVIEW stands, `Rebase`
+//! its IN PROGRESS. `merge`: a REVIEW ticket — where automove lands a finished
 //! turn, and where HJKL back to IN PROGRESS opts a ticket out — whose
 //! attached branch is ahead and fast-forwardable, with its claude idle after
 //! an end of turn or no live claude at all (the card is in REVIEW and there
@@ -19,8 +21,7 @@
 
 use std::collections::{HashMap, HashSet};
 
-use crate::automove::{IN_PROGRESS, REVIEW};
-use crate::board::{Board, Confidence, SessionState, StopReason};
+use crate::board::{Board, Confidence, SessionState, StopReason, TrainReach};
 
 /// The `Principal::Automation { rule }` word, and the feed's.
 pub const RULE: &str = "merge_train";
@@ -92,14 +93,14 @@ pub fn plan(input: &Input) -> Plan {
                 continue;
             }
             let seat = seat(input.board, t.id);
-            if col.name == REVIEW
+            if col.settings.train == TrainReach::Merge
                 && f.ahead > 0
                 && !f.needs_rebase
                 && matches!(seat, Seat::Empty | Seat::Idle)
             {
                 plan.merge.push(t.id);
             }
-            if (col.name == REVIEW || col.name == IN_PROGRESS)
+            if matches!(col.settings.train, TrainReach::Merge | TrainReach::Rebase)
                 && f.needs_rebase
                 && seat == Seat::Idle
                 && !input.fused.contains(&t.id)
@@ -130,11 +131,18 @@ mod tests {
         .expect("a ticket from its required fields")
     }
 
+    const IN_PROGRESS: &str = "IN PROGRESS";
+    const REVIEW: &str = "REVIEW";
+
+    /// The template board, its columns carrying the template's reach: the
+    /// train reads `TrainReach`, never a name, so the names here are only
+    /// what `template_settings` keys on.
     fn board() -> Board {
         let mut b = Board::default();
         for (i, name) in ["TODO", IN_PROGRESS, REVIEW, "DONE"].iter().enumerate() {
-            b.columns.push(Column { name: (*name).into(), order: format!("{i}") });
+            b.columns.push(Column::new(*name, format!("{i}")));
         }
+        b.seed_template_settings();
         b
     }
 

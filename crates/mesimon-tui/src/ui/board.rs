@@ -14,7 +14,7 @@ use mesimon_core::keymap;
 
 use crate::app::{App, InputPurpose, Mode};
 use crate::layout::{self, Slot};
-use crate::text::EditBuffer;
+use crate::text::{edit_window, EditBuffer};
 
 use super::card::{self, CardCtx};
 
@@ -26,7 +26,10 @@ pub(super) fn draw_columns(f: &mut Frame, area: Rect, app: &App) {
         return;
     }
     let mut window = app.col_window.get();
-    let geom = layout::board_geometry(area.width, cols.len(), app.cursor_col, &mut window);
+    // A column pinned collapsed (T-117) is a spine unless the cursor is in it.
+    let pinned: Vec<bool> =
+        app.board.sorted_columns().iter().map(|c| c.settings.collapsed).collect();
+    let geom = layout::board_geometry(area.width, cols.len(), app.cursor_col, &pinned, &mut window);
     app.col_window.set(window);
 
     for (ci, name) in cols.iter().enumerate() {
@@ -225,7 +228,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
                 // to a real ticket, and collapsing it mid-prompt would take
                 // the agent's own state off screen while you type at it.
                 let selected = is_cursor_col
-                    && app.cursor_row == i
+                    && app.cursor_row == Some(i)
                     && (matches!(app.mode, Mode::Normal) || prompt_of(t).is_some());
                 push_card(t, selected, false);
             }
@@ -240,7 +243,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             // blind until the ticket exists.
             let painted = crate::tags::painted(&app.board, tags);
             let (line, x_off) = card::render_edit(&ctx, buf, &painted);
-            let selector = card::render_workspace_selector(&ctx, *workspace);
+            let column_default = app.board.column(name).and_then(|c| c.settings.workspace);
+            let selector = card::render_workspace_selector(&ctx, *workspace, column_default);
             groups.push(Group {
                 lines: vec![line, selector],
                 cursor: true,
@@ -281,6 +285,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let total = lines.len();
     let mut scroll =
         if is_cursor_col { app.scroll_row.get().min(total.saturating_sub(1)) } else { 0 };
+    // On the header the column shows its top, so `j` lands on a visible card.
+    let on_header = is_cursor_col
+        && app.on_header()
+        && !matches!(app.mode, Mode::Input { purpose: InputPurpose::Create { .. }, .. });
+    if on_header {
+        scroll = 0;
+    }
     if is_cursor_col {
         if let Some((cs, ce)) = cursor_range {
             let lo = cs.saturating_sub(2);
@@ -392,10 +403,34 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // ---- header row (cursor-column treatment, reminted 2026-08-30) --------
     // The cursor column's header is a full-width painted band on the
     // `selected` surface — a 1-cell bar there read as another card. The name
-    // still steps dim1 -> base. A value and a shape, never a hue.
+    // still steps dim1 -> base. A value and a shape, never a hue. With the
+    // cursor ON the header (T-117) the band's first cell is the cursor BAR,
+    // the way a selected card's is: the same shape one row up, still no hue.
     let quiet = if is_cursor_col { Style::default().fg(theme.sel.dim2) } else { theme.dim2() };
-    let mut head: Vec<Span<'static>> = vec![Span::raw("  ")];
-    if is_cursor_col {
+    let header_edit: Option<&EditBuffer> = match editing {
+        Some((InputPurpose::RenameColumn { name: n }, buf)) if n == name => Some(buf),
+        _ => None,
+    };
+    let mut head: Vec<Span<'static>> = Vec::new();
+    let mut header_cursor_x: Option<u16> = None;
+    if on_header || header_edit.is_some() {
+        let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
+        head.push(Span::styled(bar_ch.to_string(), bar_style));
+        head.push(Span::raw(" "));
+    } else {
+        head.push(Span::raw("  "));
+    }
+    if let Some(buf) = header_edit {
+        // The name edited in place, with the hardware cursor (06 §5.7),
+        // the badges standing down for the field.
+        let budget = (area.width as usize).saturating_sub(3);
+        let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
+        header_cursor_x = Some(2 + cx);
+        head.push(Span::styled(
+            shown,
+            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
+        ));
+    } else if is_cursor_col {
         head.push(Span::styled(
             name.to_uppercase(),
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
@@ -404,18 +439,32 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         head.push(Span::styled(name.to_uppercase(), theme.dim1().add_modifier(Modifier::BOLD)));
     }
     let mut right: Vec<Span<'static>> = Vec::new();
-    if attn_out > 0 {
-        right.push(Span::styled(format!("!{attn_out} "), theme.attn_text()));
+    if header_edit.is_none() {
+        if attn_out > 0 {
+            right.push(Span::styled(format!("!{attn_out} "), theme.attn_text()));
+        }
+        if above > 0 {
+            right.push(Span::styled(format!("▴{above} "), quiet));
+        }
+        if below > 0 {
+            right.push(Span::styled(format!("▾{below} "), quiet));
+        }
+        right.push(Span::styled(format!("{count}"), quiet));
     }
-    if above > 0 {
-        right.push(Span::styled(format!("▴{above} "), quiet));
-    }
-    if below > 0 {
-        right.push(Span::styled(format!("▾{below} "), quiet));
-    }
-    right.push(Span::styled(format!("{count}"), quiet));
     let used: usize = head.iter().chain(right.iter()).map(|s| s.content.width()).sum();
-    let fill = (area.width as usize).saturating_sub(used + 1);
+    let mut fill = (area.width as usize).saturating_sub(used + 1);
+    // The column's one optional mark (T-117): it does something to a ticket
+    // — a move on an edge, a claude on creation, the train. After the count,
+    // in the quiet register, and the first thing to go when the row is tight.
+    let automated =
+        header_edit.is_none() && app.board.column(name).is_some_and(|c| c.settings.automated());
+    if automated && fill >= 3 {
+        right.push(Span::styled(
+            format!(" {}", crate::glyphs::auto_mark(theme.glyph_tier())),
+            quiet,
+        ));
+        fill -= 2;
+    }
     head.push(Span::raw(" ".repeat(fill)));
     head.extend(right);
     head.push(Span::raw(" "));
@@ -474,6 +523,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             height: (ce - cs) as u16,
         });
         app.cursor_card.set(rect);
+    } else if on_header {
+        // No card is the cursor card on a header: nothing may grow out of
+        // last frame's rectangle.
+        app.cursor_card.set(None);
+    }
+    if let Some(x) = header_cursor_x {
+        f.set_cursor_position((area.x + x.min(area.width.saturating_sub(1)), area.y));
     }
 }
 

@@ -237,6 +237,22 @@ mod tests {
     }
 
     #[test]
+    fn last_event_reads_a_trailing_tool_call_as_in_flight() {
+        // The reload shape (T-265): the last record is the call, its result
+        // is minutes away, and the latches after it say nothing.
+        let p = tmp("toolcall");
+        std::fs::write(
+            &p,
+            "{\"uuid\":\"u1\",\"type\":\"user\",\"message\":{\"content\":[{\"type\":\"tool_result\"}]}}\n\
+             {\"uuid\":\"u2\",\"type\":\"assistant\",\"message\":{\"stop_reason\":\"tool_use\",\"content\":[{\"type\":\"tool_use\",\"name\":\"Bash\",\"input\":{\"command\":\"cargo ut\"}}]}}\n\
+             {\"type\":\"mode\"}\n",
+        )
+        .unwrap();
+        assert_eq!(last_event(&p), Some(TailEvent::ToolInFlight));
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    #[test]
     fn last_event_empty_or_missing_is_none() {
         assert_eq!(last_event(Path::new("/nonexistent/x.jsonl")), None);
         let p = tmp("empty");

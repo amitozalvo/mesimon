@@ -57,7 +57,11 @@ fn interrupted_turn_demotes_to_idle_without_any_hook() {
         c.request(Command::Hello { version: 1, client: "intr".into() }),
         Response::Hello { .. }
     ));
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "intr".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "intr".into(),
+        workspace: None,
+    });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 
     let sid = match c.request(Command::SpawnSession {

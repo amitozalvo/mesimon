@@ -58,6 +58,7 @@ pub use opener::doctor_line as opener_status;
 pub use prefs::doctor_line as theme_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
 pub use prefs::snooze_doctor_line as snooze_status;
+pub use prefs::status_line_doctor_line as status_line_status;
 pub use prefs::train_doctor_line as train_status;
 /// What `mesimon doctor` says about release checks — whether they are on, and
 /// when they last answered. Exported because the checker lives here, beside
@@ -116,6 +117,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // The merge train preference reaches the daemon now, not on the first
     // event: an armed board that sits quiet would otherwise never say so.
     app.reconcile_train();
+    // Same for the status line's side (T-264): a daemon that outlived the
+    // last board holds bottom until a board says top.
+    app.reconcile_status_line();
     if let Some(notice) = loaded.notice {
         app.status = notice;
     }

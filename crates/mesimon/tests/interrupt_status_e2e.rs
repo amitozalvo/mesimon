@@ -35,7 +35,11 @@ fn a_status_file_gone_idle_demotes_running_while_the_pane_still_paints() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("intrstatus");
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "intrstatus".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "intrstatus".into(),
+        workspace: None,
+    });
     let ticket = c.board().tickets.first().expect("ticket").id;
     let sid = match c.request(Command::SpawnSession {
         ticket,
@@ -125,7 +129,11 @@ fn a_status_file_gone_idle_over_a_closed_turn_is_end_turn_not_interrupted() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("intrdone");
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "intrdone".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "intrdone".into(),
+        workspace: None,
+    });
     let ticket = c.board().tickets.first().expect("ticket").id;
     let sid = match c.request(Command::SpawnSession {
         ticket,

@@ -5,7 +5,7 @@
 use crate::authorize::Action;
 use serde::{Deserialize, Serialize};
 
-use crate::board::{Board, SessionKind, WorkspaceStrategy};
+use crate::board::{Board, ColumnSettings, SessionKind, SortBy, WorkspaceStrategy};
 use crate::Principal;
 
 pub const PROTOCOL_VERSION: u32 = 1;
@@ -81,6 +81,11 @@ pub enum Command {
     CreateTicket {
         column: String,
         title: String,
+        /// The composer's workspace choice, riding the mint (T-117) so the
+        /// column's auto-run can spawn before a later `SetWorkspace` would
+        /// hit the lock. Absent means the column's own default.
+        #[serde(default)]
+        workspace: Option<WorkspaceStrategy>,
     },
     RenameTicket {
         id: ulid::Ulid,
@@ -280,6 +285,16 @@ pub enum Command {
         #[serde(default)]
         merge_notice: bool,
     },
+    /// Move the private tmux server's status line to the top or the bottom
+    /// of every pane (T-264). A per-machine preference (`prefs.json`) the
+    /// TUI pushes on every toggle and whenever a snapshot reads the daemon
+    /// holding the other side — a daemon restart, an older daemon; the
+    /// daemon reads no preference file. Held in memory, applied to the live
+    /// server and to the conf the next one starts from. Local only: chrome
+    /// over the user's own panes is nothing an agent has a say in.
+    SetStatusLine {
+        top: bool,
+    },
     /// Turn the agent tool surface on or off for this board (T-217).
     ///
     /// Per repo, persisted in `columns.toml`, and read at every spawn: off
@@ -297,6 +312,45 @@ pub enum Command {
     /// its own system prompt is not one.
     SetSystemPrompt {
         on: bool,
+    },
+    /// The column lifecycle (T-117). All local only: a tier that could add a
+    /// column, rename the one it is in, or rewrite its own column's rules
+    /// would be writing its own tier. A column's NAME is its identity —
+    /// `Ticket.column`'s foreign key, there is no id — so a rename is a daemon
+    /// transaction over every ticket file, archived ones included.
+    AddColumn {
+        name: String,
+        /// The column it lands after, in board order; absent = at the end.
+        #[serde(default)]
+        after: Option<String>,
+    },
+    RenameColumn {
+        name: String,
+        to: String,
+    },
+    /// Refused while any live ticket is in it (`move its N tickets first`)
+    /// and for the last column; an archived ticket keeps its string and the
+    /// restore falls back to the first column.
+    DeleteColumn {
+        name: String,
+    },
+    ReorderColumn {
+        name: String,
+        /// The column it lands before, in board order; absent = at the end.
+        #[serde(default)]
+        before: Option<String>,
+    },
+    /// The whole struct, every time: one validation site for the
+    /// `on_working`/`on_done` pair. Equal to what stands = no write.
+    SetColumnSettings {
+        name: String,
+        settings: ColumnSettings,
+    },
+    /// One-shot: fresh `order`s for every live ticket in the column, once.
+    /// Not a setting — nothing keeps a column sorted afterwards.
+    SortColumn {
+        column: String,
+        by: SortBy,
     },
     /// Answer the agent-brief offer with "never": stamp the board so the chip
     /// and its menu row stop. Declining for now and copying send nothing.
@@ -590,6 +644,9 @@ impl Command {
             | SetManualMerge { id, .. } => m(Mutate, true, Some(*id)),
             // A cursor landing is not news for the feed.
             SeenTicket { id } => m(Mutate, false, Some(*id)),
+            // Chrome over the panes, not the board's history: the feed says
+            // what the board did, and where the status line sits is neither.
+            SetStatusLine { .. } => m(Mutate, false, None),
             // The ticket, never the text: the feed records that the user
             // asked, not what they asked.
             PromptSession { ticket, .. }
@@ -615,6 +672,14 @@ impl Command {
             | SetMcpTools { .. }
             | SetSystemPrompt { .. }
             | IgnoreBriefOffer
+            // The column lifecycle (T-117): a person's gesture, and the feed
+            // is where "who renamed TODO" gets answered.
+            | AddColumn { .. }
+            | RenameColumn { .. }
+            | DeleteColumn { .. }
+            | ReorderColumn { .. }
+            | SetColumnSettings { .. }
+            | SortColumn { .. }
             | KillSession { .. }
             | ResumeSession { .. }
             | SleepSession { .. }
@@ -642,7 +707,7 @@ mod meta_tests {
 
     #[test]
     fn the_feed_name_is_the_wire_name() {
-        let c = Command::CreateTicket { column: "a".into(), title: "b".into() };
+        let c = Command::CreateTicket { column: "a".into(), title: "b".into(), workspace: None };
         assert_eq!(c.wire_name(), "create_ticket");
         assert_eq!(Command::ReloadShellEnv.wire_name(), "reload_shell_env");
     }
@@ -690,9 +755,13 @@ pub enum Response {
         detached: bool,
     },
     Ok,
-    /// CreateTicket's receipt: the minted id, so the client can select it.
+    /// CreateTicket's receipt: the minted id, so the client can select it,
+    /// and whether the column's `auto_run` started a claude on it (T-117) —
+    /// so the composer does not start a second.
     Created {
         id: ulid::Ulid,
+        #[serde(default)]
+        started: bool,
     },
     Spawned {
         id: uuid::Uuid,
@@ -762,6 +831,16 @@ pub enum Response {
         /// TUI reads `path` being empty as "no answer yet" and offers nothing.
         #[serde(default)]
         claude_md: ClaudeMdStatus,
+        /// The user's own `permissions.defaultMode`, what a column's
+        /// `claude_mode: inherit` resolves to (T-117) — so the dialog can
+        /// say `inherit (auto)`. Absent: unknown or unset.
+        #[serde(default)]
+        claude_default_mode: Option<String>,
+        /// Where the daemon holds the tmux status line (T-264, see
+        /// [`Command::SetStatusLine`]): the TUI pushes its preference when
+        /// this disagrees. Absent from an older daemon parses as bottom.
+        #[serde(default)]
+        status_top: bool,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the

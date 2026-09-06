@@ -46,7 +46,11 @@ fn the_terminal_zone_reads_the_shell_pane() {
         c.request(Command::Hello { version: 1, client: "tail".into() }),
         Response::Hello { .. }
     ));
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "tail".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "tail".into(),
+        workspace: None,
+    });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 
     let sid = match c.request(Command::SpawnSession {

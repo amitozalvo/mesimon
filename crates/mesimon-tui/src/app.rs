@@ -9,8 +9,8 @@ use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use mesimon_core::board::{
-    Board, ExitReason, NoteMeta, Provenance, SessionKind, SessionState, TagRef, Ticket,
-    WorkspaceStrategy,
+    Board, Column, ColumnSettings, ExitReason, NoteMeta, Provenance, SessionKind, SessionState,
+    SortBy, TagRef, Ticket, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
@@ -245,6 +245,23 @@ pub enum Mode {
         ticket: ulid::Ulid,
         links: Vec<TicketLink>,
         idx: usize,
+    },
+    /// The column settings dialog (T-117): a list over `keymap::column_items`
+    /// on one column, every row relabelling off the snapshot and none closing
+    /// the dialog (the Settings list's rule). Esc goes back to the board, or
+    /// to the menu row that opened it.
+    ColumnSettings {
+        subject: ColumnSubject,
+        idx: usize,
+        /// The Name row is a text field while `Some` (the tag picker's
+        /// `naming`): the column renamed in place, or a new one named before
+        /// it exists.
+        naming: Option<EditBuffer>,
+        /// The `Sort now` row's pending order: `h`/`l` step it, Enter runs it.
+        sort: SortBy,
+        /// The Delete row was chosen once; the next Enter on it sends.
+        delete_armed: bool,
+        from_menu: bool,
     },
     /// The note editor. A mode and not a second slot: it REPLACES the
     /// one-line composer (Tab carries the title over) and never coexists
@@ -535,6 +552,11 @@ const MERGE_ASK_COOLDOWN: Duration = Duration::from_secs(60);
 /// it, a race with another board).
 const TRAIN_PUSH_BACKOFF: Duration = Duration::from_secs(30);
 
+/// The status line's side (T-264) rides the same reconcile shape as the
+/// train, on the same back-off: a daemon that reads the other side gets the
+/// preference pushed again, not on every snapshot.
+const STATUS_PUSH_BACKOFF: Duration = TRAIN_PUSH_BACKOFF;
+
 /// The m key's staged progression (author 2026-08-30): each press shows what
 /// the next press does. Stage is derived from git state, never stored.
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -592,6 +614,11 @@ pub enum InputPurpose {
     },
     Rename {
         id: ulid::Ulid,
+    },
+    /// A column renamed in place in its header row (T-117): `r` on a header.
+    /// `name` is the column as it stands, the transaction's key.
+    RenameColumn {
+        name: String,
     },
     /// The board's Shift+Enter: a one-line field on the selected card whose
     /// text goes to that ticket's live claude, submitted, with the board
@@ -692,6 +719,26 @@ fn limit_words(bytes: usize) -> String {
     }
 }
 
+/// The column the settings dialog is on (T-117).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ColumnSubject {
+    Existing(String),
+    /// `O`: nothing minted yet. `after` is the cursor's column at the press;
+    /// Enter on the Name row sends `AddColumn { name, after }` and the subject
+    /// becomes `Existing(name)`. Esc with nothing typed closes the dialog.
+    New {
+        after: Option<String>,
+    },
+}
+
+/// What the `d` chord is armed on (T-117): a ticket, or — from a column
+/// header — the column itself.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Doomed {
+    Ticket(ulid::Ulid),
+    Column(String),
+}
+
 pub struct App {
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
@@ -723,6 +770,9 @@ pub struct App {
     /// sample has not landed — and offers nothing, which is the safe way for
     /// an unknown to read.
     pub claude_md: mesimon_core::command::ClaudeMdStatus,
+    /// The user's own `permissions.defaultMode`, off the snapshot (T-117):
+    /// what a column's `inherit` resolves to, so the row can say so.
+    pub claude_default_mode: Option<String>,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -737,13 +787,23 @@ pub struct App {
     /// When `SetAutomation` was last pushed: the reconcile on every snapshot
     /// re-arms the train after a daemon restart, and this is its back-off.
     train_pushed_at: Option<Instant>,
+    /// Where the daemon holds the tmux status line (T-264), off the snapshot;
+    /// `reconcile_status_line` pushes the preference when they disagree.
+    pub status_top: bool,
+    /// When `SetStatusLine` was last pushed — the reconcile's back-off.
+    status_pushed_at: Option<Instant>,
     /// The m flow's reply — rendered on the ticket screen's identity line
     /// (next to the branch state it acts on), never the footer. Cleared with
     /// `status` on the next keypress.
     pub merge_note: String,
     pub screen: Screen,
     pub cursor_col: usize,
-    pub cursor_row: usize,
+    /// The card under the cursor in `cursor_col`, or `None` for the column
+    /// HEADER (T-117): `k` off the top card lands there, `j` comes back. An
+    /// empty column has no card, so there the two spellings draw the same
+    /// header and `on_header` answers yes to both — which keeps a walk across
+    /// an empty column on cards.
+    pub cursor_row: Option<usize>,
     pub mode: Mode,
     pub status: String,
     pub quit: bool,
@@ -875,7 +935,11 @@ pub struct App {
     pub pending_reexec: bool,
     /// The `d` chord is armed on this ticket: the next `d` deletes it, `D`
     /// deletes and discards the branch, anything else cancels.
-    delete_armed: Option<ulid::Ulid>,
+    delete_armed: Option<Doomed>,
+    /// The verb being dispatched came from a menu row (T-117): a dialog it
+    /// opens comes back to the menu on Esc. Set around the one dispatch in
+    /// `act`'s menu arm, never stored past it.
+    menu_dispatch: bool,
     /// The `a` chord, same shape: the next `a` archives, anything else
     /// cancels. Only ever armed when `a` would archive — restoring is one
     /// press, because undoing a mistake must not be harder than making it.
@@ -966,16 +1030,19 @@ impl App {
             git: snap.git,
             pending: snap.pending,
             automation: snap.automation,
+            status_top: snap.status_top,
             claude_md: snap.claude_md,
+            claude_default_mode: snap.claude_default_mode,
             theme,
             resume_refused: None,
             merge_armed: None,
             merge_sent: None,
             train_pushed_at: None,
+            status_pushed_at: None,
             merge_note: String::new(),
             screen: Screen::Board,
             cursor_col: 0,
-            cursor_row: 0,
+            cursor_row: Some(0),
             mode: Mode::Normal,
             status: String::new(),
             quit: false,
@@ -1025,6 +1092,7 @@ impl App {
             release,
             pending_reexec: false,
             delete_armed: None,
+            menu_dispatch: false,
             tag_armed: None,
             archive_armed: None,
             snooze_armed: None,
@@ -1046,7 +1114,7 @@ impl App {
     /// Is the `d` chord armed on this ticket? The card (and the ticket page's
     /// title row) flash as a deletion while it is.
     pub fn doomed(&self, ticket: ulid::Ulid) -> bool {
-        self.delete_armed == Some(ticket)
+        matches!(&self.delete_armed, Some(Doomed::Ticket(t)) if *t == ticket)
     }
 
     /// Whether something on screen is mid-motion and wants the next frame
@@ -1078,6 +1146,7 @@ impl App {
             Ok(snap) => {
                 self.absorb(snap);
                 self.reconcile_train();
+                self.reconcile_status_line();
                 if self.daemon_down {
                     self.daemon_down = false;
                     self.status = "daemon back ∙ board refreshed".into();
@@ -1195,6 +1264,8 @@ impl App {
             pending,
             automation,
             claude_md,
+            claude_default_mode,
+            status_top,
         } = snap;
         self.board = board;
         self.grace = grace;
@@ -1207,6 +1278,8 @@ impl App {
         self.pending = pending;
         self.automation = automation;
         self.claude_md = claude_md;
+        self.claude_default_mode = claude_default_mode;
+        self.status_top = status_top;
         self.clamp_cursor();
         self.clamp_screen();
     }
@@ -1248,7 +1321,24 @@ impl App {
     pub fn selected_ticket(&self) -> Option<&Ticket> {
         let cols = self.columns();
         let col = cols.get(self.cursor_col)?;
-        self.board.column_tickets(col).get(self.cursor_row).copied()
+        self.board.column_tickets(col).get(self.cursor_row?).copied()
+    }
+
+    /// The column the cursor is in, whole.
+    pub fn cursor_column(&self) -> Option<&Column> {
+        self.board.sorted_columns().get(self.cursor_col).copied()
+    }
+
+    /// The board cursor rests on a column header (T-117): above the top card,
+    /// or on an empty column, whose only position is its header. The one
+    /// predicate behind `Ctx::on_header`, the header's cursor bar and the
+    /// four column verbs' subject.
+    pub fn on_header(&self) -> bool {
+        if !matches!(self.screen, Screen::Board) {
+            return false;
+        }
+        let Some(col) = self.cursor_column() else { return false };
+        self.cursor_row.is_none() || self.board.column_tickets(&col.name).is_empty()
     }
 
     fn clamp_cursor(&mut self) {
@@ -1258,7 +1348,7 @@ impl App {
         }
         self.cursor_col = self.cursor_col.min(cols.len() - 1);
         let n = self.board.column_tickets(&cols[self.cursor_col]).len();
-        self.cursor_row = self.cursor_row.min(n.saturating_sub(1));
+        self.cursor_row = self.cursor_row.map(|r| r.min(n.saturating_sub(1)));
     }
 
     /// Return to the board. Restarts the marquee clock so the selected
@@ -1274,6 +1364,14 @@ impl App {
 
     /// A refresh can delete the ticket the ticket screen shows.
     fn clamp_screen(&mut self) {
+        // The column dialog's column can go under it (another client): the
+        // dialog closes rather than relabelling off nothing.
+        if let Mode::ColumnSettings { subject: ColumnSubject::Existing(name), .. } = &self.mode {
+            if self.board.column(name).is_none() {
+                self.mode = Mode::Normal;
+                self.status = "column gone".into();
+            }
+        }
         // Same for the archived dialog: a restore (here or from another
         // client) can empty the list under it.
         if matches!(self.mode, Mode::Archived { .. }) && self.board.archived_tickets().is_empty() {
@@ -1447,6 +1545,7 @@ impl App {
         } else if let Mode::Input { purpose, buffer } = &mut self.mode {
             let what = match purpose {
                 InputPurpose::Create { .. } | InputPurpose::Rename { .. } => "a title",
+                InputPurpose::RenameColumn { .. } => "a column name",
                 InputPurpose::Prompt { .. } => "an ask",
             };
             (what, buffer.paste(text), buffer.limit())
@@ -1891,6 +1990,30 @@ impl App {
         }
     }
 
+    /// Tell the daemon which side the status line goes on (T-264): on every
+    /// toggle, and from `reconcile_status_line` when a snapshot reads the
+    /// daemon holding the other side — the first snapshot after a daemon
+    /// restart, or an older daemon, which refuses the command and is told
+    /// which binary to reload.
+    fn push_status_line(&mut self) {
+        self.status_pushed_at = Some(Instant::now());
+        let resp = self.req(Command::SetStatusLine { top: self.prefs.status_top });
+        if let Response::Err { message } = resp {
+            self.status = format!("the status line needs the new daemon ∙ U reloads ∙ {message}");
+        }
+    }
+
+    /// Daemon and preference disagree, back-off passed: push. Unlike the
+    /// train, bottom pushes too — the preference is the machine's, one file
+    /// for every board, so there is no other board's choice to protect.
+    pub(crate) fn reconcile_status_line(&mut self) {
+        if self.prefs.status_top != self.status_top
+            && self.status_pushed_at.is_none_or(|t| t.elapsed() >= STATUS_PUSH_BACKOFF)
+        {
+            self.push_status_line();
+        }
+    }
+
     /// Can an ask on this ticket WAIT? A shared-checkout ticket with an awake
     /// claude and no worktree binding — mirrors the daemon's `enqueue_ask`
     /// gates, so the toggle is never offered where the daemon would refuse.
@@ -2070,6 +2193,10 @@ impl App {
             Mode::Settings { .. } => Scope::Settings,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
+            // Naming a column IS a text field (the tag picker's rule), and
+            // saying so is what puts `enter save ∙ esc cancel` in the edge.
+            Mode::ColumnSettings { naming: Some(_), .. } => Scope::Input,
+            Mode::ColumnSettings { .. } => Scope::ColumnSettings,
             _ => match self.screen {
                 Screen::Diff => Scope::Diff,
                 Screen::Releases => Scope::Releases,
@@ -2102,7 +2229,16 @@ impl App {
         let merge = subject.map(|t| self.merge_stage_word(t)).unwrap_or(None);
         let undo = self.undo_target();
         let tag_cell = self.tag_cell();
-        Ctx {
+        // The column the dialog is on, else the cursor's (T-117).
+        let col = self.dialog_column().or_else(|| self.cursor_column());
+        let cs = col.map(|c| c.settings.clone()).unwrap_or_default();
+        let (col_new, col_delete_armed, col_sort_word) = match &self.mode {
+            Mode::ColumnSettings { subject, delete_armed, sort, .. } => {
+                (matches!(subject, ColumnSubject::New { .. }), *delete_armed, sort.word())
+            }
+            _ => (false, false, ""),
+        };
+        let mut ctx = Ctx {
             has_ticket: subject.is_some(),
             multi_column: self.columns().len() > 1,
             ticket_has_sessions: !sessions.is_empty(),
@@ -2124,6 +2260,35 @@ impl App {
                 _ => "undo delete",
             },
             can_nudge: self.can_nudge(),
+            on_header: self.on_header(),
+            col_name: col.map(|c| c.name.clone()).unwrap_or_default(),
+            col_new,
+            col_on_sort: false,
+            col_sort_word,
+            col_collapsed: cs.collapsed,
+            col_workspace_word: match cs.workspace {
+                None => "board default",
+                Some(WorkspaceStrategy::Worktree) => "worktree",
+                Some(WorkspaceStrategy::SharedCheckout | WorkspaceStrategy::AdoptExisting) => {
+                    "shared checkout"
+                }
+            },
+            col_claude_mode_word: cs.claude_mode.word(),
+            col_inherit_mode: self.claude_default_mode.clone().unwrap_or_default(),
+            col_tools_word: match cs.agent_tools {
+                mesimon_core::board::AgentTools::Full => "full",
+                mesimon_core::board::AgentTools::Annotate => "notes + tags",
+                mesimon_core::board::AgentTools::Read => "read only",
+                mesimon_core::board::AgentTools::Off => "off",
+            },
+            col_auto_run: cs.auto_run,
+            col_on_working: cs.on_working.clone().unwrap_or_default(),
+            col_on_done: cs.on_done.clone().unwrap_or_default(),
+            col_requires_merge: cs.requires_merge,
+            col_reclaim: cs.reclaim,
+            col_train_word: cs.train.word(),
+            col_delete_armed,
+            col_live: col.map(|c| self.board.column_tickets(&c.name).len()).unwrap_or(0),
             can_repeat: self.repeat_target().is_some(),
             repeat_word: match self.last_action {
                 Some(LastAction::Move { .. }) => "move again",
@@ -2216,6 +2381,7 @@ impl App {
                 .map(|(_, p)| p.label(self.prefs.week_start))
                 .unwrap_or(""),
             snooze_needs_you: self.prefs.snooze_needs_you,
+            status_top: self.prefs.status_top,
             week_start_word: self.prefs.week_start.name(),
             mcp_tools: self.board.mcp_tools,
             // Every clause, and the first is `path`: an empty one means no
@@ -2258,7 +2424,14 @@ impl App {
                 }),
             editor_word: self.editor_word,
             rich_keys: self.rich_keys,
+        };
+        // The one field that reads the row list, set once the list can be
+        // built: the cursor on the dialog's `Sort now` row.
+        if let Mode::ColumnSettings { idx, naming: None, .. } = &self.mode {
+            ctx.col_on_sort =
+                keymap::column_items(&ctx).get(*idx).map(|m| m.verb) == Some(Verb::SortColumn);
         }
+        ctx
     }
 
     /// What the next `m` would do, or `None` when `m` is inert — the
@@ -2341,6 +2514,9 @@ impl App {
         }
         if let Mode::Editor(_) = self.mode {
             return self.key_editor(code, mods);
+        }
+        if let Mode::ColumnSettings { naming: Some(_), .. } = self.mode {
+            return self.key_column_name(code, mods);
         }
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
@@ -2439,10 +2615,10 @@ impl App {
                 self.nav(verb, scope)
             }
             Verb::First => {
-                self.cursor_row = 0;
+                self.cursor_row = Some(0);
             }
             Verb::Last => {
-                self.cursor_row = usize::MAX;
+                self.cursor_row = Some(usize::MAX);
                 self.clamp_cursor();
             }
             Verb::Act => self.act(scope)?,
@@ -2452,12 +2628,11 @@ impl App {
             Verb::Settings => self.mode = Mode::Settings { idx: 0 },
             // ---- tickets ---------------------------------------------------
             Verb::OpenTicket => {
+                // The composer starts at the column's own default (T-117);
+                // Shift+Tab still changes it.
+                let workspace = self.cursor_column().and_then(|c| c.settings.workspace);
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::Create {
-                        workspace: None,
-                        tags: Vec::new(),
-                        description: None,
-                    },
+                    purpose: InputPurpose::Create { workspace, tags: Vec::new(), description: None },
                     buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
             }
@@ -2467,7 +2642,19 @@ impl App {
                 }
             }
             Verb::Rename => {
-                if let Some(t) = self.subject().and_then(|id| self.board.ticket(id)) {
+                // On a header the column is renamed, in place in its header
+                // row (T-117).
+                if ctx.on_header {
+                    if let Some(name) = self.cursor_column().map(|c| c.name.clone()) {
+                        self.mode = Mode::Input {
+                            purpose: InputPurpose::RenameColumn { name: name.clone() },
+                            buffer: EditBuffer::from_text(
+                                name,
+                                mesimon_core::board::COLUMN_NAME_MAX_BYTES,
+                            ),
+                        };
+                    }
+                } else if let Some(t) = self.subject().and_then(|id| self.board.ticket(id)) {
                     self.mode = Mode::Input {
                         purpose: InputPurpose::Rename { id: t.id },
                         buffer: EditBuffer::from_text(
@@ -2495,8 +2682,15 @@ impl App {
             }
             // `d` only arms. The second press is what deletes.
             Verb::DeletePrefix => {
-                if let Some(id) = self.subject() {
-                    self.delete_armed = Some(id);
+                if ctx.on_header {
+                    // The column (T-117). The daemon refuses one that holds
+                    // tickets, and its sentence lands in the status.
+                    if let Some(name) = self.cursor_column().map(|c| c.name.clone()) {
+                        self.status = format!("d again deletes the column {name}");
+                        self.delete_armed = Some(Doomed::Column(name));
+                    }
+                } else if let Some(id) = self.subject() {
+                    self.delete_armed = Some(Doomed::Ticket(id));
                     // Only what the next press does. That anything else
                     // cancels is learned once, on the first stray key.
                     self.status = if ctx.has_worktree {
@@ -2506,11 +2700,14 @@ impl App {
                     };
                 }
             }
-            Verb::Delete | Verb::DeleteDiscard => {
-                if let Some(id) = self.delete_armed.take() {
-                    self.delete_gated(id, verb == Verb::DeleteDiscard)?;
+            Verb::Delete | Verb::DeleteDiscard => match self.delete_armed.take() {
+                Some(Doomed::Ticket(id)) => self.delete_gated(id, verb == Verb::DeleteDiscard)?,
+                Some(Doomed::Column(name)) => {
+                    self.send(Command::DeleteColumn { name })?;
+                    self.clamp_cursor();
                 }
-            }
+                None => {}
+            },
             Verb::Grab => self.grab(key, scope, ctx)?,
             Verb::Nudge => self.nudge(key)?,
             Verb::Repeat => self.repeat_last()?,
@@ -2812,6 +3009,13 @@ impl App {
                 };
                 self.set_pref(word, |p| p.snooze_needs_you = on);
             }
+            Verb::StatusLine => {
+                let top = !self.prefs.status_top;
+                let word =
+                    if top { "status line at the top" } else { "status line at the bottom" };
+                self.set_pref(word, |p| p.status_top = top);
+                self.push_status_line();
+            }
             Verb::WeekStart => {
                 let day = self.prefs.week_start.next();
                 let word = format!("the week starts on {}", day.name());
@@ -2897,7 +3101,7 @@ impl App {
                 match self.req(Command::ReclaimAll) {
                     Response::Reclaimed { slept, skipped } => {
                         self.status = match (slept, skipped) {
-                            (0, 0) => "nothing in done to sleep".into(),
+                            (0, 0) => "nothing finished to sleep".into(),
                             (n, 0) => format!("slept {n}"),
                             (n, k) => format!("slept {n} ∙ {k} not ready"),
                         };
@@ -3073,6 +3277,67 @@ impl App {
                 let idx = Flavor::ALL.iter().position(|f| *f == self.theme.flavor).unwrap_or(0);
                 self.mode = Mode::Theme { idx };
             }
+            // ---- columns (T-117) -----------------------------------------
+            Verb::ColumnSettings => self.open_column_settings()?,
+            Verb::AddColumn => {
+                let after = self.cursor_column().map(|c| c.name.clone());
+                self.mode = Mode::ColumnSettings {
+                    subject: ColumnSubject::New { after },
+                    idx: 0,
+                    naming: Some(EditBuffer::new(mesimon_core::board::COLUMN_NAME_MAX_BYTES)),
+                    sort: SortBy::NewestArrival,
+                    delete_armed: false,
+                    from_menu: self.menu_dispatch,
+                };
+            }
+            Verb::ColumnName => {
+                if let Mode::ColumnSettings { subject, naming, .. } = &mut self.mode {
+                    let text = match subject {
+                        ColumnSubject::Existing(n) => n.clone(),
+                        ColumnSubject::New { .. } => String::new(),
+                    };
+                    *naming = Some(EditBuffer::from_text(
+                        text,
+                        mesimon_core::board::COLUMN_NAME_MAX_BYTES,
+                    ));
+                }
+            }
+            Verb::ColumnCollapse => self.set_column(|s| s.collapsed = !s.collapsed)?,
+            Verb::SortColumn => {
+                if let Mode::ColumnSettings { subject: ColumnSubject::Existing(name), sort, .. } =
+                    &self.mode
+                {
+                    let (name, by) = (name.clone(), *sort);
+                    self.send(Command::SortColumn { column: name.clone(), by })?;
+                    if self.status.is_empty() {
+                        self.status = format!("sorted {name} ∙ {}", by.word());
+                    }
+                }
+            }
+            Verb::ColumnWorkspace => self.set_column(|s| {
+                s.workspace = match s.workspace {
+                    None => Some(WorkspaceStrategy::Worktree),
+                    Some(WorkspaceStrategy::Worktree) => Some(WorkspaceStrategy::SharedCheckout),
+                    Some(_) => None,
+                }
+            })?,
+            Verb::ColumnClaudeMode => self.set_column(|s| s.claude_mode = s.claude_mode.next())?,
+            Verb::ColumnTools => self.set_column(|s| s.agent_tools = s.agent_tools.next())?,
+            Verb::ColumnAutoRun => self.set_column(|s| s.auto_run = !s.auto_run)?,
+            Verb::ColumnOnWorking => {
+                let next = self.next_column_target(|s| s.on_working.clone());
+                self.set_column(|s| s.on_working = next)?;
+            }
+            Verb::ColumnOnDone => {
+                let next = self.next_column_target(|s| s.on_done.clone());
+                self.set_column(|s| s.on_done = next)?;
+            }
+            Verb::ColumnRequiresMerge => {
+                self.set_column(|s| s.requires_merge = !s.requires_merge)?
+            }
+            Verb::ColumnReclaim => self.set_column(|s| s.reclaim = !s.reclaim)?,
+            Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
+            Verb::DeleteColumn => self.delete_column_from_dialog()?,
             Verb::ReleaseNotes => self.open_releases(),
             Verb::AdoptObserve => self.adopt_external(false)?,
             // ---- input (handled in key_input; unreachable here) -------------
@@ -3160,9 +3425,16 @@ impl App {
                     self.cursor_col += 1;
                     self.clamp_cursor();
                 }
-                Verb::CursorUp => self.cursor_row = self.cursor_row.saturating_sub(1),
+                // `k` off the top card lands on the header (T-117), `j`
+                // from the header on the top card.
+                Verb::CursorUp => {
+                    self.cursor_row = match self.cursor_row {
+                        Some(0) | None => None,
+                        Some(r) => Some(r - 1),
+                    }
+                }
                 _ => {
-                    self.cursor_row += 1;
+                    self.cursor_row = Some(self.cursor_row.map_or(0, |r| r + 1));
                     self.clamp_cursor();
                 }
             },
@@ -3243,6 +3515,21 @@ impl App {
                 let idx = step(idx, keymap::settings_items(&self.ctx()).len(), down);
                 self.mode = Mode::Settings { idx };
             }
+            // Up/down select; left/right reach only the sort row (the
+            // binding's gate) and step the order it will use.
+            Scope::ColumnSettings => {
+                let n = keymap::column_items(&self.ctx()).len();
+                if let Mode::ColumnSettings { idx, sort, delete_armed, .. } = &mut self.mode {
+                    match verb {
+                        Verb::CursorLeft => *sort = sort.prev(),
+                        Verb::CursorRight => *sort = sort.next(),
+                        _ => {
+                            *idx = step(*idx, n, down);
+                            *delete_armed = false;
+                        }
+                    }
+                }
+            }
             Scope::Theme => {
                 let Mode::Theme { idx } = self.mode else {
                     return;
@@ -3283,7 +3570,11 @@ impl App {
                 let verb = item.verb;
                 self.mode = Mode::Normal;
                 let ctx = self.ctx();
-                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+                // A dialog the menu opens comes back to the menu on Esc.
+                self.menu_dispatch = true;
+                let out = self.dispatch(verb, Key::Enter, Scope::Board, &ctx);
+                self.menu_dispatch = false;
+                out
             }
             // A settings row is a toggle or a picker, so the list STAYS: the
             // row relabels itself and the change is on the screen. The
@@ -3294,6 +3585,20 @@ impl App {
                 };
                 let ctx = self.ctx();
                 let items = keymap::settings_items(&ctx);
+                let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
+                    return Ok(());
+                };
+                let verb = item.verb;
+                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+            }
+            // A column row is a toggle, a cycle, the sort or the delete; the
+            // dialog STAYS and the row relabels off the snapshot.
+            Scope::ColumnSettings => {
+                let Mode::ColumnSettings { idx, .. } = self.mode else {
+                    return Ok(());
+                };
+                let ctx = self.ctx();
+                let items = keymap::column_items(&ctx);
                 let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
                     return Ok(());
                 };
@@ -3367,6 +3672,14 @@ impl App {
             }
             // One level up, on the row that opened it.
             Scope::Settings => self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) },
+            Scope::ColumnSettings => {
+                let from_menu = matches!(&self.mode, Mode::ColumnSettings { from_menu: true, .. });
+                self.mode = if from_menu {
+                    Mode::Menu { idx: self.menu_row(Verb::ColumnSettings) }
+                } else {
+                    Mode::Normal
+                };
+            }
             Scope::Brief => self.leave_brief(),
             // The menu is the board's, so the notes always return there.
             Scope::Releases => {
@@ -3377,10 +3690,186 @@ impl App {
         }
     }
 
+    /// Enter on a column header, or the menu's row (T-117): the cursor's
+    /// column's settings.
+    fn open_column_settings(&mut self) -> Result<()> {
+        let Some(name) = self.cursor_column().map(|c| c.name.clone()) else {
+            return Ok(());
+        };
+        self.mode = Mode::ColumnSettings {
+            subject: ColumnSubject::Existing(name),
+            idx: 0,
+            naming: None,
+            sort: SortBy::NewestArrival,
+            delete_armed: false,
+            from_menu: self.menu_dispatch,
+        };
+        Ok(())
+    }
+
+    /// The column the settings dialog is on, when it is on one that exists.
+    fn dialog_column(&self) -> Option<&Column> {
+        match &self.mode {
+            Mode::ColumnSettings { subject: ColumnSubject::Existing(name), .. } => {
+                self.board.column(name)
+            }
+            _ => None,
+        }
+    }
+
+    /// One column setting changed from the dialog: the whole struct goes to
+    /// the daemon (one validation site for the two rule targets) and the row
+    /// relabels off the snapshot — nothing local is flipped.
+    fn set_column(&mut self, f: impl FnOnce(&mut ColumnSettings)) -> Result<()> {
+        let Some(col) = self.dialog_column() else { return Ok(()) };
+        let name = col.name.clone();
+        let mut settings = col.settings.clone();
+        f(&mut settings);
+        self.send(Command::SetColumnSettings { name, settings })
+    }
+
+    /// The next target for a `move to` rule: through the other columns in
+    /// board order, then `stay`.
+    fn next_column_target(
+        &self,
+        current: impl Fn(&ColumnSettings) -> Option<String>,
+    ) -> Option<String> {
+        let col = self.dialog_column()?;
+        let others: Vec<String> = self.columns().into_iter().filter(|c| *c != col.name).collect();
+        match current(&col.settings) {
+            None => others.first().cloned(),
+            Some(cur) => {
+                let i = others.iter().position(|c| *c == cur);
+                i.and_then(|i| others.get(i + 1).cloned())
+            }
+        }
+    }
+
+    /// The dialog's Delete row: says why not while tickets are in it, arms
+    /// on the first Enter, sends on the second, and closes on success.
+    fn delete_column_from_dialog(&mut self) -> Result<()> {
+        let Some(col) = self.dialog_column() else { return Ok(()) };
+        let name = col.name.clone();
+        let live = self.board.column_tickets(&name).len();
+        if live > 0 {
+            self.status = format!(
+                "move its {} first",
+                if live == 1 { "ticket".to_string() } else { format!("{live} tickets") }
+            );
+            return Ok(());
+        }
+        let Mode::ColumnSettings { delete_armed, .. } = &mut self.mode else { return Ok(()) };
+        if !*delete_armed {
+            *delete_armed = true;
+            self.status = format!("enter again deletes {name}");
+            return Ok(());
+        }
+        match self.req(Command::DeleteColumn { name: name.clone() }) {
+            Response::Ok => {
+                self.mode = Mode::Normal;
+                self.refresh()?;
+                self.clamp_cursor();
+                self.status = format!("deleted the column {name}");
+            }
+            Response::Err { message } => {
+                self.status = message;
+                if let Mode::ColumnSettings { delete_armed, .. } = &mut self.mode {
+                    *delete_armed = false;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The Name row's field (T-117): the tag picker's field half — edit the
+    /// buffer off the raw key, then only Enter and Esc still resolve, against
+    /// `Scope::Input` so the edge reads `enter save ∙ esc cancel`. Enter
+    /// renames an existing column or adds the new one; a refusal keeps the
+    /// field open with the daemon's sentence (`commit_tag_name`'s rule).
+    fn key_column_name(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        let word = crate::keys::word_wise(mods);
+        if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
+            match code {
+                KeyCode::Backspace if word => buf.delete_word_back(),
+                KeyCode::Backspace => buf.backspace(),
+                KeyCode::Delete => buf.delete(),
+                KeyCode::Left if word => buf.word_left(),
+                KeyCode::Left => buf.left(),
+                KeyCode::Right if word => buf.word_right(),
+                KeyCode::Right => buf.right(),
+                KeyCode::Home => buf.home(),
+                KeyCode::End => buf.end(),
+                KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
+                    buf.delete_word_back()
+                }
+                KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => buf.kill_to_start(),
+                KeyCode::Char(_) if word => {}
+                KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => buf.insert(c),
+                _ => {}
+            }
+        }
+        let ctx = self.ctx();
+        let verb = crate::keys::to_key_text(code, mods)
+            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        match verb {
+            Some(Verb::Save | Verb::SaveStart) => {
+                let Mode::ColumnSettings { subject, naming, .. } = &self.mode else {
+                    return Ok(());
+                };
+                let text =
+                    naming.as_ref().map(|b| b.as_str().trim().to_string()).unwrap_or_default();
+                if text.is_empty() {
+                    self.status = "a column needs a name".into();
+                    return Ok(());
+                }
+                let outcome = match subject.clone() {
+                    ColumnSubject::Existing(name) if name == text => Response::Ok,
+                    ColumnSubject::Existing(name) => {
+                        self.req(Command::RenameColumn { name, to: text.clone() })
+                    }
+                    ColumnSubject::New { after } => {
+                        self.req(Command::AddColumn { name: text.clone(), after })
+                    }
+                };
+                match outcome {
+                    Response::Ok => {
+                        // The subject first, then the refresh: `clamp_screen`
+                        // closes a dialog whose column is gone, and under
+                        // the old name it would be.
+                        if let Mode::ColumnSettings { subject, naming, .. } = &mut self.mode {
+                            *subject = ColumnSubject::Existing(text.clone());
+                            *naming = None;
+                        }
+                        self.refresh()?;
+                        if let Some(ci) = self.columns().iter().position(|c| *c == text) {
+                            self.cursor_col = ci;
+                        }
+                    }
+                    Response::Err { message } => self.status = message,
+                    _ => {}
+                }
+            }
+            Some(Verb::Cancel) => {
+                if let Mode::ColumnSettings { subject, naming, .. } = &mut self.mode {
+                    match subject {
+                        ColumnSubject::Existing(_) => *naming = None,
+                        ColumnSubject::New { .. } => self.mode = Mode::Normal,
+                    }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     /// Board Enter is "get me working": a live agent focuses directly, a
     /// just-composed ticket starts one, and only then does Enter mean the
     /// ticket page. The hint says which BEFORE the press (`ticket_hot`).
     fn board_enter(&mut self) -> Result<()> {
+        if self.on_header() {
+            return self.open_column_settings();
+        }
         let Some(t) = self.selected_ticket() else {
             return Ok(());
         };
@@ -3487,7 +3976,8 @@ impl App {
             } else {
                 (self.cursor_col + cols.len() - 1) % cols.len()
             };
-            let home = (self.cursor_col, self.cursor_row);
+            let Some(row) = self.cursor_row else { return Ok(()) };
+            let home = (self.cursor_col, row);
             let idx = self.ghost_entry_idx(&cols, col, home, id);
             self.mode = Mode::Move { ticket: id, col, idx, grab: c, home };
             return Ok(());
@@ -3510,10 +4000,43 @@ impl App {
     /// card is the board where the gesture means nothing, and the hint goes
     /// down with the key.
     fn can_nudge(&self) -> bool {
+        // On a header the nudge moves the COLUMN (T-117): somewhere to go is
+        // another column.
+        if self.on_header() {
+            return self.columns().len() > 1;
+        }
         let Some(col) = self.selected_ticket().map(|t| t.column.clone()) else {
             return false;
         };
         self.columns().len() > 1 || self.board.column_tickets(&col).len() > 1
+    }
+
+    /// `HJKL` on a column header (T-117): the column one step left or right,
+    /// the cursor riding with it. Up and down mean nothing to a column and
+    /// are as silent as a card's edge press.
+    fn reorder_column(&mut self, key: Key) -> Result<()> {
+        let cols = self.columns();
+        let Some(name) = cols.get(self.cursor_col).cloned() else { return Ok(()) };
+        let right = matches!(key, Key::Char('L') | Key::AltRight);
+        let left = matches!(key, Key::Char('H') | Key::AltLeft);
+        if !right && !left {
+            return Ok(());
+        }
+        let to = if right {
+            (self.cursor_col + 1).min(cols.len() - 1)
+        } else {
+            self.cursor_col.saturating_sub(1)
+        };
+        if to == self.cursor_col {
+            return Ok(());
+        }
+        // Before the column that will stand after it: one further right, or
+        // the one it is swapping with when moving left.
+        let before = if right { cols.get(to + 1).cloned() } else { cols.get(to).cloned() };
+        self.send(Command::ReorderColumn { name: name.clone(), before })?;
+        self.cursor_col = to;
+        self.status = format!("moved {name} {}", if right { "right" } else { "left" });
+        Ok(())
     }
 
     /// `alt+<direction>`: the move `> <` makes, without the ghost. One press
@@ -3525,10 +4048,14 @@ impl App {
     /// to a ghost you can still cancel and a poor thing to do to a card that
     /// has already moved.
     fn nudge(&mut self, key: Key) -> Result<()> {
+        if self.on_header() {
+            return self.reorder_column(key);
+        }
         let cols = self.columns();
         let Some(id) = self.selected_ticket().map(|t| t.id) else {
             return Ok(());
         };
+        let Some(row) = self.cursor_row else { return Ok(()) };
         if cols.is_empty() {
             return Ok(());
         }
@@ -3549,11 +4076,11 @@ impl App {
                 // is the same count an insertion index is measured against.
                 let n = self.ghost_len(&cols, self.cursor_col, id);
                 let to = if matches!(key, Key::Char('J') | Key::AltDown) {
-                    self.cursor_row + 1
+                    row + 1
                 } else {
-                    self.cursor_row.saturating_sub(1)
+                    row.saturating_sub(1)
                 };
-                if to == self.cursor_row || to > n {
+                if to == row || to > n {
                     return Ok(());
                 }
                 (self.cursor_col, to)
@@ -3765,15 +4292,20 @@ impl App {
             }
             Some(Verb::CycleWorkspace) => match &mut purpose {
                 InputPurpose::Create { workspace, .. } => {
+                    // Three stops (T-117): a column defaulting to a worktree
+                    // can still compose a shared ticket.
                     *workspace = match workspace {
                         None => Some(WorkspaceStrategy::Worktree),
+                        Some(WorkspaceStrategy::Worktree) => {
+                            Some(WorkspaceStrategy::SharedCheckout)
+                        }
                         Some(_) => None,
                     };
                 }
                 // In the ask field the same key cycles the DELIVERY: now, or
                 // parked until the checkout is quiet (2026-09-04).
                 InputPurpose::Prompt { queued, .. } => *queued = !*queued,
-                InputPurpose::Rename { .. } => {}
+                InputPurpose::Rename { .. } | InputPurpose::RenameColumn { .. } => {}
             },
             // The ask history, shell-style. `↑` from the ordinary field keeps
             // the draft and shows the newest ask; each further `↑` goes one
@@ -4962,7 +5494,7 @@ impl App {
         }
         self.send(Command::MoveTicket { id: ticket, column: target_col, before })?;
         self.cursor_col = col;
-        self.cursor_row = idx;
+        self.cursor_row = Some(idx);
         Ok(())
     }
 
@@ -5049,6 +5581,15 @@ impl App {
             InputPurpose::Rename { id } => {
                 self.send(Command::RenameTicket { id, title })?;
             }
+            InputPurpose::RenameColumn { name } => {
+                if name != title {
+                    self.send(Command::RenameColumn { name, to: title.clone() })?;
+                    // Follow the column under its new name.
+                    if let Some(ci) = self.columns().iter().position(|c| *c == title) {
+                        self.cursor_col = ci;
+                    }
+                }
+            }
             // The board's Shift+Enter, second half. `start` is not consulted:
             // sending IS the whole act here, so both Enters do it — see the
             // input scope's ShiftEnter binding for why the harder one stays
@@ -5103,11 +5644,8 @@ impl App {
     ) -> Result<()> {
         let cols = self.columns();
         let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
-        match self.req(Command::CreateTicket { column, title }) {
-            Response::Created { id } => {
-                if workspace.is_some() {
-                    let _ = self.req(Command::SetWorkspace { id, workspace });
-                }
+        match self.req(Command::CreateTicket { column, title, workspace }) {
+            Response::Created { id, started } => {
                 // Tags picked with `^t` while the ticket was still
                 // being named, replayed now that it has an id.
                 for tag in tags {
@@ -5123,6 +5661,12 @@ impl App {
                 }
                 self.refresh()?;
                 self.select_ticket(id);
+                // The column started a claude on it already (T-117): the
+                // composer must not start a second, nor offer to.
+                if started {
+                    self.status = "claude started ∙ the column starts one on creation".into();
+                    return Ok(());
+                }
                 if start {
                     self.start_composed(id);
                     return Ok(());
@@ -5502,7 +6046,7 @@ impl App {
         for (ci, col) in cols.iter().enumerate() {
             if let Some(ri) = self.board.column_tickets(col).iter().position(|t| t.id == ticket) {
                 self.cursor_col = ci;
-                self.cursor_row = ri;
+                self.cursor_row = Some(ri);
                 return;
             }
         }
@@ -5534,6 +6078,8 @@ struct Snapshot {
     pending: Vec<mesimon_core::command::Pending>,
     automation: mesimon_core::command::AutomationStatus,
     claude_md: mesimon_core::command::ClaudeMdStatus,
+    claude_default_mode: Option<String>,
+    status_top: bool,
 }
 
 impl Snapshot {
@@ -5551,6 +6097,8 @@ impl Snapshot {
                 pending,
                 automation,
                 claude_md,
+                claude_default_mode,
+                status_top,
             } => Some(Self {
                 board,
                 grace,
@@ -5563,6 +6111,8 @@ impl Snapshot {
                 pending,
                 automation,
                 claude_md,
+                claude_default_mode,
+                status_top,
             }),
             _ => None,
         }
@@ -5604,6 +6154,8 @@ pub(crate) mod test_support {
         /// What the fake daemon says it owes, and whether its train is armed.
         pub pending: Vec<mesimon_core::command::Pending>,
         pub automation: mesimon_core::command::AutomationStatus,
+        /// Where the fake daemon holds the status line (T-264).
+        pub status_top: bool,
         /// What the fake daemon says about the repo's CLAUDE.md. Default is
         /// an empty path, which no test has to think about: it reads as "not
         /// sampled" and offers nothing.
@@ -5620,7 +6172,7 @@ pub(crate) mod test_support {
         fn request(&mut self, command: Command) -> Result<Response> {
             self.sent.borrow_mut().push(format!("{command:?}"));
             match command {
-                Command::CreateTicket { column, title } => {
+                Command::CreateTicket { column, title, workspace } => {
                     let id = ulid::Ulid(999);
                     self.board.tickets.push(Ticket {
                         id,
@@ -5634,12 +6186,12 @@ pub(crate) mod test_support {
                         entered_at: None,
                         woke_at: None,
                         manual_merge: false,
-                        workspace: None,
+                        workspace,
                         tags: Vec::new(),
                         notes: Vec::new(),
                         archived: None,
                     });
-                    return Ok(Response::Created { id });
+                    return Ok(Response::Created { id, started: false });
                 }
                 Command::GateStatus => {
                     return Ok(Response::Gate { passed: true, attach_argv: None });
@@ -5821,7 +6373,45 @@ pub(crate) mod test_support {
                     claude_md: self.claude_md.clone(),
                     pending: self.pending.clone(),
                     automation: self.automation.clone(),
+                    claude_default_mode: Some("auto".into()),
+                    status_top: self.status_top,
                 }),
+                // The column lifecycle (T-117), as the daemon does it — the
+                // refusals included, so the status a test reads is the
+                // daemon's sentence.
+                Command::AddColumn { name, after } => {
+                    Ok(match self.board.add_column(name, after.as_deref()) {
+                        Ok(()) => Response::Ok,
+                        Err(message) => Response::Err { message },
+                    })
+                }
+                Command::RenameColumn { name, to } => {
+                    Ok(match self.board.rename_column(&name, &to) {
+                        Ok(_) => Response::Ok,
+                        Err(message) => Response::Err { message },
+                    })
+                }
+                Command::DeleteColumn { name } => Ok(match self.board.delete_column(&name) {
+                    Ok(_) => Response::Ok,
+                    Err(message) => Response::Err { message },
+                }),
+                Command::ReorderColumn { name, before } => {
+                    Ok(match self.board.reorder_column(&name, before.as_deref()) {
+                        Ok(()) => Response::Ok,
+                        Err(message) => Response::Err { message },
+                    })
+                }
+                Command::SetColumnSettings { name, settings } => {
+                    Ok(match self.board.set_column_settings(&name, settings) {
+                        Ok(()) => Response::Ok,
+                        Err(message) => Response::Err { message },
+                    })
+                }
+                Command::SortColumn { column, by } => {
+                    let none = std::collections::HashSet::new();
+                    self.board.sort_column(&column, by, &none);
+                    Ok(Response::Ok)
+                }
                 Command::MoveTicket { id, column, before } => {
                     // The daemon's DONE gate, as close as the fake can stand
                     // in for it: it holds no worktree bindings, so a ticket
@@ -5990,6 +6580,7 @@ pub(crate) mod test_support {
                 git: Default::default(),
                 pending: Vec::new(),
                 automation: Default::default(),
+                status_top: false,
                 claude_md: Default::default(),
                 sent: sent.clone(),
                 refuse_focus,
@@ -6031,7 +6622,7 @@ mod tests {
     fn board_three_columns() -> Board {
         let mut b = Board::default();
         for (i, name) in ["todo", "doing", "done"].iter().enumerate() {
-            b.columns.push(Column { name: (*name).into(), order: format!("{i}") });
+            b.columns.push(Column::new(*name, format!("{i}")));
         }
         b.tickets.push(ticket(1, "todo", "a"));
         b.tickets.push(ticket(2, "todo", "b"));
@@ -6061,6 +6652,7 @@ mod tests {
             git: Default::default(),
             pending: Vec::new(),
             automation: Default::default(),
+            status_top: false,
             claude_md: mesimon_core::command::ClaudeMdStatus {
                 path: "/repo/kanban-tui/CLAUDE.md".into(),
                 present: false,
@@ -6246,6 +6838,7 @@ mod tests {
             git: Default::default(),
             pending: Vec::new(),
             automation: Default::default(),
+            status_top: false,
             sent: sent.clone(),
             refuse_focus: false,
             notes,
@@ -6304,6 +6897,7 @@ mod tests {
             git: Default::default(),
             pending: Vec::new(),
             automation: Default::default(),
+            status_top: false,
             sent: sent.clone(),
             refuse_focus: false,
             notes,
@@ -6394,10 +6988,10 @@ mod tests {
         press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.screen, Screen::Board));
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 1), "T-2 is the second todo card");
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)), "T-2 is the second todo card");
         assert_eq!(app.status, "cursor on T-2");
         // An archived target has no card for the cursor: its page opens.
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         ctrl(&mut app, 'k');
         for _ in 0..3 {
             press(&mut app, 'j');
@@ -6684,7 +7278,7 @@ mod tests {
         // A ticket with no description gets the fresh note that becomes it.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
-        app.cursor_row = 1;
+        app.cursor_row = Some(1);
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(matches!(editor(&app).purpose, EditorPurpose::Note { note: None, .. }));
     }
@@ -7005,7 +7599,7 @@ mod tests {
         assert!(!app.spoke_unseen(ulid::Ulid(1)));
         // The cursor reads it, then leaves; a further reply is news again.
         app.cursor_col = 2;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         assert!(app.poll_spoke());
         assert!(!app.spoke_unseen(t3));
         app.cursor_col = 0;
@@ -7018,7 +7612,7 @@ mod tests {
         assert!(app.spoke_unseen(t3));
         // The cursor lands: cleared on that very tick.
         app.cursor_col = 2;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         assert!(app.poll_spoke(), "the ack is a redraw");
         assert!(!app.spoke_unseen(t3));
         // And it stays clear once the cursor leaves — nothing new was said.
@@ -7083,7 +7677,7 @@ mod tests {
         let (mut app, path) = app_with_speaker("depart");
         let t3 = ulid::Ulid(3);
         app.cursor_col = 2;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         app.poll_spoke();
         // The reply lands while the cursor sits on the card, between two
         // clock beats; the cursor leaves before the next one.
@@ -7225,7 +7819,7 @@ mod tests {
         let before = sent.borrow().len();
         assert!(!app.on_paste("j\nd\nd\nn\n").unwrap());
         assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.cursor_row, 0);
+        assert_eq!(app.cursor_row, Some(0));
         assert_eq!(sent.borrow().len(), before);
     }
 
@@ -7521,6 +8115,48 @@ mod tests {
         app.train_pushed_at = None;
         app.automation.merge_train = false;
         app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 4);
+    }
+
+    /// The status line row (T-264) writes the preference AND tells the
+    /// daemon; a snapshot that reads the daemon on the other side pushes
+    /// again, once per back-off; agreement pushes nothing — in EITHER
+    /// direction, since the file is the machine's and bottom is a choice too.
+    #[test]
+    fn the_status_line_row_writes_the_preference_and_tells_the_daemon() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        let pushes = |sent: &std::cell::RefCell<Vec<String>>| {
+            sent.borrow().iter().filter(|c| c.contains("SetStatusLine")).count()
+        };
+        // Bottom on both sides: a refresh pushes nothing.
+        app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 0);
+        let ctx = app.ctx();
+        app.dispatch(Verb::StatusLine, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(app.prefs.status_top);
+        assert!(app.status.contains("status line at the top"), "{}", app.status);
+        assert!(sent_contains(&sent, "SetStatusLine { top: true }"));
+        assert_eq!(pushes(&sent), 1);
+        // The fake still says bottom: inside the back-off, no second push.
+        app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 1);
+        // Back-off passed and still bottom: push again.
+        app.status_pushed_at = Some(Instant::now() - STATUS_PUSH_BACKOFF);
+        app.refresh().unwrap();
+        assert_eq!(pushes(&sent), 2);
+        // The daemon caught up: nothing more to say.
+        app.status_top = true;
+        app.status_pushed_at = None;
+        app.reconcile_status_line();
+        assert_eq!(pushes(&sent), 2);
+        // Back to the bottom: one push saying so, and a daemon still at the
+        // top is pushed again after the back-off — bottom is not "off".
+        let ctx = app.ctx();
+        app.dispatch(Verb::StatusLine, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(sent_contains(&sent, "SetStatusLine { top: false }"));
+        assert_eq!(pushes(&sent), 3);
+        app.status_pushed_at = Some(Instant::now() - STATUS_PUSH_BACKOFF);
+        app.reconcile_status_line();
         assert_eq!(pushes(&sent), 4);
     }
 
@@ -7996,7 +8632,7 @@ mod tests {
         let id = board.tickets[0].id;
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         assert_eq!(app.subject(), Some(id));
 
         ctrl(&mut app, 't');
@@ -8022,7 +8658,7 @@ mod tests {
         board.register_tag(1, "BUG").expect("registered");
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         app.on_key(KeyCode::Char(']'), KeyModifiers::ALT).unwrap();
         for c in "11;rgb:1e1e/1e1e/1e1e".chars() {
             app.on_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
@@ -8141,7 +8777,7 @@ mod tests {
         board.register_tag(1, "BUG").expect("registered");
         let (mut app, sent) = App::for_test_logged(board, theme(), false);
         app.cursor_col = 0;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         let id = app.subject().expect("a ticket under the cursor");
         assert!(!app.peek_showing(id), "nothing is open before the press");
 
@@ -8602,7 +9238,7 @@ mod tests {
         press(&mut app, '<');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(3), ulid::Ulid(1), ulid::Ulid(2)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
     }
 
     fn alt(app: &mut App, code: KeyCode) {
@@ -8618,11 +9254,11 @@ mod tests {
         // Sideways: into the next column, at its top, cursor on it.
         alt(&mut app, KeyCode::Right);
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
-        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
         // The letter spelling is the same atom.
         alt(&mut app, KeyCode::Char('l'));
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "done");
-        assert_eq!((app.cursor_col, app.cursor_row), (2, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)));
         let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
         assert_eq!(
             done,
@@ -8632,7 +9268,7 @@ mod tests {
         // And back the way it came.
         alt(&mut app, KeyCode::Char('h'));
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
-        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
     }
 
     /// Up and down reorder inside the column, and the cursor stays on the
@@ -8643,12 +9279,12 @@ mod tests {
         alt(&mut app, KeyCode::Down);
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
         alt(&mut app, KeyCode::Char('k'));
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
     }
 
     /// Every edge stays put rather than wrapping: a ghost you can cancel may
@@ -8659,18 +9295,18 @@ mod tests {
         let mut app = app_three_columns();
         alt(&mut app, KeyCode::Left);
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
         alt(&mut app, KeyCode::Up);
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
         // Bottom of the column: down is inert too.
         alt(&mut app, KeyCode::Down);
         alt(&mut app, KeyCode::Down);
-        assert_eq!(app.cursor_row, 1);
+        assert_eq!(app.cursor_row, Some(1));
         assert!(!app.ctx().can_repeat, "a reorder is not a filing");
         // Right to the last column, then one more.
         app.cursor_col = 2;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         alt(&mut app, KeyCode::Right);
         assert_eq!(app.board.ticket(ulid::Ulid(3)).unwrap().column, "done");
         assert_eq!(app.cursor_col, 2);
@@ -8681,7 +9317,7 @@ mod tests {
     #[test]
     fn alt_direction_is_inert_with_nowhere_to_send_the_card() {
         let mut b = Board::default();
-        b.columns.push(Column { name: "todo".into(), order: "0".into() });
+        b.columns.push(Column::new("todo", "0"));
         b.tickets.push(ticket(1, "todo", "a"));
         let mut app = App::for_test(b, theme());
         assert!(!app.ctx().can_nudge);
@@ -8719,26 +9355,392 @@ mod tests {
         press(&mut app, 'J');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
         // `K` puts it back on top.
         press(&mut app, 'K');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
         // At the top, `K` has nowhere to go and does nothing.
         press(&mut app, 'K');
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
         // `L` takes it into doing, at the top.
         press(&mut app, 'L');
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
-        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
         // `L` again lands it above ticket 3 in done; `H` brings it back.
         press(&mut app, 'L');
         let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
         assert_eq!(done, vec![ulid::Ulid(1), ulid::Ulid(3)]);
         press(&mut app, 'H');
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "doing");
-        assert_eq!((app.cursor_col, app.cursor_row), (1, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
+    }
+
+    // ---- the column header as a cursor position (T-117) --------------------
+
+    /// `k` off the top card lands on the header, `j` comes back down, `h`/`l`
+    /// keep a header a header, and an empty column is its own header.
+    #[test]
+    fn k_from_the_top_card_lands_on_the_header() {
+        let mut app = app_three_columns();
+        assert_eq!(app.cursor_row, Some(0));
+        assert!(!app.on_header());
+        press(&mut app, 'k');
+        assert_eq!(app.cursor_row, None);
+        assert!(app.on_header());
+        assert!(app.selected_ticket().is_none());
+        press(&mut app, 'l');
+        assert_eq!((app.cursor_col, app.cursor_row), (1, None), "a header stays a header");
+        press(&mut app, 'j');
+        assert_eq!(app.cursor_row, Some(0), "doing is empty: its header is its only row");
+        assert!(app.on_header(), "an empty column is its own header");
+        press(&mut app, 'l');
+        press(&mut app, 'j');
+        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)));
+        assert!(!app.on_header());
+        // `g` needs a ticket and is inert on a header.
+        press(&mut app, 'k');
+        press(&mut app, 'g');
+        assert_eq!(app.cursor_row, None);
+    }
+
+    #[test]
+    fn r_on_a_header_renames_the_column_in_place() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        press(&mut app, 'r');
+        assert!(matches!(
+            &app.mode,
+            Mode::Input { purpose: InputPurpose::RenameColumn { name }, .. } if name == "todo"
+        ));
+        for c in " list".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            sent_contains(&sent, "RenameColumn { name: \"todo\", to: \"todo list\" }"),
+            "{sent:?}"
+        );
+        assert_eq!(app.columns()[0], "todo list");
+        assert_eq!(app.cursor_col, 0, "the cursor follows the column under its new name");
+        assert!(matches!(app.mode, Mode::Normal));
+        // Esc sends nothing.
+        press(&mut app, 'r');
+        press(&mut app, 'x');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!sent_contains(&sent, "to: \"todo listx\""));
+        assert_eq!(app.columns()[0], "todo list");
+    }
+
+    #[test]
+    fn d_d_on_a_header_deletes_an_empty_column_and_is_refused_on_a_full_one() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        press(&mut app, 'd');
+        assert!(app.status.contains("d again deletes the column todo"), "{}", app.status);
+        press(&mut app, 'd');
+        assert!(sent_contains(&sent, "DeleteColumn { name: \"todo\" }"), "{sent:?}");
+        assert!(
+            app.status.contains("move its 2 tickets first"),
+            "the daemon's refusal: {}",
+            app.status
+        );
+        assert_eq!(app.columns().len(), 3);
+        // A stray key cancels.
+        press(&mut app, 'd');
+        press(&mut app, 'x');
+        assert_eq!(app.status, "delete cancelled");
+        // The empty one goes.
+        press(&mut app, 'l');
+        assert!(app.on_header());
+        press(&mut app, 'd');
+        press(&mut app, 'd');
+        assert!(sent_contains(&sent, "DeleteColumn { name: \"doing\" }"), "{sent:?}");
+        assert_eq!(app.columns(), ["todo", "done"]);
+    }
+
+    #[test]
+    fn shifted_l_on_a_header_moves_the_column() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        press(&mut app, 'L');
+        assert!(
+            sent_contains(&sent, "ReorderColumn { name: \"todo\", before: Some(\"done\") }"),
+            "{sent:?}"
+        );
+        assert_eq!(app.columns(), ["doing", "todo", "done"]);
+        assert_eq!((app.cursor_col, app.cursor_row), (1, None), "the cursor rides with it");
+        press(&mut app, 'H');
+        assert_eq!(app.columns(), ["todo", "doing", "done"]);
+        assert_eq!(app.cursor_col, 0);
+        // At the edge, `H` has nowhere to go; `J`/`K` mean nothing to a column.
+        let n = sent.borrow().len();
+        press(&mut app, 'H');
+        press(&mut app, 'J');
+        press(&mut app, 'K');
+        assert_eq!(sent.borrow().len(), n);
+        assert_eq!(app.columns(), ["todo", "doing", "done"]);
+    }
+
+    #[test]
+    fn a_ticket_verb_is_inert_on_a_header() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        for c in "xaz1cs>".chars() {
+            press(&mut app, c);
+        }
+        assert!(
+            sent.borrow().iter().all(|c| c.starts_with("Snapshot") || c.starts_with("Hello")),
+            "{sent:?}"
+        );
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.on_header());
+    }
+
+    // ---- the column settings dialog (T-117) ------------------------------
+
+    #[test]
+    fn enter_on_a_header_opens_the_column_dialog_and_esc_closes_it() {
+        let mut app = app_three_columns();
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(
+            &app.mode,
+            Mode::ColumnSettings { subject: ColumnSubject::Existing(n), idx: 0, naming: None, from_menu: false, .. }
+                if n == "todo"
+        ));
+        assert_eq!(app.scope(), Scope::ColumnSettings);
+        let ctx = app.ctx();
+        assert_eq!(ctx.col_name, "todo");
+        assert_eq!(ctx.col_live, 2);
+        assert!(!ctx.col_on_sort);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        // From the menu it comes back to the menu, on its own row.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        let row = keymap::menu_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnSettings)
+            .unwrap();
+        app.mode = Mode::Menu { idx: row };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::ColumnSettings { from_menu: true, .. }));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Menu { idx } if idx == row));
+    }
+
+    #[test]
+    fn a_column_row_sends_the_whole_settings_and_stays() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // Row 1 is Collapsed.
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "SetColumnSettings { name: \"todo\""), "{sent:?}");
+        assert!(sent_contains(&sent, "collapsed: true"), "{sent:?}");
+        assert!(matches!(&app.mode, Mode::ColumnSettings { idx: 1, .. }), "the dialog stays");
+        assert!(
+            app.board.column("todo").unwrap().settings.collapsed,
+            "relabelled off the snapshot"
+        );
+        assert!(app.ctx().col_collapsed);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.column("todo").unwrap().settings.collapsed);
+        // The `move to` rows cycle the OTHER columns, then stay.
+        let row = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnOnWorking)
+            .unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = row;
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.column("todo").unwrap().settings.on_working.as_deref(), Some("doing"));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.column("todo").unwrap().settings.on_working.as_deref(), Some("done"));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.board.column("todo").unwrap().settings.on_working, None);
+        assert_eq!(app.ctx().col_on_working, "");
+    }
+
+    #[test]
+    fn the_sort_row_steps_on_l_and_runs_on_enter() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let row = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::SortColumn)
+            .unwrap();
+        for _ in 0..row {
+            press(&mut app, 'j');
+        }
+        assert!(app.ctx().col_on_sort);
+        let n = sent.borrow().len();
+        press(&mut app, 'l');
+        assert_eq!(sent.borrow().len(), n, "stepping the order costs no wire");
+        assert_eq!(app.ctx().col_sort_word, "oldest first");
+        press(&mut app, 'l');
+        assert_eq!(app.ctx().col_sort_word, "by key");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "SortColumn { column: \"todo\", by: Key }"), "{sent:?}");
+        assert!(app.status.contains("sorted todo"), "{}", app.status);
+        assert!(matches!(&app.mode, Mode::ColumnSettings { .. }), "the dialog stays");
+        // Off the sort row `l` is inert.
+        press(&mut app, 'j');
+        assert!(!app.ctx().col_on_sort);
+        press(&mut app, 'l');
+        assert_eq!(app.ctx().col_sort_word, "by key");
+    }
+
+    #[test]
+    fn the_delete_row_arms_then_sends_and_is_refused_on_a_full_column() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let last = keymap::column_items(&app.ctx()).len() - 1;
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = last;
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.status, "move its 2 tickets first");
+        assert!(!sent_contains(&sent, "DeleteColumn"));
+        // The empty column: arm, then send, then the dialog closes.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'l');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = last;
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().col_delete_armed);
+        assert_eq!(app.status, "enter again deletes doing");
+        // Moving off the row disarms it.
+        press(&mut app, 'k');
+        assert!(!app.ctx().col_delete_armed);
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "DeleteColumn { name: \"doing\" }"), "{sent:?}");
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.columns(), ["todo", "done"]);
+    }
+
+    #[test]
+    fn the_name_row_renames_in_place() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(&app.mode, Mode::ColumnSettings { naming: Some(_), .. }));
+        assert_eq!(app.scope(), Scope::Input, "naming is a text field");
+        for c in "-ish".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            sent_contains(&sent, "RenameColumn { name: \"todo\", to: \"todo-ish\" }"),
+            "{sent:?}"
+        );
+        assert!(matches!(
+            &app.mode,
+            Mode::ColumnSettings { subject: ColumnSubject::Existing(n), naming: None, .. } if n == "todo-ish"
+        ));
+        assert_eq!(app.ctx().col_name, "todo-ish");
+        // A taken name is refused and the field stays open.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for _ in 0..8 {
+            app.handle_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        }
+        for c in "done".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.status.contains("already exists"), "{}", app.status);
+        assert!(matches!(&app.mode, Mode::ColumnSettings { naming: Some(_), .. }));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(
+            matches!(&app.mode, Mode::ColumnSettings { naming: None, .. }),
+            "esc leaves the field"
+        );
+        assert_eq!(app.columns()[0], "todo-ish");
+    }
+
+    #[test]
+    fn shift_o_names_a_new_column_then_adds_it_and_esc_mints_nothing() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'O');
+        assert!(matches!(
+            &app.mode,
+            Mode::ColumnSettings { subject: ColumnSubject::New { after: Some(a) }, naming: Some(_), .. }
+                if a == "todo"
+        ));
+        assert!(app.ctx().col_new);
+        assert_eq!(keymap::column_items(&app.ctx()).len(), 1, "only the Name row until it exists");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(!sent_contains(&sent, "AddColumn"));
+        assert_eq!(app.columns().len(), 3);
+        press(&mut app, 'O');
+        for c in "qa".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            sent_contains(&sent, "AddColumn { name: \"qa\", after: Some(\"todo\") }"),
+            "{sent:?}"
+        );
+        assert_eq!(app.columns(), ["todo", "qa", "doing", "done"]);
+        assert!(matches!(
+            &app.mode,
+            Mode::ColumnSettings { subject: ColumnSubject::Existing(n), naming: None, .. } if n == "qa"
+        ));
+        assert_eq!(app.cursor_col, 1, "the cursor moves to the new column");
+        assert!(!app.ctx().col_new);
+        assert!(keymap::column_items(&app.ctx()).len() > 1, "the whole dialog, now that it exists");
+    }
+
+    #[test]
+    fn the_composer_starts_at_the_columns_workspace_default() {
+        let mut board = board_three_columns();
+        board.columns[0].settings.workspace = Some(WorkspaceStrategy::Worktree);
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        press(&mut app, 'o');
+        assert!(matches!(
+            &app.mode,
+            Mode::Input {
+                purpose: InputPurpose::Create { workspace: Some(WorkspaceStrategy::Worktree), .. },
+                ..
+            }
+        ));
+        // Shift+Tab: worktree -> shared -> board default -> worktree.
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(matches!(
+            &app.mode,
+            Mode::Input {
+                purpose: InputPurpose::Create {
+                    workspace: Some(WorkspaceStrategy::SharedCheckout),
+                    ..
+                },
+                ..
+            }
+        ));
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(matches!(
+            &app.mode,
+            Mode::Input { purpose: InputPurpose::Create { workspace: None, .. }, .. }
+        ));
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        for c in "wt".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(
+            sent_contains(&sent, "workspace: Some(Worktree)"),
+            "the choice rides the mint: {sent:?}"
+        );
     }
 
     /// `.` does the last move again, and the cursor stays put — that is the
@@ -8751,12 +9753,12 @@ mod tests {
         press(&mut app, '>');
         press(&mut app, '3');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!((app.cursor_col, app.cursor_row), (2, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)));
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "done");
 
         // Back to todo, on ticket 2 — the one press repeats the whole gesture.
         app.cursor_col = 0;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         assert_eq!(app.ctx().repeat_word, "move again");
         assert!(app.ctx().can_repeat);
         press(&mut app, '.');
@@ -8774,7 +9776,7 @@ mod tests {
     #[test]
     fn a_refused_repeat_keeps_the_refusal_on_screen() {
         let mut b = board_three_columns();
-        b.columns.push(Column { name: "DONE".into(), order: "3".into() });
+        b.columns.push(Column::new("DONE", "3"));
         // Ticket 2 wants a worktree, which is what the fake reads as unmerged.
         if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid::Ulid(2)) {
             t.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
@@ -8786,7 +9788,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "DONE");
         app.cursor_col = 0;
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         assert!(app.ctx().can_repeat);
         press(&mut app, '.');
         assert_eq!(app.board.ticket(ulid::Ulid(2)).unwrap().column, "todo");
@@ -8826,7 +9828,7 @@ mod tests {
         b.tickets.push(ticket(4, "doing", "a"));
         b.tickets.push(ticket(5, "doing", "b"));
         let mut app = App::for_test(b, theme());
-        app.cursor_row = 1; // ticket 2, second in todo
+        app.cursor_row = Some(1); // ticket 2, second in todo
         press(&mut app, '>');
         // Top of doing, NOT the grabbed row — height is adjusted by hand.
         assert!(matches!(app.mode, Mode::Move { col: 1, idx: 0, .. }));
@@ -8838,7 +9840,7 @@ mod tests {
         b.tickets.push(ticket(4, "doing", "a"));
         b.tickets.push(ticket(5, "doing", "b"));
         let mut app = App::for_test(b, theme());
-        app.cursor_row = 1; // ticket 2, second in todo
+        app.cursor_row = Some(1); // ticket 2, second in todo
         press(&mut app, '>');
         press(&mut app, 'j'); // adjusting abroad must not disturb the memory
         press(&mut app, 'h'); // back home
@@ -8847,7 +9849,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 1));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
     }
 
     /// The in-column reorder: out with `>`, home with `h`, up a row, drop.
@@ -8856,7 +9858,7 @@ mod tests {
     #[test]
     fn move_home_and_up_a_row_reorders_the_column() {
         let mut app = app_three_columns();
-        app.cursor_row = 1; // ticket 2, second in todo
+        app.cursor_row = Some(1); // ticket 2, second in todo
         press(&mut app, '>');
         press(&mut app, 'h'); // back home, at its own row
         press(&mut app, 'k'); // one row up: above ticket 1
@@ -8864,7 +9866,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, 0));
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
     }
 
@@ -8912,7 +9914,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
         assert_eq!(done, vec![ulid::Ulid(3), ulid::Ulid(1)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (2, 1));
+        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(1)));
     }
 
     /// `m` is the merge key now, everywhere. It never grabs a card, and it
@@ -9180,13 +10182,15 @@ mod tests {
     fn arrows_move_every_list() {
         let mut app = app_three_columns();
         app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.cursor_row, 1, "board ↓");
+        assert_eq!(app.cursor_row, Some(1), "board ↓");
         app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
         assert_eq!(app.cursor_col, 1, "board →");
         app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
         assert_eq!(app.cursor_col, 0, "board ←");
         app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.cursor_row, 0, "board ↑");
+        assert_eq!(app.cursor_row, None, "board ↑ off the top card lands on the header");
+        app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.cursor_row, Some(0), "board ↓ from the header");
         // …and while holding a card.
         press(&mut app, '>');
         app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
@@ -9214,7 +10218,7 @@ mod tests {
         assert_eq!(app.status, "archive cancelled");
         assert!(app.board.archived_tickets().is_empty());
         // And the full chord does archive.
-        app.cursor_row = 0;
+        app.cursor_row = Some(0);
         archive(&mut app);
         assert_eq!(app.board.archived_tickets().len(), 1);
     }

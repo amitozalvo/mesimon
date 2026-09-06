@@ -40,7 +40,11 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     let tmux_sock = h.paths.tmux_sock();
     let mut c = h.client("prompt");
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "ask me".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "ask me".into(),
+        workspace: None,
+    });
     let ticket = c.board().tickets.first().expect("ticket").id;
 
     // Before any agent exists the key has nowhere to send, and the daemon

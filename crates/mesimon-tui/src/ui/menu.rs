@@ -17,7 +17,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap::{self, MenuItem, Scope};
 
-use crate::app::App;
+use crate::app::{App, ColumnSubject, Mode};
 use crate::text::{marquee_offset, marquee_window, truncate};
 
 use super::dialog;
@@ -32,6 +32,112 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
 pub(super) fn draw_settings(f: &mut Frame, app: &App, idx: usize) {
     let items = keymap::settings_items(&app.ctx());
     draw_list(f, app, idx, "SETTINGS", Scope::Settings, &items);
+}
+
+/// The column settings dialog (T-117): thirteen rows at one line each, the
+/// selected row's detail on the last inner line — `draw_list`'s two lines a
+/// row would not fit `layout::MIN_H`. The Name row is a text field while
+/// the mode says so, edited in place with the hardware cursor.
+pub(super) fn draw_column(f: &mut Frame, app: &App) {
+    let Mode::ColumnSettings { subject, idx, naming, .. } = &app.mode else { return };
+    let ctx = app.ctx();
+    let items = keymap::column_items(&ctx);
+    let title = match subject {
+        ColumnSubject::Existing(name) => format!("COLUMN ∙ {}", name.to_uppercase()),
+        ColumnSubject::New { .. } => "NEW COLUMN".to_string(),
+    };
+    draw_dense(f, app, &ctx, *idx, &title, &items, naming.as_ref());
+}
+
+fn draw_dense(
+    f: &mut Frame,
+    app: &App,
+    ctx: &mesimon_core::keymap::Ctx,
+    idx: usize,
+    name: &str,
+    items: &[&'static MenuItem],
+    field: Option<&crate::text::EditBuffer>,
+) {
+    let theme = &app.theme;
+    if items.is_empty() {
+        return;
+    }
+    let idx = idx.min(items.len() - 1);
+    let area = dialog::centred(f.area(), items.len() as u16 + 2, dialog::MAX_W);
+    let inner_w = area.width.saturating_sub(2) as usize;
+    let inner = dialog::frame(
+        f,
+        app,
+        area,
+        None,
+        &theme.rest,
+        dialog::Edges {
+            title: dialog::title(&theme.rest, name),
+            // The scope as it stands: a naming dialog's edge reads the text
+            // field's `enter save ∙ esc cancel`.
+            tail: dialog::keys(app, app.scope(), &theme.rest, inner_w.saturating_sub(4)),
+        },
+    );
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    let mut cursor_at: Option<(u16, u16)> = None;
+    for (i, item) in items.iter().enumerate() {
+        let selected = i == idx;
+        let style = if selected {
+            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else {
+            theme.base()
+        };
+        let row_style = if selected { theme.selected_row() } else { Style::default() };
+        let text = match field {
+            Some(buf) if selected => {
+                let lead = "Name: ";
+                let budget = inner_w.saturating_sub(3 + lead.width() + 1);
+                let (shown, cx) =
+                    crate::text::edit_window(buf.as_str(), buf.width_before_cursor(), budget);
+                cursor_at = Some((inner.x + 3 + lead.width() as u16 + cx, inner.y + i as u16));
+                format!("{lead}{shown}")
+            }
+            _ => truncate(&(item.label)(ctx), inner_w.saturating_sub(4)),
+        };
+        let pad = inner_w.saturating_sub(3 + text.width());
+        lines.push(
+            Line::from(vec![
+                Span::raw("   "),
+                Span::styled(text, style),
+                Span::raw(" ".repeat(pad)),
+            ])
+            .style(row_style),
+        );
+    }
+    lines.push(Line::default());
+    // The selected row's detail, marquee-revealed when it overflows — the
+    // same clock `draw_list` runs.
+    let budget = inner_w.saturating_sub(6);
+    let detail = (items[idx].detail)(ctx);
+    let overflow = detail.width().saturating_sub(budget);
+    let scroll = if overflow > 0 {
+        let key = words_key(&detail);
+        let ms = match app.menu_marquee.get() {
+            Some((k, epoch)) if k == key => epoch.elapsed().as_millis() as u64,
+            _ => {
+                app.menu_marquee.set(Some((key, std::time::Instant::now())));
+                0
+            }
+        };
+        marquee_offset(ms, overflow)
+    } else {
+        0
+    };
+    let body = if scroll > 0 {
+        marquee_window(&detail, budget, scroll)
+    } else {
+        truncate(&detail, budget)
+    };
+    lines.push(Line::from(Span::styled(format!("     {body}"), theme.dim3())));
+    f.render_widget(Paragraph::new(lines), inner);
+    if let Some((x, y)) = cursor_at {
+        f.set_cursor_position((x.min(inner.x + inner.width.saturating_sub(1)), y));
+    }
 }
 
 fn draw_list(

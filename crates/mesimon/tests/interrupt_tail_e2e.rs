@@ -67,7 +67,11 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
         c.request(Command::Hello { version: 1, client: "intrtail".into() }),
         Response::Hello { .. }
     ));
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "intrtail".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "intrtail".into(),
+        workspace: None,
+    });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 
     let sid = match c.request(Command::SpawnSession {

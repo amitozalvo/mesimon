@@ -52,10 +52,18 @@ fn archive_gates_suggests_and_restores() {
         Response::Hello { .. }
     ));
 
-    let _ = c.request(Command::CreateTicket { column: "DONE".into(), title: "cold".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "DONE".into(),
+        title: "cold".into(),
+        workspace: None,
+    });
     // A session-less DONE ticket: suggested once created_at ages past the
     // threshold, archivable any time.
-    let _ = c.request(Command::CreateTicket { column: "DONE".into(), title: "empty".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "DONE".into(),
+        title: "empty".into(),
+        workspace: None,
+    });
     let (board, _) = snapshot_of(c.request(Command::Snapshot));
     let cold = board.tickets.iter().find(|t| t.title == "cold").unwrap().id;
     let key = board.ticket(cold).unwrap().short_key.clone();

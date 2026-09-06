@@ -1,13 +1,11 @@
  BOARD   mesimon > kanban-tui  !1    7 tickets
 
-   TODO                        2    IN PROGRESS                2    REVIEW                     2
+   TODO                       2    IN PROGRESS                2    REVIEW                    2
 
-   Decay treatments          >1y    ⠋ Fix OSC-11 detection   >1y    ✓ Grapheme truncation    >1y  D
-                                                                                                  O
-   Keymap validator          >1y    ! Adopt drawer import    >1y    x Flaky e2e on runner    >1y  N
-                                                                                                  E
-
-
+   Decay treatments         >1y    ⠋ Fix OSC-11 detection   >1y    ✓ Grapheme truncation   >1y   D
+                                                                                                 O
+   Keymap validator         >1y    ! Adopt drawer import    >1y    x Flaky e2e on runner   >1y   N
+                                                                                                 E
 
 
 
@@ -19,6 +17,8 @@
 
 
 
-                                                                                                  1
+
+
+                                                                                                 1
 
  enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename      esc menu ∙ ? keys

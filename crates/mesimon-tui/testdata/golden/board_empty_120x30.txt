@@ -27,4 +27,4 @@
 
 
 
- o new ticket                                                                                         esc menu ∙ ? keys
+ enter column settings ∙ o new ticket ∙ HJKL move column ∙ r rename column                            esc menu ∙ ? keys

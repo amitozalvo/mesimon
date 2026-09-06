@@ -233,8 +233,15 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
 /// rows in from the zone's top and bottom.
 fn dialog_rect(app: &App, cards: Rect) -> Rect {
     let mut window = app.col_window.get();
-    let geom =
-        layout::board_geometry(cards.width, app.columns().len(), app.cursor_col, &mut window);
+    let pinned: Vec<bool> =
+        app.board.sorted_columns().iter().map(|c| c.settings.collapsed).collect();
+    let geom = layout::board_geometry(
+        cards.width,
+        app.columns().len(),
+        app.cursor_col,
+        &pinned,
+        &mut window,
+    );
     let cols: Vec<(u16, u16)> = geom
         .slots
         .iter()

@@ -15,8 +15,8 @@ use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
 use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
 use mesimon_core::board::{
-    sanitize_tag, Archived, Board, Confidence, ExitReason, Provenance, SessionKind, SessionRecord,
-    SessionState, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
+    sanitize_tag, AgentTools, Archived, Board, Confidence, ExitReason, Provenance, SessionKind,
+    SessionRecord, SessionState, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, DiffTarget, Envelope,
@@ -93,10 +93,6 @@ const STATUS_IDLE_MARGIN_MS: u64 = 250;
 /// How long a Running session with no session file goes between looks for
 /// one (an older Claude Code writes none; a scan is ~40 small reads).
 const STATUS_FILE_RETRY_MS: u64 = 30_000;
-/// Tickets in this column are sleep-safe: their sessions feed the header's
-/// sleep suggestion. Interim hardcode — becomes a per-column sleep policy
-/// (`never|offer|auto`) with M5's column policies.
-const SLEEP_SAFE_COLUMN: &str = "DONE";
 /// A sleep-safe ticket whose sessions have all been asleep this long feeds
 /// the header's archive suggestion (same offer-not-action shape as sleep).
 const ARCHIVE_SUGGEST_MS: u64 = 3_600_000;
@@ -865,7 +861,10 @@ struct Parked {
     brief: bool,
 }
 
-/// An ask parked until its checkout is quiet (see `Daemon::queued`).
+/// An ask parked until its checkout is quiet (see `Daemon::queued`). The
+/// list holds the entries and the BOARD holds their order (`queue_order`):
+/// a card moved up its column goes first, the way the merge train reads
+/// the board (T-263).
 struct QueuedAsk {
     ticket: ulid::Ulid,
     /// The pane it was queued at (`Board::pane_target` then); a different
@@ -1172,8 +1171,8 @@ impl Daemon {
                 self.subscribers.push(stream.clone());
                 Response::Ok
             }
-            Command::CreateTicket { column, title } => {
-                self.create_ticket(&env.principal, column, title)
+            Command::CreateTicket { column, title, workspace } => {
+                self.create_ticket(&env.principal, column, title, workspace)
             }
             Command::RenameTicket { id, title } => {
                 self.with_ticket(id, |t| t.title = mesimon_core::board::sanitize_title(&title))
@@ -1225,8 +1224,17 @@ impl Daemon {
             Command::SeenTicket { id } => self.seen_ticket(id),
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
+            Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
+            Command::AddColumn { name, after } => self.add_column(name, after),
+            Command::RenameColumn { name, to } => self.rename_column(&name, &to),
+            Command::DeleteColumn { name } => self.delete_column(&name),
+            Command::ReorderColumn { name, before } => self.reorder_column(&name, before),
+            Command::SetColumnSettings { name, settings } => {
+                self.set_column_settings(&name, settings)
+            }
+            Command::SortColumn { column, by } => self.sort_column(&column, by),
             Command::ArchiveAll => {
                 let (archived, skipped) = self.archive_all();
                 if archived > 0 {
@@ -1360,7 +1368,7 @@ impl Daemon {
                 | Response::Spawned { .. }
                 | Response::Provisioning
                 | Response::NoteWritten { .. } => self.feed.board("local", cmd, ticket),
-                Response::Created { id } => self.feed.board("local", cmd, ticket.or(Some(*id))),
+                Response::Created { id, .. } => self.feed.board("local", cmd, ticket.or(Some(*id))),
                 Response::Merge {
                     outcome: MergeOutcome::Merged | MergeOutcome::AlreadyMerged,
                     ..
@@ -1809,6 +1817,7 @@ impl Daemon {
                         hints.push((TailHint::ExitPlanMode, None))
                     }
                     TailEvent::TurnComplete => hints.push((TailHint::TurnComplete, None)),
+                    TailEvent::ToolInFlight => hints.push((TailHint::ToolInFlight, None)),
                     TailEvent::Latch | TailEvent::Other => {}
                 }
             }
@@ -2138,13 +2147,29 @@ impl Daemon {
             // follow are the ordinary retries; a paste is made once.
             match self.pending_prompt.remove(&id) {
                 Some(Parked { text, brief }) => {
-                    let _ = self.backend.paste_text(&sid16, &text);
-                    // The brief went in with the first prompt: this session
-                    // has read its ticket, whatever it does with the tools.
-                    if brief {
-                        if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                            rec.ticket_read = true;
-                            changed = true;
+                    // A brief is the ticket's description as it stands NOW
+                    // (T-117): a ticket described after its spawn — the
+                    // composer's order, an auto-run's — still gets it. No
+                    // description means the title alone, the plain Enter.
+                    let text = if brief {
+                        self.description_body(ticket)
+                            .map(|b| format!("\n\n{b}"))
+                            .unwrap_or_default()
+                    } else {
+                        text
+                    };
+                    if text.is_empty() {
+                        let _ = self.backend.send_enter(&sid16);
+                    } else {
+                        let _ = self.backend.paste_text(&sid16, &text);
+                        // The brief went in with the first prompt: this
+                        // session has read its ticket, whatever it does with
+                        // the tools.
+                        if brief {
+                            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                                rec.ticket_read = true;
+                                changed = true;
+                            }
                         }
                     }
                 }
@@ -2269,14 +2294,18 @@ impl Daemon {
     /// one the other just made.
     fn auto_move(&mut self, ticket: ulid::Ulid, to: &SessionState, confidence: Confidence) {
         let Some(t) = self.board.ticket(ticket) else { return };
-        let Some(dest) = mesimon_core::automove::automove(&t.column, to, confidence) else {
+        // The rule is the ticket's COLUMN's (T-117): `on_working`/`on_done`,
+        // never a column name compared here.
+        let Some(col) = self.board.column(&t.column) else { return };
+        let Some(dest) = mesimon_core::automove::automove(&col.settings, to, confidence) else {
             return;
         };
+        let dest = dest.to_string();
         let by = Principal::Automation { rule: "automove".into() };
         // Every refusal path (archived, missing column, ping-pong, fuse) lives
         // in place_ticket, and a refused automove is silent by design: the
         // board simply does not move, and the feed carries the reason.
-        let _ = self.place_ticket(ticket, dest, Position::Top, &by, "automove");
+        let _ = self.place_ticket(ticket, &dest, Position::Top, &by, "automove");
     }
 
     /// Everything an agent session may ask the daemon for (T-84).
@@ -2316,6 +2345,19 @@ impl Daemon {
             return Response::Err { message: "session has exited".into() };
         }
         let ticket = rec.ticket;
+        // The column's tier (T-117), against the ticket's column as it
+        // stands NOW — the shim listed the tools of the column at spawn, and
+        // the model reads the tier it is on in the refusal.
+        let tier = self.agent_tier(ticket);
+        if !mcp::tier_admits(tier, &cmd) {
+            let col = self.board.ticket(ticket).map(|t| t.column.clone()).unwrap_or_default();
+            return Response::Err {
+                message: format!(
+                    "not available here: column {col} grants agent tools `{}`",
+                    tier.word()
+                ),
+            };
+        }
 
         match cmd {
             Command::AgentGetTicket => {
@@ -2468,7 +2510,8 @@ impl Daemon {
         description: Option<String>,
         tags: Vec<String>,
     ) -> Response {
-        let Some(column) = column.or_else(|| self.board.columns.first().map(|c| c.name.clone()))
+        let Some(column) =
+            column.or_else(|| self.board.sorted_columns().first().map(|c| c.name.clone()))
         else {
             return Response::Err { message: "the board has no columns".into() };
         };
@@ -2491,7 +2534,7 @@ impl Daemon {
             Ok(refs) => refs,
             Err(message) => return Response::Err { message },
         };
-        let id = self.mint_ticket(by, Some(from), column.clone(), title);
+        let id = self.mint_ticket(by, Some(from), column.clone(), title, None);
         if !tags.is_empty() {
             if let Some(t) = self.board.ticket_mut(id) {
                 for r in tags {
@@ -2697,20 +2740,28 @@ impl Daemon {
     /// as transient result data instead of becoming permanent model context.
     /// It excludes the current column (a move to where it already is is not a
     /// move) and any column whose gate would refuse — so a ticket with an
-    /// unmerged worktree does not advertise DONE and then refuse it.
+    /// unmerged worktree does not advertise a `requires_merge` column and
+    /// then refuse it.
     fn agent_allowed_columns(&self, id: ulid::Ulid) -> Vec<String> {
         let Some(t) = self.board.ticket(id) else { return Vec::new() };
-        let unmerged = self
-            .worktrees
-            .get(&id)
-            .is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id, &b.branch));
+        if self.agent_tier(id) < AgentTools::Full {
+            return Vec::new();
+        }
+        let unmerged = self.ticket_unmerged(id);
         self.board
             .sorted_columns()
             .into_iter()
+            .filter(|c| c.name != t.column)
+            .filter(|c| !(unmerged && c.settings.requires_merge))
             .map(|c| c.name.clone())
-            .filter(|name| name != &t.column)
-            .filter(|name| !(unmerged && name == "DONE"))
             .collect()
+    }
+
+    /// The ticket holds a worktree branch that has not landed on the base.
+    fn ticket_unmerged(&self, id: ulid::Ulid) -> bool {
+        self.worktrees
+            .get(&id)
+            .is_some_and(|b| !b.branch.is_empty() && !self.ticket_merged(id, &b.branch))
     }
 
     /// The ticket's merge state as a word — the same four the `m` flow derives
@@ -2845,17 +2896,16 @@ impl Daemon {
             }
             return Ok(from);
         }
-        // M4 DONE gate (author rule 3): DONE means the work landed — an
-        // unmerged worktree blocks the move. It lived inside the human's
-        // move path until T-84, which would have let an automation route
-        // around the one rule that keeps the board from claiming something
-        // shipped when git says it did not.
-        if dest == "DONE" {
-            if let Some(b) = self.worktrees.get(&id) {
-                if !b.branch.is_empty() && !self.ticket_merged(id, &b.branch) {
-                    return Err("worktree unmerged — merge before DONE".into());
-                }
-            }
+        // M4 DONE gate (author rule 3), now the column's `requires_merge`
+        // (T-117): entering means the work landed — an unmerged worktree
+        // blocks the move. It lived inside the human's move path until T-84,
+        // which would have let an automation route around the one rule that
+        // keeps the board from claiming something shipped when git says it
+        // did not.
+        if self.board.column(dest).is_some_and(|c| c.settings.requires_merge)
+            && self.ticket_unmerged(id)
+        {
+            return Err(format!("worktree unmerged — merge before {dest}"));
         }
         if let Decision::Deny { reason } = authorize(by, &Action::Mutate, &Resource::Ticket { id })
         {
@@ -3068,7 +3118,21 @@ impl Daemon {
             pending: self.pending_items(),
             automation: self.automation_status(),
             claude_md: self.claude_md.status(),
+            claude_default_mode: user_default_mode(),
+            status_top: self.backend.status_top(),
         }
+    }
+
+    /// `Command::SetStatusLine` (T-264): the preference reaches tmux — the
+    /// live server and the conf the next one reads — and the snapshot says
+    /// where it landed so the TUI stops pushing. No server yet is fine: the
+    /// conf carries the word until one starts.
+    fn set_status_line(&mut self, top: bool) -> Response {
+        if let Err(e) = self.backend.set_status_position(top) {
+            return Response::Err { message: format!("could not move the status line: {e}") };
+        }
+        self.broadcast();
+        Response::Ok
     }
 
     /// What mesimon owes each ticket (see `Pending`). Empty until the queued
@@ -3077,12 +3141,13 @@ impl Daemon {
     fn pending_items(&self) -> Vec<mesimon_core::command::Pending> {
         use mesimon_core::command::Pending;
         let mut out: Vec<Pending> = self
-            .queued
-            .iter()
+            .queue_order()
+            .into_iter()
+            .map(|i| &self.queued[i])
             .map(|q| mesimon_core::command::Pending {
                 ticket: q.ticket,
                 action: "ask".into(),
-                waits_on: self.keys_of(&self.checkout_holders(&q.cwd)),
+                waits_on: self.ask_waits_on(q.ticket),
                 text: Some(q.text.clone()),
                 in_flight: false,
             })
@@ -3326,19 +3391,25 @@ impl Daemon {
         moved
     }
 
+    /// Every ticket in a `reclaim` column (T-117): the set the sleep and
+    /// archive offers price and `Z` acts on.
+    fn reclaim_tickets(&self) -> std::collections::HashSet<ulid::Ulid> {
+        let cols = self.board.reclaim_columns();
+        self.board
+            .tickets
+            .iter()
+            .filter(|t| cols.contains(t.column.as_str()))
+            .map(|t| t.id)
+            .collect()
+    }
+
     /// The header's sleep suggestion: sessions on sleep-safe tickets that
     /// pass the D23 floors RIGHT NOW (same predicate the sleep keys use — the
     /// suggestion never offers what a keystroke would refuse), plus the RSS
-    /// they hold. Column gating is hardcoded until per-column sleep policy
-    /// lands with M5's column policies.
+    /// they hold. Which columns are sleep-safe is each column's `reclaim`
+    /// setting (T-117).
     fn reclaim_figures(&self) -> (u64, usize) {
-        let safe: std::collections::HashSet<ulid::Ulid> = self
-            .board
-            .tickets
-            .iter()
-            .filter(|t| t.column == SLEEP_SAFE_COLUMN)
-            .map(|t| t.id)
-            .collect();
+        let safe = self.reclaim_tickets();
         let now = now_ms();
         let mut bytes = 0u64;
         let mut n = 0usize;
@@ -3368,10 +3439,11 @@ impl Daemon {
     fn archive_candidates(&self) -> Vec<ulid::Ulid> {
         let now = now_ms();
         let threshold = archive_suggest_ms();
+        let reclaim = self.board.reclaim_columns();
         self.board
             .tickets
             .iter()
-            .filter(|t| !t.is_archived() && t.column == SLEEP_SAFE_COLUMN)
+            .filter(|t| !t.is_archived() && reclaim.contains(t.column.as_str()))
             .filter(|t| {
                 if self.board.ticket_awake_sessions(t.id) > 0 {
                     return false;
@@ -3496,7 +3568,13 @@ impl Daemon {
         Response::Ok
     }
 
-    fn create_ticket(&mut self, by: &Principal, column: String, title: String) -> Response {
+    fn create_ticket(
+        &mut self,
+        by: &Principal,
+        column: String,
+        title: String,
+        workspace: Option<WorkspaceStrategy>,
+    ) -> Response {
         // A barred columns.toml means next_key cannot be persisted, so a new
         // ticket's short_key would regress on the next start and save_ticket
         // would write over an existing ticket directory. Judged here, at the
@@ -3510,22 +3588,74 @@ impl Daemon {
         // A title is user text on a card row; scrubbed and bounded here, at
         // the boundary — the composer's own cap is a courtesy a client can lift.
         let title = mesimon_core::board::sanitize_title(&title);
-        let id = self.mint_ticket(by, None, column, title);
+        let id = self.mint_ticket(by, None, column, title, workspace);
         self.persist_and_notify();
-        Response::Created { id }
+        let started = self.auto_run(id);
+        Response::Created { id, started }
+    }
+
+    /// "Start claude on creation" (T-117): the composer's Shift+Enter, fired
+    /// by the daemon for a column that asked for it. Reached from
+    /// `create_ticket` ONLY — a person at the composer: never a move into the
+    /// column, never an agent's `create_ticket` (`agent_create_ticket` mints
+    /// on its own road), never a snooze wake, an unarchive or a grace
+    /// restore. Exactly `spawn_session(.., Claude, submit_prompt: true)`, so
+    /// it parks on worktree provisioning and replays through
+    /// `on_provisioned` like any spawn, and the brief pastes under the title
+    /// once the composer's note lands. Says what it did in the feed with the
+    /// automation as actor; a refusal is a feed line, never an error to the
+    /// composer, whose ticket exists either way. Returns whether a claude was
+    /// started (or parked to start).
+    ///
+    /// No `asked_by_hand` is needed: a fresh ticket has no last move, so the
+    /// `on_working` edge that follows is an ordinary automove.
+    fn auto_run(&mut self, id: ulid::Ulid) -> bool {
+        let wants = self
+            .board
+            .ticket(id)
+            .and_then(|t| self.board.column(&t.column))
+            .is_some_and(|c| c.settings.auto_run);
+        if !wants {
+            return false;
+        }
+        match self.spawn_session(id, SessionKind::Claude, true) {
+            Response::Spawned { .. } | Response::Provisioning => {
+                self.feed.board("automation", "auto_run_started", Some(id));
+                true
+            }
+            Response::Err { message } => {
+                let why = if message.contains("PTY") || message.contains("memory") {
+                    "resources"
+                } else if message.contains("already has a claude") {
+                    "seat_taken"
+                } else {
+                    "spawn"
+                };
+                self.feed.board("automation", &format!("auto_run_refused:{why}"), Some(id));
+                false
+            }
+            _ => false,
+        }
     }
 
     /// Append a new ticket to `column` (caller validated the column).
     /// `from` is the ticket the caller was bound to when it asked — an agent's
     /// `create_ticket` — and `None` for a person, who is bound to nothing.
+    /// `workspace` is the composer's explicit choice; absent, the column's
+    /// own default is stamped onto the ticket (T-117) — the ticket field
+    /// stays the truth, so a later change to the column is never
+    /// retroactive.
     fn mint_ticket(
         &mut self,
         by: &Principal,
         from: Option<ulid::Ulid>,
         column: String,
         title: String,
+        workspace: Option<WorkspaceStrategy>,
     ) -> ulid::Ulid {
         self.board.next_key += 1;
+        let workspace =
+            workspace.or_else(|| self.board.column(&column).and_then(|c| c.settings.workspace));
         let last =
             self.board.column_tickets(&column).last().map(|t| t.order.clone()).unwrap_or_default();
         let t = Ticket {
@@ -3540,7 +3670,7 @@ impl Daemon {
             entered_at: Some(now_iso()),
             woke_at: None,
             manual_merge: false,
-            workspace: None,
+            workspace,
             tags: Vec::new(),
             notes: Vec::new(),
             archived: None,
@@ -4312,7 +4442,7 @@ impl Daemon {
         self.drain_queue(now);
         self.broadcast();
         if self.queued.iter().any(|q| q.ticket == ticket) {
-            let behind = self.keys_of(&self.checkout_holders(&cwd));
+            let behind = self.ask_waits_on(ticket);
             Response::Queued { behind }
         } else if self.inflight.contains_key(&ticket) {
             Response::Ok
@@ -4321,23 +4451,69 @@ impl Daemon {
         }
     }
 
-    /// Paste the first waiting ask of every QUIET checkout — one per
-    /// checkout per pass, since the paste itself makes it busy again (the
-    /// in-flight marker, until the agent's `UserPromptSubmit` says so). The
-    /// target must still be the pane the ask was queued at: a fresh spawn in
-    /// the seat is a different conversation.
-    fn drain_queue(&mut self, now: u64) -> bool {
-        let mut changed = false;
-        let mut seen: Vec<String> = Vec::new();
-        let mut i = 0;
-        while i < self.queued.len() {
-            let cwd = self.queued[i].cwd.clone();
-            if seen.contains(&cwd) || !self.checkout_holders(&cwd).is_empty() {
-                seen.push(cwd);
-                i += 1;
-                continue;
+    /// The queued asks in BOARD order — column order, then row order, the
+    /// merge train's walk (`train::plan`) — so the user sorts the queue by
+    /// sorting the cards (T-263, user: "so that user can sort while items
+    /// are queued"). Read at every drain and every snapshot, never stored:
+    /// FIFO was the first shape, and it made the order invisible and
+    /// unchangeable. A ticket the board no longer lists sorts last; the
+    /// sweep drops it.
+    fn queue_order(&self) -> Vec<usize> {
+        let mut rank: HashMap<ulid::Ulid, (usize, usize)> = HashMap::new();
+        for (ci, col) in self.board.sorted_columns().iter().enumerate() {
+            for (ri, t) in self.board.column_tickets(&col.name).iter().enumerate() {
+                rank.insert(t.id, (ci, ri));
             }
+        }
+        let mut idx: Vec<usize> = (0..self.queued.len()).collect();
+        idx.sort_by_key(|&i| rank.get(&self.queued[i].ticket).copied().unwrap_or((usize::MAX, 0)));
+        idx
+    }
+
+    /// What a parked ask waits on, as keys: the tickets working in its
+    /// checkout, then the asks queued AHEAD of it there in board order —
+    /// so the card reads `queued ∙ after T-3 +1` and a card moved up its
+    /// column watches the count fall. Empty for a ticket with no ask.
+    fn ask_waits_on(&self, ticket: ulid::Ulid) -> Vec<String> {
+        let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
+            return Vec::new();
+        };
+        let mut ids = self.checkout_holders(&q.cwd);
+        for i in self.queue_order() {
+            let ahead = &self.queued[i];
+            if ahead.ticket == ticket {
+                break;
+            }
+            if ahead.cwd == q.cwd && !ids.contains(&ahead.ticket) {
+                ids.push(ahead.ticket);
+            }
+        }
+        self.keys_of(&ids)
+    }
+
+    /// Paste the TOPMOST waiting ask of every QUIET checkout — one per
+    /// checkout per pass, since the paste itself makes it busy again
+    /// (`inflight`), and in board order (`queue_order`), so the next one
+    /// goes when this one's agent has acked and settled. Runs from
+    /// `apply_change` (the EndTurn settle and the shutdown flush both come
+    /// through it), on the 1 s bucket, and at enqueue. A target that is not
+    /// the pane it was queued at is dropped, not redirected.
+    fn drain_queue(&mut self, now: u64) -> bool {
+        let mut seen: Vec<String> = Vec::new();
+        let mut take: Vec<usize> = Vec::new();
+        for i in self.queue_order() {
+            let cwd = self.queued[i].cwd.clone();
+            let quiet = !seen.contains(&cwd) && self.checkout_holders(&cwd).is_empty();
             seen.push(cwd);
+            if quiet {
+                take.push(i);
+            }
+        }
+        // Highest index first, so the lower indexes stay valid as entries
+        // leave; which checkout pastes first does not matter.
+        take.sort_unstable_by(|a, b| b.cmp(a));
+        let mut changed = false;
+        for i in take {
             let q = self.queued.remove(i);
             changed = true;
             match self.board.pane_target(q.ticket) {
@@ -4655,6 +4831,141 @@ impl Daemon {
         Response::Ok
     }
 
+    // ---- the column lifecycle (T-117) -----------------------------------
+    //
+    // Every one of these writes `columns.toml`, so every one returns early
+    // under the bar (`set_mcp_tools`'s reason) — except `sort_column`, which
+    // writes ticket files only, and those self-bar. The feed line is the
+    // wire name (`Command::meta`), with the person as actor.
+
+    fn add_column(&mut self, name: String, after: Option<String>) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        let Some(name) = mesimon_core::board::sanitize_column_name(&name) else {
+            return Response::Err { message: "a column needs a name".into() };
+        };
+        if let Err(message) = self.board.add_column(name, after.as_deref()) {
+            return Response::Err { message };
+        }
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// The name is the foreign key, so this is a transaction: every ticket
+    /// in the column (archived too), every other column's rule naming it,
+    /// the move gate's memory and the grace band's held tickets — a restore
+    /// pushes the held clone back verbatim, and one holding the old name
+    /// would land invisible.
+    fn rename_column(&mut self, name: &str, to: &str) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        let Some(to) = mesimon_core::board::sanitize_column_name(to) else {
+            return Response::Err { message: "a column needs a name".into() };
+        };
+        if name == to {
+            return Response::Ok;
+        }
+        let touched = match self.board.rename_column(name, &to) {
+            Ok(t) => t,
+            Err(message) => return Response::Err { message },
+        };
+        for id in touched {
+            if let Some(t) = self.board.ticket(id) {
+                let _ = store::save_ticket(&self.paths, t);
+            }
+        }
+        self.moves.rename_column(name, &to);
+        for g in self.grace.values_mut() {
+            if g.ticket.column == name {
+                g.ticket.column = to.clone();
+            }
+        }
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    fn delete_column(&mut self, name: &str) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        // A ticket in the grace band counts as live: `restore_ticket` pushes
+        // it back into the column it was deleted from.
+        let held = self.grace.values().filter(|g| g.ticket.column == name).count();
+        if held > 0 {
+            return Response::Err {
+                message:
+                    "a ticket just deleted from it can still come back — wait for the undo band"
+                        .into(),
+            };
+        }
+        let cleared = match self.board.delete_column(name) {
+            Ok(c) => c,
+            Err(message) => return Response::Err { message },
+        };
+        for (col, field) in cleared {
+            self.feed.board("local", &format!("column_rule_cleared:{field}"), None);
+            let _ = col;
+        }
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    fn reorder_column(&mut self, name: &str, before: Option<String>) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if let Err(message) = self.board.reorder_column(name, before.as_deref()) {
+            return Response::Err { message };
+        }
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    fn set_column_settings(
+        &mut self,
+        name: &str,
+        settings: mesimon_core::board::ColumnSettings,
+    ) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        let Some(col) = self.board.column(name) else {
+            return Response::Err { message: format!("no such column: {name}") };
+        };
+        if col.settings == settings {
+            return Response::Ok;
+        }
+        if let Err(message) = self.board.set_column_settings(name, settings) {
+            return Response::Err { message };
+        }
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// One-shot. `needs_you` is what the header's `!N` counts: the attention
+    /// queue's tickets and the woken ones.
+    fn sort_column(&mut self, column: &str, by: mesimon_core::board::SortBy) -> Response {
+        if self.board.column(column).is_none() {
+            return Response::Err { message: format!("no such column: {column}") };
+        }
+        let needs_you: std::collections::HashSet<ulid::Ulid> =
+            mesimon_core::attention::attention_queue(&self.board)
+                .iter()
+                .map(|s| s.ticket)
+                .chain(self.board.woke_tickets().iter().map(|t| t.id))
+                .collect();
+        let touched = self.board.sort_column(column, by, &needs_you);
+        for id in touched {
+            if let Some(t) = self.board.ticket(id) {
+                let _ = store::save_ticket(&self.paths, t);
+            }
+        }
+        self.broadcast();
+        Response::Ok
+    }
+
     /// The tick wheel's half of a snooze: every ticket whose deadline has
     /// passed comes back — at the TOP of its column, the way every automatic
     /// move lands (the return is fresh news), with its age restarted, and lit
@@ -4896,10 +5207,12 @@ impl Daemon {
         };
         let id = uuid::Uuid::new_v4();
         let argv: Vec<String> = match kind {
-            SessionKind::Claude => match self.claude_argv(id, "--session-id", &id.to_string()) {
-                Ok(argv) => argv,
-                Err(message) => return Response::Err { message },
-            },
+            SessionKind::Claude => {
+                match self.claude_argv(id, ticket, "--session-id", &id.to_string()) {
+                    Ok(argv) => argv,
+                    Err(message) => return Response::Err { message },
+                }
+            }
             SessionKind::Bash => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())],
         };
         // Claude enters Spawning; the SessionStart hook flips it to Running.
@@ -4948,11 +5261,12 @@ impl Daemon {
                     // CLAUDE.md asked; a prompt cannot be skipped. The plain
                     // Enter road stays title-only — the user is about to edit
                     // the box, and a 32 KiB description is not editable there.
+                    // Parked EMPTY and read at paste time (T-117): the
+                    // composer writes the description a beat after
+                    // `Created`, and a column's auto-run spawns inside it,
+                    // so what was on disk at spawn is not yet the brief.
                     if submit_prompt {
-                        if let Some(body) = self.description_body(ticket) {
-                            self.pending_prompt
-                                .insert(id, Parked { text: format!("\n\n{body}"), brief: true });
-                        }
+                        self.pending_prompt.insert(id, Parked { text: String::new(), brief: true });
                     }
                 }
             }
@@ -5321,7 +5635,7 @@ impl Daemon {
                     .or_else(|| item.preview.clone())
                     .unwrap_or_else(|| item.claude_session_id.to_string()[..8].to_string());
                 let title: String = title.chars().take(48).collect();
-                self.mint_ticket(by, None, column, title)
+                self.mint_ticket(by, None, column, title, None)
             }
         };
         let id = uuid::Uuid::new_v4();
@@ -5346,8 +5660,42 @@ impl Daemon {
 
     /// The MCP config this session is launched with. See
     /// `hook_settings::mcp_config_json` for why it looks the way it does.
-    fn mcp_config_json(&self, session: uuid::Uuid) -> String {
-        crate::hook_settings::mcp_config_json(&self.paths, &mesimon_bin(), session)
+    fn mcp_config_json(&self, session: uuid::Uuid, tier: AgentTools) -> String {
+        crate::hook_settings::mcp_config_json(&self.paths, &mesimon_bin(), session, tier)
+    }
+
+    /// How far up the tool ladder a claude on `ticket` reaches (T-117): the
+    /// board's switch off is `Off`, else its column's `agent_tools` as it
+    /// stands NOW — read at spawn for what the shim lists and at every call
+    /// for what the daemon admits, so a hand move to a `read` column narrows
+    /// a live session and a move back widens it. A ticket whose column is
+    /// gone (a hand edit) reads `Full`, what a new column gets.
+    fn agent_tier(&self, ticket: ulid::Ulid) -> AgentTools {
+        if !self.board.mcp_tools {
+            return AgentTools::Off;
+        }
+        self.board
+            .ticket(ticket)
+            .and_then(|t| self.board.column(&t.column))
+            .map(|c| c.settings.agent_tools)
+            .unwrap_or_default()
+    }
+
+    /// The `--permission-mode` a claude on `ticket` is spawned with (T-117):
+    /// its column's own word, or — `inherit` — the user's configured default,
+    /// exactly the pass-through every spawn made before columns had a say
+    /// (dogfood 2026-08-30: a session in a fresh worktree lost the global
+    /// defaultMode; the flag is the only mode source Claude Code checks
+    /// deterministically). Never a mode nobody configured:
+    /// `ClaudeMode::flag_word` cannot say `bypassPermissions`.
+    fn permission_mode_for(&self, ticket: ulid::Ulid) -> Option<String> {
+        let mode = self
+            .board
+            .ticket(ticket)
+            .and_then(|t| self.board.column(&t.column))
+            .map(|c| c.settings.claude_mode)
+            .unwrap_or_default();
+        mode.flag_word().map(str::to_string).or_else(user_default_mode)
     }
 
     /// The one argv builder for a Claude session. Fresh spawns pass
@@ -5359,6 +5707,7 @@ impl Daemon {
     fn claude_argv(
         &self,
         id: uuid::Uuid,
+        ticket: ulid::Ulid,
         identity_flag: &str,
         identity_value: &str,
     ) -> std::result::Result<Vec<String>, String> {
@@ -5368,26 +5717,17 @@ impl Daemon {
             .map_err(|e| format!("hook settings: {e}"))?;
         let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
         let mut argv = vec![claude, "--settings".into(), settings.display().to_string()];
-        argv.extend(self.mesimon_flags(id));
+        argv.extend(self.mesimon_flags(id, ticket));
         argv.push(identity_flag.to_string());
         argv.push(identity_value.to_string());
-        // Replicate the user's own configured permission mode as an explicit
-        // flag (dogfood 2026-08-30: a session in a fresh worktree lost the
-        // global defaultMode; the flag is the only mode source Claude Code
-        // checks deterministically, and --settings merge semantics are a
-        // documented gap). Pass-through only — mesimon never picks a mode the
-        // user didn't configure.
-        if let Some(mode) = user_default_mode() {
-            argv.push("--permission-mode".into());
-            argv.push(mode);
-        }
         Ok(argv)
     }
 
     /// The brief rides the argv only while BOTH switches are on: the sentence
-    /// names `get_ticket`, and a session with no tools has nothing to call.
-    fn brief_on(&self) -> bool {
-        self.board.mcp_tools && self.board.system_prompt
+    /// names `get_ticket`, and a session with no tools has nothing to call —
+    /// and the column's tier counts as a switch (T-117).
+    fn brief_on(&self, ticket: ulid::Ulid) -> bool {
+        self.agent_tier(ticket) != AgentTools::Off && self.board.system_prompt
     }
 
     /// The pairs mesimon itself puts on a claude's argv, as the board's two
@@ -5399,15 +5739,24 @@ impl Daemon {
     /// (T-224): opt-in, and only beside the tools it names — a system prompt
     /// telling the model to call a tool it does not have would be the lie
     /// the switch exists to avoid.
-    fn mesimon_flags(&self, id: uuid::Uuid) -> Vec<String> {
+    /// Then the column's say (T-117): the tier narrows what the blob lists
+    /// and `Off` drops the flag like the board switch does, and the
+    /// permission mode rides here too, so a wake re-applies the column the
+    /// way it re-applies the blob.
+    fn mesimon_flags(&self, id: uuid::Uuid, ticket: ulid::Ulid) -> Vec<String> {
         let mut out = Vec::new();
-        if self.board.mcp_tools {
+        let tier = self.agent_tier(ticket);
+        if tier != AgentTools::Off {
             out.push("--mcp-config".into());
-            out.push(self.mcp_config_json(id));
+            out.push(self.mcp_config_json(id, tier));
         }
-        if self.brief_on() {
+        if self.brief_on(ticket) {
             out.push(mesimon_core::brief::FLAG.into());
             out.push(mesimon_core::brief::TEXT.into());
+        }
+        if let Some(mode) = self.permission_mode_for(ticket) {
+            out.push("--permission-mode".into());
+            out.push(mode);
         }
         out
     }
@@ -5432,7 +5781,13 @@ impl Daemon {
             // road a session takes to pick a switch up or drop it, since a
             // live pane's argv was fixed at exec — "wake it to pick the
             // setting up" must be true in both directions.
-            let owned = ["--session-id", "--resume", "--mcp-config", mesimon_core::brief::FLAG];
+            let owned = [
+                "--session-id",
+                "--resume",
+                "--mcp-config",
+                mesimon_core::brief::FLAG,
+                "--permission-mode",
+            ];
             let mut argv = Vec::with_capacity(rec.argv.len() + 2);
             let mut it = rec.argv.iter();
             while let Some(a) = it.next() {
@@ -5447,7 +5802,7 @@ impl Daemon {
                 .position(|a| a == "--settings")
                 .map(|i| (i + 2).min(argv.len()))
                 .unwrap_or(argv.len().min(1));
-            let mut ours = self.mesimon_flags(rec.id);
+            let mut ours = self.mesimon_flags(rec.id, rec.ticket);
             ours.push("--resume".into());
             ours.push(target.to_string());
             argv.splice(at..at, ours);
@@ -5455,7 +5810,7 @@ impl Daemon {
         }
         // Adopted with no argv of ours: build the full spawn argv fresh —
         // hooks via --settings keyed on OUR record uuid (never --bare, S-D).
-        self.claude_argv(rec.id, "--resume", &target.to_string())
+        self.claude_argv(rec.id, rec.ticket, "--resume", &target.to_string())
     }
 
     /// Double-resume guard (09 §9: two resumes interleave one transcript).
@@ -5555,10 +5910,12 @@ impl Daemon {
         // and the in-app `/resume` relearn writes it the same way.
         let fresh = self.resume_transcript_missing(rec, claude_id).then(uuid::Uuid::new_v4);
         let argv = match fresh {
-            Some(new_id) => match self.claude_argv(rec.id, "--session-id", &new_id.to_string()) {
-                Ok(a) => a,
-                Err(message) => return Response::Err { message },
-            },
+            Some(new_id) => {
+                match self.claude_argv(rec.id, rec.ticket, "--session-id", &new_id.to_string()) {
+                    Ok(a) => a,
+                    Err(message) => return Response::Err { message },
+                }
+            }
             None => match self.resume_argv(rec) {
                 Ok(a) => a,
                 Err(message) => return Response::Err { message },
@@ -5834,14 +6191,8 @@ impl Daemon {
     fn reclaim_all(&mut self) -> (usize, usize) {
         // The header offer's action: sleep-safe tickets only. Z must sleep
         // exactly the set the suggestion prices, never sessions on tickets
-        // still in play (2026-08-30 rescope; per-column policy lands in M5).
-        let safe: std::collections::HashSet<ulid::Ulid> = self
-            .board
-            .tickets
-            .iter()
-            .filter(|t| t.column == SLEEP_SAFE_COLUMN)
-            .map(|t| t.id)
-            .collect();
+        // still in play (2026-08-30 rescope; the columns' `reclaim`, T-117).
+        let safe = self.reclaim_tickets();
         let candidates: Vec<uuid::Uuid> = self
             .board
             .sessions
@@ -6087,6 +6438,12 @@ fn resting_hint(path: &std::path::Path, now: u64) -> Option<TailHint> {
                 Some(TailHint::StaleQuiet)
             }
         }
+        // A trailing tool call: the tool is running, and the transcript is
+        // STILL for as long as it does — the file's quiet says nothing here
+        // (T-265: a reload during a 3.5-minute `cargo` call). Seed Running;
+        // a turn that really died is `probe_activity`'s to catch, off the
+        // pane's own quiet, which a tool in flight keeps painting.
+        TailEvent::ToolInFlight => Some(TailHint::ToolInFlight),
         // A trailing user/attachment record: the turn may be in flight — say
         // nothing while the file is fresh, idle once it has clearly died.
         TailEvent::Other => {

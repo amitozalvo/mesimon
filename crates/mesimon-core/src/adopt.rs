@@ -81,6 +81,14 @@ pub enum TailEvent {
     AssistantText { text: String },
     /// The assistant called a tool that needs a human.
     NeedsHuman { tool: TailTool },
+    /// The assistant called a tool and said nothing else: the tool is IN
+    /// FLIGHT until its `tool_result` lands, and the transcript writes nothing
+    /// for as long as it runs — a build or a test suite keeps the file still
+    /// for minutes while the pane is busy (T-265, 2026-09-06: a reload during
+    /// a 3.5-minute `cargo` call read the session as idle until the tool came
+    /// back). Distinct from `Other` precisely so a quiet-file rule cannot call
+    /// it a dead turn.
+    ToolInFlight,
     /// `system`/`turn_duration`: the turn finished.
     TurnComplete,
     /// The stream was cut mid-turn.
@@ -137,8 +145,11 @@ pub fn classify_tail_record(v: &Value) -> TailEvent {
                 .rev()
                 .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
                 .find_map(|b| b.get("text").and_then(Value::as_str));
+            let calls_a_tool =
+                blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"));
             match text {
                 Some(t) => TailEvent::AssistantText { text: t.to_string() },
+                None if calls_a_tool => TailEvent::ToolInFlight,
                 None => TailEvent::Other,
             }
         }
@@ -442,6 +453,40 @@ mod tests {
                 {"type":"text","text":"done"}]}}"#);
         assert_eq!(tool_activity(&v), None);
         assert_eq!(tool_activity(&val(r#"{"uuid":"u7","type":"user","message":{}}"#)), None);
+    }
+
+    #[test]
+    fn a_textless_tool_call_is_a_tool_in_flight() {
+        // Current Claude Code writes one record per content block, and stamps
+        // the whole message's stop_reason on each — so the BLOCK is the
+        // evidence, never `stop_reason: tool_use` (a mid-turn thinking record
+        // carries it too).
+        let v =
+            val(r#"{"uuid":"u1","type":"assistant","message":{"stop_reason":"tool_use","content":[
+                {"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#);
+        assert_eq!(classify_tail_record(&v), TailEvent::ToolInFlight);
+        // Text beside the call still previews (and still means Running).
+        let v =
+            val(r#"{"uuid":"u2","type":"assistant","message":{"stop_reason":"tool_use","content":[
+                {"type":"text","text":"running the suite"},
+                {"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#);
+        assert_eq!(
+            classify_tail_record(&v),
+            TailEvent::AssistantText { text: "running the suite".into() }
+        );
+        // The two human-facing tools keep their own event.
+        let v =
+            val(r#"{"uuid":"u3","type":"assistant","message":{"stop_reason":"tool_use","content":[
+                {"type":"tool_use","name":"AskUserQuestion","input":{}}]}}"#);
+        assert_eq!(
+            classify_tail_record(&v),
+            TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion }
+        );
+        // A thinking-only record is still nothing the observe tier can use.
+        let v =
+            val(r#"{"uuid":"u4","type":"assistant","message":{"stop_reason":"tool_use","content":[
+                {"type":"thinking","thinking":"hm"}]}}"#);
+        assert_eq!(classify_tail_record(&v), TailEvent::Other);
     }
 
     #[test]

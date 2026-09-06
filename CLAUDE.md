@@ -180,6 +180,21 @@ add it here.
 3. `cargo ut`: the keymap validators run. A hint that shows on the board changes the board
    goldens: `MESIMON_UPDATE_GOLDEN=1 cargo test -p mesimon-tui`, then review the diff by eye.
 
+**A column setting** (T-117, 2026-09-06):
+1. The field on `core/src/board.rs::ColumnSettings` — `#[serde(default)]`, `skip_serializing_if`
+   its default. It reaches the disk inside the column's `[[columns]]` table and the TUI on the
+   snapshot for free. If its default is today's behaviour, no schema bump; if an older build
+   DROPPING it would widen what a spawn or an agent gets (`agent_tools`, `claude_mode`), bump
+   `COLUMNS_SCHEMA` (`daemon/src/store.rs`, the doctrine is on the constant).
+2. `board::template_settings` if the four template columns should carry it — the ONE place a
+   column name is read as a literal (a fresh board and the v3→v4 migration both seed from it).
+3. The reader — `automove`, `train::plan`, `place_ticket`'s gate, `permission_mode_for`,
+   `agent_tier`, `reclaim_columns` — reads the ticket's column through `Board::column`, never a
+   name. `Board::set_column_settings` is where a cross-column reference is validated.
+4. `ColumnSettings::summary` (doctor's `columns` line and the dialog's details) and a `MenuItem`
+   in `keymap::COLUMN_ITEMS` with its `Ctx::col_*` word, filled in `App::ctx()`; a toggle's
+   dispatch arm is one `self.set_column(|s| …)`.
+
 **A theme:** a `static` `Palette` in `tui/src/theme.rs` (every profile, hand-authored — never
 nearest-matched), a `Flavor` variant and its arms in `palette`/`name`/`blurb` (the compiler
 finds them), a `Kind` for the law or a fourth clause argued in `test_chroma_law`. `cargo ut`
@@ -479,6 +494,44 @@ editor save must not fork the user's shell). E2e: `crates/mesimon/tests/shell_en
 (asserts the value is NOT on the pane's command line) and `exec_e2e.rs`; STALE-MAP "A pane
 gets the user's own shell environment" + "The environment travels inside the pane".
 
+**Columns own their automations (T-117, 2026-09-06).** A column is `Column { name, order,
+settings: ColumnSettings }` and its NAME is its identity (`Ticket.column`'s foreign key, no id):
+`RenameColumn` is a daemon transaction over every ticket file, archived ones included, every
+other column's rule naming it, the move gate's memory and the grace band. No code path compares a
+column name to a literal after `board::template_settings`, the one seeding table (a fresh board,
+and the store's v3→v4 migration of an existing one — `COLUMNS_SCHEMA` 4). `on_working`/`on_done`
+ARE automove (`core/src/automove.rs` reads the ticket's column's settings), `train` is the merge
+train's reach (`Merge` = candidates + rebase asks, `Rebase` = asks only), `requires_merge` is the
+DONE gate, `reclaim` is the sleep/archive offer and `X`/`Z`, `workspace` defaults a ticket CREATED
+there by stamping the ticket field at mint (never retroactive), `collapsed` pins a spine, `claude_mode`
+rides `--permission-mode` (`inherit` = the user's own `defaultMode`, else `auto`/`plan`/`manual`;
+the enum cannot spell `bypassPermissions`; `--permission-mode` is in `resume_argv`'s `owned` list so
+a wake re-applies the column), `agent_tools` is a four-rung tier — `off < read < annotate < full`,
+`mcp::tier_needed_by` — advertised at spawn as `--tools <word>` on the shim's argv (it lists
+`tools_for(tier)`) and enforced in `handle_agent` at EVERY call against the ticket's column as it
+stands then, ANDed with `Board.mcp_tools`; `agent_allowed_columns` is empty below `full`. `auto_run`
+("start claude on creation") fires from `Daemon::create_ticket` ONLY — a person at the composer —
+as `spawn_session(.., Claude, submit_prompt: true)`, feed `auto_run_started` /
+`auto_run_refused:<why>` with actor `automation`, `Response::Created { started }` so the composer
+starts no second; never on a move, an agent's `create_ticket`, a wake, an unarchive. For that the
+brief is read at PASTE time (`retry_pending_submits` reads `description_body` when `Parked.brief`),
+so a description written after the spawn still travels, and the composer's workspace rides
+`CreateTicket { workspace }`. `DeleteColumn` refuses live tickets (`move its N tickets first`) and
+the last column; `SortColumn` is one-shot. The six commands are local-only (`agent_allows`),
+`Mutate` on the board, barred under `columns_barred`. `mesimon doctor` prints a `columns` line.
+**In the TUI** the column HEADER is a cursor position (`App::cursor_row: Option<usize>`, `None`;
+an empty column IS its header — `App::on_header`, `Ctx::on_header`): Enter opens
+`Mode::ColumnSettings` (`Scope::ColumnSettings`, `keymap::COLUMN_ITEMS` drawn by
+`menu::draw_dense`, one line a row; the Name row is a text field in place and then the scope is
+`Input`), `r` renames in the header row (`InputPurpose::RenameColumn`), `HJKL` moves the column
+(`ReorderColumn`), `d d` deletes (`Doomed::Column`), `O` adds one after the cursor's and names it
+first (`ColumnSubject::New`); the menu has `Column settings` and `Add a column` rows. A header
+under the cursor wears the cursor bar; a column that does something wears ` →` after its count
+(`glyphs::auto_mark`, dropped first when tight); a pinned column is a spine unless the cursor is in
+it (`layout::board_geometry`'s `pinned`). Goldens `board_header_*`, `board_pinned_120x30`,
+`column_settings_*`, `column_add_120x30`, `help_header_120x30`. E2e `column_e2e`, `auto_run_e2e`,
+`claude_mode_e2e`, `agent_tools_e2e`. (STALE-MAP "Columns own their automations".)
+
 **Attention flow (M2).** Claude sessions spawn with `--settings <state>/hooks/<uuid>.json` — a
 32-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's
 silent-failure traps: no `if` off tool events, matchers only where supported). Thirty-one of the
@@ -505,7 +558,11 @@ binary's first execs in syspolicyd's malware scan for 41 s, and a finished simbl
 `turn_duration` — stamped at or after the Running spell means `Signal::StatusFileIdle { turn_done:
 true }` → `Idle{EndTurn}` at Medium (automove takes it to REVIEW; a late Stop then commits High over
 it); the previous turn's close is older than the spell, so the recordless Esc still reads
-`Interrupted`. E2e `interrupt_status_e2e` runs both (STALE-MAP "A late Stop is not an Esc"). After a
+`Interrupted`. E2e `interrupt_status_e2e` runs both (STALE-MAP "A late Stop is not an Esc"). **And a
+reload mid-tool seeds `Running`** (T-265, 2026-09-06): a trailing assistant record with only a
+`tool_use` block is `TailEvent::ToolInFlight`, never `Other`, because a tool in flight keeps the
+transcript still for its whole duration and the mtime-quiet rule in `resting_hint` read a 3.5-minute
+`cargo` call as a dead turn (STALE-MAP "A tool in flight survives a reload"). After a
 daemon restart, our own Claude sessions sit at `Unknown{DaemonRestarted}` (reconcile never trusts
 stale claims) and borrow the observe tier while `Unknown`: the transcript tail re-derives state at
 Low confidence until a hook re-asserts. Sessions mesimon didn't spawn get no hooks and can never
@@ -632,8 +689,10 @@ Sleeping claude). A queued ask rides `PromptSession { queued: true }` into the d
 `core/src/quiet.rs::working_tickets`: no claude with the same `cwd` Spawning / Running /
 RequiresAction / Idle{Background} / `pending_submit` / a paste of ours still owed its ack
 (`Daemon::inflight`); a shell never counts — hooked beside `auto_move` in `apply_change`, on the
-1 s bucket, and at enqueue (a quiet checkout sends at once); one per checkout per pass, FIFO, one
-per ticket. It is DROPPED by any `UserPromptSubmit` on the ticket while it waits (the daemon
+1 s bucket, and at enqueue (a quiet checkout sends at once); one per checkout per pass, **in
+BOARD order — column order, then top to bottom, the merge train's walk** (`Daemon::queue_order`,
+T-263, 2026-09-06: the user sorts the queue by moving the cards; `waits_on` names the holders and
+then the asks ahead, so the row's `+N` falls as a card rises), one per ticket. It is DROPPED by any `UserPromptSubmit` on the ticket while it waits (the daemon
 cannot tell its own paste's ack from the user's keystroke, so the next prompt closes it either
 way), by sleep / kill / delete, by the sweep (target gone, replaced, parked, ticket archived) —
 never by a hand move. The snapshot's `pending: Vec<Pending>` (kept general: the train's rows ride
@@ -1006,14 +1065,20 @@ marks both the chip and the rows it stands in front of. To add one: add the menu
 
 **The preferences are one level down, behind the menu's `Settings` row (2026-09-04, user
 request).** A menu row is an action or a door, never a toggle: `keymap::SETTINGS_ITEMS`
-(theme, agent replies, how a snooze returns, the week's first day — `MenuItem`s, so
-`ui/menu.rs::draw_list` draws both lists) is behind `Verb::Settings` → `Mode::Settings` / `Scope::Settings` (word
+(theme, agent replies, where the tmux status line sits, how a snooze returns, the week's first
+day — `MenuItem`s, so `ui/menu.rs::draw_list` draws both lists) is behind `Verb::Settings` → `Mode::Settings` / `Scope::Settings` (word
 `SETTINGS`, the menu's three shapes, `esc back`). Choosing a settings row KEEPS the list open
 — the row relabels itself — and the theme picker pops back onto its row on Enter and Esc
 alike; Esc from the list lands on the menu's `Settings` row (`App::menu_row` /
 `settings_row`). No settings row is ever a suggestion (`every_suggestion_is_a_menu_row` holds
 the two lists apart), and the row's detail names the current theme so the door says what is
-behind it. Golden `settings_120x30`. (STALE-MAP "The preferences move into a Settings submenu".)
+behind it. Golden `settings_120x30`. (STALE-MAP "The preferences move into a Settings submenu".) **The
+status line's side is one of those rows (T-264, 2026-09-06)**: `Status line at the bottom / top`
+→ `prefs.json::status_line_top` → `Command::SetStatusLine { top }` (denied to agents) →
+`TmuxBackend::set_status_position`, which re-renders the conf for the NEXT server AND
+`set-option`s the live one; the snapshot's `status_top` is the daemon's word and
+`App::reconcile_status_line` pushes the preference whenever they differ, either way, on the
+train's back-off. E2e `status_line_e2e`. (STALE-MAP "The tmux status line can sit at the top".)
 
 `?` (`ui/help.rs`) renders `keymap::overlay` and is the complete answer for the current
 screen and state.

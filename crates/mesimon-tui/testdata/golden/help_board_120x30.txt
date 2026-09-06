@@ -2,10 +2,9 @@
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
-   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
-      ╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮
-   Key│ MOVE AROUND                                           SESSIONS                                           │
-      │   hjkl      move around                                 c         claude                                 │
+   Dec╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮ >1y
+      │ MOVE AROUND                                           SESSIONS                                           │
+   Key│   hjkl      move around                                 c         claude                                 │
       │   g         top of column                               s         shell                                  │
       │   G         bottom of column                            x         sleep sessions                         │
       │   enter     go to the agent                                                                              │
@@ -15,10 +14,11 @@
       │   o         new ticket                                                                                   │
       │   > <       move card, aiming                         APP                                                │
       │   HJKL      move card                                   esc       menu                                   │
-      │   r         rename                                      q         quit                                   │
-      │   tab       describe                                    ?         keys                                   │
-      │   n         note                                        ^L        redraw                                 │
-      │   ^t        tags                                        ^Z        suspend mesimon                        │
+      │   O         new column                                  q         quit                                   │
+      │   r         rename                                      ?         keys                                   │
+      │   tab       describe                                    ^L        redraw                                 │
+      │   n         note                                        ^Z        suspend mesimon                        │
+      │   ^t        tags                                                                                         │
       │   a         archive                                                                                      │
       │   z         snooze                                                                                       │
       │   d         delete                                                                                       │

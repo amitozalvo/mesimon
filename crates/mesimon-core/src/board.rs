@@ -309,11 +309,292 @@ impl SessionRecord {
     }
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+/// A column: its name — which IS its identity, `Ticket.column`'s foreign
+/// key; there is no id, so a rename is a transaction over every ticket — its
+/// order, and its settings (T-117). The settings are flattened, so on disk
+/// their keys sit beside `name` and `order` inside the `[[columns]]` table
+/// and every one of them defaults: a file from before T-117 parses as it did.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Column {
     pub name: String,
     /// Fractional index; columns sort by it.
     pub order: String,
+    #[serde(flatten)]
+    pub settings: ColumnSettings,
+}
+
+impl Column {
+    pub fn new(name: impl Into<String>, order: impl Into<String>) -> Self {
+        Self { name: name.into(), order: order.into(), settings: ColumnSettings::default() }
+    }
+}
+
+/// The `--permission-mode` a claude started on a ticket in this column runs
+/// with (T-117). `Inherit` is the user's own `permissions.defaultMode`, the
+/// pass-through every spawn made before columns had a say. The enum has no
+/// `bypassPermissions` and no `dontAsk` on purpose: a column may narrow what
+/// a person configured, never hand out a mode nobody asked for (D10).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ClaudeMode {
+    #[default]
+    Inherit,
+    Auto,
+    Plan,
+    Manual,
+}
+
+impl ClaudeMode {
+    /// The flag's word, `None` for inherit. Claude Code 2.1.261 spells them
+    /// `auto`, `plan`, `manual` — and `manual`, never `default`, which the
+    /// flag refuses.
+    pub fn flag_word(self) -> Option<&'static str> {
+        match self {
+            Self::Inherit => None,
+            Self::Auto => Some("auto"),
+            Self::Plan => Some("plan"),
+            Self::Manual => Some("manual"),
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        self.flag_word().unwrap_or("inherit")
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Inherit => Self::Auto,
+            Self::Auto => Self::Plan,
+            Self::Plan => Self::Manual,
+            Self::Manual => Self::Inherit,
+        }
+    }
+
+    fn is_inherit(&self) -> bool {
+        *self == Self::Inherit
+    }
+}
+
+/// Which of mesimon's own MCP tools a claude on a ticket in this column may
+/// call (T-117): board authority, tiered. Ordered — `Off < Read < Annotate <
+/// Full` — and `mcp::AgentTools::needed_by` is the table that says which
+/// tool needs which rung. Advertised at spawn (the shim lists only these)
+/// and enforced by the daemon on every call against the ticket's CURRENT
+/// column, so a REVIEW column can keep an agent from moving its own ticket.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentTools {
+    /// No `--mcp-config` at all, like `Board::mcp_tools` off.
+    Off,
+    /// `get_ticket`, `list_board`, `read_note`.
+    Read,
+    /// Read, plus `write_note` and `tag_ticket`.
+    Annotate,
+    /// Everything: `move_ticket` and `create_ticket` too. Today's behaviour.
+    #[default]
+    Full,
+}
+
+impl AgentTools {
+    /// The word on the shim's argv and in the file.
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Read => "read",
+            Self::Annotate => "annotate",
+            Self::Full => "full",
+        }
+    }
+
+    pub fn parse(s: &str) -> Option<Self> {
+        Some(match s {
+            "off" => Self::Off,
+            "read" => Self::Read,
+            "annotate" => Self::Annotate,
+            "full" => Self::Full,
+            _ => return None,
+        })
+    }
+
+    /// The dialog's cycle: narrowing first, so one press from `full` asks
+    /// the smallest question.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Full => Self::Annotate,
+            Self::Annotate => Self::Read,
+            Self::Read => Self::Off,
+            Self::Off => Self::Full,
+        }
+    }
+
+    fn is_full(&self) -> bool {
+        *self == Self::Full
+    }
+}
+
+/// How far the merge train reaches into this column (T-117): nowhere, rebase
+/// asks only, or auto-merge candidates and rebase asks. The train's global
+/// preference is still the consent switch; this says where it looks.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TrainReach {
+    #[default]
+    Off,
+    Rebase,
+    Merge,
+}
+
+impl TrainReach {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Rebase => "rebase asks",
+            Self::Merge => "auto-merge",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Rebase,
+            Self::Rebase => Self::Merge,
+            Self::Merge => Self::Off,
+        }
+    }
+
+    fn is_off(&self) -> bool {
+        *self == Self::Off
+    }
+}
+
+/// A one-shot order for `Board::sort_column` (T-117). Not a setting: nothing
+/// keeps a column sorted, and every gesture keeps working afterwards.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum SortBy {
+    /// Most recent arrival in the column first.
+    NewestArrival,
+    OldestArrival,
+    /// `T-1`, `T-2`, … by number.
+    Key,
+    /// Needs-you first, each half keeping its order.
+    NeedsYouFirst,
+}
+
+impl SortBy {
+    pub const ALL: [SortBy; 4] =
+        [SortBy::NewestArrival, SortBy::OldestArrival, SortBy::Key, SortBy::NeedsYouFirst];
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::NewestArrival => "newest first",
+            Self::OldestArrival => "oldest first",
+            Self::Key => "by key",
+            Self::NeedsYouFirst => "needs-you first",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Self::ALL[(i + 1) % Self::ALL.len()]
+    }
+
+    pub fn prev(self) -> Self {
+        let i = Self::ALL.iter().position(|s| *s == self).unwrap_or(0);
+        Self::ALL[(i + Self::ALL.len() - 1) % Self::ALL.len()]
+    }
+}
+
+/// Everything a column decides (T-117). Every automation the daemon runs
+/// on a ticket is a field here, read off the ticket's column through
+/// `Board::column` and never off a column NAME: `on_working`/`on_done` ARE
+/// automove, `train` is the merge train's reach, `requires_merge` is the
+/// DONE gate, `reclaim` is the sleep/archive offer. The defaults are what a
+/// column with no template settings did before: nothing moves, tools full,
+/// mode inherited, train off. Each default is skipped on disk so a file
+/// says only what was chosen.
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct ColumnSettings {
+    /// Pinned as a one-cell spine unless the cursor is in it.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub collapsed: bool,
+    /// The workspace a ticket CREATED here starts with, stamped onto the
+    /// ticket at mint; the ticket field stays the truth and a change here is
+    /// never retroactive. `None` = the board default.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub workspace: Option<WorkspaceStrategy>,
+    #[serde(default, skip_serializing_if = "ClaudeMode::is_inherit")]
+    pub claude_mode: ClaudeMode,
+    #[serde(default, skip_serializing_if = "AgentTools::is_full")]
+    pub agent_tools: AgentTools,
+    /// A ticket a PERSON creates here gets claude started on its title, the
+    /// brief pasted and submitted — the composer's Shift+Enter, fired by the
+    /// daemon. Creation only: never a move, an agent's `create_ticket`, a
+    /// wake, an unarchive or an undo.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub auto_run: bool,
+    /// The column a ticket moves to when its claude starts working
+    /// (`Running` at Medium or better). `None` = stay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_working: Option<String>,
+    /// The column a ticket moves to when its claude ends a turn
+    /// (`Idle{EndTurn}` at Medium or better). `None` = stay.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub on_done: Option<String>,
+    /// Entry is refused while the ticket's worktree branch is unmerged.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub requires_merge: bool,
+    /// The header's sleep and archive offers, `X` and `Z` price this column.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub reclaim: bool,
+    #[serde(default, skip_serializing_if = "TrainReach::is_off")]
+    pub train: TrainReach,
+}
+
+impl ColumnSettings {
+    /// Whether any automation would act on a ticket here — the header's one
+    /// optional mark.
+    pub fn automated(&self) -> bool {
+        self.auto_run
+            || self.on_working.is_some()
+            || self.on_done.is_some()
+            || self.train != TrainReach::Off
+    }
+
+    /// The non-default settings in words, for `doctor` and the dialog.
+    pub fn summary(&self) -> Vec<String> {
+        let mut out = Vec::new();
+        if self.collapsed {
+            out.push("collapsed".into());
+        }
+        if let Some(w) = self.workspace {
+            out.push(format!("workspace: {}", w.word()));
+        }
+        if self.claude_mode != ClaudeMode::Inherit {
+            out.push(format!("claude: {}", self.claude_mode.word()));
+        }
+        if self.agent_tools != AgentTools::Full {
+            out.push(format!("agent tools: {}", self.agent_tools.word()));
+        }
+        if self.auto_run {
+            out.push("starts claude on creation".into());
+        }
+        if let Some(c) = &self.on_working {
+            out.push(format!("working → {c}"));
+        }
+        if let Some(c) = &self.on_done {
+            out.push(format!("done → {c}"));
+        }
+        if self.requires_merge {
+            out.push("entry needs a merged branch".into());
+        }
+        if self.reclaim {
+            out.push("offers sleep + archive".into());
+        }
+        if self.train != TrainReach::Off {
+            out.push(format!("train: {}", self.train.word()));
+        }
+        out
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -364,8 +645,9 @@ pub struct Ticket {
     #[serde(default, skip_serializing_if = "is_false")]
     pub manual_merge: bool,
     /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
-    /// a column policy only defaults NEW tickets, M5). `None` = inherit the board
-    /// default. Must stay after the scalar fields (TOML serialize order).
+    /// a column's `workspace` setting only defaults a NEW ticket, stamped here at
+    /// mint — T-117). `None` = inherit the board default. Must stay after the
+    /// scalar fields (TOML serialize order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceStrategy>,
     /// Tags, at most one per group (a group is an axis: kind, environment…).
@@ -580,6 +862,17 @@ pub fn sanitize_tag(raw: &str) -> Option<String> {
     nonblank(cap_bytes(&scrub_cells(raw, false), TAG_MAX_BYTES))
 }
 
+/// The longest a column name may be, in bytes (T-117). The header draws it
+/// uppercased in a column no narrower than 26 cells, and a spine spells it
+/// one letter per row; a tag's bound is the right size.
+pub const COLUMN_NAME_MAX_BYTES: usize = 24;
+
+/// The daemon-side boundary for a column name: `sanitize_tag`'s rule.
+pub fn sanitize_column_name(raw: &str) -> Option<String> {
+    use crate::text::{cap_bytes, nonblank, scrub_cells};
+    nonblank(cap_bytes(&scrub_cells(raw, false), COLUMN_NAME_MAX_BYTES))
+}
+
 /// The `[archived]` table on a ticket. Presence = off the board.
 ///
 /// A SNOOZE is an archive with a deadline (T-74): `until` set means the
@@ -626,7 +919,19 @@ pub enum WorkspaceStrategy {
     AdoptExisting,
 }
 
-/// Layer-0 board default until column policies land (M5).
+impl WorkspaceStrategy {
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Worktree => "worktree",
+            Self::SharedCheckout => "shared checkout",
+            Self::AdoptExisting => "adopt",
+        }
+    }
+}
+
+/// Layer-0 board default. A column's `workspace` setting defaults a ticket
+/// CREATED in it by stamping the ticket field at mint (T-117), so this stays
+/// the answer for a ticket nothing stamped.
 pub const DEFAULT_WORKSPACE: WorkspaceStrategy = WorkspaceStrategy::SharedCheckout;
 
 impl Ticket {
@@ -643,7 +948,8 @@ impl Ticket {
         self.entered_at.as_deref().unwrap_or(&self.created_at)
     }
 
-    /// Layered resolution: ticket field, else the board default (column default is M5).
+    /// Layered resolution: ticket field (a column's default is stamped here
+    /// at mint), else the board default.
     pub fn workspace_strategy(&self) -> WorkspaceStrategy {
         self.workspace.unwrap_or(DEFAULT_WORKSPACE)
     }
@@ -793,6 +1099,28 @@ pub const STARTER_GROUP: u8 = 1;
 /// D33i: the shipped default template.
 pub const DEFAULT_COLUMNS: [&str; 4] = ["TODO", "IN PROGRESS", "REVIEW", "DONE"];
 
+/// What each template column DID before T-117 made the rules explicit — and
+/// the ONE place a column name is read as a literal. `with_default_columns`
+/// seeds a fresh board with it and the store's v3→v4 migration seeds an
+/// existing one; after that every automation reads the ticket's column
+/// through `Board::column`, so renaming TODO breaks nothing.
+pub fn template_settings(name: &str) -> Option<ColumnSettings> {
+    let d = ColumnSettings::default;
+    Some(match name {
+        "TODO" => ColumnSettings { on_working: Some("IN PROGRESS".into()), ..d() },
+        "IN PROGRESS" => {
+            ColumnSettings { on_done: Some("REVIEW".into()), train: TrainReach::Rebase, ..d() }
+        }
+        "REVIEW" => ColumnSettings {
+            on_working: Some("IN PROGRESS".into()),
+            train: TrainReach::Merge,
+            ..d()
+        },
+        "DONE" => ColumnSettings { requires_merge: true, reclaim: true, ..d() },
+        _ => return None,
+    })
+}
+
 /// What every short key starts with: `T-12`. The mint, the on-disk recovery
 /// of the counter and the link recogniser (`links.rs`) all read it here.
 pub const KEY_PREFIX: &str = "T-";
@@ -803,10 +1131,241 @@ impl Board {
         let mut prev = String::new();
         for name in DEFAULT_COLUMNS {
             let order = crate::fracindex::between(&prev, "");
-            b.columns.push(Column { name: name.into(), order: order.clone() });
+            b.columns.push(Column::new(name, order.clone()));
             prev = order;
         }
+        b.seed_template_settings();
         b
+    }
+
+    /// Give every column named like the template its template settings, then
+    /// drop any `on_working`/`on_done` naming a column this board does not
+    /// have (a quarantine-rebuilt board may lack one). The v3→v4 road and the
+    /// fresh board's; returns whether anything changed.
+    pub fn seed_template_settings(&mut self) -> bool {
+        let mut changed = false;
+        for c in self.columns.iter_mut() {
+            if let Some(s) = template_settings(&c.name) {
+                if c.settings != s {
+                    c.settings = s;
+                    changed = true;
+                }
+            }
+        }
+        changed | !self.prune_dangling_refs().is_empty()
+    }
+
+    /// Clear every `on_working`/`on_done` that names a column the board does
+    /// not have. Returns `(column, field)` for each one cleared, so the
+    /// caller can say so.
+    pub fn prune_dangling_refs(&mut self) -> Vec<(String, &'static str)> {
+        let names: Vec<String> = self.columns.iter().map(|c| c.name.clone()).collect();
+        let mut out = Vec::new();
+        for c in self.columns.iter_mut() {
+            if c.settings.on_working.as_ref().is_some_and(|n| !names.contains(n)) {
+                c.settings.on_working = None;
+                out.push((c.name.clone(), "on_working"));
+            }
+            if c.settings.on_done.as_ref().is_some_and(|n| !names.contains(n)) {
+                c.settings.on_done = None;
+                out.push((c.name.clone(), "on_done"));
+            }
+        }
+        out
+    }
+
+    pub fn column(&self, name: &str) -> Option<&Column> {
+        self.columns.iter().find(|c| c.name == name)
+    }
+
+    pub fn column_mut(&mut self, name: &str) -> Option<&mut Column> {
+        self.columns.iter_mut().find(|c| c.name == name)
+    }
+
+    /// A name already on the board, letter case aside: the header uppercases
+    /// every name, so `todo` beside `TODO` would draw as two of one column.
+    fn column_name_taken(&self, name: &str) -> bool {
+        self.columns.iter().any(|c| c.name.eq_ignore_ascii_case(name))
+    }
+
+    /// Add a column after `after` (the sorted successor), else at the end.
+    pub fn add_column(&mut self, name: String, after: Option<&str>) -> Result<(), String> {
+        if self.column_name_taken(&name) {
+            return Err(format!("a column named {name} already exists"));
+        }
+        let sorted = self.sorted_columns();
+        let order = match after {
+            Some(a) => {
+                let Some(i) = sorted.iter().position(|c| c.name == a) else {
+                    return Err(format!("no such column: {a}"));
+                };
+                let next = sorted.get(i + 1).map(|c| c.order.as_str()).unwrap_or("");
+                crate::fracindex::between(&sorted[i].order, next)
+            }
+            None => {
+                crate::fracindex::between(sorted.last().map(|c| c.order.as_str()).unwrap_or(""), "")
+            }
+        };
+        self.columns.push(Column::new(name, order));
+        Ok(())
+    }
+
+    /// Rename a column, carrying every ticket in it — ARCHIVED ONES INCLUDED,
+    /// since an archive keeps its column for the restore — and every other
+    /// column's `on_working`/`on_done` naming it. Returns the ticket ids
+    /// that changed so the caller writes only those files.
+    pub fn rename_column(&mut self, from: &str, to: &str) -> Result<Vec<ulid::Ulid>, String> {
+        if self.column(from).is_none() {
+            return Err(format!("no such column: {from}"));
+        }
+        if from != to && !(from.eq_ignore_ascii_case(to)) && self.column_name_taken(to) {
+            return Err(format!("a column named {to} already exists"));
+        }
+        if from == to {
+            return Ok(Vec::new());
+        }
+        for c in self.columns.iter_mut() {
+            if c.name == from {
+                c.name = to.to_string();
+            }
+            if c.settings.on_working.as_deref() == Some(from) {
+                c.settings.on_working = Some(to.to_string());
+            }
+            if c.settings.on_done.as_deref() == Some(from) {
+                c.settings.on_done = Some(to.to_string());
+            }
+        }
+        let mut touched = Vec::new();
+        for t in self.tickets.iter_mut() {
+            if t.column == from {
+                t.column = to.to_string();
+                touched.push(t.id);
+            }
+        }
+        Ok(touched)
+    }
+
+    /// Delete a column. Refused while any live ticket is in it — an archived
+    /// one keeps its column string and the restore falls back to the first
+    /// column — and refused for the last column. Clears every
+    /// `on_working`/`on_done` pointing at it; returns those, as
+    /// `prune_dangling_refs` does.
+    pub fn delete_column(&mut self, name: &str) -> Result<Vec<(String, &'static str)>, String> {
+        if self.column(name).is_none() {
+            return Err(format!("no such column: {name}"));
+        }
+        if self.columns.len() == 1 {
+            return Err("the last column stays".into());
+        }
+        let live = self.column_tickets(name).len();
+        if live > 0 {
+            return Err(format!(
+                "move {} first",
+                if live == 1 { "its ticket".to_string() } else { format!("its {live} tickets") }
+            ));
+        }
+        self.columns.retain(|c| c.name != name);
+        Ok(self.prune_dangling_refs())
+    }
+
+    /// Move a column before `before` in board order, else to the end.
+    pub fn reorder_column(&mut self, name: &str, before: Option<&str>) -> Result<(), String> {
+        if self.column(name).is_none() {
+            return Err(format!("no such column: {name}"));
+        }
+        if before == Some(name) {
+            return Ok(());
+        }
+        let others: Vec<(String, String)> = self
+            .sorted_columns()
+            .iter()
+            .filter(|c| c.name != name)
+            .map(|c| (c.name.clone(), c.order.clone()))
+            .collect();
+        let order = match before {
+            Some(b) => {
+                let Some(i) = others.iter().position(|(n, _)| n == b) else {
+                    return Err(format!("no such column: {b}"));
+                };
+                let prev = if i == 0 { "" } else { others[i - 1].1.as_str() };
+                crate::fracindex::between(prev, &others[i].1)
+            }
+            None => {
+                crate::fracindex::between(others.last().map(|(_, o)| o.as_str()).unwrap_or(""), "")
+            }
+        };
+        if let Some(c) = self.column_mut(name) {
+            c.order = order;
+        }
+        Ok(())
+    }
+
+    /// Replace a column's settings whole. `on_working`/`on_done` must name a
+    /// column the board has, other than this one — a self-loop is refused,
+    /// not resolved.
+    pub fn set_column_settings(&mut self, name: &str, s: ColumnSettings) -> Result<(), String> {
+        if self.column(name).is_none() {
+            return Err(format!("no such column: {name}"));
+        }
+        for (field, target) in [("working", &s.on_working), ("done", &s.on_done)] {
+            if let Some(t) = target {
+                if t == name {
+                    return Err(format!("when {field}: a column cannot move a ticket to itself"));
+                }
+                if self.column(t).is_none() {
+                    return Err(format!("when {field}: no such column: {t}"));
+                }
+            }
+        }
+        if let Some(c) = self.column_mut(name) {
+            c.settings = s;
+        }
+        Ok(())
+    }
+
+    /// One-shot: fresh fractional indices for every live ticket in the
+    /// column, in `by`'s order (ties keep their current order, then id).
+    /// Returns the ids whose `order` changed. `needs_you` is the daemon's
+    /// set — the attention queue's tickets and the woken ones.
+    pub fn sort_column(
+        &mut self,
+        name: &str,
+        by: SortBy,
+        needs_you: &std::collections::HashSet<ulid::Ulid>,
+    ) -> Vec<ulid::Ulid> {
+        let mut ids: Vec<ulid::Ulid> = self.column_tickets(name).iter().map(|t| t.id).collect();
+        let key_of = |id: ulid::Ulid| -> (u64, u64, bool) {
+            let t = self.ticket(id).expect("id from column_tickets");
+            let arrival = stamp_secs(t.column_since()).unwrap_or(0);
+            let key =
+                t.short_key.strip_prefix(KEY_PREFIX).and_then(|k| k.parse().ok()).unwrap_or(0);
+            (arrival, key, needs_you.contains(&id))
+        };
+        match by {
+            SortBy::NewestArrival => ids.sort_by_key(|&id| std::cmp::Reverse(key_of(id).0)),
+            SortBy::OldestArrival => ids.sort_by_key(|&id| key_of(id).0),
+            SortBy::Key => ids.sort_by_key(|&id| key_of(id).1),
+            SortBy::NeedsYouFirst => ids.sort_by_key(|&id| !key_of(id).2),
+        }
+        let mut touched = Vec::new();
+        let mut prev = String::new();
+        for id in ids {
+            let order = crate::fracindex::between(&prev, "");
+            if let Some(t) = self.tickets.iter_mut().find(|t| t.id == id) {
+                if t.order != order {
+                    t.order = order.clone();
+                    touched.push(id);
+                }
+            }
+            prev = order;
+        }
+        touched
+    }
+
+    /// The columns whose tickets the sleep and archive offers, `X` and `Z`
+    /// price (`reclaim`).
+    pub fn reclaim_columns(&self) -> std::collections::HashSet<&str> {
+        self.columns.iter().filter(|c| c.settings.reclaim).map(|c| c.name.as_str()).collect()
     }
 
     pub fn ticket(&self, id: ulid::Ulid) -> Option<&Ticket> {
@@ -1587,5 +2146,238 @@ mod tests {
             let back: SessionState = serde_json::from_str(&json).unwrap();
             assert_eq!(s, back);
         }
+    }
+
+    // ---- columns (T-117) ------------------------------------------------
+
+    fn template_board() -> Board {
+        Board::with_default_columns()
+    }
+
+    /// The seeding table covers exactly the template — the one place a name
+    /// is read as a literal, and it reads no other.
+    #[test]
+    fn template_settings_cover_exactly_the_default_columns() {
+        for name in DEFAULT_COLUMNS {
+            assert!(template_settings(name).is_some(), "{name}");
+        }
+        assert!(template_settings("Backlog").is_none());
+        assert!(template_settings("todo").is_none(), "the literal, not a case-fold");
+        let b = template_board();
+        assert_eq!(b.column("TODO").unwrap().settings.on_working.as_deref(), Some("IN PROGRESS"));
+        assert_eq!(b.column("IN PROGRESS").unwrap().settings.on_done.as_deref(), Some("REVIEW"));
+        assert_eq!(b.column("IN PROGRESS").unwrap().settings.train, TrainReach::Rebase);
+        assert_eq!(b.column("REVIEW").unwrap().settings.on_working.as_deref(), Some("IN PROGRESS"));
+        assert_eq!(b.column("REVIEW").unwrap().settings.train, TrainReach::Merge);
+        assert!(b.column("DONE").unwrap().settings.requires_merge);
+        assert!(b.column("DONE").unwrap().settings.reclaim);
+        assert_eq!(b.reclaim_columns().into_iter().collect::<Vec<_>>(), vec!["DONE"]);
+        // Every template rule points at a column the board has.
+        let mut b2 = b.clone();
+        assert!(b2.prune_dangling_refs().is_empty());
+        assert!(!b2.seed_template_settings(), "seeding twice changes nothing");
+    }
+
+    #[test]
+    fn seeding_prunes_a_reference_to_a_missing_column() {
+        let mut b = Board::default();
+        b.columns.push(Column::new("TODO", "a"));
+        b.columns.push(Column::new("DONE", "b"));
+        assert!(b.seed_template_settings());
+        assert_eq!(b.column("TODO").unwrap().settings.on_working, None);
+        assert!(b.column("DONE").unwrap().settings.reclaim);
+    }
+
+    #[test]
+    fn rename_column_carries_every_ticket_and_every_reference() {
+        let mut b = template_board();
+        b.tickets.push(ticket(1, "TODO", "a"));
+        b.tickets.push(ticket(2, "TODO", "b"));
+        b.tickets.push(ticket(3, "REVIEW", "a"));
+        let mut archived = ticket(4, "TODO", "c");
+        archived.archived =
+            Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
+        b.tickets.push(archived);
+        let touched = b.rename_column("TODO", "INBOX").unwrap();
+        assert_eq!(touched, vec![ulid::Ulid(1), ulid::Ulid(2), ulid::Ulid(4)]);
+        assert!(b.column("TODO").is_none());
+        assert!(b.column("INBOX").is_some());
+        assert_eq!(b.ticket(ulid::Ulid(4)).unwrap().column, "INBOX", "archived too");
+        assert_eq!(b.ticket(ulid::Ulid(3)).unwrap().column, "REVIEW");
+        // A rule pointing at the renamed column follows it.
+        let mut b = template_board();
+        b.rename_column("IN PROGRESS", "DOING").unwrap();
+        assert_eq!(b.column("TODO").unwrap().settings.on_working.as_deref(), Some("DOING"));
+        assert_eq!(b.column("REVIEW").unwrap().settings.on_working.as_deref(), Some("DOING"));
+        assert_eq!(b.column("DOING").unwrap().settings.on_done.as_deref(), Some("REVIEW"));
+    }
+
+    #[test]
+    fn rename_refuses_a_taken_or_unknown_name_and_allows_a_recase() {
+        let mut b = template_board();
+        assert!(b.rename_column("NOPE", "X").is_err());
+        assert!(b.rename_column("TODO", "REVIEW").is_err());
+        assert!(b.rename_column("TODO", "review").is_err(), "the header uppercases");
+        assert_eq!(b.rename_column("TODO", "TODO").unwrap(), Vec::new());
+        b.tickets.push(ticket(1, "TODO", "a"));
+        assert_eq!(b.rename_column("TODO", "Todo").unwrap().len(), 1, "a recase of itself");
+        assert_eq!(b.column("Todo").unwrap().settings.on_working.as_deref(), Some("IN PROGRESS"));
+    }
+
+    #[test]
+    fn delete_refuses_live_tickets_and_the_last_column_and_clears_refs() {
+        let mut b = template_board();
+        b.tickets.push(ticket(1, "IN PROGRESS", "a"));
+        b.tickets.push(ticket(2, "IN PROGRESS", "b"));
+        assert_eq!(b.delete_column("IN PROGRESS").unwrap_err(), "move its 2 tickets first");
+        b.tickets.clear();
+        b.tickets.push(ticket(3, "IN PROGRESS", "a"));
+        assert_eq!(b.delete_column("IN PROGRESS").unwrap_err(), "move its ticket first");
+        let mut archived = ticket(3, "IN PROGRESS", "a");
+        archived.archived =
+            Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
+        b.tickets = vec![archived];
+        let cleared = b.delete_column("IN PROGRESS").unwrap();
+        assert_eq!(
+            cleared,
+            vec![("TODO".to_string(), "on_working"), ("REVIEW".to_string(), "on_working")]
+        );
+        assert!(b.column("IN PROGRESS").is_none());
+        assert_eq!(b.column("TODO").unwrap().settings.on_working, None);
+        assert_eq!(
+            b.ticket(ulid::Ulid(3)).unwrap().column,
+            "IN PROGRESS",
+            "an archive keeps its string"
+        );
+        assert!(b.delete_column("NOPE").is_err());
+        let mut one = Board::default();
+        one.columns.push(Column::new("ONLY", "a"));
+        assert_eq!(one.delete_column("ONLY").unwrap_err(), "the last column stays");
+    }
+
+    fn names(b: &Board) -> Vec<String> {
+        b.sorted_columns().iter().map(|c| c.name.clone()).collect()
+    }
+
+    #[test]
+    fn add_and_reorder_keep_a_strict_order() {
+        let mut b = template_board();
+        b.add_column("QA".into(), Some("REVIEW")).unwrap();
+        assert_eq!(names(&b), ["TODO", "IN PROGRESS", "REVIEW", "QA", "DONE"]);
+        b.add_column("LATER".into(), None).unwrap();
+        assert_eq!(names(&b), ["TODO", "IN PROGRESS", "REVIEW", "QA", "DONE", "LATER"]);
+        assert!(b.add_column("qa".into(), None).is_err(), "taken, case aside");
+        assert!(b.add_column("X".into(), Some("NOPE")).is_err());
+        b.reorder_column("LATER", Some("TODO")).unwrap();
+        assert_eq!(names(&b), ["LATER", "TODO", "IN PROGRESS", "REVIEW", "QA", "DONE"]);
+        b.reorder_column("LATER", None).unwrap();
+        assert_eq!(names(&b), ["TODO", "IN PROGRESS", "REVIEW", "QA", "DONE", "LATER"]);
+        b.reorder_column("QA", Some("IN PROGRESS")).unwrap();
+        assert_eq!(names(&b), ["TODO", "QA", "IN PROGRESS", "REVIEW", "DONE", "LATER"]);
+        b.reorder_column("QA", Some("QA")).unwrap();
+        assert_eq!(names(&b), ["TODO", "QA", "IN PROGRESS", "REVIEW", "DONE", "LATER"]);
+        let orders: Vec<&str> = b.sorted_columns().iter().map(|c| c.order.as_str()).collect();
+        let mut sorted = orders.clone();
+        sorted.sort();
+        sorted.dedup();
+        assert_eq!(orders, sorted, "orders stay strictly increasing: {orders:?}");
+    }
+
+    #[test]
+    fn set_column_settings_validates_the_references() {
+        let mut b = template_board();
+        let s = ColumnSettings { on_working: Some("TODO".into()), ..Default::default() };
+        assert!(b.set_column_settings("TODO", s).unwrap_err().contains("itself"));
+        let s = ColumnSettings { on_done: Some("NOPE".into()), ..Default::default() };
+        assert!(b.set_column_settings("TODO", s).unwrap_err().contains("no such column"));
+        let s =
+            ColumnSettings { on_done: Some("DONE".into()), auto_run: true, ..Default::default() };
+        b.set_column_settings("TODO", s.clone()).unwrap();
+        assert_eq!(b.column("TODO").unwrap().settings, s);
+        assert!(b.set_column_settings("NOPE", ColumnSettings::default()).is_err());
+    }
+
+    #[test]
+    fn sort_column_by_each_key() {
+        let mut b = template_board();
+        let mut t1 = ticket(1, "TODO", "c");
+        t1.entered_at = Some("@30".into());
+        let mut t2 = ticket(2, "TODO", "a");
+        t2.entered_at = Some("@10".into());
+        let mut t3 = ticket(3, "TODO", "b");
+        t3.created_at = "@20".into(); // no entered_at: column_since falls back
+        b.tickets.extend([t1, t2, t3]);
+        b.tickets.push(ticket(9, "REVIEW", "a"));
+        let order =
+            |b: &Board| -> Vec<u128> { b.column_tickets("TODO").iter().map(|t| t.id.0).collect() };
+        assert_eq!(order(&b), [2, 3, 1], "manual order to start");
+        let none = std::collections::HashSet::new();
+        let touched = b.sort_column("TODO", SortBy::Key, &none);
+        assert_eq!(order(&b), [1, 2, 3]);
+        assert!(!touched.is_empty());
+        assert_eq!(b.ticket(ulid::Ulid(9)).unwrap().order, "a", "another column is untouched");
+        b.sort_column("TODO", SortBy::NewestArrival, &none);
+        assert_eq!(order(&b), [1, 3, 2]);
+        b.sort_column("TODO", SortBy::OldestArrival, &none);
+        assert_eq!(order(&b), [2, 3, 1]);
+        let needs: std::collections::HashSet<_> = [ulid::Ulid(1)].into_iter().collect();
+        b.sort_column("TODO", SortBy::NeedsYouFirst, &needs);
+        assert_eq!(order(&b), [1, 2, 3], "needs-you first, the rest keeping their order");
+        assert!(
+            b.sort_column("TODO", SortBy::NeedsYouFirst, &needs).is_empty(),
+            "a no-op touches nothing"
+        );
+        for t in b.column_tickets("TODO") {
+            assert!(t.entered_at.is_some() || t.id == ulid::Ulid(3), "a sort is not a move");
+        }
+    }
+
+    #[test]
+    fn column_name_is_scrubbed_bounded_and_nonblank() {
+        assert_eq!(sanitize_column_name("  QA \u{1b}[31m "), Some("QA [31m".into()));
+        assert_eq!(sanitize_column_name("   "), None);
+        let long = "x".repeat(COLUMN_NAME_MAX_BYTES + 5);
+        assert_eq!(sanitize_column_name(&long).unwrap().len(), COLUMN_NAME_MAX_BYTES);
+        assert_eq!(COLUMN_NAME_MAX_BYTES, TAG_MAX_BYTES);
+    }
+
+    /// D10: a column narrows what the user configured, never hands out a mode
+    /// nobody asked for. The enum cannot spell the two escape hatches.
+    #[test]
+    fn claude_mode_never_emits_bypass() {
+        for m in [ClaudeMode::Inherit, ClaudeMode::Auto, ClaudeMode::Plan, ClaudeMode::Manual] {
+            let w = m.flag_word().unwrap_or("");
+            assert!(
+                !["bypassPermissions", "dontAsk", "acceptEdits", "default"].contains(&w),
+                "{w}"
+            );
+            assert_eq!(m.next().next().next().next(), m);
+        }
+        assert_eq!(
+            ClaudeMode::Manual.flag_word(),
+            Some("manual"),
+            "never `default`, the flag refuses it"
+        );
+    }
+
+    #[test]
+    fn agent_tools_are_ordered_and_named() {
+        assert!(AgentTools::Off < AgentTools::Read);
+        assert!(AgentTools::Read < AgentTools::Annotate);
+        assert!(AgentTools::Annotate < AgentTools::Full);
+        for t in [AgentTools::Off, AgentTools::Read, AgentTools::Annotate, AgentTools::Full] {
+            assert_eq!(AgentTools::parse(t.word()), Some(t));
+        }
+        assert_eq!(AgentTools::parse("all"), None);
+        assert_eq!(AgentTools::default(), AgentTools::Full);
+    }
+
+    #[test]
+    fn the_settings_summary_says_only_what_was_chosen() {
+        assert!(ColumnSettings::default().summary().is_empty());
+        let s = template_settings("REVIEW").unwrap();
+        assert_eq!(s.summary(), ["working → IN PROGRESS", "train: auto-merge"]);
+        assert!(s.automated());
+        assert!(!template_settings("DONE").unwrap().automated());
     }
 }

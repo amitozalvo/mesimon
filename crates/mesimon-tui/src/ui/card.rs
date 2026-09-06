@@ -115,6 +115,7 @@ pub(super) fn render_prompt(
 pub(super) fn render_workspace_selector(
     ctx: &CardCtx,
     workspace: Option<mesimon_core::board::WorkspaceStrategy>,
+    column_default: Option<mesimon_core::board::WorkspaceStrategy>,
 ) -> Line<'static> {
     let theme = ctx.theme;
     let word = match workspace {
@@ -122,6 +123,9 @@ pub(super) fn render_workspace_selector(
         Some(mesimon_core::board::WorkspaceStrategy::AdoptExisting) => "adopt",
         Some(mesimon_core::board::WorkspaceStrategy::SharedCheckout) | None => "shared",
     };
+    // The column's own default, while the field still stands on it (T-117).
+    let from_column = column_default.is_some() && workspace == column_default;
+    let word = if from_column { format!("{word} (column default)") } else { word.to_string() };
     let spans = vec![
         Span::raw("  "),
         Span::styled(format!("⎇ {word}"), Style::default().fg(theme.sel.dim1)),
@@ -191,7 +195,13 @@ fn worktree_mark(
         // Behind main — the m flow's rebase stage comes before merge.
         _ if w.needs_rebase => (format!("{g}{down}"), WtTone::Ready),
         _ if w.ahead > 0 => (format!("{g}{up}"), WtTone::Ready),
-        _ => (g.to_string(), WtTone::Quiet),
+        // Nothing to report — and the trailing space is load-bearing: the
+        // mark is right-aligned against the fixed age slot, so a one-cell
+        // form would put THIS card's glyph a column right of every other
+        // card's and hand the freed cell back to the title. The glyph's
+        // column is the anchor; the state char sits in a slot beside it,
+        // empty here.
+        _ => (format!("{g} "), WtTone::Quiet),
     })
 }
 

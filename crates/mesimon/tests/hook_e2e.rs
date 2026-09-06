@@ -75,9 +75,17 @@ fn m2_attention_headless() {
     ));
     assert!(matches!(watcher.request(Command::Subscribe), Response::Ok));
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "attn".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "attn".into(),
+        workspace: None,
+    });
     // A pre-existing REVIEW ticket: automoved arrivals must land ABOVE it.
-    let _ = c.request(Command::CreateTicket { column: "REVIEW".into(), title: "decoy".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "REVIEW".into(),
+        title: "decoy".into(),
+        workspace: None,
+    });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let ticket = board.tickets.iter().find(|t| t.title == "attn").expect("ticket").id;
 

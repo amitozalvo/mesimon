@@ -6022,3 +6022,155 @@ relinked `tags_e2e` still paid 22 s from a mesimon pane: the private tmux server
 to launchd, so nothing under it descends from iTerm2 for the responsible-process check. A gate
 that depends on a per-machine setting the machine cannot honour is no gate. Untried: adding the
 tmux binary itself to that list; running the gate from a plain iTerm2 tab.
+
+## The detach hint spells its keys the way the footer does (T-261, 2026-09-06)
+
+The private tmux server's status line said ` Ctrl+]/^5 back ` — two spellings of "control"
+in ten cells, on the one line a user reads while the board's own footer (`^k`, `^t`, `^s`;
+`keymap`'s `Key::Ctrl(c)` renders `^c`) is out of sight. It reads ` ^]/^5 back ` now. The
+literal lived twice — in `conf::render` for fresh servers and in `TmuxBackend::set_status_left`,
+which pushes it live to servers that predate a conf change — and drifted apart is exactly how
+it would go wrong again, so it is one constant, `conf::STATUS_RIGHT`, and
+`the_detach_hint_speaks_the_footers_language` pins the caret spelling and the conf's use of
+it. Prose keeps `Ctrl+]`: the first-run check's sentence and `doctor`'s `back to board` line
+are sentences, not hints, and `Ctrl+5` is the keymap's own name for the banned atom's one
+whitelisted spelling.
+
+## The queued ask goes in board order (T-263, 2026-09-06, user: "so that user can sort while items are queued")
+
+**What was wrong.** The 2026-09-04 queue was first-come: `drain_queue` walked `Daemon::queued` in
+insertion order, so with three asks parked on one checkout the order they would go out in was
+the order the user had typed them, shown nowhere and changeable only by dropping and re-queuing.
+The merge train already read the board (`train::plan`: column order, then row order), and the
+user asked for the same rule — "top first bottom last" — so the cards ARE the queue.
+
+**What was built.** `Daemon::queue_order` ranks every queued entry by `(column, row)` off
+`sorted_columns` / `column_tickets` at read time — never stored, so a hand move is the whole
+edit and there is no second order to drift; a ticket the board no longer lists sorts last and
+the sweep drops it. `drain_queue` walks that order and still pastes ONE ask per quiet checkout
+per pass (the paste makes it busy again), taking the entries out highest index first so the
+lower indexes stay valid. `ask_waits_on` is what `Response::Queued { behind }` and the
+snapshot's `Pending.waits_on` carry now: the checkout's working tickets, then the asks queued
+AHEAD of it on the same checkout in board order — so the card's `queued ∙ after T-3 +1` counts
+the queue too and the `+N` falls as the card is moved up; the pending list itself is in board
+order. `QueuedAsk.queued_at` stays on the record, unread. E2e `ask_queue_e2e::
+queued_asks_go_in_board_order_and_a_move_resorts_them`: two asks on one held checkout, the
+column reordered while they wait, the top card's ask lands first and the other keeps waiting
+on it.
+
+**Not changed.** Everything the first block says about dropping, replacing, in-flight and the
+sweep; automove still parks a finished ticket at the TOP of its column, so left alone the last
+ticket to finish still asks first — the same shape the train has.
+
+## Columns own their automations (T-117, 2026-09-06, user: "the goal is to not have magic after this")
+
+**What was wrong.** A column was `{ name, order }` and every automation the daemon ran was keyed
+to a column-name literal: `automove.rs` held `TODO`/`IN PROGRESS`/`REVIEW`, `train.rs` read
+`REVIEW`/`IN PROGRESS`, `server.rs` had `SLEEP_SAFE_COLUMN = "DONE"` and a literal `"DONE"` in the
+merge gate and in `agent_allowed_columns`. Nothing on any screen said so, there was no wire
+command to add, rename, reorder or delete a column, and a hand-edited rename in `columns.toml`
+silently orphaned every ticket in it (`readd_missing_columns` runs only on the quarantine path).
+The corpus had designed column policy files under a trust gate (D9/D11, docs/16 §4) with a leader
+key that was never built; none of it shipped.
+
+**Decisions (with the user, 2026-09-06).** Sort is ONE-SHOT — an action, not a standing order,
+so every gesture keeps working after it. The column header is a CURSOR POSITION
+(`cursor_row: Option<usize>`), not a leader menu or a menu-only door; an empty column is its own
+header, which keeps every `has_ticket` gate as it was. "Start claude on arrival" fires on
+CREATION only — a person at the composer — never on a move, an agent's `create_ticket`, a snooze
+wake, an unarchive or an undo. "MCP permissions" is mesimon's OWN tools, tiered (`off`/`read`/
+`annotate`/`full`), not a Claude Code tool deny list — that axis (D33j-2's tool capability) is
+deferred and would be a second setting.
+
+**What was built.** `ColumnSettings` flattened into `Column` (serde `flatten` through `toml`
+round-trips; every field defaults and is skipped at its default, so a file says only what was
+chosen); `COLUMNS_SCHEMA` 4 with the v3→v4 seeding by name through `board::template_settings`,
+the one literal table, pruning a rule that names a column the board lacks; the six commands
+(`AddColumn`, `RenameColumn` — every ticket file, archived included, every rule, the move gate,
+the grace band — `DeleteColumn` refusing live tickets and the last column, `ReorderColumn`,
+`SetColumnSettings` whole-struct so the two rule targets validate together, `SortColumn`);
+`automove(&ColumnSettings, ..)`; `train::plan` on `TrainReach`; the DONE gate and the reclaim set
+on the columns; `mint_ticket` stamping the column's workspace default onto the ticket. The
+three new settings: `claude_mode` on `--permission-mode` (the enum has no bypass; the flag is now
+in `resume_argv`'s `owned` list so a wake re-applies the column — before this a wake kept the mode
+it was born with, which was fine while the mode came from nowhere but the user's file);
+`agent_tools` listed by the shim off `--tools <word>` on the blob's argv and admitted by the
+daemon at every call against the ticket's column NOW (a hand move narrows or widens a live
+session; Claude caches `tools/list`, so a live pane keeps SHOWING what it was born with and
+reads the tier in the refusal); `auto_run` as the composer's Shift+Enter fired by the daemon
+inside `create_ticket`, which needed three ordering fixes — the composer's workspace rides
+`CreateTicket { workspace }` (a later `SetWorkspace` would hit the spawn's lock), the brief is
+read at PASTE time so the composer's note written after `Created` still travels (`brief_e2e`
+unchanged), and `Created { started }` keeps the composer from starting a second. The TUI: the
+header cursor and its four verbs (Enter, `r` in place, `HJKL`, `d d`), `O`, the dense dialog
+(thirteen rows at one line each — `draw_list`'s two lines a row does not fit `MIN_H` 20),
+`h`/`l` on the sort row only, the Name row as a text field with the scope `Input`, the menu's
+two rows, the header's ` →` mark and cursor bar, pinned spines in `board_geometry`, the
+composer starting at the column's default with ` (column default)` on its row. `doctor` prints
+`columns`. The `X`/menu wording stopped naming `done`.
+
+**Traps found on the way.** `every_menu_row_is_spelled` trims labels: a `format!("Name: {}", x)`
+with an empty `Ctx` word is a stem. `clamp_screen` closes the dialog whose column is gone, so a
+rename must move the dialog's subject BEFORE the refresh. The move gate refuses an agent undoing
+a hand's move inside a minute, which is the gate's business and not the tier's (the
+`agent_tools_e2e` moves to a third column). `MESIMON_CLAUDE_HOME` is the harness's scratch dir,
+so a test that wants a `defaultMode` writes `settings.json` there.
+
+**Not done.** WIP limits; per-column model/effort (D14); Claude Code's own tool deny overlay
+(D33j-2, a `permissions.deny` in the `--settings` file); auto-run on an agent's `create_ticket`
+(D32b — needs a spawn budget first); undo for column operations; a CHANGELOG entry (written at
+release, as for every post-alpha.15 ticket).
+
+## The tmux status line can sit at the top (T-264, 2026-09-06, user: "preference")
+
+The private server's status line — the breadcrumb and ` ^]/^5 back ` — sat at the bottom of an
+agent's pane because tmux's default put it there, and nothing had asked. It is a Settings row
+now, `Status line at the bottom` / `at the top` (`Verb::StatusLine`, under the replies row), a
+per-machine preference like the train's (`prefs.json::status_line_top`, off) that the daemon is
+TOLD rather than reads: `Command::SetStatusLine { top }` (denied to agents — chrome over the
+user's own panes; unlogged, since the feed is what the board did and this is neither) →
+`TmuxBackend::set_status_position`, which takes BOTH roads at once because a running server
+never re-reads its conf — the conf is re-rendered (`conf::render` takes the side now, so the
+NEXT server comes up on it) and a live server gets the `set-option`. No server is not a
+failure: the word is held and the conf carries it. The snapshot reports the side the daemon
+holds (`Response::Board.status_top`, serde default bottom) and `App::reconcile_status_line`
+pushes the preference whenever they disagree, on the train's 30 s back-off — in EITHER
+direction, unlike the train, because the file is the machine's and bottom is a choice too; the
+first push is from `lib.rs` before the event loop, so a daemon that outlived the last board
+converges before the first attach. `set_status_left` re-sends the side beside the right-hand
+hint on every breadcrumb change, so a server predating the daemon holding the preference lands
+on the first focus. `doctor` prints a `status line` line. E2e `status_line_e2e`: set before any
+server exists and the first server comes up on top (the conf road), set against it and it
+moves (the live road). Golden `settings_120x30` grew the row; the marquee test's train row is
+sixth now.
+
+## A tool in flight survives a reload (T-265, 2026-09-06)
+
+The board reloaded (`U`) while T-117's claude was two minutes into a `cargo build` + `cargo ut`
+Bash call, and the card wore no working mark for a further minute and three-quarters, until the
+tool returned and its `PostToolUse` frame promoted the idle record (T-228's rule). The restart
+backfill (`server.rs::resting_hint`, the one look at how an `Unknown` session's transcript
+RESTED) had read the trailing record — an `assistant` with only a `tool_use` block — as
+`TailEvent::Other`, the bucket a trailing user or attachment record shares, and judged it on
+the file's mtime: quiet past `TAIL_QUIET_MS` (45 s) is `StaleQuiet`, so the session was seeded
+`Idle{Unknown}` at Low. But a tool in flight writes NOTHING to the transcript for its whole
+duration — Claude Code records the call before it runs and the result after — so a build or a
+suite keeps the file still for minutes while the pane is busy, and every reload during a tool
+longer than 45 s read as idle. Nothing else could lift it sooner: the observer hooks no generic
+`PreToolUse`, the status-file probe acts on `idle` only (the file said `busy`), and the pane
+probe only ever demotes.
+
+Now the record IS its own event: `adopt::classify_tail_record` returns `TailEvent::ToolInFlight`
+for a textless assistant record carrying a `tool_use` block (the two human-facing tools keep
+`NeedsHuman`; text beside the call is still `AssistantText`, which already meant Running), and
+both roads seed `TailHint::ToolInFlight` → `Running` at Low — the backfill regardless of the
+file's quiet, and the live poll for a lost session. The evidence is the BLOCK, never
+`stop_reason: tool_use`: current Claude Code writes one record per content block and stamps the
+whole message's stop reason on each, so a mid-turn thinking record carries it too (measured on
+T-117's transcript: 72 thinking records with `tool_use`). A turn that really died mid-tool is
+still caught — `probe_activity` demotes a Running pane quiet for `PANE_QUIET_MS`, and a tool in
+flight keeps the pane painting through Claude's spinner, which is the clock a tool obeys where
+the transcript's does not. Tests: `a_textless_tool_call_is_a_tool_in_flight` (adopt),
+`transcript_hints_are_always_low_and_silent` (attention), `last_event_reads_a_trailing_tool_call_as_in_flight`
+(tail). Not done: no e2e — the shape needs a restart mid-tool with a stub that holds a tool open,
+and the three unit tests pin the whole road but the wiring.

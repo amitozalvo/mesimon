@@ -27,7 +27,11 @@ use mesimon_core::command::{Command, Response};
 /// then a `Stop` whose settle is still pending when we return. Returns the
 /// ticket's key, for the file on disk.
 fn park_a_stop_in_flight(c: &mut TestClient, hook_sock: &Path) -> String {
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "flush".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "flush".into(),
+        workspace: None,
+    });
     let ticket = c.board().tickets.iter().find(|t| t.title == "flush").unwrap().id;
     let sid = match c.request(Command::SpawnSession {
         ticket,

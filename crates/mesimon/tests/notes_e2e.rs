@@ -26,7 +26,11 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     let sock = h.paths.orch_sock();
     let mut c = h.client("notes");
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "noted".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "noted".into(),
+        workspace: None,
+    });
     let board = c.board();
     let ticket = board.tickets[0].id;
     let key = board.tickets[0].short_key.clone();
@@ -157,7 +161,11 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     assert_eq!(b.tickets[0].notes.len(), 1);
     assert_eq!(b.tickets[0].description().unwrap().id, second);
     // A note the agent cannot see is refused by name, not found by id.
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "other".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "other".into(),
+        workspace: None,
+    });
     let other = c.board().tickets.iter().find(|t| t.title == "other").unwrap().id;
     let foreign =
         match c.request(Command::WriteNote { ticket: other, note: None, text: "mine".into() }) {
@@ -225,7 +233,11 @@ fn an_approved_plan_is_the_agents_note_on_the_ticket() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("plan-note");
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "planned".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "planned".into(),
+        workspace: None,
+    });
     let ticket = c.board().tickets[0].id;
     let sid = match c.request(Command::SpawnSession {
         ticket,

@@ -59,7 +59,11 @@ fn restart_recovers_state_from_the_transcript() {
         c.request(Command::Hello { version: 1, client: "restart".into() }),
         Response::Hello { .. }
     ));
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "restart".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "restart".into(),
+        workspace: None,
+    });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
     let sid = match c.request(Command::SpawnSession {
         ticket,
@@ -186,7 +190,11 @@ fn restart_recovers_done_from_a_resting_transcript() {
         c.request(Command::Hello { version: 1, client: "rest".into() }),
         Response::Hello { .. }
     ));
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "rest".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "rest".into(),
+        workspace: None,
+    });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
     let sid = match c.request(Command::SpawnSession {
         ticket,

@@ -114,8 +114,16 @@ fn agent_board_tools_tier_and_collisions() {
     }
     let mut c = TestClient::connect(&sock);
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "the work".into() });
-    let _ = c.request(Command::CreateTicket { column: "REVIEW".into(), title: "decoy".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "the work".into(),
+        workspace: None,
+    });
+    let _ = c.request(Command::CreateTicket {
+        column: "REVIEW".into(),
+        title: "decoy".into(),
+        workspace: None,
+    });
     let board = board_of(c.request(Command::Snapshot));
     let ticket = board.tickets.iter().find(|t| t.title == "the work").unwrap().id;
     let key = board.ticket(ticket).unwrap().short_key.clone();
@@ -150,10 +158,12 @@ fn agent_board_tools_tier_and_collisions() {
     // whole of what the switch promises. A second ticket, because a live
     // pane's argv was fixed at exec and nothing can revise it.
     assert!(matches!(c.request(Command::SetMcpTools { on: false }), Response::Ok));
-    let quiet = match c
-        .request(Command::CreateTicket { column: "TODO".into(), title: "no tools".into() })
-    {
-        Response::Created { id } => id,
+    let quiet = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "no tools".into(),
+        workspace: None,
+    }) {
+        Response::Created { id, .. } => id,
         other => panic!("create failed: {other:?}"),
     };
     let quiet_sid = match c.request(Command::SpawnSession {

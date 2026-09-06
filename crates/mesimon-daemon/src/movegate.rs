@@ -194,6 +194,20 @@ impl MoveGate {
     /// else's move — an agent that announced REVIEW — keeps its protection:
     /// the person did not make it, so their ask cannot supersede it. The
     /// fuse is untouched; moving by hand is still what clears it.
+    /// A column was renamed (T-117): the memory of where a ticket came from
+    /// and went follows it, or a ping-pong check after the rename would
+    /// compare the old name and never fire.
+    pub fn rename_column(&mut self, from: &str, to: &str) {
+        for l in self.last.values_mut() {
+            if l.from == from {
+                l.from = to.to_string();
+            }
+            if l.to == from {
+                l.to = to.to_string();
+            }
+        }
+    }
+
     pub fn asked_by_hand(&mut self, ticket: ulid::Ulid) {
         if self.last.get(&ticket).is_some_and(|l| l.actor == Principal::Local.actor()) {
             self.last.remove(&ticket);

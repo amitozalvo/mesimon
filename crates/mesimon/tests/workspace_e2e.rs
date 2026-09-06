@@ -112,7 +112,11 @@ fn a_workspace_of_repos_stands_on_the_wire() {
     assert!(matches!(resp, Response::Err { .. }), "{resp:?}");
 
     // ---- a worktree ticket is refused in words ------------------------------
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "Fix thing".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "Fix thing".into(),
+        workspace: None,
+    });
     let id = match c.request(Command::Snapshot) {
         Response::Board { board, .. } => board.tickets[0].id,
         other => panic!("expected board, got {other:?}"),

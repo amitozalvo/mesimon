@@ -31,8 +31,16 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     let mut c = h.client("snooze");
 
     // Two cards in TODO, the napper UNDER the other: the wake must put it on top.
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "stays".into() });
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "napper".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "stays".into(),
+        workspace: None,
+    });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "napper".into(),
+        workspace: None,
+    });
     let board = c.board();
     let stays = board.tickets.iter().find(|t| t.title == "stays").unwrap().id;
     let napper = board.tickets.iter().find(|t| t.title == "napper").unwrap().id;

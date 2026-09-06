@@ -126,7 +126,11 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
         std::thread::sleep(Duration::from_millis(200));
     }
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "env".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "env".into(),
+        workspace: None,
+    });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
     let sid = match c.request(Command::SpawnSession {
         ticket,

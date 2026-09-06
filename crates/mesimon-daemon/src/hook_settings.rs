@@ -247,7 +247,12 @@ pub fn mesimon_bin() -> PathBuf {
 ///
 /// `--strict-mcp-config` is deliberately NOT passed: dropping the user's own
 /// MCP servers from their own agent is subtractive magic (D7).
-pub fn mcp_config_json(paths: &Paths, mesimon_bin: &Path, session: uuid::Uuid) -> String {
+pub fn mcp_config_json(
+    paths: &Paths,
+    mesimon_bin: &Path,
+    session: uuid::Uuid,
+    tier: mesimon_core::board::AgentTools,
+) -> String {
     // Built through serde, never by formatting: a repo path containing a quote
     // would otherwise break the blob open.
     json!({
@@ -261,6 +266,10 @@ pub fn mcp_config_json(paths: &Paths, mesimon_bin: &Path, session: uuid::Uuid) -
                     "mcp",
                     "--sock", paths.orch_sock().display().to_string(),
                     "--session", session.to_string(),
+                    // The column's tier at spawn (T-117): what the shim
+                    // LISTS. The daemon enforces at every call regardless,
+                    // against the ticket's column as it stands then.
+                    "--tools", tier.word(),
                 ],
             }
         }

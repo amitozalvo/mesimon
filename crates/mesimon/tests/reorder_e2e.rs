@@ -46,7 +46,11 @@ fn a_card_reorders_inside_its_own_column() {
 
     for title in ["a", "b", "c"] {
         assert!(matches!(
-            c.request(Command::CreateTicket { column: "TODO".into(), title: title.into() }),
+            c.request(Command::CreateTicket {
+                column: "TODO".into(),
+                title: title.into(),
+                workspace: None
+            }),
             Response::Created { .. }
         ));
     }

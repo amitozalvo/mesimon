@@ -157,6 +157,8 @@ pub enum AttentionTool {
 pub enum TailHint {
     /// A new assistant text block — the session is producing output.
     AssistantText,
+    /// A tool call with no result yet — the session is working, in a tool.
+    ToolInFlight,
     AskUserQuestion,
     ExitPlanMode,
     TurnComplete,
@@ -778,7 +780,7 @@ impl Machine {
             }
             Signal::TranscriptHint { kind } => {
                 let s = match kind {
-                    TailHint::AssistantText => S::Running,
+                    TailHint::AssistantText | TailHint::ToolInFlight => S::Running,
                     TailHint::AskUserQuestion => S::RequiresAction { reason: Reason::Question },
                     TailHint::ExitPlanMode => S::RequiresAction { reason: Reason::Plan },
                     TailHint::TurnComplete => S::Idle { stop_reason: StopReason::EndTurn },
@@ -1631,6 +1633,7 @@ mod tests {
     fn transcript_hints_are_always_low_and_silent() {
         for (kind, want) in [
             (TailHint::AssistantText, SessionState::Running),
+            (TailHint::ToolInFlight, SessionState::Running),
             (TailHint::AskUserQuestion, SessionState::RequiresAction { reason: Reason::Question }),
             (TailHint::ExitPlanMode, SessionState::RequiresAction { reason: Reason::Plan }),
             (TailHint::TurnComplete, SessionState::Idle { stop_reason: StopReason::EndTurn }),

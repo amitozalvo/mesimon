@@ -62,7 +62,11 @@ fn wait_attached(c: &mut TestClient, ticket: ulid::Ulid) -> WorktreeItem {
 
 /// A worktree ticket with a spawned agent and one commit on its branch.
 fn ready(c: &mut TestClient, title: &str) -> (ulid::Ulid, uuid::Uuid, String, PathBuf) {
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: title.into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: title.into(),
+        workspace: None,
+    });
     let id = c.board().tickets.iter().find(|t| t.title == title).unwrap().id;
     assert!(matches!(
         c.request(Command::SetWorkspace { id, workspace: Some(WorkspaceStrategy::Worktree) }),

@@ -109,7 +109,11 @@ fn m3_adoption_and_sleep() {
         c.request(Command::Hello { version: 1, client: "m3".into() }),
         Response::Hello { .. }
     ));
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "adopt".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "adopt".into(),
+        workspace: None,
+    });
     let ticket = board_of(c.request(Command::Snapshot)).tickets[0].id;
 
     // --- Census: lazy, drawer-open only.

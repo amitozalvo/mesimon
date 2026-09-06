@@ -30,7 +30,16 @@ use crate::paths::Paths;
 /// every agent on the board its tools back after the user took them away.
 /// A consent flag may not be lost by a downgrade. `claude_md_ignored` rides
 /// the same bump.
-pub const COLUMNS_SCHEMA: u32 = 3;
+/// v4 (T-117) put the automations on the columns: every `[[columns]]` table
+/// may carry `on_working`, `on_done`, `train`, `requires_merge`, `reclaim`,
+/// `claude_mode`, `agent_tools`, `auto_run`, `workspace`, `collapsed`. A
+/// bump for the `mcp_tools` reason: a v3 build reading the file would drop
+/// `agent_tools = "read"` and `claude_mode = "plan"` on its next write and
+/// every claude spawned there would get the full tier and the user's own
+/// mode back — a widening. Loading a v3 file seeds the four template columns
+/// with what they DID (`Board::seed_template_settings`) and stamps 4; a v4
+/// file is never re-seeded, so a rule removed by hand stays removed.
+pub const COLUMNS_SCHEMA: u32 = 4;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
 /// `save_ticket` drop every note's metadata while the files stayed behind
@@ -220,8 +229,9 @@ enum Verdict {
 }
 
 fn verdict(found: u32, ours: u32) -> Verdict {
-    // `older` is unreachable while every counter is at 1; when a second
-    // version lands, the migration chain goes here (16 §6.2).
+    // Older loads: every field defaults, and the one migration that has to
+    // DO something — columns v3 → v4 — is `load_columns`'s, keyed on the
+    // stamp it found (16 §6.2).
     if found > ours {
         Verdict::Newer(found)
     } else {
@@ -306,18 +316,19 @@ fn readd_missing_columns(board: &mut Board) {
     let mut prev = board.sorted_columns().last().map(|c| c.order.clone()).unwrap_or_default();
     for name in missing {
         let order = mesimon_core::fracindex::between(&prev, "");
-        board.columns.push(Column { name, order: order.clone() });
+        board.columns.push(Column::new(name, order.clone()));
         prev = order;
     }
 }
 
 /// Load `columns.toml`. Returns the board skeleton, whether writes to that
-/// file are barred, and whether the on-disk state was lost (so `next_key`
-/// must be recovered from the ticket directories).
-fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bool) {
+/// file are barred, whether the on-disk state was lost (so `next_key` must
+/// be recovered from the ticket directories), and whether a migration
+/// changed the board (so the caller writes it back at the new stamp).
+fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bool, bool) {
     let defaults = || Board::with_default_columns();
     if !cols_path.is_file() {
-        return (defaults(), false, false); // fresh repo; caller writes it out
+        return (defaults(), false, false, false); // fresh repo; caller writes it out
     }
     let text = match std::fs::read_to_string(cols_path) {
         Ok(t) => t,
@@ -331,7 +342,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                 .with_path(cols_path.display())
                 .with_detail(e.to_string()),
             );
-            return (defaults(), true, true);
+            return (defaults(), true, true, false);
         }
     };
 
@@ -348,11 +359,11 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                 match verdict(found as u32, COLUMNS_SCHEMA) {
                     Verdict::Newer(n) => {
                         notices.push(future_notice(cols_path, n, COLUMNS_SCHEMA));
-                        return (defaults(), true, true);
+                        return (defaults(), true, true, false);
                     }
                     Verdict::Load => match v.try_into::<ColumnsFile>() {
                         Ok(cf) => {
-                            let b = Board {
+                            let mut b = Board {
                                 columns: cf.columns,
                                 next_key: cf.next_key,
                                 tags: cf.tags,
@@ -362,7 +373,11 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 system_prompt: cf.system_prompt,
                                 ..Default::default()
                             };
-                            return (b, false, false);
+                            // v3 → v4 (T-117): the template columns get the
+                            // rules they had as literals, once, on the way
+                            // to the new stamp.
+                            let migrated = found < 4 && b.seed_template_settings();
+                            return (b, false, false, migrated);
                         }
                         Err(e) => Some(e.to_string()),
                     },
@@ -375,7 +390,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
     let moved = quarantine(cols_path);
     let barred = moved.is_none(); // could not move it: never write over it
     notices.push(quarantine_notice(cols_path, moved.as_deref(), detail));
-    (defaults(), barred, true)
+    (defaults(), barred, true, false)
 }
 
 /// Load one `ticket.toml`. `None` excludes just that ticket from the board
@@ -482,7 +497,8 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
     let mut notices = Vec::new();
     let cols_path = paths.board_dir.join("board/columns.toml");
     let fresh = !cols_path.is_file();
-    let (mut board, columns_write_barred, columns_lost) = load_columns(&cols_path, &mut notices);
+    let (mut board, columns_write_barred, columns_lost, migrated) =
+        load_columns(&cols_path, &mut notices);
 
     let tickets_dir = paths.board_dir.join("board/tickets");
     if tickets_dir.is_dir() {
@@ -508,7 +524,7 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
     let seeded = seed_tags && !columns_write_barred && board.seed_starter_tags();
     // Write the defaults out only when the path is actually free: a fresh
     // repo, or a quarantine that succeeded in moving the bad file aside.
-    if (fresh || columns_lost || seeded) && !columns_write_barred {
+    if (fresh || columns_lost || seeded || migrated) && !columns_write_barred {
         save_columns(paths, &board)?;
     }
 
@@ -536,6 +552,19 @@ pub fn read_mcp_tools(paths: &Paths) -> bool {
 /// repo that never asked for one would be the worse mistake.
 pub fn read_system_prompt(paths: &Paths) -> bool {
     read_columns_file(paths).is_some_and(|cf| cf.system_prompt)
+}
+
+/// The columns in board order, for `doctor`'s `columns` line (T-117) — read
+/// off the file on `read_mcp_tools`'s terms, and `None` where there is no
+/// board to speak of (doctor never creates one). A v3 file answers with the
+/// template rules the daemon would seed, so doctor and the board agree.
+pub fn read_columns(paths: &Paths) -> Option<Vec<Column>> {
+    let cf = read_columns_file(paths)?;
+    let mut b = Board { columns: cf.columns, ..Default::default() };
+    if cf.schema_version < 4 {
+        b.seed_template_settings();
+    }
+    Some(b.sorted_columns().into_iter().cloned().collect())
 }
 
 /// `columns.toml` parsed, or `None` where it is missing or unreadable — the
@@ -671,6 +700,60 @@ mod tests {
         assert_eq!(l.board.next_key, 4);
         assert_eq!(l.board.columns.len(), 1);
         assert!(!l.columns_write_barred);
+        // Its lone TODO is seeded on the way to v4, and the rule pointing at
+        // an IN PROGRESS this board does not have is pruned rather than
+        // left to hit `no such column` on every edge.
+        assert_eq!(l.board.columns[0].settings.on_working, None);
+        assert!(std::fs::read_to_string(dir.join(".mesimon/board/columns.toml"))
+            .unwrap()
+            .contains("schema_version = 4"));
+        cleanup(&dir, &paths);
+    }
+
+    /// The v3 → v4 migration (T-117): the four template columns get the
+    /// rules they carried as literals, a fifth gets nothing, the file is
+    /// restamped with the rules INSIDE each `[[columns]]` table, and a second
+    /// load changes nothing.
+    #[test]
+    fn v3_columns_file_migrates_to_v4_with_the_template_settings() {
+        use mesimon_core::board::TrainReach;
+        let (dir, paths) = scratch("migratecols");
+        let cols = dir.join(".mesimon/board/columns.toml");
+        write(
+            &cols,
+            "schema_version = 3\nnext_key = 7\nmcp_tools = false\n\n\
+             [[columns]]\nname = \"TODO\"\norder = \"a\"\n\n\
+             [[columns]]\nname = \"IN PROGRESS\"\norder = \"b\"\n\n\
+             [[columns]]\nname = \"REVIEW\"\norder = \"c\"\n\n\
+             [[columns]]\nname = \"DONE\"\norder = \"d\"\n\n\
+             [[columns]]\nname = \"BACKLOG\"\norder = \"e\"\n",
+        );
+        let l = load(&paths).unwrap();
+        assert!(l.notices.is_empty(), "{:?}", l.notices);
+        let col = |n: &str| l.board.column(n).unwrap().settings.clone();
+        assert_eq!(col("TODO").on_working.as_deref(), Some("IN PROGRESS"));
+        assert_eq!(col("IN PROGRESS").on_done.as_deref(), Some("REVIEW"));
+        assert_eq!(col("IN PROGRESS").train, TrainReach::Rebase);
+        assert_eq!(col("REVIEW").on_working.as_deref(), Some("IN PROGRESS"));
+        assert_eq!(col("REVIEW").train, TrainReach::Merge);
+        assert!(col("DONE").requires_merge && col("DONE").reclaim);
+        assert_eq!(col("BACKLOG"), Default::default());
+        assert!(!l.board.mcp_tools, "the other scalars survive the migration");
+        let text = std::fs::read_to_string(&cols).unwrap();
+        assert!(text.contains("schema_version = 4"), "{text}");
+        let todo = text.find("name = \"TODO\"").unwrap();
+        let next = text.find("name = \"IN PROGRESS\"").unwrap();
+        let rule = text.find("on_working = \"IN PROGRESS\"").unwrap();
+        assert!(todo < rule && rule < next, "the rule sits inside TODO's table:\n{text}");
+        assert!(!text.contains("collapsed"), "a default is not written:\n{text}");
+        // Idempotent: the stamp is what keeps a rule removed by hand removed.
+        let again = load(&paths).unwrap();
+        assert_eq!(again.board.columns, l.board.columns);
+        let stripped = text.replace("on_working = \"IN PROGRESS\"\n", "");
+        write(&cols, &stripped);
+        let third = load(&paths).unwrap();
+        assert_eq!(third.board.column("TODO").unwrap().settings.on_working, None);
+        assert_eq!(third.board.column("REVIEW").unwrap().settings.on_working, None);
         cleanup(&dir, &paths);
     }
 
@@ -1344,7 +1427,22 @@ order = "a0"
             mcp_tools: false,
             claude_md_ignored: true,
             system_prompt: true,
-            columns: vec![Column { name: "TODO".into(), order: "a0".into() }],
+            columns: vec![Column {
+                name: "TODO".into(),
+                order: "a0".into(),
+                settings: mesimon_core::board::ColumnSettings {
+                    collapsed: true,
+                    workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+                    claude_mode: mesimon_core::board::ClaudeMode::Plan,
+                    agent_tools: mesimon_core::board::AgentTools::Read,
+                    auto_run: true,
+                    on_working: Some("QA".into()),
+                    on_done: None,
+                    requires_merge: true,
+                    reclaim: true,
+                    train: mesimon_core::board::TrainReach::Merge,
+                },
+            }],
             tags: vec![
                 mesimon_core::board::Tag { name: "BUG".into(), group: 1, color: None },
                 mesimon_core::board::Tag { name: "STAGING".into(), group: 2, color: Some(4) },
@@ -1352,6 +1450,12 @@ order = "a0"
         };
         let text = toml::to_string_pretty(&cf).unwrap();
         let back: ColumnsFile = toml::from_str(&text).unwrap();
+        // T-117: the flattened settings round-trip inside the column's own
+        // table, and a default (`on_done`) is not written.
+        assert_eq!(back.columns, cf.columns);
+        assert!(text.contains("claude_mode = \"plan\""), "{text}");
+        assert!(text.contains("agent_tools = \"read\""), "{text}");
+        assert!(!text.contains("on_done"), "{text}");
         assert_eq!(back.tags.len(), 2);
         assert_eq!(back.tags[0].name, "BUG");
         // An unchosen colour stays absent on disk and falls back to the
@@ -1375,10 +1479,10 @@ order = "a0"
         // The stamp is what stops an older build silently dropping the
         // registry on its next write: at v1 it would parse, ignore `tags`,
         // and overwrite the file without them.
-        assert_eq!(COLUMNS_SCHEMA, 3);
+        assert_eq!(COLUMNS_SCHEMA, 4);
         assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
-        assert!(matches!(verdict(2, COLUMNS_SCHEMA), Verdict::Load));
-        assert!(matches!(verdict(COLUMNS_SCHEMA, 2), Verdict::Newer(3)));
+        assert!(matches!(verdict(3, COLUMNS_SCHEMA), Verdict::Load));
+        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(4)));
     }
 
     /// Today's ticket.toml carries no stamp; it must read as schema 1 (16 §6.2

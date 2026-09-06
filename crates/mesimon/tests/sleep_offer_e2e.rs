@@ -50,8 +50,16 @@ fn z_sleeps_only_the_done_column() {
         Response::Hello { .. }
     ));
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "hot".into() });
-    let _ = c.request(Command::CreateTicket { column: "DONE".into(), title: "cold".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "hot".into(),
+        workspace: None,
+    });
+    let _ = c.request(Command::CreateTicket {
+        column: "DONE".into(),
+        title: "cold".into(),
+        workspace: None,
+    });
     let board = board_of(c.request(Command::Snapshot));
     let hot = board.tickets.iter().find(|t| t.column == "TODO").unwrap().id;
     let cold = board.tickets.iter().find(|t| t.column == "DONE").unwrap().id;

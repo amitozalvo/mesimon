@@ -61,10 +61,18 @@ fn leaving_claude_parks_the_session() {
         Response::Hello { .. }
     ));
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "left it".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "left it".into(),
+        workspace: None,
+    });
     // A ticket holds one claude (2026-09-02), so the case with no conversation
     // needs a ticket of its own.
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "lost it".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "lost it".into(),
+        workspace: None,
+    });
     let find = |c: &mut TestClient, title: &str| {
         c.board().tickets.iter().find(|t| t.title == title).expect("ticket").id
     };

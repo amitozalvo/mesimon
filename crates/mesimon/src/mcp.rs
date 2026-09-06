@@ -26,6 +26,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::UnixStream;
 use std::path::PathBuf;
 
+use mesimon_core::board::AgentTools;
 use mesimon_core::command::{Command, Envelope, Response};
 use mesimon_core::mcp::{self, ToolCall};
 use mesimon_core::Principal;
@@ -44,6 +45,10 @@ pub fn run(args: &[String]) -> ! {
         eprintln!("mesimon mcp: --session must be a uuid");
         std::process::exit(2);
     };
+    // The column's tier at spawn (T-117): what this process LISTS. Absent —
+    // an argv persisted before the flag existed — lists everything; the
+    // daemon decides at every call, so listing more never grants more.
+    let tier = val(args, "--tools").and_then(AgentTools::parse).unwrap_or(AgentTools::Full);
 
     let stdin = std::io::stdin();
     let mut out = std::io::stdout();
@@ -52,7 +57,7 @@ pub fn run(args: &[String]) -> ! {
         if line.trim().is_empty() {
             continue;
         }
-        let Some(reply) = handle_line(&line, &sock, session) else { continue };
+        let Some(reply) = handle_line(&line, &sock, session, tier) else { continue };
         let Ok(s) = serde_json::to_string(&reply) else { continue };
         // stdout is the protocol. Nothing else may ever be written here —
         // diagnostics go to stderr, which Claude Code logs.
@@ -65,7 +70,7 @@ pub fn run(args: &[String]) -> ! {
 
 /// One JSON-RPC message in, at most one out. `None` = a notification, which
 /// takes no reply (answering one is a protocol error, not a courtesy).
-fn handle_line(line: &str, sock: &PathBuf, session: uuid::Uuid) -> Option<Value> {
+fn handle_line(line: &str, sock: &PathBuf, session: uuid::Uuid, tier: AgentTools) -> Option<Value> {
     let msg: Value = serde_json::from_str(line).ok()?;
     let method = msg.get("method").and_then(Value::as_str).unwrap_or_default();
     let params = msg.get("params").cloned().unwrap_or(Value::Null);
@@ -79,7 +84,7 @@ fn handle_line(line: &str, sock: &PathBuf, session: uuid::Uuid) -> Option<Value>
             Some(ok(id, mcp::initialize_result(client_protocol)))
         }
         "ping" => Some(ok(id, json!({}))),
-        "tools/list" => Some(ok(id, json!({ "tools": mcp::tools() }))),
+        "tools/list" => Some(ok(id, json!({ "tools": mcp::tools_for(tier) }))),
         "tools/call" => Some(call_tool(id, &params, sock, session)),
         // Everything else, including the three that would otherwise become
         // injection surfaces: `skills/list` (registers SKILL.md bodies into
@@ -217,7 +222,12 @@ mod tests {
     use super::*;
 
     fn line(v: Value) -> Option<Value> {
-        handle_line(&v.to_string(), &PathBuf::from("/nonexistent.sock"), uuid::Uuid::nil())
+        handle_line(
+            &v.to_string(),
+            &PathBuf::from("/nonexistent.sock"),
+            uuid::Uuid::nil(),
+            AgentTools::Full,
+        )
     }
 
     #[test]
@@ -362,6 +372,7 @@ mod tests {
 
     #[test]
     fn garbage_on_stdin_does_not_produce_a_reply() {
-        assert!(handle_line("not json", &PathBuf::from("/x"), uuid::Uuid::nil()).is_none());
+        assert!(handle_line("not json", &PathBuf::from("/x"), uuid::Uuid::nil(), AgentTools::Full)
+            .is_none());
     }
 }

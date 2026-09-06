@@ -106,7 +106,11 @@ fn m4_worktree_lifecycle() {
     ));
 
     // ---- ticket 1: worktree strategy, lazy provision on spawn -------------
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "Fix thing".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "Fix thing".into(),
+        workspace: None,
+    });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let t1 = board.tickets[0].id;
     assert!(matches!(
@@ -262,7 +266,11 @@ fn m4_worktree_lifecycle() {
     }
 
     // ---- ticket 2: conflict path + discard delete -------------------------
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "clash".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "clash".into(),
+        workspace: None,
+    });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let t2 = board.tickets.iter().find(|t| t.title == "clash").unwrap().id;
     let _ =

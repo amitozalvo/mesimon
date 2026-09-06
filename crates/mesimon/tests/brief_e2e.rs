@@ -38,7 +38,11 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("brief");
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "brief me".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "brief me".into(),
+        workspace: None,
+    });
     let ticket = c.board().tickets.first().expect("ticket").id;
     assert!(matches!(
         c.request(Command::WriteNote { ticket, note: None, text: BRIEF.into() }),
@@ -136,7 +140,11 @@ fn a_composed_spawn_submits_the_description_under_the_title() {
     // With the agent brief switched on for this spawn: the flag and the text
     // ride the argv, verbatim, right after the tools the text names.
     assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "bare title".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "bare title".into(),
+        workspace: None,
+    });
     let bare = c.board().tickets.into_iter().find(|t| t.title == "bare title").unwrap().id;
     let bsid = match c.request(Command::SpawnSession {
         ticket: bare,

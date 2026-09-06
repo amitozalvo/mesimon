@@ -238,6 +238,19 @@ pub(crate) fn branch_mark(tier: Tier) -> char {
     }
 }
 
+/// The column header's one optional mark (T-117): this column DOES
+/// something to a ticket — moves it on an edge, starts a claude, reaches
+/// the merge train. `→` U+2192, one cell, outside the banned box range,
+/// drawn in the header's quiet register and dropped first when the row is
+/// tight; the ASCII tier reads `>`.
+pub(crate) fn auto_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '>'
+    } else {
+        '→'
+    }
+}
+
 pub(crate) fn ahead_mark(tier: Tier) -> char {
     if tier == Tier::Ascii {
         '^'
@@ -1008,7 +1021,7 @@ mod tests {
     fn branch_marks_are_one_cell_at_both_tiers() {
         use unicode_width::UnicodeWidthChar;
         for tier in [Tier::Unicode, Tier::Ascii] {
-            for c in [branch_mark(tier), ahead_mark(tier), behind_mark(tier)] {
+            for c in [branch_mark(tier), ahead_mark(tier), behind_mark(tier), auto_mark(tier)] {
                 assert_eq!(c.width(), Some(1), "{c:?}");
                 assert!(!(0x2500..=0x259F).contains(&(c as u32)), "{c:?}");
             }

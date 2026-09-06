@@ -1,9 +1,30 @@
 //! The private server's tmux.conf — every line justified by docs/19 or a spike.
 
+/// The status line's right-hand hint: the two detach keys and the word. Spelled
+/// the way the board's own footer spells a control key (`keymap`: `Key::Ctrl(c)`
+/// renders `^c`, so `^k`, `^t`, `^]`) — one vocabulary on both sides of the
+/// handover; it read `Ctrl+]/^5` for a while, two spellings in ten cells
+/// (T-261). Rendered into the conf for fresh servers and pushed live by
+/// `TmuxBackend::set_status_left` for the ones already running, from this one
+/// place, so the two cannot drift apart again.
+pub const STATUS_RIGHT: &str = " ^]/^5 back  ";
+
+/// The `status-position` word for a preference: tmux's own two values.
+pub fn status_position(top: bool) -> &'static str {
+    if top {
+        "top"
+    } else {
+        "bottom"
+    }
+}
+
 /// Render the conf. `pane_died_cmd` is the daemon's notify command (spike T-7:
 /// the `pane-died` hook is the ONLY timely death signal — control mode is
 /// silent on pane death); `None` renders the hook-less M1 conf (unit tests).
-pub fn render(pane_died_cmd: Option<&str>) -> String {
+/// `status_top` is the Settings preference (T-264): where the status line
+/// sits over an agent's pane. Rendered for FRESH servers and pushed live by
+/// `TmuxBackend::set_status_position` for running ones.
+pub fn render(pane_died_cmd: Option<&str>, status_top: bool) -> String {
     // Spike references: T-2 (update-environment), T-6 (extended-keys, focus-events),
     // T-7 (remain-on-exit + pane-died), T-10 (clipboard/passthrough containment).
     // C-5 needs its own bind: `extended-keys always` negotiates CSI-u with the outer
@@ -30,12 +51,14 @@ set -g escape-time 10
 set -g status-style "reverse"
 set -g status-left " mesimon "
 set -g status-left-length 120
-set -g status-right " Ctrl+]/^5 back  "
+set -g status-right "@STATUS_RIGHT@"
 set -g status-right-length 20
+set -g status-position @STATUS_POSITION@
 set -g window-status-format ""
 set -g window-status-current-format ""
 "##
-        .to_string();
+        .replace("@STATUS_RIGHT@", STATUS_RIGHT)
+        .replace("@STATUS_POSITION@", status_position(status_top));
     for (table, key, pipe) in copy_pipe_bindings() {
         conf.push_str(&format!(
             "bind-key -T {table} {key} send-keys -X copy-pipe-and-cancel \"{pipe}\"\n"
@@ -141,13 +164,33 @@ mod tests {
 
     #[test]
     fn hookless_render_has_no_hook() {
-        assert!(!render(None).contains("pane-died"));
+        assert!(!render(None, false).contains("pane-died"));
+    }
+
+    /// The status line's side is the preference's (T-264): bottom, tmux's
+    /// own default, unless Settings said top — and the conf always says
+    /// which, so a fresh server never inherits a stale word.
+    #[test]
+    fn the_status_line_sits_where_the_preference_says() {
+        assert!(render(None, false).contains("set -g status-position bottom\n"));
+        assert!(render(None, true).contains("set -g status-position top\n"));
+        assert_eq!(status_position(true), "top");
+    }
+
+    /// The detach hint spells its keys the way the board's footer does — a
+    /// caret, never `Ctrl+` — and says the same thing on a fresh server's conf
+    /// as on a live one (T-261).
+    #[test]
+    fn the_detach_hint_speaks_the_footers_language() {
+        assert!(!STATUS_RIGHT.contains("Ctrl"), "{STATUS_RIGHT:?}");
+        assert!(STATUS_RIGHT.contains("^]") && STATUS_RIGHT.contains("^5"));
+        assert!(render(None, false).contains(&format!("set -g status-right \"{STATUS_RIGHT}\"")));
     }
 
     #[test]
     #[cfg(target_os = "macos")]
     fn render_pipes_copy_to_the_clipboard_without_osc52() {
-        let conf = render(None);
+        let conf = render(None, false);
         assert!(conf.contains(r#"copy-pipe-and-cancel "pbcopy""#));
         assert!(conf.contains("bind-key -T copy-mode-vi MouseDragEnd1Pane"));
         // T-10 containment must survive the clipboard fix.
@@ -195,7 +238,7 @@ mod tests {
     #[test]
     fn hooked_render_carries_the_notify() {
         let cmd = pane_died_cmd("/abs/mesimon", "/tmp/m/hook.sock");
-        let conf = render(Some(&cmd));
+        let conf = render(Some(&cmd), false);
         assert!(conf.contains("set-hook -g pane-died"));
         assert!(conf.contains(r#""/abs/mesimon" hook"#));
         assert!(conf.contains("#{session_name}"));

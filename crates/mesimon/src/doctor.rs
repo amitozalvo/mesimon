@@ -235,6 +235,8 @@ fn environment(verbose: bool) -> Section {
     // The merge train (2026-09-04): the one standing consent for mesimon to
     // prompt an agent with no per-press gesture, so doctor says when it is on.
     records.push(rec(Level::Note, "merge train", mesimon_tui::train_status()));
+    // Where the private tmux server's status line sits over a pane (T-264).
+    records.push(rec(Level::Note, "status line", mesimon_tui::status_line_status()));
 
     records.push(match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => rec(Level::Ok, "HOME", redact(&h, verbose)),
@@ -435,6 +437,31 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                     mesimon_core::brief::TEXT,
                 )),
             );
+        }
+
+        // The columns and what each one DOES (T-117): every automation is a
+        // column setting now, so this line is the whole answer to "why did
+        // that card move". A board with no file prints nothing — doctor
+        // never creates one.
+        if let Some(cols) = mesimon_daemon::store::read_columns(&paths) {
+            let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+            let mut rules: Vec<String> = Vec::new();
+            for c in &cols {
+                let words = c.settings.summary();
+                if !words.is_empty() {
+                    rules.push(format!("{}: {}", c.name, words.join(" ∙ ")));
+                }
+            }
+            let line = names.join(" → ");
+            let record = rec(Level::Ok, "columns", line);
+            records.push(if rules.is_empty() {
+                record.advice("No column carries an automation: nothing moves a card but a hand.")
+            } else {
+                record.advice(format!(
+                    "What each column does, and nothing else does (Enter on a column header changes it):\n\n{}",
+                    rules.join("\n")
+                ))
+            });
         }
 
         // And the CLAUDE.md road, for a user who would rather keep the words
@@ -657,7 +684,12 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     let bin = mesimon_daemon::hook_settings::mesimon_bin();
     // A fixed nil uuid: the real blob differs only in the session id, and a
     // fresh one on every run would make this output impossible to diff.
-    let blob = mesimon_daemon::hook_settings::mcp_config_json(&paths, &bin, uuid::Uuid::nil());
+    let blob = mesimon_daemon::hook_settings::mcp_config_json(
+        &paths,
+        &bin,
+        uuid::Uuid::nil(),
+        mesimon_core::board::AgentTools::Full,
+    );
 
     println!("the flag every mesimon-spawned Claude session carries");
     println!("  --mcp-config '{blob}'");

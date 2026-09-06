@@ -44,7 +44,11 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
         Response::Hello { .. }
     ));
 
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "tag me".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "tag me".into(),
+        workspace: None,
+    });
     let board = board_of(c.request(Command::Snapshot));
     let id = board.tickets[0].id;
     let key = board.tickets[0].short_key.clone();
@@ -77,7 +81,11 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
 
     // It is offered on a ticket that never wore it, which is the point of a
     // registry rather than a per-ticket accident.
-    let _ = c.request(Command::CreateTicket { column: "TODO".into(), title: "other".into() });
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "other".into(),
+        workspace: None,
+    });
     let board = board_of(c.request(Command::Snapshot));
     let other = board.tickets.iter().find(|t| t.title == "other").unwrap().id;
     assert_eq!(board.group_tags(1), vec!["BUG", "REGR"]);

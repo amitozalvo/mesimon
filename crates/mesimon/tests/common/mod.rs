@@ -465,10 +465,17 @@ pub struct Shim {
 
 impl Shim {
     pub fn start(sock: &Path, session: uuid::Uuid) -> Self {
+        Self::start_with(sock, session, &[])
+    }
+
+    /// The shim with extra argv — `--tools <tier>`, the way the daemon's
+    /// blob starts it (T-117).
+    pub fn start_with(sock: &Path, session: uuid::Uuid, extra: &[&str]) -> Self {
         let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
             .args(["mcp", "--sock"])
             .arg(sock)
             .args(["--session", &session.to_string()])
+            .args(extra)
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())

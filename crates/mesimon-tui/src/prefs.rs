@@ -49,6 +49,11 @@ pub(crate) struct Prefs {
     /// After a train merge, paste the merged notice into that agent (starts
     /// a turn). On by default; only meaningful while the train is on.
     pub merge_train_notice: bool,
+    /// The private tmux server's status line sits at the TOP of an agent's
+    /// pane (T-264) — where the board's own header was — instead of tmux's
+    /// default bottom. Off by default; the TUI pushes it to the daemon, which
+    /// owns the server and never reads this file.
+    pub status_top: bool,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -62,6 +67,7 @@ impl Default for Prefs {
             week_start: Weekday::Monday,
             merge_train: false,
             merge_train_notice: true,
+            status_top: false,
             doc: Map::new(),
         }
     }
@@ -71,6 +77,7 @@ const SNOOZE_KEY: &str = "snooze_needs_you";
 const WEEK_START_KEY: &str = "week_start";
 const MERGE_TRAIN_KEY: &str = "merge_train";
 const MERGE_TRAIN_NOTICE_KEY: &str = "merge_train_notice";
+const STATUS_TOP_KEY: &str = "status_line_top";
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -115,6 +122,7 @@ impl Prefs {
         doc.insert(SNOOZE_KEY.into(), Value::from(self.snooze_needs_you));
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
         doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
+        doc.insert(STATUS_TOP_KEY.into(), Value::from(self.status_top));
         // A day this build does not know is a newer build's; like a foreign
         // theme name, the default it read as is not written over it.
         let foreign = doc
@@ -168,6 +176,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let merge_train = doc.get(MERGE_TRAIN_KEY).and_then(Value::as_bool).unwrap_or(false);
     let merge_train_notice =
         doc.get(MERGE_TRAIN_NOTICE_KEY).and_then(Value::as_bool).unwrap_or(true);
+    let status_top = doc.get(STATUS_TOP_KEY).and_then(Value::as_bool).unwrap_or(false);
     let week_start = doc
         .get(WEEK_START_KEY)
         .and_then(Value::as_str)
@@ -180,6 +189,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         week_start,
         merge_train,
         merge_train_notice,
+        status_top,
         doc,
     };
     if schema > SCHEMA {
@@ -243,6 +253,16 @@ pub fn train_doctor_line() -> String {
         "on ∙ tells the agent after a merge ∙ armed only while a board is open".into()
     } else {
         "on ∙ silent after a merge ∙ armed only while a board is open".into()
+    }
+}
+
+/// `mesimon doctor`'s `status line` line (T-264): which side of an agent's
+/// pane the private tmux server's bar sits on.
+pub fn status_line_doctor_line() -> String {
+    if load_home().prefs.status_top {
+        "top of the pane (Settings moves it back to the bottom)".into()
+    } else {
+        "bottom of the pane, tmux's default (Settings moves it to the top)".into()
     }
 }
 
@@ -368,6 +388,26 @@ mod tests {
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["merge_train"], true);
         assert_eq!(v["merge_train_notice"], false);
+        assert_eq!(v["dark"], "amber");
+    }
+
+    /// The status line's side (T-264): absent is the bottom (tmux's own
+    /// default), a flip round-trips and survives a theme pick.
+    #[test]
+    fn the_status_line_defaults_to_the_bottom_and_round_trips() {
+        let p = scratch("statusline");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(!l.prefs.status_top, "absent is the default: bottom");
+        l.prefs.status_top = true;
+        save(&p, &l.prefs).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.status_top);
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["status_line_top"], true);
         assert_eq!(v["dark"], "amber");
     }
 

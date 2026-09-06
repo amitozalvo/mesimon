@@ -90,7 +90,11 @@ fn m1_acceptance_headless() {
     assert_eq!(names, ["TODO", "IN PROGRESS", "REVIEW", "DONE"]);
 
     // Create → rename → move.
-    c.request(Command::CreateTicket { column: "TODO".into(), title: "first ticket".into() });
+    c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "first ticket".into(),
+        workspace: None,
+    });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let t = board.tickets.first().expect("ticket created").clone();
     assert_eq!(t.short_key, "T-1");
