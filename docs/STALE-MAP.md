@@ -6341,15 +6341,29 @@ tests, and the turn before it verified the tree twice — once before the versio
 after, because the bump relinks every crate — so one suite ran three times. The 40-minute deadline
 alpha.15 added was a budget for the wait, not a fix for it.
 
-**What the wait is, measured.** A freshly linked 6 MB e2e binary takes **25 s** on its first exec
-with `user 0.00 sys 0.00` — the process is held before it runs, not working — and **0 s** on the
-second. A byte-identical copy at a new path: 0.25 s, so the verdict is cached by content and a
-relink is always a fresh one. A hello-world C binary: 0.47 s, so it scales with the binary — a
-content scan of an `adhoc,linker-signed` Mach-O on first launch, which is the class macOS 14+
-hands to XProtect. The unified log shows nothing from `syspolicyd` without root. Apple's knob for
-exactly this is *Privacy & Security → Developer Tools* for the terminal (the responsible app —
-iTerm2 here, since the tmux server is reparented to launchd and inherits it); the author was
-asked to add it and the 25 s measurement is to be re-run after.
+**What the wait is, measured — and it is the directory, not the file.** A freshly linked 6 MB e2e
+binary takes **25 s** on its first exec with `user 0.00 sys 0.00` (held before it runs) and 0 s on
+the second. The first guesses were wrong in turn, and each was refuted by a measurement: not a
+network timeout (the notarization lookup is one 76 ms HTTP round trip, status 200, then `Code did
+not match any currently allowed policy`); not the size of the binary (`target/debug/mesimon` at
+23.6 MB, relinked and exec'd by a hook the same second, scans in 0.5 s — 42 of 45 scans in the
+log window took 0.3–0.6 s whatever their size); not the terminal's *Developer Tools* grant (24 s
+from a plain iTerm2 tab with iTerm2 listed); not a warm-up window (two binaries linked together
+and exec'd back to back: 25 s and 29 s). The live sample says where the time goes: **~15 s of
+`syspolicyd` itself at 50–73% CPU** (14 s of CPU time) before it even calls XProtect, then a
+**12 s XProtect YARA pass** at ~23%. And the decisive probe — one byte of a string patched so the
+content is new, re-signed, the identical file exec'd from three directories — reads **0.56 s** from
+an empty scratch dir, **0.35 s** from `target/debug/` (14 entries), **37 s** from
+`target/debug/deps/`, which held **879,272 entries and 50 GB** — accumulated since 2026-08-30,
+ONE WEEK: every relink of 36 e2e binaries leaves its split-debuginfo `.o` files and its old-hash
+binary behind, and cargo collects nothing. So Gatekeeper's first-exec evaluation walks the
+executable's directory (the "direct malware and dylib scan" looks at its siblings), and a directory
+of 879 k files costs 25–37 s per fresh binary — which is also why the 2026-09-05 memory of "~30 s
+per binary" was true and its explanation was not. `zsh` has a builtin `log`, so `/usr/bin/log show`
+is the command that reads the unified log; every earlier `log show` in the session ran the builtin
+and read nothing. The Docker Desktop VM had been at 104% CPU for four days throughout
+(`com.apple.Virtualization.VirtualMachine`, parent `com.docker.virtualization`) — unrelated to
+the hold, and reported to the author.
 
 **The change.** `ci/test-run.py::stamp_pass` writes `target/suite-passed.json` after a clean run
 of a FULL-workspace `cargo test`/`nextest` on a CLEAN tree: HEAD's sha, the tmux that drove it
@@ -6368,7 +6382,9 @@ python3 -B ci/test-run.py --jobs 4` (nextest, parallel, bounded so the first-exe
 stampede the machine — 36 at once hung both live boards on alpha.15) → tag → push →
 `ci/release.sh`. Nothing is verified before the bump.
 
-**Not done.** The Developer Tools exemption is unverified until the author adds the terminal; if
-it removes the hold, `--jobs 4` can go and the stamp is worth the two minutes of tests rather than
-the twenty-five of waiting. `ci/__pycache__/test-run.cpython-314.pyc` is tracked in git and should
-not be.
+**Not done.** The remedy is `cargo clean` (or a prune of `target/debug/deps`) and keeping the
+directory small — a `find deps -mtime +N -delete` on a cadence, or a fresh `--target-dir` for the
+suite; which one is the author's call, since a clean wipes 48 GB of cache and darkens the live
+board's hooks for the rebuild. Until it is done the stamp-skip is what saves the release its
+second run, and `--jobs 4` stays. `ci/__pycache__/test-run.cpython-314.pyc` is tracked in git and
+should not be.
