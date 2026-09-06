@@ -2091,8 +2091,8 @@ impl App {
 
     /// The owed row's words (2026-09-04): what mesimon will do to this card
     /// next and what it waits on — `queued ∙ after T-12`, `auto-merge ∙
-    /// after T-3 +1`. Names the first ticket still working and counts the
-    /// rest, so the row stays one row. A ticket taken off the train (T-227)
+    /// after T-3 +1`, `auto-merge ∙ blocked`. Names the first ticket still
+    /// working and counts the rest, so the row stays one row. A ticket taken off the train (T-227)
     /// owes nothing and wears no mark, but the row still says so —
     /// `auto-merge ∙ off` — because the door `t` closed is the same door it
     /// reopens, and a closed door with no sign is a ticket that silently
@@ -2118,6 +2118,14 @@ impl App {
             ("ask", _) if p.in_flight => "queued ∙ sending".into(),
             ("ask", None) => "queued ∙ sends next".into(),
             ("ask", Some(a)) => format!("queued ∙ {a}"),
+            // The checkout refused this merge (T-289) — a dirty tree the
+            // ff would overwrite, almost always. It outranks what the row
+            // waits on, because a blocked merge does not happen when the
+            // board goes quiet: the row would be promising one that never
+            // comes, which is what a person read as the train hanging. WHY
+            // is the advisory row's — that is a sentence and this is 22
+            // cells.
+            ("merge", _) if p.text.is_some() => "auto-merge ∙ blocked".into(),
             // "auto-": the row is the one place a card says the merge is
             // mesimon's to make, and `merge ∙ next` read as a hand's (T-227).
             ("merge", None) => "auto-merge ∙ next".into(),
@@ -8495,6 +8503,22 @@ mod tests {
         assert_eq!(row(&mut app, vec!["T-3"], false, "merge"), "auto-merge ∙ after T-3");
         assert_eq!(row(&mut app, vec![], false, "rebase"), "rebase ask ∙ next");
         assert_eq!(row(&mut app, vec!["T-3", "T-4"], false, "rebase"), "rebase ask ∙ after T-3 +1");
+        // A merge the checkout refused (T-289): the reason travels on `text`
+        // and outranks what the row waits on — quiet is not what it needs.
+        // The ask's own `text` is its words, and must not read as a refusal.
+        let blocked = |app: &mut App, waits_on: Vec<&str>, action: &str| {
+            app.pending = vec![mesimon_core::command::Pending {
+                ticket: ulid::Ulid(1),
+                action: action.into(),
+                waits_on: waits_on.into_iter().map(String::from).collect(),
+                text: Some("uncommitted changes in the main checkout".into()),
+                in_flight: false,
+            }];
+            app.pending_row(ulid::Ulid(1)).unwrap()
+        };
+        assert_eq!(blocked(&mut app, vec![], "merge"), "auto-merge ∙ blocked");
+        assert_eq!(blocked(&mut app, vec!["T-3", "T-4"], "merge"), "auto-merge ∙ blocked");
+        assert_eq!(blocked(&mut app, vec!["T-3"], "ask"), "queued ∙ after T-3");
         app.pending.clear();
         assert!(app.pending_row(ulid::Ulid(1)).is_none());
         assert!(!app.owed(ulid::Ulid(1)));

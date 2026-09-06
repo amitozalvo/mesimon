@@ -1458,7 +1458,14 @@ it, claude idle, pane silent ≥ 5 s by `#{window_activity}`) once per base tip 
 hand `m` records too), fused at 6 asks / 2 h (`Notice merge_train_suspended`, a hand `m` or move
 clears it). Merged tickets do not move. `AutomationStatus` on the snapshot says armed / asked /
 suspended (`merge_outstanding` reads `train_asked`), `pending` carries `merge` / `rebase` rows so
-the cards say what is coming (`merge ∙ after T-3 +1`). **The header says NOTHING** — a ` ∙ train`
+the cards say what is coming (`merge ∙ after T-3 +1`). **A merge the CHECKOUT refused says so
+(T-289, 2026-09-07):** the refusal detail rides `Pending.text`, the card's owed row reads
+`auto-merge ∙ blocked` (it outranks `after …` — a blocked merge is not waiting for quiet), and
+the sentence is a standing `merge_train_blocked` notice in the advisory row beside the fuse's,
+built from `pending_items()` so the row and the notice cannot disagree. `Train::refuse`
+remembers per `(branch tip, base tip)` and neither moves on a `git stash`, so `on_git_sampled`
+calls `Train::forget_refusals()` on a sample delta — which is why the git sample rides
+`wt_refresh_ticks()` (= `RSS_TICKS`) now. **The header says NOTHING** — a ` ∙ train`
 clause beside the checkout's own branch shipped for a day and was cut (author 2026-09-04, with
 ` ∙ auto-merge`, its hour-old rename): the header speaks for the whole board and the train only
 ever reaches ATTACHED worktree tickets, so a board-wide word claims more than it does. Armed-ness
@@ -1488,8 +1495,8 @@ trees),
 check), `MESIMON_UPDATE_CHECK` (force a dev build past the CHANNEL gate — the build-tree guard
 still refuses, so copy the binary out of `target/` first),
 `MESIMON_SERVER_GUARD_TICKS` (shrink the 15 s
-server-alive guard cadence), `MESIMON_WT_REFRESH_TICKS` (the worktree flags' and the merge
-train's cadence, default 40 ticks). E2e pattern: in-process
+server-alive guard cadence), `MESIMON_WT_REFRESH_TICKS` (the slow bucket — the worktree
+flags, the merge train, the CLAUDE.md sample and the checkout's git sample; default 40 ticks). E2e pattern: in-process
 daemon thread + real tmux + the real built binary via `env!("CARGO_BIN_EXE_mesimon")` (only
 available in `crates/mesimon/tests/`).
 

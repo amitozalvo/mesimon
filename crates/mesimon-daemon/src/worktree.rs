@@ -1247,12 +1247,17 @@ pub fn ff_merge(repo: &Path, branch: &str, base: &str) -> Result<()> {
 /// A refusal reason fit for the status line: git's dirty-checkout refusal
 /// (multi-line, one path per line) becomes one actionable sentence; anything
 /// else is flattened to a single line — the wire must never carry text a
-/// one-line footer cannot render.
+/// one-line footer cannot render. Never EMPTY, since T-289 hangs a standing
+/// notice off it: a git that refused without a word still owes the user one.
 pub fn merge_refusal_detail(err: &str, base: &str) -> String {
     if err.contains("local changes") || err.contains("would be overwritten") {
         return format!("uncommitted changes in the {base} checkout — commit or stash them first");
     }
-    err.split_whitespace().collect::<Vec<_>>().join(" ")
+    let one_line = err.split_whitespace().collect::<Vec<_>>().join(" ");
+    if one_line.is_empty() {
+        return format!("the {base} checkout refused the fast-forward");
+    }
+    one_line
 }
 
 // ---- teardown ---------------------------------------------------------------
@@ -1568,6 +1573,11 @@ mod tests {
         assert!(!d.contains('\n') && !d.contains('\t'));
         assert_eq!(d, "uncommitted changes in the main checkout — commit or stash them first");
         assert_eq!(merge_refusal_detail("boom\nline two", "main"), "boom line two");
+        assert_eq!(
+            merge_refusal_detail("  \n ", "main"),
+            "the main checkout refused the fast-forward",
+            "a wordless refusal still says something: the notice hangs off this"
+        );
 
         // The real thing: ff-able branch, dirty base checkout on overlapping
         // files — git refuses the ff, the mapped detail is the sentence.

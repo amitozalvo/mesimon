@@ -6659,3 +6659,50 @@ no notification out of band (the tmux status line's `!N` picks it up for free). 
 `board_raised_120x30` / `ticket_raised_120x30`; the L3 colour law sweeps it over `Flavor::ALL`
 (`test_attn_provenance_raised`, and `attn_stays_on_the_card` is the woke law's helper generalised
 to take the lit card's title). E2e `raise_hand_e2e`, tier coverage in `agent_tools_e2e`.
+
+## A merge the checkout refused says so (T-289, 2026-09-07)
+
+Two REVIEW tickets sat wearing `auto-merge ∙ next` for hours and never merged. The train had
+tried, three times, and been refused: another session in the shared checkout was holding
+uncommitted work, and an ff-merge that would overwrite it is one git declines. The daemon had
+the sentence — `merge_refusal_detail` maps git's "local changes"/"would be overwritten" to
+*uncommitted changes in the main checkout — commit or stash them first* — and shipped it on
+`Pending.text`. `App::pending_row` never read it. So the one channel that could have said why
+was already built, already populated, and rendered nowhere: the card went on promising a merge
+that the train had stopped attempting.
+
+**The card says THAT, the advisory row says WHY.** `pending_row` gains one arm, before the two
+that name what the merge waits on — `("merge", _) if p.text.is_some() => "auto-merge ∙ blocked"`
+— because a blocked merge is not waiting for the board to go quiet, and `after T-3` there is a
+promise about the wrong thing. The reason is a sentence and the owed row is 22 cells (the
+`train_120x30` golden already truncates `auto-merge ∙ after T-3 ~`), so it goes where the flap
+fuse's already goes: a standing `merge_train_blocked` notice in the advisory row, one per
+distinct reason, naming its tickets in board order — *merge train held for T-282, T-283 —
+uncommitted changes in the main checkout — commit or stash them first*. It is built from
+`pending_items()`' own output rather than from the refusal map, so the row and the notice cannot
+disagree; `snapshot` now computes `pending` before the notices block and hands the same value to
+both. The ticket page's state row reads `auto-merge ∙ blocked` off the same function and stops
+there — the row is already ~113 cells wide at 120 and only the branch name gives — and `m` is
+one key away, which answers with the full sentence in the status line.
+
+**And the fix the sentence asks for now works.** A refusal is remembered per `(branch tip, base
+tip)` so a dirty checkout is not retried every bucket — but neither tip moves when the user
+STASHES, which is half of what the sentence tells them to do, so the train would have stayed
+stuck on a checkout it had already been cleaned out of. `on_git_sampled` calls
+`Train::forget_refusals()` on the branch where the sample differs from the cache: the checkout
+moved, so every verdict it handed down is stale. The cost of being wrong is one `git merge
+--ff-only` that fails without writing anything; the feed stays quiet because the tip-pair key
+still absorbs the passes in between. The git sample moved from `RSS_TICKS` to
+`wt_refresh_ticks()` for it — the same number in production (`RSS_TICKS`), and now
+`MESIMON_WT_REFRESH_TICKS` shortens the whole slow bucket rather than three quarters of it, so
+an e2e that shortens the train's cadence shortens the thing that unsticks it too.
+
+The user's first guess — that moving the running ticket to REVIEW and back while two tickets
+waited on it had confused the train — was not it: a hand move clears the train's memory of THAT
+ticket (`hand_touched`) and touches nothing else. The dirty checkout was.
+
+Deliberately out: no expiry on the refusal (a doomed ff-merge every minute forever would write a
+`merge_train_refused:merge` line into the feed every minute, and the feed is the record), and no
+header word (the train still has no board-wide clause — the notice is a condition, not a state).
+Golden `train_blocked_120x30`; e2e
+`merge_train_e2e::a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean`.

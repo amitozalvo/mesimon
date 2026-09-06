@@ -125,6 +125,15 @@ impl Train {
         self.refused.insert(ticket, (tip, base_tip, detail));
     }
 
+    /// Forget every remembered refusal. The checkout that refused them has
+    /// changed under them (T-289): the `(tip, base tip)` pair a refusal is
+    /// keyed on does not move when the user STASHES, which is one of the two
+    /// things the refusal itself asks for, so the git sample's own delta is
+    /// what lets the train try again.
+    pub fn forget_refusals(&mut self) {
+        self.refused.clear();
+    }
+
     /// The detail of a merge refused at exactly this `(tip, base tip)`.
     pub fn refusal(&self, ticket: ulid::Ulid, tip: &str, base_tip: &str) -> Option<&str> {
         self.refused
@@ -230,5 +239,19 @@ mod tests {
         assert!(train.refusal(t, "a", "b2").is_none(), "the base moved");
         train.hand_touched(t);
         assert!(train.refusal(t, "a", "b").is_none());
+    }
+
+    /// The checkout moved (T-289): every refusal it made goes with it, so a
+    /// stash — which moves neither tip — lets the train try again.
+    #[test]
+    fn a_checkout_that_changes_forgets_every_refusal() {
+        let mut train = Train::default();
+        train.refuse(ulid::Ulid(1), "a".into(), "b".into(), "dirty".into());
+        train.refuse(ulid::Ulid(2), "c".into(), "b".into(), "dirty".into());
+        train.record_ask(ulid::Ulid(1), "b".into(), 0, false, Instant::now());
+        train.forget_refusals();
+        assert!(train.refusal(ulid::Ulid(1), "a", "b").is_none());
+        assert!(train.refusal(ulid::Ulid(2), "c", "b").is_none());
+        assert!(train.asked_tips().contains_key(&ulid::Ulid(1)), "the asks are not refusals");
     }
 }

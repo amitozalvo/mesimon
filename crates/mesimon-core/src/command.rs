@@ -32,7 +32,8 @@ pub struct Notice {
     /// parse (tui/src/client.rs) — one new notice kind would blank the board
     /// on an older client. One of:
     /// `quarantined` | `future_version` | `worktrees_barred` | `build_skew` |
-    /// `shell_env`.
+    /// `shell_env` | `merge_train_suspended` | `merge_train_blocked` |
+    /// `automation_suspended`.
     pub kind: String,
     /// The headline, in mesimon's voice, ready to render. Never raw serde text.
     pub text: String,
@@ -1097,8 +1098,11 @@ pub struct Pending {
     /// the board, for the train); may include this ticket's own key.
     #[serde(default)]
     pub waits_on: Vec<String>,
-    /// The ask's words, so a second Shift+Enter reopens the field on them.
-    /// The local socket only — never the feed (D11), never a file.
+    /// The ask's words, so a second Shift+Enter reopens the field on them —
+    /// and, on a `merge` row, the reason the checkout REFUSED it (T-289),
+    /// which is what makes the row say `blocked` instead of promising a
+    /// merge that will not happen. The local socket only — never the feed
+    /// (D11), never a file.
     #[serde(default)]
     pub text: Option<String>,
     /// Pasted, waiting on the agent's `UserPromptSubmit` ack.

@@ -2624,6 +2624,44 @@ fn golden_train_120() {
     golden("train_120x30", &render(&app, 120, 30));
 }
 
+/// The checkout refused the merge (T-289): the card that was promising one
+/// says the door is shut instead, and the reason — a sentence, which no card
+/// row can hold — is the advisory row's, in the same voice the flap fuse
+/// uses. Before this the row read `auto-merge ∙ next` for as long as the
+/// tree stayed dirty and nothing anywhere said why.
+#[test]
+fn golden_train_blocked_120() {
+    let mut app = app_graphite(fixture(false));
+    app.automation.merge_train = true;
+    app.notices = vec![mesimon_core::command::Notice::new(
+        "merge_train_blocked",
+        "merge train held for T-5 — uncommitted changes in the main \
+         checkout — commit or stash them first",
+    )];
+    app.pending = vec![mesimon_core::command::Pending {
+        ticket: ulid_n(5),
+        action: "merge".into(),
+        waits_on: vec!["T-3".into()],
+        text: Some("uncommitted changes in the main checkout — commit or stash them first".into()),
+        in_flight: false,
+    }];
+    app.cursor_col = 2;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("auto-merge ∙ blocked")), "{}", lines.join("\n"));
+    assert!(
+        !lines.iter().any(|l| l.contains("after T-3")),
+        "a blocked merge is not waiting on the board:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        lines.iter().any(|l| l.contains("commit or stash them first")),
+        "the advisory row says why:\n{}",
+        lines.join("\n")
+    );
+    golden("train_blocked_120x30", &render(&app, 120, 30));
+}
+
 /// A pull request merged somewhere else (T-267): the branch is not an
 /// ancestor of anything, and the ticket page still says the work landed —
 /// naming the ref, because the user did not merge it here, and the commit

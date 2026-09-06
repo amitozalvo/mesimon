@@ -1529,7 +1529,7 @@ impl Daemon {
         if self.ticks % wt_refresh_ticks() == 0 {
             changed |= stage!("claude_md", self.claude_md.refresh(&self.paths.repo_root));
         }
-        if self.ticks % RSS_TICKS == 1 {
+        if self.ticks % wt_refresh_ticks() == 1 {
             if !self.git_fetch_every.is_zero()
                 && self.git_last_fetch.is_none_or(|t| t.elapsed() >= self.git_fetch_every)
             {
@@ -1537,6 +1537,9 @@ impl Daemon {
             }
             // One tick off the writer's own burst above: the sample is a fork on
             // a worker, but its spawn should not stack on the worktree flags.
+            // The same slow bucket as those flags — the sample is now what
+            // lets the train retry a refused merge (T-289), so a test that
+            // shortens one has to shorten both or watch the train stay stuck.
             stage!("queue_git_sample", self.queue_git_sample());
         }
         if self.ticks % server_guard_ticks() == 0 {
@@ -3200,6 +3203,7 @@ impl Daemon {
         // blown. The fuse is a real change in how the board behaves — cards
         // stop moving themselves — so it is said out loud rather than left
         // for the user to notice as an absence.
+        let pending = self.pending_items();
         let mut notices = self.notices.clone();
         let mut fused: Vec<String> = self
             .moves
@@ -3222,6 +3226,29 @@ impl Daemon {
                      m on it, or a move by hand, clears it.",
                     train_fused.join(", ")
                 ),
+            ));
+        }
+        // A merge the checkout refused, in the same voice and for the same
+        // reason (T-289): the train has stopped trying and the card cannot
+        // say why — its owed row is 22 cells and this is a sentence. Built
+        // from `pending` so the row and the notice can never disagree; one
+        // per distinct reason, naming its tickets in board order.
+        let mut blocked: Vec<(&str, Vec<String>)> = Vec::new();
+        for p in &pending {
+            let (Some(detail), Some(t)) =
+                (p.text.as_deref().filter(|_| p.action == "merge"), self.board.ticket(p.ticket))
+            else {
+                continue;
+            };
+            match blocked.iter_mut().find(|(d, _)| *d == detail) {
+                Some((_, keys)) => keys.push(t.short_key.clone()),
+                None => blocked.push((detail, vec![t.short_key.clone()])),
+            }
+        }
+        for (detail, keys) in blocked {
+            notices.push(Notice::new(
+                "merge_train_blocked",
+                format!("merge train held for {} — {detail}", keys.join(", ")),
             ));
         }
         if !fused.is_empty() {
@@ -3255,7 +3282,7 @@ impl Daemon {
                 fetch_error: self.git_fetch_error.clone(),
                 ..self.git_cache.clone()
             },
-            pending: self.pending_items(),
+            pending,
             automation: self.automation_status(),
             claude_md: self.claude_md.status(),
             claude_default_mode: user_default_mode(),
@@ -3411,6 +3438,14 @@ impl Daemon {
             changed = true;
         }
         if sample != self.git_cache {
+            // The checkout moved: a commit, a stash, a file written. A merge
+            // the checkout REFUSED was refused by that state (T-289), and the
+            // `(branch tip, base tip)` pair the refusal is keyed on does not
+            // move when the user stashes — which is one of the two things the
+            // refusal asks them to do. The sample's own delta is what lets the
+            // train try again; the cost of being wrong is one ff-merge that
+            // fails without writing anything.
+            self.train.forget_refusals();
             self.git_cache = sample;
             changed = true;
         }
@@ -6832,9 +6867,10 @@ fn tmux_text(s: &str, max_chars: usize) -> String {
 }
 
 /// Test seam only — e2e cannot wait out the real 15 s server guard.
-/// The worktree flags' (and the train's) cadence, in ticks: `RSS_TICKS`
-/// unless `MESIMON_WT_REFRESH_TICKS` says otherwise — a test seam, since an
-/// e2e cannot wait 10 s a step.
+/// The slow bucket, in ticks — the worktree flags, the train, the CLAUDE.md
+/// sample and the checkout's git sample: `RSS_TICKS` unless
+/// `MESIMON_WT_REFRESH_TICKS` says otherwise — a test seam, since an e2e
+/// cannot wait 10 s a step.
 fn wt_refresh_ticks() -> u64 {
     std::env::var("MESIMON_WT_REFRESH_TICKS")
         .ok()

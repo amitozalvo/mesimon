@@ -301,3 +301,74 @@ fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     );
     let _ = c2.request(Command::Shutdown);
 }
+
+/// A merge the CHECKOUT refuses (T-289). An untracked `alpha.txt` sits where
+/// the fast-forward would write one, so git refuses it — and before this the
+/// card went on saying `auto-merge ∙ next` for as long as the tree stayed
+/// dirty, with nothing anywhere saying why. Now the reason rides the pending
+/// row and a standing notice spells it out; and taking the file away is
+/// enough to unstick it, which the refusal's `(branch tip, base tip)` key
+/// never was — a stash moves neither.
+#[test]
+fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let Some(h) = Harness::boot_with_env(
+        "train-blocked",
+        Some(STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let feed = || std::fs::read_to_string(h.paths.activity_log()).unwrap_or_default();
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("train-blocked");
+    let (a, sa, branch_a, _) = ready(&mut c, "alpha");
+    // In the way: the ff would create this file, and git will not overwrite
+    // one it does not know about.
+    std::fs::write(repo.join("alpha.txt"), "not mine\n").unwrap();
+    std::thread::sleep(Duration::from_millis(500));
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(5), "A in REVIEW", || {
+        c.board().ticket(a).unwrap().column == "REVIEW"
+    });
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(15), "the refusal to be recorded", || {
+        feed().contains("merge_train_refused:merge")
+    });
+    // The row carries the reason, and the board says it in a sentence.
+    let owed = pending_of(&mut c, Some(a));
+    let merge = owed
+        .iter()
+        .find(|p| p.action == "merge")
+        .unwrap_or_else(|| panic!("a merge row: {owed:?}"));
+    let why = merge.text.clone().expect("the refusal travels with the row");
+    assert!(why.contains("uncommitted changes"), "{why}");
+    let notices = match c.request(Command::Snapshot) {
+        Response::Board { notices, .. } => notices,
+        other => panic!("not a board: {other:?}"),
+    };
+    let n = notices
+        .iter()
+        .find(|n| n.kind == "merge_train_blocked")
+        .unwrap_or_else(|| panic!("a standing notice: {notices:?}"));
+    assert!(n.text.contains("T-1") && n.text.contains(&why), "{}", n.text);
+    assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]));
+    // Out of the way. Neither tip moves — only the checkout's own status —
+    // and that is what lets the train try again.
+    std::fs::remove_file(repo.join("alpha.txt")).unwrap();
+    wait_until(Duration::from_secs(25), "A to merge once the checkout is clean", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+    });
+    wait_until(Duration::from_secs(5), "the notice to go with it", || {
+        !pending_of(&mut c, Some(a)).iter().any(|p| p.action == "merge")
+    });
+    let _ = c.request(Command::Shutdown);
+}
