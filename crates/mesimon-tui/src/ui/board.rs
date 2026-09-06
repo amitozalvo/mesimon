@@ -537,6 +537,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 /// ⊆ [!A-Z0-9 space]. Header cell is `!` iff the column holds a waiting
 /// session; then the name one letter per row; the count bottom-aligned,
 /// never dropped — the name truncates.
+///
+/// The `!` is INVERTED — `theme.attn_row()`, the needs-you title row's own
+/// treatment, bold like the header's `!N` chip (T-271, 2026-09-06, user:
+/// "more aggressiveness"). One cell of attn-coloured glyph is the smallest
+/// mark the board can make and it was reading as quiet next to the folded
+/// column it stands for; painting the cell spends the same one colour on
+/// the whole cell instead of on a stroke.
 fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
     let theme = &app.theme;
     let tickets = app.board.column_tickets(name);
@@ -550,7 +557,7 @@ fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Row 0 aligns with the column headers.
     lines.push(if waiting {
-        Line::from(Span::styled("!", theme.attn_text()))
+        Line::from(Span::styled("!", theme.attn_row().add_modifier(Modifier::BOLD)))
     } else {
         Line::default()
     });

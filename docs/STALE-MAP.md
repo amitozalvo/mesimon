@@ -6549,3 +6549,25 @@ walks the workspace's `src/` trees the way verdict's `permissionDecision` scan d
 call cannot come back under a new name; `tests/` is exempt (an e2e re-spawning its own test
 binary is not shipped code). Verified on the kernel's documented behaviour (proc(5)) and the
 unit tests; no Linux run, since the Docker gate is paused.
+
+## A folded column's needs-you mark is painted (T-271, 2026-09-06)
+
+A collapsed column is one cell wide, and its top cell is `!` when anything inside it needs you
+(07 §3.1's `⊆ [!A-Z0-9 space]`). That `!` was drawn with `theme.attn_text()` — the attn colour as
+a foreground stroke — which is the quietest form the one saturated colour has, on the narrowest
+thing the board draws, standing in for a whole column of cards. The author asked for "a yellow
+background for more aggressiveness".
+
+It is now `theme.attn_row().add_modifier(BOLD)`: the same inverted treatment the needs-you TITLE
+row and the header's `!N` chip already wear — `attn` ground, `attn_ink` on it, REVERSED in mono.
+So this is a fourth CALL SITE of an existing role, not a fourth SGR-7 use: an unexpanded column
+saying "needs you" is the same sentence a card's title row says, and painting the whole cell
+spends the colour on the cell rather than on a stroke inside it. The bold is the header chip's,
+for the same reason — one cell has no other way to get louder.
+
+Nothing else moved. The expanded column header's off-screen `!N` badge (`ui/board.rs`) keeps
+`attn_text()`: it sits in a row of other badges on the ground and is not the only mark for what
+is behind it. The goldens are colourless so none drifted, and `test_attn_provenance_woke`'s
+folded-board clause still holds — a spine only exists in a column the cursor is not in, and the
+cell it paints is the column's own. `the_folded_column_paints_its_needs_you_mark` pins bg, fg
+and weight over `Flavor::ALL`.

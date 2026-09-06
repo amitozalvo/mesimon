@@ -3287,6 +3287,36 @@ fn test_attn_provenance_woke() {
     assert!(lines.iter().any(|l| l.contains('!')), "the folded column must show the mark");
 }
 
+/// T-271: the spine's `!` is the needs-you row's own inverted treatment —
+/// the cell is PAINTED `attn` with `attn_ink` on it, not a coloured stroke
+/// on the ground. One cell is the smallest mark the board makes, and a
+/// folded column is standing in for every card inside it.
+#[test]
+fn the_folded_column_paints_its_needs_you_mark() {
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let (attn, ink) = (theme.attn, theme.attn_ink);
+        let mut app = App::for_test(fixture_woke(), theme);
+        app.cursor_col = 0; // fold the column the woke ticket is in
+        let buf = cells(&app, 60, 30);
+        let mut found = false;
+        for x in 0..60u16 {
+            let c = &buf[(x, 0u16)];
+            if c.symbol() != "!" {
+                continue;
+            }
+            found = true;
+            assert_eq!(c.bg, attn, "{flavor:?}: the spine's ! sits on the beam");
+            assert_eq!(c.fg, ink, "{flavor:?}: the spine's ! is written in the ink");
+            assert!(
+                c.modifier.contains(Modifier::BOLD),
+                "{flavor:?}: the spine's ! is bold, like the header's !N chip"
+            );
+        }
+        assert!(found, "{flavor:?}: the folded column must show the mark");
+    }
+}
+
 fn attn_stays_on_the_waiting_card(flavor: Flavor, board: Board) {
     let theme = Theme::new(flavor, Profile::TrueColor);
     let attn = theme.attn;
