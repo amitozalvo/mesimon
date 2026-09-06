@@ -285,7 +285,7 @@ fn eligibility(repo_root: &Path) -> Option<Eligible> {
     if why_off().is_some() {
         return None;
     }
-    let exe = std::env::current_exe().ok()?;
+    let exe = mesimon_core::exe::current_exe().ok()?;
     let paths = mesimon_daemon::Paths::for_repo(repo_root).ok()?;
     Some(Eligible { exe, stamp: stamp_path()?, stage_dir: paths.rt_dir.join("update") })
 }
@@ -308,7 +308,7 @@ fn why_off() -> Option<&'static str> {
     // development build wearing whatever stamp it was given, and replacing it
     // with a download would destroy work — so the answer here is no, even
     // when the channel gate was forced open on purpose.
-    if std::env::current_exe().is_ok_and(|e| in_build_tree(&e)) {
+    if mesimon_core::exe::current_exe().is_ok_and(|e| in_build_tree(&e)) {
         return Some("this binary is inside a build tree");
     }
     if stamp_path().is_none() {

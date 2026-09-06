@@ -6520,3 +6520,32 @@ Scope, deliberately: only the agent's omitted `column`. The unarchive fallback a
 drawer's import still take the first column — the first is "the column is gone" and the second
 was not asked for; a wider "wherever nothing chose" is one line each on `landing_column` if it
 is ever wanted. The human's composer creates in the cursor's column and never asks.
+
+## The reload execs the path, not the inode (T-280, 2026-09-06)
+
+Reported from WSL with a screenshot: `mesimon: reloading…` then `Error: exec of the new binary
+failed: No such file or directory (os error 2)`, the board gone and a shell prompt in its place.
+
+The corpus and every reload path assumed `std::env::current_exe()` is a fact of the process. On
+macOS it is (the path the process was started by, from `_NSGetExecutablePath`). On Linux it is
+`readlink /proc/self/exe`, which names the INODE the process runs from — and `install.sh` (and
+`release.rs::install`, the in-app download) land a new binary by renaming a new file over the
+old, which unlinks that inode. From then on the kernel answers `/home/x/.local/bin/mesimon
+(deleted)`. `update.rs` had cached the good path at startup, so it saw the new mtime and offered
+`U`; `reexec` then asked again and exec'd the deleted name. The daemon had the same trap one
+step wider: `hook_settings::mesimon_bin` and `spawn_detached` ask at spawn time, so a daemon
+that outlived an install would have written the dead name into every new session's hook set and
+the `pane-died` notify (macOS never showed it; the build-skew restart usually hid it).
+
+What changed: `core/src/exe.rs::current_exe` is the one road to our own path — resolved on the
+first call and cached for the life of the process (the TUI's update watch and the daemon's
+`exe_stamp` both ask at startup), with a trailing ` (deleted)` stripped regardless, since the
+path under the suffix is where the new binary now is and that is exactly what a reload wants to
+exec and a hook set wants to name. Every caller goes through it (reload, update watch, release
+eligibility and its build-tree guard, hook set, daemon respawn, the `pane-died` notify, the
+bundled tmux's sibling lookup, doctor's `binary` line); the test seams (`MESIMON_HOOK_BIN`,
+`MESIMON_DAEMON_BIN`) still outrank it at each caller. `no_source_line_asks_the_os_for_the_exe_directly`
+walks the workspace's `src/` trees the way verdict's `permissionDecision` scan does, so the raw
+call cannot come back under a new name; `tests/` is exempt (an e2e re-spawning its own test
+binary is not shipped code). Verified on the kernel's documented behaviour (proc(5)) and the
+unit tests; no Linux run, since the Docker gate is paused.

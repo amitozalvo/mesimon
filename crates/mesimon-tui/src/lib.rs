@@ -163,7 +163,7 @@ fn reexec(repo_root: &Path) -> Result<()> {
         eprintln!("mesimon: the daemon is still shutting down; starting the new client anyway");
     }
     use std::os::unix::process::CommandExt;
-    let exe = std::env::current_exe()?;
+    let exe = mesimon_core::exe::current_exe()?;
     let err = std::process::Command::new(exe).args(std::env::args_os().skip(1)).exec();
     Err(anyhow::anyhow!("exec of the new binary failed: {err}"))
 }

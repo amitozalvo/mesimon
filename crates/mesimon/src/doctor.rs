@@ -249,7 +249,7 @@ fn environment(verbose: bool) -> Section {
 
 fn install(verbose: bool) -> Section {
     let mut records = Vec::new();
-    match std::env::current_exe() {
+    match mesimon_core::exe::current_exe() {
         Ok(exe) => {
             records.push(rec(Level::Ok, "binary", redact(&exe.display().to_string(), verbose)));
             // The hook settings of every spawned session embed this absolute

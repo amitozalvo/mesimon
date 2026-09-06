@@ -101,7 +101,13 @@ the daemon it asked to stop"). **And the reload SPEAKS (2026-09-05):** `reexec` 
 screen and prints `mesimon: reloading…`, and `run` holds a `client::LateWord` (`mesimon:
 connecting to the daemon…`, said only past 1 s) across the connect and the first snapshot — before
 this, tmux's stale `[detached …]` line was the only thing on screen for the whole connect, and a
-slow one under load read as a hang (STALE-MAP "The reload says what it is doing").
+slow one under load read as a hang (STALE-MAP "The reload says what it is doing"). **And the
+binary's own path is asked ONCE, through `mesimon_core::exe::current_exe`** (T-280, 2026-09-06):
+on Linux `/proc/self/exe` reads `…/mesimon (deleted)` the moment an install renamed a new file
+over the running one, and the reload exec'd that name on WSL; the helper caches the first answer
+and strips the suffix, every caller (reload, update watch, hook set, daemon respawn, bundled tmux,
+doctor) goes through it, and a core test scans `src/` for a raw `std::env::current_exe` (STALE-MAP
+"The reload execs the path, not the inode").
 
 **A RELEASED board also asks whether a newer one exists, and a dev board never does.**
 `update.rs` only ever fires for someone who already updated — on a released machine nothing moves

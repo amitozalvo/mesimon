@@ -44,7 +44,7 @@ pub fn spawn_detached(repo_root: &Path) -> Result<()> {
     // one. Unset in production, where the daemon is always this same binary.
     let exe = std::env::var_os("MESIMON_DAEMON_BIN")
         .map(std::path::PathBuf::from)
-        .map_or_else(std::env::current_exe, Ok)?;
+        .map_or_else(mesimon_core::exe::current_exe, Ok)?;
     let paths = Paths::for_repo(repo_root)?;
     paths.ensure_dirs()?;
     let log = std::fs::OpenOptions::new().create(true).append(true).open(paths.daemon_log())?;
@@ -82,7 +82,7 @@ pub fn spawn_detached(repo_root: &Path) -> Result<()> {
 /// call this, so they cannot disagree about which fields they read; a `None`
 /// on either side means "unknown" and never "changed" (D26 fails closed).
 pub fn exe_stamp() -> Option<mesimon_core::command::ExeStamp> {
-    let exe = std::env::current_exe().ok()?;
+    let exe = mesimon_core::exe::current_exe().ok()?;
     let md = std::fs::metadata(exe).ok()?;
     let mtime_ms = mesimon_core::clock::epoch_ms(md.modified().ok()?)?;
     Some(mesimon_core::command::ExeStamp { mtime_ms, len: md.len() })

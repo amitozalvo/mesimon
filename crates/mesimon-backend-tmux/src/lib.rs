@@ -36,7 +36,7 @@ pub fn tmux_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("MESIMON_TMUX_BIN") {
         return PathBuf::from(p);
     }
-    if let Ok(exe) = std::env::current_exe() {
+    if let Ok(exe) = mesimon_core::exe::current_exe() {
         if let Some(sibling) = exe.parent().map(|d| d.join(BUNDLED_TMUX)) {
             if sibling.is_file() {
                 return sibling;

@@ -218,7 +218,7 @@ pub fn write_settings(paths: &Paths, session: uuid::Uuid, hook_bin: &Path) -> Re
 pub fn mesimon_bin() -> PathBuf {
     std::env::var("MESIMON_HOOK_BIN")
         .map(PathBuf::from)
-        .or_else(|_| std::env::current_exe())
+        .or_else(|_| mesimon_core::exe::current_exe())
         .unwrap_or_else(|_| PathBuf::from("mesimon"))
 }
 

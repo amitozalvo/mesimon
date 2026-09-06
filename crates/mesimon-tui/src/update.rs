@@ -20,7 +20,7 @@ pub struct UpdateWatch {
 
 impl UpdateWatch {
     pub fn new() -> Self {
-        let exe = std::env::current_exe().ok();
+        let exe = mesimon_core::exe::current_exe().ok();
         let start = exe.as_deref().and_then(mtime);
         Self { exe, start, candidate: None, last_check: Instant::now(), ready: false }
     }

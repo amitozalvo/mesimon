@@ -15,6 +15,7 @@ pub mod claudemd;
 pub mod clock;
 pub mod command;
 pub mod diff;
+pub mod exe;
 pub mod fracindex;
 pub mod keymap;
 pub mod links;

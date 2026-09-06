@@ -461,7 +461,7 @@ pub fn run(paths: Paths) -> Result<()> {
     // live-server install below covers one that outlived a daemon restart.
     let hook_bin = std::env::var("MESIMON_HOOK_BIN")
         .map(std::path::PathBuf::from)
-        .or_else(|_| std::env::current_exe())
+        .or_else(|_| mesimon_core::exe::current_exe())
         .unwrap_or_else(|_| std::path::PathBuf::from("mesimon"));
     let pane_died = mesimon_backend_tmux::conf::pane_died_cmd(
         &hook_bin.display().to_string(),
