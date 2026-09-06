@@ -6401,3 +6401,20 @@ from the release order: at 0.4 s a scan, parallel first execs are harmless.
 prune because their objects are still "referenced" — by them; they are 36 files a release and
 the 50k advice catches the drift. `ci/__pycache__/test-run.cpython-314.pyc` is tracked in git
 and should not be.
+
+## The cursor is not put on a pinned column (T-276, 2026-09-06, user: "when entering / refreshing TUI, prefer not land on a collapsed column")
+
+T-117's pinned column is a spine "unless the cursor is in it", and the cursor is in it whenever
+`cursor_col` says so — including the two times nothing the user did put it there: the launch,
+which starts on column 0 (the author's first column is a pinned `Automations`, so every board
+opened with it unfolded), and a snapshot that pulls the cursor's column away (deleted, or
+reordered by another client), where `clamp_cursor`'s `min` lands on whatever now holds the
+index. `App::leave_pinned_column(was)` runs after both — `App::new` with `None`, `absorb` with
+the name the cursor stood on BEFORE the board was replaced — and steps to the nearest expanded
+column, rightward first (a deleted column's neighbours slide in from the right), leftward
+otherwise, staying put on a board of nothing but spines. **The name is the gate**: a cursor
+still on the column it was on is the user's own `h`/`l` into the spine or the collapse they just
+chose on it from the column dialog, and both keep the cursor, so `golden_board_pinned_120`'s
+"the cursor entering it expands it" still holds. `select_ticket` (Esc from a ticket page) is
+untouched: it aims at a card, and the card is the point. No key, no `Ctx` field, no golden
+moved. Pinned by `the_cursor_is_not_put_on_a_pinned_column`.

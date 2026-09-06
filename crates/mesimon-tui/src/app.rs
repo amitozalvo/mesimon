@@ -1117,6 +1117,9 @@ impl App {
         if daemon_down {
             app.note_daemon_down();
         }
+        // The board opens on its first column, and a first column pinned
+        // collapsed would be expanded by the cursor landing in it (T-276).
+        app.leave_pinned_column(None);
         Ok(app)
     }
 
@@ -1276,6 +1279,7 @@ impl App {
             claude_default_mode,
             status_top,
         } = snap;
+        let was = self.cursor_column().map(|c| c.name.clone());
         self.board = board;
         self.grace = grace;
         self.external = external;
@@ -1290,6 +1294,7 @@ impl App {
         self.claude_default_mode = claude_default_mode;
         self.status_top = status_top;
         self.clamp_cursor();
+        self.leave_pinned_column(was.as_deref());
         self.clamp_screen();
     }
 
@@ -1358,6 +1363,34 @@ impl App {
         self.cursor_col = self.cursor_col.min(cols.len() - 1);
         let n = self.board.column_tickets(&cols[self.cursor_col]).len();
         self.cursor_row = self.cursor_row.map(|r| r.min(n.saturating_sub(1)));
+    }
+
+    /// A column pinned collapsed is a spine until the cursor enters it, so a
+    /// cursor PUT there by something other than a keypress — the launch,
+    /// which starts on the first column, or a snapshot that pulled the
+    /// column out from under it (deleted, or reordered by another client) —
+    /// would expand a column the user asked to keep folded (T-276, user:
+    /// "when entering / refreshing TUI, prefer not land on a collapsed
+    /// column"). `was` is the column the cursor stood on before the board
+    /// changed; a cursor still on it stays — that is the user's own walk
+    /// into the column, or the collapse they just chose on it. The nearest
+    /// expanded column is taken, rightward first (a deleted column's cards
+    /// slide in from the right), and a board of nothing but spines is left
+    /// where it is.
+    fn leave_pinned_column(&mut self, was: Option<&str>) {
+        let cols = self.board.sorted_columns();
+        let Some(col) = cols.get(self.cursor_col) else { return };
+        if !col.settings.collapsed || was == Some(col.name.as_str()) {
+            return;
+        }
+        let expanded = |i: &usize| !cols[*i].settings.collapsed;
+        let right = (self.cursor_col + 1..cols.len()).find(expanded);
+        let left = (0..self.cursor_col).rev().find(expanded);
+        if let Some(to) = right.or(left) {
+            self.cursor_col = to;
+            self.cursor_row = self.cursor_row.map(|_| 0);
+            self.clamp_cursor();
+        }
     }
 
     /// Return to the board. Restarts the marquee clock so the selected
@@ -9623,6 +9656,59 @@ mod tests {
         assert!(matches!(&app.mode, Mode::ColumnSettings { from_menu: true, .. }));
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Menu { idx } if idx == row));
+    }
+
+    /// T-276: the launch lands on the first EXPANDED column, a refresh that
+    /// pulls the cursor's column away lands beside it on an expanded one,
+    /// and the column the user walked into or folded themselves keeps the
+    /// cursor.
+    #[test]
+    fn the_cursor_is_not_put_on_a_pinned_column() {
+        let mut board = board_three_columns();
+        board.columns[0].settings.collapsed = true;
+        let app = App::for_test(board, theme());
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)), "launch skips the spine");
+
+        // Walking into it is the user's own choice: it stays through a refresh.
+        let mut app = app;
+        press(&mut app, 'h');
+        assert_eq!(app.cursor_col, 0);
+        app.refresh().unwrap();
+        assert_eq!(app.cursor_col, 0, "a refresh keeps the column the cursor walked into");
+
+        // Folding the column under the cursor keeps the cursor on it.
+        let mut board = board_three_columns();
+        board.columns[2].settings.collapsed = true;
+        let mut app = App::for_test(board, theme());
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.column("todo").unwrap().settings.collapsed);
+        assert_eq!(app.cursor_col, 0, "the collapse just chosen keeps the cursor");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'j');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.board.column("todo").unwrap().settings.collapsed);
+
+        // The empty `doing` deleted from under the cursor: the clamp would
+        // land on the pinned `done`, so the cursor goes left to `todo`.
+        press(&mut app, 'l');
+        assert!(app.on_header());
+        press(&mut app, 'd');
+        press(&mut app, 'd');
+        assert_eq!(app.columns(), ["todo", "done"]);
+        assert_eq!((app.cursor_col, app.cursor_row), (0, None), "left, past the spine");
+
+        // Nothing but spines: the cursor stays where it is.
+        let mut board = board_three_columns();
+        for c in &mut board.columns {
+            c.settings.collapsed = true;
+        }
+        let app = App::for_test(board, theme());
+        assert_eq!(app.cursor_col, 0);
     }
 
     #[test]
