@@ -9125,6 +9125,8 @@ mod tests {
             needs_rebase: false,
             detail: None,
             path: Some("/wt/T-1-x".into()),
+            merged_in: String::new(),
+            merged_oid: String::new(),
         });
         app.screen = Screen::Ticket { ticket: t, rail_idx: 0 };
         sent.borrow_mut().clear();

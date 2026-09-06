@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter focus ∙ v diff ∙ r rename ∙ d delete ∙ n describe                                     ? keys
+ jk select session ∙ enter focus ∙ ! terminal in worktree ∙ v diff ∙ r rename ∙ d delete ∙ n describe            ? keys
