@@ -9,6 +9,45 @@ into the binary and shown by the Esc menu's "Release notes" row (`core/src/relno
 parses it; `cargo ut` checks every heading), and `ci/release.sh` lifts the tag's
 section out of it for the GitHub release body.
 
+## v0.1.0-alpha.17 — 2026-09-06
+
+- **`!` opens the project's terminal.** A shell on mesimon's own tmux server, in the directory
+  the screen you press it on is about: the checkout from the board, a ticket's attached worktree
+  from its page or its branch diff. `git fetch`, `pull`, `push` — anything that wants a prompt —
+  without a second tab and without leaving the board, and the detach key brings you back to the
+  screen you left. The shell persists: a `pull` still running when you detach is still running
+  when you come back, and it outlives the board and the daemon the way an agent's pane does. It
+  is not a session on a ticket, so it takes no card, no rail row and no seat; `exit` closes it
+  and the next `!` opens a fresh one, and a worktree's terminal is closed before its worktree is
+  torn down. It replaces the diff viewer's foreground shell. Unhinted on purpose; `?` lists it.
+
+- **The archive reclaims a landed worktree.** A ticket archived with its branch merged — by
+  ancestry, or as the patch alpha.16 learned to recognise — now gives its checkout back: the
+  directory is removed and the branch deleted, which is what deleting the ticket already did, so
+  finished work stops leaving worktrees on disk forever. Unmerged work keeps its tree, a ticket
+  something still holds a pane on keeps everything, and a snooze — an archive with a deadline —
+  touches nothing. Restore the ticket, start an agent, and the worktree is provisioned again;
+  waking a sleeping session whose checkout has gone now does the same, instead of refusing.
+
+- **The board has a default column.** A ticket an agent files with `create_ticket` and does not
+  place landed in the first column, which on a fresh board is BACKLOG — out of sight of the
+  columns the work is in. The Settings row `Default column: …` says where those land instead. A
+  rename carries the choice, deleting the column drops it back to the first, and `mesimon doctor`
+  names it.
+
+- **The cursor does not land on a collapsed column.** A column pinned as a spine unfolds while
+  the cursor is in it, so a board that opened on one — or a refresh that pulled the cursor's own
+  column out from under it — undid the pin as soon as it was set. Launch and refresh now step to
+  the nearest expanded column. Walking into a spine yourself, or folding the column you are
+  standing on, still keeps the cursor where you put it.
+
+- **`U` reloads the binary that was installed, not the one it replaced.** On Linux, once
+  `install.sh` had renamed a new binary over the running one, the reload asked the kernel where
+  it was running from, got the old file's name with `(deleted)` on the end, and tried to exec
+  that: `exec of the new binary failed: No such file or directory`. mesimon now resolves its own
+  path once, and everything that needs it — the reload, the update watch, the hooks it writes,
+  the daemon it respawns, the tmux it ships — asks that one answer.
+
 ## v0.1.0-alpha.16 — 2026-09-06
 
 - **Columns own their automations.** A column was a name and an order, and everything it did
