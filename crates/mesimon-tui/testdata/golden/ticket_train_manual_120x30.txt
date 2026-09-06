@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter focus ∙ ! terminal in worktree ∙ v diff ∙ t auto-merge ∙ r rename ∙ d delete          ? keys
+ jk select session ∙ enter focus ∙ v diff ∙ t auto-merge ∙ r rename ∙ d delete ∙ n describe                      ? keys

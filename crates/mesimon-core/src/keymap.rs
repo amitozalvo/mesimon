@@ -1316,11 +1316,11 @@ static BOARD: &[Binding] = &[
     Binding {
         // The project's terminal (T-273): a shell in the checkout, on the
         // private tmux server, that outlives the visit — `git fetch` and
-        // `git push` without leaving the board or opening a tab. Hinted in
-        // the header's git clause beside `v diff`, the row that names the
-        // checkout it opens (T-158's idiom), so `prio: 0` keeps the footer
-        // the selection's. `always`: a board with no repository still has
-        // a directory to stand in.
+        // `git push` without leaving the board or opening a tab. Overlay-only
+        // on every screen (T-277, user: "keep only on ? help menu"): it drew
+        // in the header's git clause beside `v diff` for a day, and a key
+        // that is always there is what `?` lists. `always`: a board with no
+        // repository still has a directory to stand in.
         keys: &[Key::Char('!')],
         verb: Verb::Terminal,
         show: "!",
@@ -1747,8 +1747,8 @@ static TICKET: &[Binding] = &[
         // ticket's worktree when it has one — the directory that is hard to
         // reach — else the checkout. Not a session of the ticket (`s` is
         // that): nothing joins the rail, and the shell is the same one the
-        // board's `!` finds. In the footer, since the rail's trailer names
-        // the rail's own sessions.
+        // board's `!` finds. Overlay-only (T-277): the word still says
+        // which directory in `?`, the footer stays the rail's.
         keys: &[Key::Char('!')],
         verb: Verb::Terminal,
         show: "!",
@@ -1757,7 +1757,7 @@ static TICKET: &[Binding] = &[
         class: Class::Plain,
         group: Group::Sessions,
         mutates: false,
-        prio: 45,
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('x')],
@@ -2051,6 +2051,7 @@ static DIFF: &[Binding] = &[
         // diff with its worktree present opens the worktree's, the checkout
         // diff the checkout's — the same directory the diff reads. Until
         // T-273 this was `$SHELL` in the foreground, gone on return.
+        // Overlay-only since T-277, like the other two.
         keys: &[Key::Char('!')],
         verb: Verb::Terminal,
         show: "!",
@@ -2059,7 +2060,7 @@ static DIFF: &[Binding] = &[
         class: Class::Plain,
         group: Group::Worktree,
         mutates: false,
-        prio: 50,
+        prio: 0,
     },
     Binding {
         keys: &[Key::Char('q'), Key::Esc],

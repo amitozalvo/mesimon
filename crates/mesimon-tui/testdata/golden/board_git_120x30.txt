@@ -1,4 +1,4 @@
- BOARD   mesimon > kanban-tui ⎇ main ↑2 ↓1 ∙ 3 changed  v diff  ! terminal   7 tickets         ◦ update ready (U ∙ esc)
+ BOARD   mesimon > kanban-tui ⎇ main ↑2 ↓1 ∙ 3 changed  v diff   7 tickets                     ◦ update ready (U ∙ esc)
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 

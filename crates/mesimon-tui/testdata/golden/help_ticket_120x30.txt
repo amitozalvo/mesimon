@@ -27,4 +27,4 @@
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
 
- jk select session ∙ enter focus ∙ ! terminal ∙ r rename ∙ d delete ∙ n describe                                 ? keys
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

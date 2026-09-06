@@ -1357,11 +1357,10 @@ attach rides the focus road (`App::focus_target`: GATE first, then the grant, pa
 `FocusTarget::Terminal` in the slots a session's `FocusTarget::Session(uuid, origin)` uses) and
 the return sends `TerminalEnd` and STAYS on the screen the key was pressed on — no origin, since
 nothing was selected. `process_teardowns` kills the worktree's terminal before `worktree::remove`
-(never remove a live cwd; the reaper never saw it because it is no session). Hints: the board's
-binding is `prio: 0` and `chrome::git_clause` draws ` ! terminal` after ` v diff` — whatever the
-change count, since a fetch is what a clean checkout wants — and it is the FIRST rung dropped
-when the row is tight (then `v diff`, then the count); the ticket page's footer reads `! terminal`
-/ `! terminal in worktree`, the diff's the same on `worktree_present`. Before T-273 `!` was the
+(never remove a live cwd; the reaper never saw it because it is no session). Hints: NONE on screen
+since T-277 (2026-09-06, user: "keep only on ? help menu") — all three bindings are `prio: 0` and
+`?` lists `! terminal` / `! terminal in worktree`; for a day `chrome::git_clause` drew it after
+` v diff` and the ticket and diff footers carried it. Before T-273 `!` was the
 diff's `WorktreeShell`: `$SHELL` in the foreground through the handover, gone on return, inert
 on the checkout diff. `pending_attach_cwd` survives for the `^k` editor road only. E2e
 `terminal_e2e`, and the worktree case in `worktree_e2e`. (STALE-MAP "`!` is the project's

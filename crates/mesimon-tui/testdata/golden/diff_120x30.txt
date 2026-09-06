@@ -27,4 +27,4 @@
 
 
 
- jk scroll ∙ n N next / previous file ∙ { } page ∙ z context, layout… ∙ R refresh ∙ ! terminal in worktree       ? keys
+ jk scroll ∙ n N next / previous file ∙ { } page ∙ z context, layout… ∙ R refresh ∙ q back                       ? keys

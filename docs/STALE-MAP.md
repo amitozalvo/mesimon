@@ -6418,3 +6418,21 @@ chose on it from the column dialog, and both keep the cursor, so `golden_board_p
 "the cursor entering it expands it" still holds. `select_ticket` (Esc from a ticket page) is
 untouched: it aims at a card, and the card is the point. No key, no `Ctx` field, no golden
 moved. Pinned by `the_cursor_is_not_put_on_a_pinned_column`.
+
+## The terminal's key is listed only in `?` (T-277, 2026-09-06)
+
+Asked for as "remove `! terminal` hint, keep only on `?` help menu", a day after T-273 put it in
+the board header's git clause (after ` v diff`), the ticket page's footer and the diff's footer.
+
+What changed: all three `Verb::Terminal` bindings are `prio: 0` now and `chrome::git_clause`
+draws only `v diff`. The words survive — `terminal` / `terminal in worktree` — as the row `?`
+lists on each screen, so the overlay still says which directory the key opens. The drop order in
+the git clause is the T-221 one again: `v diff` first, then the count, then the name to its
+floor.
+
+Why: `!` is a standing key — it is available on every board, whatever the state — and a hint
+that is always there is not telling the user anything about the moment. The footer and the
+header's clause are for what the SELECTION or the checkout's state makes possible now; a key that
+never changes is what `?` exists to list. `test_git_clause_gives_way_to_the_offer` lost its
+"terminal goes first" rung and `checkout_diff_says_uncommitted_and_offers_the_checkout_terminal`
+asserts the overlay's row instead of the footer's. Eighteen goldens lost the cluster.

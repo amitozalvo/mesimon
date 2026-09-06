@@ -236,21 +236,17 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
             })
             .unwrap_or_default()
     };
+    // The terminal's `!` (T-273) is NOT here: it drew ` ! terminal` after
+    // ` v diff` for a day and was cut (T-277, user: "keep only on ? help
+    // menu") — a standing key on every board is what `?` is for, and the
+    // clause's job is the checkout's state.
     let mut hint: Vec<Span<'static>> =
         if g.changed == 0 { Vec::new() } else { hint_for(keymap::Verb::OpenDiff) };
-    // The terminal (T-273) opens the checkout this clause names, so its key
-    // sits here too — whatever the count, since a fetch or a push is what
-    // it is for — and it is the first rung given up when the row is tight.
-    let mut term = hint_for(keymap::Verb::Terminal);
-    let hint_w: usize = super::spans_width(&hint) + super::spans_width(&term);
+    let hint_w: usize = super::spans_width(&hint);
     // ` ⎇ ` is three cells; the arrows ride on the name.
     let fixed = 3 + state.width();
     let floor = name.width().min(GIT_BRANCH_FLOOR);
     let mut name_room = room.saturating_sub(fixed + changed.width() + hint_w);
-    if name_room < floor {
-        term.clear();
-        name_room = room.saturating_sub(fixed + changed.width() + super::spans_width(&hint));
-    }
     if name_room < floor {
         hint.clear();
         name_room = room.saturating_sub(fixed + changed.width());
@@ -273,7 +269,6 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
         out.push(Span::styled(changed, theme.dim2()));
     }
     out.extend(hint);
-    out.extend(term);
     out
 }
 
