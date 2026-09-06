@@ -452,7 +452,12 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                     rules.push(format!("{}: {}", c.name, words.join(" ∙ ")));
                 }
             }
-            let line = names.join(" → ");
+            let mut line = names.join(" → ");
+            // The default column (T-279), only when one was chosen: unset
+            // means the first, which the arrow line already shows first.
+            if let Some(d) = mesimon_daemon::store::read_default_column(&paths) {
+                line.push_str(&format!(" ∙ an agent's create_ticket lands in {d}"));
+            }
             let record = rec(Level::Ok, "columns", line);
             records.push(if rules.is_empty() {
                 record.advice("No column carries an automation: nothing moves a card but a hand.")

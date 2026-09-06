@@ -1296,6 +1296,7 @@ impl Daemon {
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
+            Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
             Command::AddColumn { name, after } => self.add_column(name, after),
             Command::RenameColumn { name, to } => self.rename_column(&name, &to),
@@ -2587,9 +2588,9 @@ impl Daemon {
         description: Option<String>,
         tags: Vec<String>,
     ) -> Response {
-        let Some(column) =
-            column.or_else(|| self.board.sorted_columns().first().map(|c| c.name.clone()))
-        else {
+        // No column named means the board's default (T-279): the one chosen
+        // in Settings while it still exists, else the first column.
+        let Some(column) = column.or_else(|| self.board.landing_column()) else {
             return Response::Err { message: "the board has no columns".into() };
         };
         if !self.board.columns.iter().any(|c| c.name == column) {
@@ -4977,6 +4978,26 @@ impl Daemon {
         // turns it on, which is what makes the stamp affordable here too.
         if !on {
             self.board.claude_md_ignored = true;
+        }
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// The default column (T-279): where an agent's `create_ticket` lands a
+    /// card that names no column. `None` is the first column again. A
+    /// person's row in Settings — `mcp::agent_allows` denies the command —
+    /// and `columns.toml`'s, so it returns early under the bar like the two
+    /// switches above. The next `create_ticket` reads it; nothing already on
+    /// the board moves.
+    fn set_default_column(&mut self, column: Option<&str>) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.default_column.as_deref() == column {
+            return Response::Ok;
+        }
+        if let Err(message) = self.board.set_default_column(column) {
+            return Response::Err { message };
         }
         self.persist_and_notify();
         Response::Ok

@@ -313,6 +313,16 @@ pub enum Command {
     SetSystemPrompt {
         on: bool,
     },
+    /// Choose the board's DEFAULT column (T-279): where an agent's
+    /// `create_ticket` lands a card that names no column. `None` is the first
+    /// column, the old behaviour; a name is validated against the board's
+    /// real columns. Per repo, persisted in `columns.toml`, a Settings row.
+    /// Local only — an agent that could choose where its own cards land
+    /// would be choosing what the user sees first.
+    SetDefaultColumn {
+        #[serde(default)]
+        column: Option<String>,
+    },
     /// The column lifecycle (T-117). All local only: a tier that could add a
     /// column, rename the one it is in, or rewrite its own column's rules
     /// would be writing its own tier. A column's NAME is its identity —
@@ -501,7 +511,8 @@ pub enum Command {
     /// second card: an agent that finds work outside its ticket's scope
     /// files it instead of doing it or losing it. `column` is a plain string
     /// validated against the board's real columns; absent means the board's
-    /// first column, which is where a human's new ticket lands too. The
+    /// default column (`Board::landing_column`, T-279) — the first column
+    /// unless the user chose another in Settings. The
     /// caller's session stays bound to ITS ticket — a created ticket has no
     /// session, and no tool can give it one.
     AgentCreateTicket {
@@ -680,6 +691,7 @@ impl Command {
             // the brief on" get answered later.
             | SetMcpTools { .. }
             | SetSystemPrompt { .. }
+            | SetDefaultColumn { .. }
             | IgnoreBriefOffer
             // The column lifecycle (T-117): a person's gesture, and the feed
             // is where "who renamed TODO" gets answered.

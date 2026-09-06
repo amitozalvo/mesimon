@@ -6487,3 +6487,36 @@ setting for the rule (T-117's table) — it ships board-wide. `mesimon doctor` u
 `archive_reclaim_e2e` (three tests: ff-merged → dir, branch and binding gone, restore + spawn
 provisions fresh; unmerged → untouched; squash-merged → dir gone, branch and `Evicted` binding
 kept, restore + wake rebuilds the tree with the record's cwd following).
+
+## The board has a default column (T-279, 2026-09-06)
+
+Asked for as "default column (omitting column in create ticket mcp will land there, instead of
+first column default) — in settings". Before this, an agent's `create_ticket` with `column`
+omitted landed in the board's FIRST column, a literal nobody could change short of reordering
+the board.
+
+What changed: `Board.default_column: Option<String>` — a column NAME, the foreign key every
+other cross-column reference is — persisted as a scalar in `columns.toml` before the tables,
+`#[serde(default)]`, absent until chosen and no `COLUMNS_SCHEMA` bump: a build that drops it
+lands the agent's card in the first column, the old behaviour, and widens nothing an agent gets
+(the `mcp_tools` bump exists for the opposite direction). `Board::landing_column()` is the ONE
+reader — the chosen name while the board still has that column, else the first column — and
+`Daemon::agent_create_ticket` asks it where `sorted_columns().first()` stood. `rename_column`
+carries it, `prune_dangling_refs` clears it (so `delete_column` does, with a
+`column_rule_cleared:default_column` feed line), and `Board::set_default_column` refuses a name
+the board lacks — a dangling default would read as the first column while the row said
+otherwise. `Command::SetDefaultColumn { column: Option<String> }` is a person's (`agent_allows`
+denies it: an agent choosing where its own cards land would be choosing what the user sees
+first; it names a column per call instead, in the open), `Mutate` + logged, barred under
+`columns_barred`. The Settings row `Default column: TODO` (`Verb::DefaultColumn`, last in
+`SETTINGS_ITEMS`, `Ctx::default_column` filled from `landing_column` UPPERCASED as the header
+spells every column, and the row is absent while that word is empty) cycles the columns in board
+order on Enter from the one the daemon would use now, wrapping — the week-start ring's shape.
+The tool description says "omitted means the board's default column"; `doctor`'s `columns` line
+appends `∙ an agent's create_ticket lands in X` only when one was chosen. Golden
+`settings_120x30`; `mcp_e2e` chooses, renames, deletes and resets it on a column of its own.
+
+Scope, deliberately: only the agent's omitted `column`. The unarchive fallback and the external
+drawer's import still take the first column — the first is "the column is gone" and the second
+was not asked for; a wider "wherever nothing chose" is one line each on `landing_column` if it
+is ever wanted. The human's composer creates in the cursor's column and never asks.

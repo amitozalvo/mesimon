@@ -1141,7 +1141,10 @@ that touches a ticket other than the caller's, by minting it**: `Command::AgentC
 title, column?, description?, idempotency_key? }` → `Daemon::agent_create_ticket`, the same
 `mint_ticket` + `sanitize_title` a human's composer gets, authorized as `Mutate` on
 `Resource::Column` (one card appended, the board itself untouched — `authorize` still denies
-`Mutate` on `Board`), refused under the columns bar, `column` absent = the board's first column,
+`Mutate` on `Board`), refused under the columns bar, `column` absent = the board's DEFAULT column
+(T-279, 2026-09-06: `Board::landing_column` — `Board.default_column`, a name in `columns.toml`
+chosen by the Settings row `Default column: …` / `Command::SetDefaultColumn`, denied to agents;
+the first column until one is chosen or once that column is deleted; a rename carries it),
 and the description written through `write_note` so the note carries `agent:<uuid>` as author.
 The receipt is a KEY (`T-9`), never an id, and nothing takes a key back; the new card has no
 session and no tool starts one. The replay map is now `AgentReplay::{Moved, Created}`, keyed by

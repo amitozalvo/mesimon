@@ -92,6 +92,13 @@ struct ColumnsFile {
     /// LESS to the model, the safe direction — see the field on `Board`.
     #[serde(default)]
     system_prompt: bool,
+    /// Where an agent's `create_ticket` lands with no column named
+    /// (`Board::default_column`, T-279). A scalar, so it sits here before
+    /// the tables; absent — every file written before it — means the first
+    /// column, the old behaviour, and a plain default with no bump: a build
+    /// that drops it narrows nothing an agent gets.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    default_column: Option<String>,
     columns: Vec<Column>,
     /// The tag registry (v2). Another array of tables, so it may follow
     /// `columns` but must stay after every scalar.
@@ -371,6 +378,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 mcp_tools: cf.mcp_tools,
                                 claude_md_ignored: cf.claude_md_ignored,
                                 system_prompt: cf.system_prompt,
+                                default_column: cf.default_column,
                                 ..Default::default()
                             };
                             // v3 → v4 (T-117): the template columns get the
@@ -554,6 +562,16 @@ pub fn read_system_prompt(paths: &Paths) -> bool {
     read_columns_file(paths).is_some_and(|cf| cf.system_prompt)
 }
 
+/// `Board::default_column` off the file, for `doctor`'s `columns` line
+/// (T-279): the chosen name while the file still lists that column, else
+/// `None`, which doctor reads as the first column — the daemon's own
+/// `landing_column` answer, so the two agree.
+pub fn read_default_column(paths: &Paths) -> Option<String> {
+    let cf = read_columns_file(paths)?;
+    let name = cf.default_column?;
+    cf.columns.iter().any(|c| c.name == name).then_some(name)
+}
+
 /// The columns in board order, for `doctor`'s `columns` line (T-117) — read
 /// off the file on `read_mcp_tools`'s terms, and `None` where there is no
 /// board to speak of (doctor never creates one). A v3 file answers with the
@@ -582,6 +600,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
         system_prompt: board.system_prompt,
+        default_column: board.default_column.clone(),
         columns: board.columns.clone(),
         tags: board.tags.clone(),
     };
@@ -1404,6 +1423,38 @@ order = "a0"
         cleanup(&dir, &paths);
     }
 
+    /// The default column (T-279) rides the same file: absent until chosen,
+    /// round-tripped once it is, and doctor's reader agrees with the board's
+    /// `landing_column` — a name the file's columns no longer list is nobody's
+    /// default.
+    #[test]
+    fn the_default_column_round_trips_and_is_absent_until_chosen() {
+        let (dir, paths) = scratch("t279trip");
+        let mut l = load(&paths).unwrap();
+        save_columns(&paths, &l.board).unwrap();
+        let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).unwrap();
+        assert!(!text.contains("default_column"), "unchosen is unwritten:\n{text}");
+        assert_eq!(read_default_column(&paths), None);
+        l.board.set_default_column(Some("REVIEW")).unwrap();
+        save_columns(&paths, &l.board).unwrap();
+        let back = load(&paths).unwrap();
+        assert_eq!(back.board.default_column.as_deref(), Some("REVIEW"));
+        assert_eq!(back.board.landing_column().as_deref(), Some("REVIEW"));
+        assert_eq!(read_default_column(&paths).as_deref(), Some("REVIEW"));
+        // Written by hand to a column the board lacks: the board lands on the
+        // first column and doctor says the same.
+        let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).unwrap();
+        std::fs::write(
+            paths.board_dir.join("board/columns.toml"),
+            text.replace("default_column = \"REVIEW\"", "default_column = \"GONE\""),
+        )
+        .unwrap();
+        let back = load(&paths).unwrap();
+        assert_eq!(back.board.landing_column().as_deref(), Some("TODO"));
+        assert_eq!(read_default_column(&paths), None);
+        cleanup(&dir, &paths);
+    }
+
     /// The seam the vocabulary e2es use: no offer, no stamp, no write.
     #[test]
     fn the_seed_can_be_declined_for_a_test() {
@@ -1427,6 +1478,7 @@ order = "a0"
             mcp_tools: false,
             claude_md_ignored: true,
             system_prompt: true,
+            default_column: Some("TODO".into()),
             columns: vec![Column {
                 name: "TODO".into(),
                 order: "a0".into(),
@@ -1469,9 +1521,14 @@ order = "a0"
         assert!(!back.mcp_tools);
         assert!(back.claude_md_ignored);
         assert!(back.system_prompt);
+        assert_eq!(back.default_column.as_deref(), Some("TODO"));
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
         assert!(
             text.find("system_prompt").expect("system_prompt on disk")
+                < text.find("[[columns]]").unwrap()
+        );
+        assert!(
+            text.find("default_column").expect("default_column on disk")
                 < text.find("[[columns]]").unwrap()
         );
         let table = text.find("[[columns]]").expect("the columns table");

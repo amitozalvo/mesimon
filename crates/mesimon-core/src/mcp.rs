@@ -218,7 +218,7 @@ pub fn tools() -> Vec<Value> {
                     "column": {
                         "type": "string",
                         "description": "Optional. A column name from list_board; omitted \
-                                        means the first column.",
+                                        means the board's default column.",
                     },
                     "description": {
                         "type": "string",
@@ -562,6 +562,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // this is not a road an agent gets a share of.
         | Command::SetSystemPrompt { .. }
         | Command::IgnoreBriefOffer
+        // Where an agent's own `create_ticket` lands by default (T-279): an
+        // agent choosing where its cards go would be choosing what the user
+        // sees first. It names a column per call instead, in the open.
+        | Command::SetDefaultColumn { .. }
         // The column lifecycle (T-117): a tier that could add a column,
         // rename its own, or rewrite its own column's `agent_tools` would be
         // writing its own tier.
@@ -975,6 +979,7 @@ mod tests {
             Command::ReorderColumn { name: "QA".into(), before: None },
             Command::SetColumnSettings { name: "QA".into(), settings: Default::default() },
             Command::SortColumn { column: "QA".into(), by: crate::board::SortBy::Key },
+            Command::SetDefaultColumn { column: Some("QA".into()) },
             Command::MoveTicket { id: t, column: "DONE".into(), before: None },
             Command::SpawnSession {
                 ticket: t,

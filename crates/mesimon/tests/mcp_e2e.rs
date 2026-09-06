@@ -312,6 +312,61 @@ fn agent_board_tools_tier_and_collisions() {
     assert!(refused.contains("no such column"), "{refused}");
     assert!(shim.call_err("create_ticket", json!({})).contains("title"));
 
+    // ---- the default column (T-279): where an unplaced card lands -------
+    // A person chooses it in Settings; an agent may not (it would be choosing
+    // what the user sees first). Once chosen, an omitted column means that
+    // one; a named column is still honoured; a rename carries it; deleting
+    // the column puts the first column back. On a column of its own, so the
+    // board the rest of this test walks keeps its shape.
+    assert!(matches!(
+        c.request(Command::AddColumn { name: "INBOX".into(), after: None }),
+        Response::Ok
+    ));
+    assert!(matches!(
+        c.send(
+            Principal::Agent { session: sid },
+            Command::SetDefaultColumn { column: Some("INBOX".into()) }
+        ),
+        Response::Err { .. }
+    ));
+    assert!(matches!(
+        c.request(Command::SetDefaultColumn { column: Some("NOPE".into()) }),
+        Response::Err { .. }
+    ));
+    assert!(matches!(
+        c.request(Command::SetDefaultColumn { column: Some("INBOX".into()) }),
+        Response::Ok
+    ));
+    let landed = shim.call_ok("create_ticket", json!({"title": "unplaced"}));
+    assert_eq!(landed["column"], "INBOX", "no column named means the chosen default");
+    let placed = shim.call_ok("create_ticket", json!({"title": "placed", "column": "TODO"}));
+    assert_eq!(placed["column"], "TODO", "a named column still wins");
+    assert!(matches!(
+        c.request(Command::RenameColumn { name: "INBOX".into(), to: "LATER".into() }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.default_column.as_deref(), Some("LATER"), "a rename carries the default");
+    assert_eq!(shim.call_ok("create_ticket", json!({"title": "after rename"}))["column"], "LATER");
+    let board = board_of(c.request(Command::Snapshot));
+    for t in board.tickets.iter().filter(|t| t.column == "LATER") {
+        assert!(matches!(
+            c.request(Command::MoveTicket { id: t.id, column: "TODO".into(), before: None }),
+            Response::Ok
+        ));
+    }
+    assert!(matches!(c.request(Command::DeleteColumn { name: "LATER".into() }), Response::Ok));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.default_column, None, "the default goes with its column");
+    assert_eq!(
+        shim.call_ok("create_ticket", json!({"title": "after delete"}))["column"],
+        "TODO",
+        "back to the first column"
+    );
+    // `None` is the first column by choice, and the board's word is the same.
+    assert!(matches!(c.request(Command::SetDefaultColumn { column: None }), Response::Ok));
+    assert_eq!(board_of(c.request(Command::Snapshot)).landing_column().as_deref(), Some("TODO"));
+
     // ---- create_ticket wears tags, by name, from the registry -----------
     // Names resolve case-insensitively when that is unambiguous, land on
     // their registry group, and a repeat is one tag, not a refusal.
@@ -395,6 +450,8 @@ fn agent_board_tools_tier_and_collisions() {
         // registry is the user's.
         Command::SetTag { id: ticket, group: 1, name: Some("hijacked".into()) },
         Command::RegisterTag { group: 4, name: "hijacked".into() },
+        // Where its own cards land by default (T-279): the user's to choose.
+        Command::SetDefaultColumn { column: Some("DONE".into()) },
         Command::Snapshot,
         Command::Shutdown,
     ] {

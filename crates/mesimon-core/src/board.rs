@@ -1056,6 +1056,17 @@ pub struct Board {
     /// more.
     #[serde(default)]
     pub system_prompt: bool,
+    /// Where a ticket lands when nobody chose a column for it (T-279): an
+    /// agent's `create_ticket` with `column` omitted. A column NAME, the
+    /// foreign key every other cross-column reference is, so `rename_column`
+    /// carries it and `delete_column` clears it; `None` — and a name the board
+    /// no longer has — means the first column, which is what every board did
+    /// before the field. Per repo, in `columns.toml`, chosen from the Settings
+    /// submenu. A plain serde default with no schema bump: a build that drops
+    /// it lands the agent's card in the first column, the old behaviour, and
+    /// hands nobody anything wider.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default_column: Option<String>,
 }
 
 /// `Board::mcp_tools` defaults ON: a serde default has to be a function, and
@@ -1081,6 +1092,7 @@ impl Default for Board {
             mcp_tools: true,
             claude_md_ignored: false,
             system_prompt: false,
+            default_column: None,
         }
     }
 }
@@ -1161,6 +1173,9 @@ impl Board {
     pub fn prune_dangling_refs(&mut self) -> Vec<(String, &'static str)> {
         let names: Vec<String> = self.columns.iter().map(|c| c.name.clone()).collect();
         let mut out = Vec::new();
+        if let Some(d) = self.default_column.take_if(|n| !names.contains(n)) {
+            out.push((d, "default_column"));
+        }
         for c in self.columns.iter_mut() {
             if c.settings.on_working.as_ref().is_some_and(|n| !names.contains(n)) {
                 c.settings.on_working = None;
@@ -1176,6 +1191,33 @@ impl Board {
 
     pub fn column(&self, name: &str) -> Option<&Column> {
         self.columns.iter().find(|c| c.name == name)
+    }
+
+    /// The column a ticket lands in when nothing named one (T-279): the
+    /// chosen default while the board still has it, else the first column.
+    /// `None` only on a board with no columns at all.
+    pub fn landing_column(&self) -> Option<String> {
+        if let Some(d) = self.default_column.as_deref().and_then(|n| self.column(n)) {
+            return Some(d.name.clone());
+        }
+        self.sorted_columns().first().map(|c| c.name.clone())
+    }
+
+    /// Choose the landing column, or `None` to go back to the first column.
+    /// Refused for a name the board does not have: a dangling default would
+    /// read as the first column and the Settings row would say otherwise.
+    pub fn set_default_column(&mut self, name: Option<&str>) -> Result<(), String> {
+        match name {
+            Some(n) if self.column(n).is_none() => Err(format!("no such column: {n}")),
+            Some(n) => {
+                self.default_column = Some(n.to_string());
+                Ok(())
+            }
+            None => {
+                self.default_column = None;
+                Ok(())
+            }
+        }
     }
 
     pub fn column_mut(&mut self, name: &str) -> Option<&mut Column> {
@@ -1234,6 +1276,9 @@ impl Board {
             if c.settings.on_done.as_deref() == Some(from) {
                 c.settings.on_done = Some(to.to_string());
             }
+        }
+        if self.default_column.as_deref() == Some(from) {
+            self.default_column = Some(to.to_string());
         }
         let mut touched = Vec::new();
         for t in self.tickets.iter_mut() {
@@ -2213,6 +2258,28 @@ mod tests {
     }
 
     #[test]
+    fn default_column_is_the_landing_column_and_follows_a_rename() {
+        let mut b = template_board();
+        assert_eq!(b.landing_column().as_deref(), Some("TODO"), "unset means the first column");
+        assert_eq!(b.set_default_column(Some("NOPE")).unwrap_err(), "no such column: NOPE");
+        assert_eq!(b.default_column, None, "a refusal changes nothing");
+        b.set_default_column(Some("REVIEW")).unwrap();
+        assert_eq!(b.landing_column().as_deref(), Some("REVIEW"));
+        b.rename_column("REVIEW", "QA").unwrap();
+        assert_eq!(b.default_column.as_deref(), Some("QA"), "a rename carries it");
+        assert_eq!(b.landing_column().as_deref(), Some("QA"));
+        // A name the board lost reads as the first column, and the prune
+        // clears it so the file agrees with what the board does.
+        b.default_column = Some("GONE".into());
+        assert_eq!(b.landing_column().as_deref(), Some("TODO"));
+        assert_eq!(b.prune_dangling_refs(), vec![("GONE".to_string(), "default_column")]);
+        assert_eq!(b.default_column, None);
+        b.set_default_column(None).unwrap();
+        assert_eq!(b.landing_column().as_deref(), Some("TODO"));
+        assert_eq!(Board::default().landing_column(), None, "no columns, nowhere to land");
+    }
+
+    #[test]
     fn rename_refuses_a_taken_or_unknown_name_and_allows_a_recase() {
         let mut b = template_board();
         assert!(b.rename_column("NOPE", "X").is_err());
@@ -2237,11 +2304,17 @@ mod tests {
         archived.archived =
             Some(Archived { at: "@1".into(), by: "local".into(), until: None, needs_you: false });
         b.tickets = vec![archived];
+        b.set_default_column(Some("IN PROGRESS")).unwrap();
         let cleared = b.delete_column("IN PROGRESS").unwrap();
         assert_eq!(
             cleared,
-            vec![("TODO".to_string(), "on_working"), ("REVIEW".to_string(), "on_working")]
+            vec![
+                ("IN PROGRESS".to_string(), "default_column"),
+                ("TODO".to_string(), "on_working"),
+                ("REVIEW".to_string(), "on_working")
+            ]
         );
+        assert_eq!(b.default_column, None, "the default goes with its column");
         assert!(b.column("IN PROGRESS").is_none());
         assert_eq!(b.column("TODO").unwrap().settings.on_working, None);
         assert_eq!(

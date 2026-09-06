@@ -2434,6 +2434,8 @@ impl App {
             // first sample still in flight), and an unknown must never read
             // as "missing" — that would offer to write a file on a guess.
             system_prompt: self.board.system_prompt,
+            // Spelled as the header spells every column: uppercased.
+            default_column: self.board.landing_column().unwrap_or_default().to_uppercase(),
             brief_offer: !self.claude_md.path.is_empty()
                 && !self.claude_md.present
                 && self.board.mcp_tools
@@ -3017,6 +3019,32 @@ impl App {
                     self.set_system_prompt(false)?;
                 } else {
                     self.mode = Mode::Brief { from_settings: true };
+                }
+            }
+            // The default column (T-279): board state like the tools, so it
+            // goes to the daemon and comes back on the snapshot. Enter walks
+            // the columns in board order from the one the daemon would use
+            // now, wrapping — a fixed ring, like the week's first day.
+            Verb::DefaultColumn => {
+                let cols: Vec<String> =
+                    self.board.sorted_columns().iter().map(|c| c.name.clone()).collect();
+                if cols.len() < 2 {
+                    self.status = "the board has one column ∙ everything lands there".into();
+                } else {
+                    let cur = self.board.landing_column();
+                    let at = cur.and_then(|c| cols.iter().position(|n| *n == c)).unwrap_or(0);
+                    let next = cols[(at + 1) % cols.len()].clone();
+                    match self.client.request(Command::SetDefaultColumn { column: Some(next.clone()) })?
+                    {
+                        Response::Err { message } => self.status = message,
+                        _ => {
+                            self.refresh()?;
+                            self.status = format!(
+                                "an agent's create_ticket lands in {} unless it names a column",
+                                next.to_uppercase()
+                            );
+                        }
+                    }
                 }
             }
             // The offer opens the dialog and does nothing else. The switch is

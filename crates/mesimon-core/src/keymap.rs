@@ -438,6 +438,11 @@ pub enum Verb {
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
     SystemPrompt,
+    /// The Settings row under it (T-279): the board's default column, where
+    /// an agent's `create_ticket` lands a card that names no column. Enter
+    /// cycles it through the columns in board order. Board state like
+    /// `McpTools`, in `columns.toml`.
+    DefaultColumn,
     /// The menu row that opens the agent-brief dialog (T-217/T-224): the
     /// text shown verbatim, with four ways out.
     BriefOffer,
@@ -703,6 +708,11 @@ pub struct Ctx {
     /// prompt (T-224). Board state, per repo — the Settings row's label and
     /// the offer read it.
     pub system_prompt: bool,
+    /// Where an agent's `create_ticket` lands when it names no column
+    /// (T-279): the chosen default while the board has it, else the first
+    /// column — `Board::landing_column`'s word, so the row says what the
+    /// daemon will do. Empty on a board with no columns.
+    pub default_column: String,
     /// The brief is off, the repo's `CLAUDE.md` does not say it either, the
     /// tool it names is on, and the offer was not answered with "never". All
     /// four, because each one alone would offer noise.
@@ -3018,6 +3028,27 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
             }
         },
         avail: always,
+        key: "",
+    },
+    // The default column (T-279): where an agent's `create_ticket` lands a
+    // card that names no column. Board state like the two rows above, so it
+    // acts over the wire and the row relabels itself off the snapshot. The
+    // label names the column the daemon WILL use — the first column until
+    // one is chosen — so an unset default never reads as "none".
+    MenuItem {
+        verb: Verb::DefaultColumn,
+        label: |c| format!("Default column: {}", c.default_column),
+        detail: |c| {
+            if !c.mcp_tools {
+                "needs the agent tools on ∙ create_ticket is one of them".into()
+            } else {
+                "where an agent's create_ticket lands unplaced ∙ enter cycles".into()
+            }
+        },
+        // A board with no columns has nowhere to land: no row rather than a
+        // label with nothing after the colon. (Delete refuses the last
+        // column, so this is a snapshot that has not arrived yet.)
+        avail: |c| !c.default_column.is_empty(),
         key: "",
     },
 ];
@@ -5542,6 +5573,7 @@ mod tests {
             bulk_archive: 2,
             has_archived: true,
             update_ready: true,
+            default_column: "TODO".into(),
             ..Default::default()
         };
         assert_eq!(resolve(Scope::Board, Key::Esc, &ctx), Some(Verb::Menu));
@@ -5577,6 +5609,7 @@ mod tests {
                 // the same door. Last, so no existing row's index moves.
                 Verb::McpTools,
                 Verb::SystemPrompt,
+                Verb::DefaultColumn,
             ]
         );
         // The notice row rides UNDER the train row (not at the end of the
@@ -5730,6 +5763,7 @@ mod tests {
             theme_name: "graphite",
             theme_blurb: "dark, the default",
             theme_slot_word: "dark",
+            default_column: "TODO".into(),
             ..Default::default()
         };
         for m in MENU_ITEMS.iter().chain(SETTINGS_ITEMS).chain(COLUMN_ITEMS) {
