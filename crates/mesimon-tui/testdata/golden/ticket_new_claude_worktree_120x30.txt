@@ -6,18 +6,18 @@
 
   PREVIEW                                                                                  SESSIONS                  0
 
-                      .               *                                                    + claude session
-                            \  |  /
-                            -- * --
-                            /  |  \
-                        *               .
-
+                                     ▄█▄                                                   + claude session
+                     ▄█▄    ▄▄▄     ▄███
+                     ▀██▄   ███    ▄███▀
+                      ▀███████████████▀
+                      ████  █████  ████
+                      ▀███▄▄█████▄▄███▀
+                        ▀▀█████████▀▀
 
     enter start claude
 
     starts in a worktree of its own ∙ plan mode ∙ read tools
     types the ticket title into its box, and sends nothing
-
 
 
 

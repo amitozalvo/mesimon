@@ -12,6 +12,8 @@ mod glyphs;
 mod handover;
 mod layout;
 mod localtime;
+mod mascot;
+mod notification_app;
 mod notifier;
 mod notify;
 mod opener;

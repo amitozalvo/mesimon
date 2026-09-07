@@ -67,6 +67,11 @@ jobs:
       - name: Duplicate dependency drift
         run: ./ci/check-dup-deps.sh
 
+      - name: Mascot assets and installer welcome
+        run: |
+          python3 -B ci/mascot.py --check
+          python3 -B ci/test_installer.py
+
       - name: Test
         run: python3 -B ci/test-run.py -- cargo test --workspace
 

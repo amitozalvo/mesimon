@@ -7946,3 +7946,81 @@ mouse input still receive it. The same binding definitions render into fresh con
 are installed on surviving tmux servers at daemon startup; a reload does not require killing
 agent sessions. `wheel_scrolls_one_line_on_fresh_and_surviving_servers` checks the bindings
 against real tmux, including replacing old five-line bindings and repeated installation.
+
+
+## The shin welcomes a session and carries notification attention (2026-09-08)
+
+The identity plan's shin becomes the installer welcome, the ticket preview's
+empty-seat mark, and a notification image (user: "yes and also do the notification
+icon"). The terminal art is hand-tuned: 24 columns by 12 rows in the installer,
+20 by 7 in the preview, where a literal copy would crowd out the start instructions.
+The installer shows it only after installation succeeds, on a UTF-8 TTY that is
+not dumb. Piped output keeps the normal text. `ci/mascot.py` owns both text drawings,
+the filled SVG geometry, the antialiased PNGs, and the installer's embedded copy.
+
+The preview replaces T-308's starburst in exactly its two homes: the offer of a
+new Claude session and an unprompted session with no transcript. It stays out of
+working conversations, sleepers, corpses, questions and card/header chrome. All
+instructions are reserved before the art is admitted, including the busy-checkout
+clause. The mark uses `dim1`, never attention color or motion; Mono uses the
+wordmark. L1 now admits block glyphs at the shin's exact recorded cells, matched
+to the checked-in drawing. It does not admit them across the preview rectangle,
+let alone across the TUI. The existing content scrub and dialog-perimeter law stay.
+
+Notification color follows a semantic `Post.needs_you` bit, derived from the
+coalescer's loudest event. Quoted words and customizable sounds cannot choose
+an attention icon. A mixed batch gets the detached amber tip; a completed turn
+gets the resting silhouette. Both PNGs are embedded, published atomically under
+the existing per-repository state allowlist, and named by their content digest.
+Only an image-capable post materializes them: neither doctor, discovery, disabled
+notifications nor sound previews write. An asset failure leaves the banner intact.
+
+Linux passes `--icon` before notify-send's `--`. A positively identified
+terminal-notifier 2 bundle gets `-appIcon`; version 3 removed that API, so newer
+and unknown bundles get `-contentImage`. That is an attachment, not a promise of
+a changed application identity. The bundle version is read without launching a
+GUI helper. Click activation, tab reveal and per-board grouping survive; no sender
+spoofing or helper-bundle rewriting is introduced. osascript, OSC and custom
+programs keep their existing contracts. Notification images use a graphite tile
+so their contrast is independent of the system notification's background.
+
+Pinned by preview goldens and the size/Mono/state tests, the scoped L1 sweep,
+`attention_presentation_follows_events_not_words_or_sound`, notification argument
+and version tests, atomic asset/symlink tests, and the offline installer tests.
+
+
+## The OS icon needs an app identity, not an accepted flag (2026-09-08)
+
+The first shin implementation classified terminal-notifier by its bundle version
+and trusted version 2's `-appIcon`. The user reported the unchanged OS icon. The
+new code had already materialized the resting PNG on macOS 26.6.2, so an old build
+or a missing asset was not the explanation. The flag sets private notification
+properties; accepting it is not evidence that the OS paints them. A private copy
+of the installed helper, given the `io.mesimon.notifications` identity, the Mesimon
+name and an ICNS mascot, and ad-hoc signed, DID show the icon. The user confirmed
+the real OS notification. This supersedes the earlier version-based icon rule.
+
+`notification_app` now snapshots the discovered helper bundle, rejects symlinks
+and special files, and hashes all its inputs plus the icon into an immutable
+app generation. It copies ordinary files into an isolated staging directory,
+changes only that copy's identity, then signs and verifies it with macOS tools.
+Only a sealed generation is published; simultaneous boards can converge on the
+same generation, and an upgraded helper never replaces an executable still
+handling an old notification. Setup children share a ten-second deadline and
+are reaped. Neither discovery nor doctor runs this preparation.
+
+The home moves to `~/.local/state/mesimon/notifications/`, shared across boards
+because an OS app identity is shared across boards. This stays inside the
+existing write allowlist. The source helper remains untouched. The resting
+mascot is the real application icon; attention posts additionally carry the
+amber image. Unknown bundles retain an attachment fallback. There is no
+`-appIcon` or `-sender`, and the click/reveal/group arguments are preserved.
+A setup failure still posts the ordinary notification and reports the lost
+app icon. macOS may request permission for Mesimon's separate identity.
+
+Pinned by native signing/verification without posting, source-preservation,
+upgrade, simultaneous-publication, failed-signature, symlink and timeout tests,
+and the existing notification argument checks. The live visual confirmation
+covers the actual system icon, which argv assertions never could.
+The user also verified the finished integration on a running agent: the OS
+notification displayed the mascot correctly.

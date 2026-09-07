@@ -913,6 +913,8 @@ pub struct App {
     /// how `test_no_drawn_structure` tells a frame's box glyph, which the L1
     /// law admits, from one that leaked in anywhere else, which it bans.
     pub frames: std::cell::RefCell<Vec<ratatui::layout::Rect>>,
+    /// The compact shin's exact bounds, for the scoped block-glyph law.
+    pub mascot: std::cell::RefCell<Option<ratatui::layout::Rect>>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
     /// the first rendered frame is always frame 0 — goldens stay stable).
     pub spin_epoch: Cell<Option<std::time::Instant>>,
@@ -1109,6 +1111,7 @@ impl App {
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
+            mascot: std::cell::RefCell::new(None),
             spin_epoch: Cell::new(None),
             diff: None,
             releases: None,

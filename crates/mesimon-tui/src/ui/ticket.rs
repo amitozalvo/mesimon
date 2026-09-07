@@ -700,10 +700,10 @@ fn quiet_session(
     // The mark stands while the conversation has not STARTED — the empty
     // seat's own face, one beat later, so the zone does not blink between the
     // press and the first prompt. A turn in flight is a conversation, and
-    // there the live pulse is the focal point: a static burst over it was
+    // there the live pulse is the focal point: a static mascot over it was
     // built, seen, and cut the same hour (it read as "nothing here" beside a
     // row saying something was happening). Never over a corpse, a sleeper, a
-    // failure or a raised permission prompt either — a starburst has nothing
+    // failure or a raised permission prompt either — the mascot has nothing
     // to say about any of those.
     let unspoken = rec.kind == SessionKind::Claude
         && rec.transcript_path.is_none()
@@ -713,7 +713,7 @@ fn quiet_session(
         );
     let mut lines: Vec<Line<'static>> = vec![Line::default()];
     if unspoken {
-        lines.extend(spark_rows(app, area, block_w));
+        lines.extend(mascot_rows(app, area, block_w, text.len()));
     }
     lines.extend(text);
     lines
@@ -802,30 +802,6 @@ fn box_clause(rec: &mesimon_core::board::SessionRecord) -> String {
     }
 }
 
-/// The starburst an empty seat wears (T-308), hand-authored like a palette
-/// and never generated. Claude Code's own welcome screen could not be
-/// borrowed for it on three counts: it is drawn in full-block, shade and
-/// quadrant glyphs, which is exactly the range L1's `test_no_drawn_structure`
-/// bans; it is sixteen rows tall, taller than this zone at any terminal size
-/// worth drawing it in; and it is somebody else's brand art. What survives
-/// the trip is the IDEA — a mark with a sparse starfield around it — redrawn
-/// in ASCII, which also means it renders the same at every glyph tier
-/// instead of needing a mono fallback of its own. The four field stars are
-/// point-symmetric about the burst's centre column.
-const SPARK: [&str; 5] = [
-    "  .               *",
-    "        \\  |  /",
-    "        -- * --",
-    "        /  |  \\",
-    "    *               .",
-];
-/// Which rows of `SPARK` are the burst itself; the rest is the field around
-/// it, and the two take different steps of the grey ramp.
-const SPARK_BURST: std::ops::Range<usize> = 1..4;
-/// Under this many rows the zone drops the art and keeps the words: the
-/// sentence is what the press needs, the picture is what it earns.
-const SPARK_MIN_H: usize = 12;
-
 /// What the `+ claude session` row would do, previewed (T-308). The zone
 /// stood empty on that row — the one row on the page whose whole purpose is
 /// a press nobody has made yet — so it now shows the mark, the press in the
@@ -858,62 +834,38 @@ fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Ve
     let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
 
     let mut lines: Vec<Line<'static>> = vec![Line::default()];
-    lines.extend(spark_rows(app, area, block_w));
+    lines.extend(mascot_rows(app, area, block_w, text.len()));
     lines.extend(text);
     lines
 }
 
-/// `SPARK`, hung over a text block `block_w` cells wide — with the two
-/// breathing rows under it — or nothing at all where the zone is too short
-/// or too narrow to carry it. Centred on the WORDS, not on the zone: the
-/// zone is 87 cells at 120x30 against some 55 of sentence, and centring in
-/// it left the picture floating off to the right of everything it is about
-/// (built that way first, seen once, changed).
-fn spark_rows(app: &App, area: Rect, block_w: usize) -> Vec<Line<'static>> {
-    let theme = &app.theme;
-    let art_w = SPARK.iter().map(|r| r.width()).max().unwrap_or(0);
-    if (area.height as usize) < SPARK_MIN_H || (area.width as usize) <= art_w + 6 {
+/// The shin is centred over the words. Reserve the heading, leading blank,
+/// one breathing row and ALL text before admitting the art. Mono gets the
+/// wordmark; a short or narrow preview gives the space back to its sentences.
+fn mascot_rows(app: &App, area: Rect, block_w: usize, text_h: usize) -> Vec<Line<'static>> {
+    let unicode = app.theme.glyph_tier() == glyphs::Tier::Unicode;
+    let art = if unicode { crate::mascot::COMPACT } else { "mesimon" };
+    let art_h = art.lines().count();
+    let art_w = art.lines().map(|r| r.width()).max().unwrap_or(0);
+    if (area.height as usize) < 2 + art_h + 1 + text_h || (area.width as usize) < art_w + 6 {
         return Vec::new();
     }
-    let pad = " ".repeat(block_w.max(art_w).saturating_sub(art_w) / 2);
-    let mut lines: Vec<Line<'static>> = Vec::new();
-    for (i, row) in SPARK.iter().enumerate() {
-        let mut spans = vec![Span::raw(pad.clone())];
-        if SPARK_BURST.contains(&i) {
-            // The burst's core is the value step, its spokes one under it,
-            // the field one under that. No hue anywhere: the board's one
-            // saturated colour is needs-you's, and a decoration may never
-            // spend it.
-            for part in split_star(row) {
-                let style = if part == "*" { theme.dim1() } else { theme.dim2() };
-                spans.push(Span::styled(part.to_string(), style));
-            }
-        } else {
-            spans.push(Span::styled((*row).to_string(), theme.dim3()));
-        }
-        lines.push(Line::from(spans));
+    let pad = block_w.max(art_w).saturating_sub(art_w) / 2;
+    if unicode {
+        *app.mascot.borrow_mut() =
+            Some(Rect::new(area.x + pad as u16, area.y + 2, art_w as u16, art_h as u16));
     }
-    lines.push(Line::default());
+    let mut lines: Vec<Line<'static>> = art
+        .lines()
+        .map(|row| {
+            Line::from(vec![
+                Span::raw(" ".repeat(pad)),
+                Span::styled(row.to_string(), app.theme.dim1()),
+            ])
+        })
+        .collect();
     lines.push(Line::default());
     lines
-}
-
-/// A burst row split into its star and everything else, so the two can take
-/// different greys without the art being transcribed a second time.
-fn split_star(row: &str) -> Vec<&str> {
-    let mut out = Vec::new();
-    let mut rest = row;
-    while let Some(i) = rest.find('*') {
-        if i > 0 {
-            out.push(&rest[..i]);
-        }
-        out.push(&rest[i..i + 1]);
-        rest = &rest[i + 1..];
-    }
-    if !rest.is_empty() {
-        out.push(rest);
-    }
-    out
 }
 
 /// The sentences under the mark. The first says what the session will be, in

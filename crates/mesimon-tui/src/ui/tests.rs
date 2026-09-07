@@ -4033,7 +4033,7 @@ fn golden_ticket_new_claude_120() {
     golden("ticket_new_claude_120x30", &lines);
     // The zone the row sits beside is no longer blank (T-308): the mark, the
     // press in the keymap's own words, and what the session would be.
-    assert!(lines.iter().any(|l| l.contains("-- * --")), "the mark: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("▀███████████████▀")), "the mark: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("starts in the checkout")), "where: {lines:?}");
     assert!(
         lines.iter().any(|l| l.contains("types the ticket title into its box, and sends nothing")),
@@ -4093,7 +4093,7 @@ fn golden_ticket_starting_120() {
     let mut app = app_graphite(b);
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("-- * --")), "the mark: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("▀███████████████▀")), "the mark: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("starting up")), "the state: {lines:?}");
     assert!(
         lines.iter().any(|l| l.contains("mesimon presses enter when it is ready")),
@@ -4153,7 +4153,7 @@ fn the_quiet_zone_says_why_there_are_no_words() {
     assert_eq!(words(&dead).0, "exited");
 }
 
-/// The picture is what the zone gives up first: under `SPARK_MIN_H` rows the
+/// The picture is what the zone gives up first: when its full drawing and the text cannot fit the
 /// words stay whole and the mark goes, because the sentence is what the
 /// press needs and the art is what it earns.
 #[test]
@@ -4166,16 +4166,59 @@ fn the_empty_seat_drops_its_mark_before_its_words() {
     app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let tall = render(&app, 120, 30);
-    assert!(tall.iter().any(|l| l.contains("-- * --")), "the mark fits at 30: {tall:?}");
+    assert!(tall.iter().any(|l| l.contains("▀███████████████▀")), "the mark fits at 30: {tall:?}");
     // A description takes the rows off the top of the zone, which is the
     // ordinary way it runs out.
     let short = render(&app, 120, 20);
-    assert!(!short.iter().any(|l| l.contains("-- * --")), "the mark goes: {short:?}");
+    assert!(!short.iter().any(|l| l.contains("▀███████████████▀")), "the mark goes: {short:?}");
     assert!(short.iter().any(|l| l.contains("enter start claude")), "the press stays: {short:?}");
     assert!(
         short.iter().any(|l| l.contains("starts in the checkout")),
         "and so do the words: {short:?}"
     );
+}
+
+#[test]
+fn the_shin_is_static_grey_and_only_precedes_a_conversation() {
+    let mut app = app_graphite(fixture(false));
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let buf = cells(&app, 120, 30);
+    let rect = app.mascot.borrow().expect("the empty seat has a mascot");
+    for (dy, row) in crate::mascot::COMPACT.lines().enumerate() {
+        for (dx, ch) in row.chars().enumerate() {
+            if ch != ' ' {
+                let cell = &buf[(rect.x + dx as u16, rect.y + dy as u16)];
+                assert_eq!(cell.symbol(), ch.to_string());
+                assert_eq!(Some(cell.fg), app.theme.dim1().fg);
+            }
+        }
+    }
+    app.spin_epoch.set(Some(std::time::Instant::now() - std::time::Duration::from_secs(10)));
+    assert_eq!(buf, cells(&app, 120, 30), "the mascot never animates");
+
+    app.theme = Theme::new(Flavor::Graphite, Profile::Mono);
+    let lines = render(&app, 120, 30);
+    assert!(app.mascot.borrow().is_none());
+    assert!(!lines.iter().any(|row| row.contains('█') || row.contains('▄')));
+    assert!(lines.iter().any(|row| row.trim_start().starts_with("mesimon")), "mono gets the wordmark");
+
+    app.theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    app.board.sessions.retain(|s| s.ticket != ulid_n(1));
+    for (state, expected) in [
+        (SessionState::Spawning, true),
+        (SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown }, true),
+        (SessionState::Running, false),
+        (SessionState::Sleeping, false),
+        (SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }, false),
+    ] {
+        app.board.sessions.retain(|s| s.ticket != ulid_n(1));
+        app.board.sessions.push(session(11, ulid_n(1), SessionKind::Claude, state.clone()));
+        let _ = cells(&app, 120, 30);
+        assert_eq!(app.mascot.borrow().is_some(), expected, "{state:?}");
+    }
+    app.screen = Screen::Board;
+    let _ = cells(&app, 120, 30);
+    assert!(app.mascot.borrow().is_none(), "a previous preview never exempts the board");
 }
 
 /// EXACTLY one rail row wears the cursor surface, wherever `rail_idx` sits.
@@ -4437,7 +4480,13 @@ fn test_no_banned_sgr() {
                 let mut seat = App::for_test(fixture(false), Theme::new(flavor, profile));
                 seat.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
                 assert!(
-                    render(&seat, 120, 30).iter().any(|l| l.contains("-- * --")),
+                    render(&seat, 120, 30).iter().any(|l| l.contains(
+                        if profile == Profile::Mono {
+                            "mesimon"
+                        } else {
+                            "▀███████████████▀"
+                        }
+                    )),
                     "the empty seat's mark must be ON SCREEN, or this law does not bite"
                 );
                 cells(&seat, 120, 30)
@@ -4548,19 +4597,23 @@ fn test_no_banned_sgr() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// L1: zero drawn structure — no box-drawing or block-element codepoints
-/// anywhere (the accent bar is a painted space).
+/// L1: no drawn structure outside the explicit tag/description, dialog
+/// perimeter and exact mascot-cell exceptions (the accent bar is painted).
 #[test]
 fn test_no_drawn_structure() {
     // Every screen swept is kept as its cell grid AND the dialog frames its
     // draw recorded: a box glyph is legal on a frame's perimeter and nowhere
     // else (T-158, the one allowlisted role), and the perimeter is a fact of
     // the frame the draw itself reported — the test transcribes nothing.
-    let swept: std::cell::RefCell<Vec<(ratatui::buffer::Buffer, Vec<ratatui::layout::Rect>)>> =
-        std::cell::RefCell::new(Vec::new());
+    type DrawnFrame = (
+        ratatui::buffer::Buffer,
+        Vec<ratatui::layout::Rect>,
+        Option<ratatui::layout::Rect>,
+    );
+    let swept: std::cell::RefCell<Vec<DrawnFrame>> = std::cell::RefCell::new(Vec::new());
     let sweep = |app: &App| -> Vec<String> {
         let buf = cells(app, 120, 30);
-        swept.borrow_mut().push((buf.clone(), app.frames.borrow().clone()));
+        swept.borrow_mut().push((buf.clone(), app.frames.borrow().clone(), *app.mascot.borrow()));
         lines_of(&buf)
     };
     let path = write_transcript("drawn-law", &reply_record(RICH_REPLY));
@@ -4662,13 +4715,13 @@ fn test_no_drawn_structure() {
             lines
         },
         {
-            // T-308's mark is ASCII on purpose — this is the law that says
-            // so, and the sweep is what keeps it true.
+            // The shin's block glyphs are legal only at its recorded cells.
+            // All other preview content still crosses the scrub boundary.
             let mut seat = app_graphite(fixture(false));
             seat.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
             let lines = sweep(&seat);
             assert!(
-                lines.iter().any(|l| l.contains("-- * --")),
+                lines.iter().any(|l| l.contains("▀███████████████▀")),
                 "the empty seat's mark must be ON SCREEN, or this law does not bite"
             );
             lines
@@ -4812,7 +4865,7 @@ fn test_no_drawn_structure() {
         })
     };
     let mut framed = 0usize;
-    for (buf, frames) in swept.borrow().iter() {
+    for (buf, frames, mascot) in swept.borrow().iter() {
         framed += frames.len();
         let area = buf.area();
         for y in 0..area.height {
@@ -4835,9 +4888,23 @@ fn test_no_drawn_structure() {
                     // second admission (author 2026-09-03, "reduce thickness"
                     // of the ticket page's description bar): a painted cell
                     // has one width, so a thinner bar is a glyph or nothing.
-                    // `Theme::desc_bar` is its only producer.
+                    // `Theme::desc_bar` is its only producer. The shin adds
+                    // an exception for its EXACT cells, never its whole zone.
                     assert!(
-                        ch == '▀' || ch == '▎' || on_perimeter(frames, x, y),
+                        ch == '▀'
+                            || ch == '▎'
+                            || on_perimeter(frames, x, y)
+                            || mascot.is_some_and(|r| {
+                                x >= r.x
+                                    && y >= r.y
+                                    && x < r.right()
+                                    && y < r.bottom()
+                                    && crate::mascot::COMPACT
+                                        .lines()
+                                        .nth((y - r.y) as usize)
+                                        .and_then(|row| row.chars().nth((x - r.x) as usize))
+                                        == Some(ch)
+                            }),
                         "drawn-structure codepoint {ch:?} at {x},{y} off any dialog frame"
                     );
                 }

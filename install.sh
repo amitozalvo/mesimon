@@ -143,6 +143,33 @@ fi
 echo
 echo "installed $("$PREFIX/mesimon" --version) -> $PREFIX/mesimon"
 
+# A welcome only after a successful install, on a UTF-8 terminal. Piped
+# output and limited terminals keep the ordinary text; no ANSI escapes.
+case "${LC_ALL:-${LC_CTYPE:-${LANG:-}}}" in
+  *[Uu][Tt][Ff]-8*|*[Uu][Tt][Ff]8*) mascot_utf8=yes ;;
+  *) mascot_utf8=no ;;
+esac
+if [ -t 1 ] && [ "${TERM:-dumb}" != dumb ] && [ "$mascot_utf8" = yes ]; then
+  echo
+# mascot:start
+  cat <<'MESIMON_SHIN'
+                   ▄██▄
+  ▄██▄             ████
+  ████            ▄███▀
+  ▀███▄    ▄██▄   ████
+   ████    ████  ▄███▀
+   ▀███▄   ████  ████
+    ████████████████
+  ▄██████████████████▄
+  █████  ██████  █████
+  █████▄▄██████▄▄█████
+   ▀████████████████▀
+      ▀▀▀▀▀▀▀▀▀▀▀▀
+MESIMON_SHIN
+# mascot:end
+  echo "  mesimon is ready"
+fi
+
 case ":$PATH:" in
   *":$PREFIX:"*) ;;
   *)

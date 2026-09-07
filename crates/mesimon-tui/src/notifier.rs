@@ -169,7 +169,13 @@ impl Notifier {
         // The two per-board constants are resolved in one place: what this
         // board is CALLED, and what its banners are grouped under (T-292).
         // `notify::find` knows no repo, so the group lands here.
-        let channels = Channels { group: crate::notify::group_for(repo_root), ..channels };
+        let channels = Channels {
+            group: crate::notify::group_for(repo_root),
+            icon_dir: mesimon_daemon::Paths::for_repo(repo_root)
+                .ok()
+                .and_then(|p| p.state_dir.parent().map(|home| home.join("notifications"))),
+            ..channels
+        };
         let worker = Worker::new(
             repo_root.to_path_buf(),
             title_of(repo_root),
@@ -259,11 +265,10 @@ fn detail_for(board: &Board, ticket: ulid::Ulid, words: bool) -> Option<Detail> 
 /// WHO is talking, and about which board: `mesimon - simbly`.
 ///
 /// Two halves, because a banner's title answers two questions and the OS
-/// answers neither. The product name is there because the banner does not
-/// come from an app called mesimon — `terminal-notifier` posts it under its
-/// OWN identity, and `osascript` under Script Editor's, so on a machine
-/// running several things this row is the only place mesimon can say it is
-/// mesimon. The board's name is there because a user with two of them open
+/// answers neither consistently. The private macOS helper now has Mesimon's
+/// own identity, while osascript and other fallback rungs still use their
+/// host application's. The title identifies the product on every rung.
+/// The board's name is there because a user with two of them open
 /// has to be told which one, and the checkout's own directory name is what
 /// they call it — the breadcrumb's `mesimon > simbly`, in a field that has
 /// no room for a breadcrumb.
@@ -294,7 +299,7 @@ fn say_through(ch: Channels, console: Arc<Console>, shared: Arc<Shared>) -> Say 
             // The status line belongs to the main loop; leave it there for
             // the next tick to take, and never stop the board over a banner.
             *shared.trouble.lock().unwrap_or_else(|e| e.into_inner()) =
-                Some(format!("could not notify: {e}"));
+                Some(format!("notification: {e}"));
         }
     })
 }

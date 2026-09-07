@@ -51,6 +51,7 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     // This frame's dialog frames, recorded as they are drawn (`dialog::frame`).
     app.frames.borrow_mut().clear();
+    *app.mascot.borrow_mut() = None;
 
     // Live-resize floor (07 §2.4): a notice, never a broken layout.
     let area = f.area();

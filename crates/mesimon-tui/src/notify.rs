@@ -452,6 +452,12 @@ pub struct Channels {
     /// click at all. `None` means the banner behaves as it did before both:
     /// it appears, and clicking it does nothing.
     pub click: Option<Click>,
+    /// The shared notification state directory. Assets are written only
+    /// by an actual image-capable post, never by discovery or doctor.
+    pub icon_dir: Option<PathBuf>,
+    /// The installed helper bundle, discovered without running it. An actual
+    /// macOS post prepares a private signed Mesimon copy under `icon_dir`.
+    pub notifier_app: Option<PathBuf>,
 }
 
 /// The two ladders. The group is not resolved here — this function knows no
@@ -462,6 +468,9 @@ pub fn find() -> Channels {
         banner: find_banner(std::env::var("MESIMON_NOTIFY").ok().as_deref(), which_on_path),
         player: find_player(std::env::var("MESIMON_SOUND").ok().as_deref(), which_on_path),
         group: None,
+        icon_dir: None,
+        notifier_app: which_on_path("terminal-notifier")
+            .and_then(|path| crate::notification_app::discover(&path)),
         click: find_click(
             std::env::var("MESIMON_TERM_BUNDLE").ok().as_deref(),
             std::env::var("MESIMON_TERM_REVEAL").ok().as_deref(),
@@ -471,6 +480,20 @@ pub fn find() -> Channels {
             own_tty().as_deref(),
         ),
     }
+}
+
+/// Add presentation arguments only to backends that support them. Keep
+/// custom helpers' two-argument contract and osascript's positional fields.
+fn with_icon(banner: &Banner, mut argv: Vec<String>, path: &std::path::Path) -> Vec<String> {
+    let flag = match banner {
+        Banner::TerminalNotifier => "-contentImage",
+        Banner::NotifySend => "--icon",
+        _ => return argv,
+    };
+    // Insert before notify-send's `--`, never after its user-controlled
+    // fields. argv stays an array; paths with spaces are one argument.
+    argv.splice(1..1, [flag.to_string(), path.to_string_lossy().into_owned()]);
+    argv
 }
 
 /// This board's notification group: one per REPO, keyed the way every other
@@ -788,10 +811,47 @@ impl Console {
 /// escape and finds the terminal handed over says nothing and reports no
 /// error: not raising a banner is not a failure to report.
 pub fn post(ch: &Channels, p: &Post, console: &Console) -> std::io::Result<()> {
+    post_with(ch, p, console, |argv| launch(argv, None))
+}
+
+fn post_with(
+    ch: &Channels,
+    p: &Post,
+    console: &Console,
+    launch: impl Fn(&[String]) -> std::io::Result<()>,
+) -> std::io::Result<()> {
+    let mut icon_error = None;
     if !p.body.is_empty() {
         let f = Fields::of(p);
         match ch.banner.argv(ch.group.as_deref(), ch.click.as_ref(), &f) {
-            Some(argv) => launch(&argv, None)?,
+            Some(mut argv) => {
+                if let Some(dir) = ch.icon_dir.as_ref() {
+                    let mut branded = false;
+                    if cfg!(target_os = "macos") && ch.banner == Banner::TerminalNotifier {
+                        if let Some(source) = ch.notifier_app.as_ref() {
+                            match crate::notification_app::prepare(dir, source) {
+                                Ok(program) => {
+                                    argv[0] = program.to_string_lossy().into_owned();
+                                    branded = true;
+                                }
+                                Err(e) => icon_error = Some(io_error_without_icon(e)),
+                            }
+                        }
+                    }
+                    // The app icon is stable. Only an attention post needs
+                    // an extra amber image; Linux and unbranded helpers keep
+                    // the per-post PNG on both kinds of banner.
+                    if matches!(ch.banner, Banner::TerminalNotifier | Banner::NotifySend)
+                        && (!branded || p.needs_you)
+                    {
+                        match crate::mascot::icon(dir, p.needs_you) {
+                            Ok(path) => argv = with_icon(&ch.banner, argv, &path),
+                            Err(e) => icon_error = Some(io_error_without_icon(e)),
+                        }
+                    }
+                }
+                launch(&argv)?;
+            }
             None if ch.banner == Banner::Osc => {
                 console.write_if_held(|| write_osc9(&f.title, &f.folded))?
             }
@@ -800,12 +860,21 @@ pub fn post(ch: &Channels, p: &Post, console: &Console) -> std::io::Result<()> {
     }
     if !p.sound.is_off() {
         match ch.player.argv(p.sound) {
-            Some(argv) => launch(&argv, None)?,
+            Some(argv) => launch(&argv)?,
             None if ch.player == Player::Off => {}
             None => console.write_if_held(ring_bell)?,
         }
     }
-    Ok(())
+    match icon_error {
+        Some(e) => Err(e),
+        None => Ok(()),
+    }
+}
+
+fn io_error_without_icon(error: std::io::Error) -> std::io::Error {
+    std::io::Error::other(format!(
+        "Mesimon app icon unavailable; using the helper's banner: {error}"
+    ))
 }
 
 /// A post's three fields, each safe to hand to another process or to write
@@ -824,6 +893,7 @@ struct Fields {
 impl Fields {
     fn of(p: &Post) -> Fields {
         let scrubbed = Post {
+            needs_you: p.needs_you,
             title: field(&p.title),
             subtitle: field(&p.subtitle),
             body: field(&p.body),
@@ -956,6 +1026,89 @@ pub fn doctor_line() -> String {
 mod tests {
     use super::*;
 
+    #[test]
+    fn mascot_arguments_preserve_clicks_fields_and_custom_helpers() {
+        let f = fields("-board", "T-1", "needs you");
+        let path = std::path::Path::new("/private/state with spaces/shin.png");
+        let c = click(ITERM2_ID);
+        let original = Banner::TerminalNotifier.argv(Some("mesimon-1"), Some(&c), &f).unwrap();
+        let mut argv = with_icon(&Banner::TerminalNotifier, original.clone(), path);
+        assert_eq!(&argv[1..3], &["-contentImage", path.to_str().unwrap()]);
+        assert!(!argv.iter().any(|a| a == "-appIcon" || a == "-sender"));
+        argv.drain(1..3);
+        assert_eq!(argv, original, "the click and fields remain intact");
+        let linux = Banner::NotifySend.argv(None, None, &f).unwrap();
+        let argv = with_icon(&Banner::NotifySend, linux, path);
+        assert_eq!(&argv[..5], &["notify-send", "--icon", path.to_str().unwrap(), "--", "-board"]);
+        for rung in [Banner::Custom("ding".into()), Banner::Osascript] {
+            let argv = rung.argv(None, None, &f).unwrap();
+            assert_eq!(with_icon(&rung, argv.clone(), path), argv);
+        }
+    }
+
+    #[test]
+    fn silent_and_disabled_banners_do_not_materialize_icons() {
+        let dir = std::env::temp_dir().join(format!("msmn-no-icon-{}", uuid::Uuid::new_v4()));
+        let mut ch = Channels {
+            banner: Banner::TerminalNotifier,
+            player: Player::Off,
+            group: None,
+            click: None,
+            icon_dir: Some(dir.clone()),
+            notifier_app: None,
+        };
+        post(&ch, &Post::sound_only(Sound::Off), &Console::default()).unwrap();
+        ch.banner = Banner::Off;
+        let p = Post {
+            needs_you: true,
+            title: "board".into(),
+            subtitle: String::new(),
+            body: "needs you".into(),
+            sound: Sound::Off,
+        };
+        post(&ch, &p, &Console::default()).unwrap();
+        assert!(!dir.exists());
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn failed_app_setup_still_launches_the_banner_and_reports_the_icon() {
+        let root =
+            std::env::temp_dir().join(format!("msmn-notify-fallback-{}", uuid::Uuid::new_v4()));
+        let source = root.join("broken.app");
+        std::fs::create_dir_all(&source).unwrap();
+        let ch = Channels {
+            banner: Banner::TerminalNotifier,
+            player: Player::Off,
+            group: Some("mesimon-fallback".into()),
+            click: Some(click(ITERM2_ID)),
+            icon_dir: Some(root.join("notifications")),
+            notifier_app: Some(source),
+        };
+        let p = Post {
+            needs_you: false,
+            title: "board".into(),
+            subtitle: "T-1".into(),
+            body: "finished".into(),
+            sound: Sound::Off,
+        };
+        let calls = std::cell::RefCell::new(Vec::new());
+        let error = post_with(&ch, &p, &Console::default(), |argv| {
+            calls.borrow_mut().push(argv.to_vec());
+            Ok(())
+        })
+        .unwrap_err();
+        assert!(error.to_string().contains("app icon unavailable"));
+        let calls = calls.into_inner();
+        assert_eq!(calls.len(), 1);
+        assert_eq!(calls[0][0], "terminal-notifier");
+        assert!(calls[0].windows(2).any(|pair| pair == ["-group", "mesimon-fallback"]));
+        assert!(calls[0].windows(2).any(|pair| pair == ["-activate", ITERM2_ID]));
+        assert!(calls[0].iter().any(|arg| arg == "-contentImage"));
+        assert!(!calls[0].iter().any(|arg| arg == "-appIcon"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
     fn none(_: &str) -> Option<PathBuf> {
         None
     }
@@ -963,6 +1116,7 @@ mod tests {
     /// The three fields a rung is handed, as `post` builds them.
     fn fields(title: &str, subtitle: &str, body: &str) -> Fields {
         Fields::of(&Post {
+            needs_you: false,
             title: title.into(),
             subtitle: subtitle.into(),
             body: body.into(),
@@ -1450,8 +1604,16 @@ mod tests {
     fn a_silent_post_runs_nothing() {
         // Off on both channels with a real body: `post` must not try to spawn,
         // and `Off` is the one rung that writes no escape either.
-        let ch = Channels { banner: Banner::Off, player: Player::Off, group: None, click: None };
+        let ch = Channels {
+            banner: Banner::Off,
+            player: Player::Off,
+            group: None,
+            click: None,
+            icon_dir: None,
+            notifier_app: None,
+        };
         let p = Post {
+            needs_you: false,
             title: "t".into(),
             subtitle: "T-1 ∙ a ticket".into(),
             body: "b".into(),

@@ -198,6 +198,9 @@ impl Sound {
 /// body, which is why `body` stays the one discriminator.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Post {
+    /// The batch includes an attention event. Presentation must not infer
+    /// this from a customizable sound or from quoted notification words.
+    pub needs_you: bool,
     pub title: String,
     /// The ticket this is about, named — empty for an aggregate, which has
     /// no one ticket to name, and for a sound-only post.
@@ -210,7 +213,13 @@ impl Post {
     /// A sound and nothing else — the Settings row's preview, and what the
     /// focus rule leaves of a batch while you are looking at the board.
     pub fn sound_only(sound: Sound) -> Post {
-        Post { title: String::new(), subtitle: String::new(), body: String::new(), sound }
+        Post {
+            needs_you: false,
+            title: String::new(),
+            subtitle: String::new(),
+            body: String::new(),
+            sound,
+        }
     }
 
     pub fn is_silent(&self) -> bool {
@@ -349,7 +358,13 @@ impl Coalescer {
             }
             many => (String::new(), body(many)),
         };
-        Some(Post { title: v.board.to_string(), subtitle, body, sound })
+        Some(Post {
+            needs_you: loudest == Kind::NeedsYou,
+            title: v.board.to_string(),
+            subtitle,
+            body,
+            sound,
+        })
     }
 
     /// Drop everything held without saying it — the board went away, or the
@@ -1211,8 +1226,23 @@ mod tests {
     }
 
     #[test]
+    fn attention_presentation_follows_events_not_words_or_sound() {
+        let voice = Voice { board: "board", needs_you: Sound::Off, done: Sound::Off, words: true };
+        let detail = |_: Ulid| Some(Detail { title: "needs you".into(), said: "needs you".into() });
+        let mut c = Coalescer::default();
+        c.offer(Event::turn_done(t(1), "T-1"), 0);
+        assert!(!c.due(0, &voice, &detail).unwrap().needs_you);
+        c.offer(Event::needs_you(t(1), "T-1", ""), WINDOW_MS);
+        c.offer(Event::turn_done(t(2), "T-2"), WINDOW_MS);
+        let mixed = c.due(WINDOW_MS, &voice, &detail).unwrap();
+        assert!(mixed.needs_you, "attention wins in a mixed batch, even with sound off");
+        assert!(mixed.sound.is_off());
+    }
+
+    #[test]
     fn hushing_takes_the_banner_and_leaves_the_sound() {
         let mut p = Post {
+            needs_you: false,
             title: "board".into(),
             subtitle: "T-1 ∙ a ticket".into(),
             body: "needs you".into(),
