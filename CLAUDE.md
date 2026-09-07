@@ -243,7 +243,8 @@ left edge, snapped to a run of WHOLE columns so the cards beside it never show a
 row; **`Tab` on a board card opens the ticket's description in the SAME dialog, grown out of that
 card** (T-163, 2026-09-03 — it took the key from the `needs you` attention walk, which is gone),
 and there `Shift+Tab` still sets the ticket's workspace (`SetWorkspace`, at once) while no session
-or worktree has locked it (`Ctx::workspace_open` mirrors the daemon's `set_workspace` lock). The
+or worktree has locked it (`Ctx::workspace_open` mirrors the daemon's `set_workspace` lock — since
+T-309 that is a SUBJECT fact, and the board and the ticket page carry the same key; below). The
 editor's surface is the SCREEN's: over the board it is the dialog whatever it holds (`n`/`N` too),
 from the ticket page it takes the whole screen. `n`/`N` open a note. **`^s` saves and leaves the
 dialog, either way** (2026-09-04, user request): on a note the body is written and the editor
@@ -1562,9 +1563,20 @@ injection vector). Provisioning is lazy (first spawn; `daemon/src/worktree.rs` s
 precheck/add/mark/include/ready, OFF the writer thread via `Msg::Provisioned`, concurrency 2
 — trap: `tmutil addexclusion` stalls 11 s on TCC, keep it detached); the parked spawn replays
 on ready. Bindings persist in `worktrees.json` (state dir); ownership marker in the git admin
-dir; pid-bearing locks + crash-safe sweep. Workspace is chosen ONCE, in the composer
-(Shift+Tab) — it locks the moment a session or binding exists, so the ticket screen has no
-`w`. **Merges are ff-only** — TUI `m` is a staged flow
+dir; pid-bearing locks + crash-safe sweep. **Workspace is chosen with `Shift+Tab`, for as long as
+the choice is open (T-309, 2026-09-07)**: the composer's pick, and then the same atom on the board,
+on the ticket page and in the description editor, all four through `App::set_ticket_workspace` →
+`Command::SetWorkspace` so they cannot disagree about which way the toggle goes. `Ctx::workspace_open`
+is the gate and it MIRRORS the daemon (`set_workspace` refuses over any session record or any
+worktree binding, so a resumable corpse locks it too); `Ctx::workspace_worktree` is what names the
+DESTINATION in the hint (`t`'s idiom: `own worktree` / `shared checkout`), since the card and the
+state row already say where the ticket stands. HINTED on the ticket page, overlay-only on the board
+(that footer is at its width at 120 columns) — the status says where the ticket landed, and the
+card's mark says the rest: **a worktree asked for but not cut is `⎇·`**, one dot in the DORMANT
+register against `queued`'s three (`card::worktree_mark`'s no-binding arm, `WtTone::Dormant`),
+because provisioning is lazy and between the pick and the first spawn the card said nothing at all.
+Archived tickets and a workspace board (`multi_repo`) offer nothing, and the ticket screen still has
+no `w`. Goldens `board_worktree_planned_120x30`, `ticket_new_claude_120x30`. **Merges are ff-only** — TUI `m` is a staged flow
 (stage derived from git state): ahead+ff → confirm→merge; main moved → inject
 "rebase+test" to the agent (conflicts resolve in the worktree, tests run pre-main); merged →
 inject the notice. Delete gates on unmerged bindings (`d` then `D` discards, branch `-D`); DONE move

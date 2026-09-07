@@ -1944,6 +1944,51 @@ fn golden_card_branch_line_120() {
     golden("board_worktree_120x30", &render(&app, 120, 30));
 }
 
+/// T-309: a ticket set to a worktree of its own before anyone has started on
+/// it. Provisioning is lazy — the tree is cut at the first spawn — so between
+/// the pick and that spawn the card drew NOTHING at all, and shift+tab on the
+/// board (which is what put the pick on this screen) had no answer to show
+/// for itself. One dot, in the dormant register: less than `queued`'s three.
+#[test]
+fn a_worktree_asked_for_but_not_cut_wears_a_dormant_mark() {
+    let mut app = app_graphite(fixture(false));
+    let mark = crate::glyphs::branch_mark(crate::glyphs::Tier::Unicode);
+    let planned = format!("{mark}\u{b7}");
+    let marked = |app: &App| {
+        render(app, 120, 30).iter().filter(|l| l.contains(mark)).cloned().collect::<Vec<_>>()
+    };
+    assert!(marked(&app).is_empty(), "the shared checkout says nothing");
+    for t in app.board.tickets.iter_mut().filter(|t| t.id == ulid_n(1)) {
+        t.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
+    }
+    app.cursor_row = Some(0);
+    let rows = marked(&app);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(rows[0].contains(&planned), "{rows:?}");
+    // The mark is right-aligned against the age slot, so its width IS the
+    // glyph's column — see `the_worktree_glyph_holds_one_column`.
+    assert_eq!(unicode_width::UnicodeWidthStr::width(planned.as_str()), 2);
+    golden("board_worktree_planned_120x30", &render(&app, 120, 30));
+    // A binding, once there is one, takes the mark back: the dot is the gap
+    // between the choice and the tree, not a second way to say worktree.
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(1),
+        branch: "msmn/T-1-decay-treatments".into(),
+        status: "attached".into(),
+        merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
+        conflict: false,
+        ahead: 0,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-1".into()),
+    }];
+    let rows = marked(&app);
+    assert_eq!(rows.len(), 1, "{rows:?}");
+    assert!(!rows[0].contains(&planned), "{rows:?}");
+}
+
 /// The worktree mark is right-aligned against the fixed age slot, so its
 /// WIDTH is its glyph's column: a state char beside the branch glyph pulls
 /// the glyph one cell left, and a clean attached worktree — the one arm with

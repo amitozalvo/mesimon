@@ -27,4 +27,4 @@
 
 
 
- jk select row ∙ enter start claude ∙ r rename ∙ d delete ∙ n describe                                           ? keys
+ jk select row ∙ enter start claude ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                  ? keys

@@ -822,6 +822,16 @@ pub struct Ctx {
     pub ticket_shells: bool,
     // ---- worktree ----
     pub has_worktree: bool,
+    /// The SUBJECT ticket's workspace is still open to change: no session
+    /// and no worktree binding yet (the daemon's `set_workspace` lock,
+    /// mirrored). Shift+Tab sets it then — on the board, on the ticket
+    /// page, and in the description editor, which is where it lived until
+    /// T-309. It closes for good the moment work starts on the ticket.
+    pub workspace_open: bool,
+    /// That ticket asks for a worktree of its own (`WorkspaceStrategy`,
+    /// defaulted). The hint names where the press would leave it, the way
+    /// `t`'s does — so this is what tells the two words apart.
+    pub workspace_worktree: bool,
     /// `m` would actually do something on the next press.
     pub merge_actionable: bool,
     pub merge_word: &'static str,
@@ -921,11 +931,6 @@ pub struct Ctx {
     pub editor_body: bool,
     /// The editor holds changes not yet saved.
     pub editor_dirty: bool,
-    /// The editor is on a ticket whose workspace is still open to change:
-    /// no session and no worktree yet (the daemon's `set_workspace` lock,
-    /// mirrored). Shift+Tab in the description editor sets it then — the
-    /// composer's choice, a press late.
-    pub workspace_open: bool,
     /// The program `^g` hands the note's body to — the basename of
     /// `$VISUAL`, else `$EDITOR`, else `vi` — as the footer's word for it
     /// (`^g nvim`). Empty means no external editor is wired up (every test
@@ -1483,6 +1488,24 @@ static BOARD: &[Binding] = &[
         prio: 65,
     },
     Binding {
+        // The composer's workspace pick, reachable for as long as it means
+        // anything (T-309): a ticket that has not started yet can still be
+        // told to take a worktree of its own, and until now the only way in
+        // was the description editor. Same key, same toggle, one screen out.
+        // Overlay-only — the board's footer is already at its width at 120
+        // columns, and the card says which way the ticket is set (the branch
+        // mark, dormant while nothing is cut yet).
+        keys: &[Key::BackTab],
+        verb: Verb::CycleWorkspace,
+        show: "shift+tab",
+        hint: |c| if c.workspace_worktree { "shared checkout" } else { "own worktree" },
+        avail: |c| c.has_ticket && !c.ticket_archived && !c.multi_repo && c.workspace_open,
+        class: Class::Plain,
+        group: Group::Worktree,
+        mutates: true,
+        prio: 0,
+    },
+    Binding {
         // `n` opens the note the cursor means: the selected rail note on the
         // ticket page, else the description, else a fresh note that becomes
         // the description. Overlay-only here: the board's footer is for
@@ -1956,6 +1979,23 @@ static TICKET: &[Binding] = &[
         group: Group::Worktree,
         mutates: true,
         prio: 62,
+    },
+    Binding {
+        // The board's shift+tab, on the ticket page (T-309): same verb, same
+        // toggle. HINTED here where it is overlay-only on the board — the
+        // ticket page's footer has the room and this page is where a ticket
+        // is set up before anyone starts on it. The word is the DESTINATION,
+        // `t`'s idiom above: where the press would leave the ticket, since
+        // the state row beside it already says where it stands.
+        keys: &[Key::BackTab],
+        verb: Verb::CycleWorkspace,
+        show: "shift+tab",
+        hint: |c| if c.workspace_worktree { "shared checkout" } else { "own worktree" },
+        avail: |c| c.has_ticket && !c.ticket_archived && !c.multi_repo && c.workspace_open,
+        class: Class::Plain,
+        group: Group::Worktree,
+        mutates: true,
+        prio: 64,
     },
     Binding {
         keys: &[Key::Char('r')],
@@ -4005,12 +4045,14 @@ static INPUT: &[Binding] = &[
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
-        // Set at creation because the choice locks the moment a session or a
-        // worktree exists — this is the only place it is ever open. In the
-        // ASK field the same key cycles the delivery instead — `now` /
-        // `queued` — on the row under the field (2026-09-04); one binding,
-        // because a key is bound once per scope, and one gesture: shift+tab
-        // is "the other way" for whatever the field is about.
+        // Set at creation because the choice locks the moment a session or
+        // a worktree exists — this is the first place it is open, and since
+        // T-309 the board and the ticket page keep offering it for as long
+        // as it stays open. In the ASK field the same key cycles the
+        // delivery instead — `now` / `queued` — on the row under the field
+        // (2026-09-04); one binding, because a key is bound once per scope,
+        // and one gesture: shift+tab is "the other way" for whatever the
+        // field is about.
         hint: |c| if c.prompting { "now / queued" } else { "shared checkout / own worktree" },
         avail: |c| (c.composing && !c.multi_repo) || (c.prompting && c.ask_queueable),
         class: Class::Plain,
@@ -4265,12 +4307,13 @@ static EDITOR: &[Binding] = &[
         // Composing, the pick rides with the draft; on a ticket that exists
         // it is set on the daemon at once (`SetWorkspace`), and only while
         // nothing has locked it — the choice closes the moment a session or
-        // a worktree exists, the same rule `set_workspace` refuses by.
-        // SILENT in the edge (author 2026-09-04): the key is spelled on the
-        // context row beside the pick it cycles (`editor::context_line`),
-        // the way the one-line composer's card spells it, so the bottom
-        // edge said it a second time. Bound, not hinted — the `c` precedent
-        // on the ticket page.
+        // a worktree exists, the same rule `set_workspace` refuses by. The
+        // same `workspace_open` now carries the key on the board and the
+        // ticket page (T-309); here it stays SILENT in the edge (author
+        // 2026-09-04): the key is spelled on the context row beside the
+        // pick it cycles (`editor::context_line`), the way the one-line
+        // composer's card spells it, so the bottom edge said it a second
+        // time. Bound, not hinted — the `c` precedent on the ticket page.
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
@@ -5351,6 +5394,61 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('t'), &open), None, "tags stay the picker's");
     }
 
+    /// T-309: the workspace pick is the composer's, but the choice it makes
+    /// stays open for as long as the daemon would take it — no session, no
+    /// worktree binding — so the same key answers on the board and on the
+    /// ticket page, where a ticket is set up before anyone starts on it.
+    /// One verb, one atom, three screens.
+    #[test]
+    fn the_workspace_choice_is_open_until_work_starts() {
+        let open = Ctx { has_ticket: true, workspace_open: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(
+                resolve(scope, Key::BackTab, &open),
+                Some(Verb::CycleWorkspace),
+                "{scope:?}"
+            );
+            // The word is the DESTINATION, `t`'s idiom: the card and the
+            // state row say where the ticket stands, the hint says where the
+            // press would leave it.
+            assert_eq!(
+                hint_for(scope, Verb::CycleWorkspace, &open),
+                Some(("shift+tab", "own worktree")),
+                "{scope:?}"
+            );
+            let already = Ctx { workspace_worktree: true, ..open.clone() };
+            assert_eq!(
+                hint_for(scope, Verb::CycleWorkspace, &already),
+                Some(("shift+tab", "shared checkout")),
+                "{scope:?}"
+            );
+            // Locked — a session or a worktree exists, which is exactly what
+            // `set_workspace` refuses by. Inert, and unhinted with it.
+            let shut = Ctx { workspace_open: false, ..open.clone() };
+            assert_eq!(resolve(scope, Key::BackTab, &shut), None, "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::CycleWorkspace, &shut), None, "{scope:?}");
+            // An archived ticket offers nothing (T-300's shape).
+            let gone = Ctx { ticket_archived: true, ..open.clone() };
+            assert_eq!(resolve(scope, Key::BackTab, &gone), None, "{scope:?}");
+            // And no card at all is no subject.
+            assert_eq!(resolve(scope, Key::BackTab, &Ctx::default()), None, "{scope:?}");
+        }
+        // The ticket page hints it in the footer; the board keeps it to the
+        // overlay, where `n` and `s` already are — the board's row is at its
+        // width at 120 columns and the card's own mark says which way the
+        // ticket is set.
+        assert!(
+            footer_items(Scope::Ticket, &open).iter().any(|b| b.show == "shift+tab"),
+            "{:?}",
+            footer_items(Scope::Ticket, &open).iter().map(|b| b.show).collect::<Vec<_>>()
+        );
+        assert!(!footer_items(Scope::Board, &open).iter().any(|b| b.show == "shift+tab"));
+        assert!(overlay(Scope::Board, &open)
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .any(|(k, h)| k == "shift+tab" && h == "own worktree"));
+    }
+
     /// `Tab` grows the one-line composer into the editor, and only there: a
     /// rename has no description and a prompt is not a ticket. On the board
     /// the same key on a card opens the same dialog on the ticket's own
@@ -5370,8 +5468,11 @@ mod tests {
         assert_eq!(resolve(Scope::Board, Key::Tab, &Ctx::default()), None, "no card, no tab");
         for scope in [Scope::Ticket, Scope::Diff, Scope::Global] {
             assert_eq!(resolve(scope, Key::Tab, &card), None, "{scope:?}");
+            // And its shift is the workspace pick, which needs the choice to
+            // still be open — see `the_workspace_choice_is_open_until_work_starts`.
             assert_eq!(resolve(scope, Key::BackTab, &card), None, "{scope:?}");
         }
+        assert_eq!(resolve(Scope::Board, Key::BackTab, &card), None);
         // Inside the editor Tab is nothing: not a character (a note holds no
         // tabs) and not a verb.
         let editing = Ctx { editing: true, editor_composing: true, ..Default::default() };
@@ -6442,5 +6543,14 @@ mod tests {
         let editor =
             Ctx { editing: true, workspace_open: true, multi_repo: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::BackTab, &editor), None);
+        // And the two screens the key reached in T-309 are held by the same
+        // clause: a worktree of the root holds none of the code, wherever
+        // the press comes from.
+        let screen =
+            Ctx { has_ticket: true, workspace_open: true, multi_repo: true, ..Default::default() };
+        for scope in [Scope::Board, Scope::Ticket] {
+            assert_eq!(resolve(scope, Key::BackTab, &screen), None, "{scope:?}");
+            assert_eq!(hint_for(scope, Verb::CycleWorkspace, &screen), None, "{scope:?}");
+        }
     }
 }

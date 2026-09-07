@@ -7608,3 +7608,61 @@ words; a link mark on the card. Pinned by `the_agents_latest_words_are_links_too
 target the notes already listed not listing twice) and
 `the_latest_words_outlive_the_pane_and_are_all_a_ticket_needs` (a Sleeping claude on a ticket
 with no note at all opens the dialog — the case the old gate refused).
+
+## The workspace choice stays open until work starts (T-309, 2026-09-07)
+
+**Built.** `Shift+Tab` sets a ticket's workspace from the board and from the ticket page, not
+only from inside the description editor — and a worktree asked for but not cut wears a mark on
+the card. The user's words: *"shift+tab on a ticket with no session should let the user change,
+unless provisioned already ∙ also from ticket page ∙ also from description composer"*, then
+*"we also need a glyph indicating unprovisioned worktree on the ticket"*.
+
+**The choice was never once-only; the KEY was.** M4a's note says "Workspace is chosen ONCE, in
+the composer", and that was read off the composer being the only surface that offered the key —
+but `Daemon::set_workspace` has always refused on exactly two facts (any session record, any
+worktree binding) and taken the write otherwise, and T-163 had already put the same key in the
+description editor on a ticket that exists. So nothing about the rule moved: what moved is that
+`Ctx::workspace_open` stopped being an EDITOR fact (`EditorPurpose::Note`'s ticket) and became a
+SUBJECT one — the board cursor's card, the ticket page's ticket, the editor's note — which is
+the same ticket in the editor's case, since the editor takes every key while it is up. The field
+moved out of Ctx's editor block into its worktree block with it.
+
+**One road, four surfaces.** `App::set_ticket_workspace` is the whole toggle: read the ticket's
+strategy, send the other one, and say where it landed. The editor's `Note` arm now calls it too,
+so the composer's draft (which has no ticket to send about) is the only arm left that computes
+anything of its own. The status is `T-9 gets a worktree of its own` / `T-9 works in the shared
+checkout` and is set only when the board came back changed — the daemon's refusal has already
+put its own sentence there, and the TUI's gate is a mirror, not the authority.
+
+**The hint names the DESTINATION, and only on the ticket page.** `Ctx::workspace_worktree` picks
+between `own worktree` and `shared checkout` — `t`'s idiom (`auto-merge` / `merge by hand`),
+which is right here because the card's mark and the page's state row already say where the ticket
+STANDS, so a hint repeating that would be the second spelling T-158 spends its rules avoiding.
+The board's binding is `prio: 0`: its footer is at its width at 120 columns (` enter go to the
+agent ∙ space ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe` plus the app cluster),
+and this is the `n`/`s` treatment — bound, listed in `?`, unhinted on the row. The ticket page's
+sits at 64, between `t` and `r`, with the worktree keys.
+
+**`⎇·` is the gap between the pick and the tree.** Provisioning is lazy — the worktree is cut at
+the first spawn — so a ticket set to `Worktree` and never started drew NOTHING on the card, and
+the board's new key had no answer to show for itself. `card::worktree_mark` grew a no-binding arm
+(it took the ticket, which `render` already had) returning one dot in a new `WtTone::Dormant`,
+`dim3` on the resting ramp and `sel.dim3` under the cursor. One dot against `queued`'s three
+reads as less than being provisioned, which is what it is; ASCII is `.`; the mark is two cells
+like every other, so the glyph keeps its column (the anchor rule
+`the_worktree_glyph_holds_one_column` states). A binding of any status takes the dot back — it is
+not a second way to say "worktree". `·` U+00B7 is outside the banned box range, so the L1 law
+needed no exception (unlike `▀` and `▎`).
+
+**Not built.** No daemon change at all — no `Command`, no `Snapshot` field, no schema, no e2e; the
+lock, its two refusals and its sentences are untouched. The ticket page's state row was left
+alone: it already says ` ∙ ⎇ worktree` for an unprovisioned one and says nothing for a shared
+checkout, which is the right silence for the default. A shared-checkout ticket gets no card mark
+for the same reason. And the daemon was NOT loosened to allow a switch over a dead session record
+— a resumable corpse's cwd would move under it — so "no session" stays literal.
+
+Pinned by `the_workspace_choice_is_open_until_work_starts` and
+`a_workspace_board_offers_no_worktree_choice` (`core/src/keymap.rs`),
+`shift_tab_on_a_card_sets_the_workspace_too` (`tui/src/app.rs`),
+`a_worktree_asked_for_but_not_cut_wears_a_dormant_mark` and the goldens
+`board_worktree_planned_120x30` / `ticket_new_claude_120x30`.

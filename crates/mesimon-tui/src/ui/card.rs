@@ -176,18 +176,33 @@ enum WtTone {
     Err,
     /// Commits waiting — merge available (a suggestion, calm register).
     Ready,
+    /// Asked for, nothing cut yet — a step under quiet (T-309).
+    Dormant,
 }
 
 fn worktree_mark(
+    ticket: &Ticket,
     wt: Option<&mesimon_core::command::WorktreeItem>,
     ascii: bool,
 ) -> Option<(String, WtTone)> {
-    let w = wt?;
     let tier = if ascii { Tier::Ascii } else { Tier::Unicode };
     // The glyph and the arrows are the header's too (T-124): one home.
     let g = branch_mark(tier);
     let (up, down) = (ahead_mark(tier), behind_mark(tier));
     let (dots, check) = if ascii { ('.', '+') } else { ('…', '✓') };
+    let Some(w) = wt else {
+        // Asked for, not cut yet (T-309). The workspace is a choice the
+        // ticket carries from the moment it is minted and the worktree is
+        // only cut at the first spawn, so between the two the card said
+        // NOTHING — and shift+tab on the board, which is what put that
+        // choice on this screen, had no answer to show for itself. One dot
+        // against `queued`'s three, in the dormant register: less than
+        // being provisioned, which is what it is.
+        let planned =
+            ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree;
+        let dot = if ascii { '.' } else { '·' };
+        return planned.then(|| (format!("{g}{dot}"), WtTone::Dormant));
+    };
     Some(match w.status.as_str() {
         "queued" | "provisioning" => (format!("{g}{dots}"), WtTone::Quiet),
         "error" => (format!("{g}x"), WtTone::Err),
@@ -335,7 +350,7 @@ pub(super) fn render(
     };
 
     // ---- line 1: [glyph sp?][title][fill][wt][age] ------------------------
-    let wt_mark = worktree_mark(wt, tier == crate::glyphs::Tier::Ascii);
+    let wt_mark = worktree_mark(ticket, wt, tier == crate::glyphs::Tier::Ascii);
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
@@ -417,6 +432,15 @@ pub(super) fn render(
             WtTone::Err => theme.err_text(),
             WtTone::Ready => register_style(theme, Register::Calm),
             WtTone::Quiet => quiet_style,
+            // One step under the quiet register — and under the cursor it is
+            // the selected ramp's, like every other quiet thing on the card.
+            WtTone::Dormant => {
+                if cursorish {
+                    Style::default().fg(theme.sel.dim3)
+                } else {
+                    theme.dim3()
+                }
+            }
         };
         spans.push(Span::styled(format!(" {m}"), style));
     }

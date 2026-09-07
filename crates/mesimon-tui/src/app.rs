@@ -2617,6 +2617,18 @@ impl App {
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
             has_worktree: wt.is_some_and(|w| !w.branch.is_empty()),
+            // The daemon's `set_workspace` lock, mirrored: a session or a
+            // worktree binding on the ticket closes the choice. The
+            // SUBJECT's, so it answers for the board cursor and the ticket
+            // page as well as the editor's note (T-309) — which is the same
+            // ticket the editor was opened on, since the editor takes every
+            // key while it is up.
+            workspace_open: subject.is_some_and(|t| {
+                !self.board.sessions.iter().any(|s| s.ticket == t) && self.wt_item(t).is_none()
+            }),
+            workspace_worktree: subject
+                .and_then(|t| self.board.ticket(t))
+                .is_some_and(|t| t.workspace_strategy() == WorkspaceStrategy::Worktree),
             merge_actionable: merge.is_some(),
             merge_word: merge.unwrap_or("merge"),
             two_pane: self.diff_two_pane.get(),
@@ -2702,16 +2714,6 @@ impl App {
             editor_composing: editor.is_some_and(|e| e.composing()),
             editor_body: editor.is_some_and(|e| e.focus == Field::Body),
             editor_dirty: editor.is_some_and(|e| e.dirty()),
-            // The daemon's `set_workspace` lock, mirrored: a session or a
-            // worktree binding on the ticket closes the choice.
-            workspace_open: editor
-                .and_then(|e| match e.purpose {
-                    EditorPurpose::Note { ticket, .. } => Some(ticket),
-                    EditorPurpose::Compose { .. } => None,
-                })
-                .is_some_and(|t| {
-                    !self.board.sessions.iter().any(|s| s.ticket == t) && self.wt_item(t).is_none()
-                }),
             editor_word: self.editor_word,
             rich_keys: self.rich_keys,
         };
@@ -3735,10 +3737,18 @@ impl App {
             Verb::DeleteColumn => self.delete_column_from_dialog()?,
             Verb::ReleaseNotes => self.open_releases(),
             Verb::AdoptObserve => self.adopt_external(false)?,
+            // Shift+Tab on a ticket that has not started yet (T-309): the
+            // composer's pick, still open. The composer and the editor keep
+            // their own arms — there the draft or the note is what the key
+            // is inside of — and this is the same toggle on the screen.
+            Verb::CycleWorkspace => {
+                if let Some(ticket) = self.subject() {
+                    return self.set_ticket_workspace(ticket);
+                }
+            }
             // ---- input (handled in key_input; unreachable here) -------------
             Verb::Save
             | Verb::SaveStart
-            | Verb::CycleWorkspace
             | Verb::EditLeft
             | Verb::EditRight
             | Verb::EditWordLeft
@@ -4865,13 +4875,8 @@ impl App {
                 // refusal lands in the status.
                 EditorPurpose::Note { ticket, .. } => {
                     let ticket = *ticket;
-                    let current = self.board.ticket(ticket).and_then(|t| t.workspace);
-                    let workspace = match current {
-                        Some(WorkspaceStrategy::Worktree) => None,
-                        _ => Some(WorkspaceStrategy::Worktree),
-                    };
                     self.mode = Mode::Editor(ed);
-                    return self.send(Command::SetWorkspace { id: ticket, workspace });
+                    return self.set_ticket_workspace(ticket);
                 }
             },
             Some(Verb::EditorNewline) => match ed.focus {
@@ -5557,6 +5562,37 @@ impl App {
     /// The ticket's worktree binding, as the last snapshot reported it.
     pub fn wt_item(&self, ticket: ulid::Ulid) -> Option<&WorktreeItem> {
         self.worktrees.iter().find(|w| w.ticket == ticket)
+    }
+
+    /// Flip a ticket between the shared checkout and a worktree of its own —
+    /// the composer's Shift+Tab, on a ticket that exists (T-309). One road
+    /// for all three surfaces (board, ticket page, description editor), so
+    /// they cannot disagree about which way the toggle goes.
+    ///
+    /// The keymap only offers the key while the choice is open; the daemon's
+    /// `set_workspace` lock is the authority and its refusal lands in the
+    /// status the same way. The status says where the ticket ended up rather
+    /// than that a key was pressed: on the board the card's branch mark is
+    /// the only other thing that moved.
+    fn set_ticket_workspace(&mut self, ticket: ulid::Ulid) -> Result<()> {
+        let Some(t) = self.board.ticket(ticket) else { return Ok(()) };
+        let (key, worktree) =
+            (t.short_key.clone(), t.workspace_strategy() == WorkspaceStrategy::Worktree);
+        let workspace = if worktree { None } else { Some(WorkspaceStrategy::Worktree) };
+        self.send(Command::SetWorkspace { id: ticket, workspace })?;
+        // Only when the daemon took it: a refusal has already said why.
+        if self
+            .board
+            .ticket(ticket)
+            .is_some_and(|t| (t.workspace_strategy() == WorkspaceStrategy::Worktree) != worktree)
+        {
+            self.status = if worktree {
+                format!("{key} works in the shared checkout")
+            } else {
+                format!("{key} gets a worktree of its own")
+            };
+        }
+        Ok(())
     }
 
     /// A claude on this ticket is mid-turn — `quiet::is_working`, the
@@ -7998,6 +8034,57 @@ mod tests {
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
         assert_eq!(app.board.tickets[0].workspace, None);
+    }
+
+    /// T-309: the same press, one screen out. A ticket nobody has started
+    /// can still be told to take a worktree of its own — from the board and
+    /// from its own page, not only from inside the description editor — and
+    /// the status says where it ended up, since on the board the card's
+    /// branch mark is the only other thing that moved.
+    #[test]
+    fn shift_tab_on_a_card_sets_the_workspace_too() {
+        let back = |app: &mut App| app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        let (mut app, sent) = app_with_note();
+        back(&mut app);
+        assert!(sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert_eq!(app.board.tickets[0].workspace, Some(WorkspaceStrategy::Worktree));
+        assert_eq!(app.status, "T-1 gets a worktree of its own");
+        assert_eq!(app.mode, Mode::Normal, "no dialog, no field");
+        back(&mut app);
+        assert_eq!(app.board.tickets[0].workspace, None, "and back");
+        assert_eq!(app.status, "T-1 works in the shared checkout");
+
+        // The ticket page, on the ticket it is open on.
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        back(&mut app);
+        assert_eq!(app.board.tickets[0].workspace, Some(WorkspaceStrategy::Worktree));
+
+        // A session on the ticket locks the choice — the daemon's rule, and
+        // the key is inert rather than refused.
+        let (mut app, sent) = app_with_note_and(true);
+        back(&mut app);
+        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert_eq!(app.board.tickets[0].workspace, None);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        back(&mut app);
+        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        // So does a worktree binding, with no session at all.
+        let (mut app, sent) = app_with_note();
+        app.worktrees = vec![mesimon_core::command::WorktreeItem {
+            ticket: ulid::Ulid(1),
+            branch: "msmn/T-1".into(),
+            status: "attached".into(),
+            path: Some("/wt/T-1".into()),
+            merged: false,
+            merged_in: String::new(),
+            merged_oid: String::new(),
+            conflict: false,
+            ahead: 0,
+            needs_rebase: false,
+            detail: None,
+        }];
+        back(&mut app);
+        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
     }
 
     /// `^s` on a note saves and leaves, either way; a clean one just leaves
