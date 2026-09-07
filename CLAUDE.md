@@ -1085,6 +1085,30 @@ the project's terminal is a place to stand, not a session of the ticket. Golden
 `ticket_new_claude_120x30`. (STALE-MAP "The rail offers the session, and the ticket's shell is
 gated".)
 
+**And the PREVIEW zone beside that row previews the SESSION (T-308, 2026-09-07).** It drew nothing
+there — `draw_preview`'s chain is shell, then note, then reply-or-working, and the offer is none of
+the three — so the one row whose whole purpose is an unmade press sat next to the emptiest half of
+the screen. `ticket.rs::empty_seat` draws a mark, the press through
+`binding_for(Scope::Ticket, Verb::Act)` + `chrome::hint_spans` (the footer's own binding, so the two
+cannot disagree), and `seat_rows`: `starts in a worktree of its own` / `in the checkout` — never the
+branch, which the state row four lines up already carries — plus the column's `claude_mode` and
+`agent_tools` ONLY where they differ from a spawn by hand (`Board.mcp_tools` off reads as
+`AgentTools::Off`); then `types the ticket title into its box, and sends nothing`, which is this
+road's contract (`submit_prompt: false`, so no brief travels — the one place the difference from the
+composer's Shift+Enter is visible); then, under `App::checkout_busy` only, `another claude is already
+writing in this checkout`, since this road does not queue and the press adds a second writer
+(T-294's hazard, at the press that causes it). Every fact is already on the page: no `Command`, no
+`Snapshot` field, no `Ctx` field, no key. **The art is redrawn, never borrowed** — Claude Code's own
+welcome is Clawd and a starfield in `█ ░ ▒ ▓` and the quadrants, sixteen rows tall: that range is
+exactly what `test_no_drawn_structure` bans, the height does not fit, and it is somebody else's
+brand art. `SPARK` is five rows of hand-authored ASCII (one drawing for all four glyph tiers, and
+both L1 sweeps render it), greyscale — star on `dim1`, spokes `dim2`, field `dim3`, the three
+brightnesses `░ ▒ ▓` gave them — with no hue (the one saturated colour is needs-you's) and no
+motion. Under `SPARK_MIN_H` (12) rows of zone the picture goes and the words stay; the mark is
+centred over the TEXT block, not the zone, which is 87 cells wide against ~55 of sentence. Goldens
+`ticket_new_claude_120x30`, `ticket_new_claude_worktree_120x30`. (STALE-MAP "The empty seat previews
+the session it would start".)
+
 **Leaving a Claude session is the same thing as sleeping it.** Ctrl+C-out, `/exit` and Ctrl+D end
 the process, never the conversation, so `Daemon::park_on_exit` converts a clean exit to `Sleeping`
 and `x` wakes it — one gesture, not two, and the ticket keeps its worktree lock. The gate is the

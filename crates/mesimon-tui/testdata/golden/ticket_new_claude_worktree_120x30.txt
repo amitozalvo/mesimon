@@ -1,0 +1,30 @@
+ TICKET (T-2)   mesimon > kanban-tui
+
+ Keymap validator
+ TODO for >1y ∙ created >1y ago ∙ ⎇ worktree
+
+
+  PREVIEW                                                                                  SESSIONS                  0
+
+                      .               *                                                    + claude session
+                            \  |  /
+                            -- * --
+                            /  |  \
+                        *               .
+
+
+    enter start claude
+
+    starts in a worktree of its own ∙ plan mode ∙ read tools
+    types the ticket title into its box, and sends nothing
+
+
+
+
+
+
+
+
+
+
+ enter start claude ∙ shift+tab shared checkout ∙ r rename ∙ d delete ∙ n describe                               ? keys

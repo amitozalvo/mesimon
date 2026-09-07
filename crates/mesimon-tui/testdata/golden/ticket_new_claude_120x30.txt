@@ -11,20 +11,20 @@
  ▎ • the goldens moved with it~
 
 
-                                                                                           SESSIONS                  0
+  PREVIEW                                                                                  SESSIONS                  0
 
-                                                                                           + claude session
-
-                                                                                           NOTES                     1
-
-                                                                                           ≡ What changed      you >1y
+                     .               *                                                     + claude session
+                           \  |  /
+                           -- * --                                                         NOTES                     1
+                           /  |  \
+                       *               .                                                   ≡ What changed      you >1y
                                                                                            N new note
 
+    enter start claude
 
-
-
-
-
+    starts in the checkout
+    types the ticket title into its box, and sends nothing
+    another claude is already writing in this checkout
 
 
  jk select row ∙ enter start claude ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                  ? keys

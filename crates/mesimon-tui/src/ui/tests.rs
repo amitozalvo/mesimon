@@ -4031,6 +4031,69 @@ fn golden_ticket_new_claude_120() {
     assert!(lines.iter().any(|l| l.contains("enter start claude")), "and the press: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("s shell")), "the gated key is silent: {lines:?}");
     golden("ticket_new_claude_120x30", &lines);
+    // The zone the row sits beside is no longer blank (T-308): the mark, the
+    // press in the keymap's own words, and what the session would be.
+    assert!(lines.iter().any(|l| l.contains("-- * --")), "the mark: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("starts in the checkout")), "where: {lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("types the ticket title into its box, and sends nothing")),
+        "the contract this road keeps: {lines:?}"
+    );
+}
+
+/// The same zone on a ticket whose column narrows what its claude gets
+/// (T-117 x T-308): the clauses are read off the column live, so what the
+/// board grants is what the preview says. A column that changes nothing says
+/// nothing — the plain case is `golden_ticket_new_claude_120`.
+#[test]
+fn golden_ticket_new_claude_worktree_120() {
+    let mut b = fixture(false);
+    if let Some(c) = b.columns.iter_mut().find(|c| c.name == "todo") {
+        c.settings.claude_mode = mesimon_core::board::ClaudeMode::Plan;
+        c.settings.agent_tools = mesimon_core::board::AgentTools::Read;
+    }
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(2)) {
+        t.workspace = Some(mesimon_core::board::WorkspaceStrategy::Worktree);
+    }
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(2), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines
+            .iter()
+            .any(|l| l.contains("starts in a worktree of its own ∙ plan mode ∙ read tools")),
+        "the column's own grant: {lines:?}"
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("already writing")),
+        "a worktree ticket shares no checkout: {lines:?}"
+    );
+    golden("ticket_new_claude_worktree_120x30", &lines);
+}
+
+/// The picture is what the zone gives up first: under `SPARK_MIN_H` rows the
+/// words stay whole and the mark goes, because the sentence is what the
+/// press needs and the art is what it earns.
+#[test]
+fn the_empty_seat_drops_its_mark_before_its_words() {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(1)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let tall = render(&app, 120, 30);
+    assert!(tall.iter().any(|l| l.contains("-- * --")), "the mark fits at 30: {tall:?}");
+    // A description takes the rows off the top of the zone, which is the
+    // ordinary way it runs out.
+    let short = render(&app, 120, 20);
+    assert!(!short.iter().any(|l| l.contains("-- * --")), "the mark goes: {short:?}");
+    assert!(short.iter().any(|l| l.contains("enter start claude")), "the press stays: {short:?}");
+    assert!(
+        short.iter().any(|l| l.contains("starts in the checkout")),
+        "and so do the words: {short:?}"
+    );
 }
 
 /// EXACTLY one rail row wears the cursor surface, wherever `rail_idx` sits.
@@ -4287,6 +4350,17 @@ fn test_no_banned_sgr() {
                 cells(&app, 120, 30)
             },
             {
+                // The empty seat's own preview (T-308): the mark and the
+                // sentences that stand where the zone used to be blank.
+                let mut seat = App::for_test(fixture(false), Theme::new(flavor, profile));
+                seat.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+                assert!(
+                    render(&seat, 120, 30).iter().any(|l| l.contains("-- * --")),
+                    "the empty seat's mark must be ON SCREEN, or this law does not bite"
+                );
+                cells(&seat, 120, 30)
+            },
+            {
                 install_diff(&mut app);
                 assert!(
                     render(&app, 120, 30).iter().any(|l| l.contains("vs a1b2c3d4")),
@@ -4490,6 +4564,18 @@ fn test_no_drawn_structure() {
             assert!(
                 lines.iter().any(|l| l.contains("in 2.4s")),
                 "the whole shell tail must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
+        {
+            // T-308's mark is ASCII on purpose — this is the law that says
+            // so, and the sweep is what keeps it true.
+            let mut seat = app_graphite(fixture(false));
+            seat.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+            let lines = sweep(&seat);
+            assert!(
+                lines.iter().any(|l| l.contains("-- * --")),
+                "the empty seat's mark must be ON SCREEN, or this law does not bite"
             );
             lines
         },

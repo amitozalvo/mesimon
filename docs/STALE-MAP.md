@@ -7777,3 +7777,68 @@ The test flipped rather than went:
 `the_ticket_page_never_names_the_links_key_on_its_state_row`, which asserts the row is silent with
 a link fetched AND without one, and that `keymap::overlay` still carries the row. No golden moved
 — no golden ever had a fetched note body with a link in it.
+## The empty seat previews the session it would start (T-308, 2026-09-07, user: "new claude session preview should be nicer. maybe ascii art from claude code with 'Press Enter to ...'. your take?")
+
+T-300 gave the ticket rail a phantom `+ claude session` row and made it the row the cursor opens
+on. The PREVIEW zone beside it drew NOTHING — `draw_preview`'s chain is shell, then note, then
+reply-or-working, and the offer row is none of the three — so the one row on the page whose whole
+purpose is a press nobody has made yet sat next to the emptiest half of the screen.
+
+**The zone previews the SESSION, not a document.** That is the reading of the word that made the
+change worth more than decoration: everything else the zone shows is the last of a record, and
+here there is no record, so what it shows is what the press would produce. `empty_seat` in
+`tui/src/ui/ticket.rs` draws a mark, the press in the keymap's own words, and two or three
+clauses — where it will run, what its column hands it, and who else is already writing in the
+same checkout. Every fact is one the page already holds (`Ticket.workspace`, the column's
+`ColumnSettings`, `Board.mcp_tools`, `App::checkout_busy`); nothing new crosses the wire, no
+`Command`, no `Snapshot` field, no `Ctx` field, no key.
+
+**The art is redrawn, not borrowed.** Claude Code's own welcome screen — measured on 2.1.263 —
+is Clawd and a starfield built from `█ ░ ▒ ▓` and the quadrant blocks, sixteen rows tall inside a
+58-cell box. All three of those are disqualifying here: that codepoint range is exactly what L1's
+`test_no_drawn_structure` bans (two admissions, `▀` and `▎`, both already spent), sixteen rows is
+more than this zone has at any terminal size worth drawing it in, and it is somebody else's brand
+art in a third-party tool. What crosses over is the IDEA — a mark with a sparse field around it —
+as `SPARK`, five rows of ASCII hand-authored like a palette and never generated. ASCII also means
+one drawing for all four glyph tiers instead of a mono fallback, and the L1 sweeps now render it
+so a future edit that reaches for a block glyph fails the law rather than the eye.
+
+**Greyscale, and no motion.** The burst's star is the value step, its spokes one under, the field
+one under that — the three brightnesses Claude Code gets from `░ ▒ ▓`, taken off the grey ramp
+instead. Not one hue: the board's single saturated colour is needs-you's and a decoration may
+never spend it. Nothing pulses either — D19's motion ban bends only for something that is moving,
+and nothing here is.
+
+**The words come from the keymap.** The press row is `binding_for(Scope::Ticket, Verb::Act)`
+through `chrome::hint_spans`, the same binding the footer is drawing two rows down, so the zone
+and the footer cannot disagree about what Enter does (T-158's one-home rule). It renders `enter
+start claude` rather than the ticket's "Press Enter to …" — the house dialect, and it follows the
+binding when the hint changes.
+
+**What the clauses say, and what they refuse to say.** `starts in a worktree of its own` /
+`starts in the checkout`, never the branch name: the state row four lines up already carries `⎇
+msmn/T-3-slug`, and naming it here would be the only thing this clause could add, said twice. A
+column's `claude_mode` and `agent_tools` are appended only where they differ from what a spawn by
+hand would get — a column that changes nothing has nothing to preview — and `Board.mcp_tools` off
+reads the same as `AgentTools::Off`, because from the seat's point of view it is. The second row,
+`types the ticket title into its box, and sends nothing`, is the road's own contract: this press
+is `spawn_session(.., submit_prompt: false)`, which types the title and stops, so the brief does
+NOT travel (`server.rs` parks `Parked { brief: true }` only under `submit_prompt`) — the one place
+where a reader can see the difference between this key and the composer's Shift+Enter at the
+moment it matters. The third stands only under `App::checkout_busy`: this road does not queue, so
+Enter here puts a second writer into a checkout somebody is already in — T-294's hazard, at the
+press that can still cause it.
+
+**The picture gives way before the words.** Under `SPARK_MIN_H` (12) rows of zone the art is
+dropped and the sentences stay whole, which is how a described ticket on a 20-row terminal reads:
+the description takes the rows off the top, and the press needs the sentence, not the picture. The
+mark is centred over the TEXT block rather than over the zone — the zone is 87 cells at 120x30 and
+the sentences are ~55, so centring in it left the picture floating off to the right of everything
+it is about (built that way first, seen once, changed).
+
+**Not built.** A hint pointing at the board's Shift+Enter for the description (a hint for another
+screen's key, which is what T-158 removed); the same treatment for a freshly spawned claude whose
+transcript has not landed yet, where the zone is also blank — a real gap, and a different fix; art
+that pulses, scales with the zone, or has a second variant. Goldens `ticket_new_claude_120x30`
+(plain) and `ticket_new_claude_worktree_120x30` (a worktree ticket in a column that narrows both
+mode and tools), plus `the_empty_seat_drops_its_mark_before_its_words` for the give-way.

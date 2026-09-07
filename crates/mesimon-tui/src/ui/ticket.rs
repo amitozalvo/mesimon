@@ -436,6 +436,10 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .as_ref()
             .filter(|t| sel.is_some_and(|s| s.id == t.session))
             .map(|t| t.lines.as_slice());
+        // The empty seat (T-308): the cursor is on the `+ claude session`
+        // row and there is no document to show, so the zone previews the
+        // SESSION the press would start instead of standing empty.
+        let seat = matches!(row, Some(RailRow::NewClaude)).then_some(ticket_id);
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
         draw_preview(
             f,
@@ -446,6 +450,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             working,
             shell,
             note,
+            seat,
         );
         draw_rail(
             f,
@@ -494,6 +499,7 @@ fn draw_preview(
     working: bool,
     shell: Option<&[String]>,
     note: Option<(&NoteMeta, Option<&str>)>,
+    seat: Option<ulid::Ulid>,
 ) {
     let theme = &app.theme;
     let mut lines: Vec<Line<'static>> = Vec::new();
@@ -626,8 +632,152 @@ fn draw_preview(
                 Span::styled(row, theme.dim2()),
             ]));
         }
+    } else if let Some(ticket) = seat.and_then(|id| app.board.ticket(id)) {
+        lines.push(heading());
+        lines.extend(empty_seat(app, ticket, area));
     }
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The starburst an empty seat wears (T-308), hand-authored like a palette
+/// and never generated. Claude Code's own welcome screen could not be
+/// borrowed for it on three counts: it is drawn in full-block, shade and
+/// quadrant glyphs, which is exactly the range L1's `test_no_drawn_structure`
+/// bans; it is sixteen rows tall, taller than this zone at any terminal size
+/// worth drawing it in; and it is somebody else's brand art. What survives
+/// the trip is the IDEA — a mark with a sparse starfield around it — redrawn
+/// in ASCII, which also means it renders the same at every glyph tier
+/// instead of needing a mono fallback of its own. The four field stars are
+/// point-symmetric about the burst's centre column.
+const SPARK: [&str; 5] = [
+    "  .               *",
+    "        \\  |  /",
+    "        -- * --",
+    "        /  |  \\",
+    "    *               .",
+];
+/// Which rows of `SPARK` are the burst itself; the rest is the field around
+/// it, and the two take different steps of the grey ramp.
+const SPARK_BURST: std::ops::Range<usize> = 1..4;
+/// Under this many rows the zone drops the art and keeps the words: the
+/// sentence is what the press needs, the picture is what it earns.
+const SPARK_MIN_H: usize = 12;
+
+/// What the `+ claude session` row would do, previewed (T-308). The zone
+/// stood empty on that row — the one row on the page whose whole purpose is
+/// a press nobody has made yet — so it now shows the mark, the press in the
+/// keymap's own words, and the clauses that say what the session about to
+/// exist will BE. Every fact is one the page already holds; nothing is asked
+/// of the daemon to draw it.
+fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Vec<Line<'static>> {
+    let theme = &app.theme;
+    let w = area.width as usize;
+    let h = area.height as usize;
+    // The words first: they are what sizes the block, and the mark is hung
+    // over their middle rather than over the zone's. The zone is far wider
+    // than these sentences, so centring the art in IT would leave the
+    // picture floating off to the right of everything it is about.
+    let ctx = app.ctx();
+    let press = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::Act, &ctx);
+    let rows = seat_rows(app, ticket);
+    let mut text: Vec<Line<'static>> = Vec::new();
+    if let Some(b) = press {
+        let mut spans = vec![Span::raw("   ")];
+        spans.extend(chrome::hint_spans(&[b], &ctx, &theme.rest, w.saturating_sub(3)));
+        text.push(Line::from(spans));
+        text.push(Line::default());
+    }
+    for row in &rows {
+        text.push(Line::from(vec![
+            Span::raw("   "),
+            Span::styled(truncate(row, w.saturating_sub(4)), theme.dim2()),
+        ]));
+    }
+    let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
+
+    let mut lines: Vec<Line<'static>> = vec![Line::default()];
+    let art_w = SPARK.iter().map(|r| r.width()).max().unwrap_or(0);
+    if h >= SPARK_MIN_H && w > art_w + 6 {
+        let pad = " ".repeat(block_w.max(art_w).saturating_sub(art_w) / 2);
+        for (i, row) in SPARK.iter().enumerate() {
+            let mut spans = vec![Span::raw(pad.clone())];
+            if SPARK_BURST.contains(&i) {
+                // The burst's core is the value step, its spokes one under
+                // it, the field one under that. No hue anywhere: the board's
+                // one saturated colour is needs-you's, and a decoration may
+                // never spend it.
+                for part in split_star(row) {
+                    let style = if part == "*" { theme.dim1() } else { theme.dim2() };
+                    spans.push(Span::styled(part.to_string(), style));
+                }
+            } else {
+                spans.push(Span::styled((*row).to_string(), theme.dim3()));
+            }
+            lines.push(Line::from(spans));
+        }
+        lines.push(Line::default());
+        lines.push(Line::default());
+    }
+    lines.extend(text);
+    lines
+}
+
+/// A burst row split into its star and everything else, so the two can take
+/// different greys without the art being transcribed a second time.
+fn split_star(row: &str) -> Vec<&str> {
+    let mut out = Vec::new();
+    let mut rest = row;
+    while let Some(i) = rest.find('*') {
+        if i > 0 {
+            out.push(&rest[..i]);
+        }
+        out.push(&rest[i..i + 1]);
+        rest = &rest[i + 1..];
+    }
+    if !rest.is_empty() {
+        out.push(rest);
+    }
+    out
+}
+
+/// The sentences under the mark. The first says what the session will be, in
+/// the state row's bullet-joined grammar; the second is mesimon's own
+/// contract at the moment it is about to be kept — this road spawns with
+/// `submit_prompt: false`, so the title is typed and the description stays
+/// here, which is the whole difference from the composer's Shift+Enter; the
+/// third stands only where the press would put a SECOND writer into a
+/// checkout somebody is already working in, the hazard T-294 exists for and
+/// the one line here that might change the answer.
+fn seat_rows(app: &App, ticket: &mesimon_core::board::Ticket) -> Vec<String> {
+    use mesimon_core::board::{AgentTools, ClaudeMode, WorkspaceStrategy};
+    let mut clauses = vec![if ticket.workspace_strategy() == WorkspaceStrategy::Worktree
+        || app.wt_item(ticket.id).is_some()
+    {
+        // The branch is on the state row already; naming it here would
+        // be the only thing this clause could add, said twice.
+        "in a worktree of its own".to_string()
+    } else {
+        "in the checkout".to_string()
+    }];
+    // What the ticket's column hands the session (T-117), and only where it
+    // differs from what a spawn by hand would get: a column that changes
+    // nothing has nothing to preview.
+    let settings = app.board.column(&ticket.column).map(|c| &c.settings);
+    if let Some(m) = settings.map(|s| s.claude_mode).filter(|m| *m != ClaudeMode::Inherit) {
+        clauses.push(format!("{} mode", m.word()));
+    }
+    let tools = settings.map(|s| s.agent_tools).unwrap_or_default();
+    if !app.board.mcp_tools || tools == AgentTools::Off {
+        clauses.push("no mesimon tools".to_string());
+    } else if tools != AgentTools::Full {
+        clauses.push(format!("{} tools", tools.word()));
+    }
+    let mut rows = vec![format!("starts {}", clauses.join(" ∙ "))];
+    rows.push("types the ticket title into its box, and sends nothing".to_string());
+    if app.checkout_busy(ticket.id) {
+        rows.push("another claude is already writing in this checkout".to_string());
+    }
+    rows
 }
 
 /// Which document the preview zone is showing, for the scroll to belong to:
