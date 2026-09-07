@@ -1320,7 +1320,9 @@ no schema.
 
 **A banner says WHICH BOARD, WHICH TICKET and WHAT HAPPENED (T-292, 2026-09-07, dogfooding: "OS
 notification doesn't show ticket title. and no transcript").** `Post` has three fields — `title`
-the board, `subtitle` `T-12 ∙ Add auth to the API`, `body` `needs you ∙ PERMISSION` /
+`mesimon - simbly` (the product name because the banner is posted under the HELPER's identity, not
+mesimon's, plus the board's own directory; a hyphen, so the source does not read as a peer of the
+`∙`-joined news a folded rung gets), `subtitle` `T-12 ∙ Add auth to the API`, `body` `needs you ∙ PERMISSION` /
 `finished ∙ <the agent's last line>`. **The verb always leads and content is APPENDED**, so the
 sentence with nothing to append is the one that shipped before (`needs you`, `finished a turn`)
 and the two moments are told apart without the chime. **Only a batch of ONE gets it**: three

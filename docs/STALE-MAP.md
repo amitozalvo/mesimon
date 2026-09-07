@@ -7062,8 +7062,13 @@ of the work the banner existed to save. `terminal-notifier` and `osascript`'s `d
 notification` each have three fields and the channel was using two of them, so the fix was to say
 the third thing rather than to build anything.
 
-**The mapping, and why the verb stayed.** `title` is WHICH BOARD (the checkout's directory name,
-already there since T-282, and the reason it exists is two boards open at once); `subtitle` is
+**The mapping, and why the verb stayed.** `title` is WHO AND WHICH BOARD — `mesimon - simbly`, the
+product name and the checkout's directory. The second half was already there in T-282 (two boards
+open at once); the first was added the same day this shipped, because the banner is posted under
+the HELPER's identity — `terminal-notifier`'s own, or Script Editor's for `osascript` — so the
+title row is the only place mesimon can say it is mesimon. A hyphen and not `∙`, since the
+one-field rungs fold the whole post with `∙` and the source must not read as a peer of its news.
+`subtitle` is
 WHICH TICKET — `T-12 ∙ Add auth to the API`, the key first because the key is how a ticket is named
 in a prompt or a commit and the title second because it is what a person recognises; `body` is WHAT
 HAPPENED. The one thing the brief's own table got wrong is that the body could then be pure content

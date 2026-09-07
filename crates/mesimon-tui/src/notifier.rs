@@ -256,14 +256,31 @@ fn detail_for(board: &Board, ticket: ulid::Ulid, words: bool) -> Option<Detail> 
     Some(Detail { title, said })
 }
 
-/// Which board is talking. A user with two of them open has to be told, and
-/// the checkout's own directory name is what they call it.
+/// WHO is talking, and about which board: `mesimon - simbly`.
+///
+/// Two halves, because a banner's title answers two questions and the OS
+/// answers neither. The product name is there because the banner does not
+/// come from an app called mesimon — `terminal-notifier` posts it under its
+/// OWN identity, and `osascript` under Script Editor's, so on a machine
+/// running several things this row is the only place mesimon can say it is
+/// mesimon. The board's name is there because a user with two of them open
+/// has to be told which one, and the checkout's own directory name is what
+/// they call it — the breadcrumb's `mesimon > simbly`, in a field that has
+/// no room for a breadcrumb.
+///
+/// A hyphen rather than mesimon's own `∙`, deliberately: the rungs with one
+/// field fold the whole post together with `∙`, so keeping a different mark
+/// here is what stops `mesimon ∙ simbly ∙ T-12 ∙ …` from reading as four
+/// peers when the first two are one source and the rest are its news.
+///
+/// A root with no name is the product alone rather than a dangling hyphen.
 fn title_of(repo_root: &Path) -> String {
-    repo_root
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .filter(|n| !n.is_empty())
-        .unwrap_or_else(|| "mesimon".into())
+    let board =
+        repo_root.file_name().map(|n| n.to_string_lossy().into_owned()).filter(|n| !n.is_empty());
+    match board {
+        Some(name) => format!("mesimon - {name}"),
+        None => "mesimon".into(),
+    }
 }
 
 /// How a post reaches a person. A closure rather than a `Channels` field so a
@@ -1001,11 +1018,14 @@ mod tests {
         ran.join().expect("the thread returns when the board goes");
     }
 
-    /// The board's own directory name is what a user calls it, and two boards
-    /// have to be told apart.
+    /// Who is talking and about which board. The product name because the
+    /// banner is posted under the helper's identity and not mesimon's, and
+    /// the checkout's own directory name because two boards have to be told
+    /// apart.
     #[test]
-    fn the_title_is_the_checkouts_name() {
-        assert_eq!(title_of(Path::new("/home/a/code/mesimon")), "mesimon");
-        assert_eq!(title_of(Path::new("/")), "mesimon", "a root with no name still has one");
+    fn the_title_names_the_product_and_the_board() {
+        assert_eq!(title_of(Path::new("/home/a/code/simbly")), "mesimon - simbly");
+        assert_eq!(title_of(Path::new("/home/a/code/mesimon")), "mesimon - mesimon");
+        assert_eq!(title_of(Path::new("/")), "mesimon", "a root with no name is not a hyphen");
     }
 }

@@ -267,8 +267,10 @@ pub struct Detail {
 /// thing a caller has to decide before a batch can be worded.
 #[derive(Debug, Clone, Copy)]
 pub struct Voice<'a> {
-    /// The board's own name — the checkout's directory, what the user calls
-    /// it. Two boards open at once is why the field exists.
+    /// Who is talking and about which board — `mesimon - simbly`, built by
+    /// `notifier::title_of`. Two boards open at once is why the second half
+    /// exists; the helper that posts the banner carrying its own identity
+    /// rather than mesimon's is why the first does.
     pub board: &'a str,
     pub needs_you: Sound,
     pub done: Sound,
