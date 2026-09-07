@@ -41,6 +41,13 @@ pub struct Client {
     /// process. "At most one restart per connect" must not become "one
     /// restart every 2 s" on the app's reconnect cadence.
     restart_suppressed: bool,
+    /// A second connection on this board (`Client::connect_observer`), which
+    /// never brings a daemon UP: reopening goes through `open_existing`, so
+    /// nothing is spawned and nothing waits on the lock. The board's own
+    /// client owns the daemon's life — and a `U` reload asks the daemon to
+    /// stop and then waits for it to be GONE, a wait a thread respawning it
+    /// behind the reload would turn into thirty seconds of nothing.
+    observer: bool,
     /// Surfaced once, when a skew could not be settled.
     notice: Option<Notice>,
 }
@@ -110,6 +117,9 @@ impl Transport for Client {
     fn request(&mut self, command: Command) -> Result<Response> {
         let res = match self.conn.as_mut() {
             Some(c) => c.request(command),
+            None if self.observer => open_existing(&self.repo_root)
+                .map(|c| self.conn.insert(c))
+                .and_then(|c| c.request(command)),
             None => open_current(&self.repo_root, !self.restart_suppressed)
                 .map(|(c, n)| {
                     // One failed restart disables the mechanism for this
@@ -171,18 +181,43 @@ impl Client {
                 repo_root: repo_root.to_path_buf(),
                 conn: Some(conn),
                 restart_suppressed: notice.is_some(),
+                observer: false,
                 notice,
             }),
             Err(why) => Ok(Client {
                 repo_root: repo_root.to_path_buf(),
                 conn: None,
                 restart_suppressed: false,
+                observer: false,
                 notice: Some(
                     Notice::new("daemon_down", format!("no daemon yet — {why}"))
                         .with_detail("reconnecting on a 2 s cadence; `mesimon doctor` says why a daemon will not start".to_string()),
                 ),
             }),
         }
+    }
+
+    /// A SECOND connection on the same board: the notification thread's
+    /// (T-291, `crate::notifier`).
+    ///
+    /// Two things it deliberately does not do. It never restarts the daemon
+    /// over a build skew — the board's own client owns that decision, and two
+    /// clients racing to restart one daemon is exactly the loop
+    /// `build_skew`'s ordering rule exists to prevent. And it raises no
+    /// notice, because a second client has nowhere to put an advisory: the
+    /// status line and the advisory row are the board's.
+    ///
+    /// A daemon that is not there is not fatal, as for [`Client::connect`]:
+    /// the caller comes up disconnected and dials again on its own cadence.
+    pub fn connect_observer(repo_root: &Path) -> Result<Self> {
+        let _ = Paths::for_repo(repo_root)?;
+        Ok(Client {
+            repo_root: repo_root.to_path_buf(),
+            conn: open_existing(repo_root).ok(),
+            restart_suppressed: true,
+            observer: true,
+            notice: None,
+        })
     }
 }
 
@@ -407,6 +442,20 @@ fn connect_or_spawn(repo_root: &Path, sock: &Path, budget: Duration) -> Result<U
         }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// Connect to a daemon that is ALREADY listening, or fail at once.
+///
+/// The observer's road (T-291). No spawn, no lock wait, no budget: a second
+/// connection is a passive reader, and bringing a daemon up — or holding
+/// still for thirty seconds while one shuts down — is the board's own
+/// client's business, not a background thread's.
+fn open_existing(repo_root: &Path) -> Result<Conn> {
+    let paths = Paths::for_repo(repo_root)?;
+    let sock = paths.orch_sock();
+    let stream =
+        UnixStream::connect(&sock).with_context(|| format!("no daemon on {}", sock.display()))?;
+    handshake(stream)
 }
 
 fn open(repo_root: &Path) -> Result<Conn> {

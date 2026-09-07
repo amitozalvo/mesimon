@@ -17,9 +17,75 @@
 //! swallows it too; the board itself never runs inside mesimon's private
 //! server, so there is no DCS wrap to do here.
 //!
+//! **A banner you can click** (T-293) raises the terminal it came from, and
+//! that is one rung's gift only: `terminal-notifier -activate <bundle-id>`
+//! names an application to bring forward. `osascript`'s `display
+//! notification` can carry no action at all, and `notify-send --action`
+//! needs a process that stays alive to read the click on its stdout, which a
+//! detached null-stdio launch deliberately is not. So the click belongs to
+//! the rung the ladder already prefers, and `doctor` says so on the rung
+//! that cannot deliver one rather than leaving it to be discovered.
+//! `-sender` is the rival and is refused: it would give the banner the
+//! terminal's own icon, but its own README says it cannot be combined with
+//! `-activate`, which needs the sender to BE terminal-notifier — and a
+//! banner that looks right and does nothing is what this ends.
+//!
+//! **Which terminal to raise** is a ladder of its own: `MESIMON_TERM_BUNDLE`
+//! (`off`, or a bundle id) → an outer tmux VETOES the question →
+//! `__CFBundleIdentifier`, which macOS stamps on the app it launches and
+//! every child inherits, so it names the id exactly — no table — for kitty,
+//! Alacritty, Warp and whatever ships next year → a small `TERM_PROGRAM`
+//! table for a process tree that lost it. The veto is the interesting rung.
+//! Inside the user's own tmux that inherited `__CFBundleIdentifier` names
+//! whatever started the SERVER, not the client attached now, and `-activate`
+//! LAUNCHES an application that is not running — so a stale id opens a fresh
+//! window of the wrong terminal, which is worse than doing nothing, because
+//! a notification is a promise. `TERM_PROGRAM` is rewritten to `tmux` in
+//! every pane, which makes it the one reliable negative. `LC_TERMINAL` was
+//! considered and refused: it can only answer where both the others are
+//! absent, which on macOS is ssh, and there it would raise iTerm2 on the
+//! machine nobody is looking at.
+//!
+//! **Which TAB inside it** is the other half, and without it the first is
+//! half a promise (T-301): `-activate` names an application, so the click
+//! raised the terminal and left whatever tab happened to be in front of it.
+//! No application can answer this — only the terminal can, and it answers in
+//! AppleScript — so the tab is a second flag on the same rung, `-execute`,
+//! which terminal-notifier runs through `/bin/sh -c` AFTER the activation.
+//! Both actions run, in that order: that is terminal-notifier's own source,
+//! not an assumption, which is why the two flags are sent together rather
+//! than one instead of the other. Two terminals can be asked where a tab is
+//! — iTerm2 by the session uuid its dictionary calls `id of session`, which
+//! is the tail of `ITERM_SESSION_ID`, and Apple Terminal by a tab's `tty`,
+//! which is the one on our own stdin — and `MESIMON_TERM_REVEAL` is `off`
+//! or a program of the user's own for every terminal neither fits.
+//!
+//! Three rules hold that together. **A script talks to the application the
+//! click raises**: a `Reveal` names its own bundle id and is dropped when it
+//! is not the one `-activate` was given, so a `MESIMON_TERM_BUNDLE` naming
+//! some other application cannot leave a script aimed at this one. **It
+//! raises a tab and never an application**: every script is wrapped in `if
+//! application id … is running`, because `tell application` STARTS what is
+//! not running, and a click that opens a fresh empty terminal is the tmux
+//! veto's failure by another road. **And the command carries no word from a
+//! payload**: it is a constant script plus one id this module validated,
+//! single-quoted by `sh_line` — argv's rule kept where argv is not on offer.
+//!
 //! **The sound ladder** is `MESIMON_SOUND` (`off` or a program) → `afplay` on
 //! macOS → `paplay` / `pw-play` / `canberra-gtk-play` on Linux → the terminal
 //! bell, which is the rung nothing can take away.
+//!
+//! **The two escape rungs write to OUR stdout, and since T-291 they say so.**
+//! Every other rung spawns a program and is therefore indifferent to what the
+//! terminal is doing; OSC 9 and the bell are writes into the same stream
+//! ratatui draws on, from a thread of their own ([`crate::notifier`]). So
+//! both go through [`Console`], which holds the two facts only the main loop
+//! knows: whether the board still HOLDS the terminal (a handover gives it to
+//! tmux or an editor for the whole life of the child) and whether a frame is
+//! being written right now. That is the honest limit T-291 records — while
+//! the board is off screen the escape rungs say nothing at all, which is why
+//! the ladders prefer a helper program and why a machine that has one loses
+//! nothing.
 //!
 //! Two rules hold across both, and both are load-bearing:
 //!
@@ -34,22 +100,169 @@
 
 use std::io::Write;
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use mesimon_core::notify::{Post, Sound};
 use mesimon_core::text;
 
 use crate::opener::launch;
 
-/// A notification body is one line on somebody's screen. Both fields are
-/// bounded here rather than trusted: the title is a directory name and the
-/// body can carry an agent's own sentence. Wide enough that a raised hand's
-/// full `board::RAISE_REASON_MAX_BYTES` (160) still arrives with `T-12 needs
-/// you ∙ ` in front of it — the words are why the banner was worth sending.
+/// A notification field is one line on somebody's screen. All three are
+/// bounded here rather than trusted: the title is a directory name, the
+/// subtitle carries a ticket's own title and the body can carry an agent's
+/// own sentence. Wide enough that a raised hand's full
+/// `board::RAISE_REASON_MAX_BYTES` (160) still arrives with `needs you ∙ ` in
+/// front of it — the words are why the banner was worth sending.
+///
+/// It is the BACKSTOP, not the shape: `core::notify` already clips a title
+/// and a reply on a word boundary with an ellipsis, because those two are
+/// read by a person. This one is a byte cap on what leaves the process, and
+/// the folded line a one-field rung gets is bounded by construction, being
+/// two already-capped fields with a separator between them.
 const MAX_FIELD: usize = 240;
 
 /// Where the freedesktop sound theme keeps the three events six names
 /// collapse to (`core::notify::Sound::event_freedesktop`).
 const FREEDESKTOP: &str = "/usr/share/sounds/freedesktop/stereo";
+
+/// Which TAB a click should land in (T-301), for the terminals that can say.
+///
+/// The string in each variant is that terminal's own name for the board's
+/// session, validated where it was read and never repaired: an id with a
+/// character dropped names a DIFFERENT tab, which is the very failure this
+/// rung exists to end.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum Reveal {
+    /// iTerm2, by the session uuid its dictionary calls `id of session` —
+    /// the tail of `ITERM_SESSION_ID`, which every session is born with and
+    /// which outlives the `w0t1p0` coordinates in front of it.
+    ITerm2(String),
+    /// Apple Terminal, by a tab's `tty`. Its dictionary knows no session id
+    /// at all, but every tab knows its tty and ours is the one on our stdin.
+    AppleTerminal(String),
+    /// `MESIMON_TERM_REVEAL=<program>`, run with no arguments — the escape
+    /// hatch for a terminal with a remote control of its own (`kitty @
+    /// focus-window`, `wezterm cli activate-pane`), which knows which window
+    /// it means far better than a table here ever could.
+    Custom(String),
+}
+
+/// The two applications a reveal can script, spelled the way `-activate`
+/// spells them. Written once because the script and the pairing rule have to
+/// agree, and a second spelling is how they would come apart.
+const ITERM2_ID: &str = "com.googlecode.iterm2";
+const TERMINAL_ID: &str = "com.apple.Terminal";
+
+/// Select the session `argv` names. `select` is iTerm2's own verb for "make
+/// receiver visible and selected" and all three receivers are needed: the
+/// window may not be the front one, the tab may not be the front tab, and
+/// the session may be one pane of a split.
+///
+/// The `is running` guard is the load-bearing line, not a politeness. `tell
+/// application` starts what is not running, so without it a click on a
+/// banner that outlived its terminal would LAUNCH iTerm2 and open an empty
+/// window — a click that lies, which is what the tmux veto exists to
+/// prevent by its own road. Asking whether an application is running starts
+/// nothing, so the guard is also what makes the `activate` inside it safe.
+///
+/// That `activate` is the script's, not a duplicate of `-activate`'s: it
+/// makes the reveal whole on its own rather than depending on the
+/// activation ahead of it having landed. It is Apple Terminal that measures
+/// this — that one reorders its windows only while it is the ACTIVE
+/// application, and `set frontmost` in a background one returns success and
+/// does nothing — but both scripts say it, because one of them relying on
+/// the timing of another process is not a thing to leave to chance.
+const ITERM2_SCRIPT: &str = "\
+on run argv
+if application id \"com.googlecode.iterm2\" is running then
+tell application id \"com.googlecode.iterm2\"
+activate
+repeat with w in windows
+repeat with t in tabs of w
+repeat with s in sessions of t
+if id of s is (item 1 of argv) then
+select w
+select t
+select s
+return
+end if
+end repeat
+end repeat
+end repeat
+end tell
+end if
+end run";
+
+/// The same thing in Apple Terminal's own dictionary, which has no session
+/// and no `select`: a tab is `selected`, a window is `frontmost`, and both
+/// are properties rather than verbs.
+const TERMINAL_SCRIPT: &str = "\
+on run argv
+if application id \"com.apple.Terminal\" is running then
+tell application id \"com.apple.Terminal\"
+activate
+repeat with w in windows
+repeat with t in tabs of w
+if tty of t is (item 1 of argv) then
+set selected of t to true
+set frontmost of w to true
+return
+end if
+end repeat
+end repeat
+end tell
+end if
+end run";
+
+impl Reveal {
+    /// The application this script talks to, or `None` where the user's own
+    /// program does — which is what pairs a reveal to the click carrying it.
+    fn app(&self) -> Option<&'static str> {
+        match self {
+            Reveal::ITerm2(_) => Some(ITERM2_ID),
+            Reveal::AppleTerminal(_) => Some(TERMINAL_ID),
+            Reveal::Custom(_) => None,
+        }
+    }
+
+    /// The `/bin/sh -c` line terminal-notifier runs on a click, or `None`
+    /// where a word could not be quoted — refused, never escaped.
+    fn command(&self) -> Option<String> {
+        match self {
+            Reveal::ITerm2(id) => sh_line(&["osascript", "-e", ITERM2_SCRIPT, id]),
+            Reveal::AppleTerminal(tty) => sh_line(&["osascript", "-e", TERMINAL_SCRIPT, tty]),
+            Reveal::Custom(prog) => sh_line(&[prog]),
+        }
+    }
+
+    /// What `doctor` calls this rung, said as the tail of a sentence about
+    /// the application — the tab is not a thing of its own to a reader.
+    fn word(&self) -> String {
+        match self {
+            Reveal::ITerm2(_) | Reveal::AppleTerminal(_) => "and this board's own tab".into(),
+            Reveal::Custom(p) => format!("and runs {p} ($MESIMON_TERM_REVEAL)"),
+        }
+    }
+}
+
+/// What a click does: an application to bring forward, and — where the
+/// terminal can be asked — the tab the board is actually drawn in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Click {
+    /// The bundle id `-activate` raises.
+    pub app: String,
+    /// How to reach the board's own tab inside it. `None` is what T-293
+    /// shipped: the application comes forward showing whatever was in front.
+    pub reveal: Option<Reveal>,
+}
+
+impl Click {
+    /// The `-execute` command, if there is one. Built before the argv so
+    /// that vector of borrows has something to borrow.
+    fn command(&self) -> Option<String> {
+        self.reveal.as_ref().and_then(Reveal::command)
+    }
+}
 
 /// Who draws the banner.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -58,7 +271,11 @@ pub enum Banner {
     Off,
     /// OSC 9 to our own stdout — the terminal draws it, or nobody does.
     Osc,
-    /// `MESIMON_NOTIFY=<program>`, called `<program> <title> <body>`.
+    /// `MESIMON_NOTIFY=<program>`, called `<program> <title> <body>`. It is
+    /// NOT handed the click's bundle id: a fourth argv word would silently
+    /// change what `$3` means to a program written against T-282's shape,
+    /// and `opener::launch` clears no environment, so one that wants the id
+    /// reads `MESIMON_TERM_BUNDLE` or `__CFBundleIdentifier` for itself.
     Custom(String),
     TerminalNotifier,
     Osascript,
@@ -67,17 +284,73 @@ pub enum Banner {
 
 impl Banner {
     /// The argv, or `None` where the rung writes an escape instead.
-    fn argv(&self, title: &str, body: &str) -> Option<Vec<String>> {
+    ///
+    /// Two rungs have three fields and take the subtitle on its own (T-292);
+    /// the rest are handed it folded into the body, so a user's own program
+    /// keeps the two arguments it was written against. An EMPTY subtitle —
+    /// what an aggregate produces, having no one ticket to name — takes the
+    /// argv that shipped before, byte for byte.
+    ///
+    /// `click` is what a click should do (T-293, T-301) and reaches exactly
+    /// one rung, for the same reason `group` does: it is the only one that
+    /// has the concept.
+    fn argv(&self, group: Option<&str>, click: Option<&Click>, p: &Fields) -> Option<Vec<String>> {
         let v = |args: &[&str]| Some(args.iter().map(|s| (*s).to_string()).collect());
+        let (title, subtitle, body) = (p.title.as_str(), p.subtitle.as_str(), p.folded.as_str());
+        // Built up here because the argv below is a vector of borrows and a
+        // reveal's command is made on the spot.
+        let reveal = click.and_then(Click::command);
         match self {
             Banner::Off | Banner::Osc => None,
             Banner::Custom(prog) => v(&[prog, title, body]),
             Banner::TerminalNotifier => {
-                v(&["terminal-notifier", "-title", title, "-message", body])
+                let mut argv: Vec<&str> = vec!["terminal-notifier", "-title", title];
+                if !p.subtitle.is_empty() {
+                    argv.extend(["-subtitle", subtitle]);
+                }
+                argv.extend(["-message", &p.body]);
+                // The click (T-293): bring this terminal forward. Only ever
+                // an id this module resolved, never a word from a payload.
+                if let Some(c) = click {
+                    argv.extend(["-activate", &c.app]);
+                    // And the tab inside it (T-301). Second, and never
+                    // instead: terminal-notifier runs both in this order, so
+                    // the application is already forward when the script
+                    // picks this board's own tab out of it — and if the
+                    // script is refused permission to script the terminal,
+                    // what is left is exactly the click that shipped before.
+                    if let Some(cmd) = reveal.as_deref() {
+                        argv.extend(["-execute", cmd]);
+                    }
+                }
+                // One group per BOARD, so a new banner replaces the last one
+                // rather than stacking a column of them in Notification
+                // Centre — the coalescing rule the module already follows,
+                // extended into the OS for one argument. Per board and not
+                // per ticket: two boards open at once are two conversations.
+                if let Some(id) = group {
+                    argv.extend(["-group", id]);
+                }
+                v(&argv)
             }
             // The words are `argv`, the script is a constant. `item 1` is the
-            // title and `item 2` the body, so neither can be read as code
-            // however they are spelled.
+            // title, `item 2` the subtitle and `item 3` the body, so none of
+            // them can be read as code however they are spelled. Which is
+            // also why no rung may grow a FLAG here: the words are found by
+            // position, so one inserted argument silently shifts all three.
+            Banner::Osascript if !subtitle.is_empty() => v(&[
+                "osascript",
+                "-e",
+                "on run argv",
+                "-e",
+                "display notification (item 3 of argv) with title (item 1 of argv) \
+                 subtitle (item 2 of argv)",
+                "-e",
+                "end run",
+                title,
+                subtitle,
+                &p.body,
+            ]),
             Banner::Osascript => v(&[
                 "osascript",
                 "-e",
@@ -171,13 +444,239 @@ impl Player {
 pub struct Channels {
     pub banner: Banner,
     pub player: Player,
+    /// This board's own notification group (T-292), for the one rung that
+    /// has the concept. `None` where the repo could not be identified, which
+    /// only costs the replacing.
+    pub group: Option<String>,
+    /// What a click does (T-293, T-301), for the one rung that can carry a
+    /// click at all. `None` means the banner behaves as it did before both:
+    /// it appears, and clicking it does nothing.
+    pub click: Option<Click>,
 }
 
+/// The two ladders. The group is not resolved here — this function knows no
+/// repo — and [`Notifier::start`](crate::notifier::Notifier::start) fills it
+/// in beside the board's own name, the other per-board constant.
 pub fn find() -> Channels {
     Channels {
         banner: find_banner(std::env::var("MESIMON_NOTIFY").ok().as_deref(), which_on_path),
         player: find_player(std::env::var("MESIMON_SOUND").ok().as_deref(), which_on_path),
+        group: None,
+        click: find_click(
+            std::env::var("MESIMON_TERM_BUNDLE").ok().as_deref(),
+            std::env::var("MESIMON_TERM_REVEAL").ok().as_deref(),
+            std::env::var("__CFBundleIdentifier").ok().as_deref(),
+            std::env::var("TERM_PROGRAM").ok().as_deref(),
+            std::env::var("ITERM_SESSION_ID").ok().as_deref(),
+            own_tty().as_deref(),
+        ),
     }
+}
+
+/// This board's notification group: one per REPO, keyed the way every other
+/// per-repo thing is (D33b's `proj16`, a hash of the canonical path), so two
+/// checkouts of the same project are two groups and a moved directory is a
+/// new one — which is the same answer the sockets and the state dir give.
+pub fn group_for(repo_root: &std::path::Path) -> Option<String> {
+    let paths = mesimon_daemon::Paths::for_repo(repo_root).ok()?;
+    Some(format!("mesimon-{}", paths.proj16))
+}
+
+/// What a `TERM_PROGRAM` is worth when macOS itself did not say. Every entry
+/// has to be VERIFIED before it is added — `osascript -e 'id of app "…"'`, or
+/// the app's own `Info.plist` — never written from memory: a wrong id is not
+/// dangerous (macOS activates nothing) but it makes `doctor` promise a click
+/// that cannot happen, and a confident wrong answer is worse than a blank.
+/// The table is deliberately short; `__CFBundleIdentifier` above it already
+/// answers for any terminal launched the ordinary way, and
+/// `MESIMON_TERM_BUNDLE` answers for everything else.
+const TERM_BUNDLES: &[(&str, &str)] =
+    &[("iTerm.app", "com.googlecode.iterm2"), ("Apple_Terminal", "com.apple.Terminal")];
+
+/// A bundle id is at most this many bytes. Real ones are reverse-DNS and far
+/// shorter; this only stops an absurd value reaching a command line.
+const BUNDLE_ID_MAX: usize = 128;
+
+/// Which application a click should raise, or `None` for no click action.
+///
+/// Pure, and every input is a parameter, so the ladder is the same on every
+/// platform a test runs on. The rungs, and why they are in this order, are in
+/// the module doc; the one that is not obvious is the tmux veto, which sits
+/// ABOVE `__CFBundleIdentifier` because inside an outer tmux that variable is
+/// inherited and stale, and a stale id makes `-activate` launch the wrong
+/// terminal rather than raise the right one.
+fn find_activate(
+    env: Option<&str>,
+    cf: Option<&str>,
+    term_program: Option<&str>,
+) -> Option<String> {
+    match env.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) if v.eq_ignore_ascii_case("off") => return None,
+        Some(v) => return bundle_id(v),
+        None => {}
+    }
+    // An outer tmux rewrites this in every pane, so it is the one thing here
+    // that cannot be stale — and what it says is "you cannot see the real
+    // terminal from in here".
+    if term_program.is_some_and(|v| v.eq_ignore_ascii_case("tmux")) {
+        return None;
+    }
+    if let Some(id) = cf.and_then(bundle_id) {
+        return Some(id);
+    }
+    let name = term_program?;
+    TERM_BUNDLES.iter().find(|(k, _)| *k == name).and_then(|(_, id)| bundle_id(id))
+}
+
+/// A bundle id, or nothing. This boundary REJECTS where [`field`] scrubs, and
+/// the difference is the point: dropping a character from a bundle id yields
+/// a different, possibly real one, so a silent repair here would raise the
+/// wrong application. A leading `-` is refused for a second reason — it would
+/// be read as another flag by terminal-notifier's own argument parsing, and
+/// `-activate -sound` is a flag with no value.
+fn bundle_id(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    if v.is_empty() || v.len() > BUNDLE_ID_MAX {
+        return None;
+    }
+    if !v.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    v.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_'))
+        .then(|| v.to_string())
+}
+
+/// What a click will do, or `None` for a banner that does nothing when it
+/// is clicked.
+///
+/// The application is settled first because the tab is inside it: a reveal
+/// scripting a DIFFERENT application than the one being raised is dropped
+/// rather than sent, which is what stops an explicit `MESIMON_TERM_BUNDLE`
+/// from leaving a script aimed at the terminal we merely happen to be in.
+/// The user's own program is exempt, naming no application to disagree with.
+fn find_click(
+    bundle_env: Option<&str>,
+    reveal_env: Option<&str>,
+    cf: Option<&str>,
+    term_program: Option<&str>,
+    iterm_session: Option<&str>,
+    tty: Option<&str>,
+) -> Option<Click> {
+    let app = find_activate(bundle_env, cf, term_program)?;
+    let reveal = find_reveal(reveal_env, term_program, iterm_session, tty)
+        .filter(|r| r.app().is_none_or(|id| id == app));
+    Some(Click { app, reveal })
+}
+
+/// Which tab, and how to reach it. Pure, like the ladder above it, and the
+/// rungs are the module doc's.
+///
+/// The tmux veto needs no rung of its own here: an outer tmux rewrites
+/// `TERM_PROGRAM` in every pane, so the table below simply does not answer —
+/// which is the right answer, because in there `ITERM_SESSION_ID` is
+/// INHERITED from whatever started the server and names a session that is
+/// not this one. Selecting the wrong tab would be the bug, not the fix.
+fn find_reveal(
+    env: Option<&str>,
+    term_program: Option<&str>,
+    iterm_session: Option<&str>,
+    tty: Option<&str>,
+) -> Option<Reveal> {
+    match env.map(str::trim).filter(|v| !v.is_empty()) {
+        Some(v) if v.eq_ignore_ascii_case("off") => return None,
+        Some(v) => return sh_word(v).map(Reveal::Custom),
+        None => {}
+    }
+    match term_program? {
+        "iTerm.app" => session_uuid(iterm_session?).map(Reveal::ITerm2),
+        "Apple_Terminal" => tty_path(tty?).map(Reveal::AppleTerminal),
+        _ => None,
+    }
+}
+
+/// A session id, a tty or a program name is at most this many bytes. Real
+/// ones are far shorter — a uuid is 36 and a tty is a dozen — and this only
+/// stops an absurd value reaching a command line.
+const REVEAL_MAX: usize = 128;
+
+/// The uuid out of `ITERM_SESSION_ID`, which is spelled `w0t1p0:<uuid>`: a
+/// pane's coordinates, then the id the dictionary answers to. REJECTS where
+/// [`field`] scrubs, for `bundle_id`'s reason — a repaired id is a different
+/// tab, and landing in one is the bug being fixed here.
+fn session_uuid(raw: &str) -> Option<String> {
+    let v = raw.trim().rsplit(':').next()?.trim();
+    if v.is_empty() || v.len() > REVEAL_MAX || !v.starts_with(|c: char| c.is_ascii_alphanumeric()) {
+        return None;
+    }
+    v.chars().all(|c| c.is_ascii_alphanumeric() || c == '-').then(|| v.to_string())
+}
+
+/// The tty of our own tab, as Apple Terminal spells a tab's: an absolute
+/// path under `/dev`, and nothing else is one.
+fn tty_path(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    if !v.starts_with("/dev/") || v.len() > REVEAL_MAX {
+        return None;
+    }
+    v.chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '.' | '_' | '-'))
+        .then(|| v.to_string())
+}
+
+/// A program named by `MESIMON_TERM_REVEAL`. A PROGRAM, as `MESIMON_NOTIFY`,
+/// `MESIMON_SOUND` and `MESIMON_OPEN` all mean one: whitespace is refused
+/// rather than split, because this word is quoted whole and a command line
+/// quoted whole is one program name with spaces in it, which would never run
+/// and would never say why. Arguments belong inside a script the variable
+/// points at, where the user's own shell rules apply.
+fn sh_word(raw: &str) -> Option<String> {
+    let v = raw.trim();
+    (!v.is_empty()
+        && v.len() <= REVEAL_MAX
+        && !v.contains('\'')
+        && !v.chars().any(|c| c.is_whitespace() || c.is_control()))
+    .then(|| v.to_string())
+}
+
+/// One `/bin/sh -c` line, every word single-quoted.
+///
+/// The only place mesimon builds a shell command, and it exists because
+/// `-execute` takes a command where every other rung takes argv. So it keeps
+/// argv's rule by construction: inside single quotes `sh` reads every byte
+/// literally, `'` is the one byte that can end the quoting, and a word
+/// holding one is REFUSED rather than escaped — `bundle_id`'s answer, for
+/// `bundle_id`'s reason. Newlines are ordinary bytes in there, which is what
+/// lets a whole AppleScript ride one word.
+fn sh_line(words: &[&str]) -> Option<String> {
+    let mut out = String::new();
+    for w in words {
+        if w.is_empty() || w.contains('\'') || w.contains('\0') {
+            return None;
+        }
+        if !out.is_empty() {
+            out.push(' ');
+        }
+        out.push('\'');
+        out.push_str(w);
+        out.push('\'');
+    }
+    (!out.is_empty()).then_some(out)
+}
+
+/// The tty the board is drawn on, which is the tab Apple Terminal knows it
+/// by. Asked once per process from `find`, on the main thread, which is what
+/// makes `ttyname`'s static buffer safe to read.
+fn own_tty() -> Option<String> {
+    // SAFETY: `ttyname` returns NULL or a pointer to static storage valid
+    // until the next call in this thread, and the string is copied here
+    // before anything else can make one.
+    let p = unsafe { libc::ttyname(0) };
+    if p.is_null() {
+        return None;
+    }
+    let s = unsafe { std::ffi::CStr::from_ptr(p) };
+    s.to_str().ok().map(str::to_string)
 }
 
 fn find_banner(env: Option<&str>, which: impl Fn(&str) -> Option<PathBuf>) -> Banner {
@@ -227,19 +726,75 @@ fn which_on_path(name: &str) -> Option<PathBuf> {
         .find(|cand| std::fs::metadata(cand).is_ok_and(|m| m.is_file()))
 }
 
+/// The board's own terminal, shared with the notification thread (T-291).
+///
+/// One lock over one fact: does the board hold the terminal? A draw takes it
+/// to draw, an escape-writing rung takes it to write, and a handover takes it
+/// to change hands — so an escape can neither land inside a frame nor reach a
+/// terminal that now belongs to tmux or to the user's editor.
+///
+/// A handover is the whole reason this exists, and it is also why the answer
+/// there is "say nothing" rather than "wait": a `!` shell or an attached pane
+/// lives for as long as the user wants it to, and a banner held for twenty
+/// minutes is worse than one never raised.
+#[derive(Debug)]
+pub struct Console {
+    held: Mutex<bool>,
+}
+
+impl Default for Console {
+    /// A board that has never handed its terminal over holds it.
+    fn default() -> Self {
+        Console { held: Mutex::new(true) }
+    }
+}
+
+impl Console {
+    /// A poisoned lock is a panic somewhere else, not a reason to lose the
+    /// terminal: step over it the way `prefs` steps over its own.
+    fn lock(&self) -> MutexGuard<'_, bool> {
+        self.held.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Held for the length of one draw. The main loop takes this around
+    /// `terminal.draw`, which is what keeps a banner out of a frame.
+    pub fn drawing(&self) -> MutexGuard<'_, bool> {
+        self.lock()
+    }
+
+    /// The board is giving the terminal away, or taking it back. Taken under
+    /// the same lock, so a rung already inside a write finishes before the
+    /// terminal changes hands.
+    pub fn set_held(&self, held: bool) {
+        *self.lock() = held;
+    }
+
+    /// Write, but only while the terminal is ours.
+    fn write_if_held(&self, f: impl FnOnce() -> std::io::Result<()>) -> std::io::Result<()> {
+        let held = self.lock();
+        if !*held {
+            return Ok(());
+        }
+        f()
+    }
+}
+
 /// Say it. A banner with no words is a sound-only post — the focus rule's
 /// output, and a Settings row's preview.
 ///
 /// Errors are the spawn's own (no such program) and the terminal's; whether
 /// the notification was actually SEEN is not ours to know, the same reason
-/// the board says `opening …` and never `opened`.
-pub fn post(ch: &Channels, p: &Post) -> std::io::Result<()> {
+/// the board says `opening …` and never `opened`. A rung that writes an
+/// escape and finds the terminal handed over says nothing and reports no
+/// error: not raising a banner is not a failure to report.
+pub fn post(ch: &Channels, p: &Post, console: &Console) -> std::io::Result<()> {
     if !p.body.is_empty() {
-        let title = field(&p.title);
-        let body = field(&p.body);
-        match ch.banner.argv(&title, &body) {
+        let f = Fields::of(p);
+        match ch.banner.argv(ch.group.as_deref(), ch.click.as_ref(), &f) {
             Some(argv) => launch(&argv, None)?,
-            None if ch.banner == Banner::Osc => write_osc9(&title, &body)?,
+            None if ch.banner == Banner::Osc => {
+                console.write_if_held(|| write_osc9(&f.title, &f.folded))?
+            }
             None => {}
         }
     }
@@ -247,10 +802,38 @@ pub fn post(ch: &Channels, p: &Post) -> std::io::Result<()> {
         match ch.player.argv(p.sound) {
             Some(argv) => launch(&argv, None)?,
             None if ch.player == Player::Off => {}
-            None => ring_bell()?,
+            None => console.write_if_held(ring_bell)?,
         }
     }
     Ok(())
+}
+
+/// A post's three fields, each safe to hand to another process or to write
+/// inside an escape sequence — plus the one line a rung with a single field
+/// gets. Built once per post so the scrubbing happens once and the two
+/// shapes cannot disagree about what was said.
+struct Fields {
+    title: String,
+    subtitle: String,
+    body: String,
+    /// Subtitle and body as one line. Folded from the SCRUBBED halves, so it
+    /// is bounded by construction and needs no cap of its own.
+    folded: String,
+}
+
+impl Fields {
+    fn of(p: &Post) -> Fields {
+        let scrubbed = Post {
+            title: field(&p.title),
+            subtitle: field(&p.subtitle),
+            body: field(&p.body),
+            sound: p.sound,
+        };
+        // The wording of the fold belongs to the module that owns mesimon's
+        // voice, so it is asked for rather than spelled again here.
+        let folded = scrubbed.folded();
+        Fields { title: scrubbed.title, subtitle: scrubbed.subtitle, body: scrubbed.body, folded }
+    }
 }
 
 /// One field of a notification, safe to hand to another process or to write
@@ -259,7 +842,7 @@ fn field(raw: &str) -> String {
     text::cap_bytes(&text::scrub_text(raw), MAX_FIELD).to_string()
 }
 
-/// OSC 9 has one text, not a title and a body — so they are joined with the
+/// OSC 9 has one text, not three fields — so they are joined with the
 /// separator every other line of mesimon uses. Written straight to stdout the
 /// way `osc::copy_to_clipboard` writes OSC 52: between draws, no `execute!`,
 /// and nothing on screen moves, so no redraw is owed.
@@ -279,18 +862,53 @@ fn ring_bell() -> std::io::Result<()> {
     out.flush()
 }
 
+/// Whether a click will do anything, for the line below. `Some` only where
+/// the answer is about the rung that ANSWERED: promising a click on a rung
+/// that cannot deliver one is the failure this sentence exists to prevent,
+/// and on Linux a `TERM_PROGRAM` of `vscode` or `WezTerm` would otherwise
+/// resolve a macOS bundle id and make the line lie.
+fn click_words(banner: &Banner, click: Option<&Click>) -> Option<String> {
+    match (banner, click) {
+        (Banner::TerminalNotifier, Some(c)) => Some(match &c.reveal {
+            Some(r) => format!("click raises {} {}", c.app, r.word()),
+            // Honest about the half it has: the application will come
+            // forward showing whatever was in front of it, which is exactly
+            // what somebody reads this line to find out (T-301).
+            None => format!(
+                "click raises {}, not this tab ∙ MESIMON_TERM_REVEAL names a program that can",
+                c.app
+            ),
+        }),
+        (Banner::TerminalNotifier, None) => {
+            Some("click does nothing ∙ MESIMON_TERM_BUNDLE names your terminal's bundle id".into())
+        }
+        (Banner::Osascript, _) => {
+            Some("this rung's banner cannot be clicked — terminal-notifier's can".into())
+        }
+        _ => None,
+    }
+}
+
 /// What `mesimon doctor` says: whether it is on, which rungs answered, and
 /// both sounds. The rungs are named even while it is off, because "would it
 /// work if I turned it on" is the question somebody reads this line to ask.
 pub fn doctor_line() -> String {
     let p = &crate::prefs::load_home().prefs;
     let ch = find();
+    // Asked once and said in BOTH arms: "would it work if I turned it on" is
+    // the whole reason the off arm names its rungs at all.
+    let click = click_words(&ch.banner, ch.click.as_ref());
     if !p.notify {
-        return format!(
+        let mut off = format!(
             "off (Settings ∙ Notifications turns it on) — would use {} and {}",
             ch.banner.word(),
             ch.player.word()
         );
+        if let Some(c) = click {
+            off.push_str(" ∙ ");
+            off.push_str(&c);
+        }
+        return off;
     }
     let mut parts = vec![format!("on ∙ {}", ch.banner.word())];
     parts.push(format!("needs-you {}", p.notify_sound_needs_you.name()));
@@ -307,6 +925,30 @@ pub fn doctor_line() -> String {
     } else {
         "quiet while the board is focused".into()
     });
+    // What a banner will actually contain (T-292) — the question somebody
+    // reads this line to ask on a machine other people can see.
+    parts.push(if p.notify_words {
+        "quoting the agent's own line".into()
+    } else {
+        "naming the ticket, never quoting the agent".into()
+    });
+    parts.push(if p.notify_in_pane {
+        "said even inside the agent's own pane".into()
+    } else {
+        "silent inside the agent's own pane".into()
+    });
+    // The one thing a user cannot read off the rung's name: this rung writes
+    // to the board's own terminal, so it alone goes quiet while that terminal
+    // belongs to an attached pane or an editor (T-291). Every other rung
+    // spawns a program with null stdio and speaks through a handover. Said
+    // apart from the in-pane PREFERENCE above, which is a choice; this is a
+    // property of the rung that answered.
+    if ch.banner == Banner::Osc {
+        parts.push("this rung cannot reach you mid-handover — a helper program can".into());
+    }
+    if let Some(c) = click {
+        parts.push(c);
+    }
     parts.join(" ∙ ")
 }
 
@@ -317,8 +959,30 @@ mod tests {
     fn none(_: &str) -> Option<PathBuf> {
         None
     }
+
+    /// The three fields a rung is handed, as `post` builds them.
+    fn fields(title: &str, subtitle: &str, body: &str) -> Fields {
+        Fields::of(&Post {
+            title: title.into(),
+            subtitle: subtitle.into(),
+            body: body.into(),
+            sound: Sound::Glass,
+        })
+    }
+
+    /// A post with no subtitle — the aggregate's shape, and the shape every
+    /// rung had before T-292.
+    fn plain(title: &str, body: &str) -> Fields {
+        fields(title, "", body)
+    }
     fn all(n: &str) -> Option<PathBuf> {
         Some(PathBuf::from(format!("/usr/bin/{n}")))
+    }
+
+    /// A click that raises an application and nothing finer — what every
+    /// test written before the tab existed means by "a click".
+    fn click(app: &str) -> Click {
+        Click { app: app.into(), reveal: None }
     }
 
     #[test]
@@ -354,27 +1018,397 @@ mod tests {
 
     #[test]
     fn the_words_ride_argv_and_never_the_script() {
-        let argv = Banner::Osascript.argv("board", "\" & do shell script \"boom").expect("argv");
-        assert_eq!(argv.last().expect("the body"), "\" & do shell script \"boom");
-        // Every `-e` fragment is a constant: none of them holds the words.
-        for (i, a) in argv.iter().enumerate() {
-            if a == "-e" {
-                let script = &argv[i + 1];
-                assert!(!script.contains("board"), "{script}");
-                assert!(!script.contains("boom"), "{script}");
+        // Both scripts, since T-292: the two-field one and the three-field
+        // one an event with a subtitle takes.
+        for f in [
+            plain("board", "\" & do shell script \"boom"),
+            fields("board", "T-1 ∙ \" & do shell script \"boom", "needs you"),
+        ] {
+            let argv = Banner::Osascript.argv(None, None, &f).expect("argv");
+            // Every `-e` fragment is a constant: none of them holds the words.
+            for (i, a) in argv.iter().enumerate() {
+                if a == "-e" {
+                    let script = &argv[i + 1];
+                    assert!(!script.contains("board"), "{script}");
+                    assert!(!script.contains("boom"), "{script}");
+                    assert!(!script.contains("T-1"), "{script}");
+                }
             }
+            assert!(argv.iter().any(|a| a.contains("boom")), "and the words are still sent");
         }
         assert_eq!(
-            Banner::NotifySend.argv("-t", "b").expect("argv"),
+            Banner::NotifySend.argv(None, None, &plain("-t", "b")).expect("argv"),
             vec!["notify-send", "--", "-t", "b"],
             "a title that starts with a dash is still a title"
         );
         assert_eq!(
-            Banner::Custom("ding".into()).argv("t", "b").expect("argv"),
+            Banner::Custom("ding".into()).argv(None, None, &plain("t", "b")).expect("argv"),
             vec!["ding", "t", "b"]
         );
-        assert!(Banner::Osc.argv("t", "b").is_none());
-        assert!(Banner::Off.argv("t", "b").is_none());
+        assert!(Banner::Osc.argv(None, None, &plain("t", "b")).is_none());
+        assert!(Banner::Off.argv(None, None, &plain("t", "b")).is_none());
+    }
+
+    /// T-292: the two rungs that have three fields take the subtitle on its
+    /// own; the three that have one get it folded in front of the body, so a
+    /// user's own program keeps the arity it was written against.
+    #[test]
+    fn a_subtitle_rides_its_own_field_or_folds_into_the_body() {
+        let f = fields("board", "T-1 ∙ Add auth", "needs you ∙ PERMISSION");
+        assert_eq!(
+            Banner::TerminalNotifier.argv(None, None, &f).expect("argv"),
+            vec![
+                "terminal-notifier",
+                "-title",
+                "board",
+                "-subtitle",
+                "T-1 ∙ Add auth",
+                "-message",
+                "needs you ∙ PERMISSION"
+            ]
+        );
+        let osa = Banner::Osascript.argv(None, None, &f).expect("argv");
+        assert_eq!(&osa[osa.len() - 3..], ["board", "T-1 ∙ Add auth", "needs you ∙ PERMISSION"]);
+        assert!(osa.iter().any(|a| a.contains("subtitle (item 2 of argv)")), "{osa:?}");
+        // The one-field rungs, all folded the same way.
+        let folded = "T-1 ∙ Add auth ∙ needs you ∙ PERMISSION";
+        assert_eq!(
+            Banner::NotifySend.argv(None, None, &f).expect("argv"),
+            vec!["notify-send", "--", "board", folded]
+        );
+        assert_eq!(
+            Banner::Custom("ding".into()).argv(None, None, &f).expect("argv"),
+            vec!["ding", "board", folded],
+            "a user's own program still takes two arguments"
+        );
+    }
+
+    /// An aggregate has no one ticket to name, so it takes the argv that
+    /// shipped before this — byte for byte, both scripts included.
+    #[test]
+    fn no_subtitle_is_the_argv_that_always_was() {
+        let f = plain("board", "2 agents finished ∙ T-1 T-2");
+        assert_eq!(
+            Banner::TerminalNotifier.argv(None, None, &f).expect("argv"),
+            vec!["terminal-notifier", "-title", "board", "-message", "2 agents finished ∙ T-1 T-2"]
+        );
+        let osa = Banner::Osascript.argv(None, None, &f).expect("argv");
+        assert!(osa.iter().any(|a| a.contains("(item 2 of argv) with title")), "{osa:?}");
+        assert!(!osa.iter().any(|a| a.contains("subtitle")), "{osa:?}");
+        assert_eq!(osa.len(), 9, "seven script words and the two fields");
+    }
+
+    /// The click's terminal (T-293). Every input is a parameter, so this is
+    /// the same ladder on every platform the suite runs on.
+    #[test]
+    fn the_terminal_that_gets_raised_is_named_by_the_env_first_and_the_os_second() {
+        let itrm = "com.googlecode.iterm2";
+        // The variable outranks everything, and `off` is a rung of its own.
+        assert_eq!(
+            find_activate(Some(" com.x.y "), Some(itrm), Some("iTerm.app")),
+            Some("com.x.y".into())
+        );
+        assert_eq!(find_activate(Some("OFF"), Some(itrm), Some("iTerm.app")), None);
+        assert_eq!(find_activate(Some("   "), Some(itrm), None), Some(itrm.into()));
+        // macOS's own answer beats the table, and the table catches its loss.
+        assert_eq!(find_activate(None, Some("com.x.y"), Some("iTerm.app")), Some("com.x.y".into()));
+        assert_eq!(find_activate(None, None, Some("iTerm.app")), Some(itrm.into()));
+        assert_eq!(
+            find_activate(None, None, Some("Apple_Terminal")),
+            Some("com.apple.Terminal".into())
+        );
+        // Nothing to go on, and a terminal the table has never heard of.
+        assert_eq!(find_activate(None, None, None), None);
+        assert_eq!(find_activate(None, None, Some("SomeNewTerm")), None);
+    }
+
+    /// The veto, and the reason it sits above `__CFBundleIdentifier`: inside
+    /// an outer tmux that variable is INHERITED, so it names whatever started
+    /// the server rather than the client attached now — and `-activate`
+    /// launches an application that is not running, so a stale id opens a
+    /// window of the wrong terminal instead of raising the right one.
+    #[test]
+    fn an_outer_tmux_names_no_terminal_because_nothing_it_can_see_is_fresh() {
+        assert_eq!(find_activate(None, Some("com.apple.Terminal"), Some("tmux")), None);
+        assert_eq!(find_activate(None, None, Some("tmux")), None);
+        // Said explicitly, it is still honoured: the user can see their own
+        // terminal even when mesimon cannot.
+        assert_eq!(
+            find_activate(Some("com.googlecode.iterm2"), None, Some("tmux")),
+            Some("com.googlecode.iterm2".into())
+        );
+    }
+
+    /// The tab (T-301), which is the other half of the same click: the
+    /// variable first, then the terminal we are actually in.
+    #[test]
+    fn the_tab_is_named_by_the_env_first_and_the_terminal_second() {
+        let sid = Some("w0t1p0:3D455141-E58B-4841-B5FD-1C4F99E53CD6");
+        let uuid = "3D455141-E58B-4841-B5FD-1C4F99E53CD6";
+        let tty = Some("/dev/ttys004");
+        // The variable outranks both, and `off` is a rung of its own: the
+        // application still comes forward, the tab is simply not asked for.
+        assert_eq!(
+            find_reveal(Some(" raise-my-term "), Some("iTerm.app"), sid, tty),
+            Some(Reveal::Custom("raise-my-term".into()))
+        );
+        assert_eq!(find_reveal(Some("OFF"), Some("iTerm.app"), sid, tty), None);
+        // A blank variable is no variable, as on both ladders above.
+        assert_eq!(
+            find_reveal(Some("   "), Some("iTerm.app"), sid, tty),
+            find_reveal(None, Some("iTerm.app"), sid, tty)
+        );
+        // The two terminals that can be asked, each by its own key.
+        assert_eq!(
+            find_reveal(None, Some("iTerm.app"), sid, tty),
+            Some(Reveal::ITerm2(uuid.into()))
+        );
+        assert_eq!(
+            find_reveal(None, Some("Apple_Terminal"), sid, tty),
+            Some(Reveal::AppleTerminal("/dev/ttys004".into()))
+        );
+        // A uuid with no coordinates in front of it is still a uuid.
+        assert_eq!(
+            find_reveal(None, Some("iTerm.app"), Some(uuid), None),
+            Some(Reveal::ITerm2(uuid.into()))
+        );
+        // Nothing to go on: the key is missing, or the terminal is one no
+        // rung fits — which is most of them, and costs only the tab.
+        assert_eq!(find_reveal(None, Some("iTerm.app"), None, tty), None);
+        assert_eq!(find_reveal(None, Some("Apple_Terminal"), sid, None), None);
+        assert_eq!(find_reveal(None, Some("WezTerm"), sid, tty), None);
+        assert_eq!(find_reveal(None, None, sid, tty), None);
+    }
+
+    /// The veto reaches the tab too, and by the same road: inside an outer
+    /// tmux `ITERM_SESSION_ID` is INHERITED from whatever started the
+    /// server, so it names a session that is not this one — and selecting
+    /// the wrong tab is the bug, not the fix. `TERM_PROGRAM` is rewritten in
+    /// every pane, so the table simply never answers there.
+    #[test]
+    fn an_outer_tmux_names_no_tab_either() {
+        let sid = Some("w0t1p0:3D455141-E58B-4841-B5FD-1C4F99E53CD6");
+        assert_eq!(find_reveal(None, Some("tmux"), sid, Some("/dev/ttys004")), None);
+        assert_eq!(
+            find_click(None, None, Some("com.googlecode.iterm2"), Some("tmux"), sid, None),
+            None,
+            "and the click as a whole is still refused"
+        );
+    }
+
+    /// A script talks to the application the click raises, or it does not
+    /// travel: a `MESIMON_TERM_BUNDLE` naming some other application would
+    /// otherwise leave an iTerm2 script attached to a click that raises
+    /// something else. The user's own program names no application and so
+    /// has nothing to disagree with.
+    #[test]
+    fn a_reveal_scripts_the_application_the_click_raises() {
+        let sid = Some("w0t1p0:3D455141-E58B-4841-B5FD-1C4F99E53CD6");
+        let uuid = "3D455141-E58B-4841-B5FD-1C4F99E53CD6";
+        let whole = find_click(None, None, None, Some("iTerm.app"), sid, None).expect("a click");
+        assert_eq!(whole.app, ITERM2_ID);
+        assert_eq!(whole.reveal, Some(Reveal::ITerm2(uuid.into())));
+        // Said explicitly and agreeing: both halves stand.
+        let same =
+            find_click(Some(ITERM2_ID), None, None, Some("iTerm.app"), sid, None).expect("a click");
+        assert_eq!(same.reveal, Some(Reveal::ITerm2(uuid.into())));
+        // Said explicitly and disagreeing: the application is the user's
+        // word, and the script that cannot be about it is dropped.
+        let other =
+            find_click(Some("com.x.y"), None, None, Some("iTerm.app"), sid, None).expect("a click");
+        assert_eq!(other.app, "com.x.y");
+        assert_eq!(other.reveal, None);
+        // A program of the user's own survives the same disagreement.
+        let custom =
+            find_click(Some("com.x.y"), Some("raise-my-term"), None, Some("iTerm.app"), sid, None)
+                .expect("a click");
+        assert_eq!(custom.reveal, Some(Reveal::Custom("raise-my-term".into())));
+        // No application, no click — and so no tab either.
+        assert_eq!(find_click(None, None, None, Some("SomeNewTerm"), sid, None), None);
+    }
+
+    /// The command is a constant script and one validated id, single-quoted:
+    /// argv's rule kept where `-execute` offers no argv. And every script
+    /// asks whether its application is running before it says `tell`, since
+    /// `tell` STARTS what is not running and a click that opens an empty
+    /// terminal is the promise this whole rung exists to keep.
+    #[test]
+    fn the_click_runs_a_constant_script_and_never_a_composed_one() {
+        for (script, id) in [(ITERM2_SCRIPT, ITERM2_ID), (TERMINAL_SCRIPT, TERMINAL_ID)] {
+            assert!(script.contains(&format!("application id \"{id}\" is running")), "{script}");
+            // The activate is INSIDE the guard, which is what keeps it from
+            // launching a terminal that is not running.
+            let guard = script.find("is running").expect("a guard");
+            assert!(script[guard..].contains("\nactivate\n"), "{script}");
+            assert!(script.starts_with("on run argv"), "{script}");
+            assert!(script.contains("item 1 of argv"), "the key rides argv");
+            assert!(!script.contains('\''), "a quote would end sh's quoting: {script}");
+        }
+        let cmd = Reveal::ITerm2("3D455141-E58B".into()).command().expect("a command");
+        assert!(cmd.starts_with("'osascript' '-e' '"), "{cmd}");
+        assert!(cmd.ends_with("'3D455141-E58B'"), "{cmd}");
+        let term = Reveal::AppleTerminal("/dev/ttys004".into()).command().expect("a command");
+        assert!(term.contains("'/dev/ttys004'"), "{term}");
+        assert_eq!(
+            Reveal::Custom("raise-my-term".into()).command(),
+            Some("'raise-my-term'".into())
+        );
+        // Nothing this module refuses can reach the line, and a word holding
+        // the one byte that could end the quoting is refused, not escaped.
+        assert_eq!(sh_line(&["a", "b c"]), Some("'a' 'b c'".into()));
+        assert_eq!(sh_line(&["it's"]), None);
+        assert_eq!(sh_line(&[""]), None);
+        assert_eq!(sh_line(&[]), None);
+        assert_eq!(sh_word("it's"), None);
+        assert_eq!(sh_word("say\nboom"), None);
+        // A program, not a command line: quoted whole, a command line would
+        // be one program name with spaces in it and would never run.
+        assert_eq!(sh_word("raise-my-term --window 3"), None);
+        assert_eq!(sh_word("  raise-my-term  "), Some("raise-my-term".into()));
+        assert_eq!(find_reveal(Some("it's"), None, None, None), None);
+    }
+
+    /// The keys REJECT where `field` scrubs, for `bundle_id`'s reason: a
+    /// repaired session id names a different tab, and landing in one is the
+    /// bug being fixed.
+    #[test]
+    fn a_session_id_or_a_tty_that_is_not_one_is_refused_rather_than_scrubbed() {
+        assert_eq!(session_uuid("w0t1p0:3D45-E58B"), Some("3D45-E58B".into()));
+        assert_eq!(session_uuid(" 3D45-E58B \n"), Some("3D45-E58B".into()));
+        assert_eq!(session_uuid(""), None);
+        assert_eq!(session_uuid("w0t1p0:"), None);
+        assert_eq!(session_uuid("-flag"), None);
+        assert_eq!(session_uuid("w0t1p0:3D45 E58B"), None, "not repaired into 3D45E58B");
+        assert_eq!(session_uuid("w0t1p0:a';rm -rf /"), None);
+        assert_eq!(session_uuid(&"a".repeat(REVEAL_MAX + 1)), None);
+        assert_eq!(tty_path("/dev/ttys004"), Some("/dev/ttys004".into()));
+        assert_eq!(tty_path("/dev/pts/3"), Some("/dev/pts/3".into()));
+        assert_eq!(tty_path("ttys004"), None, "a tab's tty is an absolute path");
+        assert_eq!(tty_path("/dev/ttys004;boom"), None);
+        assert_eq!(tty_path(&format!("/dev/{}", "a".repeat(REVEAL_MAX))), None);
+    }
+
+    /// The tab flag sits beside the application's, never instead of it: a
+    /// terminal that refuses to be scripted leaves exactly the click T-293
+    /// shipped, and no other rung grows either flag.
+    #[test]
+    fn the_tab_is_a_second_flag_on_the_one_rung_that_can_carry_a_click() {
+        let f = fields("board", "T-1 ∙ Add auth", "needs you");
+        let whole =
+            Click { app: ITERM2_ID.into(), reveal: Some(Reveal::ITerm2("3D455141-E58B".into())) };
+        let argv = Banner::TerminalNotifier.argv(None, Some(&whole), &f).expect("argv");
+        let at = argv.iter().position(|a| a == "-activate").expect("the application");
+        let ex = argv.iter().position(|a| a == "-execute").expect("the tab");
+        assert_eq!(argv[at + 1], ITERM2_ID);
+        assert!(at < ex, "terminal-notifier activates first, then runs the command");
+        assert!(argv[ex + 1].contains("'3D455141-E58B'"), "{}", argv[ex + 1]);
+        // Without a reveal it is the argv T-293 shipped, byte for byte.
+        let half = Banner::TerminalNotifier.argv(None, Some(&click(ITERM2_ID)), &f).expect("argv");
+        assert!(!half.iter().any(|a| a == "-execute"), "{half:?}");
+        assert_eq!(half.len() + 2, argv.len(), "the flag is the only difference");
+        // And the rungs that cannot carry a click grow neither flag.
+        for rung in [Banner::Osascript, Banner::NotifySend, Banner::Custom("ding".into())] {
+            assert_eq!(rung.argv(None, Some(&whole), &f), rung.argv(None, None, &f), "{rung:?}");
+        }
+    }
+
+    /// This boundary REJECTS where `field` scrubs, and that is deliberate: a
+    /// bundle id with a character dropped is a different, possibly real one,
+    /// so a silent repair would raise the wrong application.
+    #[test]
+    fn a_bundle_id_that_is_not_one_is_refused_rather_than_scrubbed() {
+        assert_eq!(bundle_id("com.googlecode.iterm2"), Some("com.googlecode.iterm2".into()));
+        assert_eq!(bundle_id("  com.apple.Terminal\n"), Some("com.apple.Terminal".into()));
+        assert_eq!(bundle_id("net.kovidgoyal.kitty"), Some("net.kovidgoyal.kitty".into()));
+        // A leading dash would be read as another flag by terminal-notifier.
+        assert_eq!(bundle_id("-sound"), None);
+        assert_eq!(bundle_id(""), None);
+        assert_eq!(bundle_id("   "), None);
+        assert_eq!(bundle_id(".com.x"), None);
+        // Not repaired into `com.xy` — refused.
+        assert_eq!(bundle_id("com.x y"), None);
+        assert_eq!(bundle_id("com.x;rm -rf /"), None);
+        assert_eq!(bundle_id(&"a".repeat(BUNDLE_ID_MAX + 1)), None);
+        // And every rung exits through it, so nothing reaches argv unchecked.
+        assert_eq!(find_activate(Some("-sound"), None, None), None);
+        assert_eq!(
+            find_activate(None, Some("com.x y"), Some("iTerm.app")),
+            Some("com.googlecode.iterm2".into())
+        );
+    }
+
+    /// One rung can carry a click, so one rung gets the flag. The loop is the
+    /// load-bearing half: `osascript` finds its words by POSITION, so an
+    /// argument inserted there would shift the title, subtitle and body.
+    #[test]
+    fn only_the_terminal_notifier_rung_grows_a_flag_for_the_click() {
+        let f = fields("board", "T-1 ∙ Add auth", "needs you");
+        let argv = Banner::TerminalNotifier.argv(None, Some(&click("com.x.y")), &f).expect("argv");
+        let at = argv.iter().position(|a| a == "-activate").expect("the flag");
+        assert_eq!(argv[at + 1], "com.x.y");
+        // `-group` is still last, whether or not the click is asked for.
+        let both = Banner::TerminalNotifier
+            .argv(Some("mesimon-abc"), Some(&click("com.x.y")), &f)
+            .expect("argv");
+        assert_eq!(&both[both.len() - 2..], ["-group", "mesimon-abc"]);
+        for rung in [Banner::Osascript, Banner::NotifySend, Banner::Custom("ding".into())] {
+            assert_eq!(
+                rung.argv(None, Some(&click("com.x.y")), &f),
+                rung.argv(None, None, &f),
+                "{rung:?} grew an argument for a click it cannot carry"
+            );
+        }
+        // And with no id, the one rung that CAN carry a click is the argv
+        // that shipped before — no empty flag, no placeholder.
+        let bare = Banner::TerminalNotifier.argv(None, None, &f).expect("argv");
+        assert!(!bare.iter().any(|a| a == "-activate"), "{bare:?}");
+        assert_eq!(bare.len() + 2, argv.len(), "the flag is the only difference");
+    }
+
+    /// `doctor` promises a click only on the rung that can deliver one — on
+    /// Linux a `TERM_PROGRAM` of `vscode` resolves a macOS bundle id, and the
+    /// line must not say a notify-send banner is clickable because of it.
+    #[test]
+    fn the_click_is_promised_only_on_the_rung_that_can_deliver_one() {
+        let said = click_words(&Banner::TerminalNotifier, Some(&click("com.googlecode.iterm2")))
+            .expect("a word");
+        assert!(said.contains("com.googlecode.iterm2"), "{said}");
+        let missing = click_words(&Banner::TerminalNotifier, None).expect("a word");
+        assert!(missing.contains("MESIMON_TERM_BUNDLE"), "{missing}");
+        assert!(click_words(&Banner::Osascript, Some(&click("com.x.y"))).is_some());
+        for rung in [Banner::NotifySend, Banner::Osc, Banner::Off, Banner::Custom("ding".into())] {
+            assert_eq!(click_words(&rung, Some(&click("com.x.y"))), None, "{rung:?}");
+        }
+        // The application alone is said as the half it is, and the tab is
+        // said as the whole when there is one (T-301).
+        let half = click_words(&Banner::TerminalNotifier, Some(&click("com.x.y"))).expect("a word");
+        assert!(half.contains("not this tab") && half.contains("MESIMON_TERM_REVEAL"), "{half}");
+        let whole = click_words(
+            &Banner::TerminalNotifier,
+            Some(&Click {
+                app: ITERM2_ID.into(),
+                reveal: Some(Reveal::ITerm2("3D455141-E58B".into())),
+            }),
+        )
+        .expect("a word");
+        assert!(whole.contains("own tab") && !whole.contains("not this tab"), "{whole}");
+    }
+
+    /// One group per board (T-292), so a new banner replaces the last rather
+    /// than stacking — and only the rung that has the concept gets it.
+    #[test]
+    fn a_board_groups_its_own_banners() {
+        let f = fields("board", "T-1 ∙ Add auth", "needs you");
+        let argv = Banner::TerminalNotifier.argv(Some("mesimon-abc123"), None, &f).expect("argv");
+        assert_eq!(&argv[argv.len() - 2..], ["-group", "mesimon-abc123"]);
+        for rung in [Banner::Osascript, Banner::NotifySend, Banner::Custom("ding".into())] {
+            let argv = rung.argv(Some("mesimon-abc123"), None, &f).expect("argv");
+            assert!(!argv.iter().any(|a| a == "mesimon-abc123"), "{argv:?}");
+        }
+        // Keyed off the repo, so two checkouts are two groups.
+        let here = group_for(std::path::Path::new(".")).expect("a group for this repo");
+        assert!(here.starts_with("mesimon-"), "{here}");
+        assert_ne!(here, group_for(std::path::Path::new("/")).expect("a group for /"));
     }
 
     #[test]
@@ -388,6 +1422,13 @@ mod tests {
         assert!(!out.contains('\n'), "{out}");
         assert!(field(&"x".repeat(1000)).len() <= MAX_FIELD);
         assert_eq!(field("board ∙ name"), "board ∙ name", "ordinary words survive");
+        // All three fields cross it, the subtitle included (T-292), and the
+        // folded line is built from the scrubbed halves.
+        let f = fields("b", "T-1 ∙ \x1b]9;evil\x07", "needs you\n now");
+        for part in [&f.title, &f.subtitle, &f.body, &f.folded] {
+            assert!(!part.contains('\x1b') && !part.contains('\x07') && !part.contains('\n'));
+        }
+        assert_eq!(f.folded, format!("{} ∙ {}", f.subtitle, f.body));
     }
 
     #[test]
@@ -409,9 +1450,40 @@ mod tests {
     fn a_silent_post_runs_nothing() {
         // Off on both channels with a real body: `post` must not try to spawn,
         // and `Off` is the one rung that writes no escape either.
-        let ch = Channels { banner: Banner::Off, player: Player::Off };
-        let p = Post { title: "t".into(), body: "b".into(), sound: Sound::Glass };
-        assert!(post(&ch, &p).is_ok());
-        assert!(post(&ch, &Post::sound_only(Sound::Off)).is_ok());
+        let ch = Channels { banner: Banner::Off, player: Player::Off, group: None, click: None };
+        let p = Post {
+            title: "t".into(),
+            subtitle: "T-1 ∙ a ticket".into(),
+            body: "b".into(),
+            sound: Sound::Glass,
+        };
+        let console = Console::default();
+        assert!(post(&ch, &p, &console).is_ok());
+        assert!(post(&ch, &Post::sound_only(Sound::Off), &console).is_ok());
+    }
+
+    /// T-291's honest limit, as a rule rather than a sentence: an escape rung
+    /// writes only while the board holds the terminal. Nothing here writes to
+    /// the real stdout — the closure stands in for the escape, which is the
+    /// only thing `write_if_held` decides about.
+    #[test]
+    fn an_escape_rung_is_silent_while_the_terminal_is_handed_over() {
+        let console = Console::default();
+        let mut wrote = 0;
+        let go = |c: &Console, wrote: &mut i32| {
+            c.write_if_held(|| {
+                *wrote += 1;
+                Ok(())
+            })
+            .expect("no error either way")
+        };
+        go(&console, &mut wrote);
+        assert_eq!(wrote, 1, "a board holding its terminal writes");
+        console.set_held(false);
+        go(&console, &mut wrote);
+        assert_eq!(wrote, 1, "a handover takes the escape rungs away");
+        console.set_held(true);
+        go(&console, &mut wrote);
+        assert_eq!(wrote, 2, "and the return gives them back");
     }
 }

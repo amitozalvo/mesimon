@@ -673,9 +673,10 @@ fn golden_settings_120() {
 }
 
 /// The notifications list, one level under Settings (T-282), turned ON so
-/// all five rows draw: the master switch, the two moments, the two sounds
-/// and the focus exception. `NOTIFICATIONS` in the frame's top edge and the
-/// list's own keys in its bottom one.
+/// every row draws: the master switch, the two moments, what a banner is
+/// allowed to SAY (T-292), the two sounds and the two exceptions.
+/// `NOTIFICATIONS` in the frame's top edge and the list's own keys in its
+/// bottom one.
 #[test]
 fn golden_notifications_120() {
     let mut app = app_graphite(fixture_archived());
@@ -2560,6 +2561,50 @@ fn golden_prompt_field_queued_120() {
     golden("board_prompt_queued_120x30", &render(&app, 120, 30));
 }
 
+/// T-294: the same field on a ticket with NO claude, which is where the press
+/// would otherwise have spawned one without asking. It opens at `queued`, and
+/// the empty field says what a blank Enter does — the title is the prompt.
+#[test]
+fn golden_prompt_field_start_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    // T-1, no session on it at all.
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(1), walk: None, queued: true },
+        buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
+    };
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("start on the title")),
+        "the blank Enter names itself:\n{}",
+        lines.join("\n")
+    );
+    assert!(lines.iter().any(|l| l.contains("queued  shift+tab")), "{}", lines.join("\n"));
+    assert!(lines.last().is_some_and(|l| l.contains("enter queue")), "{:?}", lines.last());
+    golden("board_prompt_start_120x30", &render(&app, 120, 30));
+}
+
+/// And the card says a SESSION is coming, not that words are waiting: a start
+/// is louder than a paste, and it is what the queue is holding back.
+#[test]
+fn golden_queued_start_open_120() {
+    let mut app = app_graphite(fixture(false));
+    app.pending = vec![mesimon_core::command::Pending {
+        ticket: ulid_n(1),
+        action: "start".into(),
+        waits_on: vec!["T-3".into()],
+        text: None,
+        in_flight: false,
+    }];
+    app.cursor_col = 0;
+    app.cursor_row = Some(0);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("starts ∙ after T-3")), "{}", lines.join("\n"));
+    golden("board_queued_start_120x30", &render(&app, 120, 30));
+}
+
 fn pending_ask(ticket: u128, waits_on: &[&str]) -> mesimon_core::command::Pending {
     mesimon_core::command::Pending {
         ticket: ulid_n(ticket),
@@ -3444,6 +3489,39 @@ fn the_folded_column_paints_its_needs_you_mark() {
         }
         assert!(found, "{flavor:?}: the folded column must show the mark");
     }
+}
+
+/// T-302: a folded column's count reads at the TOP, on the very row every
+/// expanded column writes its own count on — at the foot it was twenty rows
+/// away from every other number on the board (user: "bottom too far"). The
+/// `!` keeps that cell when the column is waiting, and the count takes the
+/// row under it: the mark is what the folded column is standing in for.
+#[test]
+fn the_folded_column_reads_its_count_at_the_top() {
+    // Row 2 is the column-header row: the expanded columns' counts sit on
+    // it, and now so does the spine's.
+    let mut calm = app_graphite(fixture(false));
+    calm.cursor_col = 0;
+    let lines = render(&calm, 100, 24);
+    let row: Vec<char> = lines[2].chars().collect();
+    let x = row.iter().rposition(|c| *c != ' ').expect("a count");
+    assert_eq!(row[x], '1', "the folded DONE column's count: {}", lines[2]);
+    assert!(
+        lines[3..].iter().all(|l| !l.chars().nth(x).is_some_and(|c| c.is_ascii_digit())),
+        "nothing is left at the foot: {lines:?}"
+    );
+    // And the name still runs down from under it, a letter a row.
+    let letters: String = lines[4..8].iter().filter_map(|l| l.chars().nth(x)).collect();
+    assert_eq!(letters, "DONE", "the name under the count: {letters}");
+
+    // Waiting: the `!` holds row 0 and the count is the row beneath it.
+    let mut waiting = app_graphite(fixture_woke());
+    waiting.cursor_col = 0; // fold the column the woke ticket is in
+    let lines = render(&waiting, 60, 30);
+    let x = lines[2].find('!').expect("the folded column's mark");
+    assert_eq!(lines[3].chars().nth(x), Some('2'), "the count under the mark: {}", lines[3]);
+    let letters: String = lines[5..9].iter().filter_map(|l| l.chars().nth(x)).collect();
+    assert_eq!(letters, "INPR", "the name under both: {letters}");
 }
 
 fn attn_stays_on_the_waiting_card(flavor: Flavor, board: Board) {

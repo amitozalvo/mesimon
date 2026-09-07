@@ -191,7 +191,19 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // the field is added under it. That order is the point: what you are
         // about to talk to stays legible while you type at it.
         let edit_cursor = prompt_of(t).map(|(buf, queued)| {
-            let (line, x_off) = card::render_prompt(&ctx, buf, app.ticket_queued(t.id));
+            // What a blank Enter would do, in the seat's own words, and by
+            // the same rule `commit_input` judges it: drop the entry that is
+            // waiting, start claude on the title where the seat is empty and
+            // the toggle says now (T-294), or nothing at all.
+            let starts = app.board.live_claude(t.id).is_none();
+            let placeholder = if app.ticket_queued(t.id) && !(starts && !queued) {
+                "enter drops"
+            } else if starts {
+                "start on the title"
+            } else {
+                "ask claude"
+            };
+            let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
             lines.push(line);
             let at = lines.len() - 1;
             // The delivery row, where the ask can wait (2026-09-04): after
@@ -534,9 +546,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 }
 
 /// A collapsed column (07 §3.1): 1 cell, reads vertically, codepoints
-/// ⊆ [!A-Z0-9 space]. Header cell is `!` iff the column holds a waiting
-/// session; then the name one letter per row; the count bottom-aligned,
-/// never dropped — the name truncates.
+/// ⊆ [!A-Z0-9 space]. The TOP carries what an expanded column's header
+/// row carries — the `!` iff the column holds a waiting session, then the
+/// count, a digit a row — and the name runs down from under them, one
+/// letter per row, truncating when the column is short.
+///
+/// The count sat at the FOOT until T-302 (2026-09-07, user: "bottom too
+/// far"), which put a 1-cell column's only number twenty rows away from
+/// every other count on the board. With nothing waiting its first digit
+/// lands on row 0, the very row the expanded columns write their own count
+/// on; a `!` claims that cell and pushes it one row down, because the mark
+/// is what the folded column is standing in for.
 ///
 /// The `!` is INVERTED — `theme.attn_row()`, the needs-you title row's own
 /// treatment, bold like the header's `!N` chip (T-271, 2026-09-06, user:
@@ -551,32 +571,23 @@ fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
         let sessions = ticket_sessions(app, t.id);
         card::needs_you(t, &sessions)
     });
-    let count = tickets.len().to_string();
 
     let h = area.height as usize;
     let mut lines: Vec<Line<'static>> = Vec::new();
     // Row 0 aligns with the column headers.
-    lines.push(if waiting {
-        Line::from(Span::styled("!", theme.attn_row().add_modifier(Modifier::BOLD)))
-    } else {
-        Line::default()
-    });
+    if waiting {
+        lines.push(Line::from(Span::styled("!", theme.attn_row().add_modifier(Modifier::BOLD))));
+    }
+    for d in tickets.len().to_string().chars() {
+        lines.push(Line::from(Span::styled(d.to_string(), theme.dim2())));
+    }
     lines.push(Line::default()); // aligns with the blank under headers
 
-    let body = h.saturating_sub(2);
-    let digits: Vec<char> = count.chars().collect();
-    let name_rows = body.saturating_sub(digits.len() + 1);
-    let letters: Vec<char> =
-        name.to_uppercase().chars().filter(|c| c.is_ascii_alphanumeric()).take(name_rows).collect();
-    for c in &letters {
+    let name_rows = h.saturating_sub(lines.len());
+    let upper = name.to_uppercase();
+    let letters = upper.chars().filter(|c| c.is_ascii_alphanumeric()).take(name_rows);
+    for c in letters {
         lines.push(Line::from(Span::styled(c.to_string(), theme.dim1())));
-    }
-    let used = lines.len() - 2;
-    for _ in used..body.saturating_sub(digits.len()) {
-        lines.push(Line::default());
-    }
-    for d in digits {
-        lines.push(Line::from(Span::styled(d.to_string(), theme.dim2())));
     }
 
     f.render_widget(Paragraph::new(lines), area);

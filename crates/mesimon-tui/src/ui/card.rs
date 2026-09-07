@@ -78,14 +78,16 @@ pub(super) fn render_edit(
 /// It also keeps the row clear of `tags::stack_full`, which paints the stripe
 /// of the lines above and knows nothing about this one.
 ///
-/// `reopened` is a field opened on a WAITING ask (T-241): emptied, its
-/// placeholder says what a blank Enter does — `enter drops` — because the
-/// gesture is not one the footer teaches and the delivery row under the
-/// field has no room to say it on a narrow column.
+/// `placeholder` is what an EMPTY field says a blank Enter will do, and the
+/// caller picks it because only the caller knows the seat: `enter drops` on a
+/// field reopened over a WAITING ask (T-241), `start on the title` on an empty
+/// claude seat (T-294) — both gestures the footer does not teach and the
+/// delivery row under the field has no room for on a narrow column — and
+/// `ask claude` otherwise, the words the key itself was hinted with.
 pub(super) fn render_prompt(
     ctx: &CardCtx,
     buffer: &EditBuffer,
-    reopened: bool,
+    placeholder: &str,
 ) -> (Line<'static>, u16) {
     let theme = ctx.theme;
     // `  › ` — indent, caret, space. The caret is what an empty field has to
@@ -99,8 +101,8 @@ pub(super) fn render_prompt(
         // An empty field says what it is for, in the same words the key was
         // hinted with. The hardware cursor sits on the first letter of it,
         // which is how every placeholder has ever worked.
-        let word = if reopened { "enter drops" } else { "ask claude" };
-        spans.push(Span::styled(truncate(word, budget), Style::default().fg(theme.sel.dim3)));
+        spans
+            .push(Span::styled(truncate(placeholder, budget), Style::default().fg(theme.sel.dim3)));
     } else {
         spans.push(Span::styled(
             shown,

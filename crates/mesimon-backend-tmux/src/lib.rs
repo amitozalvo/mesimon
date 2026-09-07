@@ -442,6 +442,32 @@ impl TmuxBackend {
             .collect())
     }
 
+    /// How long every client attached to this session has been quiet, in
+    /// SECONDS — the freshest one wins, and `None` means nobody is attached
+    /// (T-299).
+    ///
+    /// `#{client_activity}` is the last time tmux read input from that
+    /// client, which is the only evidence anywhere that the person is still
+    /// at the terminal while the board is handed over: focus reporting is
+    /// off for the duration of an attach and the keys go to tmux, not to
+    /// the TUI. Seconds, because that is tmux's own resolution here — a
+    /// `time_t` on the wire, measured against the same clock this process
+    /// reads, so no timezone or format is involved.
+    ///
+    /// An empty listing is nobody attached, which is not an error: a client
+    /// detaching is the ordinary end of every handover. A timestamp in the
+    /// FUTURE (a clock stepped back under us) saturates to zero rather than
+    /// wrapping into "quiet since the Bronze Age".
+    pub fn client_quiet_secs(&self, sid16: &str) -> Result<Option<u64>> {
+        let out = self.run(&["list-clients", "-t", sid16, "-F", "#{client_activity}"])?;
+        let now = mesimon_core::clock::now_secs();
+        Ok(out
+            .lines()
+            .filter_map(|l| l.trim().parse::<u64>().ok())
+            .map(|at| now.saturating_sub(at))
+            .min())
+    }
+
     /// argv for the focus handover (docs/19 §2): the TUI execs this as a child.
     pub fn attach_argv(&self, sid16: &str) -> Vec<String> {
         vec![

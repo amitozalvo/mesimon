@@ -270,11 +270,13 @@ pub struct Daemon {
     pending_prompt: HashMap<uuid::Uuid, Parked>,
     /// Asks parked until the ticket's CHECKOUT is quiet (2026-09-04, after
     /// five claudes in one checkout committed at once): the board's
-    /// Shift+Enter with the field's toggle at `queued`. FIFO per checkout,
-    /// one entry per ticket, pasted by `drain_queue` when `checkout_holders`
-    /// is empty. In memory for `pending_prompt`'s reason: a restart drops
-    /// the words rather than pasting them into a pane it no longer
-    /// understands, and the mark on the card goes with them.
+    /// Shift+Enter with the field's toggle at `queued`. One entry per
+    /// ticket, in BOARD order (`queue_order`), delivered by `drain_queue`
+    /// when `checkout_holders` is empty — pasted into a pane, or, since
+    /// T-294, waking the ticket's parked claude or starting one. In memory
+    /// for `pending_prompt`'s reason: a restart drops the words rather than
+    /// pasting them into a pane it no longer understands, and the mark on
+    /// the card goes with them.
     queued: Vec<QueuedAsk>,
     /// Tickets whose pane mesimon pasted into ON ITS OWN CLOCK — a queued
     /// ask, the train's rebase request or merged notice — whose
@@ -329,9 +331,9 @@ pub struct Daemon {
     /// Per-ticket worktree bindings (M4), persisted as worktrees.json.
     worktrees: worktree::Bindings,
     /// Spawn requests parked behind provisioning: replayed on Provisioned(Ok).
-    /// The bool is the request's `submit_prompt` — a parked Shift+Enter must
-    /// still submit its prompt when the worktree finally lands.
-    pending_spawns: Vec<(ulid::Ulid, SessionKind, bool)>,
+    /// A parked Shift+Enter must still submit its prompt — and carry the
+    /// words it was given (T-294) — when the worktree finally lands.
+    pending_spawns: Vec<PendingSpawn>,
     /// Wakes parked behind provisioning (T-278), replayed beside the spawns.
     pending_resumes: Vec<PendingResume>,
     /// merged/ahead/conflict flags, refreshed on the 10 s bucket while
@@ -922,6 +924,17 @@ const INFLIGHT_MS: u64 = 10_000;
 /// get mesimon's appended and submitted.
 const TRAIN_PANE_QUIET_MS: u64 = 5_000;
 
+/// A spawn parked behind worktree provisioning, replayed by `on_provisioned`.
+struct PendingSpawn {
+    ticket: ulid::Ulid,
+    kind: SessionKind,
+    submit_prompt: bool,
+    /// The words the request carried, if any (T-294): a queued start's ask,
+    /// or a send-now one. `None` is the ordinary spawn, whose whole prompt is
+    /// the title and the brief.
+    prompt: Option<String>,
+}
+
 /// Words waiting for a pane that reads (`Daemon::pending_prompt`). `brief`
 /// marks the composed spawn's paste of the ticket description (T-224): it is
 /// what stamps `ticket_read` on the record when it lands, where the board's
@@ -937,14 +950,42 @@ struct Parked {
 /// the board (T-263).
 struct QueuedAsk {
     ticket: ulid::Ulid,
-    /// The pane it was queued at (`Board::pane_target` then); a different
-    /// session in the seat at delivery time drops it.
-    session: uuid::Uuid,
+    /// The seat it was queued at; a seat that changed at delivery time drops
+    /// it rather than redirecting the words (`sweep_queue`).
+    seat: QueuedSeat,
     /// The checkout key: `SessionRecord.cwd`, compared as a string.
     cwd: String,
+    /// Empty only for a `Start`, where the prompt is the ticket's own title
+    /// and brief — the composed spawn, waiting its turn.
     text: String,
     #[allow(dead_code)]
     queued_at: u64,
+}
+
+/// Where a prompt's claude is (`Daemon::seat_of`), and therefore how it is
+/// delivered. A queued ask remembers the seat it was aimed at: the words go
+/// to that claude or nowhere, never to whoever is sitting there later.
+enum QueuedSeat {
+    /// A pane to paste into — today's ask.
+    Pane(uuid::Uuid),
+    /// A parked claude: the delivery wakes it and parks the words for the
+    /// first tick after `SessionStart` (T-294).
+    Wake(uuid::Uuid),
+    /// No claude at all: the delivery starts one on the ticket's title, with
+    /// the words (if any) under the brief (T-294).
+    Start,
+}
+
+impl QueuedSeat {
+    /// The word the snapshot carries for this seat (`Pending::action`), which
+    /// is what makes the card say `claude starts` rather than `queued`.
+    fn word(&self) -> &'static str {
+        match self {
+            QueuedSeat::Pane(_) => "ask",
+            QueuedSeat::Wake(_) => "wake",
+            QueuedSeat::Start => "start",
+        }
+    }
 }
 
 use mesimon_core::clock::{now_ms, now_secs};
@@ -1190,6 +1231,13 @@ impl Daemon {
         // rather than merely true.
         let resource = match &env.command {
             Command::PaneTail { session, .. } => Resource::Session { id: *session },
+            // Same rule as the line above, for the pane the user is inside
+            // (T-299). `Board` where nothing is focused: there is no session
+            // to name and the command answers `None` anyway.
+            Command::FocusQuiet => match self.focus {
+                Some(Focus::Session(id)) => Resource::Session { id },
+                _ => Resource::Board,
+            },
             // Typing into a pane is changing the session, and the chokepoint
             // should say which one. `Board` when there is no target: the
             // command is about to refuse anyway, and inventing a session id
@@ -1341,7 +1389,7 @@ impl Daemon {
                 Response::Err { message: self.barred_message("worktrees") }
             }
             Command::SpawnSession { ticket, kind, submit_prompt } => {
-                self.spawn_session(ticket, kind, submit_prompt)
+                self.spawn_session(ticket, kind, submit_prompt, None)
             }
             Command::KillSession { id } => self.kill_session(id),
             Command::FocusStart { session } => self.focus_start(session),
@@ -1379,6 +1427,7 @@ impl Daemon {
                 message: "diff commands are served on the connection thread".into(),
             },
             Command::PaneTail { session, lines } => self.pane_tail(session, lines),
+            Command::FocusQuiet => self.focus_quiet(),
             Command::AttachExternal { claude_session_id, ticket } => {
                 match self.attach_external(&env.principal, claude_session_id, ticket) {
                     Ok(id) => {
@@ -1774,6 +1823,28 @@ impl Daemon {
             },
             Err(e) => Response::Err { message: e.to_string() },
         }
+    }
+
+    /// How long the person inside the focused pane has been quiet (T-299).
+    ///
+    /// One `list-clients` fork, and only on the notification thread's ask —
+    /// which happens when it is holding a line ABOUT the watched ticket and
+    /// is deciding whether to swallow it, so on a board nobody is attached
+    /// to it never runs at all. Same writer-thread reasoning as `pane_tail`:
+    /// one small tmux fork, where the off-thread treatment exists for git.
+    ///
+    /// Every way of not knowing is `None`, and the caller reads `None` as
+    /// away. Only a SESSION attach can answer: the `!` terminal and the gate
+    /// are somebody's own shell, and T-292's suppression was never theirs.
+    fn focus_quiet(&self) -> Response {
+        let Some(Focus::Session(id)) = self.focus else {
+            return Response::FocusQuiet { quiet_ms: None };
+        };
+        let Some(rec) = self.board.sessions.iter().find(|r| r.id == id) else {
+            return Response::FocusQuiet { quiet_ms: None };
+        };
+        let secs = self.backend.client_quiet_secs(&rec.sid16()).ok().flatten();
+        Response::FocusQuiet { quiet_ms: secs.map(|s| s.saturating_mul(1000)) }
     }
 
     /// Session names for the board: latch each live pane's OSC-0 title onto
@@ -2238,10 +2309,20 @@ impl Daemon {
                     // (T-117): a ticket described after its spawn — the
                     // composer's order, an auto-run's — still gets it. No
                     // description means the title alone, the plain Enter.
+                    // The words a Shift+Enter carried into an empty seat
+                    // (T-294) ride UNDER the brief, in the order they were
+                    // written: the ticket says what the work is, the user
+                    // says what to do about it first.
                     let text = if brief {
-                        self.description_body(ticket)
+                        let brief = self
+                            .description_body(ticket)
                             .map(|b| format!("\n\n{b}"))
-                            .unwrap_or_default()
+                            .unwrap_or_default();
+                        match (brief.is_empty(), text.is_empty()) {
+                            (_, true) => brief,
+                            (true, false) => format!("\n\n{text}"),
+                            (false, false) => format!("{brief}\n\n{text}"),
+                        }
                     } else {
                         text
                     };
@@ -3313,9 +3394,11 @@ impl Daemon {
             .map(|i| &self.queued[i])
             .map(|q| mesimon_core::command::Pending {
                 ticket: q.ticket,
-                action: "ask".into(),
+                // The seat's own word, so the card can say a session will
+                // START rather than that words are queued (T-294).
+                action: q.seat.word().into(),
                 waits_on: self.ask_waits_on(q.ticket),
-                text: Some(q.text.clone()),
+                text: (!q.text.is_empty()).then(|| q.text.clone()),
                 in_flight: false,
             })
             .collect();
@@ -3796,7 +3879,7 @@ impl Daemon {
         if !wants {
             return false;
         }
-        match self.spawn_session(id, SessionKind::Claude, true) {
+        match self.spawn_session(id, SessionKind::Claude, true, None) {
             Response::Spawned { .. } | Response::Provisioning => {
                 self.feed.board("automation", "auto_run_started", Some(id));
                 true
@@ -4557,30 +4640,69 @@ impl Daemon {
     /// holds for it in the strongest form the promise has: mesimon does not
     /// add a token, and here it does not author one either.
     fn prompt_session(&mut self, ticket: ulid::Ulid, text: String, queued: bool) -> Response {
+        let seat = self.seat_of(ticket);
         // Blank in, nothing out: an empty paste would press Enter on a turn
-        // the user never wrote.
-        let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
-            return Response::Err { message: "nothing to send".into() };
+        // the user never wrote. An EMPTY SEAT is the one exception (T-294):
+        // there the Enter lands on the ticket title the spawn types, which
+        // is a turn the user did write — it is the composed start, asked for
+        // through the same field.
+        let text = match (mesimon_core::command::sanitize_prompt(&text), &seat) {
+            (Some(text), _) => text,
+            (None, QueuedSeat::Start) => String::new(),
+            (None, _) => return Response::Err { message: "nothing to send".into() },
         };
         if queued {
-            return self.enqueue_ask(ticket, text);
+            return self.enqueue_ask(ticket, seat, text);
         }
         // Sending now while an ask waits is the user talking to the agent
         // ahead of it: the waiting words are theirs to drop, and they just
         // did (the TUI's status says so).
         self.forget_queued(ticket, "queued_ask_dropped", "local");
-        if self.prompt_target(ticket).is_none() {
-            return self.prompt_sleeping(ticket, text);
+        self.deliver(ticket, seat, text)
+    }
+
+    /// Where the ticket's claude is, for a prompt: in a pane, parked, or not
+    /// there at all. The same three answers `prompt_session` routes on and
+    /// `drain_queue` re-checks at delivery — one function, so a queued ask
+    /// and a sent one can never disagree about what "the ticket's claude"
+    /// means. `has_pane` before `is_live`: a parked session is live and has
+    /// no process to type at.
+    fn seat_of(&self, ticket: ulid::Ulid) -> QueuedSeat {
+        if let Some(id) = self.prompt_target(ticket) {
+            return QueuedSeat::Pane(id);
         }
-        match self.paste_to_ticket(ticket, &text) {
-            // The board's own picture of the session is now a turn behind:
-            // the record still says `Idle` until the agent's `UserPromptSubmit`
-            // hook lands, and that is the hook's to say, not ours. What we
-            // broadcast is the feed entry above — the card catches up when
-            // the agent does, the same way it does for a prompt typed in the
-            // pane.
-            Ok(()) => Response::Ok,
-            Err(message) => Response::Err { message },
+        // Live and paneless is exactly Sleeping (`has_pane` excludes only
+        // `Exited` and `Sleeping`), so this arm is the parked claude, and
+        // `prompt_sleeping`'s own filter is the belt under it.
+        match self.board.live_claude(ticket) {
+            Some(rec) => QueuedSeat::Wake(rec.id),
+            None => QueuedSeat::Start,
+        }
+    }
+
+    /// Put the user's words in front of this ticket's claude, whatever seat
+    /// it is in — the one road, taken by a send-now `PromptSession` and by
+    /// `drain_queue` when a checkout goes quiet (T-294). A pane is pasted
+    /// into, a parked claude is woken with the words parked for its first
+    /// tick, and an EMPTY seat starts one: the title is typed as always and
+    /// the words ride under the brief.
+    fn deliver(&mut self, ticket: ulid::Ulid, seat: QueuedSeat, text: String) -> Response {
+        match seat {
+            QueuedSeat::Pane(_) => match self.paste_to_ticket(ticket, &text) {
+                // The board's own picture of the session is now a turn behind:
+                // the record still says `Idle` until the agent's `UserPromptSubmit`
+                // hook lands, and that is the hook's to say, not ours. What we
+                // broadcast is the feed entry above — the card catches up when
+                // the agent does, the same way it does for a prompt typed in the
+                // pane.
+                Ok(()) => Response::Ok,
+                Err(message) => Response::Err { message },
+            },
+            QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text),
+            QueuedSeat::Start => {
+                let words = (!text.is_empty()).then_some(text);
+                self.spawn_session(ticket, SessionKind::Claude, true, words)
+            }
         }
     }
 
@@ -4621,38 +4743,54 @@ impl Daemon {
     }
 
     /// The board's Shift+Enter with the field at `queued`: park the words
-    /// until no claude sharing this ticket's checkout is mid-turn. A pane is
-    /// required — a Sleeping claude would have to be woken at delivery time
-    /// into the very checkout just judged quiet, with `resume_session`'s own
-    /// refusals arriving seconds later — and so is the shared checkout: a
-    /// worktree's checkout is its own, and there the toggle is not offered.
-    /// One entry per ticket (a second replaces the words in place, keeping
-    /// the turn), then a drain: a checkout already quiet sends at once.
-    fn enqueue_ask(&mut self, ticket: ulid::Ulid, text: String) -> Response {
-        let Some(rec) = self.board.pane_target(ticket) else {
-            return Response::Err {
-                message: "a queued ask needs an awake claude — wake it first".into(),
-            };
+    /// until no claude sharing this ticket's checkout is mid-turn. A SHARED
+    /// checkout is required — a worktree's checkout is its own, and there the
+    /// toggle is not offered — and that is the only requirement since T-294:
+    /// the seat may be a pane, a parked claude the delivery wakes, or empty,
+    /// where the delivery starts one. Those two are the presses that most
+    /// deserve to wait, since they add a writer to the checkout rather than
+    /// asking the one already in it. One entry per ticket (a second replaces
+    /// the words in place, keeping the turn), then a drain: a checkout
+    /// already quiet sends at once.
+    fn enqueue_ask(&mut self, ticket: ulid::Ulid, seat: QueuedSeat, text: String) -> Response {
+        let Some(t) = self.board.ticket(ticket) else {
+            return no_such_ticket();
         };
-        let (session, cwd) = (rec.id, rec.cwd.clone());
-        let shared = self
-            .board
-            .ticket(ticket)
-            .is_some_and(|t| t.workspace_strategy() == WorkspaceStrategy::SharedCheckout)
+        if t.is_archived() {
+            return Response::Err { message: "ticket archived — restore it first".into() };
+        }
+        let shared = t.workspace_strategy() == WorkspaceStrategy::SharedCheckout
             && !self.worktrees.contains_key(&ticket);
         if !shared {
             return Response::Err {
                 message: "a worktree ticket's checkout is its own — send it now".into(),
             };
         }
+        // The checkout the delivery will land in: the target's own cwd where
+        // there is a session, else the shared root a spawn would resolve to
+        // (`resolve_spawn_cwd`, a pure read for this strategy).
+        let cwd = match &seat {
+            QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => {
+                match self.board.sessions.iter().find(|s| s.id == *id) {
+                    Some(rec) => rec.cwd.clone(),
+                    None => return Response::Err { message: "no such session".into() },
+                }
+            }
+            QueuedSeat::Start => self.paths.repo_root.display().to_string(),
+        };
+        // The PTY budget is deliberately NOT consulted here: a start that
+        // would be refused for resources now may be fine when its turn comes,
+        // and `spawn_session` says so at delivery either way.
         let now = now_ms();
+        let word = seat.word();
         if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
             q.text = text;
-            q.session = session;
+            q.seat = seat;
+            q.cwd = cwd;
             self.feed.board("local", "queued_ask_replaced", Some(ticket));
         } else {
-            self.queued.push(QueuedAsk { ticket, session, cwd: cwd.clone(), text, queued_at: now });
-            self.feed.board("local", "queued_ask", Some(ticket));
+            self.queued.push(QueuedAsk { ticket, seat, cwd, text, queued_at: now });
+            self.feed.board("local", &format!("queued_{word}"), Some(ticket));
         }
         self.drain_queue(now);
         self.broadcast();
@@ -4661,6 +4799,14 @@ impl Daemon {
             Response::Queued { behind }
         } else if self.inflight.contains_key(&ticket) {
             Response::Ok
+        } else if word != "ask" {
+            // A start or a wake delivered on the spot: it holds the checkout
+            // through its own record (`Spawning` + an owed Enter), so there
+            // is no in-flight marker to look for — the session is the receipt.
+            match self.board.live_claude(ticket) {
+                Some(rec) => Response::Spawned { id: rec.id, fresh: false },
+                None => Response::Err { message: "could not deliver".into() },
+            }
         } else {
             Response::Err { message: "could not deliver".into() }
         }
@@ -4729,33 +4875,62 @@ impl Daemon {
         take.sort_unstable_by(|a, b| b.cmp(a));
         let mut changed = false;
         for i in take {
-            let q = self.queued.remove(i);
+            let QueuedAsk { ticket, seat, text, .. } = self.queued.remove(i);
             changed = true;
-            match self.board.pane_target(q.ticket) {
-                Some(rec) if rec.id == q.session => {
-                    let sid = rec.sid16();
-                    match self.backend.paste_text(&sid, &q.text) {
-                        Ok(()) => {
-                            self.inflight
-                                .insert(q.ticket, (now + INFLIGHT_MS, "queued_ask_delivered"));
-                            self.feed.board("automation", "queued_ask_sent", Some(q.ticket));
-                        }
-                        Err(_) => {
-                            self.feed.board("automation", "queued_ask_failed", Some(q.ticket))
-                        }
+            let word = seat.word();
+            if !self.seat_stands(ticket, &seat) {
+                self.feed.board("automation", "queued_ask_dropped_target_gone", Some(ticket));
+                continue;
+            }
+            // A pane's paste is owed an ack, so the checkout is held by the
+            // `inflight` marker until it lands. A wake and a start hold it
+            // through their own record — `Spawning` and an owed Enter are
+            // both WORKING — so they need no marker, and the card shows the
+            // launching arc instead of `queued ∙ sending`.
+            match seat {
+                QueuedSeat::Pane(_) => match self.paste_to_ticket(ticket, &text) {
+                    Ok(()) => {
+                        self.inflight.insert(ticket, (now + INFLIGHT_MS, "queued_ask_delivered"));
+                        self.feed.board("automation", "queued_ask_sent", Some(ticket));
                     }
-                }
-                _ => {
-                    self.feed.board("automation", "queued_ask_dropped_target_gone", Some(q.ticket))
-                }
+                    Err(_) => self.feed.board("automation", "queued_ask_failed", Some(ticket)),
+                },
+                seat => match self.deliver(ticket, seat, text) {
+                    Response::Err { message } => {
+                        eprintln!("mesimon: queued {word} failed: {message}");
+                        self.feed.board(
+                            "automation",
+                            &format!("queued_{word}_failed"),
+                            Some(ticket),
+                        );
+                    }
+                    _ => {
+                        self.feed.board("automation", &format!("queued_{word}_sent"), Some(ticket));
+                    }
+                },
             }
         }
         changed
     }
 
-    /// Drop the asks whose ticket or target is gone: the ticket deleted or
-    /// archived, the pane dead or parked, or a different session in the
-    /// seat. The explicit cancels (`kill_session`, `sleep_one`,
+    /// Is the seat an entry was queued at still the seat it named? A pane
+    /// must be the same pane, a parked claude the same record (woken by hand
+    /// in the meantime is fine — same session, same conversation), and a
+    /// `Start` needs the seat still EMPTY, since a claude somebody started
+    /// there is not one to start beside. A seat that changed drops the
+    /// entry; nothing is ever redirected.
+    fn seat_stands(&self, ticket: ulid::Ulid, seat: &QueuedSeat) -> bool {
+        match seat {
+            QueuedSeat::Pane(id) => self.prompt_target(ticket) == Some(*id),
+            QueuedSeat::Wake(id) => self.board.live_claude(ticket).map(|s| s.id) == Some(*id),
+            QueuedSeat::Start => self.board.live_claude(ticket).is_none(),
+        }
+    }
+
+    /// Drop the asks whose ticket or seat is gone: the ticket deleted or
+    /// archived, the pane dead or parked, a different session in the seat,
+    /// or — for a queued start — a claude somebody started there by hand
+    /// (`seat_stands`). The explicit cancels (`kill_session`, `sleep_one`,
     /// `delete_ticket`, a send-now) name their reason; this is the net.
     fn sweep_queue(&mut self) -> bool {
         let stale: Vec<ulid::Ulid> = self
@@ -4763,9 +4938,7 @@ impl Daemon {
             .iter()
             .filter(|q| {
                 let ticket_gone = self.board.ticket(q.ticket).is_none_or(|t| t.is_archived());
-                let target_gone =
-                    self.board.pane_target(q.ticket).is_none_or(|s| s.id != q.session);
-                ticket_gone || target_gone
+                ticket_gone || !self.seat_stands(q.ticket, &q.seat)
             })
             .map(|q| q.ticket)
             .collect();
@@ -5510,6 +5683,7 @@ impl Daemon {
         ticket: ulid::Ulid,
         kind: SessionKind,
         submit_prompt: bool,
+        prompt: Option<String>,
     ) -> Response {
         if self.board.ticket(ticket).is_none() {
             return no_such_ticket();
@@ -5547,8 +5721,8 @@ impl Daemon {
         let cwd = match self.resolve_spawn_cwd(ticket) {
             Ok(Some(p)) => p,
             Ok(None) => {
-                if !self.pending_spawns.iter().any(|(t, k, _)| *t == ticket && *k == kind) {
-                    self.pending_spawns.push((ticket, kind, submit_prompt));
+                if !self.pending_spawns.iter().any(|s| s.ticket == ticket && s.kind == kind) {
+                    self.pending_spawns.push(PendingSpawn { ticket, kind, submit_prompt, prompt });
                 }
                 self.persist_and_notify();
                 return Response::Provisioning;
@@ -5616,7 +5790,14 @@ impl Daemon {
                     // `Created`, and a column's auto-run spawns inside it,
                     // so what was on disk at spawn is not yet the brief.
                     if submit_prompt {
-                        self.pending_prompt.insert(id, Parked { text: String::new(), brief: true });
+                        // `prompt` is the ask a Shift+Enter carried into an
+                        // empty seat (T-294) — parked BESIDE the brief, not
+                        // instead of it: the agent gets the ticket's own
+                        // words and then the user's. Empty is the ordinary
+                        // composed spawn, whose prompt is the title and the
+                        // description.
+                        let text = prompt.unwrap_or_default();
+                        self.pending_prompt.insert(id, Parked { text, brief: true });
                     }
                 }
             }
@@ -5735,16 +5916,19 @@ impl Daemon {
         match result {
             Ok(b) => {
                 self.worktrees.insert(ticket, b);
-                let pending: Vec<(ulid::Ulid, SessionKind, bool)> =
-                    self.pending_spawns.iter().filter(|(t, _, _)| *t == ticket).cloned().collect();
-                self.pending_spawns.retain(|(t, _, _)| *t != ticket);
-                for (t, kind, submit) in pending {
+                let (pending, rest): (Vec<PendingSpawn>, Vec<PendingSpawn>) =
+                    self.pending_spawns.drain(..).partition(|s| s.ticket == ticket);
+                self.pending_spawns = rest;
+                for s in pending {
                     // A failed replay has no client waiting on it — leave a
                     // feed trace (the TUI's parked focus intent surfaces the
                     // "attached but no session" outcome to the user).
-                    if let Response::Err { message } = self.spawn_session(t, kind, submit) {
+                    let kind = s.kind;
+                    if let Response::Err { message } =
+                        self.spawn_session(s.ticket, kind, s.submit_prompt, s.prompt)
+                    {
                         eprintln!("mesimon: parked spawn replay failed ({kind:?}): {message}");
-                        self.feed.board("daemon", "spawn_replay_failed", Some(t));
+                        self.feed.board("daemon", "spawn_replay_failed", Some(s.ticket));
                     }
                 }
                 // A wake parked behind the rebuild (T-278) replays the same
@@ -5769,7 +5953,7 @@ impl Daemon {
                 }
             }
             Err((stage, message)) => {
-                self.pending_spawns.retain(|(t, _, _)| *t != ticket);
+                self.pending_spawns.retain(|s| s.ticket != ticket);
                 self.pending_resumes.retain(|r| r.ticket != ticket);
                 if let Some(b) = self.worktrees.get_mut(&ticket) {
                     b.status = BindingStatus::Error { stage, message };

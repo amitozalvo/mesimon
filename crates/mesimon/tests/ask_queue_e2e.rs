@@ -56,12 +56,6 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     let b = board.tickets.iter().find(|t| t.title == "waiter").expect("b").id;
     let a_key = board.ticket(a).unwrap().short_key.clone();
 
-    // A queued ask needs an awake pane: refused before any agent exists.
-    err_containing(
-        c.request(Command::PromptSession { ticket: b, text: "early".into(), queued: true }),
-        "awake claude",
-    );
-
     let spawn = |c: &mut TestClient, ticket| match c.request(Command::SpawnSession {
         ticket,
         kind: SessionKind::Claude,
@@ -224,14 +218,116 @@ fn a_queued_ask_waits_for_the_checkout_and_is_dropped_when_the_user_talks_first(
     assert!(matches!(c.request(Command::SleepSession { id: sb }), Response::Ok));
     c.await_state(sb, "sleeping", |s| *s == SessionState::Sleeping);
     assert!(pending_of(&mut c, None).is_empty());
-    // And a queued ask at a sleeping claude is refused, not parked.
-    err_containing(
-        c.request(Command::PromptSession { ticket: b, text: "later".into(), queued: true }),
-        "awake claude",
-    );
+    // And a queued ask AT a sleeping claude parks as a wake (T-294): the
+    // delivery is what wakes it, so the words wait with everything else
+    // rather than starting a turn in a checkout somebody else is holding.
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket: b,
+            text: "mesimon-probe-58 later".into(),
+            queued: true
+        }),
+        Response::Queued { .. }
+    ));
+    let p = pending_of(&mut c, Some(b));
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0].action, "wake", "the card says a session will wake, not that words wait");
+    // Take it back off: the wake's own road is the test below, and this one
+    // is about to free the checkout.
+    assert!(matches!(c.request(Command::DropQueuedAsk { ticket: b }), Response::Ok));
     stop(&mut c, sa);
     std::thread::sleep(Duration::from_millis(2500));
     assert!(!text().contains("mesimon-probe-57"), "{:?}", text());
+
+    let _ = c.request(Command::Shutdown);
+}
+
+/// T-294: an EMPTY seat is a seat too. A queued ask on a ticket with no
+/// claude parks a START — the loudest thing the board's Shift+Enter does,
+/// and the one that most deserves to wait — and the checkout going quiet
+/// spawns one on the ticket's own title with the words under it.
+#[test]
+fn a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) =
+        Harness::boot_with_env("askstart", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
+    let got = h.dir.join("got.txt");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("askstart");
+    let text = || std::fs::read_to_string(&got).unwrap_or_default();
+
+    for title in ["holder", "waiter"] {
+        let _ = c.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: title.into(),
+            workspace: None,
+        });
+    }
+    let board = c.board();
+    let a = board.tickets.iter().find(|t| t.title == "holder").expect("a").id;
+    let b = board.tickets.iter().find(|t| t.title == "waiter").expect("b").id;
+    let a_key = board.ticket(a).unwrap().short_key.clone();
+
+    let sa = match c.request(Command::SpawnSession {
+        ticket: a,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    // A stub emits no `SessionStart`, so the record sits at `Spawning` —
+    // which is WORKING — until the hooks say otherwise.
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+
+    // The ask parks: no session on B, and the card says one is coming.
+    match c.request(Command::PromptSession {
+        ticket: b,
+        text: "mesimon-probe-71 read the ticket".into(),
+        queued: true,
+    }) {
+        Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
+        other => panic!("expected the start to be parked: {other:?}"),
+    }
+    let p = pending_of(&mut c, Some(b));
+    assert_eq!(p.len(), 1);
+    assert_eq!(p[0].action, "start");
+    assert_eq!(p[0].waits_on, vec![a_key]);
+    assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-71 read the ticket"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        c.board().sessions.iter().all(|s| s.ticket != b),
+        "nothing may start while the checkout is held"
+    );
+
+    // A settles; the start goes.
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(10), "the queued start to spawn a claude", || {
+        c.board().sessions.iter().any(|s| s.ticket == b && s.kind == SessionKind::Claude)
+    });
+    let sb = c
+        .board()
+        .sessions
+        .iter()
+        .find(|s| s.ticket == b)
+        .map(|s| (s.id, s.pending_submit))
+        .expect("the started session");
+    assert!(sb.1, "the composed spawn owes its Enter");
+    assert!(pending_of(&mut c, Some(b)).is_empty(), "the entry left with the delivery");
+
+    // The words ride the spawn: typed title first, then the paste on the
+    // first tick after `SessionStart`, exactly as a composed spawn does.
+    hook_send(&hook_sock, &sb.0.to_string(), "SessionStart", r#"{"source":"startup"}"#);
+    wait_until(Duration::from_secs(10), "the parked words to land", || {
+        text().contains("mesimon-probe-71 read the ticket")
+    });
+    assert!(text().contains("waiter"), "the title was typed too: {:?}", text());
 
     let _ = c.request(Command::Shutdown);
 }

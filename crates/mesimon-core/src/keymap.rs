@@ -395,7 +395,9 @@ pub enum Verb {
     /// claude seat is EMPTY the press is the composer's second half over
     /// again (2026-09-03): start claude with the title as its first prompt,
     /// submitted, and stay — a ticket saved with plain Enter gets the same
-    /// key later instead of a different one.
+    /// key later instead of a different one. Where another claude holds the
+    /// checkout the same press opens the field at `queued` (T-294): the
+    /// start is the loudest thing this key does, so it is the one that asks.
     Prompt,
     /// `S` on the ticket page: a second shell beside whatever is there.
     /// There is no Claude twin: a ticket holds ONE claude (2026-09-02), and a
@@ -449,6 +451,14 @@ pub enum Verb {
     /// Whether the banner also shows while the board's own terminal has
     /// focus. The sound plays either way; this row is only the banner.
     NotifyFocused,
+    /// Whether anything is said about the ticket whose agent pane you are
+    /// attached to (T-292). The one notification row that governs the SOUND
+    /// as well: the pane already showed you, and there is nowhere to go look.
+    NotifyInPane,
+    /// Whether a banner may quote the AGENT (T-292) — its last line, and a
+    /// raised hand's own sentence — or name only the ticket. mesimon's own
+    /// reason word is not the agent's words and is never withheld.
+    NotifyWords,
     /// The Settings row that turns the merge train on or off (2026-09-04):
     /// while every claude is idle, mesimon fast-forwards finished REVIEW
     /// branches and asks idle agents whose branch fell behind to rebase;
@@ -798,12 +808,19 @@ pub struct Ctx {
     /// field has somewhere to go. Gates the key AND its hint: a field with
     /// no history offers no history.
     pub prompt_history: bool,
-    /// The ask field's ticket is a shared-checkout ticket with an awake
-    /// claude, so Shift+Tab can make the ask WAIT for the checkout to go
-    /// quiet (2026-09-04). Never a worktree ticket: its checkout is its own.
+    /// The ask field's ticket is a shared-checkout ticket, so Shift+Tab can
+    /// make the ask WAIT for the checkout to go quiet (2026-09-04). Never a
+    /// worktree ticket: its checkout is its own. A pane is NOT required
+    /// since T-294 — the delivery wakes a parked claude, or starts one.
     pub ask_queueable: bool,
     /// The ask field's toggle sits at `queued` — Enter parks the words.
     pub ask_queued: bool,
+    /// A claude is mid-turn in the subject ticket's shared checkout, so a
+    /// press that would START or WAKE a session there stops and asks first
+    /// (T-294). The TUI's own read of `quiet::is_working`, and a HINT: it
+    /// decides whether a field opens, never how the words are delivered.
+    /// False on a worktree ticket — its checkout is its own.
+    pub checkout_busy: bool,
     /// The subject ticket has an ask waiting (not yet pasted): Shift+Enter
     /// reopens the field on it, and a blank Enter there drops it.
     pub ticket_queued: bool,
@@ -838,10 +855,12 @@ pub struct Ctx {
     /// `Ctx` (the row falls to a plain label); `App::ctx` always sets it.
     pub week_start_word: &'static str,
     /// The notification preferences (T-282), each one row's word. `notify`
-    /// gates the other four: an off list is a single row.
+    /// gates the other five: an off list is a single row.
     pub notify: bool,
     pub notify_done: bool,
     pub notify_focused: bool,
+    pub notify_in_pane: bool,
+    pub notify_words: bool,
     /// The two sound names — `notify::Sound::name()`, so the row, `doctor`
     /// and the ring agree on the spelling. Empty in a bare `Ctx`;
     /// `App::ctx` always sets them.
@@ -1135,7 +1154,10 @@ static BOARD: &[Binding] = &[
         // An empty seat gets the composer's sentence: the press starts
         // claude on the title, submitted, and stays. A ticket saved with
         // plain Enter is one press behind a Shift+Enter one, and this is
-        // that press.
+        // that press — unless another claude is working in the same
+        // checkout (T-294), where the field opens at `queued` instead, so
+        // the start waits its turn rather than becoming a second writer in
+        // one index.
         hint: |c| {
             // A parked agent has no box to type into, and until 2026-09-04
             // that left the key inert there — `c`, wait, come back, ask.
@@ -1149,6 +1171,12 @@ static BOARD: &[Binding] = &[
                 "wake + ask claude"
             } else if c.ticket_has_claude {
                 "ask claude"
+            } else if c.checkout_busy {
+                // An empty seat on a checkout somebody else is working in
+                // (T-294): the press opens the field instead of spawning,
+                // so the start can wait its turn. The word names what the
+                // key is for, and the field says now or queued.
+                "start claude"
             } else {
                 "ask claude the title"
             }
@@ -3168,6 +3196,29 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
         avail: |c| c.notify,
         key: "",
     },
+    // What a banner actually SAYS (T-292), before what it sounds like: the
+    // ticket's title and the agent's own line are the reason the channel was
+    // worth opening, and a banner lands on a lock screen other people see.
+    // The ticket is never withheld — that half is the feature.
+    MenuItem {
+        verb: Verb::NotifyWords,
+        label: |c| {
+            if c.notify_words {
+                "The agent's words: quoted".into()
+            } else {
+                "The agent's words: withheld".into()
+            }
+        },
+        detail: |c| {
+            if c.notify_words {
+                "its last line, on the banner ∙ enter names only the ticket".into()
+            } else {
+                "the ticket and the reason word only ∙ enter quotes it".into()
+            }
+        },
+        avail: |c| c.notify,
+        key: "",
+    },
     MenuItem {
         verb: Verb::NotifySoundNeedsYou,
         label: |c| {
@@ -3198,6 +3249,28 @@ pub static NOTIFY_ITEMS: &[MenuItem] = &[
                 "a banner over the board that already says it ∙ enter quiets it".into()
             } else {
                 "the card already says so ∙ the sound plays either way ∙ enter shows it".into()
+            }
+        },
+        avail: |c| c.notify,
+        key: "",
+    },
+    // The same idea one level finer (T-292), and the one row that governs
+    // the sound as well: on the board a chime still says "go look", and
+    // inside the agent's own pane there is nowhere left to go.
+    MenuItem {
+        verb: Verb::NotifyInPane,
+        label: |c| {
+            if c.notify_in_pane {
+                "Inside the agent's own pane: said anyway".into()
+            } else {
+                "Inside the agent's own pane: silent".into()
+            }
+        },
+        detail: |c| {
+            if c.notify_in_pane {
+                "said about the very pane you are attached to ∙ enter quiets it".into()
+            } else {
+                "its own pane already showed you ∙ sound too ∙ enter says it anyway".into()
             }
         },
         avail: |c| c.notify,
@@ -4677,6 +4750,12 @@ mod tests {
         assert_eq!(hint_for(Scope::Input, Verb::CycleWorkspace, &prompting), None);
         let shared = Ctx { ask_queueable: true, ..prompting.clone() };
         assert_eq!(resolve(Scope::Input, Key::BackTab, &shared), Some(Verb::CycleWorkspace));
+        assert_eq!(
+            hint_for(Scope::Input, Verb::CycleWorkspace, &shared),
+            Some(("shift+tab", "now / queued")),
+            "T-294: the seat does not enter into it — a shared checkout is \
+             the whole gate, since the delivery can wake or start a claude"
+        );
         assert_eq!(hint_for(Scope::Input, Verb::Save, &shared), Some(("enter", "send")));
         let queued = Ctx { ask_queued: true, ..shared.clone() };
         assert_eq!(hint_for(Scope::Input, Verb::Save, &queued), Some(("enter", "queue")));
@@ -4832,6 +4911,21 @@ mod tests {
         let parked = Ctx { ticket_has_claude: true, ..empty.clone() };
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &parked),
+            Some(("shift+enter", "wake + ask claude"))
+        );
+        // T-294: with another claude working in the same checkout the same
+        // press opens the field instead, so the start can wait its turn.
+        let busy = Ctx { checkout_busy: true, ..empty.clone() };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &busy), Some(Verb::Prompt));
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &busy),
+            Some(("shift+enter", "start claude"))
+        );
+        // A seat that is taken says what it always said: the busy checkout
+        // changes which DEFAULT the field opens at, never the word.
+        let busy_parked = Ctx { checkout_busy: true, ..parked.clone() };
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &busy_parked),
             Some(("shift+enter", "wake + ask claude"))
         );
         let no_card = Ctx { has_ticket: false, ..empty.clone() };

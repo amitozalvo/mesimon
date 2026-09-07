@@ -4871,8 +4871,8 @@ reopens the field on the words at `queued` (hint `edit the queued ask`); Esc kee
 Enter drops it (`DropQueuedAsk`; the emptied field's placeholder says `enter drops`, since T-241) — no Esc-menu row, the menu
 is for things not about the selection. E2e `ask_queue_e2e`.
 
-**Not done.** Persistence across a restart; per-column policy (M5); a wake-then-ask road for a
-sleeping target.
+**Not done.** Persistence across a restart; per-column policy (M5). *(The wake-then-ask road
+landed in T-294, below.)*
 
 ## The merge train: mesimon merges and asks to rebase while the board is quiet (2026-09-04, user: "worktrees deserve automation")
 
@@ -6868,3 +6868,562 @@ before `BUG` so a pass by name would fail, checks axis 2 breaking a tie, checks 
 sinking and ties holding, then moves a tag along the row and asserts the cards followed), the
 extended `the_sort_row_steps_on_l_and_runs_on_enter` (the ring reaches `by tag` and wraps), and
 the wire + disk round trip at the end of `tags_e2e`.
+
+## Notifications speak from a thread of their own (T-291, 2026-09-07, dogfooding T-282: "notifications aren't available while focused on a tmux session")
+
+T-282 shipped the channel and then could not use it in the one case it was built for. Heads-down
+in an agent's pane, board invisible, nine other agents finishing behind it — silence until you
+detach. Two independent bugs, both from that block above.
+
+**Bug A: nothing fired at all during a handover.** `handover::run` blocks on `cmd.status()` for
+the whole life of the child, so between `restore_terminal` and the return there is no `App::tick`
+— no snapshot, no differ, no coalescer beat, no drain of the parked post. T-282's whole
+architecture is "the attached board speaks", and during a handover the board is not running. The
+hole was never attach-specific: `!` (the project terminal), `^g` (the external editor) and `^Z`
+all ride the same road.
+
+**Bug B: the focus rule asked the wrong question.** `notify::Presence` was defined as "the
+terminal window has focus". While you are attached to a pane the terminal IS focused, so even
+with the loop running the banner would have been suppressed and only the sound would have gone
+out. The rule is now **the board is ON SCREEN and focused** — `Presence::looking`, with
+`saw_board(bool)` set around every handover, and `focused` kept as the half it is built from
+(`doctor` still reports whether the terminal ever answered). `a_board_off_screen_is_not_being_looked_at_however_focused_the_terminal_is`
+is the law, and it names both failure shapes: a stale keypress into somebody else's pane is not
+presence either.
+
+**The fix is a thread, not the daemon.** `tui/src/notifier.rs` owns a second daemon connection
+alive for the life of the board process: it subscribes, runs the differ and the coalescer, and
+posts, and none of that depends on where the main loop is. The daemon road was considered and
+refused for the reason T-282's own block gives — `Change.attention_added` is still sitting in
+`attention.rs` with no consumer, and taking it would end "a closed board is silent", which is
+D15's constraint and the sentence the Settings row says. The thread keeps the process dying as
+the off switch, needs no wire command, no `Snapshot` field, no schema and no daemon state, and
+does not spend the wire protocol on what is a view concern. Notifying with no board open at all
+is a different feature, and a surprising one.
+
+**What moved where.** The differ left `App` for `core/src/notify.rs::Differ` — it was always
+pure, and its eight tests moved with it and read better against a `Board` fixture than against an
+`App`. `App` keeps four forwarders and one field: `notifier`, set by `lib.rs` and never
+`App::new`, the rule the two ladders and `opener` already follow — so no test app and no golden
+raises a banner, makes a sound, or opens a second connection. The main loop pushes three things
+the thread cannot know: presence (focus events, keypresses, `saw_board` around every handover),
+the five preference fields (on every `App::set_pref`, so a row the user just took cannot be acted
+on once more), and the terminal. `App::started` and `now_ms` went with the differ; the clock is
+now `Shared`'s, because the main loop stamps a keypress with it and the thread reads that stamp
+back thirty seconds later, and two `Instant`s of their own would disagree by however long the
+board took to start.
+
+**A second writer on stdout is the new hazard, and `notify::Console` is the answer.** Every rung
+but two spawns a program with null stdio and is indifferent to what the terminal is doing; OSC 9
+and the bell are writes into the same stream ratatui draws on. One lock over one fact — does the
+board hold the terminal? — taken by the draw to draw, by a rung to write, and by a handover to
+change hands. So an escape can neither land inside a frame nor reach a terminal that now belongs
+to tmux. While the board is off screen those two rungs say **nothing**, and that is the honest
+limit rather than a bug to chase: a banner held for the twenty minutes somebody stays in a pane
+is worse than one never raised. The ladders already prefer a helper program, so a machine with
+`terminal-notifier` or `notify-send` is fully fixed and a pure-OSC one is not; `doctor` says so
+on the OSC rung's own line rather than leaving it to be discovered.
+
+**Two things the observer connection must not do**, both learned from reading the roads it was
+about to take. It never restarts the daemon on a build skew — `build_skew`'s ordering rule exists
+precisely to stop two clients taking turns, and a second connection with no board behind it has
+no business voting. And it never brings a daemon UP: `Client::connect_observer` reopens through
+`open_existing` (a bare `UnixStream::connect`, no spawn, no lock wait, no budget), because `U`
+asks the daemon to stop and then waits for it to be GONE — a thread respawning one behind
+`reexec`'s wait would have turned every reload into thirty seconds of "still shutting down"
+followed by a connect to a daemon nobody asked for. `run` also drops the notifier and takes the
+escape rungs away before `restore_terminal`, so the reload's own words have the terminal to
+themselves. `an_observer_subscribes_and_never_spawns_a_daemon` (in `restart_skew_e2e`, the one
+e2e that drives the real client) pins both halves and the subscription itself, which is the only
+new thing on the wire: two connections on one daemon, both told.
+
+**Cost.** With notifications ON a board change is now two `Snapshot` round trips instead of one.
+That is the price of the design and it is bounded by the switch: off — the default — the thread
+holds no connection at all, dials nothing and asks nothing, and a beat on a quiet daemon is one
+`try_recv` on the event channel.
+
+## A ticket is quiet inside its own pane (T-292, 2026-09-07, user: "not show the notification (+ sound) if inside the tmux agent session of the ticket owning the notification")
+
+T-291 made the board speak through a handover, which immediately made the obvious next thing
+audible: attached to T-5's claude, talking to it, every turn it ends rings a bell and raises a
+banner for the pane already filling the screen. The fix is the focus rule one level finer.
+
+**The rule and why it is STRONGER than the focus rule.** Looking at the board takes the banner
+and leaves the sound: a card is small, the chime says go look, and the two are different jobs.
+Inside the agent's own pane there is no second job — the permission prompt IS the pane and the
+finished turn IS the last thing printed in it — so `Presence::watching` takes both, and it is the
+only suppression in the feature that does. Only that ticket goes quiet; the other nineteen agents
+are exactly as invisible from inside a pane as they ever were, and T-291 exists to let them
+through.
+
+**Which handovers count.** An attach to that ticket's CLAUDE, and nothing else
+(`App::watched_ticket`, read off `focused_session_hint` at the moment `lib.rs` gives the terminal
+away). A SHELL session on the same ticket, the `!` terminal in its worktree and a `^g` editor all
+show the user's own words rather than the agent's turn, so an agent's news there is news — the
+test is whether the thing that happened is on the screen in front of the user, not whether the
+user is thinking about that ticket. The GATE ceremony parks its real target in `pending_gate_then`
+and leaves `focused_session_hint` None, so the first attach watches nothing and the second one
+watches the pane; that falls out of the existing shape rather than needing a case. The answer is
+a ticket id rather than a session id because a ticket holds one claude (2026-09-02) and `Event` is
+ticket-keyed — a session field on `Event` would buy nothing this does not already say.
+
+**`Coalescer::forget(ticket)`, every beat, not on the edge.** The window is five seconds long and
+`c` on a card that just lit up lands inside it, so filtering only what the differ hands over would
+still announce a line queued a moment before the attach. `forget` is called for the watched ticket
+on every pass: it catches what was already held and what was offered this same beat, it is
+idempotent, and it costs a retain over a Vec that is almost always empty. The DIFFER is untouched
+— the mark stays — so detaching does not then announce what you sat and watched happen.
+
+**Opt-out (the user's second ask).** A sixth Notifications row rather than a widening of
+`notify_focused`: the two rules differ in strength (one keeps the sound, one does not), and
+folding them would have made one label describe two behaviours. `prefs.json::notify_in_pane`,
+default false = silent. It matters for one real workflow the suppression would otherwise break:
+attached to a pane, terminal in the background, away from the desk, waiting for the ding — inside
+a handover there is no way to tell that from "actively typing", because keystrokes go to tmux and
+focus reporting is off for the duration. The row is the way to say which one you are. `doctor`
+names it on the notifications line, and the dialog is 14 rows, which still clears `MIN_H`.
+
+## What waits for the checkout may be the SESSION (T-294, 2026-09-06, user: "shift+enter on non started sessions should ask if now / queued when there is a running session")
+
+**What was wrong.** The queued ask (2026-09-04) let a prompt bound for a live PANE wait for a
+quiet checkout, and the two roads it did not cover were the two that add a WRITER to that
+checkout rather than asking the one already in it. An empty claude seat spawned at once —
+`dispatch` fell through to `start_composed`, no field, no choice — and a `Sleeping` claude was
+woken at once, because `Ctx::ask_queueable` required a pane and so did `enqueue_ask` ("a queued
+ask needs an awake claude — wake it first"). So on a busy shared checkout the presses that most
+deserved to wait were the only ones that could not. The block above listed the second of them
+under **Not done**.
+
+**Three seats, one delivery.** `Daemon::seat_of` answers `QueuedSeat::{Pane(id), Wake(id),
+Start}` — `has_pane` first, then `live_claude` (live and paneless is exactly `Sleeping`), then
+nothing — and `Daemon::deliver` is the one road every ask takes, a send-now `PromptSession` and
+`drain_queue` alike: paste, or `prompt_sleeping`, or `spawn_session(.., submit_prompt: true,
+prompt)`. That is the point of extracting it: a queued ask and a sent one cannot disagree about
+what "the ticket's claude" means, because they ask the same function. A `Start` and a `Wake` need
+no `inflight` marker to hold the checkout — `Spawning` and an owed Enter are both WORKING already
+— so the card shows the launching arc instead of `queued ∙ sending`.
+
+**The words ride under the brief.** `spawn_session` takes a `prompt: Option<String>` and parks
+`Parked { text, brief: true }`; `retry_pending_submits` composes description **then** user words,
+in the order they were written — the ticket says what the work is, the user says what to do about
+it first — and still stamps `ticket_read`. `pending_spawns` became a named `PendingSpawn` so a
+worktree provisioning replay carries the words too. A `Start`'s `text` may be EMPTY, and that is
+the one place `sanitize_prompt`'s blank refusal is lifted: its Enter lands on the ticket title the
+spawn types, which is a turn the user did write, so "an empty paste would press Enter on a turn
+the user never wrote" does not describe it.
+
+**A seat that changed drops the entry.** `seat_stands` is the rule and `sweep_queue` and
+`drain_queue` both ask it: a `Pane` must be the same pane, a `Wake` the same record (woken by hand
+in the meantime still delivers — same session, same conversation), a `Start` needs the seat still
+EMPTY. Unbranched, the old `pane_target(ticket) != q.session` test would have dropped every queued
+start on the next tick. Nothing is ever redirected; that was already the rule and it now has three
+arms. `Pending.action` carries the seat's word (`ask` | `wake` | `start` — `Pending::is_queued_ask`
+holds the vocabulary so no screen spells it), which is what lets the card say `starts ∙ after T-3`
+instead of that words are waiting: a session is about to exist there, which is louder than a paste.
+No subject on that row — the card is the subject, and `claude starts ∙ after T-3` is 25 cells where
+the row has 22; the status line has a whole row and names it.
+
+**The field opens only where waiting means something.** `Ctx::checkout_busy` — `App::checkout_busy`,
+the TUI's own read of `quiet::is_working` over shared-checkout sessions, plus the snapshot's
+`in_flight` rows standing in for the daemon's private `inflight` — is a HINT and the module doc now
+says so: it decides whether the press stops to ask, never how the words are delivered, and where it
+disagrees with `checkout_holders` the cost is a field that opened where a spawn would have gone. A
+quiet checkout keeps the one-key start (`ask claude the title`); a busy one opens the field at
+`queued` (`start claude`). **A live pane keeps `now` either way**, deliberately: it has shipped that
+way, and a person reaching for a working agent may well mean interrupt — only the two roads that
+would start or wake a session take the new default. `ask_queueable` lost its pane clause, so the
+`shift+tab now / queued` row is offered on all three seats.
+
+**The one new gesture rule.** A blank Enter over a waiting entry drops it (T-241) — except on an
+empty seat with the toggle moved to `now`, which is how a queued start jumps its own queue, since
+its field is empty by nature and there are no words to retype. `commit_input` and the card's
+placeholder judge it with the same expression, so `start on the title` and `enter drops` can never
+say different things than the key does.
+
+**Also.** `Command`, `Response`, `agent_allows`, `authorize` and every `*_SCHEMA` are untouched:
+`Pending.action` was already an open word, and `PromptSession` already carried everything needed.
+E2e `ask_queue_e2e::a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude`, and
+`prompt_e2e`'s two "no live claude" refusals are now starts — a killed record leaves an EMPTY seat,
+and an empty seat is one this command fills. Goldens `board_prompt_start_120x30`,
+`board_queued_start_120x30`.
+
+**Not done.** Persistence across a restart (a queued start dies with the daemon like every other
+entry); a queued start on a WORKTREE ticket, which `enqueue_ask` still refuses with "a worktree
+ticket's checkout is its own" — right today, since that checkout has no one else in it, and wrong
+the day worktrees share a machine's resources rather than a tree; the PTY budget, which is
+deliberately not consulted at enqueue, so a start that cannot spawn says so at delivery in the feed
+rather than at the press.
+
+## A notification says the ticket's title and what the agent said (T-292, 2026-09-07, dogfooding T-282: "OS notification doesn't show ticket title. and no transcript")
+
+T-282's banner said `T-12 needs you ∙ PERMISSION` and nothing else. The key is a pointer, not an
+answer: to learn WHICH ticket that is and WHAT happened you had to go to the board — which is most
+of the work the banner existed to save. `terminal-notifier` and `osascript`'s `display
+notification` each have three fields and the channel was using two of them, so the fix was to say
+the third thing rather than to build anything.
+
+**The mapping, and why the verb stayed.** `title` is WHICH BOARD (the checkout's directory name,
+already there since T-282, and the reason it exists is two boards open at once); `subtitle` is
+WHICH TICKET — `T-12 ∙ Add auth to the API`, the key first because the key is how a ticket is named
+in a prompt or a commit and the title second because it is what a person recognises; `body` is WHAT
+HAPPENED. The one thing the brief's own table got wrong is that the body could then be pure content
+— just `PERMISSION`, just the reply. It cannot: the two moments are `needs you` and `finished`, the
+subtitle no longer carries either, and the only other thing that tells them apart is the chime. So
+the verb leads and content is APPENDED to it (`needs you ∙ PERMISSION`, `finished ∙ Tests pass`),
+which has the second virtue that the sentence with nothing to append is the sentence that already
+shipped: `needs you`, `finished a turn`. A withheld word is a shorter line, never a different one.
+
+**Only a batch of ONE.** Three titles do not fit a banner, so several keep the count shape T-282
+gave them (`20 agents finished ∙ T-1 T-2 T-3 T-4 +16`) with no subtitle at all. `core::notify::body`
+is now the aggregate's alone and `names`/`said` are the single's; a mixed batch of one needs-you
+beside one done is still two events and still names both keys inline.
+
+**The words are resolved at POST time, and that is the whole design of the seam.** A turn's closing
+record lands on the transcript around the moment the state flips, so reading the reply on the
+rising edge races the writer that is producing it. The coalescer already holds a batch for up to
+`WINDOW_MS` (5 s) before it says anything, so `Coalescer::due` takes a lookup — `&dyn Fn(Ulid) ->
+Option<Detail>`, answering the ticket's title and its agent's last line — asked for ONE ticket and
+only past the window check. A busy board therefore reads no transcripts at all, a held batch reads
+none until it is finally said, and the cost at the top is one `stat` plus one ≤64 KiB tail read per
+five seconds, on a thread that has nothing else to do. The wording stays in the pure module and the
+freshness in the TUI; the core tests pass a stub map and a `Cell` counter proves the aggregate asks
+nothing.
+
+**The reply is taken only when `Peek::reply_key` is set.** `peek::latest_preview` falls back to the
+user's OWN words prefixed `>` where the window holds no assistant record — right for a card, wrong
+here: a banner that quotes your own prompt back at you says nothing, and says it as though the
+agent had. `Worker` keeps the board it last scanned instead of dropping it (the lookup runs a beat
+or twenty after the edge), and `detail_for` is a FREE function rather than a method so the closure
+borrows `Worker::board` alone — `batch` is borrowed mutably in the same expression, and Rust only
+splits disjoint field borrows when the closure names the field.
+
+**A preference, because a banner lands on a lock screen.** `The agent's words: quoted | withheld`
+(`prefs.json::notify_words`, default quoted) is the seventh notifications row, sitting THIRD —
+whether at all, which moments, **what it says**, what it sounds like, then the two exceptions.
+Withheld takes the agent's last line and a raised hand's own sentence; it does not take the ticket,
+which is the half this ticket exists to add, and it does not take mesimon's own reason word, which
+is from a fixed set and describes no work. Telling those two apart is why `Event` grew
+`quoted: bool` — `why` is `attention::reason_word` on one road and `Raised::reason` on another, and
+as strings they are indistinguishable. Off is also cheaper: `detail_for` does not open the
+transcript at all. Seven rows is fourteen lines and `draw_list` fits eight rows at `layout::MIN_H`,
+so the list still clears without the windowing that is still its own ticket.
+
+**Rungs with one field fold, and none of them changed arity.** `Post::folded` is in the pure module
+so the separator is decided once; `notify-send`, a user's own `MESIMON_NOTIFY` program and OSC 9
+all get `subtitle ∙ body` as the body they already took, which is what keeps somebody's own
+two-argument script working. `terminal-notifier` gains `-subtitle` and `osascript` a three-item
+script — and only when the subtitle is non-empty, so an aggregate posts the argv that shipped
+before, byte for byte, both scripts included. The words still ride argv and never the script:
+`item 1` is the title, `item 2` the subtitle, `item 3` the body. `MAX_FIELD` (240 bytes) did not
+need revisiting after all — it is the BACKSTOP, the pure module now clips a title at 72 characters
+and a reply at 120 on a word boundary with an ellipsis because those two are read by a person, and
+the folded line is two already-capped fields with a separator between them.
+
+**`-group`, the freebie.** `terminal-notifier -group <id>` replaces the previous notification with
+the same id, so one group per BOARD stops the board stacking a column of banners in Notification
+Centre — the coalescing rule extended into the OS for one argument. Per board and not per ticket:
+two boards open at once are two conversations, and the id is `mesimon-<proj16>`, the same
+canonical-path hash the sockets and the state dir are keyed by, so two checkouts of one project are
+two groups. **This is the argument T-293 will have to revisit**: with a per-board group only the
+newest banner survives to be clicked, so "clicking a notification opens the board on that ticket"
+either accepts that or narrows the group, and it should decide rather than inherit.
+
+**A note on the number.** The block above this one is titled T-292 and is T-291's second half; it
+was written before this ticket existed and its citations are left as they stand rather than
+rewritten under another session's uncommitted work. `notify_in_pane` is T-291; `notify_words`, the
+subtitle, `Detail`, `Voice` and `-group` are this one.
+
+Deliberately out: no daemon change of any kind (no `Command`, no `Snapshot` field, no schema, no
+e2e), which is T-282's posture; and no ellipsis on `MAX_FIELD`'s own cut, which stays a hard byte
+prefix because by the time it fires the pure module's clip has already failed to hold and the
+honest thing is to stop. Goldens `notifications_120x30`; tests in `core::notify`
+(`one_event_names_its_ticket_and_quotes_its_agent`, `withholding_the_words_keeps_the_ticket`,
+`an_aggregate_asks_nothing_of_the_lookup`), `tui::notify`
+(`a_subtitle_rides_its_own_field_or_folds_into_the_body`, `no_subtitle_is_the_argv_that_always_was`,
+`a_board_groups_its_own_banners`) and `tui::notifier`
+(`the_banner_names_the_ticket_and_the_row_can_withhold_the_words`).
+
+## A banner you can click raises the terminal (T-293, half one, 2026-09-07, dogfooding T-282: "clicking on OS notification should lead to the board with the item focused")
+
+T-282 gave the board a voice, T-292 made the banner name its ticket — and then the gesture
+everyone tries first did nothing. `terminal-notifier` was invoked with no action, so a click
+activated terminal-notifier itself, an app with no window; `osascript`'s `display notification`
+carries no action at all. The one accident that worked was OSC 9, where iTerm2 focuses its own
+window and tab for free.
+
+**The ticket has two halves and this is the first.** Raise the terminal (cheap, and most of the
+value: you are elsewhere, the banner says which ticket, the click puts you back in front of the
+board) and put the CURSOR on that ticket (expensive — there is no channel into a running TUI, so
+it needs a `mesimon show <KEY>` subcommand parking a request file under the runtime dir for the
+board to drain on its next tick). Only the first is built. The decisions taken for the second,
+so they are not made twice: the verb is `show`, because `focus` already means "hand the terminal
+to a pane" throughout the daemon; the click returns to the board from any screen but never over
+a text field, since a half-typed composer must not be eaten by a stray click; an aggregate keeps
+the raise and carries no target; and the parked request needs a timestamp, because `App::tick`
+does not run during a handover and a click acted on twenty minutes later is a yank.
+
+**One rung can carry a click, and it is already the preferred one.** The ticket flagged the
+ladder's ordering as a decision to make deliberately — whether to prefer a clickable rung when
+the preference asks for it. It needs no change: `find_banner` already puts `terminal-notifier`
+above `osascript` on every platform, so a machine with the brew install gets the click for free.
+The other rungs cannot follow, and that is a property rather than an omission: `osascript` has no
+action parameter, and `notify-send --action` requires the process to stay alive and read the
+chosen action off its stdout, which `opener::launch` — detached, null stdio, reaped on a thread —
+deliberately is not. So `doctor` says which rung answered and whether it can deliver a click,
+rather than leaving it to be found out by clicking.
+
+**`-sender` is the rival and is refused.** It would give the banner the terminal's own icon
+instead of terminal-notifier's, which is nicer — but its own README says it cannot be combined
+with `-activate` or `-execute`, because those need the sender of the notification to BE
+terminal-notifier. Read, not guessed. A banner that looks right and does nothing is the thing
+this ticket exists to end, so the click wins and the icon is what it costs.
+
+**Which terminal is a ladder of its own, and the interesting rung is a veto.**
+`MESIMON_TERM_BUNDLE` (`off`, or a bundle id) → an outer tmux VETOES the question →
+`__CFBundleIdentifier` → a `TERM_PROGRAM` table. Rung three is the one worth arguing for: macOS
+LaunchServices stamps `__CFBundleIdentifier` on the app it launches and every child inherits it,
+so it *is* the type `-activate` wants — a bundle id, not a name needing translation — and it
+answers for kitty, Alacritty, Warp, Hyper and whatever ships next year, where a table answers for
+however many rows somebody wrote. It is a private Apple variable, and the answer to that
+objection is that its failure mode is graceful: absent, the table catches it. Measured on the
+author's own board, `__CFBundleIdentifier=com.googlecode.iterm2`.
+
+The veto sits ABOVE it because that is the one case where inheritance makes it wrong. In the
+user's own tmux the variable is a plain inherited value naming whatever started the SERVER, not
+the client attached now — start tmux from Terminal.app, attach from iTerm2, and it says
+Terminal.app. And `-activate` goes through `NSWorkspace`, so it does not merely focus a running
+app: it LAUNCHES one that is not. A stale id therefore opens a fresh window of a terminal nobody
+asked for, which is strictly worse than doing nothing, because a notification is a promise.
+`TERM_PROGRAM` is rewritten to `tmux` in every pane, which makes it the one thing visible from in
+there that cannot be stale — a reliable negative. It could not be confirmed by measurement on
+this machine (both live tmux servers are mesimon's own, and `shellenv.rs`'s `env_clear` means a
+mesimon pane could not carry the variable whatever tmux did), so it ships as insurance that costs
+nothing.
+
+**`LC_TERMINAL` was built into the design and cut before it shipped.** iTerm2 sets it precisely so
+it survives ssh and tmux, which reads like the rung that fixes the tmux case. But ask when it can
+actually fire: only where `__CFBundleIdentifier` and `TERM_PROGRAM` are both absent, and on macOS
+that is essentially ssh — where the stock `SendEnv LC_*` forwards it and the other two do not. In
+that one live case the rung is *wrong*: it would raise iTerm2 on the remote Mac, which nobody is
+looking at. A rung whose only reachable case is a wrong answer should not exist.
+
+**`bundle_id` REJECTS where `field` scrubs, and the inversion is deliberate.** `scrub_text` drops
+characters, which is right for a sentence and wrong for an identifier: a bundle id with a
+character dropped is a different, possibly real bundle id, so a silent repair raises the wrong
+application. A leading `-` is refused for a second reason — terminal-notifier parses
+NSUserDefaults-style `-key value`, so `-activate -sound` is a flag with no value. Every rung,
+`__CFBundleIdentifier` included, exits through it.
+
+**Two things do not get the id.** `Banner::Custom` keeps its three-argument contract
+(`<program> <title> <body>`): a fourth argv word would silently change what `$3` means to a
+program somebody wrote against T-282, and `opener::launch` clears no environment, so a custom
+notifier that wants the id can read `MESIMON_TERM_BUNDLE` or `__CFBundleIdentifier` itself. And
+no rung may grow a flag in `Osascript`'s argv, ever: its words are found by POSITION (`item 1`,
+`item 2`, `item 3`), so one inserted argument shifts the title, the subtitle and the body
+together. `only_the_terminal_notifier_rung_grows_a_flag_for_the_click` asserts the argv is
+byte-identical with and without an id for every rung but one, which is what catches that
+regression before it is shipped rather than after.
+
+`-activate` is appended BEFORE `-group` so `-group` stays last and
+`a_board_groups_its_own_banners`' tail assertion keeps meaning what it meant. Nothing else moved:
+no `Command`, no `Snapshot` field, no schema, no key, no preference, no dialog row, no golden, no
+daemon code — and no README change, since nothing new is written to disk. Pinned by five tests in
+`tui::notify` (`the_terminal_that_gets_raised_is_named_by_the_env_first_and_the_os_second`,
+`an_outer_tmux_names_no_terminal_because_nothing_it_can_see_is_fresh`,
+`a_bundle_id_that_is_not_one_is_refused_rather_than_scrubbed`,
+`only_the_terminal_notifier_rung_grows_a_flag_for_the_click`,
+`the_click_is_promised_only_on_the_rung_that_can_deliver_one`).
+
+## Somebody has to still be in the pane (T-299, 2026-09-07, dogfooding T-292: "notification not shown when terminal is not focused and source again tmux session is attached")
+
+T-292 shipped in the morning and was filed against by the afternoon, which is the right length of
+feedback loop. Attached to T-5's claude, the user switched to a browser; T-5's agent hit a
+permission prompt; the board said nothing at all — no banner, no chime, because the in-pane rule
+is the one suppression that takes both. The pane was on the terminal and nobody was in front of
+it.
+
+**T-292's own block predicted this and got the conclusion wrong.** It says: "inside a handover
+there is no way to tell that from 'actively typing', because keystrokes go to tmux and focus
+reporting is off for the duration. The row is the way to say which one you are." The premise is
+exactly right and the conclusion does not follow — *tmux* can tell, because tmux is the program
+reading that terminal. A Settings row asks the user to predict, before they attach, whether they
+are about to walk away.
+
+**Half one: a focus report is evidence only while it can be REFUTED.** `restore_terminal` sends
+`\e[?1004l` before every handover, so nothing is reported for its whole duration. `Presence.focus`
+therefore held `Some(true)` — stamped the instant before the attach — for as long as the user
+stayed in the pane, and `watching` believed it. `Presence::focused` now consults `self.focus` only
+while `on_screen`; off screen, presence is keystrokes and nothing else. This changes no banner:
+`looking()` already ANDs with `on_screen`, so the only reader that can see the difference is
+`watching`. Leaving the report enabled through a handover was considered and refused — the
+terminal's `\e[I`/`\e[O` would be read by the attached tmux CLIENT and typed into the agent as
+literal escape bytes.
+
+**Half two: the keystrokes are tmux's, and they are asked for.** `#{client_activity}` is the last
+time tmux read input from a client, which is the missing half measured directly.
+`Command::FocusQuiet` → `Daemon::focus_quiet` → `TmuxBackend::client_quiet_secs`, one
+`list-clients -t <sid16> -F '#{client_activity}'`, freshest client wins, SECONDS because that is
+tmux's resolution on this format (verified on 3.6a: it holds still across three idle seconds and
+moves on a keypress from a pty client; a control-mode client is listed and stamped at attach but
+its stdin carries commands, not keys, so it never moves — which is why the e2e asserts liveness
+and not movement).
+
+**The command takes no argument**, and that is the whole of its authorization story. The subject
+is whatever the daemon holds the focus token on, so a stale ticket id from a client cannot make
+the daemon answer for a pane nobody is in. It is a `Read` in `Command::meta`, it names
+`Resource::Session` for the focused session so `authorize`'s existing denial reaches it, and
+`mcp::agent_allows` refuses it — a session read at any tier, plus a fact about the PERSON, which
+no agent has ever been able to ask for.
+
+**`None` is every way of not knowing, and it reads as away.** Nothing focused, no such session,
+nobody attached, tmux unable to answer — one answer for all of them, and `saw_pane_quiet(now,
+None)` CLEARS the memory rather than keeping the last one. That is the direction the whole feature
+falls in (`Presence`'s own doc: "silence is the failure that would make the feature look broken").
+An answer PAST `KEY_PRESENCE_MS` is likewise stored as absence rather than as an old moment:
+`now.saturating_sub(quiet_ms)` on a young monotonic clock saturates at zero, and zero is a
+keypress at start-up, so an hour of silence would have read as typing-now for the board's first
+thirty seconds.
+
+**The fork is rare by construction.** `ask_who_is_typing` runs only when `Presence::attached()` is
+Some AND `Coalescer::holds(ticket)` — an attach exists, and something is held about that very
+ticket. A board nobody is attached to never forks; an attached board with nothing to say never
+forks. It rides the daemon's writer thread for `pane_tail`'s reason: one small tmux fork, where
+the off-thread treatment exists for git.
+
+**The trade, stated.** Presence is keystrokes, so reading a long agent turn for thirty seconds
+without touching the keyboard reads as away and the ticket chimes. Chosen over the alternative
+(silence for the whole attach, which is the bug) with the user in the loop; `notify_in_pane`'s
+Settings row is unchanged and still forces the loud direction. `#{client_activity}` was picked
+over asking macOS which app is frontmost: that is a fork per beat, mac-only, and would have made
+the rule unavailable on the platform `ci/test-linux.sh` covers.
+
+Tests: `core::notify` (`tmux_says_whether_anybody_is_still_in_the_watched_pane`,
+`the_pane_answer_does_not_outlive_the_attach`,
+`a_long_silence_on_a_young_clock_is_absence_not_a_keypress`, and the T-291 test now asserting that
+an unrefutable report is not evidence); `tui::notifier`
+(`a_watched_pane_behind_another_window_speaks_after_all`,
+`the_same_pane_with_somebody_in_it_stays_quiet`); e2e `focus_quiet_e2e`.
+## A click lands in the board's own tab (T-301, 2026-09-07, dogfooding T-293: "OS notification click not leading to the correct mesimon tab in terminal")
+
+T-293 raised the terminal and called that "puts you back in front of the board". It is not, on
+any machine where the terminal has more than one tab — and the author's has two boards open in
+one iTerm2. `-activate` names an APPLICATION, so the click brought the terminal forward showing
+whatever tab happened to be in front of it, which is a coin toss dressed up as a feature. The
+half T-293 named as owed is the CURSOR (a `mesimon show <KEY>` subcommand parking a request file
+for the board to drain); this is a third thing neither half saw, and it is the one that makes the
+first half true.
+
+**The tab is a second flag on the same rung.** `-execute` is a `/bin/sh -c` line terminal-notifier
+runs when the banner is clicked, and its source runs BOTH actions in order — `if (bundleID)
+activateAppWithBundleID; if (command) executeShellCommand` — which is why the two are sent
+together rather than one instead of the other: the application comes forward, then the script
+picks this board's tab out of it, and if the script is refused permission to run, what is left is
+exactly the click T-293 shipped. `Channels.activate: Option<String>` became `Channels.click:
+Option<Click>` (`Click { app, reveal }`), which is also what keeps `Banner::argv` at four
+parameters.
+
+**Only a terminal knows where its tabs are, and it answers in AppleScript.** `Reveal` is the
+second ladder, shaped like every other one in the file: `MESIMON_TERM_REVEAL` (`off`, or a
+program of the user's own — a terminal with a remote control, `kitty @ focus-window` or `wezterm
+cli activate-pane`, knows which window it means far better than a table here could; a PROGRAM,
+as `MESIMON_NOTIFY` and `MESIMON_OPEN` both mean one, since the word is quoted whole and a
+command line quoted whole is one program name with spaces in it) → iTerm2 by
+the session uuid its dictionary calls `id of session`, which is the tail of `ITERM_SESSION_ID` →
+Apple Terminal by a tab's `tty`, which is the one on our own stdin (`own_tty`, `libc::ttyname(0)`,
+asked once from `find` on the main thread). Two rungs and no more, because every entry has to be
+VERIFIED against the running application before it is added, and those are the two macOS
+terminals with a scripting dictionary that can say where a tab is.
+
+**The tmux veto needs no rung of its own here.** An outer tmux rewrites `TERM_PROGRAM` in every
+pane, so the two-name table simply never answers — which is the right answer for the veto's own
+reason: in there `ITERM_SESSION_ID` is INHERITED from whatever started the server and names a
+session that is not this one, and selecting the wrong tab is the bug, not the fix.
+
+**Three rules hold it together, and each is a test.**
+
+- *A script talks to the application the click raises.* `Reveal::app()` names its own bundle id
+  and `find_click` DROPS a reveal that is not the one `-activate` was given, so a
+  `MESIMON_TERM_BUNDLE` naming some other application cannot leave an iTerm2 script attached to a
+  click that raises something else. The user's own program is exempt: it names no application, so
+  there is nothing to disagree with.
+- *It raises a tab and never an application.* Both scripts are wrapped in `if application id … is
+  running`, because `tell application` STARTS what is not running — a click on a banner that
+  outlived its terminal would otherwise LAUNCH it and open an empty window, which is the tmux
+  veto's failure by another road. Asking whether an application is running starts nothing, and
+  that is also what makes the `activate` INSIDE the guard safe. That `activate` is not a duplicate
+  of `-activate`'s: Apple Terminal reorders its windows only while it is the ACTIVE application
+  (`set frontmost of w to true` in a background one returns success and does nothing — measured
+  both ways, as is `set index of w to 1`), so without it the reveal would depend on another
+  process's activation having already landed.
+- *The command carries no word from a payload.* It is a constant script plus one id validated by
+  `session_uuid` / `tty_path`, which REJECT where `field` scrubs, for `bundle_id`'s reason: a
+  repaired session id names a DIFFERENT tab, and landing in one is the bug being fixed.
+  `sh_line` single-quotes every word and refuses one holding a `'` rather than escaping it —
+  inside single quotes `sh` reads every other byte literally, newlines included, which is what
+  lets a whole AppleScript ride one word. It is the only place mesimon builds a shell command,
+  and it exists because `-execute` takes a command where every other rung takes argv.
+
+**The two dictionaries are not the same shape.** iTerm2 needs `select` on the window, the tab AND
+the session, because a session may be one pane of a split and none of the three is implied by
+another. Apple Terminal has no session and no `select` at all: a tab is `selected` and a window is
+`frontmost`, both properties. An id nothing matches is a silent no-op in either — rc 0, nothing
+moves — which is the right answer for a banner clicked after its tab was closed.
+
+**What `doctor` says is which half it has.** `click raises com.googlecode.iterm2 and this board's
+own tab`, or `click raises com.github.wez.wezterm, not this tab ∙ MESIMON_TERM_REVEAL names a
+program that can` — the second is the honest sentence for every terminal neither rung fits, and it
+teaches the escape hatch in the same breath. Unchanged: the rung that cannot carry a click at all
+still says so.
+
+**What this does not fix.** The cursor still does not move to the ticket — T-293's second half,
+whose decisions are recorded there and are unchanged by this. And the first click of a machine's
+life may raise a macOS Automation prompt (terminal-notifier asking to control the terminal),
+because the responsible process for the script is terminal-notifier rather than mesimon; denied,
+what is left is T-293's click, which is the same degradation as a terminal with no rung.
+
+Nothing else moved: no `Command`, no `Snapshot` field, no schema, no key, no preference, no dialog
+row, no golden, no daemon code, and no README change — nothing new is written to disk. Pinned by
+six tests in `tui::notify` (`the_tab_is_named_by_the_env_first_and_the_terminal_second`,
+`an_outer_tmux_names_no_tab_either`, `a_reveal_scripts_the_application_the_click_raises`,
+`the_click_runs_a_constant_script_and_never_a_composed_one`,
+`a_session_id_or_a_tty_that_is_not_one_is_refused_rather_than_scrubbed`,
+`the_tab_is_a_second_flag_on_the_one_rung_that_can_carry_a_click`), and by the two scripts having
+been run through `/bin/sh -c` exactly as terminal-notifier runs them, against both live
+applications, before either was written down.
+
+## A folded column reads its count at the top (T-302, 2026-09-07, user: "collapsed columns ticket count should be somewhere else ∙ bottom too far")
+
+07 §3.1 put the collapsed column's count at the FOOT of its spine, bottom-aligned and never
+dropped, and that is what shipped: the name ran down from row 2 and the number sat on the last
+body row, twenty-odd rows below every other count on the board. Nothing else on the board is read
+there. The user's own repair is the one taken — "when no ticket needs you it should render the
+number on the uncollapsed columns line" — and generalised by one step, because the spine's row 0
+was ALREADY the header row: it is where the `!` goes, and it is the row every expanded column
+writes its own count on.
+
+So the spine's top block is now what an expanded column's header row carries, in the same order:
+the `!` (T-271's painted cell) iff the column holds a waiting ticket, then the count, a digit a
+row, then one blank, then the name. With nothing waiting the count's first digit lands ON row 0,
+level with `TODO … 2  IN PROGRESS … 2  REVIEW … 2   1`, and the four counts of a folded board read
+as one row. A `!` claims that cell and the count takes the row under it — the mark is what the
+folded column is standing in for, and it may not move for a number.
+
+**The truncation reversed, and that is the improvement.** The old arithmetic reserved the digits
+and the gap out of the body and let the NAME truncate into what was left; now the top block is
+written first and `name_rows` is whatever the column has left, so a spine too short for both loses
+letters of its name rather than its count. "Never dropped" survives literally, and stops costing a
+subtraction three lines up from where it is spent (`draw_spine` lost its `used`/`body` bookkeeping
+and its two `Vec<char>` collections with it).
+
+**The stagger is deliberate.** A waiting spine's name starts one row lower than a calm one's, and
+a column of ten or more starts one lower again. The alternative is a fixed name origin, which
+means either reserving three rows for a block that is usually one, or clipping the count of the
+one column that most needs to be counted. The name runs down from under the numbers; that is the
+whole rule, and it is legible on a 1-cell column precisely because there is nothing else there.
+
+Goldens `board_spine_100x24` and `board_pinned_120x30` moved (the count from the last body row to
+the header row, nothing else). `the_folded_column_reads_its_count_at_the_top` pins both cases —
+the digit on row 0 with a clean foot for a calm column, the `!` on row 0 with the count beneath it
+for a waiting one, and the name under whatever the top block came to. T-271's
+`the_folded_column_paints_its_needs_you_mark` is untouched and still passes: the `!` never left
+row 0. Nothing else moved — no `Command`, no snapshot field, no schema, no key, no preference.

@@ -47,14 +47,9 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
     });
     let ticket = c.board().tickets.first().expect("ticket").id;
 
-    // Before any agent exists the key has nowhere to send, and the daemon
-    // says so rather than swallowing the press.
-    match c.request(Command::PromptSession { ticket, text: "too early".into(), queued: false }) {
-        Response::Err { message } => {
-            assert!(message.contains("no live claude"), "wrong refusal: {message}");
-        }
-        other => panic!("a ticket with no agent must refuse: {other:?}"),
-    }
+    // (Before any agent exists the same command STARTS one — T-294, the last
+    // clause of this test, where the seat is empty again for the right
+    // reason rather than because nothing has happened yet.)
 
     let sid = match c.request(Command::SpawnSession {
         ticket,
@@ -185,27 +180,25 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         c.board().sessions.iter().any(|s| s.id == sid && !s.pending_submit)
     });
 
-    // No pane, no prompt — and no PARKED claude either: a dismissed record is
-    // `Exited`, which is neither live nor sleeping, so the daemon refuses
-    // rather than resurrecting it. That refusal is held independently of the
-    // key for a client that asks anyway.
+    // No pane, and no PARKED claude either: a dismissed record is `Exited`,
+    // which is neither live nor sleeping, so the seat is EMPTY — and since
+    // T-294 that is a seat this command fills rather than refuses. The words
+    // may even be blank there: the prompt is the ticket's own title, which
+    // the spawn types as it always has. The board's ask field is the only
+    // caller, and a blank field on an empty seat is what its Enter means.
     let _ = c.request(Command::KillSession { id: sid });
-    let deadline = Instant::now() + Duration::from_secs(10);
-    loop {
-        match c.request(Command::PromptSession {
-            ticket,
-            text: "still there?".into(),
-            queued: false,
-        }) {
-            Response::Err { message } => {
-                assert!(message.contains("no live claude"), "wrong refusal: {message}");
-                break;
-            }
-            other => {
-                assert!(Instant::now() < deadline, "a parked agent kept accepting: {other:?}");
-                std::thread::sleep(Duration::from_millis(200));
-            }
+    wait_until(Duration::from_secs(10), "the killed record to leave the seat", || {
+        c.board().sessions.iter().all(|s| s.id != sid || !s.state.is_live())
+    });
+    match c.request(Command::PromptSession { ticket, text: "   ".into(), queued: false }) {
+        Response::Spawned { id, .. } => {
+            assert_ne!(id, sid, "a new session, never the corpse");
+            assert!(
+                c.board().sessions.iter().any(|s| s.id == id && s.pending_submit),
+                "the composed spawn owes its Enter"
+            );
         }
+        other => panic!("an empty seat starts a claude: {other:?}"),
     }
 
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));

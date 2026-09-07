@@ -1,7 +1,12 @@
 //! Which tickets are WORKING — the one predicate behind "the checkout is
 //! quiet" (a queued ask goes out) and "the board is quiet" (the merge train
-//! moves). Pure: the daemon wraps it with its in-flight pastes and the TUI
-//! never needs it, because the snapshot carries `waits_on` by name.
+//! moves). Pure: the daemon wraps it with its in-flight pastes, and it is
+//! the daemon's answer that decides a delivery. The TUI reads `is_working`
+//! for one HINT — whether a press that would START or WAKE a session stops to
+//! ask first (T-294) — never for delivery: it cannot see the in-flight pastes
+//! or the grace band, and where the two disagree the cost is a field that
+//! opened where a spawn would have gone. The words a waiting card shows are
+//! still the snapshot's `waits_on`.
 //!
 //! Working means a turn is in progress or about to be: `Spawning`,
 //! `Running`, `RequiresAction` (a turn waiting on the user is still that

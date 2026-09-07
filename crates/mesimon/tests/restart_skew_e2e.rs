@@ -162,3 +162,64 @@ fn older_client_leaves_a_newer_daemon_alone() {
     teardown(&sock);
     let _ = newer.wait();
 }
+
+/// The notification thread's second connection (T-291, `mesimon_tui::notifier`).
+///
+/// Two things it has to get right, and neither is visible from a unit test.
+/// It SUBSCRIBES like any other client, so a board change reaches it as well
+/// as the board's own — that is the whole channel, since the thread has no
+/// other way to learn that an agent started needing you. And it brings no
+/// daemon UP: a `U` reload asks the daemon to stop and then waits for it to
+/// be gone, and a background thread respawning one behind that wait would
+/// turn the reload into thirty seconds of nothing.
+#[test]
+fn an_observer_subscribes_and_never_spawns_a_daemon() {
+    use mesimon_tui::client::{Client, Transport};
+
+    let fixture = common::TestFixture::new("observer");
+    let dir = fixture.dir.clone();
+    std::fs::create_dir_all(&dir).unwrap();
+    let paths = fixture.paths(&dir);
+    let sock = paths.orch_sock();
+    let _ = std::fs::remove_file(&sock);
+
+    // With nothing listening the observer comes up disconnected and starts
+    // nothing — where `Client::connect` would spawn a daemon and wait for it.
+    let mut lone = Client::connect_observer(&dir).expect("a client either way");
+    assert!(!lone.healthy(), "nothing to talk to yet");
+    assert!(lone.request(Cmd::Snapshot).is_err(), "and nothing to ask");
+    assert!(!sock.exists(), "an observer never brings a daemon up");
+
+    let daemon = spawn_daemon_claiming(&fixture, &dir, env!("CARGO_PKG_VERSION"));
+    assert!(wait_for(Duration::from_secs(10), || sock.exists()), "daemon socket never appeared");
+
+    // The reopen inside `request` is the road the thread's dial takes when a
+    // daemon comes back: the same client, no reconnect ceremony.
+    let board = lone.request(Cmd::Snapshot).expect("a board once there is a daemon");
+    assert!(matches!(board, Response::Board { .. }), "{board:?}");
+    assert!(lone.healthy());
+    while lone.poll_event() {} // the subscription's own backlog, if any
+
+    // A mutation from somebody else must reach BOTH connections. The board's
+    // own client is the other one here.
+    let mut board_client = common::TestClient::connect(&sock);
+    assert!(matches!(
+        board_client.request(Cmd::Hello { version: PROTOCOL_VERSION, client: "board".into() }),
+        Response::Hello { .. }
+    ));
+    assert!(matches!(
+        board_client.request(Cmd::CreateTicket {
+            column: "TODO".into(),
+            title: "a ticket the observer must hear about".into(),
+            workspace: None,
+        }),
+        Response::Created { .. }
+    ));
+    assert!(
+        wait_for(Duration::from_secs(10), || lone.poll_event()),
+        "the observer's subscription never fired"
+    );
+
+    teardown(&sock);
+    let _ = daemon.wait();
+}

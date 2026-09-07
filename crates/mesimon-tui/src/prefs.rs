@@ -70,6 +70,20 @@ pub(crate) struct Prefs {
     /// and a banner over the board it duplicates is noise. The SOUND plays
     /// either way; this row is only about the banner.
     pub notify_focused: bool,
+    /// Say it even about the ticket whose agent pane you are attached to
+    /// (T-292). Off by default: what happened in that pane is on the screen
+    /// in front of you, so a banner points at nothing and the chime is for a
+    /// turn you just watched land. Unlike [`Prefs::notify_focused`] this row
+    /// governs the SOUND too — on the board a chime still says "go look",
+    /// and inside the pane there is nowhere to go.
+    pub notify_in_pane: bool,
+    /// May a banner QUOTE the agent — its last line, and a raised hand's own
+    /// sentence (T-292)? On by default: the words are why the banner was
+    /// worth sending, and the ticket alone is what T-292 was filed against.
+    /// Off is for a machine whose lock screen other people see: the board,
+    /// the ticket's key and its title still go, and so does mesimon's own
+    /// reason word, which is from a fixed set and describes no work.
+    pub notify_words: bool,
     /// The sound for a blocked agent, and the sound for a turn landing. Two,
     /// so the difference is audible without looking. `Sound::Off` is a rung
     /// of each ring, so either can be silenced on its own.
@@ -92,6 +106,8 @@ impl Default for Prefs {
             notify: false,
             notify_done: true,
             notify_focused: false,
+            notify_in_pane: false,
+            notify_words: true,
             notify_sound_needs_you: Sound::Glass,
             notify_sound_done: Sound::Tink,
             doc: Map::new(),
@@ -107,6 +123,8 @@ const STATUS_TOP_KEY: &str = "status_line_top";
 const NOTIFY_KEY: &str = "notify";
 const NOTIFY_DONE_KEY: &str = "notify_done";
 const NOTIFY_FOCUSED_KEY: &str = "notify_focused";
+const NOTIFY_IN_PANE_KEY: &str = "notify_in_pane";
+const NOTIFY_WORDS_KEY: &str = "notify_words";
 const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = "notify_sound_needs_you";
 const NOTIFY_SOUND_DONE_KEY: &str = "notify_sound_done";
 
@@ -170,6 +188,8 @@ impl Prefs {
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
         doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
         doc.insert(NOTIFY_FOCUSED_KEY.into(), Value::from(self.notify_focused));
+        doc.insert(NOTIFY_IN_PANE_KEY.into(), Value::from(self.notify_in_pane));
+        doc.insert(NOTIFY_WORDS_KEY.into(), Value::from(self.notify_words));
         for (key, s) in [
             (NOTIFY_SOUND_NEEDS_YOU_KEY, self.notify_sound_needs_you),
             (NOTIFY_SOUND_DONE_KEY, self.notify_sound_done),
@@ -240,6 +260,8 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_focused = doc.get(NOTIFY_FOCUSED_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let notify_in_pane = doc.get(NOTIFY_IN_PANE_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let notify_words = doc.get(NOTIFY_WORDS_KEY).and_then(Value::as_bool).unwrap_or(true);
     let sound = |key: &str, fallback: Sound| {
         doc.get(key).and_then(Value::as_str).and_then(Sound::from_key).unwrap_or(fallback)
     };
@@ -261,6 +283,8 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify,
         notify_done,
         notify_focused,
+        notify_in_pane,
+        notify_words,
         notify_sound_needs_you,
         notify_sound_done,
         doc,
@@ -391,9 +415,13 @@ mod tests {
         assert!(!prefs.notify, "off by default, and deliberately");
         assert!(prefs.notify_done);
         assert!(!prefs.notify_focused);
+        assert!(!prefs.notify_in_pane, "quiet inside the agent's own pane by default");
+        assert!(prefs.notify_words, "the agent's words are quoted by default");
         prefs.notify = true;
         prefs.notify_done = false;
         prefs.notify_focused = true;
+        prefs.notify_in_pane = true;
+        prefs.notify_words = false;
         prefs.set_sound_needs_you(Sound::Hero);
         prefs.set_sound_done(Sound::Off);
         save(&p, &prefs).unwrap();
@@ -401,6 +429,8 @@ mod tests {
         assert!(l.prefs.notify);
         assert!(!l.prefs.notify_done);
         assert!(l.prefs.notify_focused);
+        assert!(l.prefs.notify_in_pane);
+        assert!(!l.prefs.notify_words);
         assert_eq!(l.prefs.notify_sound_needs_you, Sound::Hero);
         assert_eq!(l.prefs.notify_sound_done, Sound::Off);
         assert!(l.notice.is_none());

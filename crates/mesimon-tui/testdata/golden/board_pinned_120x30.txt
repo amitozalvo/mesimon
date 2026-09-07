@@ -1,6 +1,6 @@
  BOARD   mesimon > kanban-tui   7 tickets
 
-   TODO                              2    IN PROGRESS                      2    REVIEW                           2
+   TODO                              2    IN PROGRESS                      2    REVIEW                           2   1
 
    Decay treatments                >1y    ⠋ Fix OSC-11 detection         >1y    ✓ Grapheme truncation          >1y   D
                                                                                                                      O
@@ -25,6 +25,6 @@
 
 
 
-                                                                                                                     1
+
 
  enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys

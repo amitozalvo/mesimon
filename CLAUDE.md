@@ -662,7 +662,9 @@ field on the card (`Verb::Prompt` → `InputPurpose::Prompt`); inside that field
 does a second Shift+Enter (the finger is still holding shift). **On a ticket whose claude seat is
 EMPTY the board's press is the composer's second half a press late** (2026-09-03): the same
 `Verb::Prompt` binding, and `dispatch` routes on `Ctx::ticket_has_claude` to `start_composed` —
-claude spawns with the title submitted, no field, no attach, hint `ask claude the title`. A
+claude spawns with the title submitted, no field, no attach, hint `ask claude the title` — **unless
+another claude is working in the same checkout, where the field opens at `queued` instead** (T-294,
+below). A
 `Sleeping` claude is not an empty seat and the key WAKES it and asks (2026-09-04, user: "ask claude
 on sleeping agent auto wakes it for the user"): the field opens as on a paned claude (hint `wake +
 ask claude`), and `Daemon::prompt_sleeping` — the road `prompt_session` takes when `prompt_target`
@@ -699,9 +701,9 @@ ticket page's rail has its own selected session and "which claude" answers diffe
 **And the ask can WAIT for a quiet checkout (2026-09-04, after five claudes in one checkout
 committed at once).** Shift+Tab inside the ask field flips `now` / `queued` on the row under it
 (`card::render_ask_mode`, composer-style; the one `BackTab` binding in `Scope::Input`, widened —
-`Ctx::ask_queueable`: a shared-checkout ticket with an awake pane, never a worktree, never a
-Sleeping claude). A queued ask rides `PromptSession { queued: true }` into the daemon's in-memory
-`queued` list and is pasted by `drain_queue` when `checkout_holders(cwd)` is empty —
+`Ctx::ask_queueable`: a shared-checkout ticket, never a worktree, whose checkout is its own). A
+queued ask rides `PromptSession { queued: true }` into the daemon's in-memory
+`queued` list and is delivered by `drain_queue` when `checkout_holders(cwd)` is empty —
 `core/src/quiet.rs::working_tickets`: no claude with the same `cwd` Spawning / Running /
 RequiresAction / Idle{Background} / `pending_submit` / a paste of ours still owed its ack
 (`Daemon::inflight`); a shell never counts — hooked beside `auto_move` in `apply_change`, on the
@@ -718,6 +720,35 @@ only — `queued_over`) and the cursor card's `queued ∙ after T-12` row (`App:
 snooze row's slot; the ticket page's state row reads the same). A restart drops the queue like
 `pending_prompt`. E2e `ask_queue_e2e`. (STALE-MAP "The board's ask can wait for a quiet
 checkout".)
+
+**And what waits may be the SESSION (T-294, 2026-09-06, user: "shift+enter on non started sessions
+should ask if now / queued when there is a running session").** The two roads that skipped the gate
+were the two that add a WRITER to the checkout rather than asking the one already in it: an empty
+seat spawned at once, and a `Sleeping` claude was woken at once (`enqueue_ask` refused both — "a
+queued ask needs an awake claude"). Now `Daemon::seat_of` answers `Pane | Wake | Start` and
+`Daemon::deliver` is the ONE road every ask takes — a send-now `PromptSession` and `drain_queue`
+alike, so a queued ask and a sent one can never disagree about what "the ticket's claude" means:
+paste, or `prompt_sleeping`, or `spawn_session(.., submit_prompt: true, prompt)`, whose words ride
+UNDER the brief in `Parked` (`retry_pending_submits` composes description then user, and
+`spawn_session` takes the prompt so `pending_spawns` can replay it after provisioning). A `Start`
+entry's `text` may be EMPTY — there the prompt is the ticket's own title, so `sanitize_prompt`'s
+blank refusal is lifted for that seat alone (the Enter lands on the title the spawn types, which is
+a turn the user did write). The entry remembers its seat and `seat_stands` drops it when the seat
+changed — a different pane, a killed record, or a claude somebody started by hand where a `Start`
+was waiting — never redirecting; `Pending.action` carries the seat's word (`ask` | `wake` |
+`start`, `Pending::is_queued_ask`) so the card says `starts ∙ after T-3` rather than that words
+wait. **In the TUI the field opens only where waiting means something**: `Ctx::checkout_busy`
+(`App::checkout_busy`, the TUI's own read of `quiet::is_working` over shared-checkout sessions plus
+the snapshot's `in_flight` rows) is a HINT — it decides whether the press stops to ask, never how
+the words are delivered — so a quiet checkout keeps the one-key start and the hint `ask claude the
+title`, and a busy one opens the field at `queued` with the hint `start claude`. A live PANE keeps
+`now` either way: it is one turn in a conversation already there, and the press may well mean
+interrupt. A blank Enter drops a waiting entry as it always has (T-241) EXCEPT on an empty seat
+with the toggle moved to `now`, which is how a queued start — whose field is empty by nature —
+jumps its own queue; the placeholder says which (`start on the title` / `enter drops`). E2e
+`ask_queue_e2e::a_queued_start_waits_for_the_checkout_and_then_spawns_a_claude`; `prompt_e2e`'s two
+"no live claude" refusals are now starts. (STALE-MAP "What waits for the checkout may be the
+session".)
 
 **Tags are ticket metadata on an axis, and `^t` opens a picker.** `Board.tags` is the registry
 (`Tag {name, group, color}`), persisted in `columns.toml` (schema 2 — the bump exists so an older
@@ -1100,39 +1131,171 @@ train's back-off. E2e `status_line_e2e`. (STALE-MAP "The tmux status line can si
 (OS + sound effects)").** D15 said never build a notification channel and ship `watch --json`
 instead; that primitive never shipped, so the quiet was total. What is kept of D15 is its
 reasoning — default OFF, coalesced, said by the CLIENT, quiet while you are looking — and what
-is not is its conclusion. Two rising edges, both read off the snapshot in `App::absorb` (the one
-road every snapshot lands through, and the only place both boards exist at once):
+is not is its conclusion. Two rising edges, read off each snapshot against the last by
+`notify::Differ` (in `App::absorb` until T-291 moved it to the thread below):
 `Board::needs_you_tickets`' three roads are *needs you* — an attention-set session, a snooze
 that woke (T-74), a raised hand (T-107) — so the banner and the `!N` chip are one set; the words
 beside it are `attention::reason_word` for a session and the AGENT'S OWN SENTENCE for a raised
 hand, which is why `notify::Event::why` is a `String` and not the `&'static str` a hint is.
 `Idle{EndTurn}` is *a turn finished*, the state automove reads. Two guards: **`EndTurn` only at High|Medium**
 (after a daemon restart the tail re-derives every finished turn at LOW — a burst of stale
-chimes) and **the first snapshot only SEEDS** (`notify_primed`; `U` restarts the process and an
+chimes) and **the first scan only SEEDS** (`Differ::primed`; `U` restarts the process and an
 opening board must not announce its backlog). `core/src/notify.rs` is the pure half —
-`Coalescer` (one post per `WINDOW_MS` 5 s carrying the aggregate, the window rolling from the
-last thing SAID, so `20 agents finished ∙ T-1 T-2 T-3 T-4 +16`), the wording, the `Sound` ring,
+`Differ` (the rising edges, T-291), `Coalescer` (one post per `WINDOW_MS` 5 s carrying the
+aggregate, the window rolling from the last thing SAID, so `20 agents finished ∙ T-1 T-2 T-3 T-4
++16`), the wording, the `Sound` ring,
 and `Presence`, whose fallback DIRECTION is the design: a terminal that reports focus (DECSET
 1004, `EnableFocusChange`) is believed, one that does not falls back to keystroke presence
 (`KEY_PRESENCE_MS` 30 s), and no evidence at all reads as AWAY — silence is the failure it
-cannot fall into. Focus suppresses the BANNER only; the sound plays either way, and a Settings
-row opts out. `tui/src/notify.rs` is the I/O half, `opener.rs`'s ladder shape twice over
+cannot fall into. **`Presence::looking` is the board being ON SCREEN and focused** (T-291,
+2026-09-07): the terminal is focused for the whole of a handover too, and the original rule read
+that as "you are looking at it" and swallowed every banner in the one case the feature exists
+for. Looking suppresses the BANNER only; the sound plays either way, and a Settings
+row opts out. **`Presence::watching` is that rule one level finer (T-292)**: inside a ticket's own
+claude PANE, that ticket says nothing — banner AND sound, the one suppression that takes both,
+because the permission prompt IS the pane and the finished turn IS its last line, so there is
+nowhere to go look; the other nineteen agents still speak. `Coalescer::forget(ticket)` is how
+(every beat, not on the edge, so a line held from before the attach goes too); the differ still
+MARKS it, so detaching announces nothing you already watched. Only an attach to that ticket's
+claude counts — a shell beside it, the `!` terminal in its worktree and a `^g` editor all show
+the user's own words (`App::watched_ticket`) — and the Settings row `Inside the agent's own pane:
+silent | said anyway` (`prefs.json::notify_in_pane`, default silent) opts out. **And it asks
+whether anybody is still IN there, by asking tmux (T-299, 2026-09-07, dogfooding)**: `watching`
+was the attach and nothing else, so a pane left open behind a browser silenced its own ticket
+completely — no banner and no chime, the one suppression that takes both — for as long as the
+user stayed away. Two halves. **A focus report is evidence only while it can be REFUTED**:
+`restore_terminal` sends `\e[?1004l`, so nothing is reported for the whole of a handover and a
+`true` from the moment before the attach would stand forever; `Presence::focused` consults
+`self.focus` only while `on_screen`, and off screen presence is keystrokes alone. **And the
+keystrokes are tmux's**, since ours never arrive: `Command::FocusQuiet` (no argument — the
+subject is whatever the daemon holds the focus token on, so a stale id cannot answer for a pane
+nobody is in; a Read, denied to agents like every session read) → `Daemon::focus_quiet` →
+`TmuxBackend::client_quiet_secs`, one `list-clients -t <sid16> -F '#{client_activity}'` fork
+giving the freshest client's silence in SECONDS (tmux's own resolution; empty listing = nobody
+attached). `Presence::saw_pane_quiet(now, Option<u64>)` is `saw_key` for those keystrokes —
+`None` CLEARS (no evidence reads as away, here as everywhere), an answer past `KEY_PRESENCE_MS`
+is stored as absence rather than as an old moment (subtracting an hour from a young monotonic
+clock saturates to zero, and zero is a keypress at start-up), and `saw_board(true, ..)` drops it
+with `watching`. The notifier asks only when the answer can change something —
+`Presence::attached()` is Some AND `Coalescer::holds(ticket)` — so a board nobody is attached to
+never forks at all. The trade the design accepts: reading a long turn without touching the
+keyboard for 30 s reads as away, and the ticket chimes. `tui/src/notify.rs` is the I/O half, `opener.rs`'s ladder shape twice over
 (`MESIMON_NOTIFY` `off`|`osc`|a program → `terminal-notifier` → `osascript` → `notify-send` →
 **OSC 9** to our own stdout, the rung that always resolves; `MESIMON_SOUND` → `afplay` →
 `paplay`/`pw-play`/`canberra-gtk-play` → the bell), resolved in `lib.rs::run` and NEVER
-`App::new`, so no test app makes a noise. No crate: `notify-rust` reaches ObjC and dbus and
+`App::new`, so no test app makes a noise. **And the banner can be CLICKED, which raises the
+terminal it came from (T-293)** — `terminal-notifier -activate <bundle-id>`, and that rung only:
+`osascript` can carry no action at all and `notify-send --action` needs a process that stays
+alive to read the click, which a detached null-stdio launch is not, so `click_words` promises one
+in `doctor` only on the rung that answered (on Linux a `TERM_PROGRAM` of `vscode` resolves a
+macOS id and the line would otherwise lie). `-sender` is refused — nicer icon, but its own README
+says it cannot be combined with `-activate`, which needs the sender to BE terminal-notifier.
+WHICH terminal is a third ladder in `find_activate`: `MESIMON_TERM_BUNDLE` (`off`, or an id) → an
+outer tmux VETOES the question → `__CFBundleIdentifier` (macOS stamps it on the app it launches
+and every child inherits it, so it names the id exactly — no table — for kitty, Alacritty, Warp
+and whatever ships next) → `TERM_BUNDLES`, a two-row `TERM_PROGRAM` table whose every entry must
+be VERIFIED (`osascript -e 'id of app "…"'`) before it is added. The veto is the load-bearing
+rung: inside the user's own tmux the inherited `__CFBundleIdentifier` names whatever started the
+SERVER, not the client attached now, and `-activate` LAUNCHES an app that is not running — so a
+stale id opens a window of the wrong terminal, which is worse than doing nothing; `TERM_PROGRAM`
+is rewritten to `tmux` in every pane and is the one reliable negative. `LC_TERMINAL` was refused:
+it can only answer where both others are absent, which on macOS is ssh, and there it would raise
+iTerm2 on the machine nobody is looking at. `bundle_id` REJECTS where `field` scrubs (a dropped
+character yields a different, possibly real id; a leading `-` is another flag to terminal-notifier),
+and `Banner::Custom` is not handed the id — a fourth argv word would change what `$3` means to a
+program written against T-282, and `opener::launch` clears no environment, so one that wants it
+reads the variable itself. No rung may grow a FLAG in `Osascript`'s argv: its words are found by
+position (`item 1`/`item 2`/`item 3`). **And the click lands in the board's own TAB, not just its
+application (T-301, 2026-09-07, dogfooding T-293)** — `-activate` names an application, so on a
+terminal with two boards open in it the click brought the right app forward showing the wrong tab.
+The tab is a SECOND flag on the same rung, `-execute`, a `/bin/sh -c` line terminal-notifier runs
+AFTER the activation (its source runs BOTH actions, `bundleID` then `command`, which is why the
+two are sent together rather than one instead of the other; a script refused permission leaves
+exactly T-293's click). `Channels.activate` became `Channels.click: Option<Click>` (`Click { app,
+reveal }`), and `Reveal` is a ladder of its own: `MESIMON_TERM_REVEAL` (`off`, or a program of the
+user's own — `kitty @ focus-window`, `wezterm cli activate-pane`; a PROGRAM like `MESIMON_NOTIFY`,
+so whitespace is refused rather than split) → iTerm2 by the session uuid its
+dictionary calls `id of session`, the tail of `ITERM_SESSION_ID` → Apple Terminal by a tab's
+`tty`, which is the one on our own stdin (`own_tty`, `libc::ttyname(0)`, asked once from `find`).
+The tmux veto needs no rung here: an outer tmux rewrites `TERM_PROGRAM` in every pane, so the
+two-name table never answers — right, since in there `ITERM_SESSION_ID` is inherited from whatever
+started the server. Three rules, each a test. **A script talks to the app the click raises**:
+`Reveal::app()` names its own bundle id and `find_click` DROPS a reveal that is not the one
+`-activate` was given, so a `MESIMON_TERM_BUNDLE` naming something else cannot leave a script
+aimed here; the user's own program names no app and is exempt. **It raises a tab and never an
+application**: both scripts are wrapped in `if application id … is running`, because `tell
+application` STARTS what is not running and a click that opens an empty terminal is the veto's
+failure by another road — and that guard is what makes the `activate` INSIDE it safe, which is
+there because Apple Terminal reorders its windows only while it is the ACTIVE app (`set frontmost`
+in a background one returns success and does nothing, measured). **And the command carries no word
+from a payload**: a constant script plus one id validated by `session_uuid` / `tty_path` (REJECT,
+never repair — a dropped character names a different tab), single-quoted by `sh_line`, the one
+place mesimon builds a shell command and argv's rule kept where argv is not on offer. iTerm2 needs
+`select` on the window, the tab AND the session (a split pane is a session); Apple Terminal has no
+session and no `select` — a tab is `selected`, a window is `frontmost`. An id nothing matches is a
+silent no-op. `doctor` says which half it has (`click raises com.googlecode.iterm2 and this
+board's own tab`, else `…, not this tab ∙ MESIMON_TERM_REVEAL names a program that can`). Still
+owed, and unchanged: T-293's other half, the CURSOR on the ticket (`mesimon show <KEY>`).
+**`tui/src/notifier.rs` is the thread that drives them**
+(T-291): dispatch hung off `App::tick` until then, and `handover::run` blocks on `cmd.status()`
+for the whole life of an attached pane / `!` / `^g`, so nothing fired at all while you were in
+one. It owns a SECOND daemon connection (`Client::connect_observer` — never restarts the daemon
+on a skew, and reopens through `open_existing`, which spawns nothing: `U` waits for the daemon it
+asked to stop, and a thread respawning one behind that wait made every reload thirty seconds of
+nothing), holds the differ and the coalescer, and posts. `App` keeps one field — `notifier`, set
+by `lib.rs`, never `App::new` — and four forwarders: `saw_focus`, `saw_key`, `saw_board` (both
+halves of `Presence`, plus the terminal handle, flipped around every handover in `lib.rs`),
+`push_notify_prefs` (on every `set_pref`) and `preview` (the Settings row's sound, said at once
+because the control message wakes the thread). The two ESCAPE rungs (OSC 9, the bell) write to
+the same stdout ratatui draws on, so both go through `notify::Console`, one lock the draw takes
+to draw, a rung takes to write, and a handover takes to change hands — and while the board is off
+screen they say NOTHING, which is the honest limit (a helper program is unaffected, and `doctor`
+says so on the OSC line). E2e `restart_skew_e2e::an_observer_subscribes_and_never_spawns_a_daemon`. No crate: `notify-rust` reaches ObjC and dbus and
 `ci/build-linux.sh` cross-links with `rust-lld` only because nothing in the graph is C. The words
 ride **argv, never a program's source** (`osascript -e 'on run argv' …`, `workspace.rs`'s rule)
 and every field crosses `text::scrub_text`, which is also what makes the OSC rung safe. It is a
 SUBMENU (`Scope::Notifications`, `keymap::NOTIFY_ITEMS`, the same `draw_list`) because that
 function does not scroll and Settings already outruns a 20-row terminal — the row sits THIRD, not
 last, because last is inside the clipped region; `the_settings_subtitle_marquees` moved to idx 6
-with it. Five rows, 2–5 gated on the first; the two sound rows PLAY what they name as you cycle
-(the theme picker's rule that the cursor is the preview). Five `prefs.json` keys, the two sound
+with it. Seven rows now, 2–7 gated on the first (14 lines of dialog, so it still clears
+`MIN_H` at `draw_list`'s eight); the two sound rows PLAY what they name as you cycle
+(the theme picker's rule that the cursor is the preview). Seven `prefs.json` keys, the two sound
 names taking the week-start shape. Nothing daemon-side moved — no `Command`, no `Snapshot` field,
-no schema, no e2e — and `pending_notify` rides `pending_open`'s seam in `lib.rs::event_loop`.
+no schema.
 `doctor` prints a `notifications` line naming the rungs even while it is off. Goldens
-`notifications_120x30`, `settings_120x30`. (STALE-MAP "The board says it out loud".)
+`notifications_120x30`, `settings_120x30`.
+
+**A banner says WHICH BOARD, WHICH TICKET and WHAT HAPPENED (T-292, 2026-09-07, dogfooding: "OS
+notification doesn't show ticket title. and no transcript").** `Post` has three fields — `title`
+the board, `subtitle` `T-12 ∙ Add auth to the API`, `body` `needs you ∙ PERMISSION` /
+`finished ∙ <the agent's last line>`. **The verb always leads and content is APPENDED**, so the
+sentence with nothing to append is the one that shipped before (`needs you`, `finished a turn`)
+and the two moments are told apart without the chime. **Only a batch of ONE gets it**: three
+titles do not fit a banner, so several keep T-282's count shape with no subtitle, `body()` is the
+aggregate's alone and `names`/`said` are the single's. **The words are resolved at POST time** —
+`Coalescer::due(now, &Voice, &dyn Fn(Ulid) -> Option<Detail>)`, asked about ONE ticket and only
+past the window check, because a turn's closing record lands around the moment the state flips and
+reading at the edge races the writer; `Worker` keeps its last `Board` and `detail_for` is a FREE
+function so the closure borrows that field alone. The reply is taken only when
+`peek::Peek::reply_key` is set (the peek falls back to the USER's own words prefixed `>`, which a
+banner must never quote back), flattened with `text::one_line`. `core::notify` clips a title at 72
+chars and a reply at 120 on a word boundary; `MAX_FIELD` (240 bytes) is the backstop, and the
+folded line two already-capped fields. **The rungs that have one field fold** (`Post::folded`, so
+the separator is decided once) — `notify-send`, a `MESIMON_NOTIFY` program and OSC 9 keep the
+arity they had; `terminal-notifier` gains `-subtitle` and `osascript` a three-item script, ONLY
+when the subtitle is non-empty, so an aggregate posts the old argv byte for byte and the words
+still ride argv, never the script. **`-group mesimon-<proj16>`** (one per BOARD, the canonical-path
+hash) makes a new banner REPLACE the last in Notification Centre — coalescing extended into the
+OS; T-293 must revisit it, since only the newest banner survives to be clicked. The seventh
+Settings row `The agent's words: quoted | withheld` (`prefs.json::notify_words`, default quoted,
+sitting THIRD) withholds the agent's last line and a raised hand's sentence — never the ticket,
+never mesimon's own reason word, which is why `Event` grew `quoted: bool` (`why` is
+`reason_word` on one road and `Raised::reason` on another, indistinguishable as strings). Off is
+also cheaper: no transcript is opened. (STALE-MAP "The board says it out loud" +
+"Notifications speak from a thread of their own" + "A ticket is quiet inside its own pane"
+(which is T-291's, whatever its heading says) + "A notification says the ticket's title and what
+the agent said" + "A banner you can click raises the terminal" + "A click lands in the board's own
+tab".)
 
 `?` (`ui/help.rs`) renders `keymap::overlay` and is the complete answer for the current
 screen and state.

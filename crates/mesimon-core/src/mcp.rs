@@ -663,7 +663,12 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // A pane's contents are the session itself. `authorize` already
         // denies an agent `Resource::Session` at every action, and this is
         // the same rule stated where a new command has to walk past it.
-        | Command::PaneTail { .. } => false,
+        | Command::PaneTail { .. }
+        // Who is sitting at the user's terminal, and how recently they
+        // touched it (T-299). A session read by the same rule as the line
+        // above, and a fact about the PERSON besides — the notification
+        // thread is the only caller it was built for.
+        | Command::FocusQuiet => false,
     }
 }
 

@@ -5,22 +5,22 @@
    Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y
 
    Keymap validator       >1y    ⠋ Adopt drawer import  >1y    x Flaky e2e on runner  >1y
-
-
                            ╭─ NOTIFICATIONS ────────────────────────────────────────────────╮
                            │   Notifications: on                                            │
                            │     an OS banner and a sound ∙ only while this board is open ~ │
                            │   Also when a turn finishes                                    │
                            │     the card's ✔ ∙ enter keeps it to the blocked ones          │
+                           │   The agent's words: quoted                                    │
+                           │     its last line, on the banner ∙ enter names only the ticket │
                            │   Sound when an agent needs you: Glass                         │
                            │     enter cycles the ring and plays what it names              │
                            │   Sound when a turn finishes: Tink                             │
                            │     a quieter one, so the two are told apart without looking   │
                            │   Banner while the board is focused: quiet                     │
                            │     the card already says so ∙ the sound plays either way ∙ e~ │
+                           │   Inside the agent's own pane: silent                          │
+                           │     its own pane already showed you ∙ sound too ∙ enter says ~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
-
 
 
 

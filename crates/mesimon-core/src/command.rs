@@ -476,6 +476,22 @@ pub enum Command {
         lines: u16,
     },
 
+    /// How long the person inside the FOCUSED pane has been quiet (T-299).
+    ///
+    /// The one question the board cannot answer about itself. While it is
+    /// handed over, focus reporting is off and every keystroke reaches tmux
+    /// instead of us, so "is anybody still there" has no source in the
+    /// client at all — and the notification thread needs it, because the
+    /// suppression it drives takes the sound as well as the banner. tmux
+    /// knows: it is the program reading that terminal.
+    ///
+    /// Takes no argument. The subject is whatever the daemon holds the focus
+    /// token on, which is the pane on the user's terminal by construction —
+    /// asking about a session named by the client would let a stale id
+    /// answer for a pane nobody is in. A read, and denied to agents like
+    /// every other session read.
+    FocusQuiet,
+
     // ------------------------------------------------------------------
     // The agent tier (T-84). Seven commands now, reachable only by
     // `Principal::Agent`, and gated by `mcp::agent_allows` — which is an
@@ -674,6 +690,7 @@ impl Command {
             | DiffList { .. }
             | DiffFile { .. }
             | PaneTail { .. }
+            | FocusQuiet
             | ReadNote { .. }
             | AgentGetTicket
             | AgentReadNote { .. }
@@ -940,6 +957,18 @@ pub enum Response {
     PaneTail {
         lines: Vec<String>,
     },
+    /// FocusQuiet's answer: how long the client attached to the focused
+    /// pane has been silent.
+    ///
+    /// `None` is every way of not knowing — nothing focused, the session
+    /// gone, nobody attached, tmux unable to say — and it is deliberately
+    /// the same answer as "away". No evidence reads as absent everywhere in
+    /// this feature (`core::notify::Presence`), because the failure that
+    /// makes it look broken is the silent one.
+    FocusQuiet {
+        #[serde(default)]
+        quiet_ms: Option<u64>,
+    },
     /// AgentGetTicket's answer.
     AgentTicket {
         ticket: AgentTicketView,
@@ -1108,6 +1137,17 @@ pub struct Pending {
     /// Pasted, waiting on the agent's `UserPromptSubmit` ack.
     #[serde(default)]
     pub in_flight: bool,
+}
+
+impl Pending {
+    /// Is this row a queued ASK — words parked for the ticket's claude,
+    /// whatever seat it is in? `ask` is a live pane, `wake` a parked claude
+    /// the delivery wakes, `start` an empty seat where the delivery starts
+    /// one (T-294). The three words live here so no screen spells the
+    /// vocabulary itself; the train's `merge` and `rebase` rows are not asks.
+    pub fn is_queued_ask(&self) -> bool {
+        matches!(self.action.as_str(), "ask" | "start" | "wake")
+    }
 }
 
 /// The merge train as the board sees it (see `Command::SetAutomation`).

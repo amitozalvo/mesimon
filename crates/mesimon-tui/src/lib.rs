@@ -12,6 +12,7 @@ mod glyphs;
 mod handover;
 mod layout;
 mod localtime;
+mod notifier;
 mod notify;
 mod opener;
 mod osc;
@@ -139,10 +140,22 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.editor_word = external::word();
     // What `^k` opens a URL with — same rule, same reason.
     app.opener = opener::find();
-    // Which rung of each notification ladder answered (T-282) — same rule
-    // again, so no test app and no golden ever raises a banner or a sound.
-    app.notify = Some(notify::find());
+    // The board's outward voice (T-282), on a thread of its own since T-291:
+    // it owns a second daemon connection and keeps speaking through a
+    // handover, when this loop is stopped inside `cmd.status()`. Started
+    // here and never in `App::new` — the rule the two ladders and `opener`
+    // already follow — so no test app and no golden raises a banner, makes a
+    // sound, or opens a second connection.
+    app.notifier = Some(notifier::Notifier::start(repo_root, notify::find(), (&app.prefs).into()));
     let result = event_loop(&mut terminal, &mut app);
+    // The board is done with its terminal, so the notification thread's two
+    // escape rungs stop writing to it NOW — taken under the same lock a
+    // write takes, so nothing is half out — and then the thread itself goes.
+    // A reload is why the order matters: `reexec` waits for the daemon it
+    // just asked to stop, and a thread still holding a connection to it has
+    // no business talking over that.
+    app.saw_board(false);
+    drop(app.notifier.take());
     restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
         return reexec(repo_root);
@@ -180,8 +193,16 @@ fn event_loop(
     terminal: &mut ratatui::Terminal<ratatui::backend::CrosstermBackend<std::io::Stdout>>,
     app: &mut App,
 ) -> Result<()> {
+    // The notification thread writes an escape to this same stdout on its
+    // two escape rungs, so the draw and the write take one lock (T-291).
+    // Cloned out of `App` here: the guard has to outlive the borrow the draw
+    // takes.
+    let console = app.notifier.as_ref().map(crate::notifier::Notifier::console);
     loop {
-        terminal.draw(|f| ui::draw(f, app))?;
+        {
+            let _held = console.as_deref().map(crate::notify::Console::drawing);
+            terminal.draw(|f| ui::draw(f, app))?;
+        }
         app.tick()?;
 
         // U on a ready update: fall out to `run`, which execs the new
@@ -201,6 +222,7 @@ fn event_loop(
         // found it, we stop, and on SIGCONT we take it again — the daemon and
         // every session run through all of it untouched.
         if std::mem::take(&mut app.pending_suspend) {
+            app.saw_board(false);
             restore_terminal()?;
             // SAFETY: raising a signal at a point of our choosing, with the
             // terminal already restored, is the whole contract of ^Z.
@@ -208,18 +230,24 @@ fn event_loop(
                 libc::raise(libc::SIGTSTP);
             }
             *terminal = init_terminal()?;
+            app.saw_board(true);
             terminal.clear()?;
         }
 
         // Focus handover: leave the terminal entirely, attach, come back (docs/19 §2).
         while let Some(argv) = app.pending_attach.take() {
             let cwd = app.pending_attach_cwd.take();
+            // The board is about to stop being what the terminal shows, for
+            // however long the user stays in that pane (T-291). Said before
+            // the restore, so nothing writes an escape into the gap.
+            app.saw_board(false);
             restore_terminal()?;
             blank_primary_screen()?;
             let ho = handover::run(&argv, cwd.as_deref());
             // Alt screen back up FIRST — the drain's settle sleep must not
             // leave the primary screen (stale logs) on display.
             *terminal = init_terminal()?;
+            app.saw_board(true);
             handover::drain_stdin();
             if let Err(e) = ho {
                 app.status = format!("focus failed: {e}");
@@ -233,10 +261,12 @@ fn event_loop(
         // handover's road, and the same blank-then-drain around it, since
         // vim leaves the alt screen the way tmux does.
         if let Some(req) = app.pending_external_edit.take() {
+            app.saw_board(false);
             restore_terminal()?;
             blank_primary_screen()?;
             let out = external::edit_dir(&app.repo_root).and_then(|d| external::run(&req, &d));
             *terminal = init_terminal()?;
+            app.saw_board(true);
             handover::drain_stdin();
             app.external_edit_done(out)?;
         }
@@ -246,18 +276,6 @@ fn event_loop(
         if let Some(argv) = app.pending_open.take() {
             if let Err(e) = opener::launch(&argv, None) {
                 app.status = format!("could not run {}: {e}", argv[0]);
-            }
-        }
-
-        // One coalesced notification (T-282), on the same seam: detached
-        // spawn or one escape to our own stdout, between draws, nothing on
-        // screen moved. A board with no resolved channel says nothing, which
-        // is every test app.
-        if let Some(post) = app.pending_notify.take() {
-            if let Some(ch) = app.notify.as_ref() {
-                if let Err(e) = notify::post(ch, &post) {
-                    app.status = format!("could not notify: {e}");
-                }
             }
         }
 
