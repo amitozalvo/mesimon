@@ -15,13 +15,13 @@
 
     Repro steps                                                                           ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
-    1. open the board                                                                      s shell
-    2. press p
-    3. watch the peek                                                                      NOTES                     2
-
+    1. open the board
+    2. press p                                                                             NOTES                     2
+    3. watch the peek
                                                                                            ≡ What changed      you >1y
                                                                                            ≡ Repro steps    claude >1y
                                                                                            N new note
+
 
 
 

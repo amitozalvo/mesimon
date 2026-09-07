@@ -7,7 +7,6 @@
                                                                                            SESSIONS                  1
 
                                                                                           z $ bash                 >1y
-                                                                                           c start claude ∙ s shell
 
 
 
@@ -27,4 +26,5 @@
 
 
 
- jk select session ∙ enter wake ∙ r rename ∙ d delete ∙ n describe                                               ? keys
+
+ enter wake ∙ r rename ∙ d delete ∙ n describe                                                                   ? keys

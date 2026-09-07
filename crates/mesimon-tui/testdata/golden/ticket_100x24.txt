@@ -8,7 +8,7 @@
 
  ! ✻ claude                                                                                    >1y
      Bash(rm -rf node_modules)
-  s shell ∙ x sleep
+  x sleep
 
 
 
@@ -21,4 +21,4 @@
 
 
 
- jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                          ? keys
+ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

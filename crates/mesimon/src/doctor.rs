@@ -230,6 +230,10 @@ fn environment(verbose: bool) -> Section {
     // What `^k` opens a link with (T-256): the platform's opener, or
     // MESIMON_OPEN's; none is a note, since a link can still be copied.
     records.push(rec(Level::Note, "opener", mesimon_tui::opener_status()));
+    // Whether a ticket may grow its own shell session (T-300). Off by
+    // default, so the two keys that start one are inert — a line here is
+    // where a finger that remembers `s` finds out why.
+    records.push(rec(Level::Note, "ticket shells", mesimon_tui::ticket_shells_status()));
     // How a snoozed ticket returns (T-74) — the third preference in the file.
     records.push(rec(Level::Note, "snooze", mesimon_tui::snooze_status()));
     // The merge train (2026-09-04): the one standing consent for mesimon to

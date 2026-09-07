@@ -1051,6 +1051,28 @@ attaches). Everything that picks "the" agent of a ticket — `pane_target`, `boa
 spawn order and automove ping-ponged the column between their turns. (STALE-MAP "One claude per
 ticket".)
 
+**And the rail OFFERS that one seat, while the ticket's own shell is gated (T-300, 2026-09-07).**
+`RailRow::NewClaude` is a phantom rail row — `+ claude session`, no record behind it — drawn after
+the sessions and before the notes, so a ticket with none opens with the cursor ON it (the user's
+ask: focus this even where there is a description) and `Enter` spawns through `spawn_and_focus`,
+the road `c` takes. Sessions stay first because a position in `rail_sessions` IS a `rail_idx`
+(`board_enter`, the focus return). It stands exactly when the press would work — `App::new_claude_row`
+mirrors the daemon's two refusals: `live_claude` holds the seat (parked counts) and an archived
+ticket may not grow a pane — so a resumable corpse shows both rows (`enter` resumes that
+conversation, the row starts a new one) and the archived page finally offers nothing. `c` on the
+ticket page keeps ONE word, `wake claude`, and is otherwise silent-but-bound (`binding_for` drops
+an empty hint): a listed row and this row are both a second spelling of the press. `jk` gates on
+`Ctx::ticket_rail_rows > 1` now, not on sessions — a rail of notes was unwalkable before, and the
+hint says `select row` where there is no session — and one row is not a list, so the key is inert
+there. The SHELL is gated, not removed (user: "keep the feature but gate it for now"): the daemon
+still spawns `Bash`, the rail lists one, `PaneTail` previews it, `x` sleeps it, and every e2e is
+untouched — what is shut is `s`/`S` on the ticket page and the board's overlay-only `s`, on
+`Ctx::ticket_shells`, opened by `MESIMON_TICKET_SHELLS=1` (read in `lib.rs::run`, never
+`App::new`, the `editor_word`/`opener` rule) with a `doctor` line to find it by. `!` is unaffected:
+the project's terminal is a place to stand, not a session of the ticket. Golden
+`ticket_new_claude_120x30`. (STALE-MAP "The rail offers the session, and the ticket's shell is
+gated".)
+
 **Leaving a Claude session is the same thing as sleeping it.** Ctrl+C-out, `/exit` and Ctrl+D end
 the process, never the conversation, so `Daemon::park_on_exit` converts a clean exit to `Sleeping`
 and `x` wakes it — one gesture, not two, and the ticket keeps its worktree lock. The gate is the

@@ -480,12 +480,18 @@ impl Editor {
 }
 
 /// One row of the ticket page's rail: the sessions first, in spawn order,
-/// then every note of the ticket. Sessions-first is an invariant
-/// `board_enter` and the focus return lean on — a position in
-/// `rail_sessions` IS a `rail_idx`.
+/// then the `+ claude session` row while the seat is empty, then every note
+/// of the ticket. Sessions-first is an invariant `board_enter` and the focus
+/// return lean on — a position in `rail_sessions` IS a `rail_idx` — which is
+/// why the phantom row goes AFTER them and not at the top.
 #[derive(Debug, Clone, Copy)]
 pub enum RailRow<'a> {
     Session(&'a mesimon_core::board::SessionRecord),
+    /// The offer to start the ticket's claude (T-300): no record behind it,
+    /// Enter spawns. It is the rail's first row on a ticket with no session
+    /// — ahead of the notes, deliberately (the user's ask): what a ticket
+    /// with nothing on it needs first is the agent, not the reading.
+    NewClaude,
     Note(&'a NoteMeta),
 }
 
@@ -1007,6 +1013,12 @@ pub struct App {
     /// is what keeps the composer from hinting a key that would land as a
     /// plain Enter.
     pub rich_keys: bool,
+    /// A ticket may grow its own shell session (T-300) — `lib.rs::run` sets
+    /// it from `MESIMON_TICKET_SHELLS`, never `App::new`, the rule
+    /// `editor_word` and `opener` follow, so no test and no golden reads a
+    /// developer's environment. False shuts the two doors and nothing else:
+    /// a shell already on a ticket is listed, previewed and slept as before.
+    pub ticket_shells: bool,
     /// Light/dark watch (`lib.rs::run` arms it, and only when the terminal
     /// answered the startup query). None means the ground is settled for the
     /// process: forced by `MESIMON_THEME`, mono, or a terminal that cannot
@@ -1112,6 +1124,7 @@ impl App {
             just_created: None,
             prompt_history: Vec::new(),
             rich_keys: false,
+            ticket_shells: false,
             flavor_watch: None,
             ground: Ground::Dark,
             forced: None,
@@ -1951,7 +1964,7 @@ impl App {
             RailRow::Session(s) => {
                 (s.kind == SessionKind::Bash && s.state.has_pane()).then_some(s.id)
             }
-            RailRow::Note(_) => None,
+            RailRow::NewClaude | RailRow::Note(_) => None,
         }
     }
 
@@ -1968,7 +1981,7 @@ impl App {
     fn selected_note(&self) -> Option<ulid::Ulid> {
         match self.rail_row()? {
             RailRow::Note(n) => Some(n.id),
-            RailRow::Session(_) => None,
+            RailRow::NewClaude | RailRow::Session(_) => None,
         }
     }
 
@@ -2594,6 +2607,12 @@ impl App {
             git_fetch_note: self.git_fetch_note(),
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
+            sel_new_claude: matches!(row, Some(RailRow::NewClaude)),
+            ticket_shells: self.ticket_shells,
+            ticket_rail_rows: match self.screen {
+                Screen::Ticket { ticket, .. } => self.rail_rows(ticket).len(),
+                _ => 0,
+            },
             ticket_described: subject
                 .and_then(|t| self.board.ticket(t))
                 .is_some_and(|t| t.description().is_some()),
@@ -3784,7 +3803,7 @@ impl App {
     fn selected_session(&self) -> Option<uuid::Uuid> {
         match self.rail_row()? {
             RailRow::Session(s) => Some(s.id),
-            RailRow::Note(_) => None,
+            RailRow::NewClaude | RailRow::Note(_) => None,
         }
     }
 
@@ -3949,6 +3968,12 @@ impl App {
                 if let Screen::Ticket { ticket, .. } = self.screen {
                     if let Some(note) = self.selected_note() {
                         return self.open_note_editor(ticket, Some(note));
+                    }
+                    // The `+ claude session` row (T-300): the offer IS the
+                    // press. Same road `c` takes on an empty seat — spawn,
+                    // then focus — so the two cannot drift.
+                    if matches!(self.rail_row(), Some(RailRow::NewClaude)) {
+                        return self.spawn_and_focus(ticket, SessionKind::Claude);
                     }
                 }
                 if let Some(sid) = self.selected_session() {
@@ -6202,18 +6227,35 @@ impl App {
             .collect()
     }
 
-    /// The ticket page's rail: `rail_sessions` first, then every note of the
-    /// ticket in creation order — the description included, so a long one
-    /// can be paged in the preview zone. Sessions-first is what keeps a
+    /// The ticket page's rail: `rail_sessions` first, then the
+    /// `+ claude session` row while there is a seat to fill, then every note
+    /// of the ticket in creation order — the description included, so a long
+    /// one can be paged in the preview zone. Sessions-first is what keeps a
     /// position in `rail_sessions` a valid `rail_idx` (`board_enter`, the
-    /// focus return).
+    /// focus return), and it is also what puts the offer at index 0 on a
+    /// ticket that has no session: the rail opens on it, notes or not.
     pub fn rail_rows(&self, ticket: ulid::Ulid) -> Vec<RailRow<'_>> {
         let mut rows: Vec<RailRow<'_>> =
             self.rail_sessions(ticket).into_iter().map(RailRow::Session).collect();
+        if self.new_claude_row(ticket) {
+            rows.push(RailRow::NewClaude);
+        }
         if let Some(t) = self.board.ticket(ticket) {
             rows.extend(t.notes.iter().map(RailRow::Note));
         }
         rows
+    }
+
+    /// Does the rail carry the `+ claude session` row (T-300)? Exactly when
+    /// a press on it would work: the daemon's own two refusals, mirrored —
+    /// one claude per ticket (a parked one holds the seat), and never on an
+    /// archived ticket, which must not grow a pane no board surface shows.
+    /// A resumable corpse is neither, so a ticket whose claude died offers
+    /// the row beside it: `enter` on the corpse resumes the conversation,
+    /// `enter` here starts a new one.
+    pub fn new_claude_row(&self, ticket: ulid::Ulid) -> bool {
+        self.board.live_claude(ticket).is_none()
+            && self.board.ticket(ticket).is_some_and(|t| !t.is_archived())
     }
 
     fn spawn_and_focus(&mut self, ticket: ulid::Ulid, kind: SessionKind) -> Result<()> {
@@ -8314,6 +8356,79 @@ mod tests {
 
     fn sent_contains(sent: &std::cell::RefCell<Vec<String>>, needle: &str) -> bool {
         sent.borrow().iter().any(|c| c.contains(needle))
+    }
+
+    /// The rail's `+ claude session` row (T-300). It is the FIRST row on a
+    /// ticket with no session — ahead of the notes, which is the whole ask:
+    /// what a fresh ticket needs is the agent, not the reading. Enter on it
+    /// spawns, `j` still reaches the note under it, and a ticket whose seat
+    /// is taken has no offer at all.
+    #[test]
+    fn the_rail_opens_on_the_offer_and_enter_starts_claude() {
+        let (mut app, sent) = app_with_note_and(false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        assert!(matches!(app.rail_row(), Some(RailRow::NewClaude)), "the note does not take it");
+        let ctx = app.ctx();
+        assert!(ctx.sel_new_claude && !ctx.sel_note && !ctx.sel_session);
+        assert_eq!(
+            keymap::hint_for(Scope::Ticket, Verb::Act, &ctx),
+            Some(("enter", "start claude")),
+            "and the row says what the press does",
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let log = sent.borrow().join("\n");
+        assert!(log.contains("SpawnSession"), "{log}");
+        assert!(log.contains("Claude"), "the offer is a claude, never a shell: {log}");
+        // The note is one row down, and Enter there is the editor as before.
+        let (mut app, _sent) = app_with_note_and(false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'j');
+        assert!(matches!(app.rail_row(), Some(RailRow::Note(_))));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Editor(_)), "{:?}", app.mode);
+        // A seat that is taken offers nothing: one claude per ticket, and
+        // the row mirrors the daemon's own refusal rather than earning one.
+        let (mut app, _sent) = app_with_note_and(true);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        assert!(matches!(app.rail_row(), Some(RailRow::Session(_))));
+        assert!(!app.new_claude_row(ulid::Ulid(1)));
+        // Nor does an archived ticket, which may not grow a pane at all.
+        let (mut app, _sent) = app_with_note_and(false);
+        app.board.tickets[0].archived = Some(mesimon_core::board::Archived {
+            at: "@1000".into(),
+            by: "local".into(),
+            until: None,
+            needs_you: false,
+        });
+        assert!(!app.new_claude_row(ulid::Ulid(1)));
+    }
+
+    /// The two keys that start a ticket's own shell are behind the seam
+    /// (T-300): inert and unhinted until `lib.rs` sets the flag, and every
+    /// session already on a board is untouched — the rail lists it, Enter
+    /// focuses it, `x` sleeps it.
+    #[test]
+    fn a_ticket_shell_needs_the_seam() {
+        let (mut app, sent, _sid) =
+            app_with_session(SessionKind::Bash, SessionState::Running, false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        let before = sent.borrow().len();
+        press(&mut app, 's');
+        press(&mut app, 'S');
+        assert_eq!(sent.borrow().len(), before, "inert: {:?}", sent.borrow());
+        // The shell that is already there is a row like any other.
+        assert!(matches!(app.rail_row(), Some(RailRow::Session(_))));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "FocusStart"), "{:?}", sent.borrow());
+        // With the seam on, both keys are back.
+        let (mut app, sent, _sid) =
+            app_with_session(SessionKind::Claude, SessionState::Running, false);
+        app.ticket_shells = true;
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, 'S');
+        let log = sent.borrow().join("\n");
+        assert!(log.contains("SpawnSession"), "{log}");
+        assert!(log.contains("Bash"), "{log}");
     }
 
     /// Archiving is `a` then `a` — the chord the author asked for.

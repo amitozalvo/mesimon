@@ -1,14 +1,15 @@
  TICKET (T-3)   mesimon > kanban-tui  !1
 
- Fix OSC-11 detection            ╭─ KEYS ∙ ticket ────────────────────────────────────╮
- IN PROGRESS for >1y ∙ created >1│ MOVE AROUND                                        │
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1╭─ KEYS ∙ ticket ────────────────────────────────────╮
+                                 │ MOVE AROUND                                        │
                                  │   jk        select session                         │
-                                 │   q         board                                  │
-  PREVIEW                        │                                                    │    SESSIONS                  2
-                                 │ TICKETS                                            │
-    ● working                    │   r         rename                                 │   ⠋ ✻ claude               >1y
-                                 │   n         describe                               │   ◦ $ bash                 >1y
-                                 │   N         new note                               │    s shell ∙ x sleep
+  PREVIEW                        │   q         board                                  │    SESSIONS                  2
+                                 │                                                    │
+    ● working                    │ TICKETS                                            │   ⠋ ✻ claude               >1y
+                                 │   r         rename                                 │   ◦ $ bash                 >1y
+                                 │   n         describe                               │    x sleep
+                                 │   N         new note                               │
                                  │   ^t        tags                                   │
                                  │   a         archive                                │
                                  │   z         snooze                                 │
@@ -16,8 +17,6 @@
                                  │                                                    │
                                  │ SESSIONS                                           │
                                  │   enter     focus                                  │
-                                 │   s         shell                                  │
-                                 │   S         another shell                          │
                                  │   !         terminal                               │
                                  │   x         sleep                                  │
                                  │                                                    │
@@ -26,5 +25,6 @@
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
+
 
  jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

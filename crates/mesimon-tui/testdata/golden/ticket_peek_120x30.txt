@@ -8,7 +8,7 @@
 
     Fixed the OSC-11 race: the query now runs once before raw mode; goldens updated and   ⠋ ✻ claude               >1y
     clippy is clean.                                                                      ◦ $ bash                 >1y
-                                                                                           s shell ∙ x sleep
+                                                                                           x sleep
     ● working ∙ Run the golden tests
 
 

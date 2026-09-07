@@ -3963,6 +3963,26 @@ fn the_description_dialog_grows_out_of_the_card() {
     assert!(!after.iter().any(|l| l.contains("tab needs you")), "the attention walk is gone");
 }
 
+/// The rail of a ticket with no session of its own (T-300): one row, the
+/// offer, with the cursor on it — ahead of the note, which is the point. The
+/// two spawn hints that used to sit under an empty rail (`c start claude ∙
+/// s shell`) are gone: the row is the offer and `enter` is the press.
+#[test]
+fn golden_ticket_new_claude_120() {
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(1)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+    }
+    let mut app = app_graphite(b);
+    app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("+ claude session")), "the offer: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("enter start claude")), "and the press: {lines:?}");
+    assert!(!lines.iter().any(|l| l.contains("s shell")), "the gated key is silent: {lines:?}");
+    golden("ticket_new_claude_120x30", &lines);
+}
+
 #[test]
 fn golden_ticket_description_120() {
     let mut app = app_noted();

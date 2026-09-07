@@ -8,7 +8,7 @@
 
     ● working                                                                             ⠋ ✻ claude               >1y
                                                                                           ◦ $ bash                 >1y
-                                                                                           s shell ∙ x sleep
+                                                                                           x sleep
 
 
 

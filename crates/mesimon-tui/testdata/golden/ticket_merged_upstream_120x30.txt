@@ -7,7 +7,7 @@
                                                                                            SESSIONS                  1
 
                                                                                           ✓ ✻ claude               >1y
-                                                                                           s shell ∙ x sleep
+                                                                                           x sleep
 
 
 
@@ -27,4 +27,4 @@
 
 
 
- jk select session ∙ enter focus ∙ v diff ∙ r rename ∙ d delete ∙ n describe                                     ? keys
+ enter focus ∙ v diff ∙ r rename ∙ d delete ∙ n describe                                                         ? keys

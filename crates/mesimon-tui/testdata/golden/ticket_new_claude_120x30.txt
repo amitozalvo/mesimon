@@ -1,0 +1,30 @@
+ TICKET (T-1)   mesimon > kanban-tui
+
+ Decay treatments
+ TODO for >1y ∙ created >1y ago
+
+ ▎ What changed
+ ▎
+ ▎ The OSC-11 query now runs once, before raw mode, and the answer is cached for the session.
+ ▎
+ ▎ • detect.rs asks the terminal, then hands the flavor to Theme::new
+ ▎ • the goldens moved with it~
+
+
+                                                                                           SESSIONS                  0
+
+                                                                                           + claude session
+
+                                                                                           NOTES                     1
+
+                                                                                           ≡ What changed      you >1y
+                                                                                           N new note
+
+
+
+
+
+
+
+
+ jk select row ∙ enter start claude ∙ r rename ∙ d delete ∙ n describe                                           ? keys

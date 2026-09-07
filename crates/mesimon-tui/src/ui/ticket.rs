@@ -782,10 +782,6 @@ fn draw_rail(
             })
             .collect()
     };
-    if rail.is_empty() {
-        lines.extend(trailer(&[keymap::Verb::Claude, keymap::Verb::Shell]));
-    }
-
     for (i, s) in rail.iter().enumerate() {
         let selected = i == rail_idx;
         let (g, reg) = glyphs::session_glyph(s, tier, app.spin_frame());
@@ -877,9 +873,34 @@ fn draw_rail(
         }
     }
 
-    if !rail.is_empty() {
-        lines.extend(trailer(&[keymap::Verb::Claude, keymap::Verb::Shell, keymap::Verb::Sleep]));
+    // The offer to start the ticket's claude (T-300), under the sessions and
+    // before the notes — a row, not a hint, so the gesture is the one every
+    // other row already teaches: put the cursor on it and press Enter. It
+    // replaced the pair of spawn hints an empty rail used to carry (`c start
+    // claude ∙ s shell`), which asked a first-time reader to choose between
+    // two words before either meant anything.
+    if app.new_claude_row(ticket_id) {
+        let selected = rail.len() == rail_idx;
+        let name = truncate("+ claude session", w.saturating_sub(2));
+        let style = if selected {
+            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else {
+            theme.dim2()
+        };
+        let text = format!(" {name}");
+        let pad = w.saturating_sub(text.width());
+        let row_style = if selected { theme.selected_row() } else { Style::default() };
+        lines.push(
+            Line::from(vec![Span::styled(text, style), Span::raw(" ".repeat(pad))])
+                .style(row_style),
+        );
     }
+
+    // What is left of the sessions' own keys: `c` only while a parked claude
+    // is there to wake, `s` only where a ticket may still grow a shell
+    // (T-300), `x` only on a selected row. All three can stand down, and
+    // then the rail carries no trailer at all.
+    lines.extend(trailer(&[keymap::Verb::Claude, keymap::Verb::Shell, keymap::Verb::Sleep]));
 
     // ---- the notes, under the sessions ------------------------------------
     // Same shape as the sessions: a heading with the count, one row each —

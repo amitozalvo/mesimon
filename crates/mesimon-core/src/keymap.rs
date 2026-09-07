@@ -796,8 +796,26 @@ pub struct Ctx {
     // ---- ticket screen ----
     /// The rail has a selected session.
     pub sel_session: bool,
+    /// How many rows the ticket page's rail holds — the sessions, the
+    /// `+ claude session` row when it stands, then every note. What `jk`
+    /// gates on: a rail of one row is not a list to walk.
+    pub ticket_rail_rows: usize,
     pub sel_sleeping: bool,
     pub sel_dead: bool,
+    /// The rail cursor is on the `+ claude session` row (T-300) — the
+    /// phantom row the rail carries while the ticket's claude seat is empty
+    /// and it can still be filled. Enter there starts the session, which is
+    /// why the row exists at all: the two spawn keys under an empty rail
+    /// asked the reader to know which of `c` and `s` they wanted before
+    /// they knew what either was.
+    pub sel_new_claude: bool,
+    /// A ticket may grow its own SHELL session (T-300). Off — the default —
+    /// `s` and `S` on the ticket page and `s` on the board are inert and
+    /// unhinted; the sessions a board already has are untouched, and
+    /// `MESIMON_TICKET_SHELLS=1` opens the doors again. `!` is unaffected:
+    /// the project's terminal is a place to stand, not a session of the
+    /// ticket.
+    pub ticket_shells: bool,
     // ---- worktree ----
     pub has_worktree: bool,
     /// `m` would actually do something on the next press.
@@ -1258,12 +1276,14 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        // Overlay-only for the same reason as `c` above.
+        // Overlay-only for the same reason as `c` above, and gated with the
+        // ticket page's own two (T-300): where a ticket may not grow a
+        // shell, the board may not start one either.
         keys: &[Key::Char('s')],
         verb: Verb::Shell,
         show: "s",
         hint: |_| "shell",
-        avail: |c| c.has_ticket,
+        avail: |c| c.has_ticket && c.ticket_shells,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -1732,12 +1752,17 @@ static BOARD: &[Binding] = &[
 
 static TICKET: &[Binding] = &[
     Binding {
-        // A vertical list takes ↓ ↑ and nothing sideways.
+        // A vertical list takes ↓ ↑ and nothing sideways. Gated on the rail
+        // having somewhere to go rather than on there being sessions
+        // (T-300): the rail is sessions, then the `+ claude session` row,
+        // then the notes, and a ticket with no session at all still holds
+        // two rows to walk. One row is not a list, and the key is inert
+        // there — which is what keeps the hint honest.
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
         verb: Verb::CursorDown,
         show: "jk",
-        hint: |_| "select session",
-        avail: |c| c.ticket_has_sessions,
+        hint: |c| if c.ticket_has_sessions { "select session" } else { "select row" },
+        avail: |c| c.ticket_rail_rows > 1,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -1764,7 +1789,9 @@ static TICKET: &[Binding] = &[
         verb: Verb::Act,
         show: "enter",
         hint: |c| {
-            if c.sel_note {
+            if c.sel_new_claude {
+                "start claude"
+            } else if c.sel_note {
                 "edit note"
             } else if c.sel_dead {
                 "resume"
@@ -1774,7 +1801,7 @@ static TICKET: &[Binding] = &[
                 "focus"
             }
         },
-        avail: |c| c.sel_session || c.sel_note,
+        avail: |c| c.sel_session || c.sel_note || c.sel_new_claude,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -1786,17 +1813,17 @@ static TICKET: &[Binding] = &[
         show: "c",
         hint: |c| {
             // Live but paneless is exactly Sleeping: the press wakes the
-            // parked conversation and attaches, so the hint says so. A
-            // claude that is up and in the rail is SILENT here (author
-            // 2026-09-03): the press only focuses the row already listed,
-            // which `enter` on that row says — the key stays bound, the
-            // trailer under the rail stops naming it.
+            // parked conversation and attaches, so the hint says so.
+            // Otherwise SILENT — the key stays bound, the trailer under the
+            // rail stops naming it. A claude that is up is a row already
+            // listed, which `enter` on that row says (author 2026-09-03),
+            // and an EMPTY seat is the `+ claude session` row, which says
+            // the same thing about starting one (T-300). Both would be a
+            // second spelling of a row the reader is looking at.
             if c.ticket_has_claude && !c.ticket_promptable {
                 "wake claude"
-            } else if c.ticket_has_claude {
-                ""
             } else {
-                "start claude"
+                ""
             }
         },
         avail: always,
@@ -1807,11 +1834,17 @@ static TICKET: &[Binding] = &[
         prio: 0,
     },
     Binding {
+        // Gated since T-300 (user: "keep the feature but gate it for now").
+        // A ticket's own shell is whole — the rail lists it, the preview
+        // reads its pane, `x` sleeps it — but a rail that offered `c` and
+        // `s` side by side asked a first-time reader to choose between two
+        // words before either had a meaning, and the shell is the one they
+        // did not want. `MESIMON_TICKET_SHELLS=1` puts both keys back.
         keys: &[Key::Char('s')],
         verb: Verb::Shell,
         show: "s",
         hint: |_| "shell",
-        avail: always,
+        avail: |c| c.ticket_shells,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -1823,7 +1856,7 @@ static TICKET: &[Binding] = &[
         verb: Verb::ShellNew,
         show: "S",
         hint: |_| "another shell",
-        avail: always,
+        avail: |c| c.ticket_shells,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -1833,9 +1866,11 @@ static TICKET: &[Binding] = &[
         // The project's terminal (T-273), from the ticket's page: in the
         // ticket's worktree when it has one — the directory that is hard to
         // reach — else the checkout. Not a session of the ticket (`s` is
-        // that): nothing joins the rail, and the shell is the same one the
-        // board's `!` finds. Overlay-only (T-277): the word still says
-        // which directory in `?`, the footer stays the rail's.
+        // that, and is why `!` stayed out of T-300's gate: a place to stand
+        // is not a seat on the ticket): nothing joins the rail, and the
+        // shell is the same one the board's `!` finds. Overlay-only (T-277):
+        // the word still says which directory in `?`, the footer stays the
+        // rail's.
         keys: &[Key::Char('!')],
         verb: Verb::Terminal,
         show: "!",
@@ -5517,12 +5552,16 @@ mod tests {
         let ctx = Ctx {
             has_ticket: true,
             ticket_has_sessions: true,
+            ticket_rail_rows: 2,
             sel_session: true,
             multi_column: true,
             has_worktree: true,
             merge_actionable: true,
             merge_word: "merge",
             git_repo: true,
+            // Both `s` keys are gated now (T-300); the shape they share
+            // across the two screens is what this test is about.
+            ticket_shells: true,
             ..Default::default()
         };
         for (key, verb) in [
@@ -5825,13 +5864,68 @@ mod tests {
         assert_eq!(hint_for(Scope::Board, Verb::Undo, &arch), Some(("u", "undo archive")));
     }
 
+    /// A ticket's own shell is behind a gate (T-300, user: "keep the feature
+    /// but gate it for now"). Both keys are inert AND unhinted while it is
+    /// shut — the keymap's one invariant, applied to a feature that is still
+    /// whole underneath — and the board's `s` goes with them: where a ticket
+    /// may not grow a shell, no screen may start one. `!` never went behind
+    /// it, because the project's terminal is a place to stand and not a
+    /// session of the ticket.
+    #[test]
+    fn a_ticket_shell_is_behind_the_gate() {
+        let off = Ctx { has_ticket: true, sel_session: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Ticket, Key::Char('s'), &off), None);
+        assert_eq!(resolve(Scope::Ticket, Key::Char('S'), &off), None);
+        assert_eq!(resolve(Scope::Board, Key::Char('s'), &off), None);
+        assert_eq!(hint_for(Scope::Ticket, Verb::Shell, &off), None);
+        assert_eq!(hint_for(Scope::Ticket, Verb::ShellNew, &off), None);
+        assert_eq!(resolve(Scope::Ticket, Key::Char('!'), &off), Some(Verb::Terminal));
+        let on = Ctx { ticket_shells: true, ..off };
+        assert_eq!(resolve(Scope::Ticket, Key::Char('s'), &on), Some(Verb::Shell));
+        assert_eq!(resolve(Scope::Ticket, Key::Char('S'), &on), Some(Verb::ShellNew));
+        assert_eq!(resolve(Scope::Board, Key::Char('s'), &on), Some(Verb::Shell));
+        assert_eq!(hint_for(Scope::Ticket, Verb::Shell, &on), Some(("s", "shell")));
+    }
+
+    /// What replaced the pair of spawn hints under an empty rail (T-300): a
+    /// row, and Enter. One act, one spelling — so `c` on the ticket page has
+    /// exactly one word left, and it is for the seat that is already taken.
+    #[test]
+    fn the_offer_is_a_row_and_the_key_that_said_it_stands_down() {
+        let offered = Ctx { sel_new_claude: true, ticket_rail_rows: 1, ..Default::default() };
+        assert_eq!(resolve(Scope::Ticket, Key::Enter, &offered), Some(Verb::Act));
+        assert_eq!(hint_for(Scope::Ticket, Verb::Act, &offered), Some(("enter", "start claude")));
+        assert_eq!(hint_for(Scope::Ticket, Verb::Claude, &offered), None, "no second spelling");
+        // The one word `c` keeps: a parked claude holds the seat, so there is
+        // no row to offer and the key is what wakes it.
+        let parked = Ctx { ticket_has_claude: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Ticket, Verb::Claude, &parked), Some(("c", "wake claude")));
+        // A claude that is up says nothing here either: `enter` on its row does.
+        let up = Ctx { ticket_promptable: true, ..parked };
+        assert_eq!(hint_for(Scope::Ticket, Verb::Claude, &up), None);
+        // And the rail walks on rows, not on sessions: one row is not a list,
+        // two are — whether or not either is a session.
+        assert_eq!(resolve(Scope::Ticket, Key::Char('j'), &offered), None);
+        let with_note = Ctx { ticket_rail_rows: 2, ..offered };
+        assert_eq!(resolve(Scope::Ticket, Key::Char('j'), &with_note), Some(Verb::CursorDown));
+        assert_eq!(
+            hint_for(Scope::Ticket, Verb::CursorDown, &with_note),
+            Some(("jk", "select row"))
+        );
+        let seated = Ctx { ticket_has_sessions: true, ..with_note };
+        assert_eq!(
+            hint_for(Scope::Ticket, Verb::CursorDown, &seated),
+            Some(("jk", "select session"))
+        );
+    }
+
     /// Shift hardens, forces or widens the same verb. It never switches
     /// verbs — which is why the bulk sleep is `X` (the selection's `x`,
     /// widened to the done column) and not `Z`, which sat beside `z` once
     /// that snoozed the ticket: two verbs on one letter (2026-09-04, user).
     #[test]
     fn shift_stays_on_one_axis() {
-        let t = Ctx { sel_session: true, ..Default::default() };
+        let t = Ctx { sel_session: true, ticket_shells: true, ..Default::default() };
         assert_eq!(resolve(Scope::Ticket, Key::Char('c'), &t), Some(Verb::Claude));
         // `C` is gone: a ticket holds one claude, and the second seat is a
         // shell (STALE-MAP "One claude per ticket"). Shift on `c` is inert.

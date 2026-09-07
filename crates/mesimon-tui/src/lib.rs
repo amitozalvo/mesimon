@@ -52,6 +52,26 @@ pub(crate) fn snooze_words(
     mesimon_core::snooze::hint_for_label(p.label(week_start))
 }
 
+/// May a ticket grow its own shell session (T-300)? Off by default, and the
+/// two keys that start one (`s` and `S` on the ticket page, `s` on the
+/// board) are inert and unhinted while it is — the feature is whole
+/// underneath, and this is the door. Read here and handed to `App` in `run`,
+/// never in `App::new`, so no test app and no golden reads a developer's
+/// environment.
+pub(crate) fn ticket_shells() -> bool {
+    std::env::var_os("MESIMON_TICKET_SHELLS").is_some_and(|v| v == "1")
+}
+
+/// What `mesimon doctor` says about that gate — a user who remembers the key
+/// and finds it dead has one place to look.
+pub fn ticket_shells_status() -> String {
+    if ticket_shells() {
+        "on ∙ MESIMON_TICKET_SHELLS=1 ∙ s and S start a shell on a ticket".into()
+    } else {
+        "off ∙ s and S are inert ∙ MESIMON_TICKET_SHELLS=1 offers them again".into()
+    }
+}
+
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
@@ -140,6 +160,8 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.editor_word = external::word();
     // What `^k` opens a URL with — same rule, same reason.
     app.opener = opener::find();
+    // Whether a ticket may grow its own shell (T-300) — same rule again.
+    app.ticket_shells = ticket_shells();
     // The board's outward voice (T-282), on a thread of its own since T-291:
     // it owns a second daemon connection and keeps speaking through a
     // handover, when this loop is stopped inside `cmd.status()`. Started

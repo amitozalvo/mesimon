@@ -7494,3 +7494,61 @@ and the empty column's single press), `ui::golden_board_header_bar_120` (the pai
 band surviving, its bar cell gone, the footer's HEADER word),
 `ui::enter_on_the_header_bar_opens_the_checkout_diff` and
 `ui::the_header_no_longer_spells_the_diff_key`.
+
+## The rail offers the session, and the ticket's shell is gated (T-300, 2026-09-07)
+
+An empty rail taught its two spawn verbs the way T-158 taught every other key — a trailer under
+the list, in the keymap's own words: `c start claude ∙ s shell`. It was correct and it read
+badly. A first-time reader arriving at a fresh ticket was asked to choose between two words
+before either had a meaning, and one of the two is the one they did not want: a shell on a
+ticket is a niche second seat, and the board's whole proposition is the agent. Worse, the
+gesture was different from every other gesture on that screen — everywhere else you put the
+cursor on a row and press Enter.
+
+So the offer became a ROW. `RailRow::NewClaude` is a phantom with no record behind it, drawn
+`+ claude session`, and `Enter` on it spawns through the same `spawn_and_focus` the `c` key
+takes. It sits AFTER the sessions and BEFORE the notes, which is two decisions:
+
+- After the sessions, because sessions-first is an invariant `board_enter` and the focus return
+  lean on — a position in `rail_sessions` IS a `rail_idx`. A row at the top would have been a
+  silent off-by-one in three places.
+- Before the notes, deliberately (the user's ask: "even if there is a note on the ticket, focus
+  this instead"). On a ticket with no session the rail therefore OPENS on the offer, description
+  or not. The description is still on screen — the band under the identity line draws it — so
+  nothing is hidden by the cursor starting on the row that does something.
+
+It stands exactly when a press on it would work, which is the daemon's two refusals mirrored
+(`App::new_claude_row`): one claude per ticket, so a live OR parked one takes the seat, and never
+on an archived ticket, which may not grow a pane no board surface shows. A resumable corpse is
+neither, so a ticket whose claude died shows both — `enter` on the corpse resumes that
+conversation, `enter` on the row starts a new one. The archived ticket page used to hint `c start
+claude` and get "ticket archived — restore it first"; it now says nothing there, which is the
+first time that screen has been honest.
+
+**`c` on the ticket page keeps one word.** The hint is `wake claude` or nothing. A claude that is
+up is a row already listed (author 2026-09-03) and an empty seat is now a row too, so both would
+be a second spelling of something the reader is looking at. The key stays bound in every state —
+`binding_for` returns `None` on an empty hint, so it leaves the trailer and `?` without leaving
+the keymap.
+
+**`jk` gates on ROWS, not on sessions.** `Ctx::ticket_rail_rows` replaced `ticket_has_sessions`
+on that binding, and the hint says `select row` where there is no session to select. The old
+predicate was already wrong — a ticket with three notes and no session had an unwalkable rail —
+and T-300 made it common, since a described ticket with no agent now holds two rows. One row is
+not a list, so the key is inert there and the footer says so.
+
+**The shell is gated, not removed** (the user: "keep the feature but gate it for now"). The
+feature is whole underneath: the daemon still spawns `SessionKind::Bash`, the rail lists one,
+the preview zone reads its pane through `PaneTail`, `x` sleeps it, and every e2e that drives a
+shell over the wire is untouched. What is shut is the two doors — `s` and `S` on the ticket page,
+and the board's overlay-only `s`, because where a ticket may not grow a shell no screen may start
+one. `Ctx::ticket_shells` is the gate; `MESIMON_TICKET_SHELLS=1` opens it, read in `lib.rs::run`
+and never `App::new` (the rule `editor_word` and `opener` follow, so no test and no golden reads
+a developer's environment), and `doctor` prints a `ticket shells` line so a finger that remembers
+`s` has one place to look. `!` never went behind the gate: the project's terminal (T-273) is a
+place to stand, not a session of the ticket.
+
+Nothing daemon-side moved — no `Command`, no `Snapshot` field, no schema, no e2e. Pinned by
+`a_ticket_shell_is_behind_the_gate` and `the_offer_is_a_row_and_the_key_that_said_it_stands_down`
+(`core/src/keymap.rs`), `the_rail_opens_on_the_offer_and_enter_starts_claude` and
+`a_ticket_shell_needs_the_seam` (`tui/src/app.rs`), and the golden `ticket_new_claude_120x30`.
