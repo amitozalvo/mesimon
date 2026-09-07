@@ -288,7 +288,8 @@ pure, never persisted, never on the snapshot (derived data on disk drifts from i
 and `App::ticket_links` resolves them against the live board (`Board::ticket_by_key`, the
 ticket's own key excluded) and the disk (a path must be a FILE under the ticket's dir: worktree
 when attached, else the repo root). `^k` on the board or the ticket page (`Verb::Links`, both
-scopes, `prio: 0`; the page's state row hints ` ∙ ^k links` while a fetched body holds one)
+scopes, `prio: 0`; nothing on screen names it since T-312 — the ticket page's state row hinted
+` ∙ ^k links` while a fetched body held one, `?` is the one home now, `!`'s shape after T-277)
 fetches the bodies the cache lacks through `Command::ReadNote` (`App::fetch_links`) and opens
 `Mode::Links { ticket, links, idx }` / `Scope::Links` (`dialog::draw_links`, the archived list's
 shapes plus `c copy` and `^k` as `Back`); nothing to list is `no links in T-12`, never an empty

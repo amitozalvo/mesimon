@@ -2081,8 +2081,9 @@ static TICKET: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        // The board's links key on the ticket's own page; the state row
-        // names it while a fetched body holds a link (T-158's idiom).
+        // The board's links key on the ticket's own page, overlay-only like
+        // the board's. The state row named it while a fetched body held a
+        // link until T-312; `?` is the one home now.
         keys: &[Key::Ctrl('k')],
         verb: Verb::Links,
         show: "^k",

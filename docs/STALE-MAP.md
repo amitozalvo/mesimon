@@ -7754,3 +7754,26 @@ report is the opposite case, a person who acted. No `Command`, no `Ctx` field, n
 Pinned by `raise_hand_e2e::a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn`,
 which sends the real `Stop` and then a real `PostToolUse` frame down the hook socket and asserts
 the hand goes down and the card goes back to working. Removing the clause times the test out.
+
+## The links key is listed only in `?` (T-312, 2026-09-07)
+
+Asked for as "remove `^k` links hint from ticket page". T-256 put the key on the ticket page's
+state row in T-158's idiom — a hint sitting beside the thing it operates on — and gated it on
+`App::ticket_links` being non-empty, so the row named the key only while a fetched body held a
+link.
+
+What changed: `ui/ticket.rs` no longer builds that span. The binding is untouched (`prio: 0` on
+`Scope::Ticket`, `avail: |c| c.ticket_linkable`), so `^k` still opens the dialog from the page and
+`?` still lists `^k links` there, beside `^K open first link` and the screen's other overlay-only
+keys. The board's copy was overlay-only from the start and never had a hint to lose.
+
+Why: this is T-277's shape a second time. The state row says what the ticket IS — its column, its
+age, its tags, its branch, a raised hand's sentence — and a key that blinks into that row when a
+note body happens to arrive is a hint whose appearance depends on a fetch, not on the moment.
+`?` is what exists to list a key that is simply there.
+
+The test flipped rather than went:
+`the_ticket_page_names_the_links_key_only_when_there_are_links` became
+`the_ticket_page_never_names_the_links_key_on_its_state_row`, which asserts the row is silent with
+a link fetched AND without one, and that `keymap::overlay` still carries the row. No golden moved
+— no golden ever had a fetched note body with a link in it.

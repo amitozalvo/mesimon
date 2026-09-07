@@ -3745,17 +3745,22 @@ fn golden_links_120() {
     golden("links_120x30", &render(&app_links(), 120, 30));
 }
 
-/// The ticket page names `^k` on its state row while a fetched note holds
-/// a link — T-158's idiom, the key beside the description it reads — and
-/// never otherwise.
+/// The ticket page does NOT name `^k` on its state row (T-312) — not with a
+/// link fetched, not without one. `?` is the key's one home, the way `!`'s
+/// is (T-277); the state row says what the ticket is.
 #[test]
-fn the_ticket_page_names_the_links_key_only_when_there_are_links() {
+fn the_ticket_page_never_names_the_links_key_on_its_state_row() {
     let mut app = app_noted();
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let state_row = |app: &App| render(app, 120, 30)[3].clone();
-    assert!(!state_row(&app).contains("^k links"), "{}", state_row(&app));
+    assert!(!state_row(&app).contains("^k"), "{}", state_row(&app));
     app.remember_note(ulid_n(91), 1, Some("see https://a.test/x".into()));
-    assert!(state_row(&app).contains("∙ ^k links"), "{}", state_row(&app));
+    assert!(!app.ticket_links(ulid_n(3)).is_empty(), "the fixture holds a link");
+    assert!(!state_row(&app).contains("^k"), "{}", state_row(&app));
+    // The key is still bound and still listed by `?`.
+    assert!(mesimon_core::keymap::overlay(mesimon_core::keymap::Scope::Ticket, &app.ctx())
+        .iter()
+        .any(|(_, rows)| rows.contains(&("^k", "links"))));
 }
 
 fn editor_on(purpose: crate::app::EditorPurpose, title: &str, body: &str) -> crate::app::Editor {
