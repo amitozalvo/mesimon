@@ -230,6 +230,14 @@ impl TmuxBackend {
         Ok(())
     }
 
+    /// Apply the scroll step to servers that survived a daemon reload.
+    pub fn install_scroll_bindings(&self) -> Result<()> {
+        for (table, key, command) in conf::SCROLL_BINDINGS {
+            self.run(&["bind-key", "-T", table, key, command])?;
+        }
+        Ok(())
+    }
+
     fn tmux(&self) -> Command {
         let mut c = Command::new(tmux_bin());
         c.arg("-S").arg(&self.sock).arg("-f").arg(&self.conf);
@@ -560,6 +568,53 @@ mod tests {
         let d = snap.iter().find(|p| p.session_name == "dead1").unwrap();
         assert!(d.pane_dead);
         assert_eq!(d.dead_status, Some(7));
+        be.kill_server().unwrap();
+    }
+
+    #[test]
+    fn wheel_scrolls_one_line_on_fresh_and_surviving_servers() {
+        let f = fixture("backend-scroll", "t.sock");
+        let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
+        be.spawn("scroll", &f.dir, &["sleep".into(), "60".into()]).unwrap();
+        let assert_bindings = || {
+            for table in ["copy-mode", "copy-mode-vi"] {
+                for (key, direction) in [("WheelUpPane", "up"), ("WheelDownPane", "down")] {
+                    let binding = be.run(&["list-keys", "-T", table, key]).unwrap();
+                    assert!(
+                        binding.contains("select-pane")
+                            && binding.contains("send-keys")
+                            && binding.contains("-N 1 ")
+                            && binding.contains("-X")
+                            && binding.trim_end().ends_with(&format!("scroll-{direction}")),
+                        "{binding}"
+                    );
+                }
+            }
+        };
+        assert_bindings();
+        // Simulate a server born with the old defaults, then reload twice:
+        // the upgrade must cover both key tables and be idempotent.
+        for table in ["copy-mode", "copy-mode-vi"] {
+            for (key, direction) in [("WheelUpPane", "up"), ("WheelDownPane", "down")] {
+                be.run(&[
+                    "bind-key",
+                    "-T",
+                    table,
+                    key,
+                    &format!("select-pane; send-keys -N 5 -X scroll-{direction}"),
+                ])
+                .unwrap();
+            }
+        }
+        be.install_scroll_bindings().unwrap();
+        be.install_scroll_bindings().unwrap();
+        assert_bindings();
+        // Applications still receive their mouse events through tmux's
+        // root binding, rather than being forced into history scrolling.
+        assert!(be
+            .run(&["list-keys", "-T", "root", "WheelUpPane"])
+            .unwrap()
+            .contains("send-keys -M"));
         be.kill_server().unwrap();
     }
 

@@ -9,6 +9,16 @@
 /// place, so the two cannot drift apart again.
 pub const STATUS_RIGHT: &str = " ^]/^5 back  ";
 
+/// One line per wheel event: tmux's default five-line step amplifies trackpad
+/// gestures. Shared by fresh configs and live-server upgrades. Keep pane
+/// selection and leave root-table mouse forwarding to applications intact.
+pub const SCROLL_BINDINGS: [(&str, &str, &str); 4] = [
+    ("copy-mode", "WheelUpPane", "select-pane; send-keys -N 1 -X scroll-up"),
+    ("copy-mode", "WheelDownPane", "select-pane; send-keys -N 1 -X scroll-down"),
+    ("copy-mode-vi", "WheelUpPane", "select-pane; send-keys -N 1 -X scroll-up"),
+    ("copy-mode-vi", "WheelDownPane", "select-pane; send-keys -N 1 -X scroll-down"),
+];
+
 /// The `status-position` word for a preference: tmux's own two values.
 pub fn status_position(top: bool) -> &'static str {
     if top {
@@ -59,6 +69,9 @@ set -g window-status-current-format ""
 "##
         .replace("@STATUS_RIGHT@", STATUS_RIGHT)
         .replace("@STATUS_POSITION@", status_position(status_top));
+    for (table, key, command) in SCROLL_BINDINGS {
+        conf.push_str(&format!("bind-key -T {table} {key} {{ {command} }}\n"));
+    }
     for (table, key, pipe) in copy_pipe_bindings() {
         conf.push_str(&format!(
             "bind-key -T {table} {key} send-keys -X copy-pipe-and-cancel \"{pipe}\"\n"

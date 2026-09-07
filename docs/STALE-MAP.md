@@ -7936,3 +7936,13 @@ flag) stays deferred, as `00-DECISIONS` says. Nothing replaces the warning: a sl
 conversation cannot be resumed already says so where it matters, in the PREVIEW zone's `no
 conversation to resume ∙ waking it starts a fresh one` (T-308), which is read off
 `transcript_path` at draw time rather than latched into a record at sleep time.
+
+## Terminal history scrolls one line per wheel event (2026-09-08)
+
+Mesimon enabled tmux mouse handling but inherited the five-line wheel step in both
+`copy-mode` and `copy-mode-vi`. Each wheel event now scrolls one line in either direction,
+retaining pane selection. Root-table forwarding is unchanged, so applications that handle
+mouse input still receive it. The same binding definitions render into fresh configs and
+are installed on surviving tmux servers at daemon startup; a reload does not require killing
+agent sessions. `wheel_scrolls_one_line_on_fresh_and_surviving_servers` checks the bindings
+against real tmux, including replacing old five-line bindings and repeated installation.

@@ -473,6 +473,7 @@ pub fn run(paths: Paths) -> Result<()> {
     if backend.server_alive() {
         let _ = backend.install_pane_died_hook(&pane_died);
         let _ = backend.install_copy_bindings();
+        let _ = backend.install_scroll_bindings();
     }
     // A malformed state file is a NOTICE, not a startup failure: this runs
     // after orch.sock is already bound, so a hard fail here left the client
