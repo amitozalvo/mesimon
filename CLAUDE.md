@@ -1452,9 +1452,17 @@ what was kept). The description cannot spell the product's own phrase — `lint_
 **It is the ticket's, not the session's, and that is the whole design**: the `Stop` that lands
 moments after the call would wipe a `RequiresAction` reason, the 15-minute stale demote would
 drop it, D28 pins the ranks, and a restart re-derives every session as `Unknown{DaemonRestarted}`
-— the turn ENDING is exactly what must not clear it. Lowered only by a person: leaving the
-ticket's page (`App::ack_hand` → `Command::LowerHand`, never-tier), or any `UserPromptSubmit` on
-that claude (`lower_hand_on`, beside `asked_by_hand`/`ack_owed`). Unlike `woke_at` the board
+— the turn ENDING is exactly what must not clear it. **The next turn BEGINNING does**, and there
+are three roads: leaving the ticket's page (`App::ack_hand` → `Command::LowerHand`, never-tier),
+any `UserPromptSubmit` on that claude (`lower_hand_on`, beside `asked_by_hand`/`ack_owed`), and —
+since T-311, 2026-09-07 — `apply_change`'s `Idle{EndTurn}` → `Running` at High, which is T-228's
+promotion read a second time: a `!` bash command in Claude Code puts its output into the
+conversation and the model takes a turn on it with NO prompt hook, and that is exactly the shape
+of an answer to a hand ("run `gcloud auth login`, then tell me"), so the `!` stood on a card that
+was visibly working again. The three conditions each exclude a road that is not a person: `Background`
+is a park a teammate's report resumes (T-135), sub-High into `Running` is `SubagentStop`
+correcting a misread tail rather than a new turn, and `RequiresAction` → `Running` is a permission
+dialog resolving mid-turn. Unlike `woke_at` the board
 CURSOR lowers nothing (a glance is not an answer) and the page lowers it on the way OUT (clearing
 on arrival would blank the row before it could be read). `train::plan` skips a ticket with a hand
 up on both lists — a person looks before the branch goes anywhere — which also keeps the train's
@@ -1464,7 +1472,8 @@ on the ticket page's state row (`∙ claude asked 4m ago ∙ …`). No new key, 
 `TICKET_SCHEMA` bump (a dropped hand loses an alert, not recoverable state). `needs_you_count`
 became a count of TICKETS on the way past (`Board::needs_you_tickets`): the three roads overlap,
 and `!2` for one ticket matched nothing on screen. E2e `raise_hand_e2e`, goldens `board_raised_*`
-/ `ticket_raised_*`. (STALE-MAP "An agent can ask for the user".)
+/ `ticket_raised_*`. (STALE-MAP "An agent can ask for the user" + "A turn that starts without a
+prompt answers the hand".)
 
 **The tools can be switched OFF, and the board offers the AGENT BRIEF — one line in the system
 prompt of the claudes it starts** (T-217, 2026-09-04; re-aimed from CLAUDE.md to

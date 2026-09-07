@@ -1,8 +1,8 @@
 //! `raise_hand` (T-107) end to end: an agent asks for a person on its own
 //! ticket through the real shim, the mark lands on the ticket FILE and in the
-//! board's `!N`, the words come back scrubbed and capped, and the two roads
-//! down — the person's `LowerHand` and any prompt reaching the agent — each
-//! put it out.
+//! board's `!N`, the words come back scrubbed and capped, and the three roads
+//! down — the person's `LowerHand`, a prompt reaching the agent, and a turn
+//! that starts with no prompt at all (T-311) — each put it out.
 //!
 //! The point of the file is the LIFETIME. Raising is one call; what makes the
 //! mark worth having is that the `Stop` which ends the turn moments later
@@ -21,7 +21,7 @@ mod common;
 use common::*;
 
 #[test]
-fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_a_prompt() {
+fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn() {
     const STUB: &str = "#!/bin/sh\nwhile IFS= read -r line; do :; done\n";
     // The archive at the end needs a parked session, and the sleep floor is
     // a minute of wall clock this test is not going to spend.
@@ -126,6 +126,44 @@ fn a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_a_prompt() {
         !c.board().ticket(ticket).unwrap().hand_raised()
     });
     assert_eq!(c.board().needs_you_count(), 0);
+
+    // ---- and so does a turn that starts without one ----------------------
+    // The `!` bash road (T-311): a bash command typed in Claude Code puts its
+    // output into the conversation and the model takes a turn on it, firing
+    // no `UserPromptSubmit` whatever. That is how a person answers "run
+    // `gcloud auth login`, then tell me", so the turn beginning has to be an
+    // answer even when no prompt hook says so.
+    shim.call_ok("raise_hand", json!({ "reason": "run `gcloud auth login`" }));
+    hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(6), "the turn to end", || {
+        c.board().sessions.iter().any(|s| {
+            s.id == sid
+                && matches!(
+                    s.state,
+                    mesimon_core::board::SessionState::Idle {
+                        stop_reason: mesimon_core::board::StopReason::EndTurn
+                    }
+                )
+        })
+    });
+    assert!(c.board().ticket(ticket).unwrap().hand_raised(), "the Stop is still not an answer");
+    hook_send(
+        &hook_sock,
+        &sid.to_string(),
+        "PostToolUse",
+        r#"{"tool_name":"Read","tool_response":{}}"#,
+    );
+    wait_until(Duration::from_secs(6), "the new turn lowers the hand", || {
+        !c.board().ticket(ticket).unwrap().hand_raised()
+    });
+    assert_eq!(c.board().needs_you_count(), 0);
+    assert!(
+        c.board()
+            .sessions
+            .iter()
+            .any(|s| s.id == sid && matches!(s.state, mesimon_core::board::SessionState::Running)),
+        "and the card is working again (T-228)"
+    );
 
     // ---- the never-tier holds ---------------------------------------------
     // An agent may raise a hand and may not take one down: being answered is

@@ -7709,3 +7709,48 @@ Pinned by `the_workspace_choice_is_open_until_work_starts` (the unhinted-but-liv
 `board_worktree_planned_120x30` / `ticket_new_claude_120x30`, and
 `exit_parks_e2e::leaving_claude_parks_the_session`, which now asserts both sides of the lock — a
 parked claude beside a dead shell opens it, a resumed one closes it.
+
+## A turn that starts without a prompt answers the hand (T-311, 2026-09-07, dogfooding: "after answering, the ticket stayed as needs you")
+
+An agent on the author's simbly board raised a hand asking for `gcloud auth login`, the user ran
+it, the agent went back to work — and the card kept its `!` and its reason for the rest of the
+session. The board's own feed is the whole diagnosis:
+
+```
+252 raise_hand              (agent)
+253 PostToolUse             (the raise_hand call's own frame)
+254 Stop
+255 session_state running -> idle end_turn   high
+256 automove                (→ REVIEW)
+257 PostToolUse             28 s later
+258 session_state idle -> running            high, hook PostToolUse
+259 automove                (→ IN PROGRESS)
+```
+
+Not one `UserPromptSubmit`, and that hook was the only thing on the agent's side that lowered a
+hand. The user answered with Claude Code's `!` bash — the command's output goes into the
+conversation as a user message and the model takes a turn on it, firing no prompt hook whatever.
+T-228 measured exactly this two days earlier and taught the ATTENTION machine about it (line 258
+is T-228's rule working); the HAND never learned it, so the `!` stood on a card that was visibly
+working again.
+
+**The fix is the clause T-228 already built, read a second time.** `Daemon::apply_change` lowers
+the hand on `Idle{EndTurn}` → `Running` at High. T-107's half is untouched and is why the rule is
+worded as a turn STARTING rather than as a session going busy: the `Stop` that lands moments after
+the call must not be an answer, and it still is not — nothing about the hand is derived from the
+session's state, it is a ticket field with two writers and now three erasers.
+
+**Three conditions, each excluding a road that is not a person answering.** Only from `EndTurn`:
+`Idle{Background}` is a PARK, and a teammate's report resumes it with nobody involved (T-135). Only
+at High: `SubagentStop` promotes a sub-High idle back to `Running` as a CORRECTION of a misread
+tail, not as a new turn, and a hand may not come down on an inference — that is the same reasoning
+that keeps the 15-minute stale demote away from it. And only into `Running`: a `RequiresAction` →
+`Running` is a permission dialog resolving mid-turn, which answers a tool, not a person's question.
+
+**Not built.** The board CURSOR still lowers nothing — a glance is not an answer (T-107), and this
+report is the opposite case, a person who acted. No `Command`, no `Ctx` field, no schema, no key.
+`lower_hand_on` grew a second caller and its doc comment now names both roads as one idea.
+
+Pinned by `raise_hand_e2e::a_raised_hand_outlives_the_turn_and_is_lowered_by_the_person_or_the_next_turn`,
+which sends the real `Stop` and then a real `PostToolUse` frame down the hook socket and asserts
+the hand goes down and the card goes back to working. Removing the clause times the test out.

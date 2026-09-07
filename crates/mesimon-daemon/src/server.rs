@@ -16,7 +16,7 @@ use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, Tail
 use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
 use mesimon_core::board::{
     sanitize_tag, AgentTools, Archived, Board, Confidence, ExitReason, Provenance, SessionKind,
-    SessionRecord, SessionState, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
+    SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, DiffTarget, Envelope,
@@ -2440,6 +2440,27 @@ impl Daemon {
         }
         let snapshot = rec.clone();
         self.feed.session_state(&snapshot, &change.from, hook);
+        // A raised hand is answered by the NEXT turn beginning (T-311), not
+        // by the one that raised it ending — that half is T-107's whole
+        // design and is untouched. `UserPromptSubmit` was the only turn-start
+        // the daemon knew, and T-228 measured a second: a `!` bash command in
+        // Claude Code puts its output into the conversation and the model
+        // takes a turn on it with no prompt hook at all. That is exactly the
+        // shape of an answer to a hand — "run `gcloud auth login`, then tell
+        // me" — so answering the agent the way it asked left the `!` up on a
+        // card that was visibly working again (dogfood 2026-09-07). The edge
+        // is the promotion T-228 already built, and nothing else: only from
+        // `EndTurn`, because `Background` is a park a teammate's report
+        // resumes with no person involved and `Interrupted`/`Unknown` are
+        // guesses, and only at High, because `SubagentStop` promotes an
+        // inferred idle back to Running as a CORRECTION of a misread rather
+        // than as a new turn. A hand may not come down on an inference.
+        if change.confidence == Confidence::High
+            && matches!(change.from, SessionState::Idle { stop_reason: StopReason::EndTurn })
+            && matches!(change.to, SessionState::Running)
+        {
+            self.lower_hand_on(snapshot.ticket);
+        }
         self.auto_move(snapshot.ticket, &change.to, change.confidence);
         // A turn ended, or a target died: the queued asks look again. The
         // settle that lands `Idle{EndTurn}` comes through here from the
@@ -5218,10 +5239,15 @@ impl Daemon {
         }
     }
 
-    /// The other road down: a prompt reached the ticket's agent, so whatever
-    /// it was waiting for, it has been given. Returns whether anything
-    /// changed — the caller is already inside a hook turn and owns the
-    /// persist and the broadcast.
+    /// The other road down: a turn reached the ticket's agent, so whatever it
+    /// was waiting for, it has been given. Returns whether anything changed —
+    /// the caller is already inside a hook turn and owns the persist and the
+    /// broadcast.
+    ///
+    /// Two callers, one idea — the hand comes down when the NEXT turn starts.
+    /// `UserPromptSubmit` is the road a typed line takes; `apply_change`'s
+    /// `Idle{EndTurn}` → `Running` is the road a `!` bash command takes, which
+    /// fires no prompt hook at all (T-311, and see T-228 for the measurement).
     ///
     /// The daemon cannot tell its own paste's ack from a line the user typed
     /// (the queued ask states the same limit), so a prompt mesimon delivers
