@@ -2,6 +2,7 @@
 //! discipline (docs/05 §13) — exercised on every focus handover (docs/19 §2).
 
 mod app;
+mod caffeine;
 mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
@@ -75,6 +76,10 @@ pub fn ticket_shells_status() -> String {
     }
 }
 
+/// What `mesimon doctor` says about holding the machine awake (T-288):
+/// whether it is on, and which rung would hold it — named even while it is
+/// off, and named plainly when nothing here can.
+pub use caffeine::doctor_line as keep_awake_status;
 /// What `mesimon doctor` says about the note editor's `^g`: which program
 /// opens, and which variable named it.
 pub use external::doctor_line as editor_status;
@@ -172,6 +177,10 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // already follow — so no test app and no golden raises a banner, makes a
     // sound, or opens a second connection.
     app.notifier = Some(notifier::Notifier::start(repo_root, notify::find(), (&app.prefs).into()));
+    // What holds the machine awake while an agent is mid-turn (T-288) —
+    // resolved here and never in `App::new`, the same rule again, so no test
+    // app takes a power assertion or forks a holder. `App::tick` drives it.
+    app.caffeine = Some(caffeine::Caffeine::new(caffeine::find()));
     let result = event_loop(&mut terminal, &mut app);
     // The board is done with its terminal, so the notification thread's two
     // escape rungs stop writing to it NOW — taken under the same lock a
@@ -181,6 +190,13 @@ pub fn run(repo_root: &Path) -> Result<()> {
     // no business talking over that.
     app.saw_board(false);
     drop(app.notifier.take());
+    // And the hold goes here, BEFORE `reexec`: the reload waits up to
+    // `HANDOVER_MAX` for the daemon it asked to stop, and holding the
+    // machine awake through that wait — or into the next image — is exactly
+    // what a keep-awake feature must not do. (The pipe a spawned holder
+    // reads closes on the `exec` anyway; this is the road that does not
+    // depend on that.)
+    drop(app.caffeine.take());
     restore_terminal()?;
     if result.is_ok() && app.pending_reexec {
         return reexec(repo_root);

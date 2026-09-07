@@ -21,6 +21,12 @@
 //! when its last display state said finished. Unknown Codex state cannot
 //! authorize automatic checkout operations; only fresh observation or
 //! explicit parking/termination can release the hold.
+//!
+//! `is_mid_turn` is the one named narrowing: working minus `RequiresAction`,
+//! for the question "is the machine doing anything" as against "is this turn
+//! over" (T-288's keep-awake hold). It is written in terms of `is_working`,
+//! so a fifth working state — or another agent kind — joins both answers at
+//! once.
 
 use std::collections::HashSet;
 
@@ -42,6 +48,22 @@ pub fn is_working(s: &SessionRecord) -> bool {
                     | SessionState::RequiresAction { .. }
                     | SessionState::Idle { stop_reason: StopReason::Background }
             ))
+}
+
+/// A turn actually IN PROGRESS: `is_working` minus the one state that is
+/// waiting on a PERSON. A permission prompt is stopped on the user, not on
+/// the machine, so nothing is lost by letting the machine idle underneath it
+/// — which is the difference that matters to T-288's keep-awake hold, and to
+/// nothing else so far. Written in terms of `is_working` on purpose: the two
+/// can then never disagree about what a turn is, only about whether this one
+/// is waiting for you. (`glyphs::is_working` is narrower again — `Running`
+/// alone — because a spinner may only turn for something moving.)
+///
+/// It inherits the Codex hold above, and should: a session that cannot be
+/// proved quiet errs AWAKE here, which is the direction a keep-awake hold
+/// exists to protect.
+pub fn is_mid_turn(s: &SessionRecord) -> bool {
+    is_working(s) && !matches!(s.state, SessionState::RequiresAction { .. })
 }
 
 /// Tickets with a working claude — deduped, in session order — plus every
@@ -164,6 +186,78 @@ mod tests {
         );
         owed.pending_submit = true;
         assert!(is_working(&owed), "an owed Enter is a turn about to start");
+    }
+
+    #[test]
+    fn only_the_wait_on_a_person_is_not_mid_turn() {
+        let t = ulid::Ulid::new();
+        let mid = [
+            SessionState::Spawning,
+            SessionState::Running,
+            SessionState::Idle { stop_reason: StopReason::Background },
+        ];
+        for st in mid {
+            let s = session(t, SessionKind::Claude, "/r", st.clone());
+            assert!(is_mid_turn(&s), "{st:?}");
+        }
+        let waiting = session(
+            t,
+            SessionKind::Claude,
+            "/r",
+            SessionState::RequiresAction { reason: Reason::Permission },
+        );
+        assert!(is_working(&waiting), "it is still that turn");
+        assert!(!is_mid_turn(&waiting), "but it is waiting on a person, not on the machine");
+        let mut owed = session(
+            t,
+            SessionKind::Claude,
+            "/r",
+            SessionState::Idle { stop_reason: StopReason::Unknown },
+        );
+        owed.pending_submit = true;
+        assert!(is_mid_turn(&owed), "an owed Enter is a turn about to start");
+        for st in [
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+            SessionState::Sleeping,
+            SessionState::unknown(),
+        ] {
+            assert!(!is_mid_turn(&session(t, SessionKind::Claude, "/r", st.clone())), "{st:?}");
+        }
+        assert!(
+            !is_mid_turn(&session(t, SessionKind::Bash, "/r", SessionState::Running)),
+            "a shell is liveness, not activity — here as everywhere"
+        );
+    }
+
+    /// The narrowing is written over `is_working`, so it answers for every
+    /// agent kind — including the hold Codex takes when it cannot be
+    /// observed, which reads as mid-turn on purpose: unprovable-quiet errs
+    /// AWAKE, and awake is the safe direction for a keep-awake hold.
+    #[test]
+    fn the_narrowing_answers_for_codex_too() {
+        let t = ulid::Ulid::new();
+        let running = session(t, SessionKind::Codex, "/r", SessionState::Running);
+        assert!(is_mid_turn(&running), "an agent mid-turn is one whatever its vendor");
+        // A pane and no fresh observation: `is_working`'s Codex clause holds
+        // the checkout, and the machine stays up under it.
+        let unobserved = session(
+            t,
+            SessionKind::Codex,
+            "/r",
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        assert!(unobserved.observation_hold, "a fresh Codex record starts unobserved");
+        assert!(is_working(&unobserved) && is_mid_turn(&unobserved));
+        // But a turn stopped on a PERSON is still stopped on a person, hold
+        // or no hold: that is the one clause this predicate exists for.
+        let waiting = session(
+            t,
+            SessionKind::Codex,
+            "/r",
+            SessionState::RequiresAction { reason: Reason::Permission },
+        );
+        assert!(is_working(&waiting));
+        assert!(!is_mid_turn(&waiting));
     }
 
     #[test]

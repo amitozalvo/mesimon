@@ -8625,3 +8625,108 @@ to the board; a ticket branch diff restores the ticket page and its rail row.
 The shortcut also works after arming the `z` view chord. Existing hints and
 geometry are unchanged. A TUI regression exercises both encodings, both origins,
 and the armed chord, and checks that leaving clears the diff state without quitting.
+
+## The board keeps the machine awake (T-288, 2026-09-07, user: "opt in ∙ indication like caffienated on title")
+
+An agent mid-turn on a laptop that idle-sleeps is an agent stopped mid-turn — the pane freezes,
+a build dies with the machine, and a long turn comes back to a stale board. Nothing in mesimon
+touched power before this: no `caffeinate`, no `IOPMAssertion`, no `systemd-inhibit` anywhere in
+the tree. Now a preference (`prefs.json::keep_awake`, OFF and deliberately — changing what a
+machine does about power is a thing the user asks for, never a thing an update starts doing) holds
+the SYSTEM's idle sleep off while `quiet::is_mid_turn` finds anything on the board, and `☕` in
+the header says it is holding. The Settings row sits under BEHAVIOUR, beside the merge train:
+appearance is what the board shows and says, this is something the board DOES. The display still sleeps, and so does a closed lid: that is not
+idle sleep and no assertion prevents it.
+
+**The BOARD holds it, and that is the whole shape.** `notifier.rs`'s argument, reused: a
+daemon-side hold would keep a closed board's machine awake with nothing on screen to say so, and
+here the process dying is the off switch. So there is no `Command`, no `Snapshot` field, no schema
+and no daemon change of any kind — `tui/src/caffeine.rs`, a preference, a Settings row, a glyph,
+and one block in `App::tick`. Close the board and the machine sleeps as it always did.
+
+**Mid-turn is `is_working` minus one state.** `quiet::is_mid_turn` is `is_working` without
+`RequiresAction`, written in terms of it so the two can only disagree about the one clause: a turn
+stopped on a permission prompt is stopped on a PERSON, not on the machine, and holding a laptop
+awake for it buys nothing (the user's own rule — *"running is when an agent is mid turn and not
+waiting for user action"*). `App::anything_mid_turn` is the board-wide read, named apart from
+`checkout_busy` because two similar names over two different predicates is how they would drift;
+the snapshot's `in_flight` rows stand in for the daemon's own pastes, as they do next door. Being
+written in terms of `is_working` is what carried it onto Codex with no edit when the native
+provider landed — including that agent's unprovable-quiet hold, which errs AWAKE, and that is the
+direction to err in here.
+
+**macOS takes the assertion itself; nothing wraps `caffeinate(8)`.** `caffeinate` is a thin
+wrapper over `IOPMAssertionCreateWithName`, so wrapping the wrapper would buy a process and lose
+the crash safety: an assertion belongs to its owning process and powerd drops it when the task
+dies, SIGKILL included. Two `cfg(target_os = "macos")` framework links (`IOKit`,
+`CoreFoundation`), no crate added, so `ci/build-linux.sh`'s "nothing in the graph is C, therefore
+rust-lld can cross-link" is untouched. Every constant was read off this machine's own
+`IOPMLib.h` — `IOPMAssertionID` and `IOPMAssertionLevel` are `uint32_t`, `IOReturn` is
+`kern_return_t`, `kIOPMAssertionLevelOn` is 255, success is 0, "no special privileges are
+necessary" — and verified against the OS: while held, `pmset -g assertions` prints
+`PreventUserIdleSystemSleep named: "mesimon: an agent is working"` against our pid, and nothing
+after the release. `PreventUserIdleSystemSleep` and not `PreventSystemSleep` for a second reason
+beyond the display: the latter is documented as valid only on AC power, and an agent on an
+unplugged laptop is the case that needs this most.
+
+**A spawned holder is held open by a PIPE, and `tail --pid` was refuted.** The Linux rung is
+`systemd-inhibit --what=idle --who=mesimon --why=… --mode=block cat`, with `cat` reading a stdin
+pipe we own — doing it ourselves means a D-Bus client, since logind's `Inhibit()` hands back a
+file descriptor over SCM_RIGHTS, which is a dependency or a protocol implementation. The first
+design guarded it with `tail --pid=<our pid>`, `caffeinate -w`'s idea, and it is WRONG here:
+`exec` reuses the pid, so on the one edge that runs no `Drop` of ours and still must let go — the
+`U` reload — the guard would never fire. Rust's pipes are `O_CLOEXEC`, so the write end closes on
+the exec itself, and the same close covers a panic and a SIGKILL. `lib.rs` also drops the keeper
+explicitly beside the notifier's, before `reexec`, which waits up to `HANDOVER_MAX` for the daemon
+it asked to stop: holding the machine awake through that wait is precisely the bug.
+
+**`drive` polls, it is not only an edge.** `systemd-inhibit` exists on PATH in plenty of places
+with no logind to talk to (a container, an ssh session, WSL without systemd) and exits at once. A
+board that kept drawing the mark over a dead child would be this feature's one unacceptable
+failure — saying the machine is held when it is not — so every tick asks `try_wait` first, drops
+the hold, and says so once. A refused acquire is said once too and not retried until the want goes
+away and comes back; a machine with NO rung says nothing at all, because the Settings row already
+carries that sentence and a status line every time an agent starts a turn is the same news ten
+times a day.
+
+**The WSL bridge is built and does not answer.** Inside WSL2 a Linux inhibitor governs the WSL VM,
+not the host that decides when to sleep, so that rung would be one that only looks like it works.
+`MESIMON_CAFFEINATE=windows` runs `powershell.exe` through interop holding
+`SetThreadExecutionState(ES_CONTINUOUS | ES_SYSTEM_REQUIRED)`, with three independent releases —
+EOF on the stdin pipe, an explicit kill with `taskkill.exe` behind it on the pid the holder prints,
+and a four-hour cap it enforces on itself — because the failure it must not have is a host held
+awake by a process nobody can see. It is opt-in because nobody has watched it work: this repo's own
+rule for an unverified rung is `TERM_BUNDLES`', that a confident wrong answer is worse than a blank.
+`doctor` says `unverified`. Making it a default rung is one line in `find_from`.
+
+**The mark is `☕`, and it is the product's only emoji.** The author picked it over the one-cell
+candidates (`☼` U+263C, `◉` U+25C9, `⏻` U+23FB). It costs TWO cells — `Emoji_Presentation=Yes`,
+EAW=Wide — which the row's own `unicode_width` arithmetic already handles; being emoji-BY-DEFAULT
+is what makes it safe to spend, where `✔`'s text-default-with-an-emoji-property is what forced
+`done_unread`'s fallback. It hangs off the breadcrumb the way `!N` does, so it rides EVERY screen
+— the state run beside the ticket count is the board's alone, and a ticket page is a screen
+somebody sits on. `dim2`, D33e's register for a board-wide fact: `calm` says there is something
+for you to do, and a held machine asks nothing of anybody; `attn` stays needs-you's, which
+`test_the_awake_mark_is_never_attn` sweeps for over `Flavor::ALL` (`test_attn_provenance_calm`
+cannot — `caffeinated` is false in every app it builds). ASCII is `@`, chosen because `*` is
+`suggest_mark`'s and rides this same row.
+
+**Not built, and the limits.** No daemon change, no wire command, no schema bump, no e2e — nothing
+crosses a process boundary. A HANDOVER freezes the level: `handover::run` blocks the board's loop
+for the whole life of an attached pane, so a hold taken before you attached stands until you come
+back. That errs AWAKE, which is the direction the feature exists to protect, and the next tick
+re-judges within 100 ms; the notifier went to a thread because it reports EDGES and a missed one is
+missed forever, and this is a level. A dead daemon freezes it the same way, and deliberately: the
+panes really are still running, and dropping the hold on a two-second reconnect blip is the failure
+this exists to prevent.
+
+Pinned by nine tests in `tui/src/caffeine.rs` — the whole ladder through a `find_from` that takes
+`macos` as a PARAMETER (`opener::find_from` reads `cfg!` inline, and its test has to branch as a
+result; here every rung is exercised on every platform), the pipe guard in the systemd argv, the
+Windows script's constancy and its own cap, the edge, the once-said refusal, a holder that dies on
+its own, and a real IOKit assertion taken and released —
+`only_the_wait_on_a_person_is_not_mid_turn` (`core/src/quiet.rs`),
+`anything_mid_turn_counts_the_machine_and_not_the_wait` and
+`the_settings_row_keeps_the_machine_awake` (`tui/src/app.rs`, the second asserting nothing crossed
+the wire), four header tests in `ui/tests.rs`, `the_awake_mark_is_two_cells_and_outside_the_banned_range`,
+and the goldens `board_awake_120x30` and `settings_120x30`.

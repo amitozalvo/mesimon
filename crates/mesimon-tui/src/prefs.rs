@@ -55,6 +55,12 @@ pub(crate) struct Prefs {
     /// default bottom. Off by default; the TUI pushes it to the daemon, which
     /// owns the server and never reads this file.
     pub status_top: bool,
+    /// Hold this machine awake while an agent is mid-turn (T-288). OFF by
+    /// default and deliberately, for `notify`'s reason one level up: changing
+    /// what a machine does about power is a thing the user asks for, never a
+    /// thing an update starts doing. Held only while a board is open, and
+    /// only where `caffeine::find` found a rung.
+    pub keep_awake: bool,
     /// The board says it out loud (T-282): an OS banner and a sound when an
     /// agent needs you. OFF by default and deliberately — the board is quiet
     /// on purpose, and a channel out is a thing the user asks for, never a
@@ -103,6 +109,7 @@ impl Default for Prefs {
             merge_train: false,
             merge_train_notice: true,
             status_top: false,
+            keep_awake: false,
             notify: false,
             notify_done: true,
             notify_focused: false,
@@ -120,6 +127,7 @@ const WEEK_START_KEY: &str = "week_start";
 const MERGE_TRAIN_KEY: &str = "merge_train";
 const MERGE_TRAIN_NOTICE_KEY: &str = "merge_train_notice";
 const STATUS_TOP_KEY: &str = "status_line_top";
+const KEEP_AWAKE_KEY: &str = "keep_awake";
 const NOTIFY_KEY: &str = "notify";
 const NOTIFY_DONE_KEY: &str = "notify_done";
 const NOTIFY_FOCUSED_KEY: &str = "notify_focused";
@@ -185,6 +193,7 @@ impl Prefs {
         doc.insert(MERGE_TRAIN_KEY.into(), Value::from(self.merge_train));
         doc.insert(MERGE_TRAIN_NOTICE_KEY.into(), Value::from(self.merge_train_notice));
         doc.insert(STATUS_TOP_KEY.into(), Value::from(self.status_top));
+        doc.insert(KEEP_AWAKE_KEY.into(), Value::from(self.keep_awake));
         doc.insert(NOTIFY_KEY.into(), Value::from(self.notify));
         doc.insert(NOTIFY_DONE_KEY.into(), Value::from(self.notify_done));
         doc.insert(NOTIFY_FOCUSED_KEY.into(), Value::from(self.notify_focused));
@@ -257,6 +266,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
     let merge_train_notice =
         doc.get(MERGE_TRAIN_NOTICE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let status_top = doc.get(STATUS_TOP_KEY).and_then(Value::as_bool).unwrap_or(false);
+    let keep_awake = doc.get(KEEP_AWAKE_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify = doc.get(NOTIFY_KEY).and_then(Value::as_bool).unwrap_or(false);
     let notify_done = doc.get(NOTIFY_DONE_KEY).and_then(Value::as_bool).unwrap_or(true);
     let notify_focused = doc.get(NOTIFY_FOCUSED_KEY).and_then(Value::as_bool).unwrap_or(false);
@@ -280,6 +290,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         merge_train,
         merge_train_notice,
         status_top,
+        keep_awake,
         notify,
         notify_done,
         notify_focused,
@@ -556,6 +567,27 @@ mod tests {
         save(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["status_line_top"], true);
+        assert_eq!(v["dark"], "amber");
+    }
+
+    /// Keeping the machine awake (T-288): absent is off — a file written
+    /// before the preference existed must not start changing what a machine
+    /// does about power — and a pick survives a save of something else.
+    #[test]
+    fn keeping_the_machine_awake_defaults_to_off_and_round_trips() {
+        let p = scratch("keepawake");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert!(!l.prefs.keep_awake, "absent is off");
+        l.prefs.keep_awake = true;
+        save(&p, &l.prefs).unwrap();
+        let mut l = load(&p);
+        assert!(l.prefs.keep_awake);
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["keep_awake"], true);
         assert_eq!(v["dark"], "amber");
     }
 

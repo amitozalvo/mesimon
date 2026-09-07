@@ -224,6 +224,28 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
     }
 }
 
+/// The board is holding this machine awake (T-288). `☕` U+2615 HOT
+/// BEVERAGE — the author's pick, and the ONE place mesimon spends an emoji.
+/// Everything else on the chrome is a text-presentation glyph in one cell;
+/// this is `Emoji_Presentation=Yes` and EAW=Wide, so it is TWO, which the
+/// row's own `unicode_width` arithmetic already handles the way it handles
+/// any other content. Being emoji-by-default is what makes it safe to spend:
+/// every terminal draws it at two cells, where `✔`'s text-default-with-an-
+/// emoji-property is what forced `done_unread`'s fallback. Outside the
+/// 0x2500–0x259F structure range the L1 law bans.
+///
+/// The ASCII tier is `@`: free on the row it rides, which is the constraint
+/// — `*` is `suggest_mark`'s and sits on this same header row, `&`, `^` and
+/// `v` are the git clause's, and `.` `-` `|` `+` `x` `z` `(` `)` `o` `O`
+/// `;` `"` `:` `,` `!` `?` `$` `=` `>` are spoken for on the cards.
+pub(crate) fn awake_mark(tier: Tier) -> char {
+    if tier == Tier::Ascii {
+        '@'
+    } else {
+        '☕'
+    }
+}
+
 /// The branch glyph `⎇` U+2387 and the two arrows the board's own checkout
 /// (the header, T-124) and a ticket's worktree (the card's `⎇↑`/`⎇↓`) share.
 /// One home so the two surfaces cannot drift: `↑` is "ahead, push/merge
@@ -1033,6 +1055,18 @@ mod tests {
         assert_eq!(suggest_mark(Tier::Unicode), '◦');
         assert_eq!(suggest_mark(Tier::Ascii), '*');
         assert_eq!('◦'.width(), Some(1));
+    }
+
+    /// The awake mark is the one glyph on the chrome that is TWO cells, and
+    /// the row's arithmetic must agree with the terminal about that.
+    #[test]
+    fn the_awake_mark_is_two_cells_and_outside_the_banned_range() {
+        use unicode_width::UnicodeWidthChar;
+        assert_eq!(awake_mark(Tier::Unicode), '☕');
+        assert_eq!(awake_mark(Tier::Ascii), '@');
+        assert_eq!('☕'.width(), Some(2), "emoji presentation: wide, and consistently so");
+        assert_eq!('@'.width(), Some(1));
+        assert!(!(0x2500..=0x259F).contains(&('☕' as u32)), "outside the structure range");
     }
 
     /// The branch glyph and both arrows are one cell at both tiers and stay

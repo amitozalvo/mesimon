@@ -251,6 +251,10 @@ fn environment(verbose: bool) -> Section {
     // What the board says outside its own window (T-282): whether it is on,
     // and which rung of each ladder would answer if it were.
     records.push(rec(Level::Note, "notifications", mesimon_tui::notify_status()));
+    // Whether the board holds this machine awake while an agent works
+    // (T-288), and what would do it. A note, like the opener: where nothing
+    // answers, the machine sleeps exactly as it always did.
+    records.push(rec(Level::Note, "keep awake", mesimon_tui::keep_awake_status()));
 
     records.push(match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => rec(Level::Ok, "HOME", redact(&h, verbose)),

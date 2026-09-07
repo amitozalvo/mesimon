@@ -38,14 +38,17 @@ fn find_from(
     which("xdg-open").map(|_| "xdg-open".into())
 }
 
-/// `/proc/version` names Microsoft under WSL — `doctor`'s rule.
-fn is_wsl() -> bool {
+/// `/proc/version` names Microsoft under WSL — `doctor`'s rule. Shared with
+/// `caffeine.rs`, which asks the same question for a different reason: in
+/// there, no Linux call reaches the host that decides when to sleep.
+pub(crate) fn is_wsl() -> bool {
     cfg!(target_os = "linux")
         && std::fs::read_to_string("/proc/version")
             .is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"))
 }
 
-fn which_on_path(name: &str) -> Option<PathBuf> {
+/// Shared with `caffeine.rs` rather than copied a third time.
+pub(crate) fn which_on_path(name: &str) -> Option<PathBuf> {
     let path = std::env::var_os("PATH")?;
     std::env::split_paths(&path)
         .map(|dir| dir.join(name))

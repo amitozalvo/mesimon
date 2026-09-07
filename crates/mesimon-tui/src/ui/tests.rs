@@ -759,8 +759,8 @@ fn the_settings_subtitle_marquees() {
     let mut app = app_graphite(fixture_archived());
     // The merge train's row: the longest detail in the list, and off by
     // default, which is the sentence that explains the standing consent.
-    // Seventh, after theme, replies, notifications, status line, snooze and
-    // the week's day.
+    // The first row of BEHAVIOUR, which is where the train sits now; keep
+    // awake is under it, and neither index moves the other.
     app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
     app.mode = Mode::Settings { idx: 0 };
     let row = |lines: &[String]| -> String {
@@ -5373,6 +5373,80 @@ fn test_git_clause_has_an_ascii_spelling() {
     app.git = git_state("main", 2, 1, 3);
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("& main ^2 v1 ∙ 3 changed"), "{head:?}");
+}
+
+/// The board while it is holding the machine awake (T-288): the mark beside
+/// the checkout's own clause, and nothing else on the row moved.
+#[test]
+fn golden_awake_120() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    app.caffeinated = true;
+    golden("board_awake_120x30", &render(&app, 120, 30));
+}
+
+/// The keep-awake mark (T-288) is on the row only while the machine is
+/// actually being HELD, and it rides every screen because it is a fact about
+/// the machine and not about the board.
+#[test]
+fn test_the_awake_mark_shows_only_while_it_is_held() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    assert!(!render(&app, 120, 30)[0].contains('☕'), "nothing held, nothing said");
+    app.caffeinated = true;
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("kanban-tui ☕"), "it hangs off the crumb: {head:?}");
+    // And on a screen that is not the board — the state run beside the
+    // ticket count is the board's alone, the crumb is everyone's.
+    app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains('☕'), "the ticket page says it too: {head:?}");
+}
+
+/// It has an ascii spelling, like the branch clause beside it — and `@` is
+/// not `*`, which is the suggestion chip's and rides this same row.
+#[test]
+fn test_the_awake_mark_has_an_ascii_spelling() {
+    let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
+    app.caffeinated = true;
+    let head = &render(&app, 120, 30)[0];
+    assert!(head.contains("kanban-tui @"), "{head:?}");
+}
+
+/// A held machine is a quiet fact, not an alarm: the mark may never reach
+/// the one saturated colour. `test_attn_provenance_calm` cannot cover this —
+/// `caffeinated` is false in every app it builds.
+#[test]
+fn test_the_awake_mark_is_never_attn() {
+    for flavor in Flavor::ALL {
+        let theme = Theme::new(flavor, Profile::TrueColor);
+        let attn = theme.attn;
+        let mut app = App::for_test(fixture(false), theme);
+        app.caffeinated = true;
+        app.git = git_state("main", 2, 1, 3);
+        let buf = cells(&app, 120, 30);
+        for y in 0..30 {
+            for x in 0..120 {
+                assert_ne!(buf[(x, y)].fg, attn, "{flavor:?} attn fg at {x},{y}");
+                assert_ne!(buf[(x, y)].bg, attn, "{flavor:?} attn bg at {x},{y}");
+            }
+        }
+    }
+}
+
+/// It costs two cells and nothing else: the give-way ladder underneath it is
+/// the git clause's, unchanged, and the offer still ends the row.
+#[test]
+fn test_the_awake_mark_costs_two_cells_and_the_ladder_absorbs_it() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    app.force_update_ready();
+    app.caffeinated = true;
+    for w in [160u16, 110, 100, 90] {
+        let head = &render(&app, w, 30)[0];
+        assert!(head.contains('☕'), "the mark is the last thing to give at {w}: {head:?}");
+        assert!(head.trim_end().ends_with("(U ∙ esc)"), "the offer still ends the row at {w}");
+    }
 }
 
 /// PTY headroom stays hidden until 80% of the OS cap, then warns.

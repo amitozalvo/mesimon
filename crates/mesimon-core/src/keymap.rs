@@ -482,6 +482,10 @@ pub enum Verb {
     /// The Settings row that opens the notifications list (T-282) — a door,
     /// like Settings itself is a door in the menu.
     Notifications,
+    /// The Settings row that holds this machine awake while an agent is
+    /// mid-turn (T-288); remembered in `prefs.json`, held by the BOARD, so
+    /// the daemon is never told and a closed board sleeps.
+    KeepAwake,
     /// Its five rows. The first is the master switch: off means the board
     /// says nothing out loud, and the other four are not offered.
     NotifyToggle,
@@ -978,6 +982,15 @@ pub struct Ctx {
     /// The tmux status line sits at the top of a pane (the preference; the
     /// Settings row flips it).
     pub status_top: bool,
+    /// Hold this machine awake while an agent is mid-turn (T-288) — the
+    /// preference; the Settings row flips it.
+    pub keep_awake: bool,
+    /// And whether anything on this machine CAN hold it: false where the
+    /// ladder found no rung, or `MESIMON_CAFFEINATE=off` said not to. False
+    /// in a bare `Ctx` and in every test app, where no keeper was ever
+    /// built — so the row keeps its plain words in a golden, the
+    /// `editor_word` rule.
+    pub keep_awake_barred: bool,
     /// The day the week starts on — `snooze::Weekday::name()`, so the ring's
     /// last rung and the Settings row agree on the word. Empty in a bare
     /// `Ctx` (the row falls to a plain label); `App::ctx` always sets it.
@@ -3112,6 +3125,36 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // Holding the machine awake (T-288). It sits under BEHAVIOUR, beside the
+    // merge train: appearance is what the board shows and says, and this is
+    // something it DOES outside its own window while it is open — dying with
+    // the process the same way the train's arming does.
+    MenuItem {
+        verb: Verb::KeepAwake,
+        label: |c| {
+            if c.keep_awake {
+                "Keep this machine awake: on".into()
+            } else {
+                "Keep this machine awake: off".into()
+            }
+        },
+        // The barred word comes FIRST in both positions: a row promising
+        // something this machine cannot do is worse than one that says so.
+        detail: |c| {
+            if c.keep_awake_barred {
+                "nothing on this machine can hold it awake ∙ mesimon doctor says what would".into()
+            } else if c.keep_awake {
+                "no idle sleep while an agent is mid-turn ∙ only while this board is open ∙ \
+                 enter turns it off"
+                    .into()
+            } else {
+                "the machine sleeps on its own clock while an agent works ∙ enter keeps it awake"
+                    .into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::StatusLine,
         label: |c| {
@@ -3527,6 +3570,10 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
             Verb::MergeTrainNotice,
+            // Beside the train: the other switch over something the board
+            // does outside its own window while it is open, and dead with
+            // the process the same way.
+            Verb::KeepAwake,
             Verb::SnoozeQuiet,
             Verb::WeekStart,
             Verb::DefaultColumn,
@@ -6391,7 +6438,13 @@ mod tests {
             ),
             (
                 SettingsSection::Behaviour,
-                vec![Verb::MergeTrain, Verb::SnoozeQuiet, Verb::WeekStart, Verb::DefaultColumn],
+                vec![
+                    Verb::MergeTrain,
+                    Verb::KeepAwake,
+                    Verb::SnoozeQuiet,
+                    Verb::WeekStart,
+                    Verb::DefaultColumn,
+                ],
             ),
             (
                 SettingsSection::Agents,
