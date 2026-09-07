@@ -1569,9 +1569,18 @@ on the ticket page and in the description editor, all four through `App::set_tic
 `Command::SetWorkspace` so they cannot disagree about which way the toggle goes. `Ctx::workspace_open`
 is the gate and it MIRRORS the daemon (`set_workspace` refuses over any session record or any
 worktree binding, so a resumable corpse locks it too); `Ctx::workspace_worktree` is what names the
-DESTINATION in the hint (`t`'s idiom: `own worktree` / `shared checkout`), since the card and the
-state row already say where the ticket stands. HINTED on the ticket page, overlay-only on the board
-(that footer is at its width at 120 columns) — the status says where the ticket landed, and the
+DESTINATION in `keymap::workspace_hint` (`t`'s idiom: `own worktree` / `shared checkout`), since the
+card and the state row already say where the ticket stands. HINTED on the ticket page, overlay-only
+on the board (that footer is at its width at 120 columns). **The binding is `m`'s shape and the
+second one with it — LIVE while unhinted**, because a locked ticket has something worth saying and
+the first cut's silence read as a broken key (user, 2026-09-07): `App::set_ticket_workspace` names
+the ticket and the reason (a session, a worktree, or a workspace board — that last one the TUI's own
+refusal, since the daemon would take the field and only `resolve_spawn_cwd` would refuse later).
+**The composer's ring is TWO stops, always explicit** (`App::cycled_workspace`, the one-line
+composer and the editor both): it walked three (`None` / `Worktree` / `SharedCheckout`, T-117) and
+two of them drew the same word wherever a column has no default, so coming back from `worktree` took
+two presses; the row's `(column default)` tail is the readout the third stop stood in for. The
+status says where the ticket landed, and the
 card's mark says the rest: **a worktree asked for but not cut is `⎇·`**, one dot in the DORMANT
 register against `queued`'s three (`card::worktree_mark`'s no-binding arm, `WtTone::Dormant`),
 because provisioning is lazy and between the pick and the first spawn the card said nothing at all.

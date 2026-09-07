@@ -1019,6 +1019,23 @@ pub struct Binding {
     pub prio: u8,
 }
 
+/// The workspace toggle's word on the board and the ticket page (T-309), and
+/// the one place the two screens can agree. It names the DESTINATION — `t`'s
+/// idiom — because the card's mark and the page's state row already say where
+/// the ticket stands. EMPTY while the press cannot act: the choice is locked,
+/// or the board is a workspace of repositories where a worktree of the root
+/// would hold none of the code (T-225). The key stays live there so it can
+/// say which; only the hint stands down.
+fn workspace_hint(c: &Ctx) -> &'static str {
+    if c.multi_repo || !c.workspace_open {
+        ""
+    } else if c.workspace_worktree {
+        "shared checkout"
+    } else {
+        "own worktree"
+    }
+}
+
 const fn always(_: &Ctx) -> bool {
     true
 }
@@ -1495,11 +1512,18 @@ static BOARD: &[Binding] = &[
         // Overlay-only — the board's footer is already at its width at 120
         // columns, and the card says which way the ticket is set (the branch
         // mark, dormant while nothing is cut yet).
+        //
+        // `m`'s shape, and for `m`'s reason: LIVE while unhinted, because a
+        // locked ticket has something worth saying — "T-9 has a session" —
+        // and the press that comes from muscle memory deserves it. Silence
+        // is what the first cut shipped, and it read as a broken key
+        // (user, 2026-09-07). The invariant is unbroken: a key that is
+        // HINTED always works.
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
-        hint: |c| if c.workspace_worktree { "shared checkout" } else { "own worktree" },
-        avail: |c| c.has_ticket && !c.ticket_archived && !c.multi_repo && c.workspace_open,
+        hint: workspace_hint,
+        avail: |c| c.has_ticket && !c.ticket_archived,
         class: Class::Plain,
         group: Group::Worktree,
         mutates: true,
@@ -1990,8 +2014,8 @@ static TICKET: &[Binding] = &[
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
-        hint: |c| if c.workspace_worktree { "shared checkout" } else { "own worktree" },
-        avail: |c| c.has_ticket && !c.ticket_archived && !c.multi_repo && c.workspace_open,
+        hint: workspace_hint,
+        avail: |c| c.has_ticket && !c.ticket_archived,
         class: Class::Plain,
         group: Group::Worktree,
         mutates: true,
@@ -5423,11 +5447,13 @@ mod tests {
                 "{scope:?}"
             );
             // Locked — a session or a worktree exists, which is exactly what
-            // `set_workspace` refuses by. Inert, and unhinted with it.
+            // `set_workspace` refuses by. UNHINTED, but still live: `m`'s
+            // shape, so the press can name the ticket and say why instead of
+            // reading as a broken key (user, 2026-09-07).
             let shut = Ctx { workspace_open: false, ..open.clone() };
-            assert_eq!(resolve(scope, Key::BackTab, &shut), None, "{scope:?}");
+            assert_eq!(resolve(scope, Key::BackTab, &shut), Some(Verb::CycleWorkspace));
             assert_eq!(hint_for(scope, Verb::CycleWorkspace, &shut), None, "{scope:?}");
-            // An archived ticket offers nothing (T-300's shape).
+            // An archived ticket offers nothing at all (T-300's shape).
             let gone = Ctx { ticket_archived: true, ..open.clone() };
             assert_eq!(resolve(scope, Key::BackTab, &gone), None, "{scope:?}");
             // And no card at all is no subject.
@@ -5468,11 +5494,12 @@ mod tests {
         assert_eq!(resolve(Scope::Board, Key::Tab, &Ctx::default()), None, "no card, no tab");
         for scope in [Scope::Ticket, Scope::Diff, Scope::Global] {
             assert_eq!(resolve(scope, Key::Tab, &card), None, "{scope:?}");
-            // And its shift is the workspace pick, which needs the choice to
-            // still be open — see `the_workspace_choice_is_open_until_work_starts`.
+        }
+        // Its shift is another verb entirely — the workspace pick, on the two
+        // screens that have a card (`the_workspace_choice_is_open_until_work_starts`).
+        for scope in [Scope::Diff, Scope::Global] {
             assert_eq!(resolve(scope, Key::BackTab, &card), None, "{scope:?}");
         }
-        assert_eq!(resolve(Scope::Board, Key::BackTab, &card), None);
         // Inside the editor Tab is nothing: not a character (a note holds no
         // tabs) and not a verb.
         let editing = Ctx { editing: true, editor_composing: true, ..Default::default() };
@@ -6544,13 +6571,18 @@ mod tests {
             Ctx { editing: true, workspace_open: true, multi_repo: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::BackTab, &editor), None);
         // And the two screens the key reached in T-309 are held by the same
-        // clause: a worktree of the root holds none of the code, wherever
-        // the press comes from.
+        // clause: a worktree of the root holds none of the code, wherever the
+        // press comes from. Offered is HINTED there — the key stays live so
+        // the press can say why (`m`'s shape), and `App::set_ticket_workspace`
+        // refuses it before the wire.
         let screen =
             Ctx { has_ticket: true, workspace_open: true, multi_repo: true, ..Default::default() };
         for scope in [Scope::Board, Scope::Ticket] {
-            assert_eq!(resolve(scope, Key::BackTab, &screen), None, "{scope:?}");
             assert_eq!(hint_for(scope, Verb::CycleWorkspace, &screen), None, "{scope:?}");
+            assert!(!overlay(scope, &screen)
+                .into_iter()
+                .flat_map(|(_, rows)| rows)
+                .any(|(k, _)| k == "shift+tab"));
         }
     }
 }

@@ -4733,17 +4733,7 @@ impl App {
                 return Ok(());
             }
             Some(Verb::CycleWorkspace) => match &mut purpose {
-                InputPurpose::Create { workspace, .. } => {
-                    // Three stops (T-117): a column defaulting to a worktree
-                    // can still compose a shared ticket.
-                    *workspace = match workspace {
-                        None => Some(WorkspaceStrategy::Worktree),
-                        Some(WorkspaceStrategy::Worktree) => {
-                            Some(WorkspaceStrategy::SharedCheckout)
-                        }
-                        Some(_) => None,
-                    };
-                }
+                InputPurpose::Create { workspace, .. } => *workspace = cycled_workspace(*workspace),
                 // In the ask field the same key cycles the DELIVERY: now, or
                 // parked until the checkout is quiet (2026-09-04).
                 InputPurpose::Prompt { queued, .. } => *queued = !*queued,
@@ -4862,11 +4852,9 @@ impl App {
                 return Ok(());
             }
             Some(Verb::CycleWorkspace) => match &mut ed.purpose {
+                // The one-line composer's ring, in the bigger room.
                 EditorPurpose::Compose { workspace, .. } => {
-                    *workspace = match workspace {
-                        None => Some(WorkspaceStrategy::Worktree),
-                        Some(_) => None,
-                    };
+                    *workspace = cycled_workspace(*workspace)
                 }
                 // A ticket that exists: the same toggle, set on the daemon at
                 // once (a workspace is the ticket's, not the note's, so it is
@@ -5578,6 +5566,21 @@ impl App {
         let Some(t) = self.board.ticket(ticket) else { return Ok(()) };
         let (key, worktree) =
             (t.short_key.clone(), t.workspace_strategy() == WorkspaceStrategy::Worktree);
+        // Why not, in the ticket's own words. The key is live wherever there
+        // is a card (`m`'s shape) precisely so these can be said: the first
+        // cut left the press silent and it read as a broken key.
+        if !self.git.repos.is_empty() {
+            self.status = format!("{key} stays in the checkout — this board is a workspace");
+            return Ok(());
+        }
+        if self.board.sessions.iter().any(|s| s.ticket == ticket) {
+            self.status = format!("{key} has a session — the workspace is fixed once work starts");
+            return Ok(());
+        }
+        if self.wt_item(ticket).is_some() {
+            self.status = format!("{key} already has a worktree");
+            return Ok(());
+        }
         let workspace = if worktree { None } else { Some(WorkspaceStrategy::Worktree) };
         self.send(Command::SetWorkspace { id: ticket, workspace })?;
         // Only when the daemon took it: a refusal has already said why.
@@ -6695,6 +6698,26 @@ impl App {
         }
         self.refresh()
     }
+}
+
+/// The composer's workspace ring: two stops, always EXPLICIT.
+///
+/// It walked three — `None`, `Worktree`, `SharedCheckout` (T-117, so a column
+/// defaulting to a worktree could still compose a shared ticket) — and where
+/// the column has no workspace default, which is nearly everywhere, `None`
+/// and `SharedCheckout` drew the same word: the ring read shared, worktree,
+/// shared, shared, and coming back from `worktree` took two presses to reach
+/// it again (user, 2026-09-07). Naming the pick outright costs nothing —
+/// `create_ticket` stamps the column's default only where the field is
+/// absent, and both stops resolve to the same two outcomes — while the row's
+/// `(column default)` tail (`card::render_workspace_selector`) is what says
+/// when the pick happens to BE the column's own, which is the readout the
+/// third stop was standing in for.
+fn cycled_workspace(current: Option<WorkspaceStrategy>) -> Option<WorkspaceStrategy> {
+    Some(match current.unwrap_or(mesimon_core::board::DEFAULT_WORKSPACE) {
+        WorkspaceStrategy::Worktree => WorkspaceStrategy::SharedCheckout,
+        _ => WorkspaceStrategy::Worktree,
+    })
 }
 
 /// One `Response::Board`, named. EVERY field the daemon sends rides this,
@@ -8059,15 +8082,19 @@ mod tests {
         back(&mut app);
         assert_eq!(app.board.tickets[0].workspace, Some(WorkspaceStrategy::Worktree));
 
-        // A session on the ticket locks the choice — the daemon's rule, and
-        // the key is inert rather than refused.
+        // A session on the ticket locks the choice — the daemon's rule. The
+        // key stays live and SAYS so (`m`'s shape): nothing goes on the wire,
+        // and the press is not silent, which is what it was for a day.
         let (mut app, sent) = app_with_note_and(true);
         back(&mut app);
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
         assert_eq!(app.board.tickets[0].workspace, None);
+        assert_eq!(app.status, "T-1 has a session — the workspace is fixed once work starts");
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        app.status.clear();
         back(&mut app);
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert!(app.status.contains("has a session"), "{}", app.status);
         // So does a worktree binding, with no session at all.
         let (mut app, sent) = app_with_note();
         app.worktrees = vec![mesimon_core::command::WorktreeItem {
@@ -8085,6 +8112,14 @@ mod tests {
         }];
         back(&mut app);
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "T-1 already has a worktree");
+        // And a workspace board has no worktree to offer at all (T-225): the
+        // daemon would take the field, so the refusal is the TUI's own.
+        let (mut app, sent) = app_with_note();
+        app.git.repos = vec!["one".into(), "two".into()];
+        back(&mut app);
+        assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "T-1 stays in the checkout — this board is a workspace");
     }
 
     /// `^s` on a note saves and leaves, either way; a clean one just leaves
@@ -10866,24 +10901,31 @@ mod tests {
                 ..
             }
         ));
-        // Shift+Tab: worktree -> shared -> board default -> worktree.
+        // Shift+Tab is TWO stops and the word changes on every press:
+        // worktree -> shared -> worktree. It walked three until 2026-09-07,
+        // and where a column has no default of its own — nearly everywhere —
+        // two of them drew the same word, so coming back from `worktree` took
+        // two presses (user: "requires two clicks after returning to shared").
+        let workspace = |app: &App| match &app.mode {
+            Mode::Input { purpose: InputPurpose::Create { workspace, .. }, .. } => *workspace,
+            other => panic!("not composing: {other:?}"),
+        };
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(matches!(
-            &app.mode,
-            Mode::Input {
-                purpose: InputPurpose::Create {
-                    workspace: Some(WorkspaceStrategy::SharedCheckout),
-                    ..
-                },
-                ..
-            }
-        ));
+        assert_eq!(workspace(&app), Some(WorkspaceStrategy::SharedCheckout));
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(matches!(
-            &app.mode,
-            Mode::Input { purpose: InputPurpose::Create { workspace: None, .. }, .. }
-        ));
-        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(workspace(&app), Some(WorkspaceStrategy::Worktree), "one press back, not two");
+        // And on a column with no default the ring is the same two stops,
+        // starting from the `None` the composer opens with.
+        let mut plain = app_three_columns();
+        press(&mut plain, 'o');
+        assert_eq!(workspace(&plain), None, "the board default, unnamed");
+        plain.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(workspace(&plain), Some(WorkspaceStrategy::Worktree));
+        plain.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(workspace(&plain), Some(WorkspaceStrategy::SharedCheckout));
+        plain.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(workspace(&plain), Some(WorkspaceStrategy::Worktree), "one press back, not two");
+
         for c in "wt".chars() {
             press(&mut app, c);
         }

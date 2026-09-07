@@ -7654,6 +7654,33 @@ like every other, so the glyph keeps its column (the anchor rule
 not a second way to say "worktree". `·` U+00B7 is outside the banned box range, so the L1 law
 needed no exception (unlike `▀` and `▎`).
 
+**The press says why, and that is the second `m` (2026-09-07, dogfooding).** The first cut made
+the key inert wherever the choice was locked — the ordinary "a key that is not available is
+inert" rule — and the report back was *"i still can't do shift+tab to change, it doesn't change
+anything"*, which is the rule's failure mode: on a board where most tickets have a session
+record, the commonest press is the one that says nothing. So the binding took `m`'s shape —
+`avail` is a card that is not archived, `keymap::workspace_hint` is EMPTY while the press cannot
+act — and `App::set_ticket_workspace` answers in the ticket's own words: `T-9 has a session — the
+workspace is fixed once work starts`, `T-9 already has a worktree`, `T-9 stays in the checkout —
+this board is a workspace`. The invariant `m`'s comment names is unbroken: a key that is HINTED
+always works. The workspace-board clause moved into the TUI with it, because the daemon would
+TAKE that field — T-225 refuses a worktree ticket at `resolve_spawn_cwd`, not at `set_workspace`
+— so silence there was the TUI's to break.
+
+**The composer's ring lost its invisible stop (same day, same report).** T-117 gave the composer
+three stops so a column defaulting to a worktree could still compose a shared ticket: `None`,
+`Some(Worktree)`, `Some(SharedCheckout)`. Where the column has no workspace default — nearly
+everywhere — `None` and `SharedCheckout` render the same word, so the ring read *shared,
+worktree, shared, shared* and coming back from `worktree` cost two presses (*"requires two clicks
+after returning to shared"*). `App::cycled_workspace` is two stops and always EXPLICIT: the two
+strategies, resolving the current `None` through `board::DEFAULT_WORKSPACE` first. Naming the
+pick costs nothing — `create_ticket` stamps the column's default only where the field is absent,
+and both stops reach the same two outcomes — and the readout the third stop was standing in for
+is the row's own `(column default)` tail, which is a comparison against the column and needs no
+state of its own. The editor's Compose arm was a DIFFERENT two-stop ring (`None` ↔ `Worktree`,
+which could not reach `shared` at all on a worktree-defaulting column); it calls the same helper
+now.
+
 **Not built.** No daemon change at all — no `Command`, no `Snapshot` field, no schema, no e2e; the
 lock, its two refusals and its sentences are untouched. The ticket page's state row was left
 alone: it already says ` ∙ ⎇ worktree` for an unprovisioned one and says nothing for a shared
@@ -7661,8 +7688,9 @@ checkout, which is the right silence for the default. A shared-checkout ticket g
 for the same reason. And the daemon was NOT loosened to allow a switch over a dead session record
 — a resumable corpse's cwd would move under it — so "no session" stays literal.
 
-Pinned by `the_workspace_choice_is_open_until_work_starts` and
+Pinned by `the_workspace_choice_is_open_until_work_starts` (the unhinted-but-live clause too) and
 `a_workspace_board_offers_no_worktree_choice` (`core/src/keymap.rs`),
-`shift_tab_on_a_card_sets_the_workspace_too` (`tui/src/app.rs`),
+`shift_tab_on_a_card_sets_the_workspace_too` and
+`the_composer_starts_at_the_columns_workspace_default` (`tui/src/app.rs`),
 `a_worktree_asked_for_but_not_cut_wears_a_dormant_mark` and the goldens
 `board_worktree_planned_120x30` / `ticket_new_claude_120x30`.
