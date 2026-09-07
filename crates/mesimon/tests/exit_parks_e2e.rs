@@ -17,7 +17,7 @@ use common::*;
 
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{ExitReason, SessionKind, SessionState};
+use mesimon_core::board::{ExitReason, SessionKind, SessionState, WorkspaceStrategy};
 use mesimon_core::command::{Command, Response};
 
 #[test]
@@ -142,6 +142,46 @@ fn leaving_claude_parks_the_session() {
         dead_shell,
         SessionState::Exited { reason: ExitReason::UserQuit },
         "a shell's pane is its record; a parked one would wake into a new shell"
+    );
+
+    // ---- a parked record does not lock the workspace (T-309) -------------
+    //
+    // The lock is what the choice would RELOCATE: a worktree, and an agent
+    // standing in a directory the field names. `ticket` now holds two records
+    // with no pane between them — a sleeping claude and a dead shell — and
+    // neither is a checkout, so the choice is open again. It was any record
+    // at all until 2026-09-07, which on a real board is a lock nothing can
+    // open: a ticket that talked to an agent once could never be moved to a
+    // worktree.
+    assert!(
+        matches!(
+            c.request(Command::SetWorkspace {
+                id: ticket,
+                workspace: Some(WorkspaceStrategy::Worktree)
+            }),
+            Response::Ok
+        ),
+        "a parked claude and a dead shell lock nothing"
+    );
+    assert_eq!(
+        c.board().ticket(ticket).and_then(|t| t.workspace),
+        Some(WorkspaceStrategy::Worktree)
+    );
+    // Put it back before the wake: the point is the gate, not a worktree.
+    assert!(matches!(
+        c.request(Command::SetWorkspace { id: ticket, workspace: None }),
+        Response::Ok
+    ));
+    // …and the record that was just resumed has a pane, so it still locks.
+    assert!(
+        matches!(
+            c.request(Command::SetWorkspace {
+                id: other,
+                workspace: Some(WorkspaceStrategy::Worktree)
+            }),
+            Response::Err { .. }
+        ),
+        "a running agent's directory is where it is"
     );
 
     // ---- and `x` brings the parked one back ------------------------------

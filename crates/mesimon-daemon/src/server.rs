@@ -4033,9 +4033,23 @@ impl Daemon {
         if self.board.ticket(id).is_none() {
             return no_such_ticket();
         }
-        // Locked once anything exists that the choice would relocate.
-        if self.board.sessions.iter().any(|s| s.ticket == id) {
-            return Response::Err { message: "workspace locked — ticket has sessions".into() };
+        // Locked once anything exists that the choice would RELOCATE — a
+        // worktree, and an agent standing in a directory this field names.
+        //
+        // It was any session record at all until T-309 (2026-09-07), and on a
+        // board where most tickets have talked to an agent once that is a
+        // lock nothing can open: 17 of the author's 44 live tickets were held
+        // by it with not one of them provisioned, which is the case the
+        // ticket asked for by name ("unless provisioned already"). A parked
+        // or finished record relocates nothing — `resume_session` replays the
+        // record's OWN cwd and re-resolves only when that directory is gone
+        // (T-278) — so the field governs the next spawn, which is what it is
+        // for. `has_pane` and not `is_live` is exactly that line: `Sleeping`
+        // is a conversation, not a checkout.
+        if self.board.sessions.iter().any(|s| s.ticket == id && s.state.has_pane()) {
+            return Response::Err {
+                message: "workspace locked — an agent is running on this ticket".into(),
+            };
         }
         if self.worktrees.contains_key(&id) {
             return Response::Err { message: "workspace locked — worktree exists".into() };

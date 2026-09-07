@@ -1567,14 +1567,19 @@ dir; pid-bearing locks + crash-safe sweep. **Workspace is chosen with `Shift+Tab
 the choice is open (T-309, 2026-09-07)**: the composer's pick, and then the same atom on the board,
 on the ticket page and in the description editor, all four through `App::set_ticket_workspace` →
 `Command::SetWorkspace` so they cannot disagree about which way the toggle goes. `Ctx::workspace_open`
-is the gate and it MIRRORS the daemon (`set_workspace` refuses over any session record or any
-worktree binding, so a resumable corpse locks it too); `Ctx::workspace_worktree` is what names the
+is the gate and it MIRRORS the daemon. **The lock is what the choice would RELOCATE** — a worktree
+binding, or a session with a PANE (`SessionState::has_pane`, so `Sleeping` is a conversation and not
+a checkout); it was ANY session record until T-309, and on a real board that is a lock nothing can
+open (17 of the author's 44 live tickets, none provisioned). A parked record relocates nothing:
+`resume_session` replays the record's own cwd and re-resolves only when that directory is gone
+(T-278), so the field governs the next SPAWN, which is what it is for. `Ctx::workspace_worktree` is
+what names the
 DESTINATION in `keymap::workspace_hint` (`t`'s idiom: `own worktree` / `shared checkout`), since the
 card and the state row already say where the ticket stands. HINTED on the ticket page, overlay-only
 on the board (that footer is at its width at 120 columns). **The binding is `m`'s shape and the
 second one with it — LIVE while unhinted**, because a locked ticket has something worth saying and
 the first cut's silence read as a broken key (user, 2026-09-07): `App::set_ticket_workspace` names
-the ticket and the reason (a session, a worktree, or a workspace board — that last one the TUI's own
+the ticket and the reason (a running agent, a worktree, or a workspace board — that last one the TUI's own
 refusal, since the daemon would take the field and only `resolve_spawn_cwd` would refuse later).
 **The composer's ring is TWO stops, always explicit** (`App::cycled_workspace`, the one-line
 composer and the editor both): it walked three (`None` / `Worktree` / `SharedCheckout`, T-117) and
@@ -1585,7 +1590,8 @@ card's mark says the rest: **a worktree asked for but not cut is `⎇·`**, one 
 register against `queued`'s three (`card::worktree_mark`'s no-binding arm, `WtTone::Dormant`),
 because provisioning is lazy and between the pick and the first spawn the card said nothing at all.
 Archived tickets and a workspace board (`multi_repo`) offer nothing, and the ticket screen still has
-no `w`. Goldens `board_worktree_planned_120x30`, `ticket_new_claude_120x30`. **Merges are ff-only** — TUI `m` is a staged flow
+no `w`. Goldens `board_worktree_planned_120x30`, `ticket_new_claude_120x30`; e2e `exit_parks_e2e`
+holds the loosened lock from both sides. **Merges are ff-only** — TUI `m` is a staged flow
 (stage derived from git state): ahead+ff → confirm→merge; main moved → inject
 "rebase+test" to the agent (conflicts resolve in the worktree, tests run pre-main); merged →
 inject the notice. Delete gates on unmerged bindings (`d` then `D` discards, branch `-D`); DONE move

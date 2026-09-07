@@ -7681,8 +7681,21 @@ state of its own. The editor's Compose arm was a DIFFERENT two-stop ring (`None`
 which could not reach `shared` at all on a worktree-defaulting column); it calls the same helper
 now.
 
-**Not built.** No daemon change at all — no `Command`, no `Snapshot` field, no schema, no e2e; the
-lock, its two refusals and its sentences are untouched. The ticket page's state row was left
+**And the lock is the WORKTREE, not the conversation (same report).** Reading the author's own
+board settled where the silence came from: of 44 live tickets, 26 were locked and only 9 of those
+had a worktree — the other 17 were held by a session record alone, 15 of them a `Sleeping` claude
+in the shared checkout, several sitting in BACKLOG waiting to be given a tree. That is the lock the
+ticket named when it said *"unless provisioned already"*. `Daemon::set_workspace` now refuses on a
+worktree binding, or on a session with a PANE (`SessionState::has_pane`, which is exactly "not
+`Exited`, not `Sleeping`"), and the TUI mirrors it. The reasoning is the M4a one, applied
+honestly: the lock exists so the choice never RELOCATES something, and a parked record cannot be
+relocated — `resume_session` replays the record's own absolute cwd and re-resolves only when that
+directory is gone (T-278). So the field means what it always meant, "where the next spawn goes",
+and a sleeping conversation has no opinion about it. A live agent still locks: its directory is
+where it is, and saying otherwise on the card would be a lie about a running process.
+
+**Not built.** The daemon's `set_workspace` is the only thing that moved daemon-side — no
+`Command`, no `Snapshot` field, no schema. The ticket page's state row was left
 alone: it already says ` ∙ ⎇ worktree` for an unprovisioned one and says nothing for a shared
 checkout, which is the right silence for the default. A shared-checkout ticket gets no card mark
 for the same reason. And the daemon was NOT loosened to allow a switch over a dead session record
@@ -7692,5 +7705,7 @@ Pinned by `the_workspace_choice_is_open_until_work_starts` (the unhinted-but-liv
 `a_workspace_board_offers_no_worktree_choice` (`core/src/keymap.rs`),
 `shift_tab_on_a_card_sets_the_workspace_too` and
 `the_composer_starts_at_the_columns_workspace_default` (`tui/src/app.rs`),
-`a_worktree_asked_for_but_not_cut_wears_a_dormant_mark` and the goldens
-`board_worktree_planned_120x30` / `ticket_new_claude_120x30`.
+`a_worktree_asked_for_but_not_cut_wears_a_dormant_mark`, the goldens
+`board_worktree_planned_120x30` / `ticket_new_claude_120x30`, and
+`exit_parks_e2e::leaving_claude_parks_the_session`, which now asserts both sides of the lock — a
+parked claude beside a dead shell opens it, a resumed one closes it.

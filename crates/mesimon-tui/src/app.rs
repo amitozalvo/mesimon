@@ -2624,7 +2624,8 @@ impl App {
             // ticket the editor was opened on, since the editor takes every
             // key while it is up.
             workspace_open: subject.is_some_and(|t| {
-                !self.board.sessions.iter().any(|s| s.ticket == t) && self.wt_item(t).is_none()
+                !self.board.sessions.iter().any(|s| s.ticket == t && s.state.has_pane())
+                    && self.wt_item(t).is_none()
             }),
             workspace_worktree: subject
                 .and_then(|t| self.board.ticket(t))
@@ -5573,8 +5574,8 @@ impl App {
             self.status = format!("{key} stays in the checkout — this board is a workspace");
             return Ok(());
         }
-        if self.board.sessions.iter().any(|s| s.ticket == ticket) {
-            self.status = format!("{key} has a session — the workspace is fixed once work starts");
+        if self.board.sessions.iter().any(|s| s.ticket == ticket && s.state.has_pane()) {
+            self.status = format!("{key} has an agent running — its directory is where it is");
             return Ok(());
         }
         if self.wt_item(ticket).is_some() {
@@ -6922,9 +6923,9 @@ pub(crate) mod test_support {
                 }
                 // The daemon's lock, mirrored, so a test can see it refuse.
                 Command::SetWorkspace { id, workspace } => {
-                    if self.board.sessions.iter().any(|s| s.ticket == id) {
+                    if self.board.sessions.iter().any(|s| s.ticket == id && s.state.has_pane()) {
                         return Ok(Response::Err {
-                            message: "workspace locked — ticket has sessions".into(),
+                            message: "workspace locked — an agent is running on this ticket".into(),
                         });
                     }
                     let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == id) else {
@@ -7508,16 +7509,25 @@ mod tests {
     /// …and, when asked, a running claude on ticket 1 — in the FAKE's board,
     /// since every save refreshes from it.
     fn app_with_note_and(claude: bool) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
+        app_with_note_state(claude.then_some(SessionState::Running))
+    }
+
+    /// …in whichever state the test needs it. `Sleeping` is the one that is
+    /// not `Running` in any way that matters to a gate: no pane, no process,
+    /// and still resumable.
+    fn app_with_note_state(
+        claude: Option<SessionState>,
+    ) -> (App, std::rc::Rc<std::cell::RefCell<Vec<String>>>) {
         let mut b = board_three_columns();
         b.tickets[0].notes.push(note_meta(90, 1, "local"));
-        if claude {
+        if let Some(state) = claude {
             b.sessions.push(mesimon_core::board::SessionRecord::new(
                 uuid::Uuid::from_u128(7),
                 SessionKind::Claude,
                 ulid::Ulid(1),
                 vec!["claude".into()],
                 "/repo".into(),
-                SessionState::Running,
+                state,
             ));
         }
         let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
@@ -8082,19 +8092,28 @@ mod tests {
         back(&mut app);
         assert_eq!(app.board.tickets[0].workspace, Some(WorkspaceStrategy::Worktree));
 
-        // A session on the ticket locks the choice — the daemon's rule. The
-        // key stays live and SAYS so (`m`'s shape): nothing goes on the wire,
-        // and the press is not silent, which is what it was for a day.
+        // A RUNNING agent locks the choice — the daemon's rule. The key stays
+        // live and SAYS so (`m`'s shape): nothing goes on the wire, and the
+        // press is not silent, which is what it was for a day.
         let (mut app, sent) = app_with_note_and(true);
         back(&mut app);
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
         assert_eq!(app.board.tickets[0].workspace, None);
-        assert_eq!(app.status, "T-1 has a session — the workspace is fixed once work starts");
+        assert_eq!(app.status, "T-1 has an agent running — its directory is where it is");
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
         app.status.clear();
         back(&mut app);
         assert!(!sent_contains(&sent, "SetWorkspace"), "{:?}", sent.borrow());
-        assert!(app.status.contains("has a session"), "{}", app.status);
+        assert!(app.status.contains("agent running"), "{}", app.status);
+        // A PARKED one does not (T-309, dogfooding): a sleeping claude is a
+        // conversation, not a checkout — `resume_session` replays its own
+        // recorded cwd — so the field is still the next spawn's to set. This
+        // is the case that had the author's board stuck: 17 of 44 live
+        // tickets held by a record with nothing provisioned.
+        let (mut app, _sent) = app_with_note_state(Some(SessionState::Sleeping));
+        back(&mut app);
+        assert_eq!(app.board.tickets[0].workspace, Some(WorkspaceStrategy::Worktree));
+        assert_eq!(app.status, "T-1 gets a worktree of its own");
         // So does a worktree binding, with no session at all.
         let (mut app, sent) = app_with_note();
         app.worktrees = vec![mesimon_core::command::WorktreeItem {
