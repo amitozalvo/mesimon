@@ -27,6 +27,16 @@ failures before reporting done. Never `git checkout main` here (it will fail —
 to another worktree) and never merge or push to main yourself: the user merges through
 mesimon (fast-forward only, so a green rebased branch is the deliverable).
 
+## Release notes
+
+When writing or revising release notes, use the `release-notes` skill
+(`/release-notes`), available at
+[.claude/skills/release-notes/SKILL.md](.claude/skills/release-notes/SKILL.md).
+Its source is [docs/release-notes/SKILL.md](docs/release-notes/SKILL.md).
+Lead with the concrete user-visible change, then the controls and limitations
+needed to use it. Keep release notes free of stories, jokes, metaphors, and
+debugging history. Edit `CHANGELOG.md` and preserve release headings and dates.
+
 ## Commands
 
 Cargo is on PATH (`~/.cargo/bin`, via the shell profile). A session whose shell was started
