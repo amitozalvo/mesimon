@@ -6,6 +6,55 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.18 — 2026-09-08
+
+### Added
+
+- **Get desktop notifications and sounds when an agent needs you or finishes.**
+  Enable them in Esc → Settings → Notifications; they are off by default and
+  work while the board is open, including while attached to an agent. Choose
+  separate sounds, control notifications while focused, and turn off quoting
+  agent replies. Supported macOS notification helpers can bring you back to
+  the board when you click a banner.
+- **Agents can mark a ticket as needing your decision after a turn ends.**
+  The `raise_hand` tool leaves a visible reason on the ticket and pauses its
+  automatic merge until you acknowledge it or answer the agent.
+- **Start Claude from the ticket's `+ claude session` row.** Select it and
+  press Enter. Its preview shows the workspace and starting behavior; sessions
+  without readable replies now explain whether they are starting, waiting,
+  working, or missing a conversation to resume.
+- **Choose a ticket's workspace with `Shift+Tab` on the board or ticket page.**
+  Switch between the shared checkout and an individual worktree while no
+  worktree or live session locks the choice. Parked sessions no longer prevent
+  changing the workspace for the next new session.
+- **Sort a column by tags.** Select `by tag` in the column's `Sort now` row.
+  The order follows the tag picker, and later card moves remain manual.
+
+### Changed
+
+- **`Ctrl+K` includes links from the agent's latest reply.** From a ticket
+  page, it uses the selected session or note; from the board, it uses the
+  ticket's latest reply and notes.
+- **The board's top row can receive keyboard focus.** Press `k` from a column
+  header to reach it and select its available actions.
+- **Ticket shell shortcuts are disabled by default.** Set
+  `MESIMON_TICKET_SHELLS=1` to restore them. The persistent terminal opened with
+  `!` remains available.
+- **The installer, session previews, and supported notifications show the
+  Mesimon mascot.** macOS may ask for notification permission for Mesimon's
+  separate notification identity.
+
+### Fixed
+
+- **Blocked automatic merges explain why the checkout refused them.** The
+  merge train retries when the checkout becomes clean.
+- **Answering an agent clears its needs-you marker even without a typed
+  prompt.** This includes continuing through an in-pane permission response.
+- **Sleeping a session no longer shows the misleading `resume may lose
+  context` warning.** A missing conversation is explained in the session preview.
+- **Terminal history scrolls one line per mouse-wheel event.** Applications
+  that handle their own mouse input keep receiving it.
+
 ## v0.1.0-alpha.17 — 2026-09-06
 
 ### Added
