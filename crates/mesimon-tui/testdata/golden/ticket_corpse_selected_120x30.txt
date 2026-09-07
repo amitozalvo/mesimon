@@ -4,10 +4,10 @@
  IN PROGRESS for >1y ∙ created >1y ago
 
 
-                                                                                           SESSIONS                  3
+  PREVIEW                                                                                  SESSIONS                  3
 
-                                                                                          ⠋ ✻ claude               >1y
-                                                                                          ◦ $ bash                 >1y
+    exited                                                                                ⠋ ✻ claude               >1y
+    it left no transcript                                                                 ◦ $ bash                 >1y
                                                                                           ✓ ✻ claude               >1y
                                                                                               enter resumes
                                                                                            x dismiss

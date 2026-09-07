@@ -1,0 +1,30 @@
+ TICKET (T-1)   mesimon > kanban-tui
+
+ Decay treatments
+ TODO for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                                                  SESSIONS                  1
+
+                             .               *                                            ⠋ ✻ claude               >1y
+                                   \  |  /                                                 x sleep
+                                   -- * --
+                                   /  |  \
+                               *               .
+
+
+    starting up
+    the ticket title is in its box ∙ mesimon presses enter when it is ready
+
+
+
+
+
+
+
+
+
+
+
+
+ enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys

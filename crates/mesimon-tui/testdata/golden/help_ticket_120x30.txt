@@ -7,7 +7,7 @@
   PREVIEW                        │   q         board                                  │    SESSIONS                  2
                                  │                                                    │
     ● working                    │ TICKETS                                            │   ⠋ ✻ claude               >1y
-                                 │   r         rename                                 │   ◦ $ bash                 >1y
+    nothing said yet ∙ the first │   r         rename                                 │   ◦ $ bash                 >1y
                                  │   n         describe                               │    x sleep
                                  │   N         new note                               │
                                  │   ^t        tags                                   │

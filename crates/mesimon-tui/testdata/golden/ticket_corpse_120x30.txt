@@ -7,7 +7,7 @@
   PREVIEW                                                                                  SESSIONS                  3
 
     ● working                                                                             ⠋ ✻ claude               >1y
-                                                                                          ◦ $ bash                 >1y
+    nothing said yet ∙ the first words land when the turn does                            ◦ $ bash                 >1y
                                                                                           ✓ ✻ claude               >1y
                                                                                               enter resumes
                                                                                            x sleep

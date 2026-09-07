@@ -4,10 +4,10 @@
  DONE for >1y ∙ created >1y ago ∙ archived
 
 
-                                                                                           SESSIONS                  1
+  PREVIEW                                                                                  SESSIONS                  1
 
-                                                                                          z $ bash                 >1y
-
+    sleeping                                                                              z $ bash                 >1y
+    its pane is gone, and the pane was the record
 
 
 

@@ -4,10 +4,10 @@
  REVIEW for >1y ∙ created >1y ago ∙ queued ∙ after T-3
 
 
-                                                                                           SESSIONS                  1
+  PREVIEW                                                                                  SESSIONS                  1
 
-                                                                                          ✓ ✻ claude               >1y
-                                                                                           x sleep
+    done                                                                                  ✓ ✻ claude               >1y
+    it left no transcript                                                                  x sleep
 
 
 

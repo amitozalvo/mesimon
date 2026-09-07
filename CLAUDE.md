@@ -1109,6 +1109,30 @@ centred over the TEXT block, not the zone, which is 87 cells wide against ~55 of
 `ticket_new_claude_120x30`, `ticket_new_claude_worktree_120x30`. (STALE-MAP "The empty seat previews
 the session it would start".)
 
+**And the same zone reports a SESSION with nothing to read (T-308's second half).** The chain was
+shell / note / `reply.is_some() || working`, so a selected session with no readable reply drew
+nothing — a claude coming up, one waiting for its first prompt, a corpse or sleeper whose
+transcript is gone, an `Unknown` after a restart, a live shell before its first `PaneTail`. It is
+`reply` / `record` / `seat` now (`draw_preview` takes the `&SessionRecord`, not its uuid, and
+`working_row` was lifted out to serve both the reply's closing indicator and this arm's headline).
+`ticket.rs::quiet_words` is PURE over the record — testable frameless — and reuses
+`glyphs::state_word` wherever nothing better is true: this zone invents no second name for a state
+the rail already names. Before the first turn the fact is the BOX — `waiting for you ∙ the ticket
+title is in its box, unsent`, or `starting up ∙ … ∙ mesimon presses enter when it is ready` when
+`pending_submit` — gated on `Idle { stop_reason: Unknown }`, the one `Idle`
+`SessionState::has_prompted` refuses (an `EndTurn` with no words is a finished turn, not a fresh
+box, and keeps `done`). A turn in flight gives the row to the PULSE plus `nothing said yet ∙ the
+first words land when the turn does`, and the mark is not drawn there — it stands only while the
+conversation has not STARTED (`Spawning` or that `Idle`, no transcript, claude), so it is the empty
+seat's face one press later and the zone does not blink between the press and the first prompt.
+A needs-you session's headline is its own QUESTION in `attn_text`, wrapped to three rows: the rail
+cuts it to 26 cells, this has 87 — the card-versus-page split, index truncates and reading surface
+reads. A sleeper with no transcript says `waking it starts a fresh one` BEFORE the press
+(`resume_session` mints a new uuid there); a shell says `reading its pane`, since a shell keeps no
+transcript by design. **No press row** — unlike the seat's, a session row is already spelled by its
+own `enter resumes` badge and the footer. Golden `ticket_starting_120x30`, plus twelve ticket
+goldens that stopped being blank. (STALE-MAP "And the session with nothing to read yet".)
+
 **Leaving a Claude session is the same thing as sleeping it.** Ctrl+C-out, `/exit` and Ctrl+D end
 the process, never the conversation, so `Daemon::park_on_exit` converts a clean exit to `Sleeping`
 and `x` wakes it — one gesture, not two, and the ticket keeps its worktree lock. The gate is the

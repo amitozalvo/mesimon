@@ -6,7 +6,7 @@
 //! from the body but a breathing row — no band, no rule (L1); the zone
 //! divider is a 2-cell gap.
 
-use mesimon_core::board::{NoteMeta, Provenance, SessionKind, SessionState};
+use mesimon_core::board::{NoteMeta, Provenance, SessionKind, SessionState, StopReason};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -445,7 +445,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             f,
             Rect { x: area.x + 1, y: body_y, width: left_w, height: body_h },
             app,
-            sel.map(|s| s.id),
+            sel,
             peek.as_deref(),
             working,
             shell,
@@ -494,7 +494,7 @@ fn draw_preview(
     f: &mut Frame,
     area: Rect,
     app: &App,
-    session: Option<uuid::Uuid>,
+    record: Option<&mesimon_core::board::SessionRecord>,
     peek: Option<&crate::peek::Peek>,
     working: bool,
     shell: Option<&[String]>,
@@ -502,6 +502,7 @@ fn draw_preview(
     seat: Option<ulid::Ulid>,
 ) {
     let theme = &app.theme;
+    let session = record.map(|s| s.id);
     let mut lines: Vec<Line<'static>> = Vec::new();
     // The heading carries the paging keys on its right while the zone
     // overflows (T-158: the hint beside the thing it pages, off the footer)
@@ -584,7 +585,7 @@ fn draw_preview(
                 }
             }
         }
-    } else if reply.is_some() || working {
+    } else if reply.is_some() {
         lines.push(heading());
         lines.push(Line::default());
         if let Some(text) = reply {
@@ -613,30 +614,192 @@ fn draw_preview(
             }
         }
         if working {
-            // The indicator says what the agent is doing, not just that it
-            // is: the newest tool call's own title, after the state word so
-            // the vocabulary stays the rail's (07 §11.3). `thinking` REPLACES
-            // the state word — "working ∙ thinking" says one thing twice.
-            let tier = theme.glyph_tier();
-            let working_word = glyphs::state_word(&SessionState::Running);
-            let row = match peek.and_then(|p| p.activity.as_ref()) {
-                Some(crate::peek::Doing::Tool(t)) => format!("{working_word} ∙ {t}"),
-                Some(crate::peek::Doing::Thinking) => "thinking".to_string(),
-                None => working_word.to_string(),
-            };
-            let row = crate::text::truncate(&row, (area.width as usize).saturating_sub(6));
-            let mark =
-                if glyphs::pulse_lit(app.spin_frame()) { theme.dim2() } else { theme.dim3() };
-            lines.push(Line::from(vec![
-                Span::styled(format!("   {} ", glyphs::pulse(tier)), mark),
-                Span::styled(row, theme.dim2()),
-            ]));
+            lines.push(working_row(app, peek, area.width as usize));
         }
+    } else if let Some(rec) = record {
+        // A session with nothing to read (T-308): the young one whose first
+        // words have not landed, the corpse that never spoke, the shell whose
+        // pane has not been captured yet. The zone stood blank for all of
+        // them — the same blank the empty seat had, one press later.
+        lines.push(heading());
+        lines.extend(quiet_session(app, rec, peek, area));
     } else if let Some(ticket) = seat.and_then(|id| app.board.ticket(id)) {
         lines.push(heading());
         lines.extend(empty_seat(app, ticket, area));
     }
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The working indicator: what the agent is DOING, not just that it is —
+/// the newest tool call's own title after the state word, so the vocabulary
+/// stays the rail's (07 §11.3). `thinking` REPLACES the state word: "working
+/// ∙ thinking" says one thing twice. It closes a reply that is still being
+/// written, and it IS the headline for a turn that has not said anything
+/// yet (T-308).
+fn working_row(app: &App, peek: Option<&crate::peek::Peek>, width: usize) -> Line<'static> {
+    let theme = &app.theme;
+    let working_word = glyphs::state_word(&SessionState::Running);
+    let row = match peek.and_then(|p| p.activity.as_ref()) {
+        Some(crate::peek::Doing::Tool(t)) => format!("{working_word} ∙ {t}"),
+        Some(crate::peek::Doing::Thinking) => "thinking".to_string(),
+        None => working_word.to_string(),
+    };
+    let row = truncate(&row, width.saturating_sub(6));
+    let mark = if glyphs::pulse_lit(app.spin_frame()) { theme.dim2() } else { theme.dim3() };
+    Line::from(vec![
+        Span::styled(format!("   {} ", glyphs::pulse(app.theme.glyph_tier())), mark),
+        Span::styled(row, theme.dim2()),
+    ])
+}
+
+/// A selected session with nothing to read (T-308). The zone drew NOTHING
+/// for every one of these — a claude still coming up, one waiting for the
+/// first prompt, a turn in flight before its first words land, a corpse that
+/// never spoke, a shell whose pane has not been captured yet — which is the
+/// same blank the empty seat had, one press later.
+///
+/// It is a REPORT where `empty_seat` is an invitation, and that is why it
+/// carries no press row: the offer's row has no hint of its own, so the mark
+/// has to say what Enter does, while a session row is already spelled twice
+/// (its own `enter resumes` badge, and the footer). What this owes the reader
+/// instead is WHY there is nothing, which nothing else on the page says.
+fn quiet_session(
+    app: &App,
+    rec: &mesimon_core::board::SessionRecord,
+    peek: Option<&crate::peek::Peek>,
+    area: Rect,
+) -> Vec<Line<'static>> {
+    let theme = &app.theme;
+    let w = area.width as usize;
+    let (headline, clauses) = quiet_words(rec);
+    let mut text: Vec<Line<'static>> = Vec::new();
+    if rec.state == SessionState::Running {
+        // The pulse is the headline here: a turn in flight has a live thing
+        // to say about itself, and `quiet_words` leaves the row to it.
+        text.push(working_row(app, peek, w));
+    } else if !headline.is_empty() {
+        // A needs-you session's headline is its own question, in the
+        // attention register the rail row beside it is already wearing: the
+        // one place in this zone a saturated colour is earned, and the law
+        // that reserves it is about what the colour MEANS, not how many
+        // cells spend it. The rail cuts that question to its 26; here it has
+        // the zone's width and wraps — the card-versus-page split again, the
+        // index truncates and the reading surface reads.
+        let attn = matches!(rec.state, SessionState::RequiresAction { .. });
+        let style = if attn { theme.attn_text() } else { theme.dim1() };
+        for row in crate::peek::wrap(&headline, w.saturating_sub(4), 3) {
+            text.push(Line::from(vec![Span::raw("   "), Span::styled(row, style)]));
+        }
+    }
+    for c in clauses {
+        for row in crate::peek::wrap(&c, w.saturating_sub(4), 2) {
+            text.push(Line::from(vec![Span::raw("   "), Span::styled(row, theme.dim2())]));
+        }
+    }
+    let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
+    // The mark stands while the conversation has not STARTED — the empty
+    // seat's own face, one beat later, so the zone does not blink between the
+    // press and the first prompt. A turn in flight is a conversation, and
+    // there the live pulse is the focal point: a static burst over it was
+    // built, seen, and cut the same hour (it read as "nothing here" beside a
+    // row saying something was happening). Never over a corpse, a sleeper, a
+    // failure or a raised permission prompt either — a starburst has nothing
+    // to say about any of those.
+    let unspoken = rec.kind == SessionKind::Claude
+        && rec.transcript_path.is_none()
+        && matches!(
+            rec.state,
+            SessionState::Spawning | SessionState::Idle { stop_reason: StopReason::Unknown }
+        );
+    let mut lines: Vec<Line<'static>> = vec![Line::default()];
+    if unspoken {
+        lines.extend(spark_rows(app, area, block_w));
+    }
+    lines.extend(text);
+    lines
+}
+
+/// Why there is nothing to read, and what the session is doing instead. Pure
+/// over the record, so the words can be read in a test without a frame. The
+/// state word is the rail's own (`glyphs::state_word`) wherever nothing
+/// better is true — this zone may not invent a second vocabulary for states
+/// the card and the rail already name.
+pub(super) fn quiet_words(rec: &mesimon_core::board::SessionRecord) -> (String, Vec<String>) {
+    let word = glyphs::state_word(&rec.state).to_string();
+    // A shell keeps no transcript at all, so "nothing to read" is never news
+    // about a shell — what it means is that the pane has not been captured
+    // yet, which lasts one poll (`App::poll_shell_tail`, a 1 s clock).
+    if rec.kind == SessionKind::Bash {
+        return if rec.state.has_pane() {
+            (
+                "reading its pane".into(),
+                vec!["a shell keeps no transcript ∙ the pane is the whole record".into()],
+            )
+        } else {
+            (word, vec!["its pane is gone, and the pane was the record".into()])
+        };
+    }
+    match &rec.state {
+        // The turn is in flight; `quiet_session` gives the row to the pulse.
+        SessionState::Running => (
+            String::new(),
+            vec!["nothing said yet ∙ the first words land when the turn does".into()],
+        ),
+        // The question, whole. It is the reason the session is stopped and
+        // the only thing worth the zone.
+        SessionState::RequiresAction { .. } => (
+            // The rail's own fallback for a question nothing recorded, not a
+            // Debug-printed enum: one vocabulary, and this is not its home.
+            rec.detail.clone().unwrap_or_else(|| word.to_lowercase()),
+            vec!["it cannot go on until you answer ∙ its pane is where you do".into()],
+        ),
+        // Before the first turn: mesimon typed the ticket title into the box
+        // on the way up and whether the Enter is ours or yours is the one
+        // thing worth saying about it (`spawn_session`, `pending_submit`).
+        SessionState::Spawning => ("starting up".into(), vec![box_clause(rec)]),
+        // `Idle{Unknown}` is a session that has never been prompted — the
+        // one Idle `SessionState::has_prompted` refuses, which is the same
+        // predicate the `description unread` clause reads. An `EndTurn` with
+        // no readable words is a finished turn, not a fresh box, and falls
+        // through to the state word below.
+        SessionState::Idle { stop_reason: StopReason::Unknown } => (
+            if rec.pending_submit { "starting up".into() } else { "waiting for you".into() },
+            vec![box_clause(rec)],
+        ),
+        // A conversation that was never written down: waking one resumes
+        // nothing, so `resume_session` mints a fresh one under a new uuid —
+        // which the reader should know BEFORE pressing, not after.
+        SessionState::Sleeping if rec.transcript_path.is_none() => {
+            (word, vec!["no conversation to resume ∙ waking it starts a fresh one".into()])
+        }
+        SessionState::Unknown { .. } => {
+            (word, vec!["mesimon lost track of its state ∙ the next thing it does will say".into()])
+        }
+        _ => {
+            let why = if rec.transcript_path.is_none() {
+                "it left no transcript"
+            } else {
+                "nothing to read in its transcript"
+            };
+            let mut clauses = vec![why.to_string()];
+            if let Some(d) = rec.detail.clone() {
+                clauses.push(d);
+            }
+            (word, clauses)
+        }
+    }
+}
+
+/// What is in a not-yet-prompted claude's input box, and whose Enter it is
+/// waiting on. `pending_submit` is mesimon's own owed keypress (T-224's
+/// retry clock); without it the first turn is the user's to start, which is
+/// README promise 3 seen from the inside.
+fn box_clause(rec: &mesimon_core::board::SessionRecord) -> String {
+    if rec.pending_submit {
+        "the ticket title is in its box ∙ mesimon presses enter when it is ready".into()
+    } else {
+        "the ticket title is in its box, unsent".into()
+    }
 }
 
 /// The starburst an empty seat wears (T-308), hand-authored like a palette
@@ -672,7 +835,6 @@ const SPARK_MIN_H: usize = 12;
 fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Vec<Line<'static>> {
     let theme = &app.theme;
     let w = area.width as usize;
-    let h = area.height as usize;
     // The words first: they are what sizes the block, and the mark is hung
     // over their middle rather than over the zone's. The zone is far wider
     // than these sentences, so centring the art in IT would leave the
@@ -696,29 +858,43 @@ fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Ve
     let block_w = text.iter().map(|l| super::spans_width(&l.spans)).max().unwrap_or(0).min(w);
 
     let mut lines: Vec<Line<'static>> = vec![Line::default()];
-    let art_w = SPARK.iter().map(|r| r.width()).max().unwrap_or(0);
-    if h >= SPARK_MIN_H && w > art_w + 6 {
-        let pad = " ".repeat(block_w.max(art_w).saturating_sub(art_w) / 2);
-        for (i, row) in SPARK.iter().enumerate() {
-            let mut spans = vec![Span::raw(pad.clone())];
-            if SPARK_BURST.contains(&i) {
-                // The burst's core is the value step, its spokes one under
-                // it, the field one under that. No hue anywhere: the board's
-                // one saturated colour is needs-you's, and a decoration may
-                // never spend it.
-                for part in split_star(row) {
-                    let style = if part == "*" { theme.dim1() } else { theme.dim2() };
-                    spans.push(Span::styled(part.to_string(), style));
-                }
-            } else {
-                spans.push(Span::styled((*row).to_string(), theme.dim3()));
-            }
-            lines.push(Line::from(spans));
-        }
-        lines.push(Line::default());
-        lines.push(Line::default());
-    }
+    lines.extend(spark_rows(app, area, block_w));
     lines.extend(text);
+    lines
+}
+
+/// `SPARK`, hung over a text block `block_w` cells wide — with the two
+/// breathing rows under it — or nothing at all where the zone is too short
+/// or too narrow to carry it. Centred on the WORDS, not on the zone: the
+/// zone is 87 cells at 120x30 against some 55 of sentence, and centring in
+/// it left the picture floating off to the right of everything it is about
+/// (built that way first, seen once, changed).
+fn spark_rows(app: &App, area: Rect, block_w: usize) -> Vec<Line<'static>> {
+    let theme = &app.theme;
+    let art_w = SPARK.iter().map(|r| r.width()).max().unwrap_or(0);
+    if (area.height as usize) < SPARK_MIN_H || (area.width as usize) <= art_w + 6 {
+        return Vec::new();
+    }
+    let pad = " ".repeat(block_w.max(art_w).saturating_sub(art_w) / 2);
+    let mut lines: Vec<Line<'static>> = Vec::new();
+    for (i, row) in SPARK.iter().enumerate() {
+        let mut spans = vec![Span::raw(pad.clone())];
+        if SPARK_BURST.contains(&i) {
+            // The burst's core is the value step, its spokes one under it,
+            // the field one under that. No hue anywhere: the board's one
+            // saturated colour is needs-you's, and a decoration may never
+            // spend it.
+            for part in split_star(row) {
+                let style = if part == "*" { theme.dim1() } else { theme.dim2() };
+                spans.push(Span::styled(part.to_string(), style));
+            }
+        } else {
+            spans.push(Span::styled((*row).to_string(), theme.dim3()));
+        }
+        lines.push(Line::from(spans));
+    }
+    lines.push(Line::default());
+    lines.push(Line::default());
     lines
 }
 

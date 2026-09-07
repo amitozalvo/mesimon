@@ -4,10 +4,10 @@
  REVIEW for >1y ∙ created >1y ago ∙ ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge ∙ auto-merge ∙ off
 
 
-                                                                                           SESSIONS                  1
+  PREVIEW                                                                                  SESSIONS                  1
 
-                                                                                          ✓ ✻ claude               >1y
-                                                                                           x sleep
+    done                                                                                  ✓ ✻ claude               >1y
+    it left no transcript                                                                  x sleep
 
 
 

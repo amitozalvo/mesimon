@@ -4071,6 +4071,88 @@ fn golden_ticket_new_claude_worktree_120() {
     golden("ticket_new_claude_worktree_120x30", &lines);
 }
 
+/// The other blank the zone had (T-308): a session selected with nothing to
+/// read. A claude that has not been prompted yet wears the seat's own mark —
+/// the conversation has not started, which is the same thing the offer row
+/// said one press ago — and the words say what is in its box and whose Enter
+/// it waits on.
+#[test]
+fn golden_ticket_starting_120() {
+    let mut b = fixture(false);
+    b.sessions.retain(|s| s.ticket != ulid_n(1));
+    let mut s = session(
+        11,
+        ulid_n(1),
+        SessionKind::Claude,
+        SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown },
+    );
+    // The launching window: the daemon has typed the title and still owes the
+    // Enter (`pending_submit`, T-224's retry clock).
+    s.pending_submit = true;
+    b.sessions.push(s);
+    let mut app = app_graphite(b);
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("-- * --")), "the mark: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("starting up")), "the state: {lines:?}");
+    assert!(
+        lines.iter().any(|l| l.contains("mesimon presses enter when it is ready")),
+        "whose Enter it waits on: {lines:?}"
+    );
+    golden("ticket_starting_120x30", &lines);
+}
+
+/// Why there is nothing to read, per state — read as words, without a frame.
+/// The rail's own vocabulary is reused wherever nothing better is true: this
+/// zone may not invent a second name for a state the card already names.
+#[test]
+fn the_quiet_zone_says_why_there_are_no_words() {
+    use mesimon_core::board::{ExitReason, Reason, StopReason};
+    let claude = |state| session_record(11, ulid_n(1), SessionKind::Claude, state);
+    let words = |s: &SessionRecord| super::ticket::quiet_words(s);
+
+    // Before the first turn: the box, and whose Enter it waits on.
+    let mut fresh = claude(SessionState::Idle { stop_reason: StopReason::Unknown });
+    assert_eq!(words(&fresh).0, "waiting for you");
+    assert_eq!(words(&fresh).1, vec!["the ticket title is in its box, unsent".to_string()]);
+    fresh.pending_submit = true;
+    assert_eq!(words(&fresh).0, "starting up");
+    assert!(words(&fresh).1[0].contains("mesimon presses enter"));
+
+    // A finished turn with no readable words is NOT a fresh box: it keeps the
+    // rail's word and says what is missing instead.
+    let done = claude(SessionState::Idle { stop_reason: StopReason::EndTurn });
+    assert_eq!(words(&done).0, "done");
+    assert_eq!(words(&done).1, vec!["it left no transcript".to_string()]);
+
+    // A turn in flight gives the row to the pulse.
+    assert_eq!(words(&claude(SessionState::Running)).0, "");
+    assert!(words(&claude(SessionState::Running)).1[0].starts_with("nothing said yet"));
+
+    // Needs-you: the question itself, which the 26-cell rail row cannot hold.
+    let mut asked = claude(SessionState::RequiresAction { reason: Reason::Permission });
+    asked.detail = Some("Bash(rm -rf node_modules)".into());
+    assert_eq!(words(&asked).0, "Bash(rm -rf node_modules)");
+
+    // A sleeper with no conversation: waking it starts a fresh one, which is
+    // worth knowing BEFORE the press.
+    let asleep = claude(SessionState::Sleeping);
+    assert!(words(&asleep).1[0].contains("waking it starts a fresh one"));
+    let mut slept = claude(SessionState::Sleeping);
+    slept.transcript_path = Some("/t.jsonl".into());
+    assert_eq!(words(&slept).1, vec!["nothing to read in its transcript".to_string()]);
+
+    // A shell keeps no transcript, so "nothing to read" is never news about
+    // one: what it means is the pane has not been captured yet.
+    let shell = |state| session_record(12, ulid_n(1), SessionKind::Bash, state);
+    assert_eq!(words(&shell(SessionState::Running)).0, "reading its pane");
+    assert!(words(&shell(SessionState::Sleeping)).1[0].contains("the pane was the record"));
+
+    // And the corpse the rail already offers to resume.
+    let dead = claude(SessionState::Exited { reason: ExitReason::UserQuit });
+    assert_eq!(words(&dead).0, "exited");
+}
+
 /// The picture is what the zone gives up first: under `SPARK_MIN_H` rows the
 /// words stay whole and the mark goes, because the sentence is what the
 /// press needs and the art is what it earns.
@@ -4361,6 +4443,18 @@ fn test_no_banned_sgr() {
                 cells(&seat, 120, 30)
             },
             {
+                // The quiet zone's other half (T-308): a needs-you session
+                // whose whole headline is the agent's own question, in the
+                // one register this zone is allowed to reach for.
+                let mut asked = App::for_test(fixture(true), Theme::new(flavor, profile));
+                asked.screen = Screen::Ticket { ticket: ulid_n(4), rail_idx: 0 };
+                assert!(
+                    render(&asked, 120, 30).iter().any(|l| l.contains("rm -rf node_modules")),
+                    "the question must be ON SCREEN, or this law does not bite"
+                );
+                cells(&asked, 120, 30)
+            },
+            {
                 install_diff(&mut app);
                 assert!(
                     render(&app, 120, 30).iter().any(|l| l.contains("vs a1b2c3d4")),
@@ -4576,6 +4670,18 @@ fn test_no_drawn_structure() {
             assert!(
                 lines.iter().any(|l| l.contains("-- * --")),
                 "the empty seat's mark must be ON SCREEN, or this law does not bite"
+            );
+            lines
+        },
+        {
+            // And the quiet zone drawing an agent's own question, which is
+            // text from a hook payload like any other.
+            let mut asked = app_graphite(fixture(true));
+            asked.screen = Screen::Ticket { ticket: ulid_n(4), rail_idx: 0 };
+            let lines = sweep(&asked);
+            assert!(
+                lines.iter().any(|l| l.contains("rm -rf node_modules")),
+                "the question must be ON SCREEN, or this law does not bite"
             );
             lines
         },

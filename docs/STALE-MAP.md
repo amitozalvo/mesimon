@@ -7842,3 +7842,63 @@ transcript has not landed yet, where the zone is also blank — a real gap, and 
 that pulses, scales with the zone, or has a second variant. Goldens `ticket_new_claude_120x30`
 (plain) and `ticket_new_claude_worktree_120x30` (a worktree ticket in a column that narrows both
 mode and tools), plus `the_empty_seat_drops_its_mark_before_its_words` for the give-way.
+
+## And the session with nothing to read yet (T-308, second half, 2026-09-07, user: "fix the adjacent gap as well, think about a nice thing to show while claude is working but no transcript yet, also it might NOT be working, and no transcript yet")
+
+The empty seat was one of two blanks. `draw_preview`'s chain was shell, then note, then
+`reply.is_some() || working` — so a SELECTED session with no readable reply and no `Running`
+state drew nothing at all, and `ticket_corpse_selected_120x30` was 87x16 cells of void beside a
+row saying `enter resumes`. Six real states landed there: a claude coming up, one waiting for its
+first prompt, a permission prompt raised before any assistant text was persisted, a sleeper or a
+corpse whose transcript is gone, a session `Unknown` after a daemon restart, and a live shell
+whose pane has not been captured yet (up to one second of `poll_shell_tail`'s clock).
+
+**The chain became `reply` / `record` / `seat`.** `draw_preview` takes the `&SessionRecord`
+now instead of its uuid, and `working` stopped being a branch condition — a working session is a
+selected one, so the record arm covers it and `working_row` (the pulse plus the newest tool call's
+own title) was lifted out to serve both the reply's closing indicator and this arm's headline.
+
+**A report, not an invitation, which is why it has no press row.** `empty_seat` spells `enter
+start claude` because the offer row carries no hint of its own; a session row is already spelled
+twice — its own `enter resumes` badge and the footer — and a third would be T-158's rule broken by
+the change that cites it. What this owes the reader instead is WHY there is nothing, which nothing
+else on the page says. `quiet_words` is pure over the record so the sentences can be read in a test
+without a frame, and it reuses `glyphs::state_word` wherever nothing better is true: this zone may
+not invent a second name for a state the card and the rail already name.
+
+**Before the first turn, the interesting fact is the BOX.** `spawn_session` types the ticket title
+into the pane on the way up and then either stops or owes an Enter, so `waiting for you ∙ the
+ticket title is in its box, unsent` and `starting up ∙ … ∙ mesimon presses enter when it is ready`
+are the two halves of what actually happened, and `pending_submit` — T-224's retry clock — is what
+tells them apart. The gate is `Idle { stop_reason: Unknown }`, the one `Idle` that
+`SessionState::has_prompted` refuses: an `EndTurn` with no readable words is a FINISHED turn, not
+a fresh box, and keeps the rail's `done` (built without that gate first, and `ticket_queued`'s and
+`ticket_raised`'s goldens both said "waiting for you" over a `✓` row — the goldens caught it).
+
+**A turn in flight gives the row to the pulse**, and `nothing said yet ∙ the first words land when
+the turn does` under it. The mark is NOT drawn there: it was, for an hour, and `● working` under a
+starburst read as "nothing here" beside a row saying something was happening. So the rule is the
+narrower one — the mark stands while the conversation has not STARTED (`Spawning` or the never
+prompted `Idle`, no transcript, claude), which makes it the empty seat's own face one press later
+and means the zone does not blink between the press and the first prompt. Never over a corpse, a
+sleeper, a failure or a raised prompt.
+
+**A needs-you session's headline is its own question**, in the attention register the rail row
+beside it already wears. Two copies of one sentence on a page is the cost; the rail cuts it to 26
+cells and the zone has 87 and wraps to three, which is the card-versus-page split the peek row and
+the PREVIEW zone already make — the index truncates, the reading surface reads. The law that
+reserves the saturated colour is about what it MEANS, not how many cells spend it, and this is
+needs-you by the same road the rail's copy is. The alternative considered and refused: greying the
+zone's copy, which would have put the only loud copy on the truncated one.
+
+**And a sleeper with no conversation says so before the press**, not after: `resume_session` mints
+a FRESH conversation under a new uuid where there is no transcript to resume (D24 makes that free),
+which is a thing worth knowing while the cursor is on the row rather than in the status line
+afterwards. A shell is the inverse — it keeps no transcript by design, so "nothing to read" is
+never news about one, and what the blank actually means there is `reading its pane`.
+
+**Not built.** A press row (above); a countdown or elapsed clock (the rail's age slot has it); the
+last USER prompt as a stand-in for the missing reply (`peek` already falls back to it prefixed `>`
+and a zone-sized quote of your own words is not a preview of the agent's); wrapping the question
+past three rows. Pinned by `the_quiet_zone_says_why_there_are_no_words` (the words, per state,
+frameless), golden `ticket_starting_120x30`, and both L1 sweeps now render the question.

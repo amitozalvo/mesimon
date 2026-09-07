@@ -14,7 +14,7 @@
   PREVIEW                                                                                  SESSIONS                  2
 
     ● working                                                                             ⠋ ✻ claude               >1y
-                                                                                          ◦ $ bash                 >1y
+    nothing said yet ∙ the first words land when the turn does                            ◦ $ bash                 >1y
                                                                                            x sleep
 
                                                                                            NOTES                     2
