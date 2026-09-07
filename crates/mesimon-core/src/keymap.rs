@@ -190,6 +190,13 @@ pub enum Scope {
     /// is a text field while it is being typed in, and then the scope is
     /// `Input`.
     ColumnSettings,
+    /// The board's own top row (T-305): `k` off a column header lands here,
+    /// where Enter reads the section under the cursor and `j` goes back to
+    /// the column. One section is focusable today — the checkout's git
+    /// clause, whose Enter is the diff the board's `v` opens — so nothing
+    /// walks sideways and `h`/`l` are unbound. The column header is
+    /// `Ctx::col_header`, a different place a cursor can be.
+    Header,
     /// Scope barrier: owns every key, inherits nothing.
     Input,
     /// The full-screen note editor (a title line over a multi-line markdown
@@ -202,7 +209,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 22] = [
+    pub const ALL: [Scope; 23] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -223,6 +230,7 @@ impl Scope {
         Scope::Releases,
         Scope::Links,
         Scope::ColumnSettings,
+        Scope::Header,
         Scope::Input,
         Scope::Editor,
     ];
@@ -243,7 +251,8 @@ impl Scope {
             | Scope::Brief
             | Scope::Releases
             | Scope::Links
-            | Scope::ColumnSettings => Some(Scope::Global),
+            | Scope::ColumnSettings
+            | Scope::Header => Some(Scope::Global),
             Scope::Global
             | Scope::DiffView
             | Scope::DeleteChord
@@ -277,6 +286,7 @@ impl Scope {
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
             Scope::ColumnSettings => "COLUMN",
+            Scope::Header => "HEADER",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
         }
@@ -304,7 +314,8 @@ pub enum Verb {
     First,
     Last,
     /// Enter: act on the selection. Board = get me working, ticket = focus,
-    /// drawer = adopt + resume, archived = open.
+    /// drawer = adopt + resume, archived = open, header = read the section
+    /// under the cursor (T-305: the git clause's diff).
     Act,
     /// Leave this screen. Board = quit mesimon.
     Back,
@@ -907,7 +918,7 @@ pub struct Ctx {
     /// `HJKL` (move the column), `d` (delete). The hint word switches on
     /// this; the column NAME is not a hint (a hint is a `&'static str`) and
     /// goes in the status line and the dialog's title.
-    pub on_header: bool,
+    pub col_header: bool,
     /// The column settings dialog's rows read the column they are on off
     /// these (a `MenuItem` label is a plain `fn(&Ctx)`, so the column is
     /// mirrored here rather than captured). `col_name` and the two rule
@@ -1123,7 +1134,7 @@ static BOARD: &[Binding] = &[
         // one, and the hint says which it will be BEFORE the press. On a
         // column header it opens the column's settings (T-117).
         hint: |c| {
-            if c.on_header {
+            if c.col_header {
                 "column settings"
             } else if c.ticket_hot {
                 "go to the agent"
@@ -1131,7 +1142,7 @@ static BOARD: &[Binding] = &[
                 "ticket page"
             }
         },
-        avail: |c| c.has_ticket || c.on_header,
+        avail: |c| c.has_ticket || c.col_header,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -1311,7 +1322,7 @@ static BOARD: &[Binding] = &[
         show: "HJKL",
         // The same entry moves the COLUMN when the cursor is on its header
         // (T-117): one nudge, the thing under the cursor, one step.
-        hint: |c| if c.on_header { "move column" } else { "move card" },
+        hint: |c| if c.col_header { "move column" } else { "move card" },
         avail: |c| c.can_nudge,
         class: Class::Plain,
         group: Group::Ticket,
@@ -1357,8 +1368,8 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('r')],
         verb: Verb::Rename,
         show: "r",
-        hint: |c| if c.on_header { "rename column" } else { "rename" },
-        avail: |c| c.has_ticket || c.on_header,
+        hint: |c| if c.col_header { "rename column" } else { "rename" },
+        avail: |c| c.has_ticket || c.col_header,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
@@ -1635,8 +1646,8 @@ static BOARD: &[Binding] = &[
         keys: &[Key::Char('d')],
         verb: Verb::DeletePrefix,
         show: "d",
-        hint: |c| if c.on_header { "delete column" } else { "delete" },
-        avail: |c| c.has_ticket || c.on_header,
+        hint: |c| if c.col_header { "delete column" } else { "delete" },
+        avail: |c| c.has_ticket || c.col_header,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -2233,7 +2244,7 @@ static DELETE: &[Binding] = &[
         keys: &[Key::Char('d')],
         verb: Verb::Delete,
         show: "d",
-        hint: |c| if c.on_header { "delete column" } else { "delete ticket" },
+        hint: |c| if c.col_header { "delete column" } else { "delete ticket" },
         avail: always,
         class: Class::Grace,
         group: Group::Ticket,
@@ -3802,6 +3813,55 @@ static LINKS: &[Binding] = &[
     },
 ];
 
+/// The board's own top row (T-305), reached by `k` off a column header. It is
+/// a cursor position, not a screen: nothing is drawn over the board, the
+/// cursor column keeps its painted band, and `j` walks straight back into it.
+///
+/// One section is focusable — the checkout's git clause (`chrome::git_clause`)
+/// — so Enter IS the board's `v`, and the clause stops spelling that key
+/// beside the count it reads: a section the cursor can stand on says what
+/// Enter does in the footer, which is where the hint belongs once it is one
+/// press away. `h`/`l` are unbound until a second section earns them, and so
+/// is `k`: there is nothing above the top row.
+static HEADER: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down],
+        verb: Verb::CursorDown,
+        show: "j",
+        hint: |_| "back to the board",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        // The board's `v`, on the section that draws the count it opens.
+        // Gated on the sample for the same reason `v` is: with no repository
+        // under the board there is no clause to stand on.
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "diff",
+        avail: |c| c.git_repo,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "back",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 static INPUT: &[Binding] = &[
     Binding {
         keys: &[Key::Enter],
@@ -4354,6 +4414,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
         Scope::ColumnSettings => COLUMN,
+        Scope::Header => HEADER,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
     }
@@ -4558,8 +4619,9 @@ mod tests {
                 Scope::Releases => 17,
                 Scope::Links => 18,
                 Scope::ColumnSettings => 19,
-                Scope::Input => 20,
-                Scope::Editor => 21,
+                Scope::Header => 20,
+                Scope::Input => 21,
+                Scope::Editor => 22,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -5566,7 +5628,7 @@ mod tests {
         assert_eq!(resolve(Scope::DeleteChord, Key::Char('x'), &ctx), None);
         // On a column header the same chord deletes the COLUMN (T-117), and
         // says so; the discard form needs a worktree, which a header lacks.
-        let header = Ctx { on_header: true, ..Default::default() };
+        let header = Ctx { col_header: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Char('d'), &header), Some(Verb::DeletePrefix));
         assert_eq!(
             hint_for(Scope::Board, Verb::DeletePrefix, &header),
@@ -5617,8 +5679,8 @@ mod tests {
     #[test]
     fn a_header_offers_exactly_the_column_verbs() {
         let header =
-            Ctx { on_header: true, multi_column: true, can_nudge: true, ..Default::default() };
-        let empty = Ctx { on_header: false, can_nudge: false, ..header.clone() };
+            Ctx { col_header: true, multi_column: true, can_nudge: true, ..Default::default() };
+        let empty = Ctx { col_header: false, can_nudge: false, ..header.clone() };
         let mut added: Vec<Verb> = Vec::new();
         for b in bindings(Scope::Board) {
             if (b.avail)(&header) && !(b.avail)(&empty) {
@@ -5641,6 +5703,39 @@ mod tests {
         for k in [Key::Char('x'), Key::Char('a'), Key::Char('z'), Key::Char('c'), Key::Char('s')] {
             assert_eq!(resolve(Scope::Board, k, &header), None, "{k:?}");
         }
+    }
+
+    /// The board's own top row (T-305) is a cursor position one step above a
+    /// column header, and it owns three keys and no more: `j` back into the
+    /// column, Enter on the one section that is focusable, Esc to pop. It
+    /// binds nothing sideways and nothing upward while the git clause is the
+    /// only section, and it is a board scope, so `?` and the app keys reach
+    /// it while the board's own selection keys do not.
+    #[test]
+    fn the_top_row_owns_three_keys() {
+        let repo = Ctx { git_repo: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Header, Key::Char('j'), &repo), Some(Verb::CursorDown));
+        assert_eq!(resolve(Scope::Header, Key::Down, &repo), Some(Verb::CursorDown));
+        assert_eq!(resolve(Scope::Header, Key::Enter, &repo), Some(Verb::Act));
+        assert_eq!(hint_for(Scope::Header, Verb::Act, &repo), Some(("enter", "diff")));
+        assert_eq!(resolve(Scope::Header, Key::Esc, &repo), Some(Verb::Back));
+        assert_eq!(resolve(Scope::Header, Key::Char('?'), &repo), Some(Verb::Help));
+        // One section: nothing walks sideways, and nothing is above the top.
+        for k in [Key::Char('h'), Key::Char('l'), Key::Char('k'), Key::Up] {
+            assert_eq!(resolve(Scope::Header, k, &repo), None, "{k:?}");
+        }
+        // The board's own keys are the board's; none of them reaches up here.
+        let full = Ctx { has_ticket: true, multi_column: true, ..repo.clone() };
+        for k in [Key::Char('o'), Key::Char('v'), Key::Char('r'), Key::Char('d'), Key::Char('x')] {
+            assert_eq!(resolve(Scope::Header, k, &full), None, "{k:?}");
+        }
+        // Enter is gated the way the board's `v` is: no repository, no clause
+        // to stand on, so nothing to read.
+        let bare = Ctx::default();
+        assert_eq!(resolve(Scope::Header, Key::Enter, &bare), None);
+        assert_eq!(hint_for(Scope::Header, Verb::Act, &bare), None);
+        let shown: Vec<&str> = footer_items(Scope::Header, &repo).iter().map(|b| b.show).collect();
+        assert_eq!(shown, vec!["j", "enter", "esc", "?"]);
     }
 
     /// Archiving takes two presses; restoring takes one. The chord tail binds
@@ -6138,6 +6233,7 @@ mod tests {
             Scope::Releases,
             Scope::Links,
             Scope::ColumnSettings,
+            Scope::Header,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");

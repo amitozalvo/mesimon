@@ -817,9 +817,16 @@ pub struct App {
     /// The card under the cursor in `cursor_col`, or `None` for the column
     /// HEADER (T-117): `k` off the top card lands there, `j` comes back. An
     /// empty column has no card, so there the two spellings draw the same
-    /// header and `on_header` answers yes to both — which keeps a walk across
-    /// an empty column on cards.
+    /// header and `on_column_header` answers yes to both — which keeps a walk
+    /// across an empty column on cards.
     pub cursor_row: Option<usize>,
+    /// `k` off a column header lands on the board's own top row (T-305) —
+    /// `Scope::Header`, where Enter opens the checkout diff and `j` comes
+    /// back. One section is focusable today, the git clause, so there is
+    /// nothing to walk sideways and `hl` are unbound there; it is only ever
+    /// set on the board, and only where a git sample has landed for the
+    /// clause to be drawn at all.
+    pub header_focus: bool,
     pub mode: Mode,
     pub status: String,
     pub quit: bool,
@@ -1066,6 +1073,7 @@ impl App {
             screen: Screen::Board,
             cursor_col: 0,
             cursor_row: Some(0),
+            header_focus: false,
             mode: Mode::Normal,
             status: String::new(),
             quit: false,
@@ -1422,14 +1430,27 @@ impl App {
 
     /// The board cursor rests on a column header (T-117): above the top card,
     /// or on an empty column, whose only position is its header. The one
-    /// predicate behind `Ctx::on_header`, the header's cursor bar and the
+    /// predicate behind `Ctx::col_header`, the header's cursor bar and the
     /// four column verbs' subject.
-    pub fn on_header(&self) -> bool {
-        if !matches!(self.screen, Screen::Board) {
+    ///
+    /// False while the top row holds the cursor (T-305): `k` off a column
+    /// header leaves the column entirely, so the column's four verbs stand
+    /// down and its header gives the cursor bar back — the column keeps only
+    /// its painted band, which is what says where `j` returns to.
+    pub fn on_column_header(&self) -> bool {
+        if !matches!(self.screen, Screen::Board) || self.header_focus {
             return false;
         }
         let Some(col) = self.cursor_column() else { return false };
         self.cursor_row.is_none() || self.board.column_tickets(&col.name).is_empty()
+    }
+
+    /// Is the cursor column standing at its header — with the cursor there or
+    /// one row further up, on the top row? The board's own draw asks this
+    /// (the column shows its top either way); `on_column_header` is the
+    /// narrower question of where the cursor itself is.
+    pub fn at_column_header(&self) -> bool {
+        (self.header_focus && matches!(self.screen, Screen::Board)) || self.on_column_header()
     }
 
     fn clamp_cursor(&mut self) {
@@ -2440,6 +2461,9 @@ impl App {
                 Screen::Diff => Scope::Diff,
                 Screen::Releases => Scope::Releases,
                 Screen::Ticket { .. } => Scope::Ticket,
+                // The board's top row is a cursor position on the board, so
+                // it is a scope and not a screen (T-305).
+                Screen::Board if self.header_focus => Scope::Header,
                 Screen::Board => Scope::Board,
             },
         }
@@ -2499,7 +2523,7 @@ impl App {
                 _ => "undo delete",
             },
             can_nudge: self.can_nudge(),
-            on_header: self.on_header(),
+            col_header: self.on_column_header(),
             col_name: col.map(|c| c.name.clone()).unwrap_or_default(),
             col_new,
             col_on_sort: false,
@@ -2893,7 +2917,7 @@ impl App {
             Verb::Rename => {
                 // On a header the column is renamed, in place in its header
                 // row (T-117).
-                if ctx.on_header {
+                if ctx.col_header {
                     if let Some(name) = self.cursor_column().map(|c| c.name.clone()) {
                         self.mode = Mode::Input {
                             purpose: InputPurpose::RenameColumn { name: name.clone() },
@@ -2931,7 +2955,7 @@ impl App {
             }
             // `d` only arms. The second press is what deletes.
             Verb::DeletePrefix => {
-                if ctx.on_header {
+                if ctx.col_header {
                     // The column (T-117). The daemon refuses one that holds
                     // tickets, and its sentence lands in the status.
                     if let Some(name) = self.cursor_column().map(|c| c.name.clone()) {
@@ -3779,9 +3803,16 @@ impl App {
                     self.cursor_col += 1;
                     self.clamp_cursor();
                 }
-                // `k` off the top card lands on the header (T-117), `j`
-                // from the header on the top card.
+                // `k` off the top card lands on the column header (T-117),
+                // and off the column header on the board's own top row
+                // (T-305) — but only where that row has a section to stand
+                // on, which today is the git clause and nothing else. `j`
+                // walks back down the same two steps.
                 Verb::CursorUp => {
+                    if self.on_column_header() {
+                        self.header_focus = self.git.sampled;
+                        return;
+                    }
                     self.cursor_row = match self.cursor_row {
                         Some(0) | None => None,
                         Some(r) => Some(r - 1),
@@ -3891,6 +3922,9 @@ impl App {
                     }
                 }
             }
+            // The top row's only motion: `j` returns to the column the
+            // cursor left, which kept its painted band the whole time.
+            Scope::Header => self.header_focus = false,
             Scope::Theme => {
                 let Mode::Theme { idx } = self.mode else {
                     return;
@@ -3908,6 +3942,9 @@ impl App {
     fn act(&mut self, scope: Scope) -> Result<()> {
         match scope {
             Scope::Board => self.board_enter(),
+            // The one focusable section of the top row is the checkout's git
+            // clause, and reading it is the board's own `v` (T-305).
+            Scope::Header => self.open_checkout_diff(),
             Scope::Ticket => {
                 if let Screen::Ticket { ticket, .. } = self.screen {
                     if let Some(note) = self.selected_note() {
@@ -4058,6 +4095,9 @@ impl App {
                     Mode::Normal
                 };
             }
+            // Esc pops one level like everywhere else: off the top row and
+            // back onto the column, never into the board's menu.
+            Scope::Header => self.header_focus = false,
             Scope::Brief => self.leave_brief(),
             // The menu is the board's, so the notes always return there.
             Scope::Releases => {
@@ -4245,7 +4285,7 @@ impl App {
     /// just-composed ticket starts one, and only then does Enter mean the
     /// ticket page. The hint says which BEFORE the press (`ticket_hot`).
     fn board_enter(&mut self) -> Result<()> {
-        if self.on_header() {
+        if self.on_column_header() {
             return self.open_column_settings();
         }
         let Some(t) = self.selected_ticket() else {
@@ -4380,7 +4420,7 @@ impl App {
     fn can_nudge(&self) -> bool {
         // On a header the nudge moves the COLUMN (T-117): somewhere to go is
         // another column.
-        if self.on_header() {
+        if self.on_column_header() {
             return self.columns().len() > 1;
         }
         let Some(col) = self.selected_ticket().map(|t| t.column.clone()) else {
@@ -4426,7 +4466,7 @@ impl App {
     /// to a ghost you can still cancel and a poor thing to do to a card that
     /// has already moved.
     fn nudge(&mut self, key: Key) -> Result<()> {
-        if self.on_header() {
+        if self.on_column_header() {
             return self.reorder_column(key);
         }
         let cols = self.columns();
@@ -10063,24 +10103,75 @@ mod tests {
     fn k_from_the_top_card_lands_on_the_header() {
         let mut app = app_three_columns();
         assert_eq!(app.cursor_row, Some(0));
-        assert!(!app.on_header());
+        assert!(!app.on_column_header());
         press(&mut app, 'k');
         assert_eq!(app.cursor_row, None);
-        assert!(app.on_header());
+        assert!(app.on_column_header());
         assert!(app.selected_ticket().is_none());
         press(&mut app, 'l');
         assert_eq!((app.cursor_col, app.cursor_row), (1, None), "a header stays a header");
         press(&mut app, 'j');
         assert_eq!(app.cursor_row, Some(0), "doing is empty: its header is its only row");
-        assert!(app.on_header(), "an empty column is its own header");
+        assert!(app.on_column_header(), "an empty column is its own header");
         press(&mut app, 'l');
         press(&mut app, 'j');
         assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)));
-        assert!(!app.on_header());
+        assert!(!app.on_column_header());
         // `g` needs a ticket and is inert on a header.
         press(&mut app, 'k');
         press(&mut app, 'g');
         assert_eq!(app.cursor_row, None);
+    }
+
+    // ---- the board's own top row as a cursor position (T-305) --------------
+
+    /// `k` off a column header leaves the column and lands on the top row,
+    /// `j` and Esc walk back into it, and sideways is unbound up there while
+    /// the git clause is the only section. With no sample there is nothing to
+    /// stand on and the press does nothing at all.
+    #[test]
+    fn k_off_the_column_header_lands_on_the_top_row() {
+        let mut app = app_three_columns();
+        press(&mut app, 'k');
+        assert!(app.on_column_header());
+        press(&mut app, 'k');
+        assert!(!app.header_focus, "an unsampled checkout draws no clause to focus");
+        assert_eq!(app.scope(), Scope::Board);
+
+        app.git = mesimon_core::command::RepoGit {
+            sampled: true,
+            branch: "main".into(),
+            changed: 3,
+            ..Default::default()
+        };
+        press(&mut app, 'k');
+        assert!(app.header_focus);
+        assert_eq!(app.scope(), Scope::Header);
+        assert!(!app.on_column_header(), "the column's four verbs stand down");
+        assert!(!app.ctx().col_header);
+        assert_eq!(app.cursor_col, 0, "the column the cursor left is where `j` returns");
+        // One section, so nothing walks sideways and nothing is above.
+        for c in ['h', 'l', 'k'] {
+            press(&mut app, c);
+            assert!(app.header_focus, "{c} must be inert on the top row");
+            assert_eq!(app.cursor_col, 0);
+        }
+        press(&mut app, 'j');
+        assert!(!app.header_focus);
+        assert!(app.on_column_header(), "back on the column header, not on its top card");
+        // Esc pops the same way — it is not the board's menu up there.
+        press(&mut app, 'k');
+        assert_eq!(app.scope(), Scope::Header);
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.header_focus);
+        assert!(matches!(app.mode, Mode::Normal), "and no menu opened");
+        // An empty column IS its header, so one press is enough from it.
+        press(&mut app, 'l');
+        press(&mut app, 'j');
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)), "doing is empty");
+        assert!(app.on_column_header());
+        press(&mut app, 'k');
+        assert!(app.header_focus);
     }
 
     #[test]
@@ -10131,7 +10222,7 @@ mod tests {
         assert_eq!(app.status, "delete cancelled");
         // The empty one goes.
         press(&mut app, 'l');
-        assert!(app.on_header());
+        assert!(app.on_column_header());
         press(&mut app, 'd');
         press(&mut app, 'd');
         assert!(sent_contains(&sent, "DeleteColumn { name: \"doing\" }"), "{sent:?}");
@@ -10173,7 +10264,7 @@ mod tests {
             "{sent:?}"
         );
         assert!(matches!(app.mode, Mode::Normal));
-        assert!(app.on_header());
+        assert!(app.on_column_header());
     }
 
     // ---- the column settings dialog (T-117) ------------------------------
@@ -10246,7 +10337,7 @@ mod tests {
         // The empty `doing` deleted from under the cursor: the clamp would
         // land on the pinned `done`, so the cursor goes left to `todo`.
         press(&mut app, 'l');
-        assert!(app.on_header());
+        assert!(app.on_column_header());
         press(&mut app, 'd');
         press(&mut app, 'd');
         assert_eq!(app.columns(), ["todo", "done"]);

@@ -1231,6 +1231,26 @@ fn golden_help_header_120() {
     golden("help_header_120x30", &lines);
 }
 
+/// The `?` overlay on the board's own top row (T-305): the three keys the
+/// row has and nothing the column or a card owns.
+#[test]
+fn golden_help_header_bar_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.git = git_state("main", 2, 1, 3);
+    press(&mut app, 'k');
+    press(&mut app, 'k');
+    app.help = true;
+    let lines = render(&app, 120, 30);
+    for present in ["back to the board", "diff", "back"] {
+        assert!(lines.iter().any(|l| l.contains(present)), "{present:?}");
+    }
+    for absent in ["column settings", "rename column", "new ticket", "menu"] {
+        assert!(!lines.iter().any(|l| l.contains(absent)), "{absent:?}");
+    }
+    golden("help_header_bar_120x30", &lines);
+}
+
 /// The composer on a column with a workspace default says so on its row.
 #[test]
 fn golden_composer_column_default_120() {
@@ -1667,15 +1687,76 @@ fn board_v_opens_the_checkout_diff() {
     assert!(bare.diff.is_none());
 }
 
-/// The board's `v` is hinted where it operates, not in the footer: beside the
-/// `∙ 3 changed` it opens (T-158's idiom, T-221's key). The footer is the
-/// selection's, and this key is not about the selection.
+/// The board's own top row as a cursor position (T-305): `k` off a column
+/// header paints the git clause on the elevated surface — one pad cell each
+/// side, the greys on the `sel` ramp — takes the cursor bar off the column
+/// header while leaving it its band, and hands the footer to `Scope::Header`,
+/// where Enter is the checkout diff.
 #[test]
-fn the_board_teaches_v_beside_the_change_count() {
+fn golden_board_header_bar_120() {
+    let mut app = app_graphite(fixture(false));
+    app.cursor_col = 1;
+    app.git = git_state("main", 2, 1, 3);
+    press(&mut app, 'k');
+    assert!(app.on_column_header(), "one press onto the column header");
+    press(&mut app, 'k');
+    assert!(app.header_focus, "the second lands on the row above it");
+
+    let buf = cells(&app, 120, 30);
+    let band = Color::Rgb(0x27, 0x2B, 0x31);
+    // ` ⎇ main ↑2 ↓1 ∙ 3 changed ` starts after `mesimon > kanban-tui`.
+    let row: String = (0..120u16).map(|x| buf[(x, 0)].symbol().to_string()).collect();
+    let at = row.find('⎇').expect("the clause is drawn") as u16;
+    for x in [at - 1, at, at + 12, at + 24] {
+        assert_eq!(buf[(x, 0)].bg, band, "the focused clause is painted at {x}");
+    }
+    assert_ne!(buf[(at - 2, 0)].bg, band, "and the paint starts at the clause");
+    assert_ne!(buf[(at + 26, 0)].bg, band, "one pad cell, then the page ground again");
+    // The column keeps its band — that is what says where `j` goes back to —
+    // and gives the cursor bar up.
+    assert_eq!(buf[(40, 2)].bg, band, "the cursor column is still the cursor column");
+    assert_eq!(buf[(31, 2)].symbol(), " ", "no cursor bar on the column header");
+
+    let lines = render(&app, 120, 30);
+    let foot = lines.last().unwrap();
+    assert!(foot.contains("HEADER"), "{foot:?}");
+    assert!(foot.contains("enter diff"), "{foot:?}");
+    assert!(foot.contains("j back to the board"), "{foot:?}");
+    assert!(!foot.contains("esc menu"), "esc pops off the row up here: {foot:?}");
+    golden("board_header_bar_120x30", &lines);
+}
+
+/// Enter on the focused clause is the board's `v`, through dispatch and the
+/// wire; `q` comes back to the board with the row still holding the cursor.
+#[test]
+fn enter_on_the_header_bar_opens_the_checkout_diff() {
+    let mut app = app_graphite(fixture(false));
+    app.git = git_state("main", 2, 1, 3);
+    press(&mut app, 'k');
+    press(&mut app, 'k');
+    assert_eq!(app.scope(), mesimon_core::keymap::Scope::Header);
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
+    assert!(matches!(app.screen, Screen::Diff));
+    let d = app.diff.as_ref().unwrap();
+    assert!(!d.is_branch(), "the top row is the repository's, like the board under it");
+    assert_eq!(app.diff_ticket(), None);
+    press(&mut app, 'q');
+    assert!(matches!(app.screen, Screen::Board));
+    assert!(app.header_focus, "and the cursor is where it was left");
+}
+
+/// The board's `v` no longer teaches itself in the header (T-305): the git
+/// clause is a place the cursor can stand, so the key that reads it is the
+/// footer's to name once the cursor is there. It stays off the board's own
+/// footer — that one is the selection's — and `?` still lists it.
+#[test]
+fn the_header_no_longer_spells_the_diff_key() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 2, 1, 3);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("∙ 3 changed  v diff"), "{head:?}");
+    assert!(head.contains("∙ 3 changed   7 tickets"), "{head:?}");
+    assert!(!head.contains("v diff"), "the count no longer carries the key: {head:?}");
 
     let ctx = app.ctx();
     let (left, _) = mesimon_core::keymap::footer_split(mesimon_core::keymap::Scope::Board, &ctx);
@@ -1686,18 +1767,11 @@ fn the_board_teaches_v_beside_the_change_count() {
         overlay.iter().any(|(_, items)| items.iter().any(|(show, _)| *show == "v")),
         "`?` is where a prio-0 key is always listed"
     );
-
-    // A clean checkout has nothing to open, so it says nothing — but the key
-    // is still live, and `?` still names it.
-    app.git = git_state("main", 2, 1, 0);
-    let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ main"), "{head:?}");
-    assert!(!head.contains("v diff"), "no count, no hint: {head:?}");
     assert_eq!(
         mesimon_core::keymap::resolve(
             mesimon_core::keymap::Scope::Board,
             mesimon_core::keymap::Key::Char('v'),
-            &app.ctx()
+            &ctx
         ),
         Some(mesimon_core::keymap::Verb::OpenDiff)
     );
@@ -4610,18 +4684,17 @@ fn test_git_clause_is_silent_until_sampled_and_quiet_in_sync() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 0, 0, 0);
     let head = &render(&app, 120, 30)[0];
-    // Nothing uncommitted, so nothing for `v` to open and no hint (T-221);
-    // the terminal's `!` is not hinted here either — it was for a day
-    // (T-273) and `?` is its one home (T-277).
+    // The clause is facts and nothing else: no key rides it since T-305, and
+    // the terminal's `!` never did — it was there for a day (T-273) and `?`
+    // is its one home (T-277).
     assert!(head.contains("kanban-tui ⎇ main   7 tickets"), "{head:?}");
     assert!(!head.contains("terminal"), "{head:?}");
     app.git = git_state("main", 0, 3, 0);
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("⎇ main ↓3   7 tickets"), "{head:?}");
-    // A count is a thing to read, and the key that reads it rides beside it.
     app.git = git_state("main", 1, 0, 2);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ main ↑1 ∙ 2 changed  v diff   7 tickets"), "{head:?}");
+    assert!(head.contains("⎇ main ↑1 ∙ 2 changed   7 tickets"), "{head:?}");
     // Detached: the short oid stands in for the name, no arrows without an upstream.
     app.git = mesimon_core::command::RepoGit {
         detached: true,
@@ -4629,11 +4702,11 @@ fn test_git_clause_is_silent_until_sampled_and_quiet_in_sync() {
         ..git_state("a1b2c3d", 0, 0, 1)
     };
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ a1b2c3d ∙ 1 changed  v diff   7 tickets"), "{head:?}");
+    assert!(head.contains("⎇ a1b2c3d ∙ 1 changed   7 tickets"), "{head:?}");
 }
 
 /// The offer has first claim on the row. The clause gives its parts up in
-/// order — the count, then the name down to its floor — and the arrows are
+/// order — the name down to its floor, then the count — and the arrows are
 /// never cut; when even the floor will not fit it stands aside whole.
 #[test]
 fn test_git_clause_gives_way_to_the_offer() {
@@ -4643,27 +4716,26 @@ fn test_git_clause_gives_way_to_the_offer() {
     app.git = git_state(long, 1, 0, 3);
     app.force_release_available("v0.1.0-alpha.5");
     let head = &render(&app, 160, 30)[0];
-    assert!(head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed  v diff   7 tickets")), "{head:?}");
+    assert!(head.contains(&format!("⎇ {long} ↑1 ∙ 3 changed   7 tickets")), "{head:?}");
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "{head:?}");
-    // The hint is the first rung down: a key is not a fact about the branch.
+    // The name is what gives first, and the count rides its truncation down.
     let head = &render(&app, 110, 30)[0];
     assert!(head.contains("~ ↑1 ∙ 3 changed   7 tickets"), "the count outlives it: {head:?}");
-    assert!(!head.contains("v diff"), "the hint goes first: {head:?}");
     let head = &render(&app, 100, 30)[0];
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
     assert!(head.contains("⎇ msmn/T-124"), "the name is kept to its floor: {head:?}");
     assert!(head.contains("~ ↑1   7 tickets"), "the arrow rides the cut name: {head:?}");
     assert!(!head.contains("changed"), "the count goes next: {head:?}");
-    let head = &render(&app, 80, 30)[0];
+    let head = &render(&app, 90, 30)[0];
     assert!(head.ends_with("◦ v0.1.0-alpha.5 available (esc)"), "the offer stays: {head:?}");
     assert!(!head.contains('⎇'), "below the floor the clause stands aside whole: {head:?}");
     // With no offer the clause has the row: the name gives a little and the
-    // count and its key stay, because the name is still above its floor.
+    // count stays, because the name is still above its floor.
     let mut app = app_graphite(fixture(false));
     app.git = git_state(long, 1, 0, 3);
     let head = &render(&app, 100, 30)[0];
     assert!(
-        head.contains("⎇ msmn/T-124-git-status-pull-push~ ↑1 ∙ 3 changed  v diff   7 tickets"),
+        head.contains("⎇ msmn/T-124-git-status-pull-push-indicat~ ↑1 ∙ 3 changed   7 tickets"),
         "{head:?}"
     );
 }
@@ -5030,18 +5102,18 @@ fn test_git_clause_names_a_workspace_by_its_count() {
     };
     assert!(app.ctx().multi_repo);
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ master ↑2 ↓1 ∙ 3 repos ∙ 7 changed  v diff"), "{head:?}");
+    assert!(head.contains("⎇ master ↑2 ↓1 ∙ 3 repos ∙ 7 changed"), "{head:?}");
     // A folder of repos has no branch of its own and still speaks.
     app.git.branch.clear();
     app.git.upstream = None;
     app.git.ahead = 0;
     app.git.behind = 0;
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ 3 repos ∙ 7 changed  v diff"), "{head:?}");
-    // Clean: the count and its key go quiet, the workspace stays named.
+    assert!(head.contains("⎇ 3 repos ∙ 7 changed"), "{head:?}");
+    // Clean: the count goes quiet, the workspace stays named.
     app.git.changed = 0;
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ 3 repos   ") && !head.contains("v diff"), "{head:?}");
+    assert!(head.contains("⎇ 3 repos   "), "{head:?}");
     golden("board_workspace_120x30", &render(&app, 120, 30));
 }
 
@@ -5056,6 +5128,6 @@ fn test_git_clause_never_says_one_repo() {
         mesimon_core::command::RepoGit { repos: vec!["mt".into()], ..git_state("main", 2, 0, 3) };
     assert!(app.ctx().multi_repo, "a worktree of the root would still hold none of the code");
     let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("⎇ main ↑2 ∙ 3 changed  v diff"), "{head:?}");
+    assert!(head.contains("⎇ main ↑2 ∙ 3 changed"), "{head:?}");
     assert!(!head.contains("repo"), "{head:?}");
 }

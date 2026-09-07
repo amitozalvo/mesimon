@@ -536,7 +536,8 @@ ranks `u8::MAX`, so the untagged sink; `Tag` is LAST in `SortBy::ALL` because th
 opens on `ALL[0]` and the goldens read `Sort now: newest first`. The six commands are local-only (`agent_allows`),
 `Mutate` on the board, barred under `columns_barred`. `mesimon doctor` prints a `columns` line.
 **In the TUI** the column HEADER is a cursor position (`App::cursor_row: Option<usize>`, `None`;
-an empty column IS its header — `App::on_header`, `Ctx::on_header`): Enter opens
+an empty column IS its header — `App::on_column_header`, `Ctx::col_header`, both renamed off
+`on_header` by T-305, which gave the word a second meaning): Enter opens
 `Mode::ColumnSettings` (`Scope::ColumnSettings`, `keymap::COLUMN_ITEMS` drawn by
 `menu::draw_dense`, one line a row; the Name row is a text field in place and then the scope is
 `Input`), `r` renames in the header row (`InputPurpose::RenameColumn`), `HJKL` moves the column
@@ -547,6 +548,26 @@ under the cursor wears the cursor bar; a column that does something wears ` →`
 it (`layout::board_geometry`'s `pinned`). Goldens `board_header_*`, `board_pinned_120x30`,
 `column_settings_*`, `column_add_120x30`, `help_header_120x30`. E2e `column_e2e`, `auto_run_e2e`,
 `claude_mode_e2e`, `agent_tools_e2e`. (STALE-MAP "Columns own their automations".)
+
+**And one step above a column header is the BOARD's own top row (T-305, 2026-09-07).** `k` there
+sets `App::header_focus` and `App::scope()` answers `Scope::Header` — a cursor position on the
+board, not a screen: nothing is drawn over it, the cursor column keeps its painted band (which is
+what says where `j` returns to) and gives its bar cell up, and `App::on_column_header` is FALSE
+while the row holds the cursor, so the four column verbs stand down through the one predicate
+they already read. `App::at_column_header` is the wider question the draw asks (the column shows
+its top either way). ONE section is focusable — the checkout's git clause — so `h`/`l` are
+unbound, `k` is unbound (nothing is above the top row), and the press is refused where no sample
+has landed for the clause to be drawn at all; Enter is `Verb::Act` → `open_checkout_diff`, the
+board's own `v` on the section that draws the count it opens, and `j`/Esc walk back into the
+column. `chrome::git_clause` paints the focused clause on the elevated surface with a pad cell
+each side (the header chip's shape), its greys stepping onto the `sel` ramp while the arrows keep
+the calm register, and bold stands in where a profile can neither paint nor reverse. **It stopped
+spelling ` v diff` beside the count** (T-221's hint, the ticket's second half): a section the
+cursor can stand on says what Enter does in the footer, which is one home for the hint instead of
+two — the key still works on the board and `?` still lists it, and the clause's give-way ladder
+lost its first rung (the name truncates to its floor, then the count drops). Goldens
+`board_header_bar_120x30`, `help_header_bar_120x30`, `board_git_120x30`. (STALE-MAP "The board's
+top row is a place the cursor can stand".)
 
 **Attention flow (M2).** Claude sessions spawn with `--settings <state>/hooks/<uuid>.json` — a
 32-entry generated hook set (`daemon/src/hook_settings.rs`; its unit tests encode Claude Code's

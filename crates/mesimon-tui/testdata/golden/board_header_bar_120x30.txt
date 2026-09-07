@@ -1,4 +1,4 @@
- BOARD   mesimon > kanban-tui ⎇ main ↑2 ↓1 ∙ 3 changed   7 tickets                             ◦ update ready (U ∙ esc)
+ BOARD   mesimon > kanban-tui ⎇ main ↑2 ↓1 ∙ 3 changed    7 tickets
 
    TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
 
@@ -27,4 +27,4 @@
 
 
 
- enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys
+ HEADER  j back to the board ∙ enter diff ∙ esc back                                                             ? keys

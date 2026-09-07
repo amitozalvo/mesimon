@@ -297,11 +297,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let total = lines.len();
     let mut scroll =
         if is_cursor_col { app.scroll_row.get().min(total.saturating_sub(1)) } else { 0 };
-    // On the header the column shows its top, so `j` lands on a visible card.
-    let on_header = is_cursor_col
-        && app.on_header()
+    // On the header the column shows its top, so `j` lands on a visible card
+    // — including while the cursor has stepped one row further up, onto the
+    // board's own top row (T-305), which is where `j` comes back from.
+    let at_header = is_cursor_col
+        && app.at_column_header()
         && !matches!(app.mode, Mode::Input { purpose: InputPurpose::Create { .. }, .. });
-    if on_header {
+    // The cursor ITSELF is here — the bar cell — only while the top row does
+    // not hold it. A focused header leaves the column its painted band, which
+    // is what says where `j` returns to, and takes the bar with it.
+    let col_header = at_header && !app.header_focus;
+    if at_header {
         scroll = 0;
     }
     if is_cursor_col {
@@ -425,7 +431,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     };
     let mut head: Vec<Span<'static>> = Vec::new();
     let mut header_cursor_x: Option<u16> = None;
-    if on_header || header_edit.is_some() {
+    if col_header || header_edit.is_some() {
         let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
         head.push(Span::styled(bar_ch.to_string(), bar_style));
         head.push(Span::raw(" "));
@@ -535,7 +541,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             height: (ce - cs) as u16,
         });
         app.cursor_card.set(rect);
-    } else if on_header {
+    } else if at_header {
         // No card is the cursor card on a header: nothing may grow out of
         // last frame's rectangle.
         app.cursor_card.set(None);

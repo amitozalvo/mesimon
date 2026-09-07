@@ -153,7 +153,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // (the Settings row) and what it will actually do is per ticket (the
         // card's `merge ∙ after T-3` row), so both halves already have a home.
         let room = (area.width as usize).saturating_sub(used + reserved);
-        let git = git_clause(app, room);
+        let git = git_clause(app, room, app.header_focus);
         let git_w: usize = super::spans_width(&git);
         spans.splice(git_at..git_at, git);
         let used = used + git_w;
@@ -180,18 +180,22 @@ const GIT_BRANCH_FLOOR: usize = 10;
 /// something to do here", and the change count is a fact in words, not a
 /// star on the name. Nothing is drawn until a sample has landed.
 ///
-/// Since T-221 it also carries the key that READS the count — ` v diff`,
-/// beside the `∙ 3 changed` it opens — which is the hint-where-it-operates
-/// idiom the ticket rail's `c s x` and the PREVIEW heading's `{ } page`
-/// already use (T-158), and why the board's `v` is `prio: 0`. It rides the
-/// COUNT and not the branch: `v` shows what is uncommitted, so on a clean
-/// checkout there is nothing for it to say and `?` is where it stays.
+/// It carried the key that reads the count — ` v diff`, beside the `∙ 3
+/// changed` it opens — from T-221 until T-305 made the clause a place the
+/// cursor can STAND: `k` off a column header lands on it, and a focused
+/// section says what Enter does in the footer, which is one home for the
+/// hint instead of two. The board's `v` still works and `?` still lists it.
 ///
-/// `room` is what the row can spare. The parts give way in order: the hint
-/// drops first, then the count, then the name truncates to its floor, and the
-/// arrows are never cut — below that the clause stands aside whole rather
-/// than lie.
-fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
+/// `focused` is that cursor: the clause is painted on the elevated surface
+/// the way a selected row is, one pad cell each side like the header's own
+/// chip, and its greys step onto the `sel` ramp. The arrows keep the calm
+/// register — being under the cursor does not change what they mean.
+///
+/// `room` is what the row can spare. The name gives first — truncating down
+/// to `GIT_BRANCH_FLOOR` — and only once it is at that floor does the count
+/// drop to buy it back; the arrows are never cut, and below the floor the
+/// clause stands aside whole rather than lie.
+fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
     let g = &app.git;
     // The sampled branch and its arrows lead: the root's where the root is a
     // repository, the one nested repo's where a folder holds exactly one
@@ -222,35 +226,18 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
     if g.changed > 0 {
         changed.push_str(&format!(" ∙ {} changed", g.changed));
     }
-    // The key is spelled by `hint_spans` like every other hint — bold key,
-    // dim word — because "a key looks like this wherever it is hinted" is
-    // what makes one readable off the footer at all. Two spaces rather than
-    // a fourth `∙`: the separator is for facts, and this is not one.
-    let ctx = app.ctx();
-    let hint_for = |verb: keymap::Verb| -> Vec<Span<'static>> {
-        keymap::binding_for(keymap::Scope::Board, verb, &ctx)
-            .map(|b| {
-                let mut out = vec![Span::raw("  ".to_string())];
-                out.extend(hint_spans(&[b], &ctx, &theme.rest, room));
-                out
-            })
-            .unwrap_or_default()
-    };
     // The terminal's `!` (T-273) is NOT here: it drew ` ! terminal` after
     // ` v diff` for a day and was cut (T-277, user: "keep only on ? help
     // menu") — a standing key on every board is what `?` is for, and the
     // clause's job is the checkout's state.
-    let mut hint: Vec<Span<'static>> =
-        if g.changed == 0 { Vec::new() } else { hint_for(keymap::Verb::OpenDiff) };
-    let hint_w: usize = super::spans_width(&hint);
-    // ` ⎇ ` is three cells; the arrows ride on the name.
-    let fixed = 3 + state.width();
+    //
+    // ` ⎇ ` is three cells; the arrows ride on the name. Under the cursor
+    // the clause also owns a closing pad cell, so the paint has an edge on
+    // both sides rather than running flush into the count beside it.
+    let ink = if focused { &theme.sel } else { &theme.rest };
+    let fixed = 3 + state.width() + usize::from(focused);
     let floor = name.width().min(GIT_BRANCH_FLOOR);
-    let mut name_room = room.saturating_sub(fixed + changed.width() + hint_w);
-    if name_room < floor {
-        hint.clear();
-        name_room = room.saturating_sub(fixed + changed.width());
-    }
+    let mut name_room = room.saturating_sub(fixed + changed.width());
     if name_room < floor {
         changed.clear();
         name_room = room.saturating_sub(fixed);
@@ -259,16 +246,32 @@ fn git_clause(app: &App, room: usize) -> Vec<Span<'static>> {
         return Vec::new();
     }
     let mut out = vec![
-        Span::styled(format!(" {} ", crate::glyphs::branch_mark(tier)), theme.dim3()),
-        Span::styled(truncate(&name, name_room), theme.dim2()),
+        Span::styled(
+            format!(" {} ", crate::glyphs::branch_mark(tier)),
+            Style::default().fg(ink.dim3),
+        ),
+        Span::styled(truncate(&name, name_room), Style::default().fg(ink.dim2)),
     ];
     if !state.is_empty() {
         out.push(Span::styled(state, theme.calm_text()));
     }
     if !changed.is_empty() {
-        out.push(Span::styled(changed, theme.dim2()));
+        out.push(Span::styled(changed, Style::default().fg(ink.dim2)));
     }
-    out.extend(hint);
+    if focused {
+        out.push(Span::raw(" ".to_string()));
+        // Where the profile can paint no surface and may not reverse
+        // (light-256, a phosphor at 16) the cursor would be invisible on a
+        // row that has no bar cell to weight, so the clause takes the other
+        // half of the header chip's treatment instead — bold.
+        let mut surface = theme.selected_row();
+        if surface == Style::default() {
+            surface = surface.add_modifier(Modifier::BOLD);
+        }
+        for span in &mut out {
+            span.style = span.style.patch(surface);
+        }
+    }
     out
 }
 

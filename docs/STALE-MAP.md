@@ -7427,3 +7427,70 @@ the digit on row 0 with a clean foot for a calm column, the `!` on row 0 with th
 for a waiting one, and the name under whatever the top block came to. T-271's
 `the_folded_column_paints_its_needs_you_mark` is untouched and still passes: the `!` never left
 row 0. Nothing else moved — no `Command`, no snapshot field, no schema, no key, no preference.
+
+## The board's top row is a place the cursor can stand (T-305, 2026-09-07)
+
+T-117 made a column HEADER a cursor position: `k` off the top card lands there, four verbs take
+the column as their subject, and `j` comes back. Above it the board's own header row was a
+read-only strip — facts, an offer chip, and since T-221 one key spelled out beside the fact it
+opens (` v diff` after `∙ 3 changed`). The user asked for the obvious next step: `k` off the
+column header focuses that row too.
+
+**It is a SCOPE, not a screen.** `App::header_focus` plus `Screen::Board` answers `Scope::Header`
+in `App::scope()`; nothing is drawn over the board, no mode is set, the columns are still there.
+That is the whole reason it can be one keypress deep — the alternative shapes (a `Mode`, a
+`Screen`) both imply something covering what you were looking at, and this covers nothing.
+
+**One cursor on screen, and the column keeps its band.** `App::on_column_header` returns FALSE
+while the row holds the cursor, so every consumer of that one predicate — `Ctx::col_header` and
+with it Enter/`r`/`HJKL`/`d`'s column subjects, `board_enter`, `can_nudge`, and the header row's
+own cursor BAR — stands down in a single edit. What the cursor column does NOT give up is its
+painted band: that is what says where `j` returns to, and dropping both would have left the
+board with no memory of where you came from. `App::at_column_header` is the wider question the
+draw asks (the column shows its top row either way, so `j` lands on a visible card), and it is
+the only new predicate.
+
+**`k` off a column header, once — including on an empty one.** The gate is
+`on_column_header()`, not `cursor_row.is_none()`: an empty column is its own header with
+`cursor_row == Some(0)`, and keying on the spelling would have cost two presses there and one
+everywhere else. The press is REFUSED where `git.sampled` is false — with no repository under
+the board the clause is not drawn, and a cursor on nothing is worse than a key that does
+nothing.
+
+**One section, so three keys.** `h`, `l` and `k` are unbound in `Scope::Header`: there is
+nothing beside the git clause to walk to and nothing above the top row, and an unbound key is
+inert, which is the honest answer until a second section earns them. `j`/`Down` come back,
+`q`/Esc pop (never the board's menu — a scope pops the way every other scope pops), and Enter is
+`Verb::Act` routed to `open_checkout_diff` — the same verb every list's Enter carries, on the
+screen's own subject, which is how `Verb::Act` already reads on five other scopes.
+
+**The paint is the header chip's, one register down.** `chrome::git_clause` takes a `focused`
+flag: the spans get `Theme::selected_row()` patched over them, a pad cell is appended so the
+run has an edge on both sides rather than running flush into ` 7 tickets`, and the greys move
+from the `rest` ramp to `sel` — the cursor column header's own treatment, one row up. The
+arrows stay in the calm register (being under the cursor does not change what an arrow means),
+and where a profile can neither paint a surface nor reverse (light-256, a phosphor at 16) the
+clause goes bold instead, because unlike a card or a column header this row has no bar cell to
+weight.
+
+**And the hint left the header.** ` v diff` was T-221's "a hint lives where it operates"; a
+section the cursor can stand on operates in the footer, and having it in both places is exactly
+the duplication that idiom exists to prevent. The board's `v` is untouched — same key, same
+verb, still `prio: 0`, still listed by `?` — only the header stopped spelling it. The clause's
+give-way ladder lost its first rung with it and is now two: the name truncates to
+`GIT_BRANCH_FLOOR`, then the count drops, then the clause stands aside whole. Freeing those
+eight cells moved every width in `test_git_clause_gives_way_to_the_offer` (the offer's 80-column
+case became 90).
+
+**`Ctx::on_header` was renamed `col_header`** (`App::on_header` → `on_column_header`) in the same
+edit. With `Scope::Header` in the file the old name had two readings a line apart, and the field
+already sat under keymap.rs's `---- the column under the cursor (T-117) ----` heading with the
+`col_*` family. Thirty-three sites, no behaviour.
+
+Pinned by `keymap::the_top_row_owns_three_keys` (the three keys, the four inert ones, the board's
+own keys not reaching up, Enter gated on the sample, and the footer's exact four spellings),
+`app::k_off_the_column_header_lands_on_the_top_row` (the walk, the refusal with no sample, Esc,
+and the empty column's single press), `ui::golden_board_header_bar_120` (the paint, the column's
+band surviving, its bar cell gone, the footer's HEADER word),
+`ui::enter_on_the_header_bar_opens_the_checkout_diff` and
+`ui::the_header_no_longer_spells_the_diff_key`.
