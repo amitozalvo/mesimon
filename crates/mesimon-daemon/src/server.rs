@@ -6685,22 +6685,23 @@ impl Daemon {
             return Err("no such session".into());
         };
         self.sleep_eligible(rec, now, enforce_floor)?;
-        let (sid, kind, transcript) = (rec.sid16(), rec.kind, rec.transcript_path.clone());
+        let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
 
-        // B-A22's cheap half: a copy with no user+assistant pair means resume
-        // would come back amnesiac — sleep anyway, but say so on the card.
-        let mut warn = None;
-        if kind == SessionKind::Claude {
-            let copied = transcript.as_ref().and_then(|t| {
-                let dir = self.paths.transcripts_dir();
-                std::fs::create_dir_all(&dir).ok()?;
-                let dst = dir.join(format!("{id}.jsonl"));
-                std::fs::copy(t, &dst).ok()?;
-                Some(dst)
-            });
-            match copied {
-                Some(dst) if transcript_has_conversation(&dst) => {}
-                _ => warn = Some("resume may lose context".to_string()),
+        // B-A22: the conversation belongs to Claude's own store and this is
+        // our snapshot of it — the same copy `park_on_exit` makes, now in the
+        // same silence. It used to also assert the copy held a user+assistant
+        // pair and, failing that, park the record with `resume may lose
+        // context` in its detail: a warning the user asked for the removal of
+        // (2026-09-07). It was wrong twice over. `resume_session` does not
+        // read this copy — it replays argv with `--resume` against Claude's
+        // OWN store — so a thin snapshot costs the wake nothing, and where
+        // there is genuinely no conversation to resume the wake mints a fresh
+        // one under a new uuid rather than losing anything. The other sleep
+        // road never said it, so one gesture answered two ways.
+        if let Some(t) = &transcript {
+            let dir = self.paths.transcripts_dir();
+            if std::fs::create_dir_all(&dir).is_ok() {
+                let _ = std::fs::copy(t, dir.join(format!("{id}.jsonl")));
             }
         }
 
@@ -6709,7 +6710,11 @@ impl Daemon {
             rec.confidence = Confidence::High;
             rec.waiting_since = None;
             rec.state_changed_at = Some(now);
-            rec.detail = warn;
+            // Cleared, never merely left: a `RequiresAction` detail that
+            // outlived its state would otherwise ride the parked record —
+            // `apply_change` wipes it outside the attention states and this
+            // road does not go through `apply_change`.
+            rec.detail = None;
         }
         self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
         self.tails.remove(&id);
@@ -7189,20 +7194,6 @@ fn live_children(pid: i32) -> Vec<String> {
         .lines()
         .filter_map(|l| l.split_whitespace().nth(1).map(str::to_string))
         .collect()
-}
-
-/// B-A22's cheap assertion: the copied transcript holds a real conversation.
-fn transcript_has_conversation(path: &std::path::Path) -> bool {
-    let Ok(f) = std::fs::File::open(path) else { return false };
-    let (mut user, mut assistant) = (false, false);
-    for line in BufReader::new(f).lines().map_while(|l| l.ok()) {
-        user |= line.contains("\"type\":\"user\"");
-        assistant |= line.contains("\"type\":\"assistant\"");
-        if user && assistant {
-            return true;
-        }
-    }
-    false
 }
 
 /// `created_at`'s `@<unix secs>` stamp as epoch ms; None for anything else

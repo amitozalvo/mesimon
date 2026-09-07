@@ -7902,3 +7902,37 @@ last USER prompt as a stand-in for the missing reply (`peek` already falls back 
 and a zone-sized quote of your own words is not a preview of the agent's); wrapping the question
 past three rows. Pinned by `the_quiet_zone_says_why_there_are_no_words` (the words, per state,
 frameless), golden `ticket_starting_120x30`, and both L1 sweeps now render the question.
+
+## The sleep canary's cheap half is gone (2026-09-07, user: "remove 'resume may lose context'")
+
+`00-DECISIONS` §"The B-A22 sleep canary is deferred" shipped one half of it: at sleep time the
+transcript copy was scanned for at least one `user` and one `assistant` record, and a copy without
+both parked the record with `resume may lose context` in `SessionRecord.detail` instead of blocking
+the sleep. That warning is removed, `transcript_has_conversation` with it, and the copy itself
+stays. The doc keeps the decision as history — the code is the spec.
+
+**It was wrong twice over.** The wake does not read that copy: `resume_session` replays argv with
+`--resume`, and `resume_transcript_missing` checks `rec.transcript_path` and then every directory
+under `~/.claude/projects/` — Claude's OWN store — so a thin snapshot in `<state>/transcripts/`
+costs a wake exactly nothing. And where there genuinely is no conversation to resume, the wake
+does not come back amnesiac either: `resume_session` mints a FRESH one under a newly minted uuid
+and answers `Spawned { fresh: true }`, which is the thing the user is told. Losing context was
+never the outcome the sentence named.
+
+**And only one of the two sleep roads said it.** `park_on_exit` — the clean-exit park, the road a
+Ctrl+C-out or `/exit` takes — has always made the same copy with no check and no detail, so one
+gesture ("this session is parked") was answered two ways depending on which road reached it. The
+two blocks are now identical, which is the form the next reader should find them in.
+
+**`rec.detail = None` is load-bearing and stayed.** The old code assigned `warn` there, which
+happened to CLEAR a stale detail as a side effect; deleting the assignment would have let a
+`RequiresAction` question outlive its state on the parked record, since `apply_change` — which
+wipes detail outside the attention states — is not on this road. It is now an explicit clear with
+a comment saying why. T-308's `quiet_words` appends `detail` as a clause in its default arm, so a
+survivor would have been drawn on the ticket page's PREVIEW zone.
+
+**Not built.** The full B-A22 canary (a first-launch canary session and the per-machine capability
+flag) stays deferred, as `00-DECISIONS` says. Nothing replaces the warning: a sleeper whose
+conversation cannot be resumed already says so where it matters, in the PREVIEW zone's `no
+conversation to resume ∙ waking it starts a fresh one` (T-308), which is read off
+`transcript_path` at draw time rather than latched into a record at sleep time.
