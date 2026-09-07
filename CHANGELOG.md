@@ -32,9 +32,9 @@ in the Esc menu under `Release notes` and on GitHub.
 
 ### Changed
 
-- **`Ctrl+K` includes links from the agent's latest reply.** From a ticket
-  page, it uses the selected session or note; from the board, it uses the
-  ticket's latest reply and notes.
+- **`Ctrl+K` includes links from the agent's latest reply.** The board and
+  ticket page list the ticket's notes first, followed by its latest agent
+  reply, including replies from parked sessions.
 - **The board's top row can receive keyboard focus.** Press `k` from a column
   header to reach it and select its available actions.
 - **Ticket shell shortcuts are disabled by default.** Set
