@@ -3983,6 +3983,63 @@ fn golden_ticket_new_claude_120() {
     golden("ticket_new_claude_120x30", &lines);
 }
 
+/// EXACTLY one rail row wears the cursor surface, wherever `rail_idx` sits.
+/// A phantom row makes that easy to break and the goldens cannot see it —
+/// they are colourless — which is how T-300 shipped painting the offer and
+/// the first note together, and then nothing at all one press down: the note
+/// rows were offsetting by the SESSION count while `rail_rows` (and so
+/// `rail_idx`) counted the offer between them. Walked over both shapes: a
+/// ticket with no session, and one with two.
+#[test]
+fn exactly_one_rail_row_wears_the_cursor() {
+    let sel_bg = {
+        let t = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        t.selected_bg.expect("truecolor paints the cursor row")
+    };
+    // The rail's own cells, sampled at its right edge, which every selected
+    // row pads out to. The left zone can elevate a code block on the same
+    // ground, so the sample never leaves the rail; the ticket's own band
+    // above the zones and the footer band below them are on that surface
+    // too, so the window is the rail's list and nothing else.
+    let lit = |app: &App| -> Vec<u16> {
+        let buf = cells(app, 120, 30);
+        let head = (0..30u16)
+            .find(|y| {
+                (0..120u16).map(|x| buf[(x, *y)].symbol()).collect::<String>().contains("SESSIONS")
+            })
+            .expect("the rail's heading");
+        (head + 1..29u16).filter(|y| buf[(117u16, *y)].bg == sel_bg).collect()
+    };
+    let one_row = |app: &App, idx: usize, what: &str| {
+        let rows = lit(app);
+        assert_eq!(rows.len(), 1, "{what} at rail_idx {idx}: rows {rows:?}");
+    };
+    // No session: the offer is row 0 and the note is row 1.
+    let mut b = fixture(false);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(1)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+        t.notes.push(note_meta(91, "Repro steps", "local"));
+    }
+    let mut app = app_graphite(b);
+    for idx in 0..3 {
+        app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: idx };
+        one_row(&app, idx, "offer, then two notes");
+    }
+    // And the offer sits between the sessions and the notes, so a ticket
+    // with sessions offsets by both.
+    let mut b = fixture(false);
+    b.sessions.retain(|s| s.ticket != ulid_n(3) || s.kind == SessionKind::Bash);
+    if let Some(t) = b.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+        t.notes.push(note_meta(90, "What changed", "local"));
+    }
+    let mut app = app_graphite(b);
+    assert!(app.new_claude_row(ulid_n(3)), "a shell does not fill the claude seat");
+    for idx in 0..3 {
+        app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: idx };
+        one_row(&app, idx, "one shell, the offer, one note");
+    }
+}
+
 #[test]
 fn golden_ticket_description_120() {
     let mut app = app_noted();

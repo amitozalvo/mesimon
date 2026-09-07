@@ -737,6 +737,14 @@ fn draw_rail(
     let rail = app.rail_sessions(ticket_id);
     let notes: &[NoteMeta] = app.board.ticket(ticket_id).map(|t| t.notes.as_slice()).unwrap_or(&[]);
     let w = area.width as usize;
+    // `rail_rows` is sessions, then the offer, then the notes, and THAT is
+    // what `rail_idx` counts — so every row this function paints has to
+    // measure its own index the same way. `notes_start` is the one place the
+    // offer's row is added to the offset; getting it from `rail.len()` alone
+    // painted the first note and the offer together, and then nothing at all
+    // one press down (dogfood, minutes after T-300 shipped).
+    let offer = app.new_claude_row(ticket_id);
+    let notes_start = rail.len() + usize::from(offer);
 
     let mut head = vec![Span::styled(" SESSIONS", theme.dim1().add_modifier(Modifier::BOLD))];
     let right = rail.len().to_string();
@@ -880,7 +888,7 @@ fn draw_rail(
     // replaced the pair of spawn hints an empty rail used to carry (`c start
     // claude ∙ s shell`), which asked a first-time reader to choose between
     // two words before either meant anything.
-    if app.new_claude_row(ticket_id) {
+    if offer {
         let selected = rail.len() == rail_idx;
         let name = truncate("+ claude session", w.saturating_sub(2));
         let style = if selected {
@@ -917,7 +925,7 @@ fn draw_rail(
         lines.push(Line::from(head));
         lines.push(Line::default());
         for (j, n) in notes.iter().enumerate() {
-            let selected = rail.len() + j == rail_idx;
+            let selected = notes_start + j == rail_idx;
             let who = author_word(&n.edited_by);
             let age = created_at_epoch_ms(&n.edited_at)
                 .map(|ms| age_slot(now, ms, false))
