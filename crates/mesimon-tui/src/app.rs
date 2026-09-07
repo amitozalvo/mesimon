@@ -2613,9 +2613,7 @@ impl App {
                 Screen::Ticket { ticket, .. } => self.rail_rows(ticket).len(),
                 _ => 0,
             },
-            ticket_described: subject
-                .and_then(|t| self.board.ticket(t))
-                .is_some_and(|t| t.description().is_some()),
+            ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
             has_worktree: wt.is_some_and(|w| !w.branch.is_empty()),
@@ -6447,12 +6445,12 @@ impl App {
             .unwrap_or_else(|| self.repo_root.clone())
     }
 
-    /// The links in this ticket's notes, from the bodies already fetched —
-    /// resolved now, against the live board and the disk: a key names a
-    /// ticket that exists and is not this one, a path is a file that
-    /// exists. Document order, description first; one row per target.
+    /// The links in this ticket's notes and in what its agent last said,
+    /// from the bodies already fetched — resolved now, against the live
+    /// board and the disk: a key names a ticket that exists and is not this
+    /// one, a path is a file that exists. Document order, description
+    /// first, the agent's latest words last; one row per target.
     pub fn ticket_links(&self, ticket: ulid::Ulid) -> Vec<TicketLink> {
-        use mesimon_core::links::{extract, Found};
         let Some(t) = self.board.ticket(ticket) else {
             return Vec::new();
         };
@@ -6462,38 +6460,97 @@ impl App {
             let Some(body) = self.note_text(meta) else {
                 continue;
             };
-            for link in extract(body) {
-                let (text, target) = match link.target {
-                    Found::Url(u) => (u.clone(), LinkTarget::Url(u)),
-                    Found::Ticket(key) => match self.board.ticket_by_key(&key) {
-                        Some(other) if other.id != ticket => (key, LinkTarget::Ticket(other.id)),
-                        _ => continue,
-                    },
-                    Found::Path { path, line } => {
-                        let full = resolve_link_path(&dir, &path);
-                        if !full.is_file() {
-                            continue;
-                        }
-                        let text = match line {
-                            Some(n) => format!("{path}:{n}"),
-                            None => path,
-                        };
-                        (text, LinkTarget::File { path: full, line })
-                    }
-                };
-                if out.iter().any(|o| o.target == target) {
-                    continue;
-                }
-                out.push(TicketLink { label: link.label, text, target });
-            }
+            self.push_links(ticket, &dir, body, &mut out);
+        }
+        // …and what the agent last said (T-307). The notes are the ticket's
+        // record and go first — the description's Jira link is what `^K`
+        // opens, and a reply rewrites itself every turn — but a URL an agent
+        // prints at the end of a turn is the commonest thing there is to
+        // follow, and until now the only road to it was attaching to the
+        // pane and clicking in tmux. The source is the peek: EXACTLY the
+        // words the card's peek row and the ticket page's PREVIEW already
+        // show, so what can be read can be opened, and nothing is listed
+        // from a part of the transcript nobody can see.
+        if let Some(words) = self.latest_words(ticket) {
+            self.push_links(ticket, &dir, &words, &mut out);
         }
         out
+    }
+
+    /// The transcript a ticket's latest words are in: the claude that speaks
+    /// for it (`Board::pane_target` — the session the card's peek row, the
+    /// spoke mark and Enter all pick) while a pane lives, and the newest
+    /// claude record it has otherwise, because what an agent said last
+    /// outlives its pane.
+    fn latest_transcript(&self, ticket: ulid::Ulid) -> Option<&str> {
+        let named = |s: &&mesimon_core::board::SessionRecord| s.transcript_path.is_some();
+        self.board
+            .pane_target(ticket)
+            .filter(named)
+            .or_else(|| {
+                self.board
+                    .sessions
+                    .iter()
+                    .filter(|s| s.ticket == ticket && s.kind == SessionKind::Claude)
+                    .filter(named)
+                    .max_by_key(|s| s.state_changed_at.unwrap_or(0))
+            })
+            .and_then(|s| s.transcript_path.as_deref())
+    }
+
+    /// Is there anywhere `^k` could look — a description, or a transcript?
+    /// `Ctx::ticket_linkable`, asked once a keypress and once a frame, so it
+    /// reads the board and never the disk: whether the words hold a link is
+    /// the dialog's answer, and "none" is a status line.
+    pub(crate) fn ticket_linkable(&self, ticket: ulid::Ulid) -> bool {
+        self.board.ticket(ticket).is_some_and(|t| t.description().is_some())
+            || self.latest_transcript(ticket).is_some()
+    }
+
+    /// What that transcript's agent last said, as the peek reads it — the
+    /// same text the card's peek row and the ticket page's PREVIEW show.
+    /// `None` for a ticket with no claude, no transcript, or an unreadable
+    /// one.
+    fn latest_words(&self, ticket: ulid::Ulid) -> Option<String> {
+        self.peek_cache.peek(self.latest_transcript(ticket)?)?.text.clone()
+    }
+
+    /// Resolve every link in one body and append the ones that lead
+    /// somewhere, skipping a target already listed.
+    fn push_links(&self, ticket: ulid::Ulid, dir: &Path, body: &str, out: &mut Vec<TicketLink>) {
+        use mesimon_core::links::{extract, Found};
+        for link in extract(body) {
+            let (text, target) = match link.target {
+                Found::Url(u) => (u.clone(), LinkTarget::Url(u)),
+                Found::Ticket(key) => match self.board.ticket_by_key(&key) {
+                    Some(other) if other.id != ticket => (key, LinkTarget::Ticket(other.id)),
+                    _ => continue,
+                },
+                Found::Path { path, line } => {
+                    let full = resolve_link_path(dir, &path);
+                    if !full.is_file() {
+                        continue;
+                    }
+                    let text = match line {
+                        Some(n) => format!("{path}:{n}"),
+                        None => path,
+                    };
+                    (text, LinkTarget::File { path: full, line })
+                }
+            };
+            if out.iter().any(|o| o.target == target) {
+                continue;
+            }
+            out.push(TicketLink { label: link.label, text, target });
+        }
     }
 
     /// The keypress road: fetch every note body the cache lacks (the board
     /// has none; the ticket page has the description), then list. Each
     /// fetch is one small read on the daemon's writer thread — one to three
-    /// per ticket — through the same road `poll_notes` takes.
+    /// per ticket — through the same road `poll_notes` takes. The agent's
+    /// latest words need no fetch: the snapshot already names the transcript
+    /// and the peek reads it here (T-307).
     fn fetch_links(&mut self, ticket: ulid::Ulid) -> Vec<TicketLink> {
         let metas: Vec<(ulid::Ulid, u64)> = self
             .board
@@ -7620,6 +7677,63 @@ mod tests {
         assert_eq!(app.status, "no links in T-2");
     }
 
+    /// A claude on `ticket` whose transcript holds one reply, in the state
+    /// asked for. Pushed onto `app`'s own board — nothing here refreshes.
+    fn speaker_on(app: &mut App, ticket: ulid::Ulid, dir: &Path, state: SessionState, reply: &str) {
+        let path = dir.join("t.jsonl");
+        std::fs::write(&path, reply_line("r1", reply)).expect("seed the transcript");
+        let mut s = mesimon_core::board::SessionRecord::new(
+            uuid::Uuid::from_u128(7),
+            SessionKind::Claude,
+            ticket,
+            vec!["claude".into()],
+            "/repo".into(),
+            state,
+        );
+        s.transcript_path = Some(path.to_string_lossy().into_owned());
+        app.board.sessions.push(s);
+    }
+
+    #[test]
+    fn the_agents_latest_words_are_links_too() {
+        let (mut app, _sent, dir) = app_with_links("transcript");
+        std::fs::write(dir.join("src/b.rs"), "fn b() {}\n").unwrap();
+        let words = "ran https://ci.test/9, src/b.rs:7, ./blob.bin, https://jira.test/browse/AB-1";
+        speaker_on(&mut app, ulid::Ulid(1), &dir, SessionState::Running, words);
+        ctrl(&mut app, 'k');
+        // The notes' rows first, then the reply's — and a target either of
+        // them already listed does not list twice.
+        assert_eq!(
+            links_of(&app),
+            [
+                "https://jira.test/browse/AB-1",
+                "T-2",
+                "src/a.rs:3",
+                "T-3",
+                "./blob.bin",
+                "https://ci.test/9",
+                "src/b.rs:7",
+            ]
+        );
+    }
+
+    #[test]
+    fn the_latest_words_outlive_the_pane_and_are_all_a_ticket_needs() {
+        // Ticket 2 has no note at all — before T-307 `^k` was inert there.
+        // Its claude is parked: no pane, and still the ticket's latest words.
+        let (mut app, _sent, dir) = app_with_links("parked");
+        speaker_on(
+            &mut app,
+            ulid::Ulid(2),
+            &dir,
+            SessionState::Sleeping,
+            "filed https://ci.test/9",
+        );
+        press(&mut app, 'j');
+        ctrl(&mut app, 'k');
+        assert_eq!(links_of(&app), ["https://ci.test/9"]);
+    }
+
     #[test]
     fn tab_carries_the_title_into_the_editor() {
         let mut app = app_three_columns();
@@ -8330,7 +8444,7 @@ mod tests {
         assert!(!ctx.sel_session);
         assert!(!ctx.sel_sleeping);
         assert!(!ctx.sel_dead);
-        assert!(ctx.ticket_described);
+        assert!(ctx.ticket_linkable);
         // `x` has nothing to sleep here; Enter opens the note.
         press(&mut app, 'x');
         assert_eq!(app.mode, Mode::Normal);

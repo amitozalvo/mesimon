@@ -7552,3 +7552,54 @@ Nothing daemon-side moved — no `Command`, no `Snapshot` field, no schema, no e
 `a_ticket_shell_is_behind_the_gate` and `the_offer_is_a_row_and_the_key_that_said_it_stands_down`
 (`core/src/keymap.rs`), `the_rail_opens_on_the_offer_and_enter_starts_claude` and
 `a_ticket_shell_needs_the_seam` (`tui/src/app.rs`), and the golden `ticket_new_claude_120x30`.
+
+## `^k` also lists what the agent just said (T-307, 2026-09-07)
+
+**Built.** `App::ticket_links` reads one more body: the ticket's latest agent words, appended
+after the notes'. Everything downstream followed with no change — the dialog, `^K`'s first row,
+the ticket page's ` ∙ ^k links` hint, `c copy`, all three kinds of target and the worktree-rooted
+path resolution are the notes' road, so a URL an agent prints at the end of a turn opens the same
+way the description's Jira link does. Before it, the only road to that URL was attaching to the
+pane and clicking in tmux.
+
+**The source is the PEEK, not the transcript.** `App::latest_words` is
+`peek_cache.peek(path)?.text` — EXACTLY the words the card's peek row and the ticket page's
+PREVIEW zone already show, so what can be read can be opened and nothing is listed from a part of
+the transcript nobody can see. Reading the whole file instead would have listed every path the
+agent touched all turn, which is noise, and would have needed a second cost model; the peek's
+already exists (its module doc), the cache is already warm on any screen showing that session,
+and the read is local — `fetch_links` still round-trips only for note bodies. It follows that the
+list moves with the peek: while a new turn is in flight the peek is the user's own prompt (`>
+…`), and its links are listed for the same reason the row shows it — "nothing" is the one thing
+neither may say while the transcript plainly has something.
+
+**WHICH transcript: the ticket's claude, pane or no pane.** `App::latest_transcript` is
+`Board::pane_target` — the session the peek row, the spoke mark, prompt delivery and Enter all
+pick, so `^k` cannot disagree with the card — and, when no pane lives, the newest claude record
+the ticket has by `state_changed_at` (`rail_sessions`' shape for a corpse). What an agent said
+last outlives its pane: a parked or finished claude is exactly the one whose final URL is still
+wanted. The ticket page's rail selection is deliberately NOT consulted — `ticket_links` takes a
+ticket and is called from a draw that has one, and a per-screen answer would make the board's
+list and the page's differ on the same ticket.
+
+**Notes first, latest words last.** A reply rewrites itself every turn and the description does
+not, so putting the agent's words on top would have made `^K` — open the first link, no dialog —
+mean "whatever was last mentioned" instead of "this ticket's link". Dedup is by target and first
+occurrence wins, so a URL in both keeps the note's row and its label. A path at a different
+`:LINE` is a different target and lists twice, which is what the target-equality rule already
+said.
+
+**`Ctx::ticket_described` became `Ctx::ticket_linkable`.** The key's gate was "the ticket has a
+description", the cheap board-side proxy for "there might be something to list" — the bodies are
+not on the board. A ticket with no note and a claude that just spoke now has something, so the
+gate is `description().is_some() || latest_transcript().is_some()`: still board-only, no disk
+read, asked once a keypress and once a frame. The field had no other consumer, so it was renamed
+rather than joined by a second one. A ticket whose words hold no link still gets the status line
+(`no links in T-12`), never an empty dialog.
+
+**Not built.** A kind word or a column saying which body a row came from (the dialog is 64 cells
+and the row already spends six on `url`/`ticket`/`file`); links from anywhere but the latest
+words; a link mark on the card. Pinned by `the_agents_latest_words_are_links_too` (order, and a
+target the notes already listed not listing twice) and
+`the_latest_words_outlive_the_pane_and_are_all_a_ticket_needs` (a Sleeping claude on a ticket
+with no note at all opens the dialog — the case the old gate refused).

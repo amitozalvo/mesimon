@@ -791,8 +791,12 @@ pub struct Ctx {
     pub git_fetch_note: String,
     /// The rail cursor is on a NOTE row, not a session.
     pub sel_note: bool,
-    /// The subject ticket has a description (`notes[0]`).
-    pub ticket_described: bool,
+    /// The subject ticket has somewhere `^k` could look: a description
+    /// (`notes[0]`) or a claude whose transcript can be read (T-307). The
+    /// bodies are not on the board, so this is the cheap proxy for "there
+    /// might be a link" — one that holds none still gets a status line,
+    /// never an empty dialog.
+    pub ticket_linkable: bool,
     // ---- ticket screen ----
     /// The rail has a selected session.
     pub sel_session: bool,
@@ -1570,16 +1574,17 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        // The ticket's links (T-256): what its notes point at, listed. A
-        // Ctrl-letter like `^t`, and overlay-only like it — the footer is
-        // the selection's, and this is looked up. A ticket with no note has
-        // nothing to list, so the key is inert there; a noted ticket with no
-        // links gets a status line, not an empty dialog.
+        // The ticket's links (T-256): what its notes and its agent's latest
+        // words point at, listed. A Ctrl-letter like `^t`, and overlay-only
+        // like it — the footer is the selection's, and this is looked up. A
+        // ticket with neither a note nor a transcript has nothing to list,
+        // so the key is inert there; one whose words hold no link gets a
+        // status line, not an empty dialog.
         keys: &[Key::Ctrl('k')],
         verb: Verb::Links,
         show: "^k",
         hint: |_| "links",
-        avail: |c| c.has_ticket && c.ticket_described,
+        avail: |c| c.has_ticket && c.ticket_linkable,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -1594,7 +1599,7 @@ static BOARD: &[Binding] = &[
         verb: Verb::LinkFirst,
         show: "^K",
         hint: |_| "open first link",
-        avail: |c| c.has_ticket && c.ticket_described && c.rich_keys,
+        avail: |c| c.has_ticket && c.ticket_linkable && c.rich_keys,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -2013,12 +2018,12 @@ static TICKET: &[Binding] = &[
     },
     Binding {
         // The board's links key on the ticket's own page; the state row
-        // names it while the fetched notes hold a link (T-158's idiom).
+        // names it while a fetched body holds a link (T-158's idiom).
         keys: &[Key::Ctrl('k')],
         verb: Verb::Links,
         show: "^k",
         hint: |_| "links",
-        avail: |c| c.ticket_described,
+        avail: |c| c.ticket_linkable,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -2030,7 +2035,7 @@ static TICKET: &[Binding] = &[
         verb: Verb::LinkFirst,
         show: "^K",
         hint: |_| "open first link",
-        avail: |c| c.ticket_described && c.rich_keys,
+        avail: |c| c.ticket_linkable && c.rich_keys,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -4784,7 +4789,7 @@ mod tests {
         for scope in [Scope::Board, Scope::Ticket] {
             let rich = Ctx {
                 has_ticket: true,
-                ticket_described: true,
+                ticket_linkable: true,
                 rich_keys: true,
                 ..Default::default()
             };
@@ -4793,7 +4798,7 @@ mod tests {
             assert_eq!(hint_for(scope, Verb::LinkFirst, &rich), Some(("^K", "open first link")));
             let legacy = Ctx { rich_keys: false, ..rich.clone() };
             assert_eq!(resolve(scope, Key::Ctrl('k'), &legacy), Some(Verb::Links), "{scope:?}");
-            // No note, nothing to list: both spellings inert.
+            // No note and no transcript, nothing to list: both spellings inert.
             let bare = Ctx { has_ticket: true, rich_keys: true, ..Default::default() };
             assert_eq!(resolve(scope, Key::Ctrl('k'), &bare), None, "{scope:?}");
             assert_eq!(resolve(scope, Key::Ctrl('K'), &bare), None, "{scope:?}");

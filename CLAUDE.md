@@ -298,8 +298,18 @@ DETACHED (null stdio, reaped on a thread; ladder `MESIMON_OPEN` → `open` → `
 never `opened`); a text file (git's NUL rule at open time, `links::looks_text`) → the `^g` road's
 editor via `external::open_argv` on `pending_attach` (`+LINE` for vi's family/nano/emacs/micro,
 cwd = the file's dir so the exit status is not judged); any other file → the opener; a ticket →
-the board cursor, or its page from a page or when archived. `doctor` prints `opener`. (STALE-MAP
-"A ticket's notes carry its links".)
+the board cursor, or its page from a page or when archived. `doctor` prints `opener`. **And
+the ticket's LATEST AGENT WORDS are the second body (T-307, 2026-09-07):** `App::latest_words`
+is `peek_cache.peek(path)?.text` — exactly what the card's peek row and the page's PREVIEW show,
+so what can be read can be opened and nothing is listed from a part of the transcript nobody can
+see — appended AFTER the notes (a reply rewrites itself every turn; `^K` must keep meaning "this
+ticket's link", and dedup by target keeps the note's row and its label). The transcript is
+`App::latest_transcript`: `Board::pane_target` while a pane lives, else the ticket's newest
+claude record by `state_changed_at`, because what an agent said last outlives its pane; the
+rail's selection is deliberately not consulted. The key's gate is `Ctx::ticket_linkable`
+(`App::ticket_linkable` — a description OR a transcript, board-only, no disk read), which is
+what `ticket_described` became. (STALE-MAP "A ticket's notes carry its links" + "`^k` also lists
+what the agent just said".)
 
 **A paste is ONE event, and only a text field takes it.** `init_terminal` arms bracketed paste,
 `App::tick` routes `Event::Paste` to `App::on_paste`, and `EditBuffer::paste` flattens it to one
