@@ -8195,3 +8195,45 @@ quota auto-resume, or upstream availability. The local MCP server uses the actua
 elicitation/create protocol. Chrome is explicitly disabled in new captures:
 strict MCP configuration alone did not disable the built-in Chrome integration.
 No browser permission was granted in the inconclusive compaction attempt.
+
+## Monitor identity and version-pinned live checks (2026-09-09)
+
+Connected Haiku verification on Claude 2.1.267 refuted classification solely by
+`background_tasks[].type`: a successful top-level Monitor returned
+`tool_response.taskId`, then Stop listed that same ID as `type: shell`. With the
+watch dormant and LAB_ARMED visible, Mesimon incorrectly stayed Idle/background
+instead of completing. Capture `20260909T190552Z-e2e-monitor-wakeup-dfd43b` retains
+the failure; `20260909T191130Z-e2e-monitor-wakeup-83f237` verifies the fix and an
+actual monitor event/continuation/completion cycle.
+
+The shared ingest adapter learns bounded exact IDs from successful top-level
+Monitor results. The session record persists them, so daemon restart cannot
+forget the classification. New/resumed conversations clear them; compaction
+retains them; complete Stop task lists and TaskStop remove stale IDs. Unknown
+shells and child results stay conservative. Matching does not inspect commands
+or descriptions. Replay calls the same adapter, and `state explain` includes
+the retained IDs. A real daemon test covers persistence and an ordinary build
+beside the monitor; synthetic negative variants cover child/new-conversation
+identity boundaries. No TUI rendering or model-input surface changed.
+
+Automatic compaction, one-shot cron and self-paced loop wakeups also passed on
+2.1.267. Compaction used a 100K configured window and generated Read inputs after
+three small conversation turns; actual auto hooks, a saved compact boundary and
+continued work were required. The observed path is reactive compaction with an
+explicit threshold; default proactive behavior is not certified. All three
+wake sources emitted UserPromptSubmit without driver submission. Full evidence
+and remaining limits are in `docs/claude-live-verification.md`.
+
+The installed Claude changed versions between launches. The live runner now pins
+an exact resolved executable and records its hash, the script hash and displayed
+version; the child disables automatic background updates. The suite pins once
+per selected batch. New-version observations remain in a separate compatibility
+entry. Raw transcripts/debug logs stay private. Plan files now use a valid path
+inside the disposable project; the previous out-of-project plansDirectory was
+rejected by Claude and could fall back to its normal plan directory.
+
+The Linux suite exposed a housekeeping bug after its tests and process audit
+passed: `ci/test-run.py` ran the Mach-O OSO pruner on Linux against the read-only
+checkout. That pruner cannot establish ELF references and is now invoked only
+on macOS. The rerun completed without that error. This is separate from process
+cleanup, which was clean on both runs.

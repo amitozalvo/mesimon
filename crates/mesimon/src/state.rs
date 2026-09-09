@@ -97,6 +97,7 @@ fn explain(args: &[String]) -> Result<()> {
             mesimon_core::automove::explain(&c.settings, &session.state, session.confidence));
         json!({"session": session.id, "ticket": session.ticket, "column": ticket.map(|t| &t.column),
             "state": session.state, "confidence": session.confidence,
+            "monitor_task_ids": session.monitor_task_ids,
             "state_changed_at": session.state_changed_at, "movement_eligibility_now": move_now,
             "history_newest_first": history,
             "history_note": "Bounded diagnostic history; event times are historical, not necessarily still pending. Missing history is not proof that no event happened."})

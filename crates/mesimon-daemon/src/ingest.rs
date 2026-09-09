@@ -83,6 +83,62 @@ pub fn read_hook_frame(
     }
 }
 
+/// Stateful adapter knowledge, shared by the daemon and offline replay. A
+/// successful Monitor result is the evidence; a shell name/command is not.
+pub fn signal_with_monitors(frame: &HookFrame, monitors: &mut Vec<String>) -> Option<Signal> {
+    if !has_agent_id(frame) {
+        if frame.event == "SessionStart"
+            && frame
+                .reason
+                .as_deref()
+                .or_else(|| frame.payload.get("source").and_then(Value::as_str))
+                != Some("compact")
+        {
+            monitors.clear();
+        }
+        if frame.event == "PostToolUse" {
+            let name = frame.payload.get("tool_name").and_then(Value::as_str);
+            if name == Some("Monitor") {
+                if let Some(id) = frame
+                    .payload
+                    .pointer("/tool_response/taskId")
+                    .and_then(Value::as_str)
+                    .filter(|id| !id.is_empty() && id.len() <= 128)
+                {
+                    if monitors.len() < 256 && !monitors.iter().any(|known| known == id) {
+                        monitors.push(id.to_string());
+                        monitors.sort();
+                    }
+                }
+            } else if name == Some("TaskStop") {
+                if let Some(id) =
+                    frame.payload.pointer("/tool_input/task_id").and_then(Value::as_str)
+                {
+                    monitors.retain(|known| known != id);
+                }
+            }
+        }
+    }
+    let mut signal = signal_of(frame);
+    if let Some(Signal::Stop { has_agent_id: false, blocking_tasks, .. }) = &mut signal {
+        if frame.payload.get("background_tasks").is_some_and(Value::is_array) {
+            monitors.retain(|known| {
+                background_tasks(frame)
+                    .any(|task| task.get("id").and_then(Value::as_str) == Some(known.as_str()))
+            });
+        }
+        *blocking_tasks = background_tasks(frame).any(|task| {
+            let known_monitor = task
+                .get("id")
+                .and_then(Value::as_str)
+                .is_some_and(|id| monitors.iter().any(|known| known == id));
+            !known_monitor
+                && task.get("type").and_then(Value::as_str).is_none_or(task_blocks_end_turn)
+        });
+    }
+    signal
+}
+
 pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
     let reason = frame.reason.as_deref();
     match frame.event.as_str() {
@@ -381,6 +437,43 @@ mod tests {
         assert!(blocking(r#"{"background_tasks":[{"description":"?"}]}"#));
         assert!(!blocking(r#"{"background_tasks":[]}"#));
         assert!(!blocking("{}"));
+    }
+
+    #[test]
+    fn monitor_identity_does_not_excuse_other_shells_or_nested_tools() {
+        let mut ids = Vec::new();
+        let started = frame(
+            "PostToolUse",
+            None,
+            r#"{"tool_name":"Monitor","tool_response":{"taskId":"watch"}}"#,
+        );
+        let nested = frame(
+            "PostToolUse",
+            None,
+            r#"{"agent_id":"child","tool_name":"Monitor","tool_response":{"taskId":"child-watch"}}"#,
+        );
+        signal_with_monitors(&started, &mut ids);
+        signal_with_monitors(&nested, &mut ids);
+        assert_eq!(ids, vec!["watch"]);
+        let stop = |body: &str, ids: &mut Vec<String>| match signal_with_monitors(
+            &frame("Stop", None, body),
+            ids,
+        ) {
+            Some(Signal::Stop { blocking_tasks, .. }) => blocking_tasks,
+            _ => panic!("expected Stop"),
+        };
+        assert!(stop(
+            r#"{"background_tasks":[{"id":"watch","type":"shell"},{"id":"build","type":"shell"}]}"#,
+            &mut ids
+        ));
+        assert!(!stop(r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#, &mut ids));
+        signal_with_monitors(&frame("SessionStart", None, r#"{"source":"compact"}"#), &mut ids);
+        assert_eq!(ids, vec!["watch"]);
+        signal_with_monitors(&frame("SessionStart", None, r#"{"source":"clear"}"#), &mut ids);
+        assert!(stop(r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#, &mut ids));
+        signal_with_monitors(&started, &mut ids);
+        stop(r#"{"background_tasks":[]}"#, &mut ids);
+        assert!(ids.is_empty(), "absent tasks cannot retain a stale exemption");
     }
 
     /// A teammate is counted, not classed (T-135): the payload lists one as

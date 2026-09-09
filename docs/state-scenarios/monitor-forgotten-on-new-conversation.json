@@ -1,0 +1,114 @@
+{
+  "schema": 1,
+  "id": "monitor-forgotten-on-new-conversation",
+  "title": "monitor forgotten on new conversation",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T190552Z-e2e-monitor-wakeup-dfd43b",
+    "claude_version": "2.1.267",
+    "note": "Synthetic conversation change must discard the prior conversation's captured Monitor identity."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PostToolUse",
+        "payload": {
+          "tool_name": "Monitor",
+          "tool_response": {
+            "taskId": "watch"
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "SessionStart",
+        "payload": {
+          "source": "clear"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1700,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "unknown"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 3000,
+      "input": {
+        "source": "hook",
+        "event": "UserPromptSubmit",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 4000,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "background_tasks": [
+            {
+              "id": "watch",
+              "type": "shell"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 5500,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "background"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

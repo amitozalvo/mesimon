@@ -176,7 +176,10 @@ def main():
         # collects none of them; a week of that made deps/ 879k entries and
         # every fresh binary's first exec a 25 s Gatekeeper walk. Pruned
         # here, after each run, under cargo's own lock (ci/prune-deps.py).
-        subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("prune-deps.py")), "--quiet"], check=False)
+        # This pruner interprets Mach-O OSO entries. It cannot establish live
+        # references for ELF objects, and Linux builds may mount /work read-only.
+        if sys.platform == "darwin":
+            subprocess.run([sys.executable, "-B", str(Path(__file__).with_name("prune-deps.py")), "--quiet"], check=False)
         os.close(lock)
     return result
 

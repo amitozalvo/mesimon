@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -13,13 +14,24 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--cases', nargs='+', required=True)
     parser.add_argument('--model', choices=['haiku','sonnet'], default='haiku')
+    parser.add_argument('--claude-binary', type=Path)
     args = parser.parse_args()
     if not os.environ.get('MESIMON_TEST_RUN'):
         parser.error('run through ci/test-run.py')
+    executable = args.claude_binary or shutil.which('claude')
+    if not executable:
+        parser.error('Claude executable not found')
+    claude_binary = Path(executable).resolve(strict=True)
     results = []
     for case in args.cases:
-        run = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('claude-state-e2e.py')),
-                              '--case', case, '--model', args.model], capture_output=True, text=True, timeout=210)
+        try:
+            run = subprocess.run([sys.executable, '-B', str(Path(__file__).with_name('claude-state-e2e.py')),
+                                  '--case', case, '--model', args.model, '--claude-binary', str(claude_binary)], capture_output=True, text=True, timeout=260)
+        except subprocess.TimeoutExpired:
+            row = dict(case=case, result='runner_timeout', error='260-second runner deadline', cleanup='audit_required')
+            results.append(row)
+            print(json.dumps(row), flush=True)
+            continue
         try:
             data = json.loads(run.stdout)
         except ValueError:

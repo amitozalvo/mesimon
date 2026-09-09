@@ -87,6 +87,10 @@ def cases():
         ("plan", "Waiting for plan approval", "PermissionRequest", {"tool_name": "ExitPlanMode"}, "requires_action", "plan", "IN PROGRESS"),
         ("early-interrupt", "Recordless early Esc", "UserPromptSubmit", {}, "idle", "interrupted", "IN PROGRESS"),
         ("manual-compact", "Manual compact restores prior completion", "PreCompact", {"trigger":"manual"}, "idle", "end_turn", "REVIEW"),
+        ("auto-compact", "Automatic compact continues the turn", "PreCompact", {"trigger":"auto"}, "running", None, "IN PROGRESS"),
+        ("cron-armed", "Future cron allows current turn to finish", "Stop", {"session_crons":[{"id":"future","schedule":"* * * * *","recurring":False}]}, "idle", "end_turn", "REVIEW"),
+        ("loop-wakeup", "Scheduled wake resumes a completed card", "UserPromptSubmit", {}, "running", None, "IN PROGRESS"),
+        ("monitor-shell", "Dormant Monitor reported as shell", "Stop", {"background_tasks":[{"id":"watch","type":"shell"}]}, "idle", "end_turn", "REVIEW"),
         ("permission-cancel", "Cancelled permission clears attention", "PermissionRequest", {"tool_name": "Bash"}, "idle", "interrupted", "IN PROGRESS"),
         ("permission-resumed", "Approved tool is already running", "PermissionRequest", {"tool_name": "Bash"}, "running", None, "IN PROGRESS"),
         ("permission-allow", "Waiting for tool permission", "PermissionRequest", {"tool_name": "Bash"}, "requires_action", "permission", "IN PROGRESS"),
@@ -128,12 +132,17 @@ def seed(repo, home, binary):
         wait_for(lambda: next(s for s in client.board()["sessions"] if s["id"] == sid)["state"]["state"] == "running")
         if case == "teammate-idle":
             hook(repo, sid, "TeammateIdle", {"teammate_name": "reviewer"})
-        if case == "manual-compact":
+        if case in ("manual-compact", "loop-wakeup"):
             hook(repo, sid, "Stop", {})
             wait_for(lambda: next(s for s in client.board()["sessions"] if s["id"]==sid)["state"] == {"state":"idle","stop_reason":"end_turn"})
+        if case == "monitor-shell":
+            hook(repo, sid, "PostToolUse", {"tool_name":"Monitor","tool_response":{"taskId":"watch"}})
         hook(repo, sid, event, payload)
         if case == "manual-compact":
             hook(repo, sid, "PostCompact", {"trigger":"manual"})
+            hook(repo, sid, "SessionStart", {"source":"compact","transcript_path":str(transcript)})
+        if case == "auto-compact":
+            hook(repo, sid, "PostCompact", {"trigger":"auto"})
             hook(repo, sid, "SessionStart", {"source":"compact","transcript_path":str(transcript)})
         if case == "early-interrupt":
             since = next(s for s in client.board()["sessions"] if s["id"]==sid)["state_changed_at"]

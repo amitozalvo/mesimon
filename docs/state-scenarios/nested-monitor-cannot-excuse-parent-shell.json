@@ -1,0 +1,72 @@
+{
+  "schema": 1,
+  "id": "nested-monitor-cannot-excuse-parent-shell",
+  "title": "nested monitor cannot excuse parent shell",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T190552Z-e2e-monitor-wakeup-dfd43b",
+    "claude_version": "2.1.267",
+    "note": "Synthetic negative variant of the captured Monitor task-ID shape: child evidence cannot classify a parent shell."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PostToolUse",
+        "payload": {
+          "tool_name": "Monitor",
+          "tool_response": {
+            "taskId": "watch"
+          },
+          "agent_id": "child"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "background_tasks": [
+            {
+              "id": "watch",
+              "type": "shell"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1700,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "background"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

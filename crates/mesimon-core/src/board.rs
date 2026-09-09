@@ -236,6 +236,11 @@ pub struct SessionRecord {
     /// next finished turn for good. Sorted, deduplicated.
     #[serde(default)]
     pub idle_teammates: Vec<String>,
+    /// IDs returned by this conversation's top-level Monitor tool. Claude can
+    /// label these dormant watches as `shell` in Stop; identity preserves their
+    /// meaning across daemon restarts. No commands or prompt text are stored.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub monitor_task_ids: Vec<String>,
     /// The note this session's approved plan lives in (2026-09-03). Every
     /// `ExitPlanMode` the user approves writes its plan here, replacing the
     /// last, so a session has ONE plan note the way it has one plan file
@@ -298,6 +303,7 @@ impl SessionRecord {
             claude_session_id: None,
             pending_submit: false,
             idle_teammates: Vec::new(),
+            monitor_task_ids: Vec::new(),
             plan_note: None,
             ticket_read: false,
         }

@@ -1,0 +1,119 @@
+{
+  "schema": 1,
+  "id": "monitor-shell-identity",
+  "title": "monitor shell identity",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T191130Z-e2e-monitor-wakeup-83f237",
+    "claude_version": "2.1.267",
+    "note": "Captured top-level Monitor identity, shell-typed Stop and automatic UserPromptSubmit wakeup; normalized IDs and virtual timing."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PostToolUse",
+        "payload": {
+          "tool_name": "Monitor",
+          "tool_response": {
+            "taskId": "watch"
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "background_tasks": [
+            {
+              "id": "watch",
+              "type": "shell"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1700,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    },
+    {
+      "at_ms": 3000,
+      "input": {
+        "source": "hook",
+        "event": "UserPromptSubmit",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 4000,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "background_tasks": [
+            {
+              "id": "watch",
+              "type": "shell"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 5500,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    }
+  ]
+}

@@ -192,3 +192,63 @@ fn waiting_then_busy_clears_permission_before_the_tool_finishes() {
         session.state == SessionState::Running
     });
 }
+
+#[test]
+fn monitor_identity_survives_daemon_restart_and_does_not_excuse_a_build() {
+    if !require_tmux() {
+        return;
+    }
+    let fixture = TestFixture::new("monitor-identity");
+    let repo = fixture.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let stub = fixture.dir.join("claude-stub.sh");
+    std::fs::write(&stub, STUB).unwrap();
+    std::fs::set_permissions(&stub, std::os::unix::fs::PermissionsExt::from_mode(0o755)).unwrap();
+    fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    let paths = fixture.paths(&repo);
+    let daemon = fixture.daemon(&repo);
+    let mut client = TestClient::connect(&paths.orch_sock());
+    client.request(Command::Hello { version: 1, client: "monitor".into() });
+    let sid = spawn(&mut client, "Monitor and build");
+    let send = |event, body| hook_send(&paths.hook_sock(), &sid.to_string(), event, body);
+    send("SessionStart", r#"{"source":"startup"}"#);
+    send("UserPromptSubmit", "{}");
+    send("PostToolUse", r#"{"tool_name":"Monitor","tool_response":{"taskId":"watch"}}"#);
+    send(
+        "Stop",
+        r#"{"background_tasks":[{"id":"watch","type":"shell"},{"id":"build","type":"shell"}]}"#,
+    );
+    wait_until(Duration::from_secs(5), "ordinary build still blocks completion", || {
+        let board = client.board();
+        let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
+        rec.monitor_task_ids == vec!["watch"]
+            && rec.state == SessionState::Idle { stop_reason: StopReason::Background }
+    });
+    send("Stop", r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#);
+    wait_until(Duration::from_secs(5), "dormant watch allows REVIEW", || {
+        let board = client.board();
+        let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
+        rec.state == SessionState::Idle { stop_reason: StopReason::EndTurn }
+            && board.ticket(rec.ticket).unwrap().column == "REVIEW"
+    });
+    assert!(matches!(client.request(Command::Shutdown), Response::Ok));
+    daemon.join().unwrap();
+    drop(client);
+    let _ = std::fs::remove_file(paths.orch_sock());
+    let daemon = fixture.daemon(&repo);
+    let mut client = TestClient::connect(&paths.orch_sock());
+    client.request(Command::Hello { version: 1, client: "monitor-restarted".into() });
+    assert_eq!(
+        client.board().sessions.iter().find(|s| s.id == sid).unwrap().monitor_task_ids,
+        vec!["watch"]
+    );
+    send("UserPromptSubmit", "{}");
+    send("Stop", r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#);
+    wait_until(Duration::from_secs(5), "identity survives restart", || {
+        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
+            == SessionState::Idle { stop_reason: StopReason::EndTurn }
+    });
+    assert!(matches!(client.request(Command::Shutdown), Response::Ok));
+    daemon.join().unwrap();
+}

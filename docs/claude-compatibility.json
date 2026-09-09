@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "adapter_revision": "state-lab-1",
+  "adapter_revision": "state-lab-3",
   "versions": {
     "2.1.266": {
       "captured_at": "2026-09-09",
@@ -397,6 +397,22 @@
           "result": "inconclusive",
           "error": "checkpoint not reached: visible cancellation",
           "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T185316Z-e2e-auto-compact-2b9966",
+          "case": "auto-compact",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: final response and Stop",
+          "cleanup": "cleaned",
+          "review_note": "Haiku declined the artificial preparation prompt; no compaction prerequisite was reached."
+        },
+        {
+          "capture": "20260909T190445Z-e2e-monitor-wakeup-0ba44e",
+          "case": "monitor-wakeup",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: real scheduler/watch tool completion",
+          "cleanup": "cleaned",
+          "review_note": "Driver did not yet answer the actual Monitor permission dialog. No armed-watch assertion was reached."
         }
       ],
       "early_escape_timings": [
@@ -414,6 +430,124 @@
           "delay_ms": 500,
           "capture": "20260909T180947Z-e2e-interrupt-early-794a52",
           "result": "passed"
+        }
+      ]
+    },
+    "2.1.267": {
+      "captured_at": "2026-09-09",
+      "model": "haiku",
+      "mode": [
+        "interactive_tmux"
+      ],
+      "observed": [
+        "cron-wakeup",
+        "auto-compact",
+        "loop-wakeup",
+        "monitor-wakeup",
+        "plan"
+      ],
+      "inconclusive": [
+        "checkpoint not reached: automatic compaction completed",
+        "checkpoint not reached: automatic compaction completed"
+      ],
+      "not_yet_observed": [
+        "The other 2.1.266 live categories have not all been rerun on 2.1.267",
+        "real account quota and quota auto-resume",
+        "concurrent conflicting dialogs",
+        "arbitrary upstream hook reordering",
+        "monitor restoration across Claude process resume",
+        "default-window proactive automatic compaction"
+      ],
+      "claims": [
+        "Automatic compaction completed at an explicitly configured 100K window after short conversation preparation and generated local Read results.",
+        "One-shot cron and self-paced loop fire UserPromptSubmit without driver input; a dormant schedule does not block end_turn.",
+        "Monitor PostToolUse returns tool_response.taskId; later Stop labels that task as shell. Matching identity establishes a dormant watch.",
+        "A Monitor event fires UserPromptSubmit with a task-notification; the card returns to Running and finishes while the watch remains armed."
+      ],
+      "limitations": [
+        "These are selected version-specific observations, not certification of all states or all configurations.",
+        "The first successful automatic-compaction, cron and loop captures precede executable pinning; recorded versions agree with captured startup banners.",
+        "The failed Monitor prerequisite on 2.1.266 establishes permission UI only, not successful monitor behavior."
+      ],
+      "end_to_end": {
+        "cron-wakeup": {
+          "status": "passed",
+          "capture": "20260909T185620Z-e2e-cron-wakeup-c12b8a",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (5d6adbc, 2026-09-09)",
+          "mesimon_sha256": "5d78f63d5d8385188e84d6eace0ec64e168e9a8518ed47381be6824afc6aa4fa",
+          "assertions": 4
+        },
+        "auto-compact": {
+          "status": "passed",
+          "capture": "20260909T190011Z-e2e-auto-compact-81ac9b",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (5d6adbc, 2026-09-09)",
+          "mesimon_sha256": "5d78f63d5d8385188e84d6eace0ec64e168e9a8518ed47381be6824afc6aa4fa",
+          "assertions": 6
+        },
+        "loop-wakeup": {
+          "status": "passed",
+          "capture": "20260909T190152Z-e2e-loop-wakeup-d6bdfd",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (5d6adbc, 2026-09-09)",
+          "mesimon_sha256": "5d78f63d5d8385188e84d6eace0ec64e168e9a8518ed47381be6824afc6aa4fa",
+          "assertions": 4
+        },
+        "monitor-wakeup": {
+          "status": "passed",
+          "capture": "20260909T191130Z-e2e-monitor-wakeup-83f237",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (5d6adbc+dirty, 2026-09-09)",
+          "mesimon_sha256": "7fc8c457e22ef98bc8b7241fa154803cb12ea4548db77efa0fb1fba57367ac7f",
+          "assertions": 5,
+          "claude_sha256": "a681f3008f0050029aeebcab3af51bb6a55ddeb625a3af3141a4416d43cd2558",
+          "runner_sha256": "836aa812028e2dddfea2f8b899c52d310cbfc6e734771dbce6ff21c70092d4e9",
+          "auto_updater_disabled": true,
+          "displayed_claude_version": "2.1.267"
+        },
+        "plan": {
+          "status": "passed",
+          "capture": "20260909T191308Z-e2e-plan-79b52a",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (5d6adbc+dirty, 2026-09-09)",
+          "mesimon_sha256": "7fc8c457e22ef98bc8b7241fa154803cb12ea4548db77efa0fb1fba57367ac7f",
+          "assertions": 3,
+          "claude_sha256": "a681f3008f0050029aeebcab3af51bb6a55ddeb625a3af3141a4416d43cd2558",
+          "runner_sha256": "836aa812028e2dddfea2f8b899c52d310cbfc6e734771dbce6ff21c70092d4e9",
+          "auto_updater_disabled": true,
+          "displayed_claude_version": "2.1.267"
+        }
+      },
+      "end_to_end_attempts": [
+        {
+          "capture": "20260909T185437Z-e2e-auto-compact-98a865",
+          "case": "auto-compact",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: automatic compaction completed",
+          "cleanup": "cleaned",
+          "review_note": "Legacy percentage override did not trigger automatic compaction in this configuration."
+        },
+        {
+          "capture": "20260909T185742Z-e2e-auto-compact-07f711",
+          "case": "auto-compact",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: automatic compaction completed",
+          "cleanup": "cleaned",
+          "review_note": "PreCompact auto arrived after generated reads, but no PostCompact or persisted boundary. A later capture with preceding conversation history completed compaction."
+        },
+        {
+          "capture": "20260909T190552Z-e2e-monitor-wakeup-dfd43b",
+          "case": "monitor-wakeup",
+          "result": "failed",
+          "error": "monitor-wakeup: expected {'state': 'idle', 'reason': 'end_turn', 'column': 'REVIEW'}, got {'state': 'idle', 'reason': 'background', 'column': 'IN PROGRESS', 'confidence': 'high'}",
+          "cleanup": "cleaned",
+          "review_note": "Product defect: a proven Monitor task was listed as shell in Stop and incorrectly blocked completion; fixed by persisted task-ID correlation."
         }
       ]
     }

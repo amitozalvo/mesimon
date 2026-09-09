@@ -8,7 +8,7 @@ use mesimon_core::board::{template_settings, Confidence, SessionState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::ingest::{signal_of, HookFrame};
+use crate::ingest::{signal_with_monitors, HookFrame};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -96,6 +96,7 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
     let mut machine = Machine::restore(scenario.initial.clone(), scenario.confidence, 0);
     let mut column = scenario.column.clone();
     let mut tools = ToolLedger::default();
+    let mut monitors = Vec::new();
     let mut report =
         Report { id: scenario.id.clone(), passed: true, failures: vec![], timeline: vec![] };
     let mut last_at = 0;
@@ -103,12 +104,15 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
         anyhow::ensure!(step.at_ms >= last_at, "step {index}: arrival time runs backwards");
         last_at = step.at_ms;
         let signal = match &step.input {
-            Input::Hook { event, reason, payload } => signal_of(&HookFrame {
-                session: "lab-session".into(),
-                event: event.clone(),
-                reason: reason.clone(),
-                payload: payload.clone(),
-            }),
+            Input::Hook { event, reason, payload } => signal_with_monitors(
+                &HookFrame {
+                    session: "lab-session".into(),
+                    event: event.clone(),
+                    reason: reason.clone(),
+                    payload: payload.clone(),
+                },
+                &mut monitors,
+            ),
             Input::Transcript { record } => {
                 tools.observe(record);
                 tail_signal(record)
@@ -161,7 +165,8 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
                 view.state, column, view.confidence, view.pending.is_some()));
         }
         report.timeline.push(json!({"step": index, "at_ms": step.at_ms, "machine": view,
-            "column": column, "decision": decision, "movement": movement, "outstanding_tool": tools.is_busy()}));
+            "column": column, "decision": decision, "movement": movement, "outstanding_tool": tools.is_busy(),
+            "monitor_task_ids": monitors}));
     }
     report.passed = report.failures.is_empty();
     Ok(report)

@@ -1,0 +1,141 @@
+{
+  "schema": 1,
+  "id": "loop-wakeup",
+  "title": "loop wakeup",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T190152Z-e2e-loop-wakeup-d6bdfd",
+    "claude_version": "2.1.267",
+    "note": "Normalized capture fields and virtual timing; same production adapter and reducer."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PostToolUse",
+        "payload": {
+          "tool_name": "ScheduleWakeup"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "session_crons": [
+            {
+              "id": "scheduled",
+              "recurring": false,
+              "schedule": "4 22 * * *"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1700,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    },
+    {
+      "at_ms": 60000,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    },
+    {
+      "at_ms": 61000,
+      "input": {
+        "source": "hook",
+        "event": "UserPromptSubmit",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 65000,
+      "input": {
+        "source": "hook",
+        "event": "PostToolUse",
+        "payload": {
+          "tool_name": "Bash"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 66000,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "session_crons": []
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 67500,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    }
+  ]
+}

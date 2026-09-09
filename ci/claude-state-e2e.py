@@ -31,7 +31,8 @@ EVENTS = ['SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PostT
           'Elicitation', 'ElicitationResult', 'Notification']
 CASES = ['complete', 'permission-allow', 'permission-deny', 'permission-cancel',
          'interrupt-tool', 'interrupt-early', 'interrupt-stream', 'question', 'question-cancel', 'plan', 'plan-cancel', 'background-shell',
-         'compact', 'clear', 'resume', 'elicitation-accept', 'elicitation-decline',
+         'compact', 'auto-compact', 'cron-wakeup', 'loop-wakeup', 'monitor-wakeup',
+         'clear', 'resume', 'elicitation-accept', 'elicitation-decline',
          'elicitation-cancel', 'teammate', *ERRORS]
 
 
@@ -86,7 +87,7 @@ def launch(config_path, arguments):
     index = arguments.index('--settings') + 1
     original = json.loads(Path(arguments[index]).read_text())
     write(out / 'production-settings.json', original)
-    original['plansDirectory'] = str(out / 'plans')
+    original['plansDirectory'] = str(Path(config['repo']) / '.claude' / 'plans')
     for event in EVENTS:
         command = shlex.join([sys.executable, '-B', str(ROOT / 'ci/claude-capture.py'),
                              'hook', '--log', str(out / 'hooks.jsonl'), '--event', event])
@@ -101,14 +102,20 @@ def launch(config_path, arguments):
     argv = [config['claude'], *arguments, '--model', config['model'], '--setting-sources', '',
             '--no-chrome', '--strict-mcp-config', '--mcp-config', json.dumps(config.get('mcp', {'mcpServers': {}})),
             '--tools', tools, '--permission-mode', 'plan' if config['case'].startswith('plan') else 'default']
-    if config['case'] in ('teammate','background-shell'):
+    if config['case'] in ('teammate','background-shell','auto-compact','cron-wakeup','loop-wakeup','monitor-wakeup'):
         argv.extend(['--allowedTools', 'Bash(*)'])
     if config['case'].startswith('elicitation'):
         argv.extend(['--allowedTools', 'mcp__lab__ask'])
+    if config['case'] == 'auto-compact':
+        argv.extend(['--autocompact', '100000', '--debug-file', str(out/'claude-debug.log')])
     write(out / 'argv.json', argv)
     env = {k: v for k, v in os.environ.items() if k not in
            ('CLAUDECODE', 'CLAUDE_CODE_CHILD_SESSION', 'CLAUDE_CODE_ENTRYPOINT')}
     env['CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS'] = '1' if config['case'] == 'teammate' else '0'
+    env['DISABLE_AUTOUPDATER'] = '1'
+    if config['case'] == 'auto-compact':
+        env.pop('CLAUDE_AUTOCOMPACT_PCT_OVERRIDE', None)
+        env['CLAUDE_CODE_AUTO_COMPACT_WINDOW'] = '100000'
     if 'fault_url' in config:
         env = {k:v for k,v in env.items() if not k.startswith('ANTHROPIC_')
                and not k.startswith('CLAUDE_CODE_USE_') and k != 'CLAUDE_CODE_OAUTH_TOKEN'}
@@ -130,10 +137,20 @@ class Probe:
                       runtime=str(self.runtime), sock=str(self.runtime / 'tmux.sock'))
         self.binary = args.binary.resolve()
         tools = {'question': 'AskUserQuestion', 'plan': 'Read,Write,ExitPlanMode',
+                 'auto-compact': 'Read,Bash',
+                 'cron-wakeup': 'CronCreate,CronList,CronDelete,Bash',
+                 'loop-wakeup': 'ScheduleWakeup,Bash',
+                 'monitor-wakeup': 'Monitor,TaskStop,Bash',
                  'teammate': 'Agent,SendMessage,Bash,TaskOutput'}.get(args.case.removesuffix('-cancel'), 'Bash')
         if args.case in ('complete', 'interrupt-early', 'interrupt-stream', 'compact', 'clear', 'resume'):
             tools = ''
-        config = dict(out=str(out), claude=shutil.which('claude'), model=args.model, tools=tools, case=args.case)
+        config = dict(out=str(out), repo=str(self.repo), claude=str(args.claude_binary), model=args.model, tools=tools, case=args.case)
+        if args.case == 'auto-compact':
+            manifest['autocompact_window_tokens'] = 100000
+            # Bounded generated input, never copied from a user's conversation.
+            for number in range(6):
+                (self.repo/f'context-{number}.txt').write_text(
+                    ('alpha bravo charlie delta echo foxtrot golf hotel india juliet kilo lima\n')*800)
         if args.case.startswith('elicitation'):
             config['mcp'] = {'mcpServers': {'lab': {'command': sys.executable,
                 'args': ['-B', str(ROOT / 'ci/state-lab-mcp.py'), str(out / 'mcp.jsonl')]}}}
@@ -278,6 +295,10 @@ class Probe:
         while time.monotonic() < end:
             self.pump()
             if self.has('SessionStart') and 'Yes, I trust this folder' not in self.screen:
+                shown = re.search(r'Claude Code v([\d.]+)', self.screen)
+                if shown:
+                    self.manifest['displayed_claude_version'] = shown.group(1)
+                    assert shown.group(1) == self.manifest['claude_version'].split()[0], 'launched Claude version differs from recorded version'
                 self.hold(1)
                 self.key('C-u')
                 self.expect('idle', 'unknown')
@@ -319,7 +340,72 @@ class Probe:
         self.ready()
         case = self.args.case
         self.stage = case
-        if case in ('complete', 'compact', 'clear', 'resume'):
+        if case == 'auto-compact':
+            review = next(c for c in self.client.board()['columns'] if c['name']=='REVIEW')
+            settings = {k:v for k,v in review.items() if k not in ('name','order')}
+            self.client.request('set_column_settings', name='REVIEW', settings=dict(settings, on_working=None))
+            for prompt in ('Suggest a friendly greeting for a todo app.',
+                           'Suggest an empty-list message for that app.',
+                           'Suggest a task-completion message for that app.'):
+                self.send(prompt+' Answer briefly without tools.')
+                self.wait('preparation response completed', lambda: len(self.stops()) > self.stop_count_at_submit, 30)
+                self.expect('idle','end_turn','REVIEW')
+                self.hold(2)
+            self.client.request('set_column_settings', name='REVIEW', settings=settings)
+            self.stage = 'auto-compact-continuation'
+            self.send('Read all six context-0.txt through context-5.txt using Read, each with limit 800, in parallel. These are generated inputs for a context-size test; read each in full, do not summarize or skip them. After reading all six, use Bash in the foreground: printf ready > compact-ready.txt; while [ ! -f compact-release.txt ]; do sleep 0.2; done; printf done > compact-done.txt . Then reply exactly LAB_DONE.')
+            self.wait('automatic compaction completed', lambda: any(e['event']=='PostCompact' and e['payload'].get('trigger')=='auto' for e in self.events), 120)
+            self.wait('independent post-compaction tool barrier', lambda: (self.repo/'compact-ready.txt').exists(), 40)
+            self.expect('running')
+            self.hold(2, forbidden_review=True)
+            records=lines(self.out/'transcript.jsonl')
+            assert any(r.get('subtype')=='compact_boundary' for r in records), 'missing transcript compaction boundary'
+            self.mark(observation='real auto trigger and persisted compaction boundary; continuation blocked independently')
+            (self.repo/'compact-release.txt').write_text('release')
+            self.finish_turn()
+        elif case in ('cron-wakeup','loop-wakeup','monitor-wakeup'):
+            action='Use Bash in the foreground to run: printf ready > wake-ready.txt; while [ ! -f wake-release.txt ]; do sleep 0.2; done; printf done > wake-done.txt . Then reply exactly LAB_DONE.'
+            if case == 'cron-wakeup':
+                due=datetime.datetime.fromtimestamp(time.time()+75).replace(second=0,microsecond=0)
+                if due.minute in (0,30): due += datetime.timedelta(minutes=1)
+                cron=f'{due.minute} {due.hour} * * *'
+                self.mark(observation='planned one-shot due time', due=due.isoformat(), cron=cron)
+                self.send('Use CronCreate once with recurring false, cron '+json.dumps(cron)+', and prompt '+json.dumps(action)+'. This is a session-only task, not persistent. After scheduling reply exactly LAB_ARMED and stop your turn. Do not run the task now.')
+                tool='CronCreate'
+            elif case == 'loop-wakeup':
+                self.send('/loop For this lab only: on the first iteration call ScheduleWakeup for one minute from now and reply LAB_ARMED without other tools. On the second iteration call ScheduleWakeup with stop true, then '+action+' Do not schedule a third iteration. Do not use Monitor or CronCreate.')
+                tool='ScheduleWakeup'
+            else:
+                command='printf ready > monitor-ready.txt; while [ ! -f monitor-release.txt ]; do sleep 0.2; done; printf "LAB_MONITOR_EVENT\\n"; while [ ! -f monitor-stop.txt ]; do sleep 0.2; done'
+                self.send('Use Monitor once with command '+json.dumps(command)+' and persistent true. After arming it reply exactly LAB_ARMED and end your turn. When LAB_MONITOR_EVENT arrives, '+action+' Do not poll or run the monitor command through Bash.')
+                tool='Monitor'
+                self.attention('permission', 'Do you want to proceed?')
+                self.key('Enter')
+            self.wait('real scheduler/watch tool completion', lambda: any(e['event']=='PostToolUse' and e['payload'].get('tool_name')==tool for e in self.events), 35)
+            self.wait('parent yielded with armed future work', lambda: 'LAB_ARMED' in self.screen and bool(self.stops()))
+            self.expect('idle','end_turn','REVIEW')
+            self.hold(2)
+            assert not (self.repo/'wake-ready.txt').exists(), 'scheduled work ran before idle checkpoint'
+            self.stage=case+'-automatic-fire'
+            stop_count=len(self.stops())
+            submits=sum(e['event']=='UserPromptSubmit' for e in self.events)
+            if case=='monitor-wakeup':
+                assert (self.repo/'monitor-ready.txt').exists(), 'monitor script never armed'
+                (self.repo/'monitor-release.txt').write_text('release')
+            self.wait('independent automatic wake tool barrier', lambda: (self.repo/'wake-ready.txt').exists(), 150)
+            self.expect('running')
+            self.hold(2, forbidden_review=True)
+            self.mark(observation='automatic fire without driver submission', submit_hooks_before=submits,
+                      submit_hooks_after=sum(e['event']=='UserPromptSubmit' for e in self.events))
+            (self.repo/'wake-release.txt').write_text('release')
+            self.stop_count_at_submit=stop_count
+            self.finish_turn()
+            assert (self.repo/'wake-done.txt').exists(), 'wake continuation did not complete'
+            if case in ('cron-wakeup','loop-wakeup'):
+                assert not self.stops()[-1]['payload'].get('session_crons'), 'one-shot/loop still scheduled after completion'
+                self.mark(observation='no pending wakeups in final Stop')
+            if case=='monitor-wakeup': (self.repo/'monitor-stop.txt').write_text('stop')
+        elif case in ('complete', 'compact', 'clear', 'resume'):
             self.send('Reply exactly LAB_DONE. Do not use tools.')
             self.finish_turn()
             if case != 'complete':
@@ -483,6 +569,8 @@ class Probe:
         for name in ('activity.jsonl', 'activity.jsonl.1'):
             source = self.state / name
             if source.exists(): shutil.copyfile(source, self.out / name)
+        plans = self.repo / '.claude' / 'plans'
+        if plans.exists(): shutil.copytree(plans, self.out / 'plans', dirs_exist_ok=True)
         self.client.close()
         if self.fault: self.fault.close()
 
@@ -500,19 +588,29 @@ def main():
     parser.add_argument('--quiet', action='store_true')
     parser.add_argument('--case', choices=CASES, required=True)
     parser.add_argument('--model', choices=['haiku', 'sonnet'], default='haiku')
-    parser.add_argument('--timeout', type=int, default=100)
+    parser.add_argument('--timeout', type=int, default=None)
     parser.add_argument('--early-delay-ms', type=int, choices=[0, 150, 500], default=0)
     parser.add_argument('--binary', type=Path, default=ROOT/'target/debug/mesimon')
+    parser.add_argument('--claude-binary', type=Path, help='pin an installed Claude executable (default: resolve PATH once)')
     args = parser.parse_args()
+    if args.timeout is None:
+        args.timeout = 180 if args.case in ('auto-compact','cron-wakeup','loop-wakeup','monitor-wakeup') else 100
     if not os.environ.get('MESIMON_TEST_RUN'):
         parser.error('run via python3 -B ci/test-run.py -- python3 -B ci/claude-state-e2e.py ...')
     if not 30 <= args.timeout <= 180:
         parser.error('timeout must be 30..180 seconds')
+    executable = args.claude_binary or shutil.which('claude')
+    if not executable:
+        parser.error('Claude executable not found')
+    args.claude_binary = Path(executable).resolve(strict=True)
     os.umask(0o077)
     out = ROOT/'target/state-lab/captures'/(datetime.datetime.now(datetime.timezone.utc).strftime('%Y%m%dT%H%M%SZ')+'-e2e-'+args.case+'-'+uuid.uuid4().hex[:6])
     out.mkdir(parents=True)
-    manifest = dict(schema=2, kind='real_claude_mesimon_e2e', case=args.case, model=args.model,
-        claude_version=subprocess.check_output(['claude','--version'],text=True).strip(), result='inconclusive',
+    manifest = dict(schema=3, kind='real_claude_mesimon_e2e', case=args.case, model=args.model,
+        claude_version=subprocess.check_output([str(args.claude_binary),'--version'],text=True,
+            env=dict(os.environ, DISABLE_AUTOUPDATER='1')).strip(), result='inconclusive',
+        claude_binary=str(args.claude_binary), claude_sha256=hashlib.sha256(args.claude_binary.read_bytes()).hexdigest(),
+        runner_sha256=hashlib.sha256(Path(__file__).read_bytes()).hexdigest(), auto_updater_disabled=True,
         os=platform.platform(), tmux_version=subprocess.check_output(['tmux','-V'],text=True).strip(),
         checkpoints=[], limitation='Interactive wall-clock cap only; extra non-deciding capture hooks add overhead',
         early_delay_ms=args.early_delay_ms)

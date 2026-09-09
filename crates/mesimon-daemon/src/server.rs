@@ -2192,7 +2192,13 @@ impl Daemon {
                 }
             }
         }
-        if let Some(sig) = ingest::signal_of(&frame) {
+        let signal = self.board.sessions.iter_mut().find(|s| s.id == id).and_then(|rec| {
+            let previous = rec.monitor_task_ids.clone();
+            let signal = ingest::signal_with_monitors(&frame, &mut rec.monitor_task_ids);
+            dirty |= previous != rec.monitor_task_ids;
+            signal
+        });
+        if let Some(sig) = signal {
             // A death that names a pane still ALIVE is the previous tenant's.
             // The pane-died notify carries only the session name, and a
             // wake re-uses the record's sid16 for its new pane; sleep

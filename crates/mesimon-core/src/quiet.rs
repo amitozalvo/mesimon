@@ -101,6 +101,7 @@ mod tests {
             claude_session_id: None,
             pending_submit: false,
             idle_teammates: vec![],
+            monitor_task_ids: vec![],
             plan_note: None,
             ticket_read: false,
         }

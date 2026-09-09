@@ -1,0 +1,105 @@
+{
+  "schema": 1,
+  "id": "auto-compact-continuation",
+  "title": "auto compact continuation",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T190011Z-e2e-auto-compact-81ac9b",
+    "claude_version": "2.1.267",
+    "note": "Normalized capture fields and virtual timing; same production adapter and reducer."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PreCompact",
+        "payload": {
+          "trigger": "auto"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "PostCompact",
+        "payload": {
+          "trigger": "auto"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 3000,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 4000,
+      "input": {
+        "source": "hook",
+        "event": "PostToolUse",
+        "payload": {
+          "tool_name": "Bash"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 5000,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 6500,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    }
+  ]
+}
