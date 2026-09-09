@@ -44,9 +44,9 @@ const PAGE_PAD: u16 = 1;
 /// session and chip rows do — which is also what lets frame zero of the
 /// grow be the card itself, row for row.
 const DIALOG_HEAD_ROWS: u16 = 3;
-/// The dialog's frame is a card's: `[bar 1][pad 1][content][pad 1]`.
-const DIALOG_LEAD: u16 = 2;
-const DIALOG_FRAME: u16 = 3;
+/// The dialog's frame is a card's: `[bar 2][pad 1][content][pad 1]`.
+const DIALOG_LEAD: u16 = tags::BAR_WIDTH as u16 + 1;
+const DIALOG_FRAME: u16 = DIALOG_LEAD + 1;
 /// The dialog covers WHOLE columns (`dialog_rect`): its edges fall on the
 /// board's gutters, so the cards beside it show complete and never as a
 /// sliver cut mid-word — which is what a free-floating centred box left on
@@ -172,7 +172,7 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
         return;
     }
 
-    // ---- the stripe: the card's bar, one cell per row, wearing the tags
+    // ---- the stripe: the card's two-cell bar, wearing the tags
     // exactly as the real card will (`render_edit` paints the phantom card's
     // the same way) --------------------------------------------------------
     // The picked tags composing; the ticket's own on a description, so the
@@ -186,14 +186,11 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
             .unwrap_or_default(),
     };
     let (plain_ch, plain_style) = theme.bar(BarWeight::Cursor);
-    let (bar_ch, bar_style) =
-        tags::bar_cell(theme, plain_ch, plain_style, &worn, TagLevel::Selected);
-    let mut stripe: Vec<Line<'static>> =
-        (0..area.height).map(|_| Line::from(Span::styled(bar_ch.clone(), bar_style))).collect();
-    tags::stack_full(theme, &mut stripe, plain_ch, plain_style, &worn, TagLevel::Selected);
+    let bar = tags::bar_spans(theme, plain_ch, plain_style, &worn, TagLevel::Selected, surface);
+    let stripe: Vec<Line<'static>> = (0..area.height).map(|_| Line::from(bar.clone())).collect();
     f.render_widget(
         Paragraph::new(stripe),
-        Rect { x: area.x, y: area.y, width: 1, height: area.height },
+        Rect { x: area.x, y: area.y, width: tags::BAR_WIDTH as u16, height: area.height },
     );
 
     // ---- the head: the title where the card's title row was, the context

@@ -1,10 +1,10 @@
  BOARD   mesimon > kanban-tui   7 tickets
 
-   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
-   Decay treatments       >1y    ⠋ Fix OSC-11 detection >1y    ✓ Grapheme truncation  >1y    z Painted accent bar  >1y
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
 
-   Keymap validator       >╭─ COLUMN ∙ IN PROGRESS ─────────────────────────────────────────╮
+    Keymap validator      >╭─ COLUMN ∙ IN PROGRESS ─────────────────────────────────────────╮
                            │   Name: in progress                                            │
                            │   Collapsed: no                                                │
                            │   Sort now: newest first                                       │

@@ -1,10 +1,10 @@
  BOARD   mesimon > kanban-tui   7 tickets
 
-   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
                                  ╭─ KEYS ∙ board ─────────────────────────────────────╮
-   Decay treatments       >1y    │ MOVE AROUND                                        │1y    z Painted accent bar  >1y
+    Decay treatments      >1y    │ MOVE AROUND                                        │1y     z Painted accent bar >1y
                                  │   hjkl      move around                            │
-   Keymap validator       >1y    │   enter     column settings                        │1y
+    Keymap validator      >1y    │   enter     column settings                        │1y
                                  │                                                    │
                                  │ TICKETS                                            │
                                  │   o         new ticket                             │

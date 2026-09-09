@@ -8024,3 +8024,69 @@ and the existing notification argument checks. The live visual confirmation
 covers the actual system icon, which argv assertions never could.
 The user also verified the finished integration on a running agent: the OS
 notification displayed the mascot correctly.
+
+
+## Tag bars reserve two cells and separate two colors (2026-09-09, user direction)
+
+The single-cell half-block was too small to identify two tags without peeking. The user
+accepted a fixed two-cell bar, then requested a narrow gap so the colors do not bleed into
+one another. Every card now reserves `[bar 2][pad 1][content][pad 1]`, including untagged
+cards, move previews, the title editor, and expanded cards. Column headings and editor
+cursors use the same inset. This deliberately costs one title column; tag count never moves
+text. The workspace selector uses `(default)` and only shows its inline key hint when the
+whole hint fits.
+
+One tag fills both cells with continuous paint; no tags keeps a neutral two-cell bar. Two
+tags render as `▉▉` (U+2589 LEFT SEVEN EIGHTHS BLOCK), each in its tag color with the normal card
+background behind it. The gutter keeps this contrast-checked background on attention and
+delete rows too, so a tag near the attention hue cannot disappear into the title band. The unpainted eighth provides separation even when both tags
+have the same tint. Each color keeps its column when a card opens; the old 70/30 vertical
+stack and `▀` tag exception are retired. U+2589 is the deliberate replacement exception to
+the block-glyph restriction. Its East Asian Width Ambiguous behavior still depends on the
+terminal, as the previous half-block did. Profiles below TrueColor retain the underline and
+ASCII/state-bar fallback at the same fixed width; no RGB colors or new block glyphs leak
+into them. Additional tags are still named in the peek and ticket page.
+
+Tag colors now keep full strength away from the cursor. Selection still has its title and
+surface, and the neutral bar retains its two levels. The ten hue identities are shared across
+all six themes, anchored to the former Graphite palette in OKLCH. Candidate lightness starts
+at 0.72 on dark themes and 0.48 on light themes, chroma at 0.15; chroma is reduced at fixed
+hue to fit sRGB, and lightness adjusted where needed to clear 4.5:1 against both page and
+selection surfaces. The resulting RGB tables were reviewed in the comparison prototype.
+Stored tint indices are unchanged, but Blue/Amber/Green colors intentionally move to the
+common hue mapping once. No persistence migration or user file rewrite is needed.
+
+This supersedes the mandatory tag fade, the tag chroma ceiling/2x attention margin, and the
+per-theme forbidden hue bands. Needs-you retains its own token, glyph, and full title band.
+Replacement color tests check every theme/index for 4.5:1 surface contrast, retained chroma,
+pairwise CIE76 separation of at least 12, and cross-theme OKLCH hue drift at most one degree
+after RGB rounding. Rendering tests check full strength off the cursor, equal-tint gaps,
+row backgrounds, fixed editor geometry across color profiles, and stable columns when open.
+Board/editor goldens intentionally move their content inset by one cell; the title and reply
+truncation changes are the corresponding width cost.
+
+
+## Column overflow uses counted cues instead of faded cards (2026-09-09, user screenshot)
+
+The bottom overflow preview still rewrote the first span as a one-cell ghost bar. After the
+tag bar grew to two cells, that shortened a single-tag preview and shifted its title left;
+a two-tag preview also left the second glyph behind. More broadly, dimming a real ticket
+made overflow look like a different ticket state, and placed it too close to the footer.
+
+The copied/faded edge cards are removed. Whole visible cards retain their normal tag bars,
+colors, and geometry. A separate `↑ N above` or `↓ N below` row names the hidden count at
+its edge, with blank separation from cards. ASCII profiles use `^` and `v`. Counts include
+the boundary cards omitted to make room for a cue; hidden needs-you cards remain counted by
+the header's `!N`. The ordinary chevron counts in the header no longer duplicate the cues.
+
+Columns reserve two additional blank rows above the board's existing footer gap, so both
+cards and the bottom cue stop earlier. The selected card and live input take priority over
+scroll margins: if a tall card needs the cue rows, the directional counts move into the
+header. If a group exceeds the entire body height, scrolling keeps its live input visible.
+This supersedes the original edge-ghost treatment, while retaining cursor-following scroll
+and whole-card boundaries for ordinary cards.
+
+Tests walk both directions across all six themes with collapsed and expanded cards, checking
+exact hidden counts, title alignment, both tag cells, cursor visibility, and footer clearance.
+Additional checks cover hidden attention, ASCII arrows, and a long expanded card with a live
+prompt at minimum terminal height. Three new goldens cover overflow below, above, and both.

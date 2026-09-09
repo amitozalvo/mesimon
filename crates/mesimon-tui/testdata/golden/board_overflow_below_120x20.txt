@@ -1,0 +1,20 @@
+ BOARD   mesimon > kanban-tui   13 tickets
+
+    TODO                              12     DONE                               1
+
+    Load 00                          >1y     Elsewhere                        >1y
+
+ ▉▉ Load 01                          >1y
+
+    Load 02                          >1y
+
+ ▉▉ Load 03                          >1y
+
+    Load 04                          >1y
+
+
+    ↓ 7 below
+
+
+
+ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys

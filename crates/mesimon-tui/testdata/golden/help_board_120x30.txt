@@ -1,10 +1,10 @@
  BOARD   mesimon > kanban-tui  !1    7 tickets
 
-   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
-   Dec╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮ >1y
+    De╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮ >1y
       │ MOVE AROUND                                           SESSIONS                                           │
-   Key│   hjkl      move around                                 c         claude                                 │
+    Ke│   hjkl      move around                                 c         claude                                 │
       │   g         top of column                               x         sleep sessions                         │
       │   G         bottom of column                                                                             │
       │   enter     go to the agent                           VIEW                                               │

@@ -289,11 +289,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     }
     lines.pop(); // no trailing blank after the last card
 
-    // Scroll (cursor column only): keep the cursor card visible, scrolloff 2
-    // — the ghost-peek row plus its blank must fit past the cursor card, so
-    // the view scrolls one card early instead of parking the cursor flush
-    // against a peek.
-    let body_h = area.height.saturating_sub(2) as usize;
+    // Keep two blank rows inside the column above the board's footer gap.
+    // Overflow cues also reserve a row plus a blank next to visible cards.
+    let body_h = area.height.saturating_sub(4) as usize;
     let total = lines.len();
     let mut scroll =
         if is_cursor_col { app.scroll_row.get().min(total.saturating_sub(1)) } else { 0 };
@@ -320,6 +318,14 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             if lo < scroll {
                 scroll = lo;
             }
+            // Scroll margins must yield before they cut the cursor card.
+            // An oversized group instead keeps its live input row visible.
+            if ce - cs <= body_h {
+                scroll = scroll.clamp(ce.saturating_sub(body_h), cs);
+            } else {
+                let focus = edit_at.map(|(line, _)| line).unwrap_or(cs);
+                scroll = focus.saturating_sub(body_h.saturating_sub(1)).max(cs);
+            }
         }
         if total <= body_h {
             scroll = 0;
@@ -327,19 +333,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         app.scroll_row.set(scroll);
     }
 
-    // Edge peeks (author 2026-08-30): when content continues past an edge,
-    // that edge's row shows the next not-fully-visible card as a one-line
-    // ghost — ghost bar + dim3 ink, the move-trail demotion — instead of
-    // cutting a full-value card mid-flight. Cards that fit render whole; the
-    // ghost line IS the "more here" affordance, both directions. The cursor
-    // card is never the peek (scrolloff keeps it inside the content slice);
-    // if it somehow is (a card taller than the window), the peek yields.
+    // Show complete cards between explicit overflow cues. The cursor card
+    // takes priority over a cue when it is taller than the available slice.
     let end_vis = (scroll + body_h).min(total);
     let not_cursor = |r: &&(usize, usize, bool)| Some((r.0, r.1)) != cursor_range;
-    // Each peek costs TWO rows — the ghost line plus a blank keeping the
-    // card rhythm — so a peek never sits flush against a full-value card.
-    // Bottom: the first card that no longer fits once those rows are
-    // reserved.
+    // Each cue costs two rows: its text and a blank separating it from cards.
+    // Bottom: the first card that no longer fits after reserving the cue.
     let bottom: Option<(usize, usize, bool)> = if end_vis < total {
         card_ranges
             .iter()
@@ -360,63 +359,35 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     } else {
         None
     };
-    // Content excludes the peeked cards and their separators; the blanks
-    // around the ghosts are pushed explicitly at assembly.
+    // Content excludes hidden cards and their separators. Cues are their
+    // own rows; never restyle a card or change its tag bar at the edge.
     let content_start = top.map(|(_, end, _)| (end + 1).max(scroll + 2)).unwrap_or(scroll);
     let content_end = bottom
         .map(|(start, _, _)| start.saturating_sub(1).min(end_vis.saturating_sub(2)))
         .unwrap_or(end_vis)
         .max(content_start);
-    // A peeked card is whole-card dim3 with the ghost bar (bar colour rides
-    // the bg of a space cell in colour profiles — fg-only restyling would
-    // blank it).
-    let fade_line = |idx: usize| -> Line<'static> {
-        let mut l = lines[idx].clone();
-        l.style = Style::default();
-        let (gch, gstyle) = theme.bar(crate::theme::BarWeight::Ghost);
-        for (i, span) in l.spans.iter_mut().enumerate() {
-            if i == 0 {
-                // The bar loses its tag colour with everything else: a lit
-                // tint would be the only thing at full value on a ghost.
-                span.content = gch.to_string().into();
-                span.style = gstyle;
-            } else {
-                span.style = theme.dim3();
-            }
-        }
-        l
+    // Count everything actually omitted, including the boundary cards
+    // removed to make room for a cue. Hidden attention stays in the header.
+    let above = card_ranges.iter().filter(|(_, end, _)| *end <= content_start).count();
+    let below = card_ranges.iter().filter(|(start, _, _)| *start >= content_end).count();
+    let attn_out = card_ranges
+        .iter()
+        .filter(|(start, end, waiting)| *waiting && (*start < content_start || *end > content_end))
+        .count();
+    let overflow_arrow = |up| match (theme.glyph_tier(), up) {
+        (crate::glyphs::Tier::Ascii, true) => '^',
+        (crate::glyphs::Tier::Ascii, false) => 'v',
+        (_, true) => '↑',
+        (_, false) => '↓',
     };
-
-    // Clipped-card badges (D33k's chevron replacement for the rail): counts of
-    // cards fully above/below the viewport, and `!n` for scrolled-out waiting.
-    // A peeked waiting card hands its needs-you signal to the badge — dim3
-    // must not silently swallow attention.
-    let mut above = 0usize;
-    let mut below = 0usize;
-    let mut attn_out = 0usize;
-    for (start, end, waiting) in &card_ranges {
-        if *end <= scroll {
-            above += 1;
-            if *waiting {
-                attn_out += 1;
-            }
-        } else if *start >= scroll + body_h {
-            below += 1;
-            if *waiting {
-                attn_out += 1;
-            }
-        }
-    }
-    if let Some((_, end, true)) = top {
-        if end > scroll {
-            attn_out += 1; // partially cut, so not in the `above` count
-        }
-    }
-    if let Some((start, _, true)) = bottom {
-        if start < scroll + body_h {
-            attn_out += 1; // partially cut, so not in the `below` count
-        }
-    }
+    let overflow_line = |count: usize, up: bool| {
+        let arrow = overflow_arrow(up);
+        let direction = if up { "above" } else { "below" };
+        Line::from(vec![
+            Span::raw(" ".repeat(crate::tags::BAR_WIDTH + 1)),
+            Span::styled(format!("{arrow} {count} {direction}"), theme.dim2()),
+        ])
+    };
 
     // ---- header row (cursor-column treatment, reminted 2026-08-30) --------
     // The cursor column's header is a full-width painted band on the
@@ -433,17 +404,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut header_cursor_x: Option<u16> = None;
     if col_header || header_edit.is_some() {
         let (bar_ch, bar_style) = theme.bar(crate::theme::BarWeight::Cursor);
-        head.push(Span::styled(bar_ch.to_string(), bar_style));
+        head.push(Span::styled(bar_ch.to_string().repeat(crate::tags::BAR_WIDTH), bar_style));
         head.push(Span::raw(" "));
     } else {
-        head.push(Span::raw("  "));
+        head.push(Span::raw(" ".repeat(crate::tags::BAR_WIDTH + 1)));
     }
     if let Some(buf) = header_edit {
         // The name edited in place, with the hardware cursor (06 §5.7),
         // the badges standing down for the field.
-        let budget = (area.width as usize).saturating_sub(3);
+        let budget = (area.width as usize).saturating_sub(crate::tags::BAR_WIDTH + 2);
         let (shown, cx) = edit_window(buf.as_str(), buf.width_before_cursor(), budget);
-        header_cursor_x = Some(2 + cx);
+        header_cursor_x = Some(crate::tags::BAR_WIDTH as u16 + 1 + cx);
         head.push(Span::styled(
             shown,
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD),
@@ -461,11 +432,13 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if attn_out > 0 {
             right.push(Span::styled(format!("!{attn_out} "), theme.attn_text()));
         }
-        if above > 0 {
-            right.push(Span::styled(format!("▴{above} "), quiet));
+        // A tall cursor card may need the cue rows. Keep its hidden counts
+        // in the header in that case, without sacrificing the input field.
+        if above > 0 && top.is_none() {
+            right.push(Span::styled(format!("{}{above} ", overflow_arrow(true)), quiet));
         }
-        if below > 0 {
-            right.push(Span::styled(format!("▾{below} "), quiet));
+        if below > 0 && bottom.is_none() {
+            right.push(Span::styled(format!("{}{below} ", overflow_arrow(false)), quiet));
         }
         right.push(Span::styled(format!("{count}"), quiet));
     }
@@ -503,14 +476,16 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             out.push(Line::from(Span::styled(nudge, theme.dim3())));
         }
     } else {
-        if let Some((_, end, _)) = top {
-            out.push(fade_line(end - 1)); // the cut card's nearest line
+        if top.is_some() {
+            out.push(overflow_line(above, true));
             out.push(Line::default());
         }
         out.extend(lines[content_start..content_end].iter().cloned());
-        if let Some((start, _, _)) = bottom {
-            out.push(Line::default());
-            out.push(fade_line(start));
+        if bottom.is_some() {
+            // Keep the cue at the viewport edge even when a tall hidden card
+            // leaves unused rows after the final complete visible card.
+            out.resize(2 + body_h.saturating_sub(1), Line::default());
+            out.push(overflow_line(below, false));
         }
     }
 
@@ -518,12 +493,12 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 
     // The hardware cursor sits in the edited title (06 §5.7: visible bar in
     // any text input — never a drawn glyph).
-    let peek_rows = top.map(|_| 2usize).unwrap_or(0);
+    let top_cue_rows = top.map(|_| 2usize).unwrap_or(0);
     if let Some((line, x)) = edit_at {
         if line >= content_start && line < content_end {
             f.set_cursor_position((
                 area.x + x.min(area.width.saturating_sub(1)),
-                area.y + 2 + (peek_rows + line - content_start) as u16,
+                area.y + 2 + (top_cue_rows + line - content_start) as u16,
             ));
         }
     }
@@ -536,7 +511,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     if let Some((cs, ce)) = cursor_range {
         let rect = (cs >= content_start && ce <= content_end).then(|| Rect {
             x: area.x,
-            y: area.y + 2 + (peek_rows + cs - content_start) as u16,
+            y: area.y + 2 + (top_cue_rows + cs - content_start) as u16,
             width: area.width,
             height: (ce - cs) as u16,
         });

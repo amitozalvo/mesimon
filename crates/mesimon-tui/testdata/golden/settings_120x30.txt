@@ -1,10 +1,10 @@
  BOARD   mesimon > kanban-tui   6 tickets
 
-   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    0
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-   Decay treatments       >╭─ SETTINGS ─────────────────────────────────────────────────────╮
+    Decay treatments      >╭─ SETTINGS ─────────────────────────────────────────────────────╮
                            │   Theme: graphite                                              │
-   Keymap validator       >│     dark, the default ∙ for a dark terminal                    │
+    Keymap validator      >│     dark, the default ∙ for a dark terminal                    │
                            │   Show agent replies                                         p │
                            │     the latest reply under the selected card                   │
                            │   Notifications: off                                           │

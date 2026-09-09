@@ -1,6 +1,6 @@
  BOARD   mesimon > kanban-tui   0 tickets
 
-   TODO                     0    IN PROGRESS              0    REVIEW                   0    DONE                    0
+    TODO                    0     IN PROGRESS             0     REVIEW                  0     DONE                   0
 
    o  new ticket
 

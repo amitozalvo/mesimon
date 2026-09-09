@@ -1,16 +1,16 @@
  BOARD   mesimon > kanban-tui   7 tickets
 
-   TODO                     2    IN PROGRESS              2    REVIEW                   2    DONE                    1
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
                               ╭─ NEW TICKET ──────────────────────────────────────────────╮
-   Decay treatments       >1y │  Ship the diff viewer                                     │  z Painted accent bar  >1y
-                              │  TODO column ∙ ⎇ worktree  shift+tab ∙  BUG               │
-   Keymap validator       >1y │                                                           │
-                              │  ## Why                                                   │
+    Decay treatments      >1y │   Ship the diff viewer                                    │   z Painted accent bar >1y
+                              │   TODO column ∙ ⎇ worktree  shift+tab ∙  BUG              │
+    Keymap validator      >1y │                                                           │
+                              │   ## Why                                                  │
                               │                                                           │
-                              │  The diff viewer is read-only and the `v` key is free.    │
+                              │   The diff viewer is read-only and the `v` key is free.   │
                               │                                                           │
-                              │  - one pane under 107 cols                                │
-                              │  - `z` cycles the density                                 │
+                              │   - one pane under 107 cols                               │
+                              │   - `z` cycles the density                                │
                               │                                                           │
                               │                                                           │
                               │                                                           │

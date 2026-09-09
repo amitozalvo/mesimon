@@ -188,21 +188,10 @@ pub(crate) enum BarWeight {
     Cursor,
 }
 
-/// How loud a tag's colour is on a card. There is no alpha in a terminal, so
-/// the levels are blends toward the page ground (`Theme::pip_at`).
+/// Selection levels for the neutral bar. Tagged bars always keep their color.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TagLevel {
-    /// The cursor card: full strength, so the card you are on carries the
-    /// loudest tags on the board.
     Selected,
-    /// A card at rest: one step down. This is the level almost every tag on
-    /// the board is read at, and the step has to be big enough to SEE — the
-    /// first cut used 0.82 and the boundary was invisible.
-    ///
-    /// Two levels, not three (author, 2026-09-02): a third, quieter one for
-    /// a parked ticket shipped for a day and read as "too muted" — the glyph
-    /// already says asleep, and the block's job is "which tag", loud enough
-    /// to read. The block answers selected-or-not and nothing else.
     Rest,
 }
 
@@ -244,20 +233,14 @@ pub(crate) struct TrueColor {
     /// amber / green"); the `Option` stays because a palette with no second
     /// hue at all is a legitimate thing to declare.
     pub tints: Option<Tints>,
-    /// What `faded` blends toward. The page ground on paper; a NEUTRAL at the
-    /// ground's lightness wherever the ground has a hue, because a tint
-    /// blended into a coloured ground takes on the ground's hue and ten tags
-    /// become one (measured: 169° of drift on navy, 47° on the green-black).
+    /// Neutral target for fading an untagged bar. Colored grounds keep a
+    /// neutral at similar lightness so the neutral bar does not pick up hue.
     pub shadow: u32,
 }
 
 pub(crate) struct Tints {
     pub ring: [u32; PIPS],
-    /// The C* ceiling the law holds the ring under. 30.5 on paper; a ring
-    /// that sits UNDER a C* 83 ground may be a step louder.
-    #[cfg_attr(not(test), allow(dead_code))]
-    pub ceiling: f64,
-    /// The blend factor for `TagLevel::Rest`.
+    /// Blend factor for an untagged bar off the cursor.
     pub fade: f32,
 }
 
@@ -320,13 +303,12 @@ static GRAPHITE: Palette = Palette {
         cursor: 0xF1EFE9,
         diff: Some((0x1E2C28, 0x2E2127)),
         tints: Some(Tints {
-            // L* 62, C* 30. Measured: >= 6.18 on bg, >= 5.47 on the selected
-            // surface; worst pair dE76 15.6.
+            // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
+            // to this ground, gamut-mapped at fixed hue. No selection fade.
             ring: [
-                0xCB8381, 0x9F9761, 0x819F6D, 0x61A384, 0x41A4A1, 0x3BA2BA, 0x659BCA, 0x8F92C7,
-                0xB288B6, 0xC6829D,
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
             ],
-            ceiling: 30.5,
             fade: 0.70,
         }),
         shadow: 0x131417,
@@ -375,19 +357,12 @@ static CHALK: Palette = Palette {
         cursor: 0x1B1E23,
         diff: Some((0xDFEBE4, 0xF2E0E4)),
         tints: Some(Tints {
-            // The same ten hues as graphite at L* 38, C* 26 — darker than
-            // graphite's is light, because chalk's ground is the bright one,
-            // and a step quieter in chroma because chalk's accent has less of
-            // it to be a register above (C* 53.8 puts the ceiling at 26.9).
-            // Measured: >= 6.52 on bg, >= 5.40 on the selected surface;
-            // worst pair 13.2.
+            // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
+            // to this ground, gamut-mapped at fixed hue. No selection fade.
             ring: [
-                0x824A49, 0x605A2F, 0x486039, 0x2D644B, 0x006562, 0x006274, 0x2D5D83, 0x535680,
-                0x6F4E73, 0x7E495F,
+                0xA12E36, 0x6A5E00, 0x3C6D00, 0x006F4C, 0x006C6A, 0x00697C, 0x00629E, 0x534DAE,
+                0x84398D, 0x9A2F63,
             ],
-            ceiling: 30.5,
-            // Chalk fades LESS per step than graphite: the same sRGB ratio
-            // costs far more toward white than toward black.
             fade: 0.76,
         }),
         shadow: 0xFAF8F4,
@@ -442,16 +417,12 @@ static BLUE: Palette = Palette {
         cursor: 0xFCF6ED,
         diff: Some((0x102695, 0x2E177D)),
         tints: Some(Tints {
-            // L* 70, C* 34: hues skip 60-120 (the gold) AND 276-336 (the
-            // navy) — a tag the colour of the ground reads as ground. A step
-            // louder than paper's ring because it sits under a C* 83 ground;
-            // gold at C* 87 leaves the 2x margin whole. Measured: worst pair
-            // dE76 15.1, >= 6.7 on bg, >= 4.5 on the selected surface.
+            // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
+            // to this ground, gamut-mapped at fixed hue. No selection fade.
             ring: [
-                0x9BB477, 0x76B98F, 0x51BCAE, 0x3CBBCD, 0x57B5E2, 0x84ADE8, 0xD997C3, 0xE693A8,
-                0xE7968E, 0xDC9D79,
+                0xFF8887, 0xBFAC15, 0x80BB52, 0x21C289, 0x00BFBB, 0x00BBDC, 0x52B2FF, 0xA0A2FF,
+                0xDE8EE6, 0xF986B7,
             ],
-            ceiling: 35.0,
             fade: 0.70,
         }),
         shadow: 0x242424,
@@ -520,16 +491,12 @@ static AMBER: Palette = Palette {
         // what makes the delete flash a RED flash here.
         diff: Some((0x33280A, 0x4E1717)),
         tints: Some(Tints {
-            // Graphite's L* 62 / C* 30, on hues 127.5 + 29k: the 70° band
-            // around the phosphor (77°) is skipped, since the ladder and
-            // the accent are on that hue. Measured: worst pair dE 14.8,
-            // >= 6.2 on bg, >= 5.4 on the selected surface, >= 49° from the
-            // phosphor.
+            // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
+            // to this ground, gamut-mapped at fixed hue. No selection fade.
             ring: [
-                0x849E6B, 0x66A380, 0x48A49A, 0x39A3B3, 0x4E9FC5, 0x7598CB, 0x9B8EC3, 0xB886B0,
-                0xC88297, 0xCA847E,
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
             ],
-            ceiling: 30.5,
             fade: 0.70,
         }),
         shadow: 0x161616,
@@ -593,14 +560,12 @@ static GREEN: Palette = Palette {
         cursor: 0x9FE0AF,
         diff: Some((0x123A20, 0x4A171A)),
         tints: Some(Tints {
-            // The same ring on hues 192.5 + 29k, skipping 108-178 around the
-            // phosphor (144°). Measured: worst pair dE 14.3, >= 6.2 on bg,
-            // >= 5.3 on the selected surface, >= 49° from the phosphor.
+            // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
+            // to this ground, gamut-mapped at fixed hue. No selection fade.
             ring: [
-                0x42A4A0, 0x3BA2B8, 0x579DC7, 0x7F95CA, 0xA38CBF, 0xBD85AB, 0xCA8291, 0xC88578,
-                0xBB8C67, 0xA59560,
+                0xF47A7A, 0xBAA601, 0x7EB850, 0x20C188, 0x00BCB9, 0x00B8D8, 0x46ACFC, 0x9697FF,
+                0xD182DA, 0xEB79AA,
             ],
-            ceiling: 30.5,
             fade: 0.70,
         }),
         shadow: 0x161616,
@@ -665,11 +630,12 @@ static SOLARIZED: Palette = Palette {
         // The cream a step toward green and toward red.
         diff: Some((0xE9EBCB, 0xF6DDD3)),
         tints: Some(Tints {
+            // Shared Graphite hue identities in OKLCH; lightness/chroma adapted
+            // to this ground, gamut-mapped at fixed hue. No selection fade.
             ring: [
-                0x824A49, 0x605A2F, 0x486039, 0x2D644B, 0x006562, 0x006274, 0x2D5D83, 0x535680,
-                0x6F4E73, 0x7E495F,
+                0xA12E36, 0x6A5E00, 0x3C6D00, 0x006F4C, 0x006C6A, 0x00697C, 0x00629E, 0x534DAE,
+                0x84398D, 0x9A2F63,
             ],
-            ceiling: 30.5,
             fade: 0.76,
         }),
         shadow: 0xFDF6E3,
@@ -923,50 +889,9 @@ impl Theme {
             Style::default().add_modifier(Modifier::BOLD)
         }
     }
-    /// A tag pip's tint, `n = stable_hash(name) % PIPS`.
-    ///
-    /// Ten hues at one lightness (D31b): tag tints draw from their own ramp
-    /// and may NEVER spend the one saturated colour reserved for "needs you"
-    /// — the failure D19 names is that the alert stops being the only bright
-    /// thing and users learn to distrust it within a week.
-    ///
-    /// The ramp was C* ~7 and it FAILED IN USE (2026-08-31): at that chroma
-    /// the mark read as another grey rule and the tag said nothing. It is now
-    /// C* 30 (graphite) / 26 (chalk) / 34 (blue) — a register below the
-    /// accent, never beside it: `attn` keeps at least 2x the chroma of any
-    /// tint. A colour nobody sees encodes nothing, and an unread tag is a
-    /// worse outcome than a board with ten quiet hues on it.
-    ///
-    /// **The flavors do NOT share a ring.** Chalk's ground is paper, so a tint
-    /// is INK on it and has to be darker than the paper by the same margin
-    /// graphite's is lighter than its ground (author 2026-09-01: "barely
-    /// visible on light theme"); blue's ring skips the navy's hue band as
-    /// well as the gold's. The hues are even around the wheel except the
-    /// bands skipped, because even spacing is what maximises the worst pair
-    /// once the chroma ceiling is fixed. One ring at one lightness, NOT two
-    /// rings of five: a second lightness would separate same-hue pairs by dL*
-    /// alone (~dE 12) and is beaten by simply spacing ten hues on one ring; it
-    /// would also make some tags louder than others, which is the one thing
-    /// a tag axis may never do.
-    ///
-    /// This is the FULL strength of a tint, which only the cursor card wears;
-    /// `pip_at` steps it down for the rest.
-    ///
-    /// Below TrueColor the tint is abandoned DELIBERATELY rather than
-    /// approximated: the indexed cube has no low-chroma hue wheel, so any
-    /// hand-assignment either collapses several hues onto one index or
-    /// reaches for cells with visible chroma — and a *visible* tag colour is
-    /// precisely the accent-spending failure. Ten indistinguishable tints are
-    /// worse than none. Nothing is lost, because the pip is the tag's first
-    /// letter: the letter was always the identity, the tint was the redundant
-    /// half.
-    ///
-    /// A phosphor keeps its ring too. It shipped without one (ten foreign
-    /// hues on a one-hue screen seemed the fiction broken) and the author
-    /// asked for it back within the hour: a tag's colour is what the tag is
-    /// FOR, and a theme does not get to take it away. The register-below-
-    /// the-accent rule is restated in lightness there (`test_pip_ramp_*`),
-    /// because a white-hot accent has no chroma for a tint to sit under.
+    /// Ten stable hue identities shared by all themes. Only lightness and
+    /// chroma adapt to the surfaces; tags keep their color off the cursor.
+    /// Below TrueColor the named chips and underline carry the information.
     pub fn pip(&self, n: usize) -> Color {
         match self.tints() {
             Some(t) => hex(t.ring[n % PIPS]),
@@ -974,48 +899,8 @@ impl Theme {
         }
     }
 
-    /// The same tint at the loudness the card has earned.
-    ///
-    /// There is no alpha in a terminal, so "less visible" is a blend toward
-    /// the page ground — which is what the eye reads as a colour receding
-    /// anyway, on either flavor: a tint fades DOWN into graphite and UP into
-    /// chalk. The hue survives every level, because which tag it is remains
-    /// the only thing the colour is there to say.
-    pub(crate) fn pip_at(&self, n: usize, level: TagLevel) -> Color {
-        self.faded(self.pip(n), level)
-    }
-
-    /// Any block colour at the loudness the card has earned — the tag tints
-    /// go through here, and so does the NEUTRAL block of an untagged ticket.
-    ///
-    /// The levels are a property of the CARD, not of the palette: a board
-    /// where only tagged tickets dim answers "is this the cursor card?" for
-    /// some cards and not others, which is what the first cut did and what
-    /// the author saw (2026-09-01).
-    ///
-    /// There are two: the cursor card at the full tint, every other card one
-    /// step down. A third, quieter level for a parked ticket (0.38 graphite /
-    /// 0.46 chalk) shipped 2026-09-01 and was cut the next day as too muted —
-    /// the glyph says asleep, the block says which tag.
-    ///
-    /// The step is wide on purpose. 0.82 shipped first and the boundary was
-    /// not visible on a real board: an 18% blend is nothing on a one-cell
-    /// block, and a level nobody can tell from its neighbour is not a level.
-    ///
-    /// **The flavors need different numbers to mean the same thing.** The
-    /// blend is a ratio in sRGB bytes, and the same ratio costs far more
-    /// toward WHITE than toward black: chalk's resting tint was landing at
-    /// C* 16.8 / contrast 2.82 where graphite's landed at 21.7 / 3.61, which
-    /// is where "barely visible on light theme" came from (author
-    /// 2026-09-01). Chalk therefore fades LESS (0.76) and its ramp starts
-    /// darker (`pip`); together those put the chalk level at or above the
-    /// graphite one it mirrors, while the step stays a step.
-    ///
-    /// **And the blend target is the palette's `shadow`, not always its
-    /// ground.** On a navy ground a tint blended 62% into the ground is
-    /// navy-hued whatever it started as (169° of drift, ten tags one colour);
-    /// blue fades toward a neutral at the ground's lightness instead, which
-    /// recedes exactly as far and keeps the hue.
+    /// Fade only an untagged bar toward its neutral shadow. Tag colors no
+    /// longer share the selection ladder: dimming them hid their identity.
     pub(crate) fn faded(&self, base: Color, level: TagLevel) -> Color {
         // A tintless palette still fades its neutral block: the ladder is the
         // card's, not the ring's.
@@ -1498,101 +1383,54 @@ mod tests {
         }
     }
 
-    /// The tag ring is chromatic — that is the point of it — but it stays a
-    /// register below the accent (D31b: a tag may not spend the one saturated
-    /// colour). Two numbers hold that line: the palette's own C* ceiling, and
-    /// a 2x margin under `attn`. Legibility is held to >= 4.5 on the page
-    /// ground (the ticket page paints a chip in the tint and writes the
-    /// ground on it, so this IS that chip's text contrast) and >= 4.0 on the
-    /// selected surface. The raises from C* 7 are recorded on `pip()`.
-    ///
-    /// The three levels are checked here too, because "less visible" must
-    /// stop short of "gone": a resting tag still clears the dim2 body floor
-    /// and a sleeping one still clears the dim3 de-emphasis floor — and it
-    /// keeps its HUE: the navy ground proved a level can hold its chroma and
-    /// still have become a different colour.
-    ///
-    /// A flavor with no ring is held to the opposite promise: every pip is
-    /// the one grey, at every level. On a phosphor the accent is the beam,
-    /// so the chroma clause holds as on paper — and the ring must also keep
-    /// clear of the phosphor's own hue, which the ground and the accent wear.
+    /// Tag identity survives theme changes, with useful contrast and pair
+    /// separation. Attention retains its own token and full title band;
+    /// tags no longer share its old chroma ceiling or forbidden hue bands.
     #[test]
-    fn test_pip_ramp_is_low_chroma_and_legible() {
-        for flavor in Flavor::ALL {
-            let t = Theme::new(flavor, Profile::TrueColor);
-            let tab = tc(flavor);
-            let Some(tints) = &tab.tints else {
-                for n in 0..PIPS {
-                    assert_eq!(t.pip(n), t.rest.dim2, "{flavor:?} pip {n} has a tint");
+    fn tag_colors_are_legible_distinct_and_keep_their_hue_across_themes() {
+        // OKLab, independent of the CIE Lab model used for the older palette
+        // laws. Compare hue after 8-bit RGB rounding, with one degree tolerance.
+        let oklab = |rgb: u32| {
+            let linear = |v: u32| {
+                let c = (v & 255) as f64 / 255.0;
+                if c <= 0.04045 {
+                    c / 12.92
+                } else {
+                    ((c + 0.055) / 1.055).powf(2.4)
                 }
-                assert!(!t.paints_tags(), "{flavor:?} claims to paint tags without a ring");
-                continue;
             };
-            let (bg, selbg) = (tab.bg, tab.selected);
-            let (_, c_attn) = lch(tab.attn);
+            let (r, g, b) = (linear(rgb >> 16), linear(rgb >> 8), linear(rgb));
+            let l = (0.4122214708 * r + 0.5363325363 * g + 0.0514459929 * b).cbrt();
+            let m = (0.2119034982 * r + 0.6806995451 * g + 0.1073969566 * b).cbrt();
+            let s = (0.0883024619 * r + 0.2817188376 * g + 0.6299787005 * b).cbrt();
+            (
+                1.9779984951 * l - 2.428592205 * m + 0.4505937099 * s,
+                0.0259040371 * l + 0.7827717662 * m - 0.808675766 * s,
+            )
+        };
+        let reference = Theme::new(Flavor::Graphite, Profile::TrueColor);
+        for flavor in Flavor::ALL {
+            let theme = Theme::new(flavor, Profile::TrueColor);
+            let tab = tc(flavor);
             for n in 0..PIPS {
-                let full = rgb(t.pip(n));
-                let (_, c) = lch(full);
-                assert!(
-                    c <= tints.ceiling,
-                    "{flavor:?} pip {n} {full:06X} has C* {c:.1} > {:.1}",
-                    tints.ceiling
-                );
-                // A register below the accent, and it must stay there.
-                assert!(
-                    c_attn >= c * 2.0,
-                    "{flavor:?} pip {n} C* {c:.1} is not a register below attn C* {c_attn:.1}"
-                );
-                match flavor.kind() {
-                    Kind::Paper | Kind::ChromaticGround | Kind::TintedPaper => {}
-                    Kind::Phosphor | Kind::Ladder => {
-                        let gap = hue_gap(full, tab.attn);
-                        assert!(gap >= 35.0, "{flavor:?} pip {n} is {gap:.1}° from the phosphor");
-                    }
-                }
-                for (surface, floor) in [(bg, 4.5), (selbg, 4.0)] {
-                    let k = contrast(full, surface);
-                    assert!(k >= floor, "{flavor:?} pip {n} {full:06X} on {surface:06X} is {k:.2}");
-                }
-                // The quieter level: still seen, still hued, never gone.
-                // A floor, not a target: the resting level is allowed under
-                // the body-text floor, because it is paint and not text —
-                // what it may never do is stop being a colour.
-                {
-                    let (level, floor) = (TagLevel::Rest, 2.8);
-                    let faded = rgb(t.pip_at(n, level));
-                    let k = contrast(faded, bg);
-                    assert!(k >= floor, "{flavor:?} {level:?} pip {n} {faded:06X} is {k:.2}");
-                    let (_, cf) = lch(faded);
-                    assert!(cf >= 8.0, "{flavor:?} {level:?} pip {n} lost its hue: C* {cf:.1}");
-                    let drift = hue_gap(faded, full);
-                    assert!(drift <= 20.0, "{flavor:?} {level:?} pip {n} drifted {drift:.1}°");
-                    // Each step has to be visible as a step, not just be a
-                    // different number: >= 12% of the ground-to-tint distance.
-                    let step = |a: u32, b: u32| {
-                        let ch = |v: u32, s: u32| ((v >> s) & 255) as f64;
-                        (0..3).map(|i| (ch(a, i * 8) - ch(b, i * 8)).abs()).sum::<f64>()
-                    };
-                    let span = step(full, bg);
+                let color = rgb(theme.pip(n));
+                for surface in [tab.bg, tab.selected] {
                     assert!(
-                        step(faded, full) >= span * 0.12,
-                        "{flavor:?} {level:?} pip {n} is not far enough from the tint"
+                        contrast(color, surface) >= 4.5,
+                        "{flavor:?} tint {n} on {surface:06X}"
                     );
                 }
-            }
-            // DISTINCT hues, or the ramp encodes nothing — and distinct by
-            // enough to tell apart in a one-cell block, which is the only
-            // place most of them are ever seen. dE76 13 is the worst pair the
-            // chalk ceiling allows at ten hues; anything under 12 means the
-            // ramp has been stretched past what it can hold.
-            let mut seen: Vec<u32> = Vec::new();
-            for n in 0..PIPS {
-                let c = rgb(t.pip(n));
-                for (m, prev) in seen.iter().enumerate() {
-                    let d = delta_e(c, *prev);
-                    assert!(d >= 12.0, "{flavor:?} pips {m} and {n} are dE {d:.1} apart");
+                assert_ne!(color, tab.attn, "tags cannot use the attention token");
+                let (a, b) = oklab(color);
+                assert!(a.hypot(b) >= 0.08, "{flavor:?} tint {n} lost its chroma");
+                let (ra, rb) = oklab(rgb(reference.pip(n)));
+                let gap =
+                    ((b.atan2(a) - rb.atan2(ra)).to_degrees() + 180.0).rem_euclid(360.0) - 180.0;
+                assert!(gap.abs() <= 1.0, "{flavor:?} tint {n} drifted {gap:.2} degrees");
+                for other in 0..n {
+                    let d = delta_e(color, rgb(theme.pip(other)));
+                    assert!(d >= 12.0, "{flavor:?} tints {other}/{n} only dE {d:.1} apart");
                 }
-                seen.push(c);
             }
         }
     }

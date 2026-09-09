@@ -1,9 +1,7 @@
 //! One card (07 §4 owns the anatomy; 06 supplies glyphs and tokens).
 //!
-//! Frame per line: `[bar 1][pad 1][content T][pad 1]`, `T = width - 3`. The
-//! bar is both the state ladder and the tag mark: `tags::bar_cell` repaints
-//! it in the ticket's colours and `tags::stack_full` runs them down an open
-//! card's stripe, and tags cost the card no cell at all.
+//! Frame per line: `[bar 2][pad 1][content T][pad 1]`, `T = width - 4`.
+//! The fixed-width bar carries tags; its shape stays the same when opened.
 //! Line 1: `[glyph+sp when stateful][title][fill][age 3]` — a card with no
 //! aggregate glyph (quiet-idle only) starts its title at T[0]; spawning left
 //! that set when Shift+Enter made the launch window something a user watches. The meta strip (line 2) carries only the session
@@ -20,6 +18,7 @@ use ratatui::text::{Line, Span};
 use unicode_width::UnicodeWidthStr;
 
 use crate::glyphs::{self, ahead_mark, behind_mark, branch_mark, Register, Tier};
+use crate::tags::BAR_WIDTH;
 use crate::text::{
     age_slot, created_at_epoch_ms, edit_window, marquee_offset, marquee_window, truncate,
     EditBuffer,
@@ -43,22 +42,27 @@ pub(super) fn render_edit(
     tags: &[crate::tags::Painted],
 ) -> (Line<'static>, u16) {
     let theme = ctx.theme;
-    let t_cells = (ctx.width as usize).saturating_sub(3);
+    let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
     let (bar_ch, bar_style) = theme.bar(BarWeight::Cursor);
     // The tags picked with `^t` colour the phantom card's bar exactly as they
     // will colour the real one.
     // The composer's phantom card is the cursor card by construction.
-    let (bar_ch, bar_style) =
-        crate::tags::bar_cell(theme, bar_ch, bar_style, tags, crate::theme::TagLevel::Selected);
+    let mut spans = crate::tags::bar_spans(
+        theme,
+        bar_ch,
+        bar_style,
+        tags,
+        crate::theme::TagLevel::Selected,
+        theme.selected_bg,
+    );
     // Scroll only as far as keeps the hardware cursor visible.
     let budget = t_cells.saturating_sub(1);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
-    let x_off = 2 + cx;
-    let spans = vec![
-        Span::styled(bar_ch, bar_style),
+    let x_off = BAR_WIDTH as u16 + 1 + cx;
+    spans.extend([
         Span::raw(" "),
         Span::styled(shown, Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)),
-    ];
+    ]);
     (Line::from(spans).style(theme.selected_row()), x_off)
 }
 
@@ -75,8 +79,6 @@ pub(super) fn render_edit(
 ///
 /// No bar on span 0. `render_workspace_selector` set that shape first: a row
 /// hanging under a card belongs to it and must not read as a second card.
-/// It also keeps the row clear of `tags::stack_full`, which paints the stripe
-/// of the lines above and knows nothing about this one.
 ///
 /// `placeholder` is what an EMPTY field says a blank Enter will do, and the
 /// caller picks it because only the caller knows the seat: `enter drops` on a
@@ -90,13 +92,15 @@ pub(super) fn render_prompt(
     placeholder: &str,
 ) -> (Line<'static>, u16) {
     let theme = ctx.theme;
-    // `  › ` — indent, caret, space. The caret is what an empty field has to
+    // Bar-width indent, pad, caret, space. The caret is what an empty field has to
     // show; without it the state is an empty row.
-    const LEAD: u16 = 4;
-    let t_cells = (ctx.width as usize).saturating_sub(3);
-    let budget = t_cells.saturating_sub(LEAD as usize - 1);
+    const LEAD: u16 = BAR_WIDTH as u16 + 3;
+    let budget = (ctx.width as usize).saturating_sub(LEAD as usize + 2);
     let (shown, cx) = edit_window(buffer.as_str(), buffer.width_before_cursor(), budget);
-    let mut spans = vec![Span::raw("  "), Span::styled("› ", Style::default().fg(theme.sel.dim2))];
+    let mut spans = vec![
+        Span::raw(" ".repeat(BAR_WIDTH + 1)),
+        Span::styled("› ", Style::default().fg(theme.sel.dim2)),
+    ];
     if buffer.as_str().is_empty() {
         // An empty field says what it is for, in the same words the key was
         // hinted with. The hardware cursor sits on the first letter of it,
@@ -127,12 +131,15 @@ pub(super) fn render_workspace_selector(
     };
     // The column's own default, while the field still stands on it (T-117).
     let from_column = column_default.is_some() && workspace == column_default;
-    let word = if from_column { format!("{word} (column default)") } else { word.to_string() };
-    let spans = vec![
-        Span::raw("  "),
+    let word = if from_column { format!("{word} (default)") } else { word.to_string() };
+    let mut spans = vec![
+        Span::raw(" ".repeat(BAR_WIDTH + 1)),
         Span::styled(format!("⎇ {word}"), Style::default().fg(theme.sel.dim1)),
-        Span::styled("  shift+tab", Style::default().fg(theme.sel.dim2)),
     ];
+    let hint = "  shift+tab";
+    if super::spans_width(&spans) + hint.width() < ctx.width as usize {
+        spans.push(Span::styled(hint, Style::default().fg(theme.sel.dim2)));
+    }
     Line::from(spans).style(theme.selected_row())
 }
 
@@ -145,7 +152,7 @@ pub(super) fn render_ask_mode(ctx: &CardCtx, queued: bool) -> Line<'static> {
     let theme = ctx.theme;
     let word = if queued { "queued" } else { "now" };
     let spans = vec![
-        Span::raw("  "),
+        Span::raw(" ".repeat(BAR_WIDTH + 1)),
         Span::styled(word.to_string(), Style::default().fg(theme.sel.dim1)),
         Span::styled("  shift+tab".to_string(), Style::default().fg(theme.sel.dim2)),
     ];
@@ -242,7 +249,7 @@ pub(super) fn render(
     owed_row: Option<&str>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
-    let t_cells = (ctx.width as usize).saturating_sub(3);
+    let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
     let tier = theme.glyph_tier();
     // The `z` chord is armed on this card: it opens and names the preset on
     // a row of its own, the way a quick tag opens the card it tagged.
@@ -334,19 +341,19 @@ pub(super) fn render(
     // neutral. The ASCII tiers keep their `: | #` ladder, which is a shape
     // and not a colour, and a move trail still goes ghost with the card.
     let (ladder_ch, state_style) = theme.bar(bar);
-    // Two loudnesses, and the cursor picks: the cursor card wears its block
-    // at full strength, every other card one small step down — which is
-    // where nearly every tag on the board is read. A third, quieter level
-    // for a parked ticket lived here for a day (read off the sessions, not
-    // the glyph) and was cut as too muted (author 2026-09-02): the glyph
-    // already says asleep, and the block's one job is "which tag".
+    // Selection only changes the neutral bar; tag identity stays full strength.
     let level =
         if cursorish { crate::theme::TagLevel::Selected } else { crate::theme::TagLevel::Rest };
     let bar_base = theme.bar(BarWeight::Dormant).1;
-    let (bar_ch, bar_style) = if trail {
-        (ladder_ch.to_string(), state_style)
-    } else {
-        crate::tags::bar_cell(theme, ladder_ch, bar_base, tags, level)
+    // Keep the tag gutter on a contrast-checked surface even when the title
+    // wears an attention/delete band; a yellow tag must not vanish into gold.
+    let bar_surface = if cursorish { theme.selected_bg.or(theme.bg) } else { theme.bg };
+    let bar_spans = || {
+        if trail {
+            vec![Span::styled(ladder_ch.to_string().repeat(BAR_WIDTH), state_style)]
+        } else {
+            crate::tags::bar_spans(theme, ladder_ch, bar_base, tags, level, bar_surface)
+        }
     };
 
     // ---- line 1: [glyph sp?][title][fill][wt][age] ------------------------
@@ -354,8 +361,7 @@ pub(super) fn render(
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
-    // Tags cost the title NOTHING: they are bands under the block, not a zone
-    // on this line. That is the point of moving them off it.
+    // The fixed bar budget is independent of how many tags the ticket wears.
     let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells);
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
@@ -411,7 +417,7 @@ pub(super) fn render(
         theme.dim2()
     };
 
-    let mut spans: Vec<Span<'static>> = vec![Span::styled(bar_ch.clone(), bar_style)];
+    let mut spans = bar_spans();
     spans.push(Span::styled(" ".to_string(), Style::default()));
     if let Some((g, reg)) = glyph {
         let gs = if trail {
@@ -492,10 +498,8 @@ pub(super) fn render(
         let quiet = Style::default().fg(ramp.dim2);
         let faint = Style::default().fg(ramp.dim3);
         let mut push = |spans: Vec<Span<'static>>| {
-            let mut all = vec![
-                Span::styled(bar_ch.clone(), bar_style),
-                Span::styled(" ".to_string(), Style::default()),
-            ];
+            let mut all = bar_spans();
+            all.push(Span::raw(" "));
             all.extend(spans);
             // Pad the interior so the surface paints the full card width.
             let used: usize = super::spans_width(&all);
@@ -608,13 +612,6 @@ pub(super) fn render(
                     Span::styled(row, quiet),
                 ]);
             }
-        }
-        // An open card's stripe is five or six cells tall, so the two tags
-        // run down it as full blocks — ~70% the first, ~30% the second —
-        // instead of sharing one cell across a half-block. It repaints span 0
-        // and nothing else, so no text moves (`tags::stack_full`).
-        if !trail {
-            crate::tags::stack_full(theme, &mut lines, ladder_ch, bar_base, tags, level);
         }
         return lines;
     }

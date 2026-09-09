@@ -303,7 +303,7 @@ pub(crate) enum Register {
     /// (06 §4.2 specifies the sleeping mark there), one step under `Grey`:
     /// on `Grey` the `z` sat as loud as the idle ring and the working
     /// spinner beside it, while the card's own bar had already faded to
-    /// its Sleeping level (`tags::bar_cell`). The glyph is the one element
+    /// its neutral resting level (`tags::bar_spans`). The glyph is the one element
     /// on a parked card that was not walking the ladder, and that — not the
     /// letter — is what read as low effort (author 2026-09-02). The letter
     /// stays: `⏾` U+23FE is present in 2 of 06 §4.1's seven faces and `☾`

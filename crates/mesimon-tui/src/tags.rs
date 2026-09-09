@@ -1,47 +1,12 @@
-//! Tag rendering: the stripe down the left of a card, the names inside its
-//! peek, and the tint ramp both draw from.
+//! Fixed-width tag bars and the named chips shown in an open card.
 //!
-//! A tag is **the card's own accent bar, painted**: neutral while nothing is
-//! tagged, the tag's colour once something is. Not a glyph and not text, and
-//! not a cell of its own — a second painted cell beside the bar read as one
-//! two-tone bar rather than as two things.
-//!
-//! **One cell holds two tags**, because a cell has more than one colour
-//! channel: the bar's *paint* is the first tag and the *underline stroke*
-//! across it is the second. That is why the card spends no cell at all for
-//! tags — and why there is no glyph here either. The obvious multi-colour
-//! glyph, `▌` U+258C with a foreground and a background, is banned twice
-//! over: inside the `0x2500–0x259F` range the L1 no-drawn-structure law bans
-//! (`test_no_drawn_structure`), and East Asian Width *Ambiguous*, where the
-//! terminal spends two cells and `unicode-width` counts one. A painted space
-//! has neither problem, and it is the same trick the accent bar already uses.
-//!
-//! Three earlier marks are recorded in STALE-MAP because each failed in use:
-//! a per-tag row of bands (cost a row per tag), a full-width underline (read
-//! as a border, and at C* 7 read as nothing), and a painted row under the
-//! card (read as an extra line below the ticket).
-//!
-//! **The second tag stacks**: `▀` U+2580 in the FIRST tag's colour over the
-//! second tag's paint, so the split runs across the bar rather than down it —
-//! a cell is taller than it is wide, so those are the fatter halves. Two
-//! rivals were built and cut (author 2026-09-01): a `▌` split down the cell,
-//! and the card's right-edge pad. So was the channel all three replaced — an
-//! SGR-58 underline across the bar, which shipped and could not be seen: one
-//! pixel at the bottom of a fully painted cell.
-//!
-//! **An open card has no need of the half-block.** One cell is all a resting
-//! card can give, but a card with its peek out is five or six cells tall, and
-//! at that height the two tags are FULL painted blocks instead: the first
-//! takes the top ~70% of the stripe, the second the ~30% under it, in the
-//! same order the half-block drew them (`stack_full`).
-//!
-//! **The tints stay under the accent.** D19 reserves exactly one saturated
-//! colour for "needs you", and a full painted cell is a lot more ink than a
-//! pip, so the ramp matters more here, not less. Tab cycles a tag through the
-//! ten tints in `Theme::pip` and nothing else — there is no free-colour path.
+//! Every bar reserves two cells. One tag fills both; two tags use `▉▉`,
+//! each glyph leaving a one-eighth-cell gap on the row's background.
+//! The shape and tag order stay the same when a card opens. Tag colors do
+//! not fade with selection; the neutral bar retains its selection ladder.
 
-use ratatui::style::{Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::style::{Color, Modifier, Style};
+use ratatui::text::Span;
 use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::board::{Board, TagRef};
@@ -65,115 +30,46 @@ pub(crate) fn painted(board: &Board, tags: &[TagRef]) -> Vec<Painted> {
     out
 }
 
-/// How many tags the card's bar can show: the cell's paint and the stroke
-/// across it, and there is no third channel a colour could use without
-/// spending a character. The rest are named in the peek row and on the
-/// ticket page.
+/// The same footprint for zero, one, or two tags, in every color profile.
+pub(crate) const BAR_WIDTH: usize = 2;
 pub(crate) const TAGS_ON_CARD: usize = 2;
 
-/// The card's accent bar, painted with the tags: the first tag is the cell,
-/// and the second is the lower half of it (`▀` over the second's paint). An
-/// untagged card keeps the neutral block — dimmed to the same level, because
-/// the loudness says what the CARD is doing and every card has to answer it.
-///
-/// The card spends NO cell on tags — the bar is already there, and a second
-/// painted cell beside it read as one two-tone bar rather than as two things
-/// (dogfood 2026-09-01). An untagged ticket leaves the bar exactly as it was
-/// handed over, which is what "neutral" means here.
-///
-/// `▀` U+2580 is inside the `0x2500–0x259F` range the L1 law bans and is East
-/// Asian Width *Ambiguous*; it is here on an explicit exception from the
-/// author, because an underline — the only other way to put two colours in
-/// one cell — is one pixel at the bottom of a fully painted cell and cannot
-/// be seen. `test_no_drawn_structure` names the ONE admitted codepoint and
-/// still bans the rest of the range; a card tall enough to run the two tags
-/// as full blocks does not reach for it at all (`stack_full`).
-///
-/// `level` is how loud the colour is allowed to be — the cursor card gets it
-/// at full strength, every other card one step down, still legible as a hue
-/// (`Theme::pip_at`).
-///
-/// Off TrueColor there is no tint and the bar is a character rather than
-/// paint, so a plain underline says "tagged" without saying which.
-pub(crate) fn bar_cell(
+/// Paint the bar on this row's surface. Explicitly replace the neutral bar's
+/// background for two tags: leaving it behind the glyph would fill the gap.
+/// `▉` is an intentional exception to the block-glyph restriction. Like the
+/// former half-block it is width-ambiguous; ASCII profiles never use it.
+pub(crate) fn bar_spans(
     theme: &Theme,
     ch: char,
     style: Style,
     tags: &[Painted],
     level: TagLevel,
-) -> (String, Style) {
-    let mut worn = tags.iter().take(TAGS_ON_CARD);
-    let Some(first) = worn.next() else {
-        // Untagged, and still a block: the two loudnesses belong to the
-        // CARD, so an untagged card off the cursor dims exactly like a tagged
-        // one and the cursor card's block is the brightest either way.
+    surface: Option<Color>,
+) -> Vec<Span<'static>> {
+    let Some(first) = tags.first() else {
         let faded = style.bg.map(|c| theme.faded(c, level));
-        return (ch.to_string(), faded.map(|c| style.bg(c)).unwrap_or(style));
+        let style = faded.map(|c| style.bg(c)).unwrap_or(style);
+        return vec![Span::styled(ch.to_string().repeat(BAR_WIDTH), style)];
     };
     if !theme.paints_tags() {
-        return (ch.to_string(), style.add_modifier(Modifier::UNDERLINED));
+        // Keep the existing underline fallback and its ASCII state ladder.
+        return vec![Span::styled(
+            ch.to_string().repeat(BAR_WIDTH),
+            style.add_modifier(Modifier::UNDERLINED),
+        )];
     }
-    let paint = theme.pip_at(first.tint as usize, level);
-    match worn.next() {
-        // `▀` paints the TOP half in the foreground: first tag over second.
-        Some(second) => {
-            ("▀".to_string(), style.bg(theme.pip_at(second.tint as usize, level)).fg(paint))
-        }
-        None => (ch.to_string(), style.bg(paint)),
+    if tags.len() == 1 {
+        return vec![Span::styled("  ", style.bg(theme.pip(first.tint as usize)))];
     }
-}
-
-/// The fewest rows a stripe can be cut into two runs and still read as ~70/30
-/// rather than as halves. Under it the half-block is the honest mark.
-const SPLIT_MIN_ROWS: usize = 3;
-
-/// How many rows at the BOTTOM of a stripe belong to the second tag: ~30% of
-/// it, rounded, never fewer than one and never more than half. The first tag
-/// is the ticket's first axis and has to stay the run the eye lands on.
-/// `None` where the stripe is too short to say that at all.
-pub(crate) fn second_rows(rows: usize) -> Option<usize> {
-    (rows >= SPLIT_MIN_ROWS).then(|| ((rows * 3 + 5) / 10).clamp(1, rows / 2))
-}
-
-/// Repaint an open card's stripe: the two tags as full painted blocks, one
-/// run over the other, instead of the two halves of a single cell.
-///
-/// `▀` puts both tags in one cell because a resting card has exactly one cell
-/// to spend. A card with its peek out has five or six, and at that height the
-/// half-block is a glyph doing what plain paint does better — and it is a
-/// glyph held on an explicit exception to the L1 no-drawn-structure law, so
-/// not reaching for it is worth something by itself. The order is the one the
-/// half-block drew: first tag on top.
-///
-/// Below TrueColor there is no tint to run, and one tag has nothing to split
-/// with; both leave the stripe exactly as `bar_cell` left it. Only the first
-/// span of each line is touched — the bar is span 0 on every card row — so
-/// this moves no text and changes no width.
-pub(crate) fn stack_full(
-    theme: &Theme,
-    lines: &mut [Line<'static>],
-    ch: char,
-    base: Style,
-    tags: &[Painted],
-    level: TagLevel,
-) {
-    if !theme.paints_tags() {
-        return;
-    }
-    let (Some(first), Some(second)) = (tags.first(), tags.get(1)) else {
-        return;
-    };
-    let rows = lines.len();
-    let Some(low) = second_rows(rows) else {
-        return;
-    };
-    for (i, line) in lines.iter_mut().enumerate() {
-        let tag = if i + low < rows { first } else { second };
-        let Some(cell) = line.spans.first_mut() else {
-            continue;
-        };
-        *cell = Span::styled(ch.to_string(), base.bg(theme.pip_at(tag.tint as usize, level)));
-    }
+    tags.iter()
+        .take(TAGS_ON_CARD)
+        .map(|tag| {
+            Span::styled(
+                "▉",
+                style.bg(surface.unwrap_or(Color::Reset)).fg(theme.pip(tag.tint as usize)),
+            )
+        })
+        .collect()
 }
 
 /// The tags spelled out as painted chips, for the one row the peek gives
@@ -253,185 +149,79 @@ mod tests {
         (0..n).map(|i| Painted { name: format!("T{i}"), tint: (i % PIPS) as u8 }).collect()
     }
 
-    /// The first tag paints the bar; the second is the lower half of that one
-    /// cell. Never two cells, and never a second block beside the bar — both
-    /// were built and both read as two things rather than one two-tone bar.
     #[test]
-    fn the_second_tag_is_the_lower_half_of_the_cell() {
-        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let worn = tags(2);
-        let (first, second) = (theme.pip(worn[0].tint as usize), theme.pip(worn[1].tint as usize));
-        let (ch, st) = bar_cell(&theme, ' ', Style::default(), &worn, TagLevel::Selected);
-        assert_eq!(ch, "▀");
-        assert_eq!(st.fg, Some(first), "the first tag must be the top half");
-        assert_eq!(st.bg, Some(second));
-    }
-
-    /// The stripe of an OPEN card is tall enough to give each tag its own run
-    /// of full blocks, so the half-block is not reached for at all: ~70% of
-    /// the rows to the first tag from the top, ~30% to the second under it.
-    #[test]
-    fn an_open_card_runs_the_two_tags_as_full_blocks() {
-        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let worn = tags(2);
-        let (first, second) = (theme.pip(worn[0].tint as usize), theme.pip(worn[1].tint as usize));
-        let base = Style::default().bg(theme.rest.dim3);
-        let card = |rows: usize| -> Vec<Line<'static>> {
-            (0..rows)
-                .map(|_| {
-                    Line::from(vec![
-                        Span::styled("▀".to_string(), base.bg(second).fg(first)),
-                        Span::raw("  body".to_string()),
-                    ])
-                })
-                .collect()
-        };
-
-        let mut lines = card(6);
-        stack_full(&theme, &mut lines, ' ', base, &worn, TagLevel::Selected);
-        let stripe: Vec<(String, Option<_>)> =
-            lines.iter().map(|l| (l.spans[0].content.to_string(), l.spans[0].style.bg)).collect();
-        assert!(stripe.iter().all(|(c, _)| c == " "), "the split still drew a glyph: {stripe:?}");
-        let tops = stripe.iter().filter(|(_, bg)| *bg == Some(first)).count();
-        assert_eq!((tops, stripe.len() - tops), (4, 2), "six rows should run 4/2");
-        assert_eq!(stripe[0].1, Some(first), "the first tag is the top run");
-        assert_eq!(stripe[5].1, Some(second), "the second tag is the bottom run");
-        // The rest of every row is untouched: this repaints a cell, it does
-        // not re-lay a card.
-        assert!(lines.iter().all(|l| l.spans[1].content == "  body"));
-
-        // The ratio across the heights an open card actually reaches. The
-        // first tag is never the smaller run, and the second is never absent.
-        for rows in 3..=12 {
-            let low = second_rows(rows).expect("tall enough");
-            assert!(low >= 1 && low <= rows / 2, "{rows} rows split {low}");
-        }
-        assert_eq!(second_rows(2), None, "two rows are halves, not a 70/30 split");
-        assert_eq!(second_rows(1), None);
-        assert_eq!(second_rows(10), Some(3));
-
-        // A resting card keeps the half-block: one row has nothing to run.
-        let mut one = card(1);
-        stack_full(&theme, &mut one, ' ', base, &worn, TagLevel::Selected);
-        assert_eq!(one[0].spans[0].content, "▀", "a one-row stripe was split");
-    }
-
-    /// Nothing to split with, nothing to split into: one tag, no tags, and
-    /// every profile below TrueColor leave an open card's stripe exactly as
-    /// `bar_cell` left it.
-    #[test]
-    fn a_stripe_with_one_tag_or_no_paint_is_left_alone() {
-        let base = Style::default();
-        let card = || -> Vec<Line<'static>> {
-            (0..6).map(|_| Line::from(vec![Span::styled("|".to_string(), base)])).collect()
-        };
-        let truecolor = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        for worn in [tags(0), tags(1)] {
-            let mut lines = card();
-            stack_full(&truecolor, &mut lines, ' ', base, &worn, TagLevel::Selected);
-            assert!(lines.iter().all(|l| l.spans[0].content == "|"), "{} tags", worn.len());
-        }
-        for p in [Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono] {
-            let theme = Theme::new(Flavor::Graphite, p);
-            let mut lines = card();
-            stack_full(&theme, &mut lines, ':', base, &tags(2), TagLevel::Selected);
-            assert!(lines.iter().all(|l| l.spans[0].content == "|"), "{p:?} painted a tint");
-        }
-    }
-
-    /// Two loudnesses, and they are ordered: the cursor card's tag is the
-    /// full tint, every other card's is a small step down — and both keep
-    /// the hue, which is the only thing the colour is there to say. (A third,
-    /// quieter level for a parked ticket was cut 2026-09-02: too muted.)
-    #[test]
-    fn the_two_levels_fade_but_keep_the_hue() {
+    fn bars_keep_their_width_and_colors_across_selection() {
         for flavor in Flavor::ALL {
             let theme = Theme::new(flavor, Profile::TrueColor);
-            for n in 0..PIPS {
-                let full = theme.pip_at(n, TagLevel::Selected);
-                assert_eq!(full, theme.pip(n), "{flavor:?} the selected level is the tint");
-                let rest = theme.pip_at(n, TagLevel::Rest);
-                assert_ne!(rest, full, "{flavor:?} rest did not step down");
-                // The resting level is still a distinct colour per tag, so
-                // two resting cards never read as the same tag.
-                for other in 0..PIPS {
-                    if other != n {
-                        assert_ne!(rest, theme.pip_at(other, TagLevel::Rest));
+            let base = Style::default().bg(theme.rest.dim3);
+            for n in 0..=5 {
+                let worn = tags(n);
+                for level in [TagLevel::Selected, TagLevel::Rest] {
+                    let spans = bar_spans(&theme, ' ', base, &worn, level, theme.bg);
+                    assert_eq!(spans.iter().map(Span::width).sum::<usize>(), BAR_WIDTH);
+                    match n {
+                        0 => {
+                            assert_eq!(spans[0].style.bg, Some(theme.faded(theme.rest.dim3, level)))
+                        }
+                        1 => {
+                            assert_eq!(spans[0].content, "  ");
+                            assert_eq!(spans[0].style.bg, Some(theme.pip(0)));
+                        }
+                        _ => {
+                            assert_eq!(spans.len(), 2);
+                            for (i, span) in spans.iter().enumerate() {
+                                assert_eq!(span.content, "▉");
+                                assert_eq!(span.style.fg, Some(theme.pip(i)));
+                                assert_eq!(span.style.bg, theme.bg);
+                            }
+                        }
                     }
                 }
             }
         }
-        // Below TrueColor there is no ground to fade into, so the levels
-        // collapse rather than inventing greys the palette does not have.
-        let flat = Theme::new(Flavor::Graphite, Profile::Ansi256);
-        assert_eq!(flat.pip_at(0, TagLevel::Rest), flat.pip(0));
     }
 
-    /// One tag paints the bar and asks for nothing else — no half-block, no
-    /// edge: both would read as a second tag that is not there.
     #[test]
-    fn one_tag_is_paint_and_nothing_else() {
-        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let (ch, st) = bar_cell(&theme, ' ', Style::default(), &tags(1), TagLevel::Selected);
-        assert_eq!(ch, " ", "one tag drew a half-block");
-        assert_eq!(st.bg, Some(theme.pip(0)));
-        assert_eq!(st.fg, None);
-    }
-
-    /// A third tag does not reach the card: the bar has two channels and the
-    /// peek row has the names.
-    #[test]
-    fn the_card_shows_the_first_two_tags() {
-        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let many = tags(5);
-        let (ch, st) = bar_cell(&theme, ' ', Style::default(), &many, TagLevel::Selected);
-        assert_eq!(ch, "▀");
-        assert_eq!(st.fg, Some(theme.pip(many[0].tint as usize)));
-        assert_eq!(st.bg, Some(theme.pip(many[1].tint as usize)));
-        assert_eq!(ch.chars().count(), 1, "the mark grew past its cell");
-        // And the open card's runs are the same two, not five.
-        let base = Style::default();
-        let mut lines: Vec<Line<'static>> =
-            (0..6).map(|_| Line::from(vec![Span::styled(" ".to_string(), base)])).collect();
-        stack_full(&theme, &mut lines, ' ', base, &many, TagLevel::Selected);
-        let hues: std::collections::BTreeSet<String> =
-            lines.iter().map(|l| format!("{:?}", l.spans[0].style.bg)).collect();
-        assert_eq!(hues.len(), 2, "the stripe ran more than two tags: {hues:?}");
-    }
-
-    /// An untagged ticket leaves the bar exactly as it was handed over. That
-    /// is what keeps an untagged board rendering as it always did.
-    #[test]
-    fn an_untagged_ticket_leaves_the_bar_alone() {
-        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let base = Style::default().bg(theme.rest.dim3);
-        assert_eq!(bar_cell(&theme, ' ', base, &[], TagLevel::Selected), (" ".to_string(), base));
-    }
-
-    /// Off TrueColor there is no tint and the bar is a character rather than
-    /// paint, so a plain underline says "tagged" — the same honest
-    /// degradation the mark has always had. And no half-block: the glyph is
-    /// admitted for a colour it cannot show there.
-    #[test]
-    fn without_tints_the_bar_still_says_tagged() {
-        for p in [Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono] {
-            let theme = Theme::new(Flavor::Graphite, p);
-            let (ch, st) = bar_cell(&theme, '|', Style::default(), &tags(2), TagLevel::Selected);
-            assert_eq!(ch, "|", "{p:?} drew a half-block with no colour to put in it");
-            assert_eq!(st.bg, None, "{p:?} painted a tint it does not have");
-            assert!(st.add_modifier.contains(Modifier::UNDERLINED), "{p:?} says nothing");
+    fn two_equal_tints_still_have_a_gap_on_each_surface() {
+        for flavor in Flavor::ALL {
+            let theme = Theme::new(flavor, Profile::TrueColor);
+            let worn = vec![Painted { name: "BUG".into(), tint: 0 }; 2];
+            for surface in [theme.bg, theme.selected_bg, Some(theme.attn), theme.delete_row().bg] {
+                let spans = bar_spans(
+                    &theme,
+                    ' ',
+                    Style::default().bg(theme.rest.dim3),
+                    &worn,
+                    TagLevel::Selected,
+                    surface,
+                );
+                for span in spans {
+                    assert_eq!(span.content, "▉");
+                    assert_eq!(span.style.bg, Some(surface.unwrap_or(Color::Reset)));
+                    assert_eq!(span.style.fg, Some(theme.pip(0)));
+                }
+            }
         }
     }
 
-    /// The half-block is ONE cell wide by `unicode-width`, which is the
-    /// measurement the whole layout is arithmetic over. (It is East Asian
-    /// Width Ambiguous, so a terminal set to render Ambiguous as double will
-    /// disagree — that is the risk the author accepted, and it is recorded in
-    /// STALE-MAP rather than hidden here. An open card sidesteps it entirely:
-    /// `stack_full` paints spaces.)
     #[test]
-    fn the_half_block_is_one_cell() {
-        assert_eq!("▀".width(), 1);
+    fn without_tints_the_bar_keeps_its_ascii_fallback() {
+        for p in [Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono] {
+            let theme = Theme::new(Flavor::Graphite, p);
+            for n in 0..=3 {
+                let spans =
+                    bar_spans(&theme, '|', Style::default(), &tags(n), TagLevel::Selected, None);
+                assert_eq!(spans.len(), 1);
+                assert_eq!(spans[0].content, "||");
+                assert_eq!(spans[0].style.bg, None);
+                assert_eq!(spans[0].style.add_modifier.contains(Modifier::UNDERLINED), n > 0);
+            }
+        }
+    }
+
+    #[test]
+    fn the_seven_eighths_block_is_one_cell() {
+        assert_eq!("▉".width(), 1);
     }
 
     /// Every tag gets named, even when the row is tight: the names share the
@@ -461,28 +251,5 @@ mod tests {
             chips(&theme, &long, 9).iter().map(|s| s.content.to_string()).collect();
         assert!(squeezed.width() <= 9 && squeezed.contains("PRODU"), "{squeezed:?}");
         assert!(chips(&theme, &[], 40).is_empty());
-    }
-
-    /// The only codepoint the mark may ever reach for is the admitted
-    /// half-block `▀` U+2580. `▌` U+258C went with the home that used it —
-    /// an exception nothing spends is a ban — and `▔` U+2594, `█` U+2588 and
-    /// the rest of the range were never admitted at all.
-    #[test]
-    fn the_mark_reaches_for_one_codepoint_only() {
-        let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
-        let base = Style::default();
-        for n in 0..5 {
-            let (ch, _) = bar_cell(&theme, ' ', base, &tags(n), TagLevel::Selected);
-            for c in ch.chars() {
-                assert!(c == ' ' || c == '▀', "the mark drew {c:?}");
-            }
-            // And the open card's stripe reaches for no glyph at all.
-            let mut lines: Vec<Line<'static>> =
-                (0..6).map(|_| Line::from(vec![Span::styled(" ".to_string(), base)])).collect();
-            stack_full(&theme, &mut lines, ' ', base, &tags(n), TagLevel::Selected);
-            for l in &lines {
-                assert!(l.spans[0].content.chars().all(|c| c == ' '), "the split drew a glyph");
-            }
-        }
     }
 }

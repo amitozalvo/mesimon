@@ -1259,7 +1259,7 @@ fn golden_composer_column_default_120() {
     let mut app = app_graphite(board);
     press(&mut app, 'o');
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("worktree (column default)")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("worktree (default)")), "{lines:?}");
     golden("composer_column_default_120x30", &lines);
 }
 
@@ -2118,133 +2118,71 @@ fn test_the_bar_carries_the_tags_in_their_own_tints() {
     assert!(!plain.modifier.contains(Modifier::UNDERLINED));
 }
 
-/// Two tags, one cell: `▀` stacked across it, the first over the second. It
-/// costs the card no width, which is the whole reason the bar carries them.
-/// Two rivals were built and cut — a `▌` split down the cell, and the card's
-/// right-edge pad — so there is one home and this test is its whole story.
+/// Two full-height marks on the row's actual surface, including when open.
 #[test]
-fn test_two_tags_ride_one_cell() {
-    let mut app = app_graphite(fixture_tagged());
-    app.cursor_col = 0;
-    // The card is not the cursor and not asleep, so its tags are at rest.
-    let at = |group: u8, name: &str| {
-        app.theme.pip_at(
-            app.board.tag_def(group, name).expect("registered").tint() as usize,
-            crate::theme::TagLevel::Rest,
-        )
-    };
-    let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
-    assert_ne!(first, second, "the two channels must read apart");
-    let y =
-        render(&app, 120, 30).iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
-
-    let buf = cells(&app, 120, 30);
-    let x = (0..120u16).find(|x| buf[(*x, y)].symbol() == "▀").expect("no stacked mark");
-    assert_eq!(buf[(x, y)].fg, first, "the first tag must be the top half");
-    assert_eq!(buf[(x, y)].bg, second);
-    // One cell, and nothing else on the row wears either tint — no second
-    // block beside the bar, nothing on the trailing pad.
-    let painted: Vec<u16> =
-        (0..120u16).filter(|c| buf[(*c, y)].bg == first || buf[(*c, y)].bg == second).collect();
-    assert_eq!(painted, vec![x], "the second tag took a cell of its own: {painted:?}");
-}
-
-/// An OPEN card has a stripe five or six cells tall, and there the two tags
-/// are full painted blocks — ~70% the first from the top, ~30% the second
-/// under it — rather than two halves of one cell. The half-block is not
-/// reached for at all, which is the L1 exception going unspent.
-#[test]
-fn test_an_open_card_runs_the_tags_down_its_stripe() {
+fn test_two_tags_keep_their_columns_when_the_card_opens() {
     let path = write_transcript("tags-split", &reply_record("Rebased and green."));
-    let mut b = fixture_tagged();
-    attach_transcript(&mut b, &path);
-    let mut app = app_graphite(b);
-    app.cursor_col = 1; // T-3 "Fix OSC-11 detection": BUG + STAGING
-    app.cursor_row = Some(0);
-    app.peek = true;
-    let at = |group: u8, name: &str| {
-        app.theme.pip_at(
-            app.board.tag_def(group, name).expect("registered").tint() as usize,
-            crate::theme::TagLevel::Selected,
-        )
-    };
-    let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
-    let lines = render(&app, 120, 30);
-    let top = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
-    let buf = cells(&app, 120, 30);
-    let bar_x = (0..120u16).find(|x| buf[(*x, top)].bg == first).expect("no stripe");
-
-    // Walk the stripe down while it stays one of the two tints.
-    let mut run: Vec<ratatui::style::Color> = Vec::new();
-    for y in top..30 {
-        let c = &buf[(bar_x, y)];
-        if c.bg != first && c.bg != second {
-            break;
+    for flavor in crate::theme::Flavor::ALL {
+        for selected in [false, true] {
+            for peek in [false, true] {
+                let mut b = fixture_tagged();
+                attach_transcript(&mut b, &path);
+                let mut app = app_graphite(b);
+                app.theme = crate::theme::Theme::new(flavor, crate::theme::Profile::TrueColor);
+                app.cursor_col = if selected { 1 } else { 0 };
+                app.cursor_row = Some(0);
+                app.peek = peek;
+                let at = |group, name| {
+                    app.theme
+                        .pip(app.board.tag_def(group, name).expect("registered").tint() as usize)
+                };
+                let (first, second) = (at(1, "BUG"), at(2, "STAGING"));
+                let lines = render(&app, 120, 30);
+                let top = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+                let buf = cells(&app, 120, 30);
+                let x = (30..60).find(|x| buf[(*x, top)].symbol() == "▉").expect("tag bar");
+                let surface = if selected { app.theme.selected_bg } else { app.theme.bg }.unwrap();
+                let mut rows = 0;
+                for y in top..30 {
+                    if buf[(x, y)].symbol() != "▉" {
+                        break;
+                    }
+                    assert_eq!(buf[(x + 1, y)].symbol(), "▉");
+                    assert_eq!(buf[(x, y)].fg, first);
+                    assert_eq!(buf[(x + 1, y)].fg, second);
+                    assert_eq!(buf[(x, y)].bg, surface, "gap at {x},{y}");
+                    assert_eq!(buf[(x + 1, y)].bg, surface);
+                    rows += 1;
+                }
+                if selected && peek {
+                    assert!(rows >= 3);
+                } else {
+                    assert!(rows >= 1);
+                }
+            }
         }
-        assert_eq!(c.symbol(), " ", "the open stripe drew a glyph at row {y}");
-        run.push(c.bg);
     }
-    assert!(run.len() >= 3, "the open card was too short to split: {} rows", run.len());
-    let low = run.iter().filter(|c| **c == second).count();
-    assert_eq!(low, crate::tags::second_rows(run.len()).expect("tall enough"));
-    assert!(low >= 1 && low < run.len() - low, "the second tag is not the smaller run");
-    assert_eq!(run[0], first, "the first tag is the top of the stripe");
-    assert_eq!(*run.last().expect("rows"), second, "the second tag is the bottom");
-    // The runs are contiguous: one changeover, not stripes.
-    let flips = run.windows(2).filter(|w| w[0] != w[1]).count();
-    assert_eq!(flips, 1, "the stripe changed tint {flips} times");
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// Two loudnesses on one board: the cursor card at full strength, every
-/// other card a step down — a parked ticket included, since the glyph says
-/// asleep and the block says which tag (the quieter third level was cut
-/// 2026-09-02 as too muted). There is no alpha in a terminal, so the step
-/// is a blend toward the ground.
+/// Selection and sleep do not dim tag identity.
 #[test]
-fn test_the_card_state_sets_the_tag_loudness() {
+fn test_tags_keep_full_strength_off_the_cursor() {
     let mut app = app_graphite(fixture_tagged());
     app.cursor_col = 0;
-    app.cursor_row = Some(0); // "Decay treatments" (FTR) is the cursor card
-    let buf = cells(&app, 120, 30);
-    let lines = render(&app, 120, 30);
-    let tint = app.board.tag_def(1, "FTR").expect("registered").tint() as usize;
-    let at = |level| app.theme.pip_at(tint, level);
-    // Cards from every column share a screen row, and two of them wear the
-    // same tag here — so the search is scoped to the card's own column.
-    let bar_of = |lines: &[String],
-                  needle: &str,
-                  buf: &ratatui::buffer::Buffer,
-                  cols: std::ops::Range<u16>| {
-        let y = lines.iter().position(|l| l.contains(needle)).expect("card") as u16;
-        cols.clone()
-            .find(|x| {
-                buf[(*x, y)].bg == at(crate::theme::TagLevel::Selected)
-                    || buf[(*x, y)].bg == at(crate::theme::TagLevel::Rest)
-            })
-            .map(|x| buf[(x, y)].bg)
-    };
-    assert_eq!(
-        bar_of(&lines, "Decay treatments", &buf, 0..30),
-        Some(at(crate::theme::TagLevel::Selected)),
-        "the cursor card must wear its tag at full strength"
-    );
-    // T-7's session is asleep, and its tag sits at rest like any other
-    // card off the cursor: the block does not say "asleep", the glyph does.
-    assert_eq!(
-        bar_of(&lines, "Painted accent bar", &buf, 88..120),
-        Some(at(crate::theme::TagLevel::Rest)),
-        "a sleeping ticket wears its tag at the ordinary resting level"
-    );
-    // Move the cursor off, and the same card steps down to rest.
-    app.cursor_row = Some(1);
-    let buf = cells(&app, 120, 30);
-    let lines = render(&app, 120, 30);
-    assert_eq!(
-        bar_of(&lines, "Decay treatments", &buf, 0..30),
-        Some(at(crate::theme::TagLevel::Rest)),
-        "a card off the cursor sits at rest"
-    );
+    let tint = app.theme.pip(app.board.tag_def(1, "FTR").expect("tag").tint() as usize);
+    for row in [0, 1] {
+        app.cursor_row = Some(row);
+        let buf = cells(&app, 120, 30);
+        let lines = lines_of(&buf);
+        for (name, x) in [("Decay treatments", 1), ("Painted accent", 91)] {
+            let y = lines.iter().position(|l| l.contains(name)).expect("card") as u16;
+            for dx in 0..2 {
+                assert_eq!(buf[(x + dx, y)].bg, tint);
+                assert_eq!(buf[(x + dx, y)].symbol(), " ");
+            }
+        }
+    }
 }
 
 /// The two loudnesses are the CARD's, not the palette's: an untagged board
@@ -2285,32 +2223,33 @@ fn test_an_untagged_block_ladders_too() {
 /// the board has.
 #[test]
 fn test_a_waiting_card_still_shouts() {
-    let mut b = fixture_tagged();
-    let mut s = session(
-        42,
-        ulid_n(3),
-        SessionKind::Claude,
-        SessionState::RequiresAction { reason: Reason::Permission },
-    );
-    s.waiting_since = Some(1);
-    b.sessions.push(s);
-    let mut app = app_graphite(b);
-    app.cursor_col = 0;
-    let buf = cells(&app, 120, 30);
-    let lines = render(&app, 120, 30);
-    let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
-    let tint = app.theme.pip_at(
-        app.board.tag_def(1, "BUG").expect("registered").tint() as usize,
-        crate::theme::TagLevel::Rest,
-    );
-    assert!(
-        (0..120u16).any(|x| buf[(x, y)].bg == tint || buf[(x, y)].fg == tint),
-        "the waiting card lost its tag"
-    );
-    assert!(
-        (0..120u16).any(|x| buf[(x, y)].bg == ATTN_GRAPHITE),
-        "the waiting card lost its alarm row"
-    );
+    for flavor in crate::theme::Flavor::ALL {
+        for selected in [false, true] {
+            let mut b = fixture_tagged();
+            let mut session = session(
+                42,
+                ulid_n(3),
+                SessionKind::Claude,
+                SessionState::RequiresAction { reason: Reason::Permission },
+            );
+            session.waiting_since = Some(1);
+            b.sessions.push(session);
+            let mut app = app_graphite(b);
+            app.theme = crate::theme::Theme::new(flavor, crate::theme::Profile::TrueColor);
+            app.cursor_col = if selected { 1 } else { 0 };
+            let buf = cells(&app, 120, 30);
+            let lines = lines_of(&buf);
+            let y = lines.iter().position(|l| l.contains("Fix OSC-11")).expect("card") as u16;
+            let x = (30..60).find(|x| buf[(*x, y)].symbol() == "▉").expect("tags");
+            let surface = if selected { app.theme.selected_bg } else { app.theme.bg }.unwrap();
+            for (dx, group, name) in [(0, 1, "BUG"), (1, 2, "STAGING")] {
+                let tint = app.theme.pip(app.board.tag_def(group, name).unwrap().tint() as usize);
+                assert_eq!(buf[(x + dx, y)].fg, tint);
+                assert_eq!(buf[(x + dx, y)].bg, surface, "keep tags off the attention ground");
+            }
+            assert_eq!(buf[(x + 2, y)].bg, app.theme.attn, "the title keeps its alarm band");
+        }
+    }
 }
 
 /// Tags now spend ink on the underline channel, so the one-saturated-colour
@@ -2334,14 +2273,12 @@ fn test_tag_underlines_never_spend_the_accent() {
     }
 }
 
-/// The second tag costs the card nothing: the same board, the same text, the
-/// same widths whether a ticket wears one tag or two. It rides a cell that
-/// was already there — at rest the lower half of the bar, open the lower
-/// third of the stripe — and that is the whole reason it is paint.
+/// All cards reserve the same two cells: adding a second tag only changes
+/// the bar and the named chips, never title position or available width.
 #[test]
 fn test_the_second_tag_costs_no_width() {
     let plain = |lines: Vec<String>| -> Vec<String> {
-        lines.iter().map(|l| l.replace('▀', " ")).collect()
+        lines.iter().map(|l| l.replace('▉', " ")).collect()
     };
     for peek in [false, true] {
         let mut two = app_graphite(fixture_tagged());
@@ -2362,6 +2299,38 @@ fn test_the_second_tag_costs_no_width() {
                 continue;
             }
             assert_eq!(x, y, "peek {peek}: the second tag moved something");
+        }
+    }
+}
+
+/// The editor's hardware cursor uses the same fixed inset as its title,
+/// including in narrow columns and the ASCII fallback profiles.
+#[test]
+fn test_tag_count_keeps_the_title_editor_aligned() {
+    use super::card;
+    use crate::theme::{Flavor, Profile};
+    let buffer = crate::text::EditBuffer::from_text("hello".into(), 100);
+    for profile in
+        [Profile::TrueColor, Profile::Ansi256, Profile::Ansi16, Profile::Ansi8, Profile::Mono]
+    {
+        let theme = crate::theme::Theme::new(Flavor::Graphite, profile);
+        for width in [12, 29, 48] {
+            let ctx = card::CardCtx { theme: &theme, width, now_ms: 0, spin: 0 };
+            let mut previous = None;
+            for n in 0..=2 {
+                let worn: Vec<_> =
+                    (0..n).map(|tint| crate::tags::Painted { name: "tag".into(), tint }).collect();
+                let (line, cursor) = card::render_edit(&ctx, &buffer, &worn);
+                let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+                let title_x = text.replace('▉', " ").find("hello").expect("title");
+                assert_eq!(title_x, crate::tags::BAR_WIDTH + 1);
+                assert!(line.width() <= width as usize);
+                assert!(cursor < width);
+                if let Some(prev) = previous {
+                    assert_eq!(cursor, prev);
+                }
+                previous = Some(cursor);
+            }
         }
     }
 }
@@ -2643,7 +2612,7 @@ fn golden_prompt_field_120() {
     };
     let lines = render(&app, 120, 30);
     assert!(
-        lines.iter().any(|l| l.contains("Fix OSC-11 detection")),
+        lines.iter().any(|l| l.contains("Fix OSC-11")),
         "the card must survive the field — you are typing AT it:\n{}",
         lines.join("\n")
     );
@@ -2960,7 +2929,7 @@ fn golden_train_manual_120() {
     let lines = render(&app, 120, 30);
     let mark = crate::glyphs::queued(crate::glyphs::Tier::Unicode, 0);
     assert!(
-        lines.iter().any(|l| l.contains("Grapheme truncat") && !l.contains(mark)),
+        lines.iter().any(|l| l.contains("Grapheme trunca") && !l.contains(mark)),
         "nothing owed, no owed mark:\n{}",
         lines.join("\n")
     );
@@ -3059,7 +3028,7 @@ fn test_the_prompt_field_moves_no_text() {
     let after = render(&app, 120, 30);
     let card = before
         .iter()
-        .position(|l| l.contains("Fix OSC-11 detection"))
+        .position(|l| l.contains("Fix OSC-11"))
         .expect("the card renders without the field");
     assert_eq!(
         before[card], after[card],
@@ -3841,10 +3810,10 @@ fn the_composer_dialog_grows_out_of_its_card() {
     // card's cells, the meta row under it where the card's was, and the rest
     // of the board is still on screen around it.
     let first = render(&app, 120, 30);
-    assert!(first[card_row].starts_with("   Ship the diff viewer"), "{:?}", first[card_row]);
-    assert!(first[card_row + 1].starts_with("   NEW TICKET"), "{:?}", first[card_row + 1]);
+    assert!(first[card_row].starts_with("    Ship the diff viewer"), "{:?}", first[card_row]);
+    assert!(first[card_row + 1].starts_with("    NEW TICKET"), "{:?}", first[card_row + 1]);
     assert!(
-        first.iter().any(|l| l.contains("Fix OSC-11 detection")),
+        first.iter().any(|l| l.contains("Fix OSC-11")),
         "the other columns show through while the dialog is small"
     );
     assert!(!first.iter().any(|l| l.contains("describe it")), "no body at the card's size");
@@ -3862,7 +3831,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
     let title_at =
         after[4].find("Ship the diff viewer").expect("the title on the dialog's first row");
     let dialog_x = after[4][..title_at].chars().count() - 2;
-    assert_eq!(dialog_x, 31, "the second column's own bar cell: {:?}", after[4]);
+    assert_eq!(dialog_x, 32, "one cell before the title, after the two-cell bar: {:?}", after[4]);
     // The frame's top edge names the dialog on the breathing row over the
     // cards; the context row under the title starts at the column.
     assert!(after[3].contains("NEW TICKET"), "{:?}", after[3]);
@@ -3872,8 +3841,8 @@ fn the_composer_dialog_grows_out_of_its_card() {
         assert!(!after.iter().any(|l| l.contains(covered)), "{covered} is under the dialog");
     }
     assert!(
-        after[4].starts_with("   Decay treatments       >1y")
-            && after[4].contains("z Painted accent bar  >1y"),
+        after[4].starts_with("    Decay treatments      >1y")
+            && after[4].contains("z Painted accent bar >1y"),
         "whole cards on both sides, never a sliver: {:?}",
         after[4]
     );
@@ -3994,8 +3963,8 @@ fn the_description_dialog_grows_out_of_the_card() {
     // Frame zero is the card: the title in the card's cells, and with no
     // frame edge to carry it the context row says what the text is.
     let first = render(&app, 120, 30);
-    assert!(first[card_row].starts_with("   Decay treatments"), "{:?}", first[card_row]);
-    assert!(first.iter().any(|l| l.contains("Fix OSC-11 detection")), "the board shows through");
+    assert!(first[card_row].starts_with("    Decay treatments"), "{:?}", first[card_row]);
+    assert!(first.iter().any(|l| l.contains("Fix OSC-11")), "the board shows through");
 
     // Settled: the dialog over the middle columns, its frame's top edge
     // naming the note, the ticket's workspace on the context row, and the
@@ -4875,23 +4844,11 @@ fn test_no_drawn_structure() {
                     if !(0x2500..=0x259F).contains(&cp) {
                         continue;
                     }
-                    // `▀` U+2580 is the ONE admitted codepoint off a frame,
-                    // on an explicit exception from the author (2026-09-01):
-                    // it carries the second tag inside a resting card's
-                    // single bar cell, which no attribute can do — an
-                    // underline is a pixel at the bottom of a painted cell
-                    // and cannot be seen. `▌` U+258C went back to being
-                    // banned with the home that spent it; `▔` and `█` were
-                    // never admitted, nor was the rest. A frame's own six
-                    // glyphs (`glyphs::frame_set`) are legal exactly on the
-                    // perimeter the draw recorded (T-158). `▎` U+258E is the
-                    // second admission (author 2026-09-03, "reduce thickness"
-                    // of the ticket page's description bar): a painted cell
-                    // has one width, so a thinner bar is a glyph or nothing.
-                    // `Theme::desc_bar` is its only producer. The shin adds
-                    // an exception for its EXACT cells, never its whole zone.
+                    // The tag bar admits `▉` for its narrow gaps. `▎` belongs
+                    // to description bars; frames and the mascot keep their
+                    // own position-scoped exceptions.
                     assert!(
-                        ch == '▀'
+                        ch == '▉'
                             || ch == '▎'
                             || on_perimeter(frames, x, y)
                             || mascot.is_some_and(|r| {
@@ -5392,88 +5349,177 @@ fn test_move_trail_is_semi_transparent() {
     assert_eq!(fgs[1], theme.sel.base, "ghost blinks at full value (bright phase)");
 }
 
-/// A column clipped below keeps every fitting card at full value and shows
-/// the next not-fully-visible card as a one-line dim3 ghost at the edge,
-/// separated by the card-rhythm blank — same demotion both directions
-/// (author 2026-08-30). A board that fits whole fades nothing.
-#[test]
-fn test_clipped_column_edge_peeks() {
-    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+fn fixture_overflow() -> Board {
     let mut b = Board::default();
     b.columns.push(Column::new("todo", "0"));
     b.columns.push(Column::new("done", "1"));
+    b.register_tag(1, "BUG").unwrap();
+    b.register_tag(2, "UI").unwrap();
     for i in 0..12u128 {
-        b.tickets.push(ticket(
-            i + 1,
-            &format!("T-{i}"),
-            &format!("Load {i}"),
-            "todo",
-            &format!("{i:02}"),
-        ));
+        let mut t =
+            ticket(i + 1, &format!("T-{i}"), &format!("Load {i:02}"), "todo", &format!("{i:02}"));
+        t.set_tag(1, Some("BUG".into()));
+        if i % 2 == 1 {
+            t.set_tag(2, Some("UI".into()));
+        }
+        b.tickets.push(t);
     }
     b.tickets.push(ticket(99, "T-99", "Elsewhere", "done", "00"));
-    let mut app = app_graphite(b);
-    app.cursor_col = 1; // todo is a bystander column: scroll pinned to 0
+    b
+}
 
-    let rows = |app: &App, h: u16| -> Vec<(u16, ratatui::style::Color)> {
-        let buf = cells(app, 120, h);
-        let mut out = Vec::new();
-        for y in 0..h {
-            let row: String = (0..120u16).map(|x| buf[(x, y)].symbol()).collect();
-            if let Some(ix) = row.find("Load ") {
-                let x = row[..ix].chars().count() as u16;
-                out.push((y, buf[(x, y)].fg));
+/// Overflow is a counted cue, never a restyled copy of a card. All visible
+/// cards retain their full-width tag bars, and counts include the boundary
+/// cards displaced by a cue. Walk both directions to exercise scroll state.
+#[test]
+fn test_clipped_columns_keep_whole_cards_and_count_hidden_tickets() {
+    for flavor in Flavor::ALL {
+        let mut app = app_graphite(fixture_overflow());
+        app.theme = Theme::new(flavor, Profile::TrueColor);
+        app.peek = false;
+        app.cursor_col = 0;
+        for expanded in [false, true] {
+            app.peek_all = expanded;
+            app.scroll_row.set(0);
+            for cursor in (0..12).chain((0..12).rev()) {
+                app.cursor_row = Some(cursor);
+                let buf = cells(&app, 120, 20);
+                let lines = lines_of(&buf);
+                let mut visible = Vec::new();
+                for y in 0..20u16 {
+                    let row: String = (0..40).map(|x| buf[(x, y)].symbol()).collect();
+                    if let Some(byte_x) = row.find("Load ") {
+                        let x = row[..byte_x].chars().count() as u16;
+                        let index: usize = row[byte_x + 5..byte_x + 7].parse().unwrap();
+                        visible.push(index);
+                        if expanded {
+                            assert!(
+                                lines[y as usize + 1].contains("BUG"),
+                                "the edge must keep the whole card"
+                            );
+                        }
+                        assert_eq!(x, 4, "title inset at the edge");
+                        assert_eq!(
+                            buf[(x, y)].fg,
+                            if index == cursor { app.theme.sel.base } else { app.theme.rest.base }
+                        );
+                        let tint = |group, name| {
+                            app.theme.pip(app.board.tag_def(group, name).unwrap().tint() as usize)
+                        };
+                        if index % 2 == 1 {
+                            for (dx, color) in [(0, tint(1, "BUG")), (1, tint(2, "UI"))] {
+                                assert_eq!(buf[(1 + dx, y)].symbol(), "▉");
+                                assert_eq!(buf[(1 + dx, y)].fg, color);
+                            }
+                        } else {
+                            for x in [1, 2] {
+                                assert_eq!(buf[(x, y)].symbol(), " ");
+                                assert_eq!(buf[(x, y)].bg, tint(1, "BUG"));
+                            }
+                        }
+                    }
+                }
+                assert!(visible.contains(&cursor), "cursor {cursor} lost: {visible:?}");
+                assert!(visible.windows(2).all(|w| w[1] == w[0] + 1));
+                let above = visible[0];
+                let below = 11 - visible.last().unwrap();
+                if above > 0 {
+                    assert!(lines.iter().any(|l| l.contains(&format!("↑ {above} above"))));
+                } else {
+                    assert!(!lines.iter().any(|l| l.contains("above")));
+                }
+                if below > 0 {
+                    assert!(lines.iter().any(|l| l.contains(&format!("↓ {below} below"))));
+                } else {
+                    assert!(!lines.iter().any(|l| l.contains("below")));
+                }
+                for line in &lines[16..19] {
+                    assert!(line.trim().is_empty(), "footer clearance: {line:?}");
+                }
+                let card = app.cursor_card.get().expect("whole cursor card");
+                assert!(card.bottom() <= 16);
             }
         }
-        out
-    };
-
-    // Clipped below: fewer than 12 cards visible; the bottom-most is the
-    // dim3 ghost, a blank row away from the last full-value card.
-    let clipped = rows(&app, 20);
-    assert!(
-        clipped.len() > 2 && clipped.len() < 12,
-        "20 rows must clip; visible={}",
-        clipped.len()
-    );
-    let (gy, gfg) = *clipped.last().unwrap();
-    assert_eq!(gfg, theme.rest.dim3, "bottom edge is a ghost peek");
-    assert!(gy - clipped[clipped.len() - 2].0 >= 2, "blank row before the bottom ghost");
-    for (_, fg) in &clipped[..clipped.len() - 1] {
-        assert_eq!(*fg, theme.rest.base, "cards above the edge hold full value");
+        app.peek_all = false;
+        app.cursor_col = 1;
+        let lines = render(&app, 120, 40);
+        assert_eq!(lines.iter().filter(|l| l.contains("Load ")).count(), 12);
+        assert!(!lines.iter().any(|l| l.contains("above") || l.contains("below")));
     }
+}
 
-    // Clipped above: cursor at the tail scrolls the column; the top-most
-    // visible card is the ghost, blank-separated, and the cursor card holds
-    // full value.
+#[test]
+fn golden_column_overflow_cues() {
+    let mut app = app_graphite(fixture_overflow());
+    app.peek = false;
+    app.cursor_col = 1;
+    golden("board_overflow_below_120x20", &render(&app, 120, 20));
+    app.cursor_col = 0;
+    app.cursor_row = Some(6);
+    golden("board_overflow_both_120x20", &render(&app, 120, 20));
+    app.cursor_row = Some(11);
+    golden("board_overflow_above_120x20", &render(&app, 120, 20));
+    app.theme = Theme::new(Flavor::Graphite, Profile::Mono);
+    let lines = render(&app, 120, 20);
+    assert!(lines.iter().any(|l| l.contains("^ ") && l.contains("above")));
+    assert!(!lines.iter().any(|l| l.contains('↑') || l.contains('↓')));
+}
+
+#[test]
+fn test_overflow_keeps_hidden_attention_in_the_header() {
+    let mut app = app_graphite(fixture_overflow());
+    app.peek = false;
+    app.cursor_col = 1;
+    for id in [8, 12] {
+        app.board.sessions.push(session(
+            id,
+            ulid_n(id),
+            SessionKind::Claude,
+            SessionState::RequiresAction { reason: Reason::Permission },
+        ));
+    }
+    let lines = render(&app, 120, 20);
+    assert!(lines[2].contains("!2"), "hidden attention: {:?}", lines[2]);
     app.cursor_col = 0;
     app.cursor_row = Some(11);
-    let scrolled = rows(&app, 20);
-    assert!(scrolled.len() < 12, "still clipped after scrolling to the tail");
-    let (ty, tfg) = *scrolled.first().unwrap();
-    assert_eq!(tfg, theme.rest.dim3, "top edge is a ghost peek");
-    assert!(scrolled[1].0 - ty >= 2, "blank row after the top ghost");
-    assert_eq!(scrolled.last().unwrap().1, theme.sel.base, "cursor card at full value");
-    for (_, fg) in &scrolled[1..scrolled.len() - 1] {
-        assert_eq!(*fg, theme.rest.base, "interior cards hold full value");
-    }
+    let lines = render(&app, 120, 20);
+    assert!(!lines[2].contains("!2"), "visible attention must not be counted twice");
+}
 
-    // Mid-column cursor: both edges peek at once (scroll reset first — the
-    // Cell carries the tail scroll from the case above).
-    app.scroll_row.set(0);
+#[test]
+fn test_overflow_keeps_a_tall_cards_prompt_visible() {
+    let path = write_transcript(
+        "overflow-tall",
+        &reply_record(&"Detailed context about the task and its next steps. ".repeat(12)),
+    );
+    let mut board = fixture_overflow();
+    for id in [31, 32, 33] {
+        let mut s = session(id, ulid_n(7), SessionKind::Claude, SessionState::Running);
+        s.transcript_path = Some(path.to_string_lossy().into_owned());
+        board.sessions.push(s);
+    }
+    let mut app = app_graphite(board);
+    app.cursor_col = 0;
     app.cursor_row = Some(6);
-    let mid = rows(&app, 20);
-    assert_eq!(mid.first().unwrap().1, theme.rest.dim3, "top ghost with a mid cursor");
-    assert_eq!(mid.last().unwrap().1, theme.rest.dim3, "bottom ghost with a mid cursor");
-
-    // Whole: nothing fades.
-    app.cursor_col = 1;
-    app.cursor_row = Some(0);
-    let whole = rows(&app, 40);
-    assert_eq!(whole.len(), 12, "40 rows fit the whole column");
-    for (_, fg) in &whole {
-        assert_eq!(*fg, theme.rest.base, "a fully visible column never fades");
+    app.peek = true;
+    app.mode = Mode::Input {
+        purpose: InputPurpose::Prompt { ticket: ulid_n(7), walk: None, queued: false },
+        buffer: crate::text::EditBuffer::from_text("continue here".into(), 100),
+    };
+    for width in [60, 120] {
+        let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
+        terminal.draw(|f| super::draw(f, &app)).unwrap();
+        let lines = lines_of(terminal.backend().buffer());
+        assert!(lines.iter().any(|l| l.contains("Load 06")), "title: {lines:?}");
+        let prompt =
+            lines.iter().position(|l| l.contains("continue here")).expect("visible prompt");
+        assert!(prompt < 16, "field leaves room below: {lines:?}");
+        assert_eq!(terminal.get_cursor_position().unwrap().y as usize, prompt);
+        assert!(app.cursor_card.get().is_some(), "the whole group fits before footer clearance");
+        assert!(lines.iter().any(|l| l.contains('↑')), "above cue survives a tall card");
+        assert!(lines.iter().any(|l| l.contains('↓')), "below cue survives a tall card");
     }
+    let _ = std::fs::remove_dir_all(path.parent().unwrap());
 }
 
 /// A workspace (T-225): the root's own branch and arrows lead, the count of
