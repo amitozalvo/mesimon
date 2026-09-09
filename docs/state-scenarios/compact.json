@@ -1,0 +1,32 @@
+{
+  "schema": 1,
+  "id": "compact",
+  "title": "Compaction SessionStart continues work",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "SessionStart",
+        "payload": {
+          "source": "compact"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

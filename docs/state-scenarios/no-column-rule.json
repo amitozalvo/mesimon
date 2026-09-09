@@ -1,0 +1,43 @@
+{
+  "schema": 1,
+  "id": "no-column-rule",
+  "title": "A column without on_done remains unchanged",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "DONE",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "DONE"
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "DONE"
+      }
+    }
+  ]
+}

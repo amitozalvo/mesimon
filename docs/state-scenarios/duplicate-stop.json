@@ -1,0 +1,59 @@
+{
+  "schema": 1,
+  "id": "duplicate-stop",
+  "title": "Repeated Stop must not postpone completion indefinitely",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "pending": true
+      }
+    },
+    {
+      "at_ms": 900,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "pending": true
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    }
+  ]
+}

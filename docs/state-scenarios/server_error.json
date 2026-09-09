@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "id": "server_error",
+  "title": "API failure is not completion",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "StopFailure",
+        "payload": {
+          "error": "server_error"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "failed",
+          "reason": "server"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

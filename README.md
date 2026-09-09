@@ -191,6 +191,14 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting
 above all others.
 
+## Investigating agent state
+
+`mesimon state explain [session-prefix] --repo <repo>` shows the current state,
+confidence, recent inference decisions and board-movement decisions. See the
+[Claude state map](docs/claude-state-map.md) for supported evidence and known gaps,
+and the [state lab](docs/claude-state-lab.md) for offline replay, isolated
+before/after boards and occasional Haiku/Sonnet compatibility captures.
+
 ## Layout
 
 - `docs/` — a pre-code research corpus, kept for its measurements and reasoning. It is not the

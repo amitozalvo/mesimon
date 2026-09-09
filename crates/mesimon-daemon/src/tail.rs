@@ -7,7 +7,7 @@
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 
-use mesimon_core::adopt::{classify_tail_record, turn_edge, TailEvent, TurnEdge};
+use mesimon_core::adopt::{classify_tail_record, turn_edge, TailEvent, ToolLedger, TurnEdge};
 
 /// The last uuid-bearing record's classification — how a transcript nobody
 /// is streaming RESTED (daemon-restart recovery). Reads at most the final
@@ -19,6 +19,11 @@ pub fn last_event(path: &Path) -> Option<TailEvent> {
     for v in tail_records(path)? {
         match classify_tail_record(&v) {
             TailEvent::Latch => continue,
+            TailEvent::Other
+                if v.get("type").and_then(serde_json::Value::as_str) == Some("attachment") =>
+            {
+                continue
+            }
             ev => return Some(ev),
         }
     }
@@ -80,6 +85,7 @@ pub struct TailCursor {
     pub partial: Vec<u8>,
     /// Last time the file grew (epoch ms) — feeds the quiet detector.
     pub grew_at: u64,
+    pub tools: ToolLedger,
 }
 
 impl TailCursor {
@@ -87,7 +93,13 @@ impl TailCursor {
     /// as fresh activity. Preview comes from the census, not the cursor.
     pub fn at_end(path: PathBuf, now: u64) -> Self {
         let byte_offset = std::fs::metadata(&path).map(|m| m.len()).unwrap_or(0);
-        Self { path, byte_offset, partial: Vec::new(), grew_at: now }
+        let mut tools = ToolLedger::default();
+        if let Some(records) = tail_records(&path) {
+            for record in records.iter().rev() {
+                tools.observe(record);
+            }
+        }
+        Self { path, byte_offset, partial: Vec::new(), grew_at: now, tools }
     }
 
     /// Read whatever appeared since the last poll and return the complete
@@ -100,6 +112,7 @@ impl TailCursor {
             // Rotation/truncation guard (09 §4.3).
             self.byte_offset = 0;
             self.partial.clear();
+            self.tools = ToolLedger::default();
         }
         if len == self.byte_offset {
             return Vec::new();
@@ -121,12 +134,17 @@ impl TailCursor {
             Some(i) => (&buf[..=i], &buf[i + 1..]),
             None => (&buf[..0], &buf[..]),
         };
-        let lines = String::from_utf8_lossy(complete)
+        let lines: Vec<String> = String::from_utf8_lossy(complete)
             .lines()
             .filter(|l| !l.trim().is_empty())
             .map(str::to_string)
             .collect();
         self.partial = rest.to_vec();
+        for line in &lines {
+            if let Ok(record) = serde_json::from_str(line) {
+                self.tools.observe(&record);
+            }
+        }
         lines
     }
 }

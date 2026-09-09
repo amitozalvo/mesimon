@@ -1,0 +1,36 @@
+{
+  "schema": 1,
+  "id": "modern-stop-summary",
+  "title": "Modern stop_hook_summary is a completed turn",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "unknown",
+    "reason": "no_signal"
+  },
+  "confidence": "low",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "transcript",
+        "record": {
+          "uuid": "summary",
+          "type": "system",
+          "subtype": "stop_hook_summary"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "low"
+      }
+    }
+  ]
+}

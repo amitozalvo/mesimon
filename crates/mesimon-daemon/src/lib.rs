@@ -15,6 +15,7 @@ pub mod paths;
 pub mod resources;
 pub mod server;
 pub mod shellenv;
+pub mod state_replay;
 pub mod store;
 pub mod tail;
 pub mod train;

@@ -1,0 +1,46 @@
+{
+  "schema": 1,
+  "id": "nested-stop",
+  "title": "A child Stop cannot finish the parent",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "agent_id": "child",
+          "stop_hook_active": false
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 2000,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

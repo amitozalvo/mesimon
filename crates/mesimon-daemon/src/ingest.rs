@@ -40,6 +40,49 @@ pub fn parse_frame(bytes: &[u8]) -> Option<HookFrame> {
     Some(HookFrame { session, event, reason, payload })
 }
 
+/// A whole-frame deadline (not a fresh timeout per byte) bounds how long a
+/// partial sender can hold up connection ordering. Malformed frames are skipped.
+pub fn read_hook_frame(
+    mut stream: std::os::unix::net::UnixStream,
+    timeout: std::time::Duration,
+) -> Option<HookFrame> {
+    use std::io::{ErrorKind, Read};
+    use std::os::fd::AsRawFd;
+    // macOS can reject SO_RCVTIMEO updates after the peer has closed, even
+    // with a complete frame buffered. Poll a nonblocking descriptor instead.
+    stream.set_nonblocking(true).ok()?;
+    let deadline = std::time::Instant::now() + timeout;
+    let mut bytes = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        let remaining = deadline.checked_duration_since(std::time::Instant::now())?;
+        let mut fd = libc::pollfd { fd: stream.as_raw_fd(), events: libc::POLLIN, revents: 0 };
+        let millis = remaining.as_millis().saturating_add(1).min(i32::MAX as u128) as i32;
+        let ready = unsafe { libc::poll(&mut fd, 1, millis) };
+        if ready < 0 && std::io::Error::last_os_error().kind() == ErrorKind::Interrupted {
+            continue;
+        }
+        if ready <= 0 {
+            return None;
+        }
+        let capacity = (HOOK_FRAME_MAX_BYTES as usize).saturating_sub(bytes.len());
+        if capacity == 0 {
+            return None;
+        }
+        let length = capacity.min(chunk.len());
+        match stream.read(&mut chunk[..length]) {
+            Ok(0) => return parse_frame(&bytes),
+            Ok(got) => bytes.extend_from_slice(&chunk[..got]),
+            Err(error)
+                if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
+            {
+                continue
+            }
+            Err(_) => return None,
+        }
+    }
+}
+
 pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
     let reason = frame.reason.as_deref();
     match frame.event.as_str() {

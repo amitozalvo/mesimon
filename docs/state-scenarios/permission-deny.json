@@ -1,0 +1,61 @@
+{
+  "schema": 1,
+  "id": "permission-deny",
+  "title": "Automatic permission denial continues the agent",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PermissionRequest",
+        "payload": {
+          "tool_name": "Bash"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "permission"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "PermissionDenied",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "permission"
+        },
+        "column": "IN PROGRESS",
+        "pending": true
+      }
+    },
+    {
+      "at_ms": 1700,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

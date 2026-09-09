@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "id": "stop-cancelled-by-prompt",
+  "title": "A fresh prompt cancels a pending end",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "pending": true
+      }
+    },
+    {
+      "at_ms": 500,
+      "input": {
+        "source": "hook",
+        "event": "UserPromptSubmit",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 1700,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

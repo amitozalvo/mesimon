@@ -9,9 +9,7 @@
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
-use mesimon_core::adopt::{
-    classify_tail_record, cwd_matches, parse_transcript_head, SessionsPidFile, TailEvent,
-};
+use mesimon_core::adopt::{assistant_text, cwd_matches, parse_transcript_head, SessionsPidFile};
 use mesimon_core::command::ExternalItem;
 
 const HEAD_BYTES: usize = 8 * 1024;
@@ -256,8 +254,8 @@ fn scan_tail_window(path: &Path, len: u64, window: u64) -> TailInfo {
             continue;
         }
         if info.assistant.is_none() {
-            if let TailEvent::AssistantText { text } = classify_tail_record(&v) {
-                info.assistant = Some(sanitize(&text));
+            if let Some(text) = assistant_text(&v) {
+                info.assistant = Some(sanitize(text));
             }
         }
     }

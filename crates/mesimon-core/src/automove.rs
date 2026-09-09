@@ -22,13 +22,32 @@ pub fn automove<'a>(
     to: &SessionState,
     confidence: Confidence,
 ) -> Option<&'a str> {
+    explain(column, to, confidence).destination
+}
+
+#[derive(Debug, serde::Serialize)]
+pub struct MoveDecision<'a> {
+    pub outcome: &'static str,
+    pub destination: Option<&'a str>,
+}
+
+/// The same rule produces the decision and the explanation, including no move.
+pub fn explain<'a>(
+    column: &'a ColumnSettings,
+    to: &SessionState,
+    confidence: Confidence,
+) -> MoveDecision<'a> {
     if matches!(confidence, Confidence::Low | Confidence::Stale) {
-        return None;
+        return MoveDecision { outcome: "insufficient_confidence", destination: None };
     }
-    match to {
+    let destination = match to {
         SessionState::Running => column.on_working.as_deref(),
         SessionState::Idle { stop_reason: StopReason::EndTurn } => column.on_done.as_deref(),
-        _ => None,
+        _ => return MoveDecision { outcome: "state_does_not_trigger_move", destination: None },
+    };
+    MoveDecision {
+        outcome: if destination.is_some() { "eligible" } else { "no_column_rule" },
+        destination,
     }
 }
 

@@ -1,0 +1,65 @@
+{
+  "schema": 1,
+  "id": "normal-stop",
+  "title": "A completed turn moves to REVIEW after settling",
+  "provenance": {
+    "kind": "capture_derived",
+    "claude_version": "2.1.266",
+    "model": "haiku",
+    "mode": "print",
+    "date": "2026-09-09",
+    "source": "docs/claude-state-lab.md",
+    "note": "Payload shape observed; virtual timings and board expectations authored independently"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "stop_hook_active": false,
+          "background_tasks": []
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "pending": true
+      }
+    },
+    {
+      "at_ms": 1599,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW",
+        "confidence": "high"
+      }
+    }
+  ]
+}

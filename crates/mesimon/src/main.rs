@@ -5,6 +5,7 @@ mod exec;
 mod gate;
 mod hook;
 mod mcp;
+mod state;
 
 use std::path::PathBuf;
 
@@ -30,6 +31,7 @@ fn main() -> Result<()> {
             mesimon_daemon::run_foreground(&repo)
         }
         Some("doctor") => doctor::run(&args[1..]),
+        Some("state") => state::run(&args[1..]),
         Some("--version" | "-V") => {
             println!("mesimon {}", version_line());
             Ok(())
@@ -75,6 +77,9 @@ fn help_text() -> &'static str {
          mesimon doctor [section]       diagnose the environment; prints fixes, applies none\n  \
          mesimon doctor --mcp           print everything mesimon adds to a session's model input\n  \
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
+         mesimon state explain [session]   explain observed state and movement\n  \
+         mesimon state replay <files...>  replay offline state scenarios\n  \
+         mesimon state compatibility <version>   show measured Claude coverage\n  \
          mesimon --version\n\n\
          spawned by Claude Code inside a mesimon session, never run by hand:\n  \
          mesimon hook   observer; reports one event, writes no stdout, exits 0\n  \

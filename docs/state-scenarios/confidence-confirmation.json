@@ -1,0 +1,33 @@
+{
+  "schema": 1,
+  "id": "confidence-confirmation",
+  "title": "A real Stop confirms inferred completion and permits movement",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "core/attention.rs same-state confidence path"
+  },
+  "initial": {
+    "state": "idle",
+    "stop_reason": "end_turn"
+  },
+  "confidence": "low",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "confidence": "high",
+        "column": "REVIEW"
+      }
+    }
+  ]
+}

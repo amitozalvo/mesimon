@@ -1,0 +1,77 @@
+{
+  "schema": 1,
+  "id": "background-shell",
+  "title": "Outstanding background work is parked, not done",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "background_tasks": [
+            {
+              "type": "shell",
+              "status": "running"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "background"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 2000,
+      "input": {
+        "source": "pane_quiet"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "background"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 3000,
+      "input": {
+        "source": "hook",
+        "event": "UserPromptSubmit",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

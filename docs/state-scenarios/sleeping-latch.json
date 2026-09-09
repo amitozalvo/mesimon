@@ -1,0 +1,44 @@
+{
+  "schema": 1,
+  "id": "sleeping-latch",
+  "title": "Late hooks cannot wake a parked session",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "sleeping"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "sleeping"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "PaneDied",
+        "payload": {}
+      },
+      "expect": {
+        "state": {
+          "state": "sleeping"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

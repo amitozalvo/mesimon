@@ -6,6 +6,8 @@
 
 use std::collections::BTreeSet;
 
+use serde::Serialize;
+
 use crate::board::{
     Board, Confidence, ExitReason, FailReason, Reason, SessionRecord, SessionState, StopReason,
     UnknownReason,
@@ -354,6 +356,32 @@ struct Pending {
     deadline: u64,
 }
 
+/// A bounded diagnostic projection: no prompt, tool input, or teammate names.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct MachineView {
+    pub state: SessionState,
+    pub confidence: Confidence,
+    pub entered_at: u64,
+    pub pending: Option<PendingView>,
+    pub pinned_until: Option<u64>,
+    pub idle_teammates: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PendingView {
+    pub state: SessionState,
+    pub confidence: Confidence,
+    pub deadline: u64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct Decision {
+    pub signal: String,
+    pub outcome: &'static str,
+    pub before: MachineView,
+    pub after: MachineView,
+}
+
 /// Per-session machine. `apply` handles a signal (enters are immediate, leaves
 /// are scheduled); `tick` fires scheduled work. All times are epoch ms,
 /// injected by the caller.
@@ -423,6 +451,67 @@ impl Machine {
         self.confidence
     }
 
+    pub fn view(&self) -> MachineView {
+        MachineView {
+            state: self.state.clone(),
+            confidence: self.confidence,
+            entered_at: self.entered_at,
+            pinned_until: self.pinned_until,
+            idle_teammates: self.idle_teammates.len(),
+            pending: self.pending.as_ref().map(|p| PendingView {
+                state: p.to.clone(),
+                confidence: p.confidence,
+                deadline: p.deadline,
+            }),
+        }
+    }
+
+    /// Use the same reducer as production and expose no-op decisions too.
+    pub fn apply_explained(&mut self, sig: &Signal, now: u64) -> (Option<Change>, Decision) {
+        let before = self.view();
+        let target = self.target(sig);
+        let blocked = if self.state == SessionState::Sleeping {
+            "sleeping_latch"
+        } else if matches!(self.state, SessionState::Exited { .. }) {
+            "exited_latch"
+        } else if target.is_none() {
+            "no_transition_rule"
+        } else if self.pinned_until.is_some_and(|until| now < until)
+            && target.as_ref().is_some_and(|(state, confidence)| {
+                *confidence != Confidence::High
+                    && !matches!(state, SessionState::Exited { .. } | SessionState::Failed { .. })
+            })
+        {
+            "inference_flap_guard"
+        } else {
+            "unchanged"
+        };
+        let change = self.apply(sig, now);
+        let after = self.view();
+        let outcome = if before.state == after.state && before.confidence != after.confidence {
+            "confidence_raised"
+        } else if change.is_some() {
+            "committed"
+        } else if before.pending != after.pending {
+            if after.pending.is_some() {
+                "settling"
+            } else {
+                "settle_cancelled"
+            }
+        } else if before.idle_teammates != after.idle_teammates {
+            "background_updated"
+        } else {
+            blocked
+        };
+        // Only the enum variant name, never a Debug payload containing names.
+        let signal = format!("{sig:?}")
+            .split(|c: char| !c.is_ascii_alphabetic())
+            .next()
+            .unwrap_or("Unknown")
+            .to_string();
+        (change, Decision { signal, outcome, before, after })
+    }
+
     pub fn apply(&mut self, sig: &Signal, now: u64) -> Option<Change> {
         // Teammate bookkeeping happens in every state, including the latched
         // ones: a teammate going idle while the lead sleeps is still a fact
@@ -483,6 +572,14 @@ impl Machine {
             self.pending = None;
             if (conf as u8) < (self.confidence as u8) {
                 self.confidence = conf;
+                // The daemon must persist/publish the stronger evidence and
+                // re-evaluate movement even when the label is unchanged.
+                return Some(Change {
+                    from: self.state.clone(),
+                    to: self.state.clone(),
+                    attention_added: false,
+                    confidence: conf,
+                });
             }
             return None;
         }
@@ -600,8 +697,9 @@ impl Machine {
             Signal::SessionEnd { kind: EndKind::Resume | EndKind::Clear } => None,
             Signal::SessionEnd { kind } => t(S::Exited { reason: kind.exit_reason() }),
             Signal::UserPromptSubmit => t(S::Running),
-            Signal::Stop { stop_hook_active: true, .. } => None, // re-entrancy guard
-            Signal::Stop { has_agent_id: true, .. } => None,     // nested, never top-level
+            // stop_hook_active describes a PREVIOUS continuation. It does not
+            // say this stop is blocked (real 2.1.266 stop-continuation capture).
+            Signal::Stop { has_agent_id: true, .. } => None, // nested, never top-level
             // In-flight work (shell, subagent, …) holds the turn open; a
             // dormant watch does not — see `task_blocks_end_turn`. The turn is
             // PAUSED, so this is `Idle{Background}` and NOT a re-assertion of
@@ -901,30 +999,28 @@ mod tests {
     }
 
     #[test]
-    fn stop_hook_active_and_agent_id_are_ignored() {
+    fn continued_turn_can_finish_but_nested_stop_cannot_finish_parent() {
         let mut m = m(SessionState::Running);
-        assert!(m
-            .apply(
-                &Signal::Stop {
-                    stop_hook_active: true,
-                    has_agent_id: false,
-                    blocking_tasks: false,
-                    teammates: 0
-                },
-                1000
-            )
-            .is_none());
-        assert!(m
-            .apply(
-                &Signal::Stop {
-                    stop_hook_active: false,
-                    has_agent_id: true,
-                    blocking_tasks: false,
-                    teammates: 0
-                },
-                1000
-            )
-            .is_none());
+        let stop = Signal::Stop {
+            stop_hook_active: true,
+            has_agent_id: false,
+            blocking_tasks: false,
+            teammates: 0,
+        };
+        assert!(m.apply(&stop, 1000).is_none());
+        assert!(m.pending.is_some());
+        let change = m.tick(2500).expect("continued turn settles");
+        assert_eq!(change.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        let mut m = Machine::new(SessionState::Running, 0);
+        m.apply(
+            &Signal::Stop {
+                stop_hook_active: true,
+                has_agent_id: true,
+                blocking_tasks: false,
+                teammates: 0,
+            },
+            1000,
+        );
         assert!(m.pending.is_none());
     }
 

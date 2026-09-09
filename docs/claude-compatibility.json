@@ -1,0 +1,88 @@
+{
+  "schema": 1,
+  "adapter_revision": "state-lab-1",
+  "versions": {
+    "2.1.266": {
+      "captured_at": "2026-09-09",
+      "model": "haiku",
+      "mode": [
+        "print",
+        "interactive_tmux"
+      ],
+      "observed": [
+        "complete",
+        "tool",
+        "stop-continuation",
+        "interactive_complete",
+        "interactive_permission_allow",
+        "interactive_tool_interrupt"
+      ],
+      "inconclusive": [
+        "initial sandbox run could not access Claude login",
+        "Two initial interactive launches exited at the trust dialog (lab driver corrected)",
+        "Initial permission prompt was declined by the model; dialog prerequisite not reached",
+        "One interrupt launch stayed in the trust dialog before input was ready; driver now waits for visible selection",
+        "One interrupt run stopped at a permission dialog; no tool-start prerequisite was reached"
+      ],
+      "not_yet_observed": [
+        "interactive compaction",
+        "teammates",
+        "quota",
+        "MCP elicitation",
+        "early recordless Esc before assistant output"
+      ],
+      "claims": [
+        {
+          "claim": "Successful continued turn emits Stop with stop_hook_active=true",
+          "status": "observed",
+          "capture": "20260909T154701Z-stop-continuation-b4bd2dac"
+        },
+        {
+          "claim": "Completed turn persists assistant end_turn records and trailing attachments",
+          "status": "observed",
+          "capture": "20260909T154634Z-complete-bdd98c94"
+        },
+        {
+          "claim": "Simple Bash turn emits PreToolUse, PostToolUse, Stop",
+          "status": "observed",
+          "capture": "20260909T154816Z-tool-966eb528"
+        },
+        {
+          "claim": "Stop does not fire for user interrupts",
+          "status": "documented",
+          "source": "https://code.claude.com/docs/en/hooks#stop"
+        },
+        {
+          "claim": "Session status files are a stable supported interface",
+          "status": "unknown",
+          "source": "No supported schema established; use only version-scoped empirical evidence"
+        },
+        {
+          "claim": "Interactive completion changed the matching session file from busy to idle",
+          "status": "observed",
+          "capture": "20260909T160930Z-interactive-complete-8fc20441"
+        },
+        {
+          "claim": "Visible Bash approval, one allowed file write, PostToolUse, then Stop",
+          "status": "observed",
+          "capture": "20260909T161207Z-interactive-permission-467bc807"
+        },
+        {
+          "claim": "Permission and tool interruption produced busy -> waiting -> busy -> idle in the matching session file",
+          "status": "observed",
+          "capture": "20260909T161602Z-interactive-interrupt-814de726"
+        },
+        {
+          "claim": "Esc after the independent tool file barrier produced an interrupted-user transcript record and no Stop before cleanup",
+          "status": "observed",
+          "capture": "20260909T161602Z-interactive-interrupt-814de726"
+        }
+      ],
+      "limitations": [
+        "Print-mode captures do not certify interactive behavior",
+        "A Stop is a stop attempt; another hook may continue it",
+        "Replay coverage is separate from live compatibility evidence"
+      ]
+    }
+  }
+}

@@ -8090,3 +8090,52 @@ Tests walk both directions across all six themes with collapsed and expanded car
 exact hidden counts, title alignment, both tag cells, cursor visibility, and footer clearance.
 Additional checks cover hidden attention, ASCII arrows, and a long expanded card with a live
 prompt at minimum terminal height. Three new goldens cover overflow below, above, and both.
+
+## Claude observation lab (research/claude-state-lab, 2026-09-09)
+
+A separate worktree preserves baseline `5798976` and provides a compiled before/after
+board comparison. `docs/claude-state-map.md` is the current observation map;
+`docs/claude-state-lab.md` records the research protocol and reproduction commands;
+`docs/claude-compatibility.json` distinguishes live evidence from untested behavior.
+The JSON fixtures in `docs/state-scenarios/` run offline through the production hook
+adapter, transcript classifier, attention reducer and automove eligibility rules.
+Live Claude capture is explicit and bounded, restricted to Haiku/Sonnet. Interactive
+capture uses a private tmux server and independent screen/file checkpoints; print-mode
+turn/dollar limits are not represented as interactive limits.
+
+Measured corrections in this branch:
+
+- A successful Haiku 2.1.266 continuation emitted Stop(false), Stop(true), SessionEnd.
+  `stop_hook_active` describes previous continuation, not a reason to discard the
+  final Stop. Nested agent Stops remain excluded. Stop remains an attempted stopping
+  point: another hook can still continue the session; this branch does not claim a
+  universal final-stop oracle.
+- Modern assistant `end_turn` and system `stop_hook_summary` completion are classified
+  by the same structural reader used for status-file corroboration. Observe-tier
+  completion remains Low and cannot automove. Trailing attachments do not erase a
+  finished recovery hint. Current capture had end_turn records and attachments,
+  without the old turn_duration record.
+- Text accompanying a tool call no longer conceals the in-flight tool. Preview text
+  has its own reader; census/preview behavior is retained. The cursor holds a tool-ID
+  ledger, initialized from bounded history, and a quiet observe-only transcript does
+  not demote known outstanding tools. Parallel results clear only their own IDs.
+- Raising confidence on the same state now publishes a Change to the daemon. This
+  persists the confirmation and reevaluates automove, without resetting the state's
+  age/waiting timestamp or announcing duplicate attention. Previously the machine
+  silently changed confidence while the persisted record and board stayed behind.
+- The demo caught hook reader threads delivering PreToolUse before the earlier
+  SessionStart/UserPromptSubmit connections. Ingestion now preserves accept order.
+  Concurrent readers report a frame or a skipped slot; an absolute 750 ms poll
+  deadline releases malformed/stalled senders. macOS rejected updating SO_RCVTIMEO
+  after a peer closed with buffered data, so the bounded reader uses nonblocking
+  poll instead. This preserves connection order, not unknowable upstream causality.
+
+`state_decision` and `movement_decision` entries extend the existing rotating activity
+log, with metadata-only state/pending/confidence projections. Repeated unchanged
+passive probes are suppressed. `mesimon state explain [session-prefix]` reads current
+state and recent decisions without starting a daemon; `state replay` runs fixtures;
+`state compatibility <version>` reports measured coverage without changing config.
+MCP tool text, board-state authorization, private tmux selection and rendering laws
+remain in their existing layers. Live unknowns (quota, team combinations, compaction,
+early recordless Esc, and source-generation correlation) are explicitly listed rather
+than treated as covered by synthetic fixtures.

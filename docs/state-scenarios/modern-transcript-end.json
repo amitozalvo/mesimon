@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "id": "modern-transcript-end",
+  "title": "Modern end_turn is completion, at low confidence",
+  "provenance": {
+    "kind": "capture_derived",
+    "claude_version": "2.1.266",
+    "model": "haiku",
+    "mode": "print",
+    "date": "2026-09-09",
+    "source": "docs/claude-state-lab.md",
+    "note": "Payload shape observed; virtual timings and board expectations authored independently"
+  },
+  "initial": {
+    "state": "unknown",
+    "reason": "no_signal"
+  },
+  "confidence": "low",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "transcript",
+        "record": {
+          "uuid": "reply",
+          "type": "assistant",
+          "message": {
+            "stop_reason": "end_turn",
+            "content": [
+              {
+                "type": "text",
+                "text": "LAB_DONE"
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "low"
+      }
+    }
+  ]
+}

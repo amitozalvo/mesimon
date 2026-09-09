@@ -80,6 +80,33 @@ impl FeedWriter {
         }));
     }
 
+    /// Metadata only; raw hook payloads and conversation content are excluded.
+    pub fn state_decision(
+        &mut self,
+        session: uuid::Uuid,
+        source: &str,
+        decision: &attention::Decision,
+    ) {
+        if decision.before == decision.after
+            && matches!(source, "tail" | "activity" | "status" | "probe")
+        {
+            return; // repeated passive probes do not grow the journal every poll
+        }
+        self.push(json!({"kind": "state_decision", "session": session,
+            "source": source, "decision": decision}));
+    }
+
+    pub fn movement_decision(
+        &mut self,
+        ticket: ulid::Ulid,
+        from: &str,
+        destination: Option<&str>,
+        outcome: &str,
+    ) {
+        self.push(json!({"kind": "movement_decision", "ticket": ticket,
+            "from": from, "destination": destination, "outcome": outcome}));
+    }
+
     /// One board mutation.
     pub fn board(&mut self, actor: &str, cmd: &str, ticket: Option<ulid::Ulid>) {
         self.push(json!({

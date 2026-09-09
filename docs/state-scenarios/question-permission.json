@@ -1,0 +1,50 @@
+{
+  "schema": 1,
+  "id": "question-permission",
+  "title": "PermissionRequest preserves the question reason",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "source": "docs/claude-state-lab.md"
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PreToolUse",
+        "payload": {
+          "tool_name": "AskUserQuestion"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "question"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "PermissionRequest",
+        "payload": {
+          "tool_name": "AskUserQuestion"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "question"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

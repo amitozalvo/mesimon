@@ -568,19 +568,30 @@ pub fn run(paths: Paths) -> Result<()> {
     let hook_listener = UnixListener::bind(&hook_path).context("bind hook.sock")?;
     std::fs::set_permissions(&hook_path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
     let hook_tx = tx.clone();
+    // Readers may finish out of order; enqueue frames in ACCEPT order. Otherwise
+    // a tiny PreToolUse can overtake SessionStart and be erased by late startup.
+    let (read_tx, read_rx) = std::sync::mpsc::channel();
     std::thread::spawn(move || {
-        for stream in hook_listener.incoming().flatten() {
-            let tx = hook_tx.clone();
-            std::thread::spawn(move || {
-                let mut stream = stream;
-                let _ = stream.set_read_timeout(Some(Duration::from_millis(750)));
-                let mut buf = Vec::new();
-                use std::io::Read;
-                if (&mut stream).take(ingest::HOOK_FRAME_MAX_BYTES).read_to_end(&mut buf).is_ok() {
-                    if let Some(frame) = ingest::parse_frame(&buf) {
-                        let _ = tx.send(Msg::Hook(frame));
-                    }
+        let mut next = 0u64;
+        let mut completed = std::collections::BTreeMap::new();
+        for (ordinal, frame) in read_rx {
+            completed.insert(ordinal, frame);
+            while let Some(frame) = completed.remove(&next) {
+                if let Some(frame) = frame {
+                    let _ = hook_tx.send(Msg::Hook(frame));
                 }
+                next += 1;
+            }
+        }
+    });
+    std::thread::spawn(move || {
+        for (ordinal, stream) in hook_listener.incoming().flatten().enumerate() {
+            let tx = read_tx.clone();
+            std::thread::spawn(move || {
+                // Every reader sends completion, including malformed/timed-out
+                // frames, so a missing event cannot strand the ordered queue.
+                let frame = ingest::read_hook_frame(stream, Duration::from_millis(750));
+                let _ = tx.send((ordinal as u64, frame));
             });
         }
     });
@@ -1676,10 +1687,8 @@ impl Daemon {
                 .find(|r| r.id == id)
                 .is_some_and(|r| r.argv.iter().any(|a| a == "--resume"));
             let sig = mesimon_core::attention::Signal::SpawnProbe { bytes, osc0, resume };
-            if let Some(m) = self.machines.get_mut(&id) {
-                if let Some(change) = m.apply(&sig, now) {
-                    changed |= self.apply_change(id, &change, None, Some("probe"));
-                }
+            if let Some(change) = self.observe_signal(id, &sig, now, "probe") {
+                changed |= self.apply_change(id, &change, None, Some("probe"));
             }
         }
         changed
@@ -1718,9 +1727,7 @@ impl Daemon {
             if now.saturating_sub(at * 1000) < quiet_ms {
                 continue;
             }
-            if let Some(change) =
-                self.machines.get_mut(&id).and_then(|m| m.apply(&Signal::PaneQuiet, now))
-            {
+            if let Some(change) = self.observe_signal(id, &Signal::PaneQuiet, now, "activity") {
                 changed |= self.apply_change(id, &change, None, Some("activity"));
             }
         }
@@ -1789,7 +1796,7 @@ impl Daemon {
             // Stop hook; the transcript says whether this is that or an Esc.
             let turn_done = transcript.is_some_and(|t| crate::tail::turn_done_since(&t, since));
             let signal = Signal::StatusFileIdle { turn_done };
-            if let Some(change) = self.machines.get_mut(&id).and_then(|m| m.apply(&signal, now)) {
+            if let Some(change) = self.observe_signal(id, &signal, now, "status") {
                 changed |= self.apply_change(id, &change, None, Some("status"));
             }
         }
@@ -1971,13 +1978,20 @@ impl Daemon {
                     TailEvent::NeedsHuman { tool: TailTool::ExitPlanMode } => {
                         hints.push((TailHint::ExitPlanMode, None))
                     }
-                    TailEvent::TurnComplete => hints.push((TailHint::TurnComplete, None)),
-                    TailEvent::ToolInFlight => hints.push((TailHint::ToolInFlight, None)),
+                    TailEvent::TurnComplete => hints.push((
+                        TailHint::TurnComplete,
+                        mesimon_core::adopt::assistant_text(&v).map(crate::census::sanitize),
+                    )),
+                    TailEvent::ToolInFlight => hints.push((
+                        TailHint::ToolInFlight,
+                        mesimon_core::adopt::assistant_text(&v).map(crate::census::sanitize),
+                    )),
                     TailEvent::Latch | TailEvent::Other => {}
                 }
             }
             if !abort_only
                 && hints.is_empty()
+                && !cursor.tools.is_busy()
                 && quiet >= TAIL_QUIET_MS
                 && self
                     .board
@@ -1990,7 +2004,7 @@ impl Daemon {
 
             for (hint, preview) in hints {
                 let sig = Signal::TranscriptHint { kind: hint };
-                if let Some(change) = self.machines.get_mut(&id).and_then(|m| m.apply(&sig, now)) {
+                if let Some(change) = self.observe_signal(id, &sig, now, "tail") {
                     changed |= self.apply_change(id, &change, None, Some("tail"));
                 }
                 // The preview outlives the state word (apply_change wipes
@@ -2131,7 +2145,8 @@ impl Daemon {
                 .machines
                 .entry(id)
                 .or_insert_with(|| Machine::new(SessionState::unknown(), now));
-            let change = machine.apply(&sig, now);
+            let (change, decision) = machine.apply_explained(&sig, now);
+            self.feed.state_decision(id, &frame.event, &decision);
             // The machine's idle-teammate set is what decides whether the
             // NEXT Stop parks or ends the turn (T-135); it survives a daemon
             // restart only on the record.
@@ -2412,6 +2427,19 @@ impl Daemon {
         self.board.sessions.iter().find(|s| s.sid16() == key).map(|s| s.id)
     }
 
+    fn observe_signal(
+        &mut self,
+        id: uuid::Uuid,
+        signal: &Signal,
+        now: u64,
+        source: &str,
+    ) -> Option<Change> {
+        let machine = self.machines.get_mut(&id)?;
+        let (change, decision) = machine.apply_explained(signal, now);
+        self.feed.state_decision(id, source, &decision);
+        change
+    }
+
     /// Fold one debounced machine transition into the session record.
     /// Returns whether anything visible changed (caller persists/broadcasts).
     fn apply_change(
@@ -2427,8 +2455,10 @@ impl Daemon {
         let now = now_ms();
         rec.state = change.to.clone();
         rec.confidence = change.confidence;
-        rec.state_changed_at = Some(now);
-        rec.waiting_since = if attention::is_attention(&change.to) { Some(now) } else { None };
+        if change.from != change.to {
+            rec.state_changed_at = Some(now);
+            rec.waiting_since = if attention::is_attention(&change.to) { Some(now) } else { None };
+        }
         match &change.to {
             SessionState::RequiresAction { .. }
             | SessionState::Failed { .. }
@@ -2487,15 +2517,20 @@ impl Daemon {
         // The rule is the ticket's COLUMN's (T-117): `on_working`/`on_done`,
         // never a column name compared here.
         let Some(col) = self.board.column(&t.column) else { return };
-        let Some(dest) = mesimon_core::automove::automove(&col.settings, to, confidence) else {
+        let from = t.column.clone();
+        let decision = mesimon_core::automove::explain(&col.settings, to, confidence);
+        let dest = decision.destination.map(str::to_string);
+        self.feed.movement_decision(ticket, &from, dest.as_deref(), decision.outcome);
+        let Some(dest) = dest else {
             return;
         };
-        let dest = dest.to_string();
         let by = Principal::Automation { rule: "automove".into() };
-        // Every refusal path (archived, missing column, ping-pong, fuse) lives
-        // in place_ticket, and a refused automove is silent by design: the
-        // board simply does not move, and the feed carries the reason.
-        let _ = self.place_ticket(ticket, &dest, Position::Top, &by, "automove");
+        let outcome = match self.place_ticket(ticket, &dest, Position::Top, &by, "automove") {
+            Ok(_) if from == dest => "already_in_column".to_string(),
+            Ok(_) => "moved".to_string(),
+            Err(reason) => format!("refused: {reason}"),
+        };
+        self.feed.movement_decision(ticket, &from, Some(&dest), &outcome);
     }
 
     /// Everything an agent session may ask the daemon for (T-84).

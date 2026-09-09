@@ -60,7 +60,8 @@ pub fn cwd_matches(cwd: &str, roots: &[PathBuf]) -> bool {
 pub struct SessionsPidFile {
     pub session_id: Option<uuid::Uuid>,
     pub cwd: Option<String>,
-    /// `idle` | `busy` — the only observed values; kept as raw text.
+    /// `idle` | `busy` | `waiting` observed on 2.1.266; kept as raw text.
+    /// `waiting` was captured at a visible permission dialog in the state lab.
     pub status: Option<String>,
     /// Epoch ms of the last `status` write (`statusUpdatedAt`). Present since
     /// at least Claude Code 2.1.25x; the interrupt probe needs it to know the
@@ -103,6 +104,57 @@ pub enum TailTool {
     ExitPlanMode,
 }
 
+/// Display text is independent of lifecycle: final replies and tool calls can
+/// both carry text. Callers must not use preview selection as a state detector.
+pub fn assistant_text(v: &Value) -> Option<&str> {
+    if v.get("type").and_then(Value::as_str) != Some("assistant") {
+        return None;
+    }
+    v.get("message")?
+        .get("content")?
+        .as_array()?
+        .iter()
+        .rev()
+        .filter(|b| b.get("type").and_then(Value::as_str) == Some("text"))
+        .find_map(|b| b.get("text").and_then(Value::as_str))
+}
+
+/// Outstanding tool identity survives quiet polls, including parallel calls.
+#[derive(Debug, Default)]
+pub struct ToolLedger(std::collections::BTreeSet<String>);
+
+impl ToolLedger {
+    pub fn is_busy(&self) -> bool {
+        !self.0.is_empty()
+    }
+    pub fn observe(&mut self, v: &Value) {
+        if matches!(classify_tail_record(v), TailEvent::Aborted | TailEvent::TurnComplete) {
+            self.0.clear();
+            return;
+        }
+        let Some(blocks) =
+            v.get("message").and_then(|m| m.get("content")).and_then(Value::as_array)
+        else {
+            return;
+        };
+        for b in blocks {
+            match b.get("type").and_then(Value::as_str) {
+                Some("tool_use") if v.get("type").and_then(Value::as_str) == Some("assistant") => {
+                    self.0.insert(
+                        b.get("id").and_then(Value::as_str).unwrap_or("unidentified").to_string(),
+                    );
+                }
+                Some("tool_result") if v.get("type").and_then(Value::as_str) == Some("user") => {
+                    self.0.remove(
+                        b.get("tool_use_id").and_then(Value::as_str).unwrap_or("unidentified"),
+                    );
+                }
+                _ => {}
+            }
+        }
+    }
+}
+
 pub fn classify_tail_record(v: &Value) -> TailEvent {
     // The latch rule is absence-of-uuid, never a type allowlist — that is
     // what survived `cost-state`/`pr-link` appearing mid-corpus (09 §4.2).
@@ -118,6 +170,11 @@ pub fn classify_tail_record(v: &Value) -> TailEvent {
         || is_interrupt(v)
     {
         return TailEvent::Aborted;
+    }
+    // Completion is structural and shared with the status-file corroborator.
+    // A final text block is not continuing activity. Capture: 2.1.266 / complete.
+    if matches!(turn_edge(v), TurnEdge::Done(_)) {
+        return TailEvent::TurnComplete;
     }
     match v.get("type").and_then(Value::as_str) {
         Some("assistant") => {
@@ -148,8 +205,8 @@ pub fn classify_tail_record(v: &Value) -> TailEvent {
             let calls_a_tool =
                 blocks.iter().any(|b| b.get("type").and_then(Value::as_str) == Some("tool_use"));
             match text {
+                _ if calls_a_tool => TailEvent::ToolInFlight,
                 Some(t) => TailEvent::AssistantText { text: t.to_string() },
-                None if calls_a_tool => TailEvent::ToolInFlight,
                 None => TailEvent::Other,
             }
         }
@@ -465,15 +522,13 @@ mod tests {
             val(r#"{"uuid":"u1","type":"assistant","message":{"stop_reason":"tool_use","content":[
                 {"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#);
         assert_eq!(classify_tail_record(&v), TailEvent::ToolInFlight);
-        // Text beside the call still previews (and still means Running).
+        // Text beside the call still previews; the tool remains explicit state evidence.
         let v =
             val(r#"{"uuid":"u2","type":"assistant","message":{"stop_reason":"tool_use","content":[
                 {"type":"text","text":"running the suite"},
                 {"type":"tool_use","name":"Bash","input":{"command":"cargo test"}}]}}"#);
-        assert_eq!(
-            classify_tail_record(&v),
-            TailEvent::AssistantText { text: "running the suite".into() }
-        );
+        assert_eq!(classify_tail_record(&v), TailEvent::ToolInFlight);
+        assert_eq!(assistant_text(&v), Some("running the suite"));
         // The two human-facing tools keep their own event.
         let v =
             val(r#"{"uuid":"u3","type":"assistant","message":{"stop_reason":"tool_use","content":[
