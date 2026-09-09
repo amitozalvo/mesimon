@@ -85,6 +85,10 @@ def cases():
         ("continued-stop", "Finished after Stop-hook continuation", "Stop", {"stop_hook_active": True}, "idle", "end_turn", "REVIEW"),
         ("question", "Waiting for your answer", "PreToolUse", {"tool_name": "AskUserQuestion"}, "requires_action", "question", "IN PROGRESS"),
         ("plan", "Waiting for plan approval", "PermissionRequest", {"tool_name": "ExitPlanMode"}, "requires_action", "plan", "IN PROGRESS"),
+        ("early-interrupt", "Recordless early Esc", "UserPromptSubmit", {}, "idle", "interrupted", "IN PROGRESS"),
+        ("manual-compact", "Manual compact restores prior completion", "PreCompact", {"trigger":"manual"}, "idle", "end_turn", "REVIEW"),
+        ("permission-cancel", "Cancelled permission clears attention", "PermissionRequest", {"tool_name": "Bash"}, "idle", "interrupted", "IN PROGRESS"),
+        ("permission-resumed", "Approved tool is already running", "PermissionRequest", {"tool_name": "Bash"}, "running", None, "IN PROGRESS"),
         ("permission-allow", "Waiting for tool permission", "PermissionRequest", {"tool_name": "Bash"}, "requires_action", "permission", "IN PROGRESS"),
         ("elicitation", "Waiting for MCP input", "Elicitation", {}, "requires_action", "elicitation", "IN PROGRESS"),
         ("authentication_failed", "Needs authentication", "StopFailure", {"error": "authentication_failed"}, "requires_action", "auth", "IN PROGRESS"),
@@ -109,13 +113,43 @@ def seed(repo, home, binary):
         sid = spawned["id"]
         transcript = repo / f"{sid}.jsonl"
         transcript.write_text("")
+        status_file = None
+        if case in ("permission-resumed", "early-interrupt"):
+            runtime, _ = paths(repo)
+            target = sid.replace("-", "")[:16]
+            pid = int(subprocess.check_output([shutil.which("tmux"), "-S", str(runtime/"tmux.sock"),
+                "display-message", "-p", "-t", target, "#{pane_pid}"], text=True, timeout=5).strip())
+            (home/"sessions").mkdir(exist_ok=True)
+            status_file = home/"sessions"/f"{pid}.json"
+            write(status_file, {"pid":pid,"sessionId":sid,"status":"waiting" if case == "permission-resumed" else "busy","statusUpdatedAt":time.time_ns()//1_000_000})
         hook(repo, sid, "SessionStart", {"session_id": sid, "source": "startup", "transcript_path": str(transcript)})
         wait_for(lambda: next(s for s in client.board()["sessions"] if s["id"] == sid)["state"]["state"] == "idle")
         hook(repo, sid, "UserPromptSubmit", {"session_id": sid})
         wait_for(lambda: next(s for s in client.board()["sessions"] if s["id"] == sid)["state"]["state"] == "running")
         if case == "teammate-idle":
             hook(repo, sid, "TeammateIdle", {"teammate_name": "reviewer"})
+        if case == "manual-compact":
+            hook(repo, sid, "Stop", {})
+            wait_for(lambda: next(s for s in client.board()["sessions"] if s["id"]==sid)["state"] == {"state":"idle","stop_reason":"end_turn"})
         hook(repo, sid, event, payload)
+        if case == "manual-compact":
+            hook(repo, sid, "PostCompact", {"trigger":"manual"})
+            hook(repo, sid, "SessionStart", {"source":"compact","transcript_path":str(transcript)})
+        if case == "early-interrupt":
+            since = next(s for s in client.board()["sessions"] if s["id"]==sid)["state_changed_at"]
+            value = json.loads(status_file.read_text())
+            value.update(status="idle", statusUpdatedAt=since+120)
+            write(status_file,value)
+        if case in ("permission-cancel", "permission-resumed"):
+            time.sleep(3)  # Let production probes observe the held dialog.
+            if case == "permission-cancel":
+                with transcript.open("a") as log:
+                    log.write(json.dumps({"uuid":"abort","type":"user","message":{"content":[{
+                        "type":"text","text":"[Request interrupted by user for tool use]"}]}})+"\n")
+            else:
+                value = json.loads(status_file.read_text())
+                value.update(status="busy", statusUpdatedAt=time.time_ns()//1_000_000)
+                write(status_file, value)
         expected = {"state": state, "column": column, "reason": reason}
         note = client.request("write_note", ticket=ticket, text=f"# {case}\n\nSynthetic, repeatable state scenario. No model is running in this pane.\n\nExpected: {state} / {reason or 'none'}, column {column}.\n\nThe corresponding replay fixture covers the transitions around this checkpoint.\n\nInspect evidence with:\n\n    {binary} state explain {sid[:8]} --repo {repo}\n")
         entries.append({"case": case, "ticket": ticket, "session": sid, "expected": expected, "note": note.get("note")})

@@ -50,6 +50,7 @@ pub enum Input {
     StatusIdle {
         turn_done: bool,
     },
+    PermissionResumed,
     PaneQuiet,
     TranscriptQuiet,
     Tick,
@@ -115,6 +116,7 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
             Input::StatusIdle { turn_done } => {
                 Some(Signal::StatusFileIdle { turn_done: *turn_done })
             }
+            Input::PermissionResumed => Some(Signal::StatusFilePermissionResumed),
             Input::PaneQuiet => Some(Signal::PaneQuiet),
             Input::TranscriptQuiet if !tools.is_busy() => {
                 Some(Signal::TranscriptHint { kind: TailHint::StaleQuiet })

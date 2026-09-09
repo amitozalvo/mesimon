@@ -107,8 +107,8 @@ const PANE_QUIET_MS: u64 = 60_000;
 /// this turn's `UserPromptSubmit` hook can land in either order (a prompt
 /// typed ahead is submitted the instant the turn ends), and a stale idle read
 /// as this turn's would blank a card that just started working. That hazard
-/// is milliseconds wide; a person's Esc is not. It was 1 s for an hour and
-/// blocked a live Esc 938 ms after Enter (dogfood 2026-09-04).
+/// is milliseconds wide. An early Esc can also land inside that window;
+/// such an idle must remain unchanged across a second probe before it counts.
 const STATUS_IDLE_MARGIN_MS: u64 = 250;
 /// How long a Running session with no session file goes between looks for
 /// one (an older Claude Code writes none; a scan is ~40 small reads).
@@ -122,6 +122,51 @@ struct StatusProbe {
     path: Option<std::path::PathBuf>,
     /// Epoch ms of the last failed search; 0 means never looked.
     looked_at: u64,
+    near_idle: Option<(u64, u64)>,
+    waiting_spell: Option<(u64, u64)>,
+}
+
+impl StatusProbe {
+    fn permission_resumed(&mut self, status: Option<&str>, at: Option<u64>, since: u64) -> bool {
+        if status == Some("waiting") {
+            self.waiting_spell = at.map(|stamp| (since, stamp));
+            return false;
+        }
+        let resumed = status == Some("busy")
+            && self.waiting_spell.is_some_and(|(spell, waiting)| {
+                spell == since && at.is_some_and(|stamp| stamp > since && stamp > waiting)
+            });
+        if status != Some("busy") {
+            self.waiting_spell = None;
+        }
+        resumed
+    }
+
+    /// Near-boundary idle evidence is delayed, never discarded forever. A
+    /// changed status/stamp cancels the confirmation; stale stamps never count.
+    fn confirms_idle(
+        &mut self,
+        status: Option<&str>,
+        at: Option<u64>,
+        since: u64,
+        now: u64,
+    ) -> bool {
+        let Some(at) = at.filter(|at| status == Some("idle") && *at > since) else {
+            self.near_idle = None;
+            return false;
+        };
+        if at >= since.saturating_add(STATUS_IDLE_MARGIN_MS) {
+            self.near_idle = None;
+            return true;
+        }
+        match self.near_idle {
+            Some((stamp, first_seen)) if stamp == at => now.saturating_sub(first_seen) >= 2000,
+            _ => {
+                self.near_idle = Some((at, now));
+                false
+            }
+        }
+    }
 }
 
 /// A worktree waiting to go (12 §12.6.1). `sids` are the panes the reaper
@@ -1747,20 +1792,33 @@ impl Daemon {
     /// session's stamp was the Esc's own second. Doc 11 §11.3 barred the file
     /// from setting state as "best-effort enrichment"; the measurement says
     /// the status is written at every edge, so it gets PaneQuiet's row sixty
-    /// seconds earlier — demotion-only, Medium, `Running` only. The stamp
-    /// must post-date this Running spell by `STATUS_IDLE_MARGIN_MS`. The
-    /// file is found once per spell by sessionId + live pid
+    /// seconds earlier. Fresh idle demotes Running at Medium; near-boundary
+    /// stamps require sustained confirmation. Permission can also clear after
+    /// an observed waiting-to-busy transition in the same spell. The file
+    /// is found by sessionId + live pid
     /// (`census::status_file_for`), then read in place.
     fn probe_status_files(&mut self) -> bool {
         let now = now_ms();
-        let cands: Vec<(uuid::Uuid, uuid::Uuid, u64, Option<std::path::PathBuf>)> = self
-            .probed_running()
+        let cands: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|r| {
+                r.kind == SessionKind::Claude
+                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
+                    && (r.state == SessionState::Running
+                        || r.state
+                            == (SessionState::RequiresAction {
+                                reason: mesimon_core::board::Reason::Permission,
+                            }))
+            })
             .map(|r| {
                 (
                     r.id,
                     r.claude_session_id.unwrap_or(r.id),
                     r.state_changed_at.unwrap_or(now),
                     r.transcript_path.as_deref().map(std::path::PathBuf::from),
+                    r.state != SessionState::Running,
                 )
             })
             .collect();
@@ -1770,9 +1828,13 @@ impl Daemon {
         }
         let home = crate::census::claude_home();
         let mut changed = false;
-        for (id, claude_id, since, transcript) in cands {
-            let probe =
-                self.status_files.entry(id).or_insert(StatusProbe { path: None, looked_at: 0 });
+        for (id, claude_id, since, transcript, permission) in cands {
+            let probe = self.status_files.entry(id).or_insert(StatusProbe {
+                path: None,
+                looked_at: 0,
+                near_idle: None,
+                waiting_spell: None,
+            });
             if probe.path.is_none() && now.saturating_sub(probe.looked_at) >= STATUS_FILE_RETRY_MS {
                 probe.path = crate::census::status_file_for(&home, claude_id);
                 probe.looked_at = now;
@@ -1787,8 +1849,17 @@ impl Daemon {
                 probe.path = None;
                 continue;
             }
-            let idle = pf.status.as_deref() == Some("idle")
-                && pf.status_updated_at.is_some_and(|at| at >= since + STATUS_IDLE_MARGIN_MS);
+            if permission {
+                if probe.permission_resumed(pf.status.as_deref(), pf.status_updated_at, since) {
+                    let signal = Signal::StatusFilePermissionResumed;
+                    if let Some(change) = self.observe_signal(id, &signal, now, "status") {
+                        changed |= self.apply_change(id, &change, None, Some("status"));
+                    }
+                }
+                continue;
+            }
+            probe.waiting_spell = None;
+            let idle = probe.confirms_idle(pf.status.as_deref(), pf.status_updated_at, since, now);
             if !idle {
                 continue;
             }
@@ -1903,7 +1974,7 @@ impl Daemon {
     /// streams). Leaving `Unknown` ends the candidacy: hooks own again and
     /// the cursor is dropped.
     ///
-    /// Third class, abort-only: our own `Running` sessions. An Esc interrupt
+    /// Third class, abort-only: our own working or attention-held sessions. An Esc interrupt
     /// fires no hook, and the pane-quiet probe is defeated by Claude Code's
     /// post-turn painting (dogfood 2026-08-30: an idle pane kept
     /// `window_activity` fresh for 60–80 s, so the interrupted card read
@@ -1924,7 +1995,8 @@ impl Daemon {
                 let ours = r.kind == SessionKind::Claude
                     && !(r.provenance == Provenance::Adopted && r.argv.is_empty());
                 let ours_lost = ours && matches!(r.state, SessionState::Unknown { .. });
-                let abort_only = ours && r.state == SessionState::Running;
+                let abort_only =
+                    ours && (r.state == SessionState::Running || attention::is_attention(&r.state));
                 if !(observe_only || ours_lost || abort_only) {
                     return None;
                 }
@@ -1951,6 +2023,16 @@ impl Daemon {
                     .any(|r| r.id == id && matches!(r.state, SessionState::Unknown { .. }))
             {
                 resting_hint(&path, now)
+            } else if fresh && abort_only {
+                // Esc may precede the first poll. Only an explicit, timestamped
+                // abort from this state spell can seed cancellation from history.
+                self.board
+                    .sessions
+                    .iter()
+                    .find(|r| r.id == id)
+                    .and_then(|r| r.state_changed_at)
+                    .filter(|since| crate::tail::aborted_since(&path, *since))
+                    .map(|_| TailHint::AbortedMidStream)
             } else {
                 None
             };
@@ -7245,4 +7327,31 @@ const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.
     format!("@{}", now_secs())
+}
+
+#[cfg(test)]
+mod status_probe_tests {
+    use super::StatusProbe;
+
+    #[test]
+    fn permission_needs_observed_waiting_and_a_new_busy_stamp_in_same_spell() {
+        let mut p = StatusProbe { path: None, looked_at: 0, near_idle: None, waiting_spell: None };
+        assert!(!p.permission_resumed(Some("busy"), Some(1200), 1000));
+        assert!(!p.permission_resumed(Some("waiting"), Some(1100), 1000));
+        assert!(!p.permission_resumed(Some("busy"), Some(1000), 1000));
+        assert!(p.permission_resumed(Some("busy"), Some(1200), 1000));
+        assert!(!p.permission_resumed(Some("busy"), Some(1600), 1500));
+    }
+
+    #[test]
+    fn early_idle_needs_confirmation_and_busy_cancels_it() {
+        let mut p = StatusProbe { path: None, looked_at: 0, near_idle: None, waiting_spell: None };
+        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1000, 2000));
+        assert!(!p.confirms_idle(Some("busy"), Some(1200), 1000, 4000));
+        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1000, 5000));
+        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1000, 6999));
+        assert!(p.confirms_idle(Some("idle"), Some(1120), 1000, 7000));
+        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1500, 9000));
+        assert!(p.confirms_idle(Some("idle"), Some(1800), 1500, 9000));
+    }
 }

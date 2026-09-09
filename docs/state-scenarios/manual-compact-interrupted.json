@@ -1,0 +1,98 @@
+{
+  "schema": 1,
+  "id": "manual-compact-interrupted",
+  "title": "Manual compaction restores interrupted even with delayed SessionStart",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T180046Z-e2e-compact-706f77",
+    "claude_version": "2.1.266",
+    "note": "Raw manual trigger shape; duplicate PreCompact and delayed SessionStart are synthetic ordering regressions"
+  },
+  "initial": {
+    "state": "idle",
+    "stop_reason": "interrupted"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "PreCompact",
+        "payload": {
+          "trigger": "manual"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 200,
+      "input": {
+        "source": "hook",
+        "event": "PreCompact",
+        "payload": {
+          "trigger": "manual"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1000,
+      "input": {
+        "source": "hook",
+        "event": "PostCompact",
+        "payload": {
+          "trigger": "manual"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 2500,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "interrupted"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "high"
+      }
+    },
+    {
+      "at_ms": 2700,
+      "input": {
+        "source": "hook",
+        "event": "SessionStart",
+        "payload": {
+          "source": "compact"
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "interrupted"
+        },
+        "column": "IN PROGRESS"
+      }
+    }
+  ]
+}

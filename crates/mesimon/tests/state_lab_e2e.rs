@@ -94,3 +94,101 @@ fn timed_out_hook_releases_following_events_and_continued_stop_moves() {
         })
     });
 }
+
+#[test]
+fn explicit_abort_clears_a_held_permission_without_completion_movement() {
+    let Some(h) =
+        Harness::boot_with_env("state-cancel", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
+    let mut client = h.client("state-cancel");
+    let sid = spawn(&mut client, "Cancelled permission");
+    let transcript = h.dir.join("cancel.jsonl");
+    std::fs::write(&transcript, "").unwrap();
+    hook_send(
+        &h.paths.hook_sock(),
+        &sid.to_string(),
+        "SessionStart",
+        &serde_json::json!({
+            "transcript_path": transcript, "source": "startup"
+        })
+        .to_string(),
+    );
+    hook_send(&h.paths.hook_sock(), &sid.to_string(), "UserPromptSubmit", "{}");
+    hook_send(
+        &h.paths.hook_sock(),
+        &sid.to_string(),
+        "PermissionRequest",
+        r#"{"tool_name":"Bash"}"#,
+    );
+    wait_until(Duration::from_secs(5), "permission visible", || {
+        matches!(
+            client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
+            SessionState::RequiresAction { .. }
+        )
+    });
+    std::thread::sleep(Duration::from_secs(3));
+    // Capture-derived 2.1.266 spelling, intentionally without interruptedMessageId.
+    std::fs::write(&transcript, concat!(r#"{"uuid":"abort","type":"user","message":{"content":[{"type":"text","text":"[Request interrupted by user for tool use]"}]}}"#, "\n")).unwrap();
+    wait_until(Duration::from_secs(8), "permission cancelled", || {
+        let board = client.board();
+        let session = board.sessions.iter().find(|s| s.id == sid).unwrap();
+        assert_ne!(board.ticket(session.ticket).unwrap().column, "REVIEW");
+        session.state == SessionState::Idle { stop_reason: StopReason::Interrupted }
+    });
+}
+
+#[test]
+fn waiting_then_busy_clears_permission_before_the_tool_finishes() {
+    let Some(h) = Harness::boot_with_env(
+        "state-approved",
+        Some(STUB),
+        &[("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let mut client = h.client("state-approved");
+    let sid = spawn(&mut client, "Approved long tool");
+    let home = h.dir.join("claude-home/sessions");
+    std::fs::create_dir_all(&home).unwrap();
+    let file = home.join(format!("{}.json", std::process::id()));
+    let write_status = |status: &str, stamp: u64| {
+        std::fs::write(
+            &file,
+            serde_json::json!({"pid":std::process::id(),"sessionId":sid,
+            "status":status,"statusUpdatedAt":stamp})
+            .to_string(),
+        )
+        .unwrap();
+    };
+    write_status("waiting", 0);
+    hook_send(&h.paths.hook_sock(), &sid.to_string(), "UserPromptSubmit", "{}");
+    hook_send(
+        &h.paths.hook_sock(),
+        &sid.to_string(),
+        "PermissionRequest",
+        r#"{"tool_name":"Bash"}"#,
+    );
+    wait_until(Duration::from_secs(5), "permission visible", || {
+        matches!(
+            client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
+            SessionState::RequiresAction { .. }
+        )
+    });
+    let since =
+        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state_changed_at.unwrap();
+    write_status("waiting", since);
+    std::thread::sleep(Duration::from_secs(3));
+    assert!(matches!(
+        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state,
+        SessionState::RequiresAction { .. }
+    ));
+    write_status("busy", since + 3000);
+    wait_until(Duration::from_secs(8), "approved tool is running before completion", || {
+        let board = client.board();
+        let session = board.sessions.iter().find(|s| s.id == sid).unwrap();
+        assert_ne!(board.ticket(session.ticket).unwrap().column, "REVIEW");
+        session.state == SessionState::Running
+    });
+}

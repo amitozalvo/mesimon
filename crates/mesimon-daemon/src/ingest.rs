@@ -105,6 +105,15 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
             },
         }),
         "UserPromptSubmit" => Some(Signal::UserPromptSubmit),
+        "PreCompact" | "PostCompact" if !has_agent_id(frame) => {
+            // Missing/unknown triggers stay on the automatic continuation path.
+            let manual = frame.payload.get("trigger").and_then(Value::as_str) == Some("manual");
+            Some(if frame.event == "PreCompact" {
+                Signal::PreCompact { manual }
+            } else {
+                Signal::PostCompact { manual }
+            })
+        }
         "Stop" => Some(Signal::Stop {
             stop_hook_active: frame
                 .payload

@@ -52,6 +52,22 @@ pub fn turn_done_since(path: &Path, since: u64) -> bool {
     false
 }
 
+/// Recover only a recent explicit cancellation when a cursor is first minted.
+/// A newer user/assistant turn record stops the search; old aborts cannot cancel
+/// a new turn just because they remain in the bounded history window.
+pub fn aborted_since(path: &Path, since: u64) -> bool {
+    let Some(records) = tail_records(path) else { return false };
+    for record in records {
+        if classify_tail_record(&record) == TailEvent::Aborted {
+            return mesimon_core::adopt::record_ms(&record).is_some_and(|at| at >= since);
+        }
+        if !matches!(turn_edge(&record), TurnEdge::Unsaid) {
+            return false;
+        }
+    }
+    false
+}
+
 /// The parsed records of the last 64 KiB, NEWEST first. The window may open
 /// mid-record, so the first line of a truncated read is dropped; a line that
 /// is not JSON is skipped (09 §4.3: never resync).
@@ -159,6 +175,28 @@ mod tests {
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(&d).unwrap();
         d.join("t.jsonl")
+    }
+
+    #[test]
+    fn abort_backfill_requires_current_timestamp_and_no_newer_turn() {
+        let path = tmp("abort-backfill");
+        let record = serde_json::json!({"uuid":"abort", "type":"user",
+            "timestamp":"2026-09-05T16:56:32.998Z",
+            "message":{"content":"[Request interrupted by user]"}});
+        let stamp = mesimon_core::adopt::record_ms(&record).unwrap();
+        std::fs::write(&path, format!("{record}\n")).unwrap();
+        assert!(aborted_since(&path, stamp - 1));
+        assert!(!aborted_since(&path, stamp + 1));
+        let mut file = std::fs::OpenOptions::new().append(true).open(&path).unwrap();
+        writeln!(
+            file,
+            "{{\"uuid\":\"new\",\"type\":\"user\",\"message\":{{\"content\":\"next prompt\"}}}}"
+        )
+        .unwrap();
+        assert!(!aborted_since(&path, stamp - 1));
+        std::fs::write(&path, "{\"uuid\":\"abort\",\"type\":\"user\",\"message\":{\"content\":\"[Request interrupted by user]\"}}\n").unwrap();
+        assert!(!aborted_since(&path, 0), "undated history is not fresh evidence");
+        std::fs::remove_dir_all(path.parent().unwrap()).unwrap();
     }
 
     #[test]

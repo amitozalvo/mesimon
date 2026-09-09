@@ -1,0 +1,58 @@
+{
+  "schema": 1,
+  "id": "permission-cancel",
+  "title": "Esc clears permission attention without completion movement",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T174047Z-e2e-permission-cancel-3f98bf",
+    "claude_version": "2.1.266",
+    "note": "Reviewed raw interrupt spelling; virtual timing and expectations authored independently. Daemon candidacy is covered by state_lab_e2e."
+  },
+  "initial": {
+    "state": "requires_action",
+    "reason": "permission"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "transcript",
+        "record": {
+          "uuid": "abort",
+          "type": "user",
+          "message": {
+            "content": [
+              {
+                "type": "text",
+                "text": "[Request interrupted by user for tool use]"
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "permission"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "interrupted"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "low"
+      }
+    }
+  ]
+}

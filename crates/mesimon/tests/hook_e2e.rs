@@ -285,7 +285,14 @@ fn m2_attention_headless() {
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
     let n: usize =
         parsed["hooks"].as_object().unwrap().values().map(|a| a.as_array().unwrap().len()).sum();
-    assert_eq!(n, 32, "31 observer entries plus the PreToolUse gate");
+    assert_eq!(n, 34, "33 observer entries plus the PreToolUse gate");
+    for event in ["PreCompact", "PostCompact"] {
+        assert_eq!(
+            parsed["hooks"][event].as_array().unwrap().len(),
+            1,
+            "manual compaction must be observed at both boundaries"
+        );
+    }
     // Prefill: the ticket title is typed into the fresh pane, never submitted
     // (the pty echoes it even though the stub never reads stdin).
     let claude_sid16 = rec.sid16();

@@ -8139,3 +8139,59 @@ MCP tool text, board-state authorization, private tmux selection and rendering l
 remain in their existing layers. Live unknowns (quota, team combinations, compaction,
 early recordless Esc, and source-generation correlation) are explicitly listed rather
 than treated as covered by synthetic fixtures.
+
+## 2026-09-09 — live Claude state verification and four additional gaps
+
+The state lab now launches real Claude through Mesimon's production spawn path,
+retains the generated observer registrations, adds non-deciding capture hooks,
+and checks real board snapshots against independently reached UI/tool barriers.
+`ci/claude-state-e2e.py` is explicitly invoked through `ci/test-run.py`; each run
+has a registered `test_guard.py` owner. Ordinary tests never launch Claude.
+The per-case evidence index and limits live in `docs/claude-live-verification.md`.
+
+Controlled Haiku 2.1.266 observations refuted four assumptions:
+
+- **Permission held after Esc.** The UI and transcript recorded interruption,
+  but abort-only tail candidacy excluded RequiresAction. It now includes held
+  attention. A newly minted cursor can recover only a timestamped current-spell
+  abort, stopping at newer turn evidence; undated/old history cannot seed it.
+- **An early Esc is outside a 250ms race window.** A real recordless cancellation
+  wrote idle about 120ms after prompt delivery. Its timestamp was ignored forever.
+  Idle inside the existing margin now requires two observations at least two
+  seconds apart, with the same stamp newer than the spell. Busy, changed stamps
+  and stale evidence cancel confirmation. This remains Medium inference, not a
+  claimed supported Claude status API or a solution to arbitrary source reordering.
+- **Tool completion adequately clears approval.** A controlled tool file barrier
+  proved Bash was running while the card still said permission. The daemon can
+  now clear Permission after observing the same live session waiting during that
+  permission spell, then busy at a strictly newer timestamp. This qualified
+  Medium signal cannot clear Question, Plan or other attention states. Explicit
+  transcript cancellation continues to handle refusal/cancel instead.
+- **Every compact restart continues a turn.** Manual `/compact` emitted
+  PreCompact(manual), SessionStart(compact), PostCompact(manual), and returned to
+  the prompt without a Stop. Mesimon now registers PreCompact/PostCompact,
+  exposes Running during compaction, and restores the state/confidence from
+  before manual compaction. Its saved context survives a late async compact
+  SessionStart and duplicate PreCompact, and is cleared by new prompt/session
+  activity. Without saved context, manual PostCompact falls back to Low
+  Idle/unknown, never inventing completion. Automatic compaction keeps the
+  continuation behavior; real automatic compaction has not been certified here.
+
+The investigation also caught harness errors and an intended product refusal:
+No was the third permission choice; MCP forms require confirming the field
+before their Accept/Decline controls; early Esc restores multiline input which
+one Ctrl+U does not fully replace; compaction needs enough conversation messages;
+line wrapping changes dialog text; and rapid setup turns activated the existing
+six-move automove fuse. These attempts are retained as failed/inconclusive
+captures, with reviewed explanations, not silently counted as verification.
+Compaction preparation temporarily disables REVIEW's on_working rule, restores
+it before the measured operation, and records that configuration explicitly.
+The fuse itself remains unchanged and has existing regression coverage.
+
+A local non-forwarding HTTP server supplies authentication, rate-limit, server
+and model-not-found errors to the real CLI using a placeholder credential. These
+are labelled injected API tests; they do not certify real account quota behavior,
+quota auto-resume, or upstream availability. The local MCP server uses the actual
+elicitation/create protocol. Chrome is explicitly disabled in new captures:
+strict MCP configuration alone did not disable the built-in Chrome integration.
+No browser permission was granted in the inconclusive compaction attempt.

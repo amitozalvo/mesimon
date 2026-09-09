@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "id": "permission-resumed",
+  "title": "An observed waiting-to-busy edge clears permission before tool completion",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "20260909T174631Z-e2e-interrupt-tool-734605",
+    "claude_version": "2.1.266",
+    "note": "Qualified status probe input; independent tool marker proves execution. Virtual timing, same production reducer."
+  },
+  "initial": {
+    "state": "requires_action",
+    "reason": "permission"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "permission_resumed"
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "permission"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "medium"
+      }
+    }
+  ]
+}

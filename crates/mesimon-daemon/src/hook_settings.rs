@@ -43,7 +43,7 @@ const STOP_FAILURE_MATCHERS: [&str; 10] = [
 /// MessageDisplay, broad PreToolUse) is deliberately absent (11 §11.2.5);
 /// broad PostToolUse is the one exception — it is the permission-accept
 /// clear path (STALE-MAP deviation, dogfood 2026-08-30).
-const SINGLE_EVENTS: [&str; 9] = [
+const SINGLE_EVENTS: [&str; 11] = [
     "UserPromptSubmit",
     "Stop",
     "SubagentStop",
@@ -53,6 +53,8 @@ const SINGLE_EVENTS: [&str; 9] = [
     "Notification", // one entry, NO matcher — daemon discriminates on notification_type
     "Elicitation",
     "ElicitationResult",
+    "PreCompact",
+    "PostCompact",
 ];
 /// `async: true` only where the hook can never need to block (11 §11.2.3).
 const ASYNC_EVENTS: [&str; 4] = ["SessionStart", "SessionEnd", "Stop", "SubagentStop"];
@@ -143,7 +145,7 @@ fn gate_entry(
     })
 }
 
-/// The 32-entry registered set for one session: 31 observers plus the gate.
+/// The 34-entry registered set for one session: 33 observers plus the gate.
 pub fn render_settings(
     hook_bin: &Path,
     hook_sock: &Path,
@@ -316,10 +318,10 @@ mod tests {
     }
 
     #[test]
-    fn thirty_two_entries() {
-        // 31 observers (D15) + 1 decider (D10).
-        assert_eq!(entries(&rendered()).len(), 32);
-        assert_eq!(observers(&rendered()).len(), 31);
+    fn thirty_four_entries() {
+        // 33 observers (D15) + 1 decider (D10).
+        assert_eq!(entries(&rendered()).len(), 34);
+        assert_eq!(observers(&rendered()).len(), 33);
     }
 
     /// The two sets are told apart by the binary they exec, not by a comment.

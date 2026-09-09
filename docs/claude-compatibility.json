@@ -25,11 +25,11 @@
         "One interrupt run stopped at a permission dialog; no tool-start prerequisite was reached"
       ],
       "not_yet_observed": [
-        "interactive compaction",
-        "teammates",
-        "quota",
-        "MCP elicitation",
-        "early recordless Esc before assistant output"
+        "automatic compaction",
+        "real account quota and quota auto-resume",
+        "dormant monitors and scheduled wakeups",
+        "concurrent conflicting dialogs",
+        "arbitrary upstream hook reordering"
       ],
       "claims": [
         {
@@ -76,12 +76,345 @@
           "claim": "Esc after the independent tool file barrier produced an interrupted-user transcript record and no Stop before cleanup",
           "status": "observed",
           "capture": "20260909T161602Z-interactive-interrupt-814de726"
+        },
+        {
+          "claim": "Permission cancellation and tool interruption can leave Mesimon holding Permission when abort-only polling excludes attention",
+          "status": "observed",
+          "capture": "20260909T174047Z-e2e-permission-cancel-3f98bf"
+        },
+        {
+          "claim": "An early recordless Esc can stamp idle about 120ms after prompt arrival, inside the previous 250ms margin",
+          "status": "observed",
+          "capture": "20260909T174125Z-e2e-interrupt-early-509c8b"
+        },
+        {
+          "claim": "A controlled tool runs after waiting changes to busy, before PostToolUse",
+          "status": "observed",
+          "capture": "20260909T174631Z-e2e-interrupt-tool-734605"
+        },
+        {
+          "claim": "Manual compaction returns to the prompt after PreCompact(manual), SessionStart(compact), PostCompact(manual), without a Stop for the operation",
+          "status": "observed",
+          "capture": "20260909T180046Z-e2e-compact-706f77"
         }
       ],
       "limitations": [
         "Print-mode captures do not certify interactive behavior",
         "A Stop is a stop attempt; another hook may continue it",
         "Replay coverage is separate from live compatibility evidence"
+      ],
+      "end_to_end": {
+        "complete": {
+          "status": "passed",
+          "capture": "20260909T173914Z-e2e-complete-0556cb",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 2
+        },
+        "permission-allow": {
+          "status": "passed",
+          "capture": "20260909T174016Z-e2e-permission-allow-fc3dda",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "question": {
+          "status": "passed",
+          "capture": "20260909T174156Z-e2e-question-5650f8",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "permission-deny": {
+          "status": "passed",
+          "capture": "20260909T174556Z-e2e-permission-deny-efef35",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "permission-cancel": {
+          "status": "passed",
+          "capture": "20260909T180621Z-e2e-permission-cancel-ace9a3",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 5,
+          "mesimon_sha256": "1224d572e8ffd26919e0e9e0bf03246df8e90d3260a44abadb43d86dd35cef74"
+        },
+        "interrupt-tool": {
+          "status": "passed",
+          "capture": "20260909T175803Z-e2e-interrupt-tool-ed4c1b",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 6,
+          "mesimon_sha256": "398ac5c4074701ca6f1a7ae6b626091d3cc5cc997a99f551af0e5951c371fcc1"
+        },
+        "interrupt-early": {
+          "status": "passed",
+          "capture": "20260909T180947Z-e2e-interrupt-early-794a52",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 4,
+          "mesimon_sha256": "1224d572e8ffd26919e0e9e0bf03246df8e90d3260a44abadb43d86dd35cef74"
+        },
+        "interrupt-stream": {
+          "status": "passed",
+          "capture": "20260909T174810Z-e2e-interrupt-stream-d595b0",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 4
+        },
+        "clear": {
+          "status": "passed",
+          "capture": "20260909T174926Z-e2e-clear-d0601c",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "resume": {
+          "status": "passed",
+          "capture": "20260909T174945Z-e2e-resume-4a2cf3",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "teammate": {
+          "status": "passed",
+          "capture": "20260909T175109Z-e2e-teammate-1741be",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "plan": {
+          "status": "passed",
+          "capture": "20260909T175306Z-e2e-plan-92cf27",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "elicitation-accept": {
+          "status": "passed",
+          "capture": "20260909T175324Z-e2e-elicitation-accept-491a5e",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "elicitation-decline": {
+          "status": "passed",
+          "capture": "20260909T175341Z-e2e-elicitation-decline-5b6c1f",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "elicitation-cancel": {
+          "status": "passed",
+          "capture": "20260909T175357Z-e2e-elicitation-cancel-7d42da",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 3
+        },
+        "fault-auth": {
+          "status": "passed",
+          "capture": "20260909T175412Z-e2e-fault-auth-759541",
+          "kind": "injected_api_real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 2
+        },
+        "fault-rate-limit": {
+          "status": "passed",
+          "capture": "20260909T175420Z-e2e-fault-rate-limit-f1f123",
+          "kind": "injected_api_real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 2
+        },
+        "fault-server": {
+          "status": "passed",
+          "capture": "20260909T175427Z-e2e-fault-server-6785d7",
+          "kind": "injected_api_real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf, 2026-09-09)",
+          "assertions": 2
+        },
+        "fault-model": {
+          "status": "passed",
+          "capture": "20260909T175918Z-e2e-fault-model-0a4f8f",
+          "kind": "injected_api_real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 2,
+          "mesimon_sha256": "398ac5c4074701ca6f1a7ae6b626091d3cc5cc997a99f551af0e5951c371fcc1"
+        },
+        "compact": {
+          "status": "passed",
+          "capture": "20260909T180532Z-e2e-compact-d532a8",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 7,
+          "mesimon_sha256": "1224d572e8ffd26919e0e9e0bf03246df8e90d3260a44abadb43d86dd35cef74"
+        },
+        "background-shell": {
+          "status": "passed",
+          "capture": "20260909T181243Z-e2e-background-shell-caa714",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 3,
+          "mesimon_sha256": "1224d572e8ffd26919e0e9e0bf03246df8e90d3260a44abadb43d86dd35cef74"
+        },
+        "question-cancel": {
+          "status": "passed",
+          "capture": "20260909T181345Z-e2e-question-cancel-22afc4",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 5,
+          "mesimon_sha256": "1224d572e8ffd26919e0e9e0bf03246df8e90d3260a44abadb43d86dd35cef74"
+        },
+        "plan-cancel": {
+          "status": "passed",
+          "capture": "20260909T181403Z-e2e-plan-cancel-7d4355",
+          "kind": "real_claude_mesimon_e2e",
+          "model": "haiku",
+          "mesimon_version": "mesimon 0.1.0-alpha.18 (66754cf+dirty, 2026-09-09)",
+          "assertions": 5,
+          "mesimon_sha256": "1224d572e8ffd26919e0e9e0bf03246df8e90d3260a44abadb43d86dd35cef74"
+        }
+      },
+      "end_to_end_limits": [
+        "Each passed entry certifies its captured checkpoints, not all behavior in that category",
+        "Injected API errors are not real account quota evidence",
+        "Automatic compaction is not certified by a manual compaction capture",
+        "Raw captures are private; only reviewed shapes and references are committed"
+      ],
+      "end_to_end_attempts": [
+        {
+          "capture": "20260909T174032Z-e2e-permission-deny-cb31e1",
+          "case": "permission-deny",
+          "result": "failed",
+          "error": "file execution disagrees with permission response",
+          "cleanup": "cleaned",
+          "review": "Driver chose second Yes option; independently detected by unexpected file creation. Selection now verified by label."
+        },
+        {
+          "capture": "20260909T174047Z-e2e-permission-cancel-3f98bf",
+          "case": "permission-cancel",
+          "result": "failed",
+          "error": "permission-cancel-response: expected {'state': 'idle', 'reason': 'interrupted', 'column': 'IN PROGRESS'}, got {'state': 'requires_action', 'reason': 'permission', 'column': 'IN PROGRESS', 'confidence': 'high'}",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T174106Z-e2e-interrupt-tool-f0939a",
+          "case": "interrupt-tool",
+          "result": "failed",
+          "error": "interrupt-tool-response: expected {'state': 'idle', 'reason': 'interrupted', 'column': 'IN PROGRESS'}, got {'state': 'requires_action', 'reason': 'permission', 'column': 'IN PROGRESS', 'confidence': 'high'}",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T174125Z-e2e-interrupt-early-509c8b",
+          "case": "interrupt-early",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: visible interruption",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T174829Z-e2e-compact-eb98cc",
+          "case": "compact",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: compaction completed",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T175004Z-e2e-plan-f08820",
+          "case": "plan",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: visible plan dialog",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T175034Z-e2e-elicitation-accept-48121a",
+          "case": "elicitation-accept",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: MCP received response",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T175220Z-e2e-compact-456b92",
+          "case": "compact",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: final response and Stop",
+          "cleanup": "cleaned",
+          "review": "Model attempted a Chrome tool during setup. Permission was not granted. Explicit --no-chrome added and setup prompt corrected."
+        },
+        {
+          "capture": "20260909T175435Z-e2e-fault-model-48e1d9",
+          "case": "fault-model",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: Claude displayed injected API failure",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T175732Z-e2e-compact-80f3a9",
+          "case": "compact",
+          "result": "failed",
+          "error": "compact: expected {'state': 'idle', 'reason': 'end_turn', 'column': 'REVIEW'}, got {'state': 'idle', 'reason': 'end_turn', 'column': 'IN PROGRESS', 'confidence': 'high'}",
+          "cleanup": "cleaned",
+          "review": "Expected board movement was refused by the existing six-move fuse. Setup column rule corrected; product guard preserved."
+        },
+        {
+          "capture": "20260909T175830Z-e2e-interrupt-early-0c2551",
+          "case": "interrupt-early",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: final response and Stop",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T181130Z-e2e-question-cancel-85f9f7",
+          "case": "question-cancel",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: visible cancellation",
+          "cleanup": "cleaned"
+        },
+        {
+          "capture": "20260909T181206Z-e2e-plan-cancel-a8a57e",
+          "case": "plan-cancel",
+          "result": "inconclusive",
+          "error": "checkpoint not reached: visible cancellation",
+          "cleanup": "cleaned"
+        }
+      ],
+      "early_escape_timings": [
+        {
+          "delay_ms": 0,
+          "capture": "20260909T180642Z-e2e-interrupt-early-32e41f",
+          "result": "passed"
+        },
+        {
+          "delay_ms": 150,
+          "capture": "20260909T180821Z-e2e-interrupt-early-d43df9",
+          "result": "passed"
+        },
+        {
+          "delay_ms": 500,
+          "capture": "20260909T180947Z-e2e-interrupt-early-794a52",
+          "result": "passed"
+        }
       ]
     }
   }

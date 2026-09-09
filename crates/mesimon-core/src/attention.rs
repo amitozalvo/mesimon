@@ -281,6 +281,15 @@ pub enum Signal {
     StatusFileIdle {
         turn_done: bool,
     },
+    /// The same live session was observed waiting while Permission was held,
+    /// then busy at a strictly newer timestamp. Qualified by the daemon.
+    StatusFilePermissionResumed,
+    PreCompact {
+        manual: bool,
+    },
+    PostCompact {
+        manual: bool,
+    },
     /// Observe tier: derived from an adopted session's transcript tail.
     TranscriptHint {
         kind: TailHint,
@@ -365,6 +374,7 @@ pub struct MachineView {
     pub pending: Option<PendingView>,
     pub pinned_until: Option<u64>,
     pub idle_teammates: usize,
+    pub manual_compaction_prior: Option<SessionState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -402,6 +412,7 @@ pub struct Machine {
     /// "reviewers done, lead done" — the daemon persists it on the record so
     /// a restart does not re-park a finished session.
     idle_teammates: BTreeSet<String>,
+    manual_compact_prior: Option<(SessionState, Confidence)>,
 }
 
 impl Machine {
@@ -440,6 +451,7 @@ impl Machine {
             pinned_until: None,
             recent_left: None,
             idle_teammates: BTreeSet::new(),
+            manual_compact_prior: None,
         }
     }
 
@@ -458,6 +470,10 @@ impl Machine {
             entered_at: self.entered_at,
             pinned_until: self.pinned_until,
             idle_teammates: self.idle_teammates.len(),
+            manual_compaction_prior: self
+                .manual_compact_prior
+                .as_ref()
+                .map(|(state, _)| state.clone()),
             pending: self.pending.as_ref().map(|p| PendingView {
                 state: p.to.clone(),
                 confidence: p.confidence,
@@ -498,6 +514,8 @@ impl Machine {
             } else {
                 "settle_cancelled"
             }
+        } else if before.manual_compaction_prior != after.manual_compaction_prior {
+            "compaction_updated"
         } else if before.idle_teammates != after.idle_teammates {
             "background_updated"
         } else {
@@ -547,6 +565,20 @@ impl Machine {
             return None;
         }
 
+        match sig {
+            Signal::PreCompact { manual: true } => {
+                if self.manual_compact_prior.is_none() {
+                    self.manual_compact_prior = Some((self.state.clone(), self.confidence));
+                }
+            }
+            Signal::PreCompact { manual: false } | Signal::UserPromptSubmit => {
+                self.manual_compact_prior = None;
+            }
+            Signal::SessionStart { source } if *source != StartSource::Compact => {
+                self.manual_compact_prior = None;
+            }
+            _ => {}
+        }
         let (to, conf) = self.target(sig)?;
 
         // Flap pin: while pinned, only a STATED transition or a terminal one
@@ -681,7 +713,22 @@ impl Machine {
             // not working (dogfood 2026-08-30: fresh spawns read "working"
             // forever). The one exception: a compact-restart fires
             // SessionStart mid-turn and the turn continues.
-            Signal::SessionStart { source: StartSource::Compact } => t(S::Running),
+            // PreCompact makes maintenance visible. Keep the saved state
+            // through PostCompact: an async SessionStart may arrive afterward.
+            Signal::PreCompact { .. } => t(S::Running),
+            Signal::PostCompact { manual: true } => Some(
+                self.manual_compact_prior
+                    .clone()
+                    .unwrap_or((S::Idle { stop_reason: StopReason::Unknown }, Confidence::Low)),
+            ),
+            Signal::PostCompact { manual: false } => t(S::Running),
+            Signal::SessionStart { source: StartSource::Compact } => {
+                if self.manual_compact_prior.is_some() {
+                    None
+                } else {
+                    t(S::Running)
+                }
+            }
             Signal::SessionStart { .. } => t(S::Idle { stop_reason: StopReason::Unknown }),
             // In-app `/resume` and `/clear` end the CONVERSATION, not the
             // process: Claude Code fires SessionEnd{reason:X} then
@@ -865,6 +912,13 @@ impl Machine {
             // goes idle in the same second, and a probe on a 2 s cadence that
             // replaced the pending EndTurn turned a finished turn into
             // "interrupted" — which automove does not promote (2026-09-04).
+            Signal::StatusFilePermissionResumed => {
+                if self.state == (S::RequiresAction { reason: Reason::Permission }) {
+                    Some((S::Running, Confidence::Medium))
+                } else {
+                    None
+                }
+            }
             Signal::PaneQuiet | Signal::StatusFileIdle { .. } => {
                 if self.state == S::Running && self.pending.is_none() {
                     let stop_reason = match sig {

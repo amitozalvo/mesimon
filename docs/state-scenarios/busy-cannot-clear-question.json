@@ -1,0 +1,45 @@
+{
+  "schema": 1,
+  "id": "busy-cannot-clear-question",
+  "title": "Generic permission-resumed evidence cannot dismiss a question",
+  "provenance": {
+    "kind": "synthetic_regression",
+    "note": "A permission status probe cannot clear other attention reasons"
+  },
+  "initial": {
+    "state": "requires_action",
+    "reason": "question"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "permission_resumed"
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "question"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "high"
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "question"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "high"
+      }
+    }
+  ]
+}
