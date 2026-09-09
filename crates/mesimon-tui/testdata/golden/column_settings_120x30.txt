@@ -4,23 +4,23 @@
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
 
-    Keymap validator      >╭─ COLUMN ∙ IN PROGRESS ─────────────────────────────────────────╮
-                           │   Name: in progress                                            │
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+
+
+                           ╭─ COLUMN ∙ IN PROGRESS ─────────────────────────────────────────╮
                            │   Collapsed: no                                                │
                            │   Sort now: newest first                                       │
                            │   Workspace for new tickets: board default                     │
-                           │   Claude mode: inherit (auto)                                  │
-                           │   Agent tools: full                                            │
-                           │   Start claude on creation: off                                │
-                           │   When claude starts working: stay                             │
-                           │   When claude ends a turn: stay                                │
+                           │   Agent behaviour                                              │
                            │   Entry needs a merged branch: no                              │
-                           │   Offer sleep + archive here: no                               │
-                           │   Merge train: off                                             │
-                           │   Delete column                                                │
+                           │   Offer: off                                                   │
+                           │   Auto merge: off                                              │
                            │                                                                │
-                           │     enter edits it in place ∙ every ticket in it follows       │
+                           │     a one-cell spine until the cursor enters it                │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+
+
+
 
 
 

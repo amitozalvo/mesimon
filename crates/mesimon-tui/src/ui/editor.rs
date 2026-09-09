@@ -357,7 +357,6 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
             }
             if let Some(col) = app.columns().get(app.cursor_col) {
                 ctx_spans.push(Span::styled(col.to_uppercase(), dim1));
-                ctx_spans.push(Span::styled(" column".to_string(), dim2));
             }
             ctx_spans.push(Span::styled(format!(" ∙ ⎇ {word}"), dim1));
             // The key beside the pick it cycles, the way the one-line

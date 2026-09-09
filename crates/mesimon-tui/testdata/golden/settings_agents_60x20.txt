@@ -1,0 +1,20 @@
+ BOARD   mesimon > kanban-tui   6 tickets
+
+    TODO                               2   2   2   0
+
+    Decay treatments                 >1y   I   R   D
+                                           N   E   O
+    Keymap validator                 >1y   P   V   N
+  ╭─ AGENTS ─────────────────────────────────────────────╮
+  │   Agent brief: off                                   │
+  │     one line: read the ticket first ∙ enter shows i~ │
+  │   Agent tools: on                                    │
+  │     the seven board tools every spawn carries ∙ ent~ │
+  ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
+                                           S
+
+
+
+
+
+ SETTINGS                                            ? keys

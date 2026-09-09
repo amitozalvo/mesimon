@@ -523,6 +523,45 @@ impl SortBy {
     }
 }
 
+/// Which bulk actions the column offers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ColumnOffers {
+    #[default]
+    Off,
+    Sleep,
+    Archive,
+    Both,
+}
+
+impl ColumnOffers {
+    pub fn next(self) -> Self {
+        match self {
+            Self::Off => Self::Sleep,
+            Self::Sleep => Self::Archive,
+            Self::Archive => Self::Both,
+            Self::Both => Self::Off,
+        }
+    }
+
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Off => "off",
+            Self::Sleep => "sleep",
+            Self::Archive => "archive",
+            Self::Both => "sleep + archive",
+        }
+    }
+
+    pub fn sleep(self) -> bool {
+        matches!(self, Self::Sleep | Self::Both)
+    }
+
+    pub fn archive(self) -> bool {
+        matches!(self, Self::Archive | Self::Both)
+    }
+}
+
 /// Everything a column decides (T-117). Every automation the daemon runs
 /// on a ticket is a field here, read off the ticket's column through
 /// `Board::column` and never off a column NAME: `on_working`/`on_done` ARE
@@ -565,11 +604,19 @@ pub struct ColumnSettings {
     /// The header's sleep and archive offers, `X` and `Z` price this column.
     #[serde(default, skip_serializing_if = "is_false")]
     pub reclaim: bool,
+    /// Independent offer selection. Absent in older boards: `reclaim` still
+    /// determines both offers there. An explicit choice overrides it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub offers: Option<ColumnOffers>,
     #[serde(default, skip_serializing_if = "TrainReach::is_off")]
     pub train: TrainReach,
 }
 
 impl ColumnSettings {
+    pub fn offers(&self) -> ColumnOffers {
+        self.offers.unwrap_or(if self.reclaim { ColumnOffers::Both } else { ColumnOffers::Off })
+    }
+
     /// Whether any automation would act on a ticket here — the header's one
     /// optional mark.
     pub fn automated(&self) -> bool {
@@ -606,8 +653,8 @@ impl ColumnSettings {
         if self.requires_merge {
             out.push("entry needs a merged branch".into());
         }
-        if self.reclaim {
-            out.push("offers sleep + archive".into());
+        if self.offers() != ColumnOffers::Off {
+            out.push(format!("offers {}", self.offers().word()));
         }
         if self.train != TrainReach::Off {
             out.push(format!("train: {}", self.train.word()));
@@ -1522,10 +1569,21 @@ impl Board {
         touched
     }
 
-    /// The columns whose tickets the sleep and archive offers, `X` and `Z`
-    /// price (`reclaim`).
+    /// The columns whose tickets the bulk sleep offer prices.
     pub fn reclaim_columns(&self) -> std::collections::HashSet<&str> {
-        self.columns.iter().filter(|c| c.settings.reclaim).map(|c| c.name.as_str()).collect()
+        self.columns
+            .iter()
+            .filter(|c| c.settings.offers().sleep())
+            .map(|c| c.name.as_str())
+            .collect()
+    }
+
+    pub fn archive_columns(&self) -> std::collections::HashSet<&str> {
+        self.columns
+            .iter()
+            .filter(|c| c.settings.offers().archive())
+            .map(|c| c.name.as_str())
+            .collect()
     }
 
     pub fn ticket(&self, id: ulid::Ulid) -> Option<&Ticket> {
@@ -1853,6 +1911,30 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn column_offers_preserve_legacy_settings_and_round_trip_independently() {
+        for legacy in [false, true] {
+            let old: ColumnSettings =
+                serde_json::from_value(serde_json::json!({"reclaim": legacy})).unwrap();
+            assert_eq!(old.offers().sleep(), legacy);
+            assert_eq!(old.offers().archive(), legacy);
+            for offer in
+                [ColumnOffers::Off, ColumnOffers::Sleep, ColumnOffers::Archive, ColumnOffers::Both]
+            {
+                let settings = ColumnSettings { offers: Some(offer), ..old.clone() };
+                let wire: ColumnSettings =
+                    serde_json::from_str(&serde_json::to_string(&settings).unwrap()).unwrap();
+                assert_eq!(wire.offers(), offer);
+                let board = Board {
+                    columns: vec![Column { name: "chosen".into(), order: "a0".into(), settings }],
+                    ..Default::default()
+                };
+                assert_eq!(board.reclaim_columns().contains("chosen"), offer.sleep());
+                assert_eq!(board.archive_columns().contains("chosen"), offer.archive());
+            }
+        }
+    }
 
     /// An M1 sessions.json line must keep parsing after the M2 enum growth
     /// (store::load hard-fails on parse error — defaults are the migration).

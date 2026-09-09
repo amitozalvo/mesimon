@@ -187,8 +187,8 @@ const GIT_BRANCH_FLOOR: usize = 10;
 /// hint instead of two. The board's `v` still works and `?` still lists it.
 ///
 /// `focused` is that cursor: the clause is painted on the elevated surface
-/// the way a selected row is, one pad cell each side like the header's own
-/// chip, and its greys step onto the `sel` ramp. The arrows keep the calm
+/// the way a selected row is, leaving the surrounding gaps on the page
+/// ground, and its greys step onto the `sel` ramp. The arrows keep the calm
 /// register — being under the cursor does not change what they mean.
 ///
 /// `room` is what the row can spare. The name gives first — truncating down
@@ -231,11 +231,10 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
     // menu") — a standing key on every board is what `?` is for, and the
     // clause's job is the checkout's state.
     //
-    // ` ⎇ ` is three cells; the arrows ride on the name. Under the cursor
-    // the clause also owns a closing pad cell, so the paint has an edge on
-    // both sides rather than running flush into the count beside it.
+    // The gap belongs to the page, not the highlight. Focus changes only
+    // style, so neither the branch nor the following count moves.
     let ink = if focused { &theme.sel } else { &theme.rest };
-    let fixed = 3 + state.width() + usize::from(focused);
+    let fixed = 3 + state.width();
     let floor = name.width().min(GIT_BRANCH_FLOOR);
     let mut name_room = room.saturating_sub(fixed + changed.width());
     if name_room < floor {
@@ -247,7 +246,7 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
     }
     let mut out = vec![
         Span::styled(
-            format!(" {} ", crate::glyphs::branch_mark(tier)),
+            format!("{} ", crate::glyphs::branch_mark(tier)),
             Style::default().fg(ink.dim3),
         ),
         Span::styled(truncate(&name, name_room), Style::default().fg(ink.dim2)),
@@ -259,7 +258,6 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
         out.push(Span::styled(changed, Style::default().fg(ink.dim2)));
     }
     if focused {
-        out.push(Span::raw(" ".to_string()));
         // Where the profile can paint no surface and may not reverse
         // (light-256, a phosphor at 16) the cursor would be invisible on a
         // row that has no bar cell to weight, so the clause takes the other
@@ -272,6 +270,7 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
             span.style = span.style.patch(surface);
         }
     }
+    out.insert(0, Span::raw(" "));
     out
 }
 

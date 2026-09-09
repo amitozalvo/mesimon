@@ -12,7 +12,7 @@
       │                                                         p         show replies                           │
       │ TICKETS                                                 P         show every reply                       │
       │   o         new ticket                                                                                   │
-      │   > <       move card, aiming                         APP                                                │
+      │   > <       move card, twice                          APP                                                │
       │   HJKL      move card                                   esc       menu                                   │
       │   O         new column                                  q         quit                                   │
       │   r         rename                                      ?         keys                                   │

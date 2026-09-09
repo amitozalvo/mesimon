@@ -241,7 +241,6 @@ impl Scope {
             Scope::Board
             | Scope::Ticket
             | Scope::Diff
-            | Scope::Move
             | Scope::Menu
             | Scope::Drawer
             | Scope::Archived
@@ -254,6 +253,7 @@ impl Scope {
             | Scope::ColumnSettings
             | Scope::Header => Some(Scope::Global),
             Scope::Global
+            | Scope::Move
             | Scope::DiffView
             | Scope::DeleteChord
             | Scope::ArchiveChord
@@ -297,6 +297,10 @@ impl Scope {
 /// is what proves the table and the handler agree.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Verb {
+    SettingsAppearance,
+    SettingsBehaviour,
+    SettingsAgents,
+    ColumnAgentBehaviour,
     // ---- global ----
     Help,
     Reload,
@@ -565,10 +569,7 @@ pub enum Verb {
     /// verb on three screens; the screen says which directory.
     Terminal,
     // ---- move ----
-    Drop,
     Cancel,
-    /// `1`–`9` — the handler reads the digit off the key.
-    DropColumn,
     // ---- drawer ----
     AdoptObserve,
     /// `n`: open the note the cursor means in the editor — the selected
@@ -665,12 +666,59 @@ impl Group {
         [Group::Navigate, Group::Ticket, Group::Sessions, Group::Worktree, Group::View, Group::App];
 }
 
+/// The settings hierarchy; leaf rows keep their existing actions.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum SettingsSection {
+    #[default]
+    Root,
+    Appearance,
+    Behaviour,
+    Agents,
+}
+
+impl SettingsSection {
+    pub fn title(self) -> &'static str {
+        match self {
+            Self::Root => "SETTINGS",
+            Self::Appearance => "APPEARANCE & NOTIFICATIONS",
+            Self::Behaviour => "BEHAVIOUR",
+            Self::Agents => "AGENTS",
+        }
+    }
+
+    pub fn opener(self) -> Verb {
+        match self {
+            Self::Root => Verb::Settings,
+            Self::Appearance => Verb::SettingsAppearance,
+            Self::Behaviour => Verb::SettingsBehaviour,
+            Self::Agents => Verb::SettingsAgents,
+        }
+    }
+
+    pub fn for_verb(verb: Verb) -> Self {
+        match verb {
+            Verb::ThemePick | Verb::Notifications | Verb::StatusLine => Self::Appearance,
+            Verb::MergeTrain
+            | Verb::MergeTrainNotice
+            | Verb::SnoozeQuiet
+            | Verb::WeekStart
+            | Verb::DefaultColumn => Self::Behaviour,
+            Verb::SystemPrompt | Verb::McpTools => Self::Agents,
+            _ => Self::Root,
+        }
+    }
+}
+
 /// What the screen can currently do. Every availability predicate and every
 /// state-dependent hint word reads from this and nothing else, so the footer,
 /// the `?` overlay and the key dispatch can never disagree about whether an
 /// action applies.
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
+    pub settings_section: SettingsSection,
+    pub column_agents: bool,
+    pub col_naming: bool,
+    pub col_offers_word: &'static str,
     // ---- board selection ----
     /// A card is under the cursor. Without it there is nothing to rename,
     /// move, delete, archive or start a session on.
@@ -1316,18 +1364,12 @@ static BOARD: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        // Overlay-only, and the two swapped places (author direction): the
-        // footer now names the accelerator and `?` names the floor. `> <` is
-        // still bound, still the spelling every terminal can reach, and still
-        // the aiming gesture — it is the teaching of it that moved.
+        // The footer names the immediate nudge; the overlay also teaches
+        // the adjacent-column move with a cancellable preview.
         keys: &[Key::Char('>'), Key::Char('<')],
         verb: Verb::Grab,
         show: "> <",
-        // Named for what it adds, now that it shares the overlay with a key
-        // that makes the same move: this one lifts a ghost you aim and can
-        // still cancel. Two rows both reading "move card" told a reader which
-        // keys exist and nothing about which to press.
-        hint: |_| "move card, aiming",
+        hint: |_| "move card, twice",
         // The user's rule: no selection, no move — and no second column to
         // move to means the same thing.
         avail: |c| c.has_ticket && c.multi_column,
@@ -1397,9 +1439,8 @@ static BOARD: &[Binding] = &[
     Binding {
         // `o` mints a card in the column; `O` mints a COLUMN after it (T-117)
         // — the same act one level wider, the way `x`/`X` widen the sleep.
-        // Overlay-only: a footer cell teaching it everywhere would crowd the
-        // selection's keys, and `?` and the menu's `Add a column` row both
-        // name it.
+        // The footer teaches this on column headers; the key and help entry
+        // remain available anywhere on the board.
         keys: &[Key::Char('O')],
         verb: Verb::AddColumn,
         show: "O",
@@ -1408,7 +1449,7 @@ static BOARD: &[Binding] = &[
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 0,
+        prio: 45,
     },
     Binding {
         keys: &[Key::Char('r')],
@@ -2192,18 +2233,18 @@ static DIFF: &[Binding] = &[
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 10,
+        prio: 0, // Beside the hunk pane.
     },
     Binding {
         keys: &[Key::Char('n'), Key::Char('N')],
         verb: Verb::NextFile,
         show: "n N",
-        hint: |_| "next / previous file",
+        hint: |_| "file",
         avail: always,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 20,
+        prio: 0, // Beside FILES, or the file heading in the single-pane view.
     },
     Binding {
         keys: &[Key::Char('}'), Key::Char('{'), Key::PageDown, Key::PageUp],
@@ -2214,7 +2255,7 @@ static DIFF: &[Binding] = &[
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
-        prio: 30,
+        prio: 0, // Beside the hunk pane.
     },
     Binding {
         keys: &[Key::Char('z')],
@@ -2585,74 +2626,20 @@ static TAG: &[Binding] = &[
 
 static MOVE: &[Binding] = &[
     Binding {
-        // Bare arrows are aliases of hjkl (04 §2.0's atom list, §2.4's table).
-        // `directional()` reads the axis back off whichever atom arrived.
-        keys: &[
-            Key::Char('h'),
-            Key::Left,
-            Key::Char('l'),
-            Key::Right,
-            Key::Char('j'),
-            Key::Down,
-            Key::Char('k'),
-            Key::Up,
-        ],
-        verb: Verb::CursorLeft,
-        show: "hjkl",
-        hint: |_| "place",
-        avail: always,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: false,
-        prio: 10,
-    },
-    Binding {
-        keys: &[
-            Key::Char('1'),
-            Key::Char('2'),
-            Key::Char('3'),
-            Key::Char('4'),
-            Key::Char('5'),
-            Key::Char('6'),
-            Key::Char('7'),
-            Key::Char('8'),
-            Key::Char('9'),
-        ],
-        verb: Verb::DropColumn,
-        show: "1-9",
-        hint: |_| "column",
-        avail: |c| c.multi_column,
-        class: Class::Plain,
-        group: Group::Navigate,
-        mutates: true,
-        prio: 20,
-    },
-    Binding {
         keys: &[Key::Char('>'), Key::Char('<')],
         verb: Verb::Grab,
         show: "> <",
-        hint: |_| "shift column",
+        hint: |_| "repeat to move",
         avail: always,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: true,
-        prio: 0,
-    },
-    Binding {
-        keys: &[Key::Enter],
-        verb: Verb::Drop,
-        show: "enter",
-        hint: |_| "drop",
-        avail: always,
-        class: Class::Plain,
-        group: Group::Ticket,
-        mutates: true,
-        prio: 30,
+        prio: 10,
     },
     Binding {
         keys: &[Key::Esc, Key::Char('q')],
         verb: Verb::Cancel,
-        show: "esc",
+        show: "other key",
         hint: |_| "cancel",
         avail: always,
         class: Class::Plain,
@@ -2901,29 +2888,6 @@ static MENU_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
-        verb: Verb::GitFetch,
-        // Names the remote, because "origin" is a convention and not a fact;
-        // the fallback is only ever the spelling test's, since the row does
-        // not stand without an upstream.
-        label: |c| {
-            let remote = if c.git_remote.is_empty() { "the remote" } else { c.git_remote.as_str() };
-            if c.git_fetch_on {
-                format!("Fetch {remote} now")
-            } else {
-                format!("Fetch {remote}")
-            }
-        },
-        detail: |c| {
-            if c.git_fetch_note.is_empty() {
-                "re-reads where the branch stands against its upstream".into()
-            } else {
-                c.git_fetch_note.clone()
-            }
-        },
-        avail: |c| c.git_upstream && !c.git_fetching,
-        key: "",
-    },
-    MenuItem {
         verb: Verb::SleepAllDone,
         label: |c| format!("Sleep {} on finished tickets", plural(c.bulk_sleep, "agent")),
         detail: |c| match gib(c.bulk_sleep_bytes) {
@@ -2973,29 +2937,6 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.has_archived,
         key: "",
     },
-    // The columns (T-117): the cursor's column's settings, and a new one. The
-    // settings row has no key on its right edge: the board's Enter is `Act`,
-    // and the header's own footer teaches `enter column settings`.
-    MenuItem {
-        verb: Verb::ColumnSettings,
-        label: |c| {
-            if c.col_name.is_empty() {
-                "Column settings".into()
-            } else {
-                format!("Column settings: {}", c.col_name)
-            }
-        },
-        detail: |_| "name, sort, workspace, claude mode, tools, automations".into(),
-        avail: always,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::AddColumn,
-        label: |_| "Add a column".into(),
-        detail: |_| "after the cursor's column ∙ name it first".into(),
-        avail: always,
-        key: "O",
-    },
     // The door to the preferences. Never a suggestion — a setting is not
     // something worth doing right now — and it names what is behind it, so
     // nobody opens it to find out.
@@ -3005,7 +2946,7 @@ static MENU_ITEMS: &[MenuItem] = &[
         // Names what is behind the door, and fits the row: the detail's
         // budget is 56 cells, so the list is the interesting half rather than
         // all seven rows (it named four of six before this).
-        detail: |c| format!("theme: {} ∙ replies ∙ snooze ∙ week ∙ agent tools", c.theme_name),
+        detail: |_| "appearance & notifications, behaviour, agents".into(),
         avail: always,
         key: "",
     },
@@ -3018,13 +2959,6 @@ static MENU_ITEMS: &[MenuItem] = &[
         detail: |_| "what changed in each version, newest first".into(),
         avail: always,
         key: "",
-    },
-    MenuItem {
-        verb: Verb::Help,
-        label: |_| "All keys on this screen".into(),
-        detail: |_| String::new(),
-        avail: always,
-        key: "?",
     },
     MenuItem {
         verb: Verb::Quit,
@@ -3042,6 +2976,27 @@ static MENU_ITEMS: &[MenuItem] = &[
 /// ever a suggestion (`every_suggestion_is_a_menu_row` holds them apart).
 static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
+        verb: Verb::SettingsAppearance,
+        label: |_| "Appearance & notifications".into(),
+        detail: |_| "theme, notifications, status line".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::SettingsBehaviour,
+        label: |_| "Behaviour".into(),
+        detail: |_| "auto merge, snooze, week start, default column".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::SettingsAgents,
+        label: |_| "Agents".into(),
+        detail: |_| "brief and tools".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ThemePick,
         label: |c| format!("Theme: {}", c.theme_name),
         detail: |c| {
@@ -3053,19 +3008,6 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         },
         avail: always,
         key: "",
-    },
-    MenuItem {
-        verb: Verb::Peek,
-        label: |c| {
-            if c.peek_on {
-                "Hide agent replies".into()
-            } else {
-                "Show agent replies".into()
-            }
-        },
-        detail: |_| "the latest reply under the selected card".into(),
-        avail: always,
-        key: "p",
     },
     // Where the tmux status line sits over an agent's pane (T-264). A
     // preference the daemon is told, like the train: it owns the server.
@@ -3153,7 +3095,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // preference and off by default.
     MenuItem {
         verb: Verb::MergeTrain,
-        label: |c| if c.merge_train { "Merge train: on".into() } else { "Merge train: off".into() },
+        label: |c| if c.merge_train { "Auto merge: on".into() } else { "Auto merge: off".into() },
         detail: |c| {
             if c.merge_train && c.merge_train_armed {
                 "merges quiet REVIEW branches, asks idle agents to rebase ∙ armed while this board is open".into()
@@ -3170,9 +3112,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::MergeTrainNotice,
         label: |c| {
             if c.merge_train_notice {
-                "Train tells the agent after a merge".into()
+                "Auto merge tells the agent after a merge".into()
             } else {
-                "Train stays silent after a merge".into()
+                "Auto merge stays silent after a merge".into()
             }
         },
         detail: |c| {
@@ -3494,7 +3436,24 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
 /// The settings rows that apply right now — all of them, today, but the
 /// filter is the menu's so a conditional preference costs nothing later.
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    SETTINGS_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+    let verbs: &[Verb] = match ctx.settings_section {
+        SettingsSection::Root => {
+            &[Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
+        }
+        SettingsSection::Appearance => &[Verb::ThemePick, Verb::Notifications, Verb::StatusLine],
+        SettingsSection::Behaviour => &[
+            Verb::MergeTrain,
+            Verb::MergeTrainNotice,
+            Verb::SnoozeQuiet,
+            Verb::WeekStart,
+            Verb::DefaultColumn,
+        ],
+        SettingsSection::Agents => &[Verb::SystemPrompt, Verb::McpTools],
+    };
+    verbs
+        .iter()
+        .filter_map(|v| SETTINGS_ITEMS.iter().find(|m| m.verb == *v && (m.avail)(ctx)))
+        .collect()
 }
 
 /// The notifications list's rows that apply right now (T-282).
@@ -3540,7 +3499,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
                 "enter edits it in place ∙ every ticket in it follows".into()
             }
         },
-        avail: always,
+        avail: |c| c.col_new || c.col_naming,
         key: "",
     },
     MenuItem {
@@ -3567,12 +3526,19 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::ColumnAgentBehaviour,
+        label: |_| "Agent behaviour".into(),
+        detail: |_| "mode, tools, creation and turn transitions".into(),
+        avail: |c| !c.col_new,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::ColumnClaudeMode,
         label: |c| {
             if c.col_claude_mode_word.is_empty() || c.col_claude_mode_word == "inherit" {
-                format!("Claude mode: inherit ({})", or(&c.col_inherit_mode, "unset"))
+                format!("Mode: inherit ({})", or(&c.col_inherit_mode, "unset"))
             } else {
-                format!("Claude mode: {}", c.col_claude_mode_word)
+                format!("Mode: {}", c.col_claude_mode_word)
             }
         },
         detail: |_| "--permission-mode for a claude started here ∙ a wake picks a change up".into(),
@@ -3603,7 +3569,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ColumnAutoRun,
-        label: |c| format!("Start claude on creation: {}", on_off(c.col_auto_run)),
+        label: |c| format!("Start agent on creation: {}", on_off(c.col_auto_run)),
         detail: |_| "a ticket you create here gets claude on its brief, submitted".into(),
         avail: |c| !c.col_new,
         key: "",
@@ -3612,9 +3578,9 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         verb: Verb::ColumnOnWorking,
         label: |c| {
             if c.col_on_working.is_empty() {
-                "When claude starts working: stay".into()
+                "When agent starts working: stay".into()
             } else {
-                format!("When claude starts working: move to {}", c.col_on_working)
+                format!("When agent starts working: move to {}", c.col_on_working)
             }
         },
         detail: |_| "enter cycles the other columns, then stay".into(),
@@ -3625,9 +3591,9 @@ static COLUMN_ITEMS: &[MenuItem] = &[
         verb: Verb::ColumnOnDone,
         label: |c| {
             if c.col_on_done.is_empty() {
-                "When claude ends a turn: stay".into()
+                "When agent ends a turn: stay".into()
             } else {
-                format!("When claude ends a turn: move to {}", c.col_on_done)
+                format!("When agent ends a turn: move to {}", c.col_on_done)
             }
         },
         detail: |_| "enter cycles the other columns, then stay".into(),
@@ -3643,47 +3609,34 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     },
     MenuItem {
         verb: Verb::ColumnReclaim,
-        label: |c| format!("Offer sleep + archive here: {}", yes_no(c.col_reclaim)),
-        detail: |_| "the header's sleep and archive chips, X and Z, price this column".into(),
+        label: |c| format!("Offer: {}", or(c.col_offers_word, "off")),
+        detail: |_| "enter cycles off, sleep, archive, sleep + archive".into(),
         avail: |c| !c.col_new,
         key: "",
     },
     MenuItem {
         verb: Verb::ColumnTrain,
-        label: |c| format!("Merge train: {}", or(c.col_train_word, "off")),
+        label: |c| {
+            format!(
+                "Auto merge: {}",
+                match c.col_train_word {
+                    "auto-merge" => "on",
+                    "rebase asks" => "rebase only",
+                    _ => "off",
+                }
+            )
+        },
         detail: |c| {
             if !c.merge_train {
-                "needs the merge train on (Settings)".into()
+                "needs auto merge on (Settings → Behaviour)".into()
             } else {
                 match c.col_train_word {
                     "auto-merge" => {
                         "ff-merges finished branches here, asks idle agents to rebase".into()
                     }
                     "rebase asks" => "asks an idle agent here to rebase when the base moves".into(),
-                    _ => "the train does not look here".into(),
+                    _ => "auto merge does not act here".into(),
                 }
-            }
-        },
-        avail: |c| !c.col_new,
-        key: "",
-    },
-    MenuItem {
-        verb: Verb::DeleteColumn,
-        label: |_| "Delete column".into(),
-        detail: |c| {
-            if c.col_delete_armed {
-                "enter again deletes it".into()
-            } else if c.col_live > 0 {
-                format!(
-                    "move its {} first",
-                    if c.col_live == 1 {
-                        "ticket".to_string()
-                    } else {
-                        format!("{} tickets", c.col_live)
-                    }
-                )
-            } else {
-                "the column goes ∙ nothing else does".into()
             }
         },
         avail: |c| !c.col_new,
@@ -3693,7 +3646,25 @@ static COLUMN_ITEMS: &[MenuItem] = &[
 
 /// The column dialog's rows that apply right now.
 pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    COLUMN_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+    COLUMN_ITEMS
+        .iter()
+        .filter(|m| {
+            let agent = matches!(
+                m.verb,
+                Verb::ColumnClaudeMode
+                    | Verb::ColumnTools
+                    | Verb::ColumnAutoRun
+                    | Verb::ColumnOnWorking
+                    | Verb::ColumnOnDone
+            );
+            (m.avail)(ctx)
+                && if ctx.col_new || ctx.col_naming {
+                    m.verb == Verb::ColumnName
+                } else {
+                    agent == ctx.column_agents
+                }
+        })
+        .collect()
 }
 
 /// The menu rows that apply right now.
@@ -4595,7 +4566,11 @@ pub fn footer_items(scope: Scope, ctx: &Ctx) -> Vec<&'static Binding> {
     let mut out: Vec<&'static Binding> = Vec::new();
     for s in chain(scope) {
         for b in bindings(s) {
-            if b.prio > 0 && (b.avail)(ctx) && !(b.hint)(ctx).is_empty() {
+            if b.prio > 0
+                && (b.avail)(ctx)
+                && !(b.hint)(ctx).is_empty()
+                && (b.verb != Verb::AddColumn || ctx.col_header)
+            {
                 out.push(b);
             }
         }
@@ -4703,6 +4678,29 @@ mod tests {
     /// from it is validated by nothing. The match is exhaustive: adding a
     /// variant fails to compile here, and the length check then fails until
     /// `ALL` names it too.
+    #[test]
+    fn pending_move_only_binds_confirmation_and_cancellation() {
+        let ctx = Ctx::default();
+        for key in [Key::Char('>'), Key::Char('<')] {
+            assert_eq!(resolve(Scope::Move, key, &ctx), Some(Verb::Grab));
+        }
+        for key in [
+            Key::Enter,
+            Key::Left,
+            Key::Right,
+            Key::Up,
+            Key::Down,
+            Key::Char('1'),
+            Key::Char('j'),
+            Key::Char('?'),
+            Key::Ctrl('c'),
+        ] {
+            assert_eq!(resolve(Scope::Move, key, &ctx), None);
+        }
+        assert_eq!(hint_for(Scope::Move, Verb::Grab, &ctx), Some(("> <", "repeat to move")));
+        assert_eq!(Scope::Move.parent(), None);
+    }
+
     #[test]
     fn scope_list_is_complete() {
         fn index(s: Scope) -> usize {
@@ -5182,7 +5180,7 @@ mod tests {
         let ctx =
             Ctx { has_ticket: true, multi_column: true, can_nudge: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Char('>'), &ctx), Some(Verb::Grab));
-        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card, aiming")));
+        assert_eq!(hint_for(Scope::Board, Verb::Grab, &ctx), Some(("> <", "move card, twice")));
         assert_eq!(resolve(Scope::Board, Key::AltLeft, &ctx), Some(Verb::Nudge));
         for k in [Key::Char('H'), Key::Char('J'), Key::Char('K'), Key::Char('L')] {
             assert_eq!(resolve(Scope::Board, k, &ctx), Some(Verb::Nudge), "{k:?}");
@@ -5837,10 +5835,24 @@ mod tests {
         let fresh = Ctx { col_new: true, ..Default::default() };
         let rows: Vec<Verb> = column_items(&fresh).iter().map(|m| m.verb).collect();
         assert_eq!(rows, vec![Verb::ColumnName]);
-        assert_eq!(column_items(&other).len(), COLUMN_ITEMS.len());
+        assert_eq!(column_items(&other).len(), 7);
+        assert!(!column_items(&other)
+            .iter()
+            .any(|m| matches!(m.verb, Verb::ColumnName | Verb::DeleteColumn)));
+        let agents = Ctx { column_agents: true, ..Default::default() };
+        assert_eq!(
+            column_items(&agents).iter().map(|m| m.verb).collect::<Vec<_>>(),
+            [
+                Verb::ColumnClaudeMode,
+                Verb::ColumnTools,
+                Verb::ColumnAutoRun,
+                Verb::ColumnOnWorking,
+                Verb::ColumnOnDone
+            ]
+        );
         assert_eq!(
             column_items(&Ctx { multi_repo: true, ..Default::default() }).len(),
-            COLUMN_ITEMS.len() - 1,
+            6,
             "a workspace board offers no worktree choice"
         );
     }
@@ -6161,11 +6173,8 @@ mod tests {
             Verb::ArchivedList,
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
-            Verb::ColumnSettings,
-            Verb::AddColumn,
             Verb::Settings,
             Verb::ReleaseNotes,
-            Verb::Help,
             Verb::Quit,
         ] {
             assert!(verbs.contains(&v), "{v:?} missing from the menu: {verbs:?}");
@@ -6175,36 +6184,32 @@ mod tests {
         let prefs: Vec<Verb> = settings_items(&ctx).iter().map(|m| m.verb).collect();
         assert_eq!(
             prefs,
-            [
-                Verb::ThemePick,
-                Verb::Peek,
-                // A door, like the Settings row itself: five rows do not fit
-                // in this list, so they live one level further down. Up here
-                // with the other two rows about what the board shows YOU,
-                // and because this list already outruns a short terminal.
-                Verb::Notifications,
-                Verb::StatusLine,
-                Verb::SnoozeQuiet,
-                Verb::WeekStart,
-                Verb::MergeTrain,
-                // Not a preference at all — board state in `columns.toml`,
-                // per repo — but it is a switch, and a switch belongs behind
-                // the same door. Last, so no existing row's index moves.
-                Verb::McpTools,
-                Verb::SystemPrompt,
-                Verb::DefaultColumn,
-            ]
+            [Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
         );
-        // The notice row rides UNDER the train row (not at the end of the
-        // list — a row after it would make that reading a coincidence), and
-        // only while the train is on.
-        let on: Vec<Verb> = settings_items(&Ctx { merge_train: true, ..ctx.clone() })
-            .iter()
-            .map(|m| m.verb)
-            .collect();
-        let train = on.iter().position(|v| *v == Verb::MergeTrain).expect("the train row");
-        assert_eq!(on.get(train + 1), Some(&Verb::MergeTrainNotice));
-        assert_eq!(on.len(), prefs.len() + 1);
+        for (section, expected) in [
+            (
+                SettingsSection::Appearance,
+                vec![Verb::ThemePick, Verb::Notifications, Verb::StatusLine],
+            ),
+            (
+                SettingsSection::Behaviour,
+                vec![Verb::MergeTrain, Verb::SnoozeQuiet, Verb::WeekStart, Verb::DefaultColumn],
+            ),
+            (SettingsSection::Agents, vec![Verb::SystemPrompt, Verb::McpTools]),
+        ] {
+            let c = Ctx { settings_section: section, ..ctx.clone() };
+            assert_eq!(settings_items(&c).iter().map(|m| m.verb).collect::<Vec<_>>(), expected);
+            assert!(!settings_items(&c).iter().any(|m| m.verb == Verb::Peek));
+        }
+        let on: Vec<Verb> = settings_items(&Ctx {
+            settings_section: SettingsSection::Behaviour,
+            merge_train: true,
+            ..ctx.clone()
+        })
+        .iter()
+        .map(|m| m.verb)
+        .collect();
+        assert_eq!(on[0..2], [Verb::MergeTrain, Verb::MergeTrainNotice]);
         for v in prefs {
             assert!(!verbs.contains(&v), "{v:?} is a preference and belongs in Settings");
         }
@@ -6366,31 +6371,39 @@ mod tests {
         assert!((sleep.detail)(&fat).contains("~3.0GiB"));
     }
 
-    /// The fetch row (T-124) stands only with an upstream to fetch from and
-    /// while no fetch is running, and it is NOT a suggestion: the header
-    /// already carries the arrows, and a chip is for the next thing to DO.
     #[test]
-    fn the_fetch_row_needs_an_upstream_and_is_not_a_suggestion() {
-        let quiet = Ctx::default();
-        assert!(!menu_items(&quiet).iter().any(|m| m.verb == Verb::GitFetch));
+    fn menu_omits_fetch_and_actions_with_contextual_keys() {
         let tracking = Ctx {
             git_upstream: true,
             git_remote: "origin".into(),
             git_fetch_note: "2 to push ∙ never fetched".into(),
             ..Default::default()
         };
-        let row = menu_items(&tracking)
-            .into_iter()
-            .find(|m| m.verb == Verb::GitFetch)
-            .expect("the fetch row stands with an upstream");
-        assert_eq!((row.label)(&tracking), "Fetch origin");
-        assert_eq!((row.detail)(&tracking), "2 to push ∙ never fetched");
-        let armed = Ctx { git_fetch_on: true, ..tracking.clone() };
-        assert_eq!((row.label)(&armed), "Fetch origin now");
-        let busy = Ctx { git_fetching: true, ..tracking.clone() };
-        assert!(!menu_items(&busy).iter().any(|m| m.verb == Verb::GitFetch));
-        assert!(!is_suggested(Verb::GitFetch, &tracking), "never a chip");
-        assert!(!SUGGESTIONS.iter().any(|s| s.verb == Verb::GitFetch));
+        for ctx in [Ctx::default(), tracking] {
+            for verb in [Verb::GitFetch, Verb::Help, Verb::AddColumn, Verb::ColumnSettings] {
+                assert!(!menu_items(&ctx).iter().any(|m| m.verb == verb));
+                assert!(!settings_items(&ctx).iter().any(|m| m.verb == verb));
+            }
+            assert_eq!(resolve(Scope::Board, Key::Char('O'), &ctx), Some(Verb::AddColumn));
+            assert_eq!(resolve(Scope::Board, Key::Char('?'), &ctx), Some(Verb::Help));
+        }
+    }
+
+    #[test]
+    fn new_column_is_hinted_only_on_column_headers() {
+        for col_header in [false, true] {
+            let ctx = Ctx { col_header, ..Default::default() };
+            assert_eq!(
+                footer_items(Scope::Board, &ctx).iter().any(|b| b.verb == Verb::AddColumn),
+                col_header
+            );
+            assert_eq!(resolve(Scope::Board, Key::Char('O'), &ctx), Some(Verb::AddColumn));
+        }
+        let ctx = Ctx::default();
+        for verb in [Verb::NextFile, Verb::PageDown, Verb::ScrollDown] {
+            assert!(!footer_items(Scope::Diff, &ctx).iter().any(|b| b.verb == verb));
+            assert!(binding_for(Scope::Diff, verb, &ctx).is_some());
+        }
     }
 
     /// Bare arrows are aliases of the letter motions, everywhere the letters
@@ -6471,6 +6484,7 @@ mod tests {
             if matches!(
                 s,
                 Scope::Input
+                    | Scope::Move
                     | Scope::Editor
                     | Scope::DiffView
                     | Scope::DeleteChord
@@ -6478,7 +6492,7 @@ mod tests {
                     | Scope::SnoozeChord
                     | Scope::TagChord
             ) {
-                continue; // barrier scopes: five chord tails and two text fields
+                continue; // chord tails, pending move and text fields own every key
             }
             assert_eq!(resolve(s, Key::Char('?'), &ctx), Some(Verb::Help), "{s:?}");
         }

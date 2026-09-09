@@ -1538,6 +1538,7 @@ order = "a0"
                     on_done: None,
                     requires_merge: true,
                     reclaim: true,
+                    offers: Some(mesimon_core::board::ColumnOffers::Sleep),
                     train: mesimon_core::board::TrainReach::Merge,
                 },
             }],

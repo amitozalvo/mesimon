@@ -3,26 +3,26 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
+
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+
                            ╭─ MENU ─────────────────────────────────────────────────────────╮
-    Keymap validator      >│ ◦ Install v0.1.0-alpha.5                                       │
+                           │ ◦ Install v0.1.0-alpha.5                                       │
                            │     downloads and verifies it ∙ nothing restarts yet           │
                            │   External sessions                                            │
                            │     claude sessions in this repo that mesimon did not start    │
                            │   Archived tickets                                             │
                            │     off the board, still here                                  │
-                           │   Column settings: todo                                        │
-                           │     name, sort, workspace, claude mode, tools, automations     │
-                           │   Add a column                                               O │
-                           │     after the cursor's column ∙ name it first                  │
                            │   Settings                                                     │
-                           │     theme: graphite ∙ replies ∙ snooze ∙ week ∙ agent tools    │
+                           │     appearance & notifications, behaviour, agents              │
                            │   Release notes                                                │
                            │     what changed in each version, newest first                 │
-                           │   All keys on this screen                                    ? │
-                           │                                                                │
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
+
+
+
 
 
 

@@ -7,6 +7,7 @@
 //! weight, so review still reads correctly in mono.
 
 use mesimon_core::diff::{Render, Sign};
+use mesimon_core::keymap::{self, Scope, Verb};
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -14,7 +15,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, DiffState};
+use crate::app::{App, DiffState, PreviewView};
 use crate::glyphs::Tier;
 use crate::text::truncate;
 
@@ -50,6 +51,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let theme = &app.theme;
     let area = f.area();
     let Some(d) = app.diff.as_ref() else { return };
+    d.view.set(PreviewView::default());
 
     // ---- top block: the header (DIFF chip, breadcrumb, and the ticket as its
     // leaf where there is one — the checkout's diff belongs to the repo, which
@@ -71,12 +73,14 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     } else {
         "uncommitted".to_string()
     };
+    let summary = if n == 0 {
+        "no changes".to_string()
+    } else {
+        format!("{against} ∙ {n} {noun} ∙ +{adds} -{dels}")
+    };
     let mut ident = vec![
         Span::styled(format!(" ⎇ {}", d.branch), theme.dim1()),
-        Span::styled(
-            format!(" ∙ {against} ∙ {n} {noun} ∙ +{adds} -{dels} ∙ {}", density_word(d.density)),
-            theme.dim2(),
-        ),
+        Span::styled(format!(" ∙ {summary}"), theme.dim2()),
     ];
     if d.is_branch() && !d.worktree_present {
         ident.push(Span::styled(" ∙ worktree evicted".to_string(), theme.dim2()));
@@ -126,6 +130,10 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         );
     }
 
+    if d.view.get().key.is_none() {
+        d.glide.set(None);
+    }
+
     // ---- footer ----------------------------------------------------------
     // From the keymap, like every other screen. `z s` drops itself above the
     // two-pane breakpoint because there is nothing to swap up there — which
@@ -145,7 +153,16 @@ fn draw_files(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     let w = area.width as usize;
     let mut head = vec![Span::styled(" FILES", theme.dim1().add_modifier(Modifier::BOLD))];
     let right = format!("({})", d.files.len());
-    head.push(Span::raw(" ".repeat(w.saturating_sub(6 + right.width() + 1))));
+    if d.files.len() > 1 {
+        let keys = hints(app, &[Verb::NextFile], w.saturating_sub(6 + right.width() + 5));
+        if !keys.is_empty() {
+            head.push(Span::raw("  "));
+            head.extend(keys);
+        }
+    }
+    head.push(Span::raw(
+        " ".repeat(w.saturating_sub(super::spans_width(&head) + right.width() + 1)),
+    ));
     head.push(Span::styled(right, theme.dim2()));
     let mut lines: Vec<Line<'static>> = vec![Line::from(head), Line::default()];
 
@@ -250,7 +267,7 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
 
     // Untracked-only rows are display-only — the honesty rule (docs/08 §2).
     if entry.status.is_empty() {
-        lines.push(Line::from(head));
+        lines.push(hunk_heading(app, d, head, w, f.area().width >= TWO_PANE_MIN_W));
         lines.push(Line::default());
         for row in [
             "untracked in the worktree — not reviewable",
@@ -263,7 +280,7 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
     }
 
     let Some(fd) = d.cache.get(&entry.path) else {
-        lines.push(Line::from(head));
+        lines.push(hunk_heading(app, d, head, w, f.area().width >= TWO_PANE_MIN_W));
         lines.push(Line::default());
         lines.push(Line::from(Span::styled("…".to_string(), theme.dim3())));
         f.render_widget(Paragraph::new(lines), area);
@@ -381,16 +398,67 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         }
     }
 
-    lines.push(Line::from(head));
-    lines.push(Line::default());
-
     // j/k scroll: clamp against the built content, write the clamp back.
     let visible = (area.height as usize).saturating_sub(2);
     let max_scroll = body.len().saturating_sub(visible);
     let scroll = d.scroll.get().min(max_scroll);
     d.scroll.set(scroll);
-    lines.extend(body.into_iter().skip(scroll).take(visible));
+    d.view.set(PreviewView {
+        key: Some(d.file_idx as u64),
+        offset: scroll,
+        max: max_scroll,
+        page: visible.saturating_sub(1).max(1),
+        follows_tail: false,
+    });
+    let at = match d.glide.get() {
+        Some(g) if g.key == d.file_idx as u64 && g.progress().is_some() => {
+            g.offset(scroll).min(max_scroll)
+        }
+        _ => {
+            d.glide.set(None);
+            scroll
+        }
+    };
+    lines.push(hunk_heading(app, d, head, w, f.area().width >= TWO_PANE_MIN_W));
+    lines.push(Line::default());
+    lines.extend(body.into_iter().skip(at).take(visible));
     f.render_widget(Paragraph::new(lines), area);
+}
+
+fn hunk_heading(
+    app: &App,
+    d: &DiffState,
+    mut head: Vec<Span<'static>>,
+    w: usize,
+    two_pane: bool,
+) -> Line<'static> {
+    let mut verbs = Vec::new();
+    if d.view.get().max > 0 {
+        verbs.push(Verb::PageDown);
+    }
+    if !two_pane && d.files.len() > 1 {
+        verbs.push(Verb::NextFile);
+    }
+    if d.view.get().max > 0 {
+        verbs.push(Verb::ScrollDown);
+    }
+    let keys = hints(app, &verbs, w / 2);
+    if !keys.is_empty() {
+        let keys_w = super::spans_width(&keys);
+        let meta_w = super::spans_width(&head[1..]);
+        head[0].content = truncate(&head[0].content, w.saturating_sub(meta_w + keys_w + 3)).into();
+        head.push(Span::raw(" ".repeat(w.saturating_sub(super::spans_width(&head) + keys_w + 1))));
+        head.extend(keys);
+    }
+    Line::from(head)
+}
+
+/// Contextual hints use the same binding text and styling as the footer.
+fn hints(app: &App, verbs: &[Verb], width: usize) -> Vec<Span<'static>> {
+    let ctx = app.ctx();
+    let bindings: Vec<_> =
+        verbs.iter().filter_map(|v| keymap::binding_for(Scope::Diff, *v, &ctx)).collect();
+    chrome::hint_spans(&bindings, &ctx, &app.theme.rest, width)
 }
 
 /// Pad with trailing spaces to `width` cells so a row's ground colour spans

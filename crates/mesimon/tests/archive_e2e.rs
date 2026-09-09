@@ -12,7 +12,7 @@ use common::*;
 
 use std::time::{Duration, Instant};
 
-use mesimon_core::board::{SessionKind, SessionState};
+use mesimon_core::board::{ColumnOffers, SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 
 #[test]
@@ -111,6 +111,38 @@ fn archive_gates_suggests_and_restores() {
     // 1. Awake (idle still holds a pane): archive refuses.
     err_containing(c.request(Command::ArchiveTicket { id: cold }), "awake");
 
+    // Independent column offers govern both the prices and the bulk actions.
+    let set_offer = |c: &mut TestClient, offers| {
+        let (board, _) = snapshot_of(c.request(Command::Snapshot));
+        let mut settings = board.column("DONE").unwrap().settings.clone();
+        settings.offers = Some(offers);
+        assert!(matches!(
+            c.request(Command::SetColumnSettings { name: "DONE".into(), settings }),
+            Response::Ok
+        ));
+    };
+    let wait_offer = |c: &mut TestClient, sleep, archive| {
+        let deadline = Instant::now() + Duration::from_secs(6);
+        loop {
+            let (_, resources) = snapshot_of(c.request(Command::Snapshot));
+            if (resources.reclaim_sessions, resources.archive_tickets) == (sleep, archive) {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "offers did not become sleep={sleep}, archive={archive}: {resources:?}"
+            );
+            std::thread::sleep(Duration::from_millis(100));
+        }
+    };
+    set_offer(&mut c, ColumnOffers::Archive);
+    wait_offer(&mut c, 0, 1);
+    assert!(matches!(c.request(Command::ReclaimAll), Response::Reclaimed { slept: 0, .. }));
+    set_offer(&mut c, ColumnOffers::Sleep);
+    wait_offer(&mut c, 1, 0);
+    assert!(matches!(c.request(Command::ArchiveAll), Response::Archived { archived: 0, .. }));
+    set_offer(&mut c, ColumnOffers::Both);
+
     // 2. Sleep it; the suggestion prices both tickets within the 1 s bucket
     // ("cold" all-asleep + the session-less "empty" past its created_at age).
     assert!(matches!(c.request(Command::SleepSession { id: sid }), Response::Ok));
@@ -171,6 +203,7 @@ fn archive_gates_suggests_and_restores() {
         assert!(Instant::now() < deadline, "offer never re-priced after restore");
         std::thread::sleep(Duration::from_millis(200));
     }
+    set_offer(&mut c, ColumnOffers::Archive);
     match c.request(Command::ArchiveAll) {
         Response::Archived { archived, skipped } => assert_eq!((archived, skipped), (2, 0)),
         other => panic!("archive_all failed: {other:?}"),

@@ -8247,3 +8247,95 @@ skipped stamping and did not exercise that path. `ci/test-run.py` now writes its
 stamp under `CARGO_TARGET_DIR` when configured, retaining `target/` by default.
 The tests and fixture audit had passed; the failed runner exit was not a passed
 gate. Verification must include a clean-tree Linux run that writes the stamp.
+
+### 2026-09-09 — quieter Git and composer chrome, deliberate header navigation
+
+Empty checkout and branch diff titles now say `no changes`; nonempty diffs keep
+their file and line counts. The title no longer includes the context-density
+word; the existing density controls retain their own labels. Focusing the
+board's Git clause changes its style only, leaving its surrounding gaps on the
+page ground and preserving the positions of all following header content.
+The expanded composer names its destination without the redundant `column`.
+
+Up/`k` travel through tickets stops at the first ticket during repeated input.
+A 650 ms quiet gap or another key ends this guard, so a deliberate subsequent
+Up still reaches the column header, then the Git section. The quiet-gap fallback
+also handles legacy terminals that report held keys as ordinary presses; it
+covers the usual initial repeat delay as well as faster repeats. Navigation
+and header geometry regressions cover these boundaries, and changed text
+goldens were inspected. The TUI selects a steady bar cursor on entry and resume,
+and restores the terminal's default cursor shape on exit and handover.
+
+### 2026-09-09 — diff reading controls and release-aware Up navigation
+
+The diff's file-navigation hints now sit beside FILES, or beside the file
+heading when the narrow layout shows only the diff. Paging and line-scrolling
+hints sit at the right of the hunk heading when its content overflows; the
+footer no longer repeats them. Diff pages use the rendered viewport with one
+row of overlap, replacing the fixed 20-row jump. They use the ticket preview's
+eased page animation, continue from the visible position on another press,
+clamp at both ends, and cancel on file changes, refresh, or hiding the pane.
+
+The menu no longer includes Fetch remote, All keys on this screen, or Add a
+column. `?` and `O` remain available; the board footer now teaches `O new column`
+when a column header is selected.
+
+User testing refuted the 650 ms Up guard above: it swallowed a fresh press after
+releasing a held key. Terminals with the negotiated keyboard protocol now
+report repeats and releases, so a fresh press can immediately leave the first
+ticket while a repeat cannot. Legacy terminals use the time delta between
+events with a 120 ms cutoff instead. They cannot distinguish a release/repress
+inside that interval from a held key. Regressions cover both input paths,
+viewport-sized paging, animation continuity, narrow layouts and hint placement.
+
+### 2026-09-10 — column settings stay on the column header
+
+Removed the Column settings row from the menu. Enter on a column header still
+opens its settings, with the existing contextual footer hint. Menu regressions
+check that the row is absent from both the menu and Settings.
+
+### 2026-09-10 — settings groups and independent column offers
+
+Settings now opens three groups: Appearance & notifications (theme,
+notifications, status line), Behaviour (auto merge, its existing optional
+post-merge notice, snooze, week start, default column), and Agents (brief,
+tools). Show agent replies is removed from Settings; the board's reply keys
+remain. Nested pickers and the brief review return to their own group, and
+Esc returns to the parent on its selected row. "Auto merge" replaces "Merge
+train" in the settings labels without changing its consent or reach.
+
+Column settings removes Name and Delete; board `r` and the existing deletion
+chord still act on the header. Agent behaviour groups mode, tools, starting an
+agent on creation, and the working/end-turn transitions. New columns still
+have a name field before they exist. The remaining root rows include auto
+merge and a single Offer ring: off, sleep, archive, sleep + archive.
+
+The optional `offers` column setting persists that independent choice through
+the existing authorized SetColumnSettings command. Absent `offers` preserves
+the legacy `reclaim` boolean's off/both meaning; an explicit choice overrides
+it. Bulk sleep and bulk archive now use separate column sets, both for their
+prices and for execution. Model and store round-trips, daemon restart and bulk
+action tests cover compatibility and independence. Goldens cover each settings
+group at 60×20 and 120×30, plus the column root and agent submenu.
+
+The daemon test also caught the old sleep count surviving an offer change until
+the 10-second RSS refresh. Changing offer eligibility now recomputes that count
+immediately using the latest byte measurements, before the snapshot is broadcast.
+
+### 2026-09-10 — adjacent ticket moves require the same key twice
+
+On a board ticket, `>` previews the column immediately to its right and `<`
+previews the column immediately to its left. Neither wraps at an edge. The
+pending ghost and dimmed original card remain until another input: only the
+same key confirms; every other key cancels and is consumed, including Enter,
+arrows, digits, help and unbound keys. Bracketed paste cancels too. MOVE no
+longer inherits global bindings or offers placement/Enter hints.
+
+A confirmed move inserts at the top of the adjacent column and leaves the
+cursor at the source row, selecting the ticket that was below it. If the last
+row moved, the previous ticket is selected; an emptied column keeps its cursor.
+A refused move leaves the original ticket selected and preserves the refusal.
+Immediate HJKL/Alt-direction nudges and `.` retain their existing behavior.
+This supersedes the earlier freely positioned, wrapping ghost gesture. Tests
+cover cancellation, both directions, edges, source focus and refused moves;
+the move and board-help goldens reflect the new gesture.

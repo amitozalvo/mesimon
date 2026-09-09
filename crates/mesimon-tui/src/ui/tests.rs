@@ -329,6 +329,8 @@ fn install_diff(app: &mut App) {
         files,
         file_idx: 0,
         scroll: std::cell::Cell::new(0),
+        view: std::cell::Cell::new(crate::app::PreviewView::default()),
+        glide: std::cell::Cell::new(None),
         marquee: std::cell::Cell::new(None),
         density: 3,
         cache,
@@ -413,6 +415,8 @@ fn install_checkout_diff(app: &mut App) {
         files,
         file_idx: 0,
         scroll: std::cell::Cell::new(0),
+        view: std::cell::Cell::new(crate::app::PreviewView::default()),
+        glide: std::cell::Cell::new(None),
         marquee: std::cell::Cell::new(None),
         density: 3,
         cache,
@@ -532,7 +536,7 @@ fn golden_interrupted_board_120() {
 #[test]
 fn golden_move_ghost_120() {
     let mut app = app_graphite(fixture(false));
-    app.mode = Mode::Move { ticket: ulid_n(3), col: 2, idx: 1, grab: '>', home: (1, 0) };
+    app.mode = Mode::Move { ticket: ulid_n(3), col: 2, idx: 0, grab: '>', home: (1, 0) };
     golden("board_move_120x30", &render(&app, 120, 30));
 }
 
@@ -672,6 +676,28 @@ fn golden_settings_120() {
     golden("settings_120x30", &render(&app, 120, 30));
 }
 
+#[test]
+fn golden_settings_groups_fit_short_and_wide_terminals() {
+    use mesimon_core::keymap::SettingsSection;
+    for (section, name) in [
+        (SettingsSection::Appearance, "appearance"),
+        (SettingsSection::Behaviour, "behaviour"),
+        (SettingsSection::Agents, "agents"),
+    ] {
+        let mut app = app_graphite(fixture_archived());
+        app.settings_section = section;
+        app.mode = Mode::Settings { idx: 0 };
+        for (w, h) in [(60, 20), (120, 30)] {
+            let rows = render(&app, w, h);
+            assert!(!rows.iter().any(|r| r.contains("agent replies")));
+            for item in mesimon_core::keymap::settings_items(&app.ctx()) {
+                assert!(rows.iter().any(|r| r.contains(&(item.label)(&app.ctx()))), "{rows:?}");
+            }
+            golden(&format!("settings_{name}_{w}x{h}"), &rows);
+        }
+    }
+}
+
 /// The notifications list, one level under Settings (T-282), turned ON so
 /// every row draws: the master switch, the two moments, what a banner is
 /// allowed to SAY (T-292), the two sounds and the two exceptions.
@@ -715,7 +741,8 @@ fn the_settings_subtitle_marquees() {
     // default, which is the sentence that explains the standing consent.
     // Seventh, after theme, replies, notifications, status line, snooze and
     // the week's day.
-    app.mode = Mode::Settings { idx: 6 };
+    app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
+    app.mode = Mode::Settings { idx: 0 };
     let row = |lines: &[String]| -> String {
         lines
             .iter()
@@ -736,7 +763,7 @@ fn the_settings_subtitle_marquees() {
     assert!(!walked.contains('~'), "a walking marquee hard-clips: {walked}");
     assert!(walked.contains("board is q"), "and it reveals what the cut hid: {walked}");
     // An unselected row is still cut: one sentence moves, the list is quiet.
-    app.mode = Mode::Settings { idx: 0 };
+    app.mode = Mode::Settings { idx: 1 };
     let quiet = row(&render(&app, 120, 30));
     assert!(quiet.contains("mesimon merges and asks"), "{quiet}");
     assert!(quiet.contains('~'), "{quiet}");
@@ -1168,33 +1195,36 @@ fn golden_column_settings_120() {
     .unwrap();
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("COLUMN ∙ IN PROGRESS")), "{lines:?}");
-    assert!(lines.iter().any(|l| l.contains("Claude mode: inherit (auto)")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("Agent behaviour")), "{lines:?}");
     golden("column_settings_120x30", &lines);
 }
 
-/// The dialog's Name row as a text field: the mode chip says NAME, the edge
-/// says save/cancel, the row shows the buffer.
+/// Agent options live one level below the column's own settings.
 #[test]
-fn golden_column_settings_naming_120() {
+fn golden_column_agent_behaviour_120() {
     let mut app = app_graphite(fixture(false));
     app.cursor_col = 1;
     app.cursor_row = None;
-    let enter = |app: &mut App| {
-        app.handle_key(
-            ratatui::crossterm::event::KeyCode::Enter,
-            ratatui::crossterm::event::KeyModifiers::NONE,
-        )
-        .unwrap()
-    };
-    enter(&mut app);
-    enter(&mut app);
-    for c in " now".chars() {
-        press(&mut app, c);
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let row = mesimon_core::keymap::column_items(&app.ctx())
+        .iter()
+        .position(|m| m.verb == mesimon_core::keymap::Verb::ColumnAgentBehaviour)
+        .unwrap();
+    if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+        *idx = row;
     }
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("Name: in progress now")), "{lines:?}");
-    assert!(lines.last().unwrap().contains("NAME"), "{:?}", lines.last());
-    golden("column_settings_naming_120x30", &lines);
+    assert!(lines.iter().any(|l| l.contains("Mode: inherit (auto)")), "{lines:?}");
+    golden("column_agent_behaviour_120x30", &lines);
 }
 
 /// `O`: the dialog on a column that does not exist yet — the Name row alone.
@@ -1607,11 +1637,156 @@ fn golden_diff_screen_120() {
     golden("diff_120x30", &render(&app, 120, 30));
 }
 
+fn install_long_diff(app: &mut App) {
+    install_diff(app);
+    let d = app.diff.as_mut().unwrap();
+    let file = d.cache.get_mut(&d.files[0].path).unwrap();
+    file.hunks.truncate(1);
+    file.hunks[0].lines = (1..=100)
+        .map(|n| mesimon_core::diff::HunkLine {
+            sign: mesimon_core::diff::Sign::Ctx,
+            old_ln: Some(n),
+            new_ln: Some(n),
+            text: format!("diff row {n:03}"),
+        })
+        .collect();
+}
+
+#[test]
+fn diff_hints_live_beside_their_panes_and_pages_use_the_viewport() {
+    for (width, height) in [(60, 20), (90, 24), (100, 24), (120, 30), (160, 40)] {
+        let mut app = app_graphite(fixture(false));
+        install_long_diff(&mut app);
+        if width < 100 {
+            let files = render(&app, width, height);
+            assert!(files[5].contains("n N file"), "{}", files[5]);
+            press(&mut app, '}');
+            assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0, "hidden diff does not page");
+            app.diff.as_mut().unwrap().swap = true;
+        }
+        let rows = render(&app, width, height);
+        assert!(rows[5].contains("n N file"), "{}", rows[5]);
+        assert!(rows[5].contains("{ } page"), "{}", rows[5]);
+        if width == 60 || width == 120 {
+            golden(&format!("diff_paging_{width}x{height}"), &rows);
+        }
+        for hint in ["n N", "{ }", "jk scroll"] {
+            assert!(!rows.last().unwrap().contains(hint), "{rows:?}");
+        }
+        let v = app.diff.as_ref().unwrap().view.get();
+        assert_eq!(v.page, height as usize - 9);
+        press(&mut app, '}');
+        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), v.page);
+        for _ in 0..20 {
+            press(&mut app, '}');
+        }
+        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), v.max);
+        for _ in 0..20 {
+            press(&mut app, '{');
+        }
+        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0);
+    }
+}
+
+#[test]
+fn diff_pages_glide_and_file_changes_cancel_the_motion() {
+    use crate::app::{Glide, GLIDE};
+    use std::time::{Duration, Instant};
+    let mut app = app_graphite(fixture(false));
+    install_long_diff(&mut app);
+    let before = render(&app, 120, 30);
+    let page = app.diff.as_ref().unwrap().view.get().page;
+    press(&mut app, '}');
+    let g = app.diff.as_ref().unwrap().glide.get().unwrap();
+    assert_eq!(g.from, 0);
+    assert!(app.animating());
+    app.diff
+        .as_ref()
+        .unwrap()
+        .glide
+        .set(Some(Glide { at: Instant::now() + Duration::from_secs(1), ..g }));
+    assert_eq!(render(&app, 120, 30), before, "frame zero retains the old page");
+    let top_row = |rows: &[String]| {
+        rows.iter()
+            .find_map(|row| {
+                row.find("diff row ").and_then(|i| row[i + 9..i + 12].parse::<usize>().ok())
+            })
+            .unwrap()
+    };
+    app.diff.as_ref().unwrap().glide.set(Some(Glide { at: Instant::now() - GLIDE / 2, ..g }));
+    let mid = top_row(&render(&app, 120, 30));
+    assert!(mid > 1 && mid < page, "{mid} between 1 and {page}");
+    press(&mut app, '}');
+    let next = app.diff.as_ref().unwrap().glide.get().unwrap();
+    assert!(next.from >= mid && next.from < page, "continues from the visible row");
+    assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 2 * page);
+    app.diff.as_ref().unwrap().glide.set(Some(Glide { at: Instant::now() - GLIDE, ..next }));
+    let landed = render(&app, 120, 30);
+    assert_eq!(top_row(&landed), 2 * page);
+    assert!(!app.animating());
+    press(&mut app, '{');
+    assert!(app.animating(), "paging up also glides");
+    press(&mut app, 'n');
+    assert!(!app.animating());
+    assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0);
+    assert!(!render(&app, 120, 30)[5].contains("{ } page"), "binary fits");
+
+    // File navigation stays visible even on a display-only untracked entry.
+    app.diff.as_mut().unwrap().file_idx = 3;
+    app.diff.as_mut().unwrap().swap = true;
+    assert!(render(&app, 90, 24)[5].contains("n N file"));
+}
+
+#[test]
+fn column_header_footer_teaches_new_column() {
+    let mut app = app_graphite(fixture(false));
+    assert!(!render(&app, 120, 30).last().unwrap().contains("O new column"));
+    app.cursor_row = None;
+    assert!(render(&app, 120, 30).last().unwrap().contains("O new column"));
+}
+
 #[test]
 fn golden_checkout_diff_120() {
     let mut app = app_graphite(fixture(false));
     install_checkout_diff(&mut app);
     golden("diff_checkout_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn empty_diffs_say_no_changes_and_titles_omit_density() {
+    for checkout in [false, true] {
+        let mut app = app_graphite(fixture(false));
+        if checkout {
+            install_checkout_diff(&mut app);
+        } else {
+            install_diff(&mut app);
+        }
+        for density in [1, 3, 8] {
+            app.diff.as_mut().unwrap().density = density;
+            let rows = render(&app, 120, 30);
+            assert!(!rows[2].contains(super::diff::density_word(density)), "{}", rows[2]);
+        }
+        app.diff.as_mut().unwrap().files.clear();
+        let rows = render(&app, 120, 30);
+        assert!(rows[2].contains("∙ no changes"), "{}", rows[2]);
+        assert!(!rows[2].contains("0 files"), "{}", rows[2]);
+        assert!(!rows[2].contains("uncommitted"), "{}", rows[2]);
+        assert!(!rows[2].contains("+0 -0"), "{}", rows[2]);
+    }
+}
+
+#[test]
+fn focusing_git_preserves_header_text_and_geometry() {
+    for width in [60, 80, 100, 120, 160] {
+        for branch in ["main", "msmn/T-124-git-status-pull-push-indication"] {
+            let mut app = app_graphite(fixture(false));
+            app.git = git_state(branch, 2, 1, 3);
+            app.force_update_ready();
+            let before = render(&app, width, 30)[0].clone();
+            app.header_focus = true;
+            assert_eq!(render(&app, width, 30)[0], before, "width {width}, branch {branch}");
+        }
+    }
 }
 
 /// The checkout diff is the same screen answering a different question, and
@@ -1688,8 +1863,8 @@ fn board_v_opens_the_checkout_diff() {
 }
 
 /// The board's own top row as a cursor position (T-305): `k` off a column
-/// header paints the git clause on the elevated surface — one pad cell each
-/// side, the greys on the `sel` ramp — takes the cursor bar off the column
+/// header paints the git clause on the elevated surface — surrounding gaps
+/// stay on the page, the greys on the `sel` ramp — takes the cursor bar off the column
 /// header while leaving it its band, and hands the footer to `Scope::Header`,
 /// where Enter is the checkout diff.
 #[test]
@@ -1707,11 +1882,11 @@ fn golden_board_header_bar_120() {
     // ` ⎇ main ↑2 ↓1 ∙ 3 changed ` starts after `mesimon > kanban-tui`.
     let row: String = (0..120u16).map(|x| buf[(x, 0)].symbol().to_string()).collect();
     let at = row.find('⎇').expect("the clause is drawn") as u16;
-    for x in [at - 1, at, at + 12, at + 24] {
+    for x in [at, at + 12, at + 23] {
         assert_eq!(buf[(x, 0)].bg, band, "the focused clause is painted at {x}");
     }
-    assert_ne!(buf[(at - 2, 0)].bg, band, "and the paint starts at the clause");
-    assert_ne!(buf[(at + 26, 0)].bg, band, "one pad cell, then the page ground again");
+    assert_ne!(buf[(at - 1, 0)].bg, band, "the repository gap stays on the page");
+    assert_ne!(buf[(at + 24, 0)].bg, band, "the following gap stays on the page");
     // The column keeps its band — that is what says where `j` goes back to —
     // and gives the cursor bar up.
     assert_eq!(buf[(40, 2)].bg, band, "the cursor column is still the cursor column");
@@ -3835,7 +4010,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
     // The frame's top edge names the dialog on the breathing row over the
     // cards; the context row under the title starts at the column.
     assert!(after[3].contains("NEW TICKET"), "{:?}", after[3]);
-    assert!(after[5].contains("TODO column ∙ ⎇"), "{:?}", after[5]);
+    assert!(after[5].contains("TODO ∙ ⎇"), "{:?}", after[5]);
     assert!(after[7].contains("describe it"), "{:?}", after[7]);
     for covered in ["Fix OSC-11 detection", "Grapheme truncation"] {
         assert!(!after.iter().any(|l| l.contains(covered)), "{covered} is under the dialog");
@@ -4169,7 +4344,10 @@ fn the_shin_is_static_grey_and_only_precedes_a_conversation() {
     let lines = render(&app, 120, 30);
     assert!(app.mascot.borrow().is_none());
     assert!(!lines.iter().any(|row| row.contains('█') || row.contains('▄')));
-    assert!(lines.iter().any(|row| row.trim_start().starts_with("mesimon")), "mono gets the wordmark");
+    assert!(
+        lines.iter().any(|row| row.trim_start().starts_with("mesimon")),
+        "mono gets the wordmark"
+    );
 
     app.theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
     app.board.sessions.retain(|s| s.ticket != ulid_n(1));
@@ -4574,11 +4752,8 @@ fn test_no_drawn_structure() {
     // draw recorded: a box glyph is legal on a frame's perimeter and nowhere
     // else (T-158, the one allowlisted role), and the perimeter is a fact of
     // the frame the draw itself reported — the test transcribes nothing.
-    type DrawnFrame = (
-        ratatui::buffer::Buffer,
-        Vec<ratatui::layout::Rect>,
-        Option<ratatui::layout::Rect>,
-    );
+    type DrawnFrame =
+        (ratatui::buffer::Buffer, Vec<ratatui::layout::Rect>, Option<ratatui::layout::Rect>);
     let swept: std::cell::RefCell<Vec<DrawnFrame>> = std::cell::RefCell::new(Vec::new());
     let sweep = |app: &App| -> Vec<String> {
         let buf = cells(app, 120, 30);
@@ -5001,7 +5176,7 @@ fn git_state(
 
 /// The board's own checkout on the header (T-124): the branch, the arrows and
 /// the change count after the breadcrumb, with the offer still at the right
-/// edge — and the menu row that spells the same facts in words.
+/// edge. Fetch is no longer a menu row.
 #[test]
 fn golden_git_120() {
     let mut app = app_graphite(fixture(false));
@@ -5010,11 +5185,9 @@ fn golden_git_120() {
     golden("board_git_120x30", &render(&app, 120, 30));
     app.mode = Mode::Menu { idx: 0 };
     let menu = render(&app, 120, 30);
-    assert!(menu.iter().any(|l| l.contains("Fetch origin")), "the menu offers the fetch: {menu:?}");
-    assert!(
-        menu.iter().any(|l| l.contains("2 to push ∙ 1 to pull ∙ never fetched")),
-        "the row spells the arrows out: {menu:?}"
-    );
+    for removed in ["Fetch origin", "All keys on this screen", "Add a column"] {
+        assert!(!menu.iter().any(|l| l.contains(removed)), "{removed}: {menu:?}");
+    }
 }
 
 /// Nothing until a sample lands; then only what is out of sync is said —

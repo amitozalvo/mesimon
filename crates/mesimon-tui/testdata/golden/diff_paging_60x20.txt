@@ -1,0 +1,20 @@
+ DIFF   mesimon > kanban-tui > Fix OSC-11 detection
+
+ ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +
+
+
+ src/auth/callba~ ∙ file 1/4 ∙ 1 hunk  { } page ∙ n N file
+
+ @@ -18,3 +18,4 @@ export async function handleCallback(
+       1  diff row 001
+       2  diff row 002
+       3  diff row 003
+       4  diff row 004
+       5  diff row 005
+       6  diff row 006
+       7  diff row 007
+       8  diff row 008
+       9  diff row 009
+      10  diff row 010
+      11  diff row 011
+ z context, layout… ∙ R refresh ∙ q back             ? keys

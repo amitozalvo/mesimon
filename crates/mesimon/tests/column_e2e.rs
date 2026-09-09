@@ -106,6 +106,7 @@ fn columns_are_added_renamed_sorted_deleted_and_survive_a_restart() {
     let mut s = settings(&board, "QA");
     s.on_done = Some("DONE".into());
     s.auto_run = true;
+    s.offers = Some(mesimon_core::board::ColumnOffers::Archive);
     s.claude_mode = mesimon_core::board::ClaudeMode::Plan;
     s.agent_tools = mesimon_core::board::AgentTools::Read;
     assert!(matches!(

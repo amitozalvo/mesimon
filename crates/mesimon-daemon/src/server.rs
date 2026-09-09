@@ -3845,7 +3845,7 @@ impl Daemon {
     fn archive_candidates(&self) -> Vec<ulid::Ulid> {
         let now = now_ms();
         let threshold = archive_suggest_ms();
-        let reclaim = self.board.reclaim_columns();
+        let reclaim = self.board.archive_columns();
         self.board
             .tickets
             .iter()
@@ -5585,8 +5585,14 @@ impl Daemon {
         if col.settings == settings {
             return Response::Ok;
         }
+        let offers_changed = col.settings.offers() != settings.offers();
         if let Err(message) = self.board.set_column_settings(name, settings) {
             return Response::Err { message };
+        }
+        if offers_changed {
+            // Changing eligibility should not leave the old offer standing
+            // until the next RSS sample. Reuse the latest byte measurements.
+            self.reclaim_cache = self.reclaim_figures();
         }
         self.persist_and_notify();
         Response::Ok

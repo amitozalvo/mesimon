@@ -17,7 +17,9 @@ use mesimon_core::command::{
 };
 use mesimon_core::keymap::{self, Ctx, Key, Scope, Verb};
 use mesimon_core::snooze::Preset;
-use ratatui::crossterm::event::{self, Event as TermEvent, KeyCode, KeyEventKind, KeyModifiers};
+use ratatui::crossterm::event::{
+    self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
+};
 
 use crate::client::Transport;
 use crate::text::{EditBuffer, TextArea};
@@ -144,6 +146,9 @@ pub struct DiffState {
     pub file_idx: usize,
     /// Hunk-pane top row; draw clamps against the rendered height.
     pub scroll: Cell<usize>,
+    /// Rendered hunk-pane geometry and the current page turn.
+    pub view: Cell<PreviewView>,
+    pub glide: Cell<Option<Glide>>,
     /// Marquee clock for the selected file row's overflowing path — same
     /// behaviour as the board card title and the ticket rail (draw-side).
     pub marquee: Cell<Option<(usize, std::time::Instant)>>,
@@ -178,13 +183,9 @@ impl DiffState {
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
     Normal,
-    /// MOVE: ghost position tracked client-side; nothing is sent until the
-    /// drop. `grab` is the key that started it (`>`, `<`, or `m`): the same
-    /// key again (or Enter) commits; for `>`/`<` the opposite key cancels,
-    /// while an `m` grab has no opposite — `>`/`<` shift columns instead.
-    /// `home` is where the grab happened (col, idx): a foreign column is
-    /// always entered at the top, the home column at the ticket's own
-    /// position (author 2026-08-30) — which is why `m` grabs in place.
+    /// Pending adjacent-column move. The initiating `grab` key confirms on
+    /// its second press; every other key cancels. The ghost stays at the
+    /// target's top and `home` keeps the cursor in the source column.
     Move {
         ticket: ulid::Ulid,
         col: usize,
@@ -698,9 +699,6 @@ pub enum Naming {
     Rename,
 }
 
-/// `{`/`}` (and PgUp/PgDn) hunk-pane page step. The key handler cannot see
-/// the rendered height, so this approximates a screenful; draw clamps.
-const DIFF_PAGE: usize = 20;
 /// The tag this binary answers to, `v` + the workspace version — the entry
 /// the release notes mark `this build`.
 const BUILD_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
@@ -833,6 +831,12 @@ pub struct App {
     /// set on the board, and only where a git sample has landed for the
     /// clause to be drawn at all.
     pub header_focus: bool,
+    /// Recent upward travel through tickets. Legacy terminals report held
+    /// keys as presses, so a short quiet gap distinguishes reaching the top
+    /// from deliberately stepping onto its header.
+    last_ticket_up: Option<Instant>,
+    pub settings_section: keymap::SettingsSection,
+    pub column_agents: bool,
     pub mode: Mode,
     pub status: String,
     pub quit: bool,
@@ -1088,6 +1092,9 @@ impl App {
             cursor_col: 0,
             cursor_row: Some(0),
             header_focus: false,
+            last_ticket_up: None,
+            settings_section: keymap::SettingsSection::Root,
+            column_agents: false,
             mode: Mode::Normal,
             status: String::new(),
             quit: false,
@@ -1177,6 +1184,11 @@ impl App {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
             || (matches!(self.screen, Screen::Ticket { .. })
                 && self.preview_glide.get().is_some_and(|g| g.progress().is_some()))
+            || (matches!(self.screen, Screen::Diff)
+                && self
+                    .diff
+                    .as_ref()
+                    .is_some_and(|d| d.glide.get().is_some_and(|g| g.progress().is_some())))
     }
 
     /// The working-spinner frame for this draw. The event loop redraws at
@@ -1679,10 +1691,30 @@ impl App {
             }
             _ => return Ok(dirty),
         };
-        if key.kind != KeyEventKind::Press {
-            return Ok(dirty);
+        Ok(self.on_terminal_key(key)? || dirty)
+    }
+
+    /// Rich terminals distinguish a fresh press from a held key. Legacy
+    /// terminals use the short inter-event gap in board navigation instead.
+    fn on_terminal_key(&mut self, key: KeyEvent) -> Result<bool> {
+        match key.kind {
+            KeyEventKind::Release => {
+                self.last_ticket_up = None;
+                return Ok(false);
+            }
+            KeyEventKind::Press if self.rich_keys => self.last_ticket_up = None,
+            KeyEventKind::Repeat
+                if key.modifiers.is_empty()
+                    && matches!(key.code, KeyCode::Up | KeyCode::Char('k'))
+                    && self.scope() == Scope::Board
+                    && self.cursor_row == Some(0)
+                    && !self.on_column_header() =>
+            {
+                return Ok(false);
+            }
+            _ => {}
         }
-        Ok(self.on_key(key.code, key.modifiers)? || dirty)
+        self.on_key(key.code, key.modifiers)
     }
 
     /// One raw key event from the terminal. The reply swallow sees it first —
@@ -1730,6 +1762,10 @@ impl App {
         self.pending_spawn_focus = None;
         self.status.clear();
         self.merge_note.clear();
+        if matches!(self.mode, Mode::Move { .. }) {
+            self.mode = Mode::Normal;
+            return Ok(true);
+        }
         let (what, pasted, limit) = if let Some(arm) = self.tag_armed.as_mut() {
             // The picker owns the keys while it is open; a paste with no
             // name field under it goes nowhere, not into the composer behind.
@@ -2047,7 +2083,7 @@ impl App {
         self.prefs.set(self.ground, flavor);
         let pinned = self.forced.take().is_some();
         // Back to the settings list, where the theme row now reads the pick.
-        self.mode = Mode::Settings { idx: self.settings_row(Verb::ThemePick) };
+        self.return_to_settings(Verb::ThemePick);
         self.preview(flavor);
         let name = flavor.name();
         self.status = match self.save_prefs(name) {
@@ -2069,18 +2105,23 @@ impl App {
 
     /// The same, in the settings list.
     fn settings_row(&self, verb: Verb) -> usize {
-        keymap::settings_items(&self.ctx()).iter().position(|m| m.verb == verb).unwrap_or(0)
+        let ctx = Ctx { settings_section: keymap::SettingsSection::for_verb(verb), ..self.ctx() };
+        keymap::settings_items(&ctx).iter().position(|m| m.verb == verb).unwrap_or(0)
+    }
+
+    fn return_to_settings(&mut self, verb: Verb) {
+        self.settings_section = keymap::SettingsSection::for_verb(verb);
+        self.mode = Mode::Settings { idx: self.settings_row(verb) };
     }
 
     /// Close the brief dialog onto whatever opened it: the Settings list, on
     /// the row that did (which now reads the answer), or the board.
     fn leave_brief(&mut self) {
-        self.mode = match self.mode {
-            Mode::Brief { from_settings: true } => {
-                Mode::Settings { idx: self.settings_row(Verb::SystemPrompt) }
-            }
-            _ => Mode::Normal,
-        };
+        if matches!(self.mode, Mode::Brief { from_settings: true }) {
+            self.return_to_settings(Verb::SystemPrompt);
+        } else {
+            self.mode = Mode::Normal;
+        }
     }
 
     /// The agent brief's switch (T-224), shared by the offer's Enter and the
@@ -2518,6 +2559,10 @@ impl App {
             _ => (false, false, ""),
         };
         let mut ctx = Ctx {
+            settings_section: self.settings_section,
+            column_agents: self.column_agents,
+            col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
+            col_offers_word: cs.offers().word(),
             has_ticket: subject.is_some(),
             multi_column: self.columns().len() > 1,
             ticket_has_sessions: !sessions.is_empty(),
@@ -2798,6 +2843,17 @@ impl App {
     /// verb it returns is matched exhaustively below — so a binding with no
     /// handler is a compile error, not a dead key.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        if !matches!(code, KeyCode::Up | KeyCode::Char('k')) || !mods.is_empty() {
+            self.last_ticket_up = None;
+        }
+        // A move is a two-key confirmation, never a placement mode. Swallow
+        // cancellation before key conversion so even unbound keys cancel.
+        if let Mode::Move { grab, .. } = self.mode {
+            if code != KeyCode::Char(grab) || !(mods - KeyModifiers::SHIFT).is_empty() {
+                self.mode = Mode::Normal;
+                return Ok(());
+            }
+        }
         // The tag tail outranks the input barrier: `^t` is reachable from the
         // composer, so the keys that follow it must not land in the title.
         if self.tag_armed.is_some() {
@@ -2921,7 +2977,24 @@ impl App {
             Verb::Back => self.back(scope),
             Verb::Quit => self.quit = true,
             Verb::Menu => self.mode = Mode::Menu { idx: 0 },
-            Verb::Settings => self.mode = Mode::Settings { idx: 0 },
+            Verb::Settings => {
+                self.settings_section = keymap::SettingsSection::Root;
+                self.mode = Mode::Settings { idx: 0 };
+            }
+            Verb::SettingsAppearance | Verb::SettingsBehaviour | Verb::SettingsAgents => {
+                self.settings_section = match verb {
+                    Verb::SettingsAppearance => keymap::SettingsSection::Appearance,
+                    Verb::SettingsBehaviour => keymap::SettingsSection::Behaviour,
+                    _ => keymap::SettingsSection::Agents,
+                };
+                self.mode = Mode::Settings { idx: 0 };
+            }
+            Verb::ColumnAgentBehaviour => {
+                self.column_agents = true;
+                if let Mode::ColumnSettings { idx, .. } = &mut self.mode {
+                    *idx = 0;
+                }
+            }
             // ---- tickets ---------------------------------------------------
             Verb::OpenTicket => {
                 // The composer starts at the column's own default (T-117);
@@ -3541,7 +3614,7 @@ impl App {
             Verb::PageDown | Verb::PageUp => {
                 let dir: isize = if verb == Verb::PageDown { 1 } else { -1 };
                 match self.screen {
-                    Screen::Diff => self.diff_scroll(dir * DIFF_PAGE as isize),
+                    Screen::Diff => self.diff_page(dir),
                     Screen::Ticket { .. } => self.preview_page(dir),
                     Screen::Releases => {
                         let page = self.releases.as_ref().map(|r| r.view.get().page).unwrap_or(0);
@@ -3597,28 +3670,6 @@ impl App {
                 }
             }
             // ---- move ------------------------------------------------------
-            Verb::Drop => {
-                if let Mode::Move { ticket, col, idx, .. } = self.mode {
-                    let cols = self.columns();
-                    self.drop_ghost(&cols, ticket, col, idx)?;
-                }
-            }
-            Verb::DropColumn => {
-                if let (Mode::Move { ticket, col, idx, grab, home }, Key::Char(c)) =
-                    (self.mode.clone(), key)
-                {
-                    let cols = self.columns();
-                    let want = c.to_digit(10).unwrap_or(1).saturating_sub(1) as usize;
-                    if want < cols.len() {
-                        let idx = if want == col {
-                            idx
-                        } else {
-                            self.ghost_entry_idx(&cols, want, home, ticket)
-                        };
-                        self.mode = Mode::Move { ticket, col: want, idx, grab, home };
-                    }
-                }
-            }
             Verb::Cancel => self.mode = Mode::Normal,
             // ---- view / lists ----------------------------------------------
             Verb::Peek => {
@@ -3681,6 +3732,7 @@ impl App {
             // ---- columns (T-117) -----------------------------------------
             Verb::ColumnSettings => self.open_column_settings()?,
             Verb::AddColumn => {
+                self.column_agents = false;
                 let after = self.cursor_column().map(|c| c.name.clone());
                 self.mode = Mode::ColumnSettings {
                     subject: ColumnSubject::New { after },
@@ -3736,7 +3788,7 @@ impl App {
             Verb::ColumnRequiresMerge => {
                 self.set_column(|s| s.requires_merge = !s.requires_merge)?
             }
-            Verb::ColumnReclaim => self.set_column(|s| s.reclaim = !s.reclaim)?,
+            Verb::ColumnReclaim => self.set_column(|s| s.offers = Some(s.offers().next()))?,
             Verb::ColumnTrain => self.set_column(|s| s.train = s.train.next())?,
             Verb::DeleteColumn => self.delete_column_from_dialog()?,
             Verb::ReleaseNotes => self.open_releases(),
@@ -3840,6 +3892,17 @@ impl App {
                 // on, which today is the git clause and nothing else. `j`
                 // walks back down the same two steps.
                 Verb::CursorUp => {
+                    let now = Instant::now();
+                    if self.cursor_row == Some(0)
+                        && !self.on_column_header()
+                        && self.last_ticket_up.is_some_and(|last| {
+                            now.duration_since(last) < Duration::from_millis(120)
+                        })
+                    {
+                        self.last_ticket_up = Some(now);
+                        return;
+                    }
+                    self.last_ticket_up = self.cursor_row.filter(|r| *r > 0).map(|_| now);
                     if self.on_column_header() {
                         self.header_focus = self.git.sampled;
                         return;
@@ -3867,36 +3930,6 @@ impl App {
                     rail_idx
                 };
                 self.screen = Screen::Ticket { ticket, rail_idx: idx };
-            }
-            Scope::Move => {
-                let Mode::Move { ticket, col, idx, grab, home } = self.mode.clone() else {
-                    return;
-                };
-                let cols = self.columns();
-                match verb {
-                    Verb::CursorLeft | Verb::CursorRight => {
-                        let to = if verb == Verb::CursorRight {
-                            (col + 1).min(cols.len().saturating_sub(1))
-                        } else {
-                            col.saturating_sub(1)
-                        };
-                        // A saturated edge press stays put — no entry, no reset.
-                        let idx = if to == col {
-                            idx
-                        } else {
-                            self.ghost_entry_idx(&cols, to, home, ticket)
-                        };
-                        self.mode = Mode::Move { ticket, col: to, idx, grab, home };
-                    }
-                    Verb::CursorUp => {
-                        self.mode =
-                            Mode::Move { ticket, col, idx: idx.saturating_sub(1), grab, home };
-                    }
-                    _ => {
-                        let n = self.ghost_len(&cols, col, ticket);
-                        self.mode = Mode::Move { ticket, col, idx: (idx + 1).min(n), grab, home };
-                    }
-                }
             }
             Scope::Menu => {
                 let Mode::Menu { idx } = self.mode else {
@@ -4116,15 +4149,32 @@ impl App {
                 // Put it back: whatever was previewed, the board returns to
                 // the theme it rests on. No entry flavor is stored, which is
                 // also what makes a ground flip under the picker right.
-                self.mode = Mode::Settings { idx: self.settings_row(Verb::ThemePick) };
+                self.return_to_settings(Verb::ThemePick);
                 self.preview(self.resting_flavor());
             }
             // One level up, on the row that opened it.
-            Scope::Settings => self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) },
-            Scope::Notifications => {
-                self.mode = Mode::Settings { idx: self.settings_row(Verb::Notifications) }
+            Scope::Settings => {
+                if self.settings_section == keymap::SettingsSection::Root {
+                    self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) };
+                } else {
+                    let opener = self.settings_section.opener();
+                    self.settings_section = keymap::SettingsSection::Root;
+                    self.mode = Mode::Settings { idx: self.settings_row(opener) };
+                }
             }
+            Scope::Notifications => self.return_to_settings(Verb::Notifications),
             Scope::ColumnSettings => {
+                if self.column_agents {
+                    self.column_agents = false;
+                    let row = keymap::column_items(&self.ctx())
+                        .iter()
+                        .position(|m| m.verb == Verb::ColumnAgentBehaviour)
+                        .unwrap_or(0);
+                    if let Mode::ColumnSettings { idx, .. } = &mut self.mode {
+                        *idx = row;
+                    }
+                    return;
+                }
                 let from_menu = matches!(&self.mode, Mode::ColumnSettings { from_menu: true, .. });
                 self.mode = if from_menu {
                     Mode::Menu { idx: self.menu_row(Verb::ColumnSettings) }
@@ -4148,6 +4198,7 @@ impl App {
     /// Enter on a column header, or the menu's row (T-117): the cursor's
     /// column's settings.
     fn open_column_settings(&mut self) -> Result<()> {
+        self.column_agents = false;
         let Some(name) = self.cursor_column().map(|c| c.name.clone()) else {
             return Ok(());
         };
@@ -4412,41 +4463,35 @@ impl App {
         self.refresh()
     }
 
-    /// `>` / `<`: grab the card and shift its ghost one column that way, or —
-    /// already holding one — shift it again. The same key commits where the
-    /// ghost stands; the opposite key cancels the whole move.
+    /// Preview only the adjacent column; the same key confirms and leaves
+    /// the source row selected so the next ticket slides under the cursor.
     fn grab(&mut self, key: Key, scope: Scope, _ctx: &Ctx) -> Result<()> {
         let Key::Char(c) = key else { return Ok(()) };
         let cols = self.columns();
-        if cols.is_empty() {
-            return Ok(());
-        }
         if scope != Scope::Move {
-            let Some(t) = self.selected_ticket() else {
-                return Ok(());
-            };
+            let Some(t) = self.selected_ticket() else { return Ok(()) };
             let id = t.id;
             let col = if c == '>' {
-                (self.cursor_col + 1) % cols.len()
+                self.cursor_col.checked_add(1).filter(|col| *col < cols.len())
             } else {
-                (self.cursor_col + cols.len() - 1) % cols.len()
+                self.cursor_col.checked_sub(1)
             };
+            let Some(col) = col else { return Ok(()) };
             let Some(row) = self.cursor_row else { return Ok(()) };
-            let home = (self.cursor_col, row);
-            let idx = self.ghost_entry_idx(&cols, col, home, id);
-            self.mode = Mode::Move { ticket: id, col, idx, grab: c, home };
+            self.mode =
+                Mode::Move { ticket: id, col, idx: 0, grab: c, home: (self.cursor_col, row) };
             return Ok(());
         }
-        let Mode::Move { ticket, col, idx, grab, .. } = self.mode.clone() else {
+        let Mode::Move { ticket, col, idx, grab, home } = self.mode.clone() else {
             return Ok(());
         };
-        if c == grab {
-            // The grab key again: commit where the ghost stands, so `>>` is
-            // one column in one gesture.
-            return self.drop_ghost(&cols, ticket, col, idx);
-        }
-        // The opposite key cancels the whole move.
         self.mode = Mode::Normal;
+        if c == grab {
+            self.drop_ghost(&cols, ticket, col, idx)?;
+            self.cursor_col = home.0;
+            self.cursor_row = Some(home.1);
+            self.clamp_cursor();
+        }
         Ok(())
     }
 
@@ -4597,8 +4642,22 @@ impl App {
 
     fn diff_scroll(&mut self, delta: isize) {
         let Some(d) = self.diff.as_ref() else { return };
-        let now = d.scroll.get() as isize;
-        d.scroll.set(now.saturating_add(delta).max(0) as usize);
+        let now = d.glide.get().map_or(d.scroll.get(), |g| g.offset(d.scroll.get())) as isize;
+        d.glide.set(None);
+        d.scroll.set(now.saturating_add(delta).clamp(0, d.view.get().max as isize) as usize);
+    }
+
+    fn diff_page(&mut self, dir: isize) {
+        let Some(d) = self.diff.as_ref() else { return };
+        let v = d.view.get();
+        let next =
+            (d.scroll.get() as isize + dir * v.page as isize).clamp(0, v.max as isize) as usize;
+        if next == d.scroll.get() {
+            return;
+        }
+        let from = d.glide.get().map_or(d.scroll.get(), |g| g.offset(d.scroll.get()));
+        d.glide.set(Some(Glide { key: d.file_idx as u64, from, at: Instant::now() }));
+        d.scroll.set(next);
     }
 
     /// `{ }` on the ticket page: move the preview zone one page, by what the
@@ -5645,6 +5704,8 @@ impl App {
                     files,
                     file_idx: 0,
                     scroll: Cell::new(0),
+                    view: Cell::new(PreviewView::default()),
+                    glide: Cell::new(None),
                     marquee: Cell::new(None),
                     density: 3,
                     cache: std::collections::HashMap::new(),
@@ -5678,6 +5739,8 @@ impl App {
                 d.worktree_present = worktree_present;
                 d.cache.clear();
                 d.scroll.set(0);
+                d.view.set(PreviewView::default());
+                d.glide.set(None);
                 let idx = d.file_idx;
                 self.diff_fetch(idx);
             }
@@ -5732,6 +5795,8 @@ impl App {
         }
         d.file_idx = idx;
         d.scroll.set(0);
+        d.view.set(PreviewView::default());
+        d.glide.set(None);
         self.diff_fetch(idx);
     }
 
@@ -5888,23 +5953,6 @@ impl App {
             self.mode = Mode::External { idx: 0 };
         }
         Ok(())
-    }
-
-    /// Where the ghost lands when it enters `col`: the top of any foreign
-    /// column (height is adjusted by hand afterwards), its own original
-    /// position when coming back home while still moving.
-    fn ghost_entry_idx(
-        &self,
-        cols: &[String],
-        col: usize,
-        home: (usize, usize),
-        ticket: ulid::Ulid,
-    ) -> usize {
-        if col == home.0 {
-            home.1.min(self.ghost_len(cols, col, ticket))
-        } else {
-            0
-        }
     }
 
     /// Archive with the advisory pre-check (the daemon gates again): archive
@@ -8816,6 +8864,7 @@ mod tests {
     /// The theme picker is a settings row, one level further down.
     fn open_theme_picker(app: &mut App) {
         open_settings(app);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap(); // Appearance & notifications
         let items = keymap::settings_items(&app.ctx());
         let idx = items.iter().position(|m| m.verb == Verb::ThemePick).expect("the theme row");
         for _ in 0..idx {
@@ -8831,19 +8880,18 @@ mod tests {
         let mut app = app_three_columns();
         open_settings(&mut app);
         assert_eq!(app.scope(), Scope::Settings);
-        // The replies row: toggle, and the list stays with the row relabelled.
-        let items = keymap::settings_items(&app.ctx());
-        let idx = items.iter().position(|m| m.verb == Verb::Peek).expect("the replies row");
-        for _ in 0..idx {
-            press(&mut app, 'j');
-        }
-        assert!(!app.peek);
+        // Root → Appearance → status line, then back through each parent.
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.peek, "enter flipped it");
-        assert_eq!(app.mode, Mode::Settings { idx }, "and the list is still open");
-        let items = keymap::settings_items(&app.ctx());
-        assert_eq!((items[idx].label)(&app.ctx()), "Hide agent replies");
-        // Esc: back to the menu, on the Settings row; a second Esc closes it.
+        assert_eq!(app.settings_section, keymap::SettingsSection::Appearance);
+        let idx = app.settings_row(Verb::StatusLine);
+        app.mode = Mode::Settings { idx };
+        let before = app.prefs.status_top;
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_ne!(app.prefs.status_top, before);
+        assert_eq!(app.mode, Mode::Settings { idx });
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.settings_section, keymap::SettingsSection::Root);
+        assert_eq!(app.mode, Mode::Settings { idx: 0 });
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         let menu_idx = keymap::menu_items(&app.ctx())
             .iter()
@@ -8852,6 +8900,75 @@ mod tests {
         assert_eq!(app.mode, Mode::Menu { idx: menu_idx });
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
+    }
+
+    #[test]
+    fn settings_groups_return_to_their_parent_and_brief_returns_to_agents() {
+        let mut app = app_three_columns();
+        open_settings(&mut app);
+        for (idx, section) in [
+            keymap::SettingsSection::Appearance,
+            keymap::SettingsSection::Behaviour,
+            keymap::SettingsSection::Agents,
+        ]
+        .into_iter()
+        .enumerate()
+        {
+            app.mode = Mode::Settings { idx };
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.settings_section, section);
+            assert_eq!(app.mode, Mode::Settings { idx: 0 });
+            if section == keymap::SettingsSection::Agents {
+                app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                assert!(matches!(app.mode, Mode::Brief { from_settings: true }));
+                app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+                assert_eq!(app.settings_section, section);
+                assert_eq!(app.mode, Mode::Settings { idx: 0 });
+            }
+            app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.settings_section, keymap::SettingsSection::Root);
+            assert_eq!(app.mode, Mode::Settings { idx });
+        }
+    }
+
+    #[test]
+    fn column_agent_settings_return_to_parent_and_offers_cycle_on_the_wire() {
+        use mesimon_core::board::ColumnOffers;
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let door = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnAgentBehaviour)
+            .unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = door;
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.column_agents);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(
+            app.board.column("todo").unwrap().settings.claude_mode,
+            mesimon_core::board::ClaudeMode::Auto
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.column_agents);
+        assert!(matches!(app.mode, Mode::ColumnSettings { idx, .. } if idx == door));
+        let row = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnReclaim)
+            .unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = row;
+        }
+        for offer in
+            [ColumnOffers::Sleep, ColumnOffers::Archive, ColumnOffers::Both, ColumnOffers::Off]
+        {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.board.column("todo").unwrap().settings.offers(), offer);
+            assert_eq!(app.ctx().col_offers_word, offer.word());
+        }
+        assert!(sent_contains(&sent, "SetColumnSettings"));
     }
 
     #[test]
@@ -10295,6 +10412,7 @@ mod tests {
         assert!(matches!(app.mode, Mode::Normal));
         assert_eq!(app.board.column_tickets("todo").len(), 2);
         assert!(app.board.column_tickets("doing").is_empty());
+        app.cursor_col = 2;
         press(&mut app, '<');
         press(&mut app, '>');
         assert!(matches!(app.mode, Mode::Normal));
@@ -10302,7 +10420,7 @@ mod tests {
     }
 
     #[test]
-    fn double_gt_moves_one_column_right_and_follows() {
+    fn double_gt_moves_right_and_selects_the_next_source_ticket() {
         let mut app = app_three_columns();
         assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
         press(&mut app, '>');
@@ -10310,8 +10428,8 @@ mod tests {
         let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
         assert_eq!(doing, vec![ulid::Ulid(1)]);
         assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.cursor_col, 1);
-        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+        assert_eq!(app.cursor_col, 0);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
     }
 
     #[test]
@@ -10323,13 +10441,15 @@ mod tests {
         // no wrap involved: done -> doing
         let doing: Vec<_> = app.board.column_tickets("doing").iter().map(|t| t.id).collect();
         assert_eq!(doing, vec![ulid::Ulid(3)]);
+        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)));
+        app.cursor_col = 1;
         // hop again into todo, which already has 1 and 2 — a foreign column
         // is entered at the top, before them
         press(&mut app, '<');
         press(&mut app, '<');
         let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
         assert_eq!(todo, vec![ulid::Ulid(3), ulid::Ulid(1), ulid::Ulid(2)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
     }
 
     fn alt(app: &mut App, code: KeyCode) {
@@ -10378,8 +10498,7 @@ mod tests {
         assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
     }
 
-    /// Every edge stays put rather than wrapping: a ghost you can cancel may
-    /// wrap, a card that has already moved may not. And a reorder does not
+    /// Every edge stays put rather than wrapping. A reorder does not
     /// arm `.` — it filed nothing.
     #[test]
     fn alt_direction_stops_at_the_edges_and_arms_nothing() {
@@ -10659,17 +10778,10 @@ mod tests {
         assert!(!ctx.col_on_sort);
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
-        // From the menu it comes back to the menu, on its own row.
+        // Column settings live on the header, not in the menu.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        let row = keymap::menu_items(&app.ctx())
-            .iter()
-            .position(|m| m.verb == Verb::ColumnSettings)
-            .unwrap();
-        app.mode = Mode::Menu { idx: row };
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::ColumnSettings { from_menu: true, .. }));
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Menu { idx } if idx == row));
+        assert!(matches!(app.mode, Mode::Menu { .. }));
+        assert!(!keymap::menu_items(&app.ctx()).iter().any(|m| m.verb == Verb::ColumnSettings));
     }
 
     /// T-276: the launch lands on the first EXPANDED column, a refresh that
@@ -10696,13 +10808,11 @@ mod tests {
         let mut app = App::for_test(board, theme());
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.board.column("todo").unwrap().settings.collapsed);
         assert_eq!(app.cursor_col, 0, "the collapse just chosen keeps the cursor");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert!(!app.board.column("todo").unwrap().settings.collapsed);
@@ -10730,12 +10840,11 @@ mod tests {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        // Row 1 is Collapsed.
-        press(&mut app, 'j');
+        // Collapsed is the first row.
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "SetColumnSettings { name: \"todo\""), "{sent:?}");
         assert!(sent_contains(&sent, "collapsed: true"), "{sent:?}");
-        assert!(matches!(&app.mode, Mode::ColumnSettings { idx: 1, .. }), "the dialog stays");
+        assert!(matches!(&app.mode, Mode::ColumnSettings { idx: 0, .. }), "the dialog stays");
         assert!(
             app.board.column("todo").unwrap().settings.collapsed,
             "relabelled off the snapshot"
@@ -10743,7 +10852,16 @@ mod tests {
         assert!(app.ctx().col_collapsed);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!app.board.column("todo").unwrap().settings.collapsed);
-        // The `move to` rows cycle the OTHER columns, then stay.
+        // Enter the agent submenu; its move rows cycle other columns.
+        let door = keymap::column_items(&app.ctx())
+            .iter()
+            .position(|m| m.verb == Verb::ColumnAgentBehaviour)
+            .unwrap();
+        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+            *idx = door;
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.column_agents);
         let row = keymap::column_items(&app.ctx())
             .iter()
             .position(|m| m.verb == Verb::ColumnOnWorking)
@@ -10804,76 +10922,13 @@ mod tests {
     }
 
     #[test]
-    fn the_delete_row_arms_then_sends_and_is_refused_on_a_full_column() {
-        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+    fn column_settings_omit_name_and_delete() {
+        let mut app = app_three_columns();
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let last = keymap::column_items(&app.ctx()).len() - 1;
-        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
-            *idx = last;
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.status, "move its 2 tickets first");
-        assert!(!sent_contains(&sent, "DeleteColumn"));
-        // The empty column: arm, then send, then the dialog closes.
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        press(&mut app, 'l');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
-            *idx = last;
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.ctx().col_delete_armed);
-        assert_eq!(app.status, "enter again deletes doing");
-        // Moving off the row disarms it.
-        press(&mut app, 'k');
-        assert!(!app.ctx().col_delete_armed);
-        press(&mut app, 'j');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(sent_contains(&sent, "DeleteColumn { name: \"doing\" }"), "{sent:?}");
-        assert!(matches!(app.mode, Mode::Normal));
-        assert_eq!(app.columns(), ["todo", "done"]);
-    }
-
-    #[test]
-    fn the_name_row_renames_in_place() {
-        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
-        press(&mut app, 'k');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(&app.mode, Mode::ColumnSettings { naming: Some(_), .. }));
-        assert_eq!(app.scope(), Scope::Input, "naming is a text field");
-        for c in "-ish".chars() {
-            press(&mut app, c);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(
-            sent_contains(&sent, "RenameColumn { name: \"todo\", to: \"todo-ish\" }"),
-            "{sent:?}"
-        );
-        assert!(matches!(
-            &app.mode,
-            Mode::ColumnSettings { subject: ColumnSubject::Existing(n), naming: None, .. } if n == "todo-ish"
-        ));
-        assert_eq!(app.ctx().col_name, "todo-ish");
-        // A taken name is refused and the field stays open.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        for _ in 0..8 {
-            app.handle_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
-        }
-        for c in "done".chars() {
-            press(&mut app, c);
-        }
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(app.status.contains("already exists"), "{}", app.status);
-        assert!(matches!(&app.mode, Mode::ColumnSettings { naming: Some(_), .. }));
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert!(
-            matches!(&app.mode, Mode::ColumnSettings { naming: None, .. }),
-            "esc leaves the field"
-        );
-        assert_eq!(app.columns()[0], "todo-ish");
+        assert!(!keymap::column_items(&app.ctx())
+            .iter()
+            .any(|m| matches!(m.verb, Verb::ColumnName | Verb::DeleteColumn)));
     }
 
     #[test]
@@ -10964,10 +11019,9 @@ mod tests {
     #[test]
     fn dot_repeats_the_last_move_and_leaves_the_cursor_home() {
         let mut app = app_three_columns();
-        // Ticket 1: grab, aim at column 3 ("done"), drop. The cursor follows.
-        press(&mut app, '>');
-        press(&mut app, '3');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // Ticket 1: nudge into column 3 ("done"). The cursor follows.
+        alt(&mut app, KeyCode::Right);
+        alt(&mut app, KeyCode::Right);
         assert_eq!((app.cursor_col, app.cursor_row), (2, Some(0)));
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "done");
 
@@ -10998,9 +11052,9 @@ mod tests {
         }
         let mut app = App::for_test(b, theme());
         // Ticket 1 has no worktree, so it files into DONE and arms `.`.
-        press(&mut app, '>');
-        press(&mut app, '4');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        alt(&mut app, KeyCode::Right);
+        alt(&mut app, KeyCode::Right);
+        alt(&mut app, KeyCode::Right);
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "DONE");
         app.cursor_col = 0;
         app.cursor_row = Some(0);
@@ -11020,9 +11074,8 @@ mod tests {
         press(&mut app, '.');
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
 
-        press(&mut app, '>');
-        press(&mut app, '3');
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        alt(&mut app, KeyCode::Right);
+        alt(&mut app, KeyCode::Right);
         // The cursor followed the card into "done": repeating here would be a
         // shuffle inside one column, not the same action again.
         assert!(!app.ctx().can_repeat);
@@ -11045,44 +11098,113 @@ mod tests {
         let mut app = App::for_test(b, theme());
         app.cursor_row = Some(1); // ticket 2, second in todo
         press(&mut app, '>');
-        // Top of doing, NOT the grabbed row — height is adjusted by hand.
+        // The pending move always offers the top of the adjacent column.
         assert!(matches!(app.mode, Mode::Move { col: 1, idx: 0, .. }));
     }
 
     #[test]
-    fn move_back_home_restores_the_original_height() {
-        let mut b = board_three_columns();
-        b.tickets.push(ticket(4, "doing", "a"));
-        b.tickets.push(ticket(5, "doing", "b"));
-        let mut app = App::for_test(b, theme());
-        app.cursor_row = Some(1); // ticket 2, second in todo
-        press(&mut app, '>');
-        press(&mut app, 'j'); // adjusting abroad must not disturb the memory
-        press(&mut app, 'h'); // back home
-        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 1, .. }));
-        // Dropping home is a perfect no-op move.
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
-        assert_eq!(todo, vec![ulid::Ulid(1), ulid::Ulid(2)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(1)));
+    fn every_other_key_cancels_a_move_without_running_its_board_action() {
+        let keys = [
+            KeyCode::Enter,
+            KeyCode::Esc,
+            KeyCode::Tab,
+            KeyCode::Char('?'),
+            KeyCode::Char('q'),
+            KeyCode::Char('3'),
+            KeyCode::Char('j'),
+            KeyCode::Char('k'),
+            KeyCode::Char('h'),
+            KeyCode::Char('l'),
+            KeyCode::Char('d'),
+            KeyCode::Char('n'),
+            KeyCode::Char('.'),
+            KeyCode::Up,
+            KeyCode::Down,
+            KeyCode::Left,
+            KeyCode::Right,
+            KeyCode::F(1),
+            KeyCode::Char('x'),
+        ];
+        for grab in ['>', '<'] {
+            for cancel in
+                keys.into_iter().chain([KeyCode::Char(if grab == '>' { '<' } else { '>' })])
+            {
+                let mut app = app_three_columns();
+                app.cursor_col = if grab == '>' { 0 } else { 2 };
+                let home = (app.cursor_col, app.cursor_row);
+                let before = serde_json::to_value(&app.board.tickets).unwrap();
+                press(&mut app, grab);
+                assert!(matches!(app.mode, Mode::Move { .. }));
+                app.handle_key(cancel, KeyModifiers::NONE).unwrap();
+                assert!(matches!(app.mode, Mode::Normal), "{grab} then {cancel:?}");
+                assert_eq!(serde_json::to_value(&app.board.tickets).unwrap(), before);
+                assert_eq!((app.cursor_col, app.cursor_row), home);
+                assert!(!app.help);
+                assert!(app.delete_armed.is_none());
+            }
+        }
     }
 
-    /// The in-column reorder: out with `>`, home with `h`, up a row, drop.
-    /// The daemon used to answer this `Ok` and change nothing, because the
-    /// column it lands in is the one it left.
     #[test]
-    fn move_home_and_up_a_row_reorders_the_column() {
+    fn double_move_keeps_the_ticket_below_selected_in_either_direction() {
+        for grab in ['>', '<'] {
+            let mut b = board_three_columns();
+            for (id, order) in [(4, "a"), (5, "b"), (6, "c")] {
+                b.tickets.push(ticket(id, "doing", order));
+            }
+            let mut app = App::for_test(b, theme());
+            app.cursor_col = 1;
+            app.cursor_row = Some(1);
+            assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(5)));
+            press(&mut app, grab);
+            assert_eq!((app.cursor_col, app.cursor_row), (1, Some(1)));
+            press(&mut app, grab);
+            let target = if grab == '>' { "done" } else { "todo" };
+            assert_eq!(app.board.column_tickets(target)[0].id, ulid::Ulid(5));
+            assert_eq!((app.cursor_col, app.cursor_row), (1, Some(1)));
+            assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(6)));
+        }
+    }
+
+    #[test]
+    fn paste_or_modified_confirmation_cancels_a_pending_move() {
+        for mods in [KeyModifiers::CONTROL, KeyModifiers::ALT] {
+            let mut app = app_three_columns();
+            press(&mut app, '>');
+            app.handle_key(KeyCode::Char('>'), mods).unwrap();
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.board.column_tickets("todo").len(), 2);
+        }
         let mut app = app_three_columns();
-        app.cursor_row = Some(1); // ticket 2, second in todo
         press(&mut app, '>');
-        press(&mut app, 'h'); // back home, at its own row
-        press(&mut app, 'k'); // one row up: above ticket 1
-        assert!(matches!(app.mode, Mode::Move { col: 0, idx: 0, .. }));
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
-        assert_eq!(todo, vec![ulid::Ulid(2), ulid::Ulid(1)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
-        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+        assert!(app.on_paste(">").unwrap());
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.board.column_tickets("todo").len(), 2);
+    }
+
+    #[test]
+    fn refused_double_move_keeps_the_ticket_selected() {
+        let mut b = board_three_columns();
+        b.columns[1].name = "DONE".into();
+        b.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
+        let mut app = App::for_test(b, theme());
+        press(&mut app, '>');
+        press(&mut app, '>');
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.cursor_col, 0);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
+        assert_eq!(app.status, "worktree unmerged — merge before DONE");
+    }
+
+    #[test]
+    fn double_move_from_the_last_row_selects_the_previous_source_ticket() {
+        let mut app = app_three_columns();
+        app.cursor_row = Some(1);
+        press(&mut app, '>');
+        press(&mut app, '>');
+        assert_eq!(app.board.ticket(ulid::Ulid(2)).unwrap().column, "doing");
+        assert_eq!(app.cursor_col, 0);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
     }
 
     #[test]
@@ -11098,38 +11220,19 @@ mod tests {
     }
 
     #[test]
-    fn double_gt_cycles_off_last_column_to_first() {
-        let mut app = app_three_columns();
-        app.cursor_col = 2; // "done", ticket 3
-        press(&mut app, '>');
-        press(&mut app, '>');
-        let todo: Vec<_> = app.board.column_tickets("todo").iter().map(|t| t.id).collect();
-        assert_eq!(todo, vec![ulid::Ulid(3), ulid::Ulid(1), ulid::Ulid(2)]);
-        assert_eq!(app.cursor_col, 0);
-        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(3)));
-    }
-
-    #[test]
-    fn double_lt_cycles_off_first_column_to_last() {
-        let mut app = app_three_columns();
-        press(&mut app, '<');
-        press(&mut app, '<');
-        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
-        assert_eq!(done, vec![ulid::Ulid(1), ulid::Ulid(3)]);
-        assert_eq!(app.cursor_col, 2);
-        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(1)));
-    }
-
-    #[test]
-    fn grab_then_fine_placement_still_drops_on_enter() {
-        let mut app = app_three_columns();
-        press(&mut app, '>'); // grab ticket 1 — ghost lands in doing
-        press(&mut app, 'l'); // ghost to done (holds 3)
-        press(&mut app, 'j'); // below 3
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
-        assert_eq!(done, vec![ulid::Ulid(3), ulid::Ulid(1)]);
-        assert_eq!((app.cursor_col, app.cursor_row), (2, Some(1)));
+    fn double_move_never_wraps_at_either_board_edge() {
+        for (col, key, id) in [(0, '<', ulid::Ulid(1)), (2, '>', ulid::Ulid(3))] {
+            let mut app = app_three_columns();
+            app.cursor_col = col;
+            let before = serde_json::to_value(&app.board.tickets).unwrap();
+            for _ in 0..2 {
+                press(&mut app, key);
+                assert!(matches!(app.mode, Mode::Normal));
+                assert_eq!(serde_json::to_value(&app.board.tickets).unwrap(), before);
+                assert_eq!(app.cursor_col, col);
+                assert_eq!(app.selected_ticket().map(|t| t.id), Some(id));
+            }
+        }
     }
 
     /// `m` is the merge key now, everywhere. It never grabs a card, and it
@@ -11330,19 +11433,6 @@ mod tests {
         assert_eq!(app.prefs.week_start, Weekday::Monday);
     }
 
-    /// Digits address columns while a card is held (04 §2.5) — MOVE is the one
-    /// scope where bare digits mean anything.
-    #[test]
-    fn digits_address_columns_while_holding_a_card() {
-        let mut app = app_three_columns();
-        press(&mut app, '>'); // grab ticket 1, ghost into doing
-        press(&mut app, '3'); // straight to the third column
-        assert!(matches!(app.mode, Mode::Move { col: 2, .. }));
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        let done: Vec<_> = app.board.column_tickets("done").iter().map(|t| t.id).collect();
-        assert_eq!(done, vec![ulid::Ulid(1), ulid::Ulid(3)]);
-    }
-
     #[test]
     fn grab_on_empty_column_is_a_noop() {
         let mut app = app_three_columns();
@@ -11427,6 +11517,64 @@ mod tests {
         assert!(matches!(app.mode, Mode::Menu { idx: 0 }), "↑ must move the menu");
     }
 
+    #[test]
+    fn held_up_stops_on_the_first_ticket_until_a_pause() {
+        for code in [KeyCode::Up, KeyCode::Char('k')] {
+            let mut app = app_three_columns();
+            app.git.sampled = true;
+            app.cursor_row = Some(1);
+            app.handle_key(code, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.cursor_row, Some(0));
+            assert!(app.last_ticket_up.is_some());
+            for _ in 0..20 {
+                app.last_ticket_up = Some(Instant::now() - Duration::from_millis(40));
+                app.handle_key(code, KeyModifiers::NONE).unwrap();
+                assert_eq!(app.cursor_row, Some(0));
+                assert!(!app.header_focus);
+            }
+            // A release/repress-sized gap, much shorter than the old 650 ms.
+            app.last_ticket_up = Some(Instant::now() - Duration::from_millis(160));
+            app.handle_key(code, KeyModifiers::NONE).unwrap();
+            assert!(app.on_column_header());
+            app.handle_key(code, KeyModifiers::NONE).unwrap();
+            assert!(app.header_focus);
+        }
+    }
+
+    #[test]
+    fn another_key_ends_upward_ticket_repeat_guard() {
+        let mut app = app_three_columns();
+        app.cursor_row = Some(1);
+        press(&mut app, 'k');
+        assert!(app.last_ticket_up.is_some());
+        app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+        assert!(app.last_ticket_up.is_none());
+        press(&mut app, 'k');
+        assert!(app.on_column_header());
+    }
+
+    #[test]
+    fn terminal_repeats_stop_at_top_and_a_fresh_press_leaves_immediately() {
+        for code in [KeyCode::Up, KeyCode::Char('k')] {
+            let mut app = app_three_columns();
+            app.rich_keys = true;
+            app.cursor_row = Some(1);
+            let key = |kind| KeyEvent::new_with_kind(code, KeyModifiers::NONE, kind);
+            app.on_terminal_key(key(KeyEventKind::Press)).unwrap();
+            assert_eq!(app.cursor_row, Some(0));
+            // A long initial repeat delay is still a repeat, not a fresh press.
+            app.last_ticket_up = Some(Instant::now() - Duration::from_secs(1));
+            for _ in 0..20 {
+                app.on_terminal_key(key(KeyEventKind::Repeat)).unwrap();
+                assert_eq!(app.cursor_row, Some(0));
+            }
+            app.on_terminal_key(key(KeyEventKind::Release)).unwrap();
+            assert_eq!(app.cursor_row, Some(0));
+            app.on_terminal_key(key(KeyEventKind::Press)).unwrap();
+            assert!(app.on_column_header());
+        }
+    }
+
     /// And in every other list, for the same reason.
     #[test]
     fn arrows_move_every_list() {
@@ -11444,7 +11592,7 @@ mod tests {
         // …and while holding a card.
         press(&mut app, '>');
         app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Move { col: 0, .. }), "move ←");
+        assert!(matches!(app.mode, Mode::Normal), "arrow cancels pending move");
     }
 
     /// Esc opens the menu, and picking a row runs its verb.
@@ -11595,7 +11743,7 @@ mod tests {
     #[test]
     fn the_notifications_door_opens_and_pops_back() {
         let mut app = app_three_columns();
-        app.mode = Mode::Settings { idx: app.settings_row(Verb::Notifications) };
+        app.return_to_settings(Verb::Notifications);
         let enter = |app: &mut App| {
             app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
         };

@@ -2,28 +2,28 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-    Decay treatments      >╭─ SETTINGS ─────────────────────────────────────────────────────╮
-                           │   Theme: graphite                                              │
-    Keymap validator      >│     dark, the default ∙ for a dark terminal                    │
-                           │   Show agent replies                                         p │
-                           │     the latest reply under the selected card                   │
-                           │   Notifications: off                                           │
-                           │     the board says nothing outside its own window ∙ enter ope~ │
-                           │   Status line at the bottom                                    │
-                           │     tmux's bar over an agent's pane ∙ enter moves it up        │
-                           │   Snooze returns with needs-you                                │
-                           │     lit until you look at it ∙ enter makes it quiet            │
-                           │   Week starts on Monday                                        │
-                           │     z's last rung: next Monday 9:00 ∙ enter cycles the day     │
-                           │   Merge train: off                                             │
-                           │     mesimon merges and asks to rebase for you while the board~ │
-                           │   Agent tools: on                                              │
-                           │     the seven board tools every spawn carries ∙ enter takes t~ │
-                           │   Agent brief: off                                             │
-                           │     one line: read the ticket first ∙ enter shows it first     │
-                           │   Default column: TODO                                         │
-                           │     where an agent's create_ticket lands unplaced ∙ enter cyc~ │
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
+
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+
+
+
+
+                           ╭─ SETTINGS ─────────────────────────────────────────────────────╮
+                           │   Appearance & notifications                                   │
+                           │     theme, notifications, status line                          │
+                           │   Behaviour                                                    │
+                           │     auto merge, snooze, week start, default column             │
+                           │   Agents                                                       │
+                           │     brief and tools                                            │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+
+
+
+
+
+
+
 
 
 

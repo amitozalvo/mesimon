@@ -31,6 +31,7 @@ mod update;
 use std::path::Path;
 
 use anyhow::Result;
+use ratatui::crossterm::cursor::SetCursorStyle;
 use ratatui::crossterm::event::{
     DisableBracketedPaste, DisableFocusChange, DisableMouseCapture, EnableBracketedPaste,
     EnableFocusChange, KeyboardEnhancementFlags, PopKeyboardEnhancementFlags,
@@ -324,15 +325,24 @@ fn init_terminal() -> Result<Term> {
     // away, which is what decides whether a notification is a banner or only
     // a sound (T-282). A terminal that ignores it sends nothing and the
     // presence rule falls back to the keyboard — never to silence.
-    execute!(stdout, EnterAlternateScreen, EnableBracketedPaste, EnableFocusChange)?;
-    // Kitty keyboard protocol, disambiguate tier only: it is what makes
-    // Shift+Enter distinguishable from Enter (board: force the ticket
-    // screen). The support probe is a terminal query, so it runs once per
+    execute!(
+        stdout,
+        EnterAlternateScreen,
+        SetCursorStyle::SteadyBar,
+        EnableBracketedPaste,
+        EnableFocusChange
+    )?;
+    // Kitty keyboard protocol distinguishes Shift+Enter and reports key
+    // releases/repeats, so a fresh Up can leave the first ticket immediately.
+    // The support probe is a terminal query, so it runs once per
     // process (query hygiene, 06 §2.9) — handovers reuse the cached answer.
     if kitty_keyboard_supported() {
         execute!(
             stdout,
-            PushKeyboardEnhancementFlags(KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES)
+            PushKeyboardEnhancementFlags(
+                KeyboardEnhancementFlags::DISAMBIGUATE_ESCAPE_CODES
+                    | KeyboardEnhancementFlags::REPORT_EVENT_TYPES
+            )
         )?;
     }
     let backend = ratatui::backend::CrosstermBackend::new(stdout);
@@ -364,7 +374,8 @@ fn restore_terminal() -> Result<()> {
         DisableBracketedPaste,
         DisableFocusChange,
         DisableMouseCapture,
-        LeaveAlternateScreen
+        LeaveAlternateScreen,
+        SetCursorStyle::DefaultUserShape
     )?;
     Ok(())
 }

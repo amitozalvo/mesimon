@@ -1,9 +1,9 @@
  DIFF   mesimon > kanban-tui > Fix OSC-11 detection
 
- ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +3 -1 ∙ normal
+ ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +3 -1
 
 
-  FILES                                                                              (4)
+  FILES  n N file                                                                    (4)
 
   MD src/auth/callback.ts                                                          +3 -1
   M  img/logo.bin                                                                      -
@@ -21,4 +21,4 @@
 
 
 
- jk scroll ∙ n N next / previous file ∙ { } page ∙ z context, layout… ∙ q back     ? keys
+ z context, layout… ∙ R refresh ∙ q back                                           ? keys

@@ -1,9 +1,9 @@
  DIFF   mesimon > kanban-tui > Fix OSC-11 detection
 
- ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +3 -1 ∙ normal
+ ⎇ msmn/T-3-fix-osc-11-detection ∙ vs a1b2c3d4 ∙ 4 files ∙ +3 -1
 
 
-  FILES                  (4)    src/auth/callback.ts ∙ file 1/4 ∙ 2 hunks
+  FILES  n N file        (4)    src/auth/callback.ts ∙ file 1/4 ∙ 2 hunks
 
   MD src/auth/callba~  +3 -1    @@ -18,3 +18,4 @@ export async function handleCallback(
   M  img/logo.bin          -         18    const code = url.searchParams.get('code')
@@ -21,4 +21,4 @@
 
 
 
- jk scroll ∙ n N next / previous file ∙ { } page ∙ z context, layout… ∙ R refresh ∙ q back   ? keys
+ z context, layout… ∙ R refresh ∙ q back                                                     ? keys

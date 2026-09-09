@@ -31,7 +31,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
 /// here is ever a suggestion, so the lead never carries the mark.
 pub(super) fn draw_settings(f: &mut Frame, app: &App, idx: usize) {
     let items = keymap::settings_items(&app.ctx());
-    draw_list(f, app, idx, "SETTINGS", Scope::Settings, &items);
+    draw_list(f, app, idx, app.settings_section.title(), Scope::Settings, &items);
 }
 
 /// The notifications list, one level under it (T-282): the same surface
@@ -50,6 +50,9 @@ pub(super) fn draw_column(f: &mut Frame, app: &App) {
     let ctx = app.ctx();
     let items = keymap::column_items(&ctx);
     let title = match subject {
+        ColumnSubject::Existing(name) if app.column_agents => {
+            format!("AGENT BEHAVIOUR ∙ {}", name.to_uppercase())
+        }
         ColumnSubject::Existing(name) => format!("COLUMN ∙ {}", name.to_uppercase()),
         ColumnSubject::New { .. } => "NEW COLUMN".to_string(),
     };
