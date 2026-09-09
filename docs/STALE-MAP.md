@@ -8237,3 +8237,13 @@ passed: `ci/test-run.py` ran the Mach-O OSO pruner on Linux against the read-onl
 checkout. That pruner cannot establish ELF references and is now invoked only
 on macOS. The rerun completed without that error. This is separate from process
 cleanup, which was clean on both runs.
+
+### 2026-09-09 — full-suite stamp respects the configured build directory
+
+Clean-tree Linux verification after the state-lab rebase exposed a second
+post-test runner error: the release success stamp used `target/` inside the
+read-only checkout even when Cargo built in `/target`. Earlier dirty-tree runs
+skipped stamping and did not exercise that path. `ci/test-run.py` now writes its
+stamp under `CARGO_TARGET_DIR` when configured, retaining `target/` by default.
+The tests and fixture audit had passed; the failed runner exit was not a passed
+gate. Verification must include a clean-tree Linux run that writes the stamp.

@@ -20,9 +20,6 @@ import tempfile
 import time
 
 
-STAMP = Path("target/suite-passed.json")
-
-
 def stamp_pass(command, env):
     """Record a clean FULL-workspace run so ci/release.sh can accept it as its
     gate instead of running the same suite a second time, serially, paying
@@ -50,9 +47,11 @@ def stamp_pass(command, env):
         return
     tmux = str(Path(tmux).resolve())
     digest = hashlib.sha256(Path(tmux).read_bytes()).hexdigest()
-    STAMP.parent.mkdir(parents=True, exist_ok=True)
-    STAMP.write_text(json.dumps(dict(sha=sha, tmux=tmux, tmux_sha256=digest, at=int(time.time())), indent=2) + "\n")
-    print(f"Suite passed at {sha[:7]} against {tmux}; stamped {STAMP}.", flush=True)
+    # Linux mounts the checkout read-only and builds in CARGO_TARGET_DIR.
+    stamp = Path(env.get("CARGO_TARGET_DIR") or "target") / "suite-passed.json"
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(json.dumps(dict(sha=sha, tmux=tmux, tmux_sha256=digest, at=int(time.time())), indent=2) + "\n")
+    print(f"Suite passed at {sha[:7]} against {tmux}; stamped {stamp}.", flush=True)
 
 
 def main():
