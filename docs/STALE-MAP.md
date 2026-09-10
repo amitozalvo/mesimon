@@ -8583,6 +8583,26 @@ The user exercised the rebuilt executable in `simbly`, observed the normal
 shutdown wait, and confirmed the board worked after handover. The agent did not
 restart the personal daemon or inspect personal conversations.
 
+## Board ticket duplication (T-316, 2026-09-10)
+
+On a selected board card, `y y` duplicates the ticket immediately below its
+source in the same column. The first `y` is absent from both footer and help;
+only after pressing it does the confirmation hint appear. Any other key cancels
+and is consumed. The second press acts on the captured source ID, and the cursor
+selects the copy without the composer's Enter-to-start shortcut.
+
+The human-only daemon command copies the exact title, tags, workspace preference,
+and all note bodies in their existing order. Notes retain authorship and revision
+metadata but receive independent IDs. Ticket identity and creation stamps are
+fresh; sessions, worktree bindings, archive/snooze/attention state, and manual-merge
+state are not copied. Column auto-run does not fire. All source notes must be
+read successfully before reserving a durable ticket key; all copied bodies are
+saved before publishing the new ticket metadata and snapshot notification.
+Failed writes refuse the operation and clean up only the new ticket directory.
+Keymap/TUI regressions cover hint visibility and the confirmation/cancellation
+flow; a supervised daemon integration covers ordering, durable content,
+independent edits, agent refusal, and suppression of auto-run.
+
 ## Half-page brace navigation (T-318, 2026-09-10)
 
 `{` and `}` move up and down by half the measured page in the diff hunk

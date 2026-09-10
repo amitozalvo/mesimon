@@ -994,6 +994,8 @@ pub struct App {
     /// The `d` chord is armed on this ticket: the next `d` deletes it, `D`
     /// deletes and discards the branch, anything else cancels.
     delete_armed: Option<Doomed>,
+    /// The board card captured by the first `y`.
+    duplicate_armed: Option<ulid::Ulid>,
     /// The verb being dispatched came from a menu row (T-117): a dialog it
     /// opens comes back to the menu on Esc. Set around the one dispatch in
     /// `act`'s menu arm, never stored past it.
@@ -1162,6 +1164,7 @@ impl App {
             release,
             pending_reexec: false,
             delete_armed: None,
+            duplicate_armed: None,
             menu_dispatch: false,
             tag_armed: None,
             archive_armed: None,
@@ -2514,6 +2517,9 @@ impl App {
         if matches!(self.mode, Mode::Editor(_)) {
             return Scope::Editor;
         }
+        if self.duplicate_armed.is_some() {
+            return Scope::DuplicateChord;
+        }
         if self.delete_armed.is_some() {
             return Scope::DeleteChord;
         }
@@ -2876,6 +2882,12 @@ impl App {
     /// verb it returns is matched exhaustively below — so a binding with no
     /// handler is a compile error, not a dead key.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // Even an atom the terminal adapter cannot represent cancels the chord.
+        if self.duplicate_armed.is_some() && (code != KeyCode::Char('y') || !mods.is_empty()) {
+            self.duplicate_armed = None;
+            self.status = "duplicate cancelled".into();
+            return Ok(());
+        }
         if !matches!(code, KeyCode::Up | KeyCode::Char('k')) || !mods.is_empty() {
             self.last_ticket_up = None;
         }
@@ -3080,6 +3092,25 @@ impl App {
             Verb::NoteNew => {
                 if let Some(ticket) = self.subject() {
                     self.open_note_editor(ticket, None)?;
+                }
+            }
+            Verb::DuplicatePrefix => {
+                if let Some(id) = self.subject() {
+                    self.duplicate_armed = Some(id);
+                    self.status = "y again duplicates the ticket".into();
+                }
+            }
+            Verb::Duplicate => {
+                if let Some(id) = self.duplicate_armed.take() {
+                    match self.req(Command::DuplicateTicket { id }) {
+                        Response::Created { id, .. } => {
+                            self.refresh()?;
+                            self.select_ticket(id);
+                            self.status = "ticket duplicated".into();
+                        }
+                        Response::Err { message } => self.status = message,
+                        _ => {}
+                    }
                 }
             }
             // `d` only arms. The second press is what deletes.
@@ -6963,6 +6994,17 @@ pub(crate) mod test_support {
         fn request(&mut self, command: Command) -> Result<Response> {
             self.sent.borrow_mut().push(format!("{command:?}"));
             match command {
+                Command::DuplicateTicket { id } => {
+                    let Some(mut ticket) = self.board.ticket(id).cloned() else {
+                        return Ok(Response::Err { message: "no such ticket".into() });
+                    };
+                    ticket.id = ulid::Ulid::new();
+                    ticket.short_key = "T-999".into();
+                    ticket.order.push('V');
+                    let id = ticket.id;
+                    self.board.tickets.push(ticket);
+                    return Ok(Response::Created { id, started: false });
+                }
                 Command::CreateTicket { column, title, workspace } => {
                     let id = ulid::Ulid(999);
                     self.board.tickets.push(Ticket {
@@ -11866,6 +11908,49 @@ mod tests {
         archive(&mut app); // archive ticket 1 so the row exists
         open_archived(&mut app);
         assert!(matches!(app.mode, Mode::Archived { idx: 0 }));
+    }
+
+    #[test]
+    fn duplicate_requires_two_presses_and_selects_the_copy() {
+        let mut app = app_three_columns();
+        let original = app.subject().unwrap();
+        let count = app.board.tickets.len();
+        press(&mut app, 'y');
+        assert_eq!(app.duplicate_armed, Some(original));
+        assert_eq!(app.scope(), Scope::DuplicateChord);
+        assert_eq!(app.board.tickets.len(), count);
+        assert_eq!(app.status, "y again duplicates the ticket");
+        press(&mut app, 'y');
+        assert!(app.duplicate_armed.is_none());
+        assert_eq!(app.board.tickets.len(), count + 1);
+        assert_ne!(app.subject(), Some(original));
+        assert!(app.just_created.is_none(), "no composer Enter-to-start shortcut");
+        assert_eq!(app.status, "ticket duplicated");
+    }
+
+    #[test]
+    fn duplicate_cancels_on_any_other_key_and_handles_a_vanished_source() {
+        for (key, mods) in [
+            (KeyCode::Char('j'), KeyModifiers::NONE),
+            (KeyCode::Esc, KeyModifiers::NONE),
+            (KeyCode::F(1), KeyModifiers::NONE),
+            (KeyCode::Char('y'), KeyModifiers::CONTROL),
+        ] {
+            let mut app = app_three_columns();
+            let original = app.subject();
+            let count = app.board.tickets.len();
+            press(&mut app, 'y');
+            app.handle_key(key, mods).unwrap();
+            assert!(app.duplicate_armed.is_none());
+            assert_eq!(app.board.tickets.len(), count);
+            assert_eq!(app.subject(), original, "cancel key is consumed");
+            assert_eq!(app.status, "duplicate cancelled");
+        }
+        let mut app = app_three_columns();
+        app.duplicate_armed = Some(ulid::Ulid::nil());
+        press(&mut app, 'y');
+        assert!(app.duplicate_armed.is_none());
+        assert_eq!(app.status, "no such ticket");
     }
 
     /// `a` alone never archives, and a stray key after it cancels cleanly.

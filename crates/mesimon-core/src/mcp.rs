@@ -571,6 +571,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::Snapshot
         | Command::Subscribe
         | Command::CreateTicket { .. }
+        | Command::DuplicateTicket { .. }
         | Command::RenameTicket { .. }
         | Command::DeleteTicket { .. }
         | Command::SetWorkspace { .. }

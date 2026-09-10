@@ -1263,7 +1263,8 @@ impl Daemon {
             },
             // A note is the ticket's: the first local commands to name the
             // precise resource, which is what `authorize` was built to hear.
-            Command::ReadNote { ticket, .. }
+            Command::DuplicateTicket { id: ticket }
+            | Command::ReadNote { ticket, .. }
             | Command::WriteNote { ticket, .. }
             | Command::NoteToAgent { ticket, .. } => Resource::Ticket { id: *ticket },
             _ => Resource::Board,
@@ -1307,6 +1308,7 @@ impl Daemon {
             Command::CreateTicket { column, title, workspace } => {
                 self.create_ticket(&env.principal, column, title, workspace)
             }
+            Command::DuplicateTicket { id } => self.duplicate_ticket(&env.principal, id),
             Command::RenameTicket { id, title } => {
                 self.with_ticket(id, |t| t.title = mesimon_core::board::sanitize_title(&title))
             }
@@ -4159,6 +4161,78 @@ impl Daemon {
         self.persist_and_notify();
         let started = self.auto_run(id);
         Response::Created { id, started }
+    }
+
+    /// Copy content only. Publish after all note bodies and metadata are saved;
+    /// duplication never provisions a workspace or invokes column auto-run.
+    fn duplicate_ticket(&mut self, by: &Principal, id: ulid::Ulid) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        let Some(source) = self.board.ticket(id).cloned() else { return no_such_ticket() };
+        if source.archived.is_some() {
+            return Response::Err { message: "cannot duplicate an archived ticket".into() };
+        }
+        let mut bodies = Vec::with_capacity(source.notes.len());
+        for note in &source.notes {
+            match store::read_note(&self.paths, &source.short_key, note.id) {
+                Ok(body) => bodies.push(body),
+                Err(e) => {
+                    return Response::Err { message: format!("could not copy the note: {e}") };
+                }
+            }
+        }
+        let column = self.board.column_tickets(&source.column);
+        let next = column.iter().position(|t| t.id == id).and_then(|i| column.get(i + 1));
+        let order = fracindex::between(&source.order, next.map_or("", |t| t.order.as_str()));
+        // Reserve the key durably before any ticket files. A failed copy may
+        // leave a gap, but a restart must never reuse a partially written key.
+        self.board.next_key += 1;
+        if let Err(e) = store::save_columns(&self.paths, &self.board) {
+            return Response::Err { message: format!("could not reserve a ticket key: {e}") };
+        }
+        let mut ticket = Ticket {
+            id: ulid::Ulid::new(),
+            short_key: format!("{}{}", mesimon_core::board::KEY_PREFIX, self.board.next_key),
+            title: source.title,
+            column: source.column,
+            order,
+            created_at: now_iso(),
+            created_by: by.note_author(),
+            created_from: None,
+            entered_at: Some(now_iso()),
+            woke_at: None,
+            manual_merge: false,
+            raised: None,
+            workspace: source.workspace,
+            tags: source.tags,
+            notes: source.notes,
+            archived: None,
+        };
+        // Preserve note authorship and order, but give each copy its own identity.
+        for note in &mut ticket.notes {
+            note.id = ulid::Ulid::new();
+        }
+        let saved = (|| -> Result<()> {
+            for (note, body) in ticket.notes.iter().zip(bodies) {
+                store::save_note(&self.paths, &ticket.short_key, note.id, &body)?;
+            }
+            store::save_ticket(&self.paths, &ticket)
+        })();
+        if let Err(e) = saved {
+            let cleanup = store::delete_ticket_dir(&self.paths, &ticket.short_key);
+            let detail = cleanup
+                .err()
+                .map(|e| format!("; could not clean up copy: {e}"))
+                .unwrap_or_default();
+            return Response::Err {
+                message: format!("could not duplicate the ticket: {e}{detail}"),
+            };
+        }
+        let id = ticket.id;
+        self.board.tickets.push(ticket);
+        self.broadcast();
+        Response::Created { id, started: false }
     }
 
     /// "Start claude on creation" (T-117): the composer's Shift+Enter, fired

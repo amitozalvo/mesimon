@@ -91,6 +91,10 @@ pub enum Command {
         #[serde(default)]
         workspace: Option<WorkspaceStrategy>,
     },
+    /// Copy a ticket's content into a fresh, sessionless card immediately below it.
+    DuplicateTicket {
+        id: ulid::Ulid,
+    },
     RenameTicket {
         id: ulid::Ulid,
         title: String,
@@ -705,7 +709,8 @@ impl Command {
             | AgentReadNote { .. }
             | AgentListBoard => m(Read, false, None),
             CreateTicket { .. } => m(Mutate, true, None),
-            RenameTicket { id, .. }
+            DuplicateTicket { id }
+            | RenameTicket { id, .. }
             | DeleteTicket { id, .. }
             | SetWorkspace { id, .. }
             | SetTag { id, .. }

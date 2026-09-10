@@ -10,8 +10,9 @@
 //!    verb that is not in the table cannot be reached.
 //! 2. Every binding carries an availability predicate over [`Ctx`]. The same
 //!    predicate gates the key AND the hint, so a key that is hinted always
-//!    works and a key that works is always hinted. "Can't move when no ticket
-//!    is selected" is one line here, not two places that agree by luck.
+//!    works. Deliberately silent prefixes reveal their hints in the chord tail.
+//!    "Can't move when no ticket is selected" is one line here, not two places
+//!    that agree by luck.
 //! 3. `footer(scope, ctx, width)` and `overlay(scope, ctx)` both read this
 //!    table. There are no hint literals left in `ui/`.
 //!
@@ -132,6 +133,8 @@ impl fmt::Display for Key {
 /// `DiffView`, which is the second half of the `z` chord.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Scope {
+    /// After `y` on a board card; a second `y` duplicates it.
+    DuplicateChord,
     Global,
     Board,
     Ticket,
@@ -228,7 +231,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 23] = [
+    pub const ALL: [Scope; 24] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -252,6 +255,7 @@ impl Scope {
         Scope::Header,
         Scope::Input,
         Scope::Editor,
+        Scope::DuplicateChord,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -274,6 +278,7 @@ impl Scope {
             Scope::Global
             | Scope::Move
             | Scope::DiffView
+            | Scope::DuplicateChord
             | Scope::DeleteChord
             | Scope::ArchiveChord
             | Scope::SnoozeChord
@@ -290,6 +295,7 @@ impl Scope {
             Scope::Board => "BOARD",
             Scope::Ticket => "TICKET",
             Scope::Diff | Scope::DiffView => "DIFF",
+            Scope::DuplicateChord => "DUPLICATE",
             Scope::DeleteChord => "DELETE",
             Scope::ArchiveChord => "ARCHIVE",
             Scope::SnoozeChord => "SNOOZE",
@@ -347,6 +353,9 @@ pub enum Verb {
     OpenTicket,
     TicketScreen,
     Rename,
+    /// `y y` — copy the selected board card.
+    DuplicatePrefix,
+    Duplicate,
     /// `d` — arms the delete chord; the next `d` deletes, `D` discards too.
     DeletePrefix,
     Delete,
@@ -1204,6 +1213,18 @@ static GLOBAL: &[Binding] = &[
 ];
 
 static BOARD: &[Binding] = &[
+    Binding {
+        // Deliberately undisclosed until the first press (T-316).
+        keys: &[Key::Char('y')],
+        verb: Verb::DuplicatePrefix,
+        show: "y",
+        hint: |_| "",
+        avail: |c| c.has_ticket && !c.col_header && !c.ticket_archived,
+        class: Class::Plain,
+        group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
     Binding {
         // Bare arrows are aliases of hjkl (04 §2.0's atom list, §2.4's table).
         // `directional()` reads the axis back off whichever atom arrived.
@@ -2424,6 +2445,19 @@ static RELEASES: &[Binding] = &[
         prio: 250,
     },
 ];
+
+/// The duplicate hint appears only after the undisclosed first `y`.
+static DUPLICATE: &[Binding] = &[Binding {
+    keys: &[Key::Char('y')],
+    verb: Verb::Duplicate,
+    show: "y",
+    hint: |_| "duplicate ticket",
+    avail: always,
+    class: Class::Plain,
+    group: Group::Ticket,
+    mutates: true,
+    prio: 10,
+}];
 
 /// The `d` chord tail. Nothing else is bound here: any other key cancels, so
 /// the only way to delete is to mean it twice.
@@ -4557,6 +4591,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Ticket => TICKET,
         Scope::Diff => DIFF,
         Scope::DiffView => DIFF_VIEW,
+        Scope::DuplicateChord => DUPLICATE,
         Scope::DeleteChord => DELETE,
         Scope::ArchiveChord => ARCHIVE,
         Scope::SnoozeChord => SNOOZE,
@@ -4842,6 +4877,7 @@ mod tests {
                 Scope::Header => 20,
                 Scope::Input => 21,
                 Scope::Editor => 22,
+                Scope::DuplicateChord => 23,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -4849,6 +4885,32 @@ mod tests {
         }
         let highest = Scope::ALL.iter().map(|s| index(*s)).max().unwrap_or(0);
         assert_eq!(Scope::ALL.len(), highest + 1);
+    }
+
+    #[test]
+    fn duplicate_is_board_only_and_hinted_only_after_the_first_y() {
+        let ctx = Ctx { has_ticket: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Board, Key::Char('y'), &ctx), Some(Verb::DuplicatePrefix));
+        assert_eq!(hint_for(Scope::Board, Verb::DuplicatePrefix, &ctx), None);
+        assert!(!footer_items(Scope::Board, &ctx).iter().any(|b| b.verb == Verb::DuplicatePrefix));
+        assert!(!overlay(Scope::Board, &ctx)
+            .iter()
+            .flat_map(|(_, rows)| rows)
+            .any(|(k, _)| *k == "y"));
+        for c in [
+            Ctx::default(),
+            Ctx { col_header: true, ..ctx.clone() },
+            Ctx { ticket_archived: true, ..ctx.clone() },
+        ] {
+            assert_eq!(resolve(Scope::Board, Key::Char('y'), &c), None);
+        }
+        assert_eq!(resolve(Scope::Ticket, Key::Char('y'), &ctx), None);
+        assert_eq!(Scope::DuplicateChord.parent(), None);
+        assert_eq!(resolve(Scope::DuplicateChord, Key::Char('y'), &ctx), Some(Verb::Duplicate));
+        assert_eq!(footer(Scope::DuplicateChord, &ctx, 80), "y duplicate ticket");
+        for key in [Key::Esc, Key::Char('j'), Key::Char('?'), Key::Enter] {
+            assert_eq!(resolve(Scope::DuplicateChord, key, &ctx), None);
+        }
     }
 
     /// 04 §2.0 rule 3: no key bound in both a scope and any ancestor, and none
@@ -6626,6 +6688,7 @@ mod tests {
                     | Scope::Move
                     | Scope::Editor
                     | Scope::DiffView
+                    | Scope::DuplicateChord
                     | Scope::DeleteChord
                     | Scope::ArchiveChord
                     | Scope::SnoozeChord
