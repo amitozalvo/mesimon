@@ -225,11 +225,11 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
 }
 
 /// Equal-width wake glyphs keep the header still as the hold changes.
-/// The preference controls visibility; the sleep glyph means enabled but idle.
+/// The preference controls visibility; the crescent means enabled but idle.
 pub(crate) fn awake_label(tier: Tier, held: bool) -> &'static str {
     match (tier == Tier::Ascii, held) {
-        (false, true) => "☕",
-        (false, false) => "💤",
+        (false, true) => "☕️",  // VS16 explicitly requests emoji presentation.
+        (false, false) => "☾ ", // Pad the text crescent to the emoji's two cells.
         (true, true) => "@",
         (true, false) => "z",
     }

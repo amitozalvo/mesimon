@@ -5400,9 +5400,9 @@ fn wake_indicator_visibility_follows_preference_on_every_screen() {
             app.caffeinated = held;
             app.prefs.keep_awake = false;
             let off = render(&app, 120, 30)[0].clone();
-            assert!(!off.contains('☕') && !off.contains('💤'), "disabled: {off}");
+            assert!(!off.contains('☕') && !off.contains('☾'), "disabled: {off}");
             app.prefs.keep_awake = true;
-            let mark = if held { "☕" } else { "💤" };
+            let mark = if held { "☕️" } else { "☾" };
             let on = render(&app, 120, 30)[0].clone();
             let label =
                 if matches!(app.screen, Screen::Board) { "7 tickets" } else { "kanban-tui" };
@@ -5428,7 +5428,12 @@ fn wake_activity_and_focus_never_move_the_header() {
             let active_label = crate::glyphs::awake_label(app.theme.glyph_tier(), true);
             let needle = format!("7 tickets {idle_label}");
             assert!(idle.contains(&needle), "missing idle glyph at {w}: {idle}");
-            let expected = idle.replacen(&needle, &format!("7 tickets {active_label}"), 1);
+            // A wide emoji contributes a blank continuation cell to the buffer dump.
+            let continuation = if profile == Profile::Mono { "" } else { " " };
+            let expected = idle
+                .replacen(&needle, &format!("7 tickets {active_label}{continuation}"), 1)
+                .trim_end()
+                .to_string();
             app.caffeinated = true;
             assert_eq!(render(&app, w, 30)[0], expected, "activity shifted header at {w}");
             app.header_focus = true;
@@ -5459,7 +5464,7 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
             app.caffeinated = held;
             app.git = git_state("main", 2, 1, 3);
             let plain = cells(&app, 120, 30);
-            let mark = if held { "☕" } else { "💤" };
+            let mark = if held { "☕️" } else { "☾" };
             let x = (0..120u16).find(|x| plain[(*x, 0)].symbol() == mark).unwrap();
             assert_eq!(
                 plain[(x, 0)].fg,
@@ -5477,6 +5482,11 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
                 if app.theme.selected_bg.is_some() { &app.theme.sel } else { &app.theme.rest };
             let expected = if held { selected_ink.base } else { selected_ink.dim3 };
             assert_eq!(focused[(x, 0)].fg, expected, "{flavor:?}, held={held}");
+            if !held {
+                assert_eq!(plain[(x + 1, 0)].symbol(), " ");
+                assert_eq!(plain[(x + 1, 0)].fg, app.theme.rest.dim3);
+                assert_eq!(focused[(x + 1, 0)].fg, expected);
+            }
             for buf in [&plain, &focused] {
                 assert_ne!(buf[(x, 0)].fg, app.theme.attn);
                 assert_ne!(buf[(x, 0)].bg, app.theme.attn);

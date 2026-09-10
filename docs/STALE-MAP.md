@@ -8860,3 +8860,16 @@ Validation: 604 TUI tests passed, with the existing live-network test ignored an
 fixture audit. All three golden diffs were inspected. Workspace clippy with warnings
 denied, formatting, diff checks, and the main build passed. The complete workspace suite,
 Linux suite and manual terminal checks were not repeated for this glyph-only follow-up.
+
+### 2026-09-10 — Emoji coffee and a dimmed moon
+
+The terminal displayed bare coffee as small monochrome text and the sleep emoji as large
+and colored. Explicitly request emoji presentation for coffee with VS16 (`☕️`). At the
+author's suggestion, idle uses a dimmed text crescent `☾`, padded to match the coffee's
+two display cells. ASCII stays `@` / `z`. The indicator remains selectable, keeps its
+idle dimming when focused, and disappears when the setting is disabled.
+
+Validation: 604 TUI tests passed, with the existing live-network test ignored and a clean
+fixture audit. All three golden diffs were inspected; formatting, diff checks and the main
+build passed. Full workspace, Linux and manual terminal checks were not repeated for this
+glyph-only change.

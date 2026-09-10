@@ -143,9 +143,8 @@ does not stop your agents** — that is the point of the daemon.
 
 **Settings › Behaviour › Keep this machine awake** prevents sleep while an agent works,
 including while you are attached to its pane. It is off by default. While enabled, a fixed-width
-indicator beside the board's ticket count shows `☕` when preventing sleep and `💤`
-when enabled but idle (`@` / `z` in ASCII mode). The idle style is dimmed; native emoji
-colors depend on the terminal.
+indicator beside the board's ticket count shows emoji-style `☕️` when preventing sleep and a dimmed crescent `☾`
+when enabled but idle (`@` / `z` in ASCII mode).
 The indicator disappears when the setting is disabled; activity changes do not shift the title.
 From a column header, press Up / `k` to reach the board header, then Right / `l` to select
 the indicator beside the ticket count. Enter opens its setting, selected and ready to toggle.
