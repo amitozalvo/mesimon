@@ -214,10 +214,21 @@
           "claim": "An owned first-launch failure retains positive before-selection evidence; explicit local acknowledgment retries into actual native Codex on the same seat after the project switches to Claude. No user turn or conversation replacement.",
           "model_calls": 0,
           "cleanup_owners": 2
+        },
+        "automatic_compaction": {
+          "status": "passed",
+          "capture": "20260910T085601Z-codex-auto-compact-873d7f68",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "At a verified private 14K total-context threshold, one native tool result triggers automatic compaction inside the same task. Checkout remains held through auto Pre/PostCompact and moves to REVIEW only after the subsequent real reply.",
+          "foreground_parent_turns": 1,
+          "automatic_compactions": 1,
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "low",
+          "cleanup_owners": 2,
+          "limitation": "Reduced fixture threshold; the default context window was not exhausted."
         }
       },
       "not_yet_observed": [
-        "default-window automatic compaction in a native user task",
         "real account quota and quota auto-resume",
         "arbitrary upstream event reorderings, concurrent dialog combinations and future CLI versions"
       ],
@@ -227,7 +238,8 @@
         "Replay and unit coverage are separate from measured native runtime behavior.",
         "Retrospective validation certifies only retained observations, not missing checkpoints; original inconclusive outcomes remain recorded.",
         "Real account quota is intentionally not exhausted for verification. Local HTTP fault injection cannot certify actual billing or account quota recovery.",
-        "Billing and some native title/context overhead are unavailable; token counts are retained in captures where supplied."
+        "Billing and some native title/context overhead are unavailable; token counts are retained in captures where supplied.",
+        "Automatic compaction was exercised at a reduced private 14K threshold; default-window exhaustion was not needed or measured."
       ],
       "inconclusive_evidence": [
         {

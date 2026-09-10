@@ -8552,3 +8552,9 @@ including an identity received just before the daemon missed its projection.
 Pending or absent evidence refuses a fresh replacement. The same record/provider
 and seat survive a valid retry despite a project provider switch. Four supervised
 integration cases and durable pre-forward snapshot regressions cover this policy.
+
+Native automatic compaction inside a task also passed (`873d7f68`) at a verified
+private 14K threshold: one tool result, auto Pre/PostCompact on the same turn,
+checkout hold through compaction, then task completion only after its actual
+reply. This confirms the manual-maintenance/task distinction without exhausting
+the default context window or changing user configuration.

@@ -681,25 +681,46 @@ class Verification:
             with (self.out / "fault-observations.jsonl").open("a") as log:
                 log.write(json.dumps(dict(snapshot=raw, board=dict(state=session["state"],
                     observation_hold=session.get("observation_hold"), stopping=session.get("codex_stopping")))) + "\n")
-            if session["state"]["state"] == "exited" and not session.get("codex_stopping", False):
-                if (not raw.get("stopped") or raw.get("state", {}).get("state") != "unknown"
-                        or not raw.get("observation_hold")):
+            if session["state"]["state"] == "exited" and session.get("codex_stopping", False):
+                if (raw.get("stopped") or raw.get("state", {}).get("state") != "unknown"
+                        or not raw.get("observation_hold") or not session.get("observation_hold")):
                     raise AssertionError("app-server death lacks conservative observation-loss cleanup evidence")
+                write(self.out / "unverified-cleanup-snapshot.json", raw)
                 break
             time.sleep(0.1)
         else:
-            raise Inconclusive("owned app-server failure did not reach acknowledged cleanup within deadline")
+            raise Inconclusive("owned app-server failure did not reach explicit unverified-cleanup hold within deadline")
         if ownership.same_process(server_identity, ownership.process_table().get(server)):
             raise AssertionError("killed owned app-server remains alive")
         if any(Path(config[name]).exists() for name in ("upstream_socket", "proxy_socket")):
-            raise AssertionError("owned server sockets survived acknowledged cleanup")
+            raise AssertionError("known owned server sockets survived cleanup attempt")
+        wake = self.client.request("wake_session", id=sid)
+        if wake.get("resp") != "err" or not next(s for s in self.client.board()["sessions"] if s["id"] == sid).get("codex_stopping"):
+            raise AssertionError("ordinary wake silently acknowledged unknown descendants")
+        warning = self.client.request("resume_session", id=sid, confirm=False)
+        if warning.get("resp") != "err" or "unknown child processes may remain" not in warning.get("message", ""):
+            raise AssertionError("explicit recovery did not present the unknown-child risk")
+        resumed = self.request("resume_session", id=sid, confirm=True)
+        if resumed.get("resp") != "spawned":
+            raise AssertionError("explicitly acknowledged recovery did not start exact resume")
+        session, current_ticket, _ = self.wait(sid, "explicitly acknowledged crash recovery resumes exact conversation without a new turn", lambda s,t,p:
+            s.get("codex_thread_id") == thread and s.get("codex_generation") != config["generation"]
+            and s["state"]["state"] == "idle" and not s.get("observation_hold", True)
+            and t["column"] == "IN PROGRESS")
+        archives = list((self.state / "hooks").glob(sid + ".cleanup-*.json"))
+        if len(archives) != 1:
+            raise AssertionError("unverified cleanup evidence was not retained exactly once")
+        archived = json.loads(archives[0].read_text())
+        if not archived.get("unknown_descendants_may_remain") or archived["snapshot"].get("stopped"):
+            raise AssertionError("recovery rewrote uncertain cleanup into success")
+        shutil.copyfile(archives[0], self.out / "acknowledged-cleanup-evidence.json")
         history = Path(session["transcript_path"])
         history.resolve().relative_to(self.home.resolve())
         turns = {record["payload"]["turn_id"] for record in (json.loads(line) for line in history.read_text().splitlines())
                  if record.get("payload", {}).get("type") == "task_started"}
         if self.calls != 1 or len(turns) != 1:
             raise AssertionError("fault verification exceeded its one-turn billing budget")
-        self.mark(assertion="app-server death produces conservative failure and owned cleanup without completion", passed=True,
+        self.mark(assertion="app-server death remains held until explicit human risk acknowledgement, then resumes exact history without completion", passed=True,
                   model_turns=1, thread_id=thread)
 
     def child(self):

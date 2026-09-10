@@ -5,7 +5,8 @@ Run explicitly through ci/test-run.py with --live. The generated stdio server
 implements the official MCP 2025-11-25 elicitation/create form protocol:
 https://modelcontextprotocol.io/specification/2025-11-25/client/elicitation
 Native form keys follow installed Codex 0.153.4's mcp_server_elicitation.rs:
-one selected enum field is submitted by Enter. No observer answers an RPC.
+one selected enum field is submitted by Enter; Escape cancels it. No observer
+answers an RPC. --answer defaults to accept; each case permits one model turn.
 """
 import argparse
 import datetime
@@ -71,8 +72,9 @@ def serve(source, sink, audit):
         elif method is None and ident == "fixture-form-1" and pending is not None:
             answer = frame.get("result",{})
             accepted = answer.get("action") == "accept" and answer.get("content") == {"confirmation":"ACCEPT_FIXTURE"}
-            result(pending, {"isError":not accepted,"content":[{"type":"text",
-                "text":"MESIMON_FORM_ACCEPTED" if accepted else "Fixture form was not accepted."}]})
+            cancelled = answer.get("action") == "cancel" and answer.get("content") in (None, {})
+            result(pending, {"isError":not (accepted or cancelled),"content":[{"type":"text",
+                "text":"MESIMON_FORM_ACCEPTED" if accepted else "MESIMON_FORM_CANCELLED" if cancelled else "Fixture form response was invalid."}]})
             pending = None
         elif method and ident is not None:
             send({"jsonrpc":"2.0","id":ident,"error":{"code":-32601,"message":"Method not found"}})
@@ -96,24 +98,54 @@ def protocol_self_test():
         {"id": 3, "method": "tools/call", "params": {"name": "fixture_confirmation", "arguments": {}}},
         {"id": "fixture-form-1", "result": {"action": "accept", "content": {"confirmation": "ACCEPT_FIXTURE"}}},
     ]
-    output, audit = io.StringIO(), []
-    namespace["serve"](io.StringIO("".join(json.dumps(value)+"\n" for value in messages)), output, audit.append)
-    frames = [json.loads(line) for line in output.getvalue().splitlines()]
-    form = next(frame for frame in frames if frame.get("method") == "elicitation/create")
-    assert form["params"]["mode"] == "form" and "_meta" not in form["params"]
-    assert frames[-1]["id"] == 3 and not frames[-1]["result"]["isError"]
-    assert frames[-1]["result"]["content"][0]["text"] == "MESIMON_FORM_ACCEPTED"
-    # Respect capability negotiation and the fixture's one-call bound.
-    for extra, capability in [(True, {"elicitation": {}}), (False, {})]:
-        trial = [dict(messages[0], params={"capabilities": capability}), messages[2]]
-        if extra:
-            trial += [messages[3], dict(messages[2], id=4)]
-        output = io.StringIO()
-        namespace["serve"](io.StringIO("".join(json.dumps(value)+"\n" for value in trial)), output, lambda _: None)
+    for action, content, marker in [
+        ("accept", {"confirmation":"ACCEPT_FIXTURE"}, "MESIMON_FORM_ACCEPTED"),
+        ("cancel", None, "MESIMON_FORM_CANCELLED"),
+    ]:
+        answer = {"action":action}
+        if content is not None:
+            answer["content"] = content
+        trial = messages[:-1] + [{"id":"fixture-form-1","result":answer}]
+        output, audit = io.StringIO(), []
+        namespace["serve"](io.StringIO("".join(json.dumps(value)+"\n" for value in trial)), output, audit.append)
         frames = [json.loads(line) for line in output.getvalue().splitlines()]
-        assert sum(frame.get("method") == "elicitation/create" for frame in frames) == int(extra)
-        assert frames[-1]["result"]["isError"]
+        form = next(frame for frame in frames if frame.get("method") == "elicitation/create")
+        assert form["params"]["mode"] == "form" and "_meta" not in form["params"]
+        assert frames[-1]["id"] == 3 and not frames[-1]["result"]["isError"]
+        assert frames[-1]["result"]["content"][0]["text"] == marker
+        validate_answer(answer, action)
+        # Both answer paths enforce the same one-call bound and capabilities.
+        for extra, capability in [(True, {"elicitation": {}}), (False, {})]:
+            bounded = [dict(messages[0], params={"capabilities": capability}), messages[2]]
+            if extra:
+                bounded += [trial[-1], dict(messages[2], id=4)]
+            output = io.StringIO()
+            namespace["serve"](io.StringIO("".join(json.dumps(value)+"\n" for value in bounded)), output, lambda _: None)
+            frames = [json.loads(line) for line in output.getvalue().splitlines()]
+            assert sum(frame.get("method") == "elicitation/create" for frame in frames) == int(extra)
+            assert frames[-1]["result"]["isError"]
+    # A cancel response carrying accepted form content is not cancellation.
+    invalid = {"action":"cancel","content":{"confirmation":"ACCEPT_FIXTURE"}}
+    try:
+        validate_answer(invalid, "cancel")
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("accepted content was allowed in a cancel response")
+    output = io.StringIO()
+    trial = messages[:-1] + [{"id":"fixture-form-1","result":invalid}]
+    namespace["serve"](io.StringIO("".join(json.dumps(value)+"\n" for value in trial)), output, lambda _: None)
+    assert json.loads(output.getvalue().splitlines()[-1])["result"]["isError"]
     print("Generated MCP protocol self-test passed; no process or model launched")
+
+
+def validate_answer(answer, expected):
+    if answer.get("action") != expected:
+        raise AssertionError("native form response does not match the requested user gesture")
+    if expected == "accept" and answer.get("content") != {"confirmation":"ACCEPT_FIXTURE"}:
+        raise AssertionError("native form did not deliver the selected fixture answer")
+    if expected == "cancel" and answer.get("content") not in (None, {}):
+        raise AssertionError("cancelled native form delivered accepted content")
 
 
 class Verification(state.Verification):
@@ -168,7 +200,9 @@ class Verification(state.Verification):
         state.lab.wait_for(initialized, timeout=15)
         self.verify_native_home(sid)
         self.mark(assertion="generated MCP tool and native form capability verified before model submission", passed=True)
-        self.ask(sid, "Call elicitation_fixture fixture_confirmation once. After its form is answered, reply MESIMON_ELICITATION_DONE. Use no other tools.")
+        completion_marker = "MESIMON_ELICITATION_DONE" if self.args.answer == "accept" else "MESIMON_ELICITATION_CANCEL_DONE"
+        self.ask(sid, "Call elicitation_fixture fixture_confirmation once. After its form is answered or cancelled, reply "
+                 + completion_marker + ". Use no other tools and do not retry the form.")
         held, _, _ = self.wait(sid, "genuine MCP form maps to Elicitation and holds checkout", lambda session,ticket,screen:
             session["state"] == {"state":"requires_action", "reason":"elicitation"}
             and session.get("observation_hold") and ticket["column"] == "IN PROGRESS"
@@ -188,21 +222,21 @@ class Verification(state.Verification):
             if any(row["direction"] == "client_to_server" and row["frame"].get("id") == "fixture-form-1" for row in self.frames()):
                 raise AssertionError("an observer answered the form before native user input")
             time.sleep(0.1)
-        # Codex's one-field enum form selects its declared default. Enter is
-        # the native submit action; no elicitation response is injected by us.
-        self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Enter")
-        self.mark(action="native_submit_fixture_enum_form_once", session=sid)
+        # Native Enter submits the default enum; native Escape cancels.
+        # The observer never sends an elicitation response.
+        key = "Enter" if self.args.answer == "accept" else "Escape"
+        self.tm("send-keys", "-t", sid.replace("-", "")[:16], key)
+        self.mark(action="native_" + self.args.answer + "_fixture_form_once", session=sid)
         def answered():
             response = next((row["frame"] for row in self.frames() if row["direction"] == "client_to_server"
                              and row["frame"].get("id") == "fixture-form-1"), None)
             if not response:
                 return False
             result = response.get("result", {})
-            if result.get("action") != "accept" or result.get("content") != {"confirmation":"ACCEPT_FIXTURE"}:
-                raise AssertionError("native form did not deliver the selected fixture answer")
+            validate_answer(result, self.args.answer)
             return True
         state.lab.wait_for(answered, timeout=10)
-        completed, _, _ = self.completed(sid, "MESIMON_ELICITATION_DONE")
+        completed, _, _ = self.completed(sid, completion_marker)
         if self.calls != 1 or completed.get("codex_turn_id") != turn:
             raise AssertionError("elicitation used more than its one foreground turn")
         calls = [row for row in self.frames() if row["frame"].get("method") == "tools/call"]
@@ -210,10 +244,11 @@ class Verification(state.Verification):
             raise AssertionError("model called the fixture tool more than once")
         reply = next((row["frame"].get("result", {}) for row in self.frames()
                       if row["direction"] == "server_to_client" and row["frame"].get("id") == calls[0]["frame"]["id"]), {})
-        if reply.get("isError") or not any(item.get("text") == "MESIMON_FORM_ACCEPTED" for item in reply.get("content", [])):
-            raise AssertionError("accepted native answer did not complete the actual MCP tool")
+        tool_marker = "MESIMON_FORM_ACCEPTED" if self.args.answer == "accept" else "MESIMON_FORM_CANCELLED"
+        if reply.get("isError") or not any(item.get("text") == tool_marker for item in reply.get("content", [])):
+            raise AssertionError("native form outcome did not complete the actual MCP tool")
         self.mark(assertion="native form answer reaches MCP tool and the same turn completes afterward", passed=True,
-                  model_turns=1, turn_id=turn)
+                  model_turns=1, turn_id=turn, answer=self.args.answer)
 
     def collect(self):
         if self.tool_log.exists():
@@ -224,6 +259,7 @@ class Verification(state.Verification):
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--live", action="store_true")
+    parser.add_argument("--answer", choices=("accept", "cancel"), default="accept")
     parser.add_argument("--self-test", action="store_true", help="check generated protocol in memory without any process or model")
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/mesimon")
     parser.add_argument("--codex", default=shutil.which("codex"))
@@ -239,10 +275,11 @@ def main():
         parser.error("installed Codex and tmux are required")
     args.binary = args.binary.resolve(strict=True)
     args.case, args.model, args.timeout = "elicitation", "gpt-5.6-luna", 120
-    out = ROOT / "target/state-lab/captures" / (datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-codex-elicitation-" + uuid.uuid4().hex[:8])
+    out = ROOT / "target/state-lab/captures" / (datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-codex-elicitation-" + args.answer + "-" + uuid.uuid4().hex[:8])
     out.mkdir(parents=True, mode=0o700)
     manifest = dict(kind="production_native_mcp_elicitation", outcome="inconclusive", cleanup=False,
-                    model=args.model, model_turn_budget=1, checkpoints=[], cost_usd=None)
+                    model=args.model, reasoning_effort="low", answer=args.answer,
+                    model_turn_budget=1, checkpoints=[], cost_usd=None)
     guard = verification = None
     try:
         guard = state.probe.Guard(145, args.tmux)

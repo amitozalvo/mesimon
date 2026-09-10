@@ -227,6 +227,21 @@ class Verification(state.Verification):
         return self.native_read(sid, "thread/turns/list", {"threadId": session["codex_thread_id"], "limit": 5, "itemsView": "full"})
 
     def held_barrier(self, sid, name, seconds=1.8):
+        receipt = next(row for row in reversed(self.hooks()) if row.get("barrier") == name)
+        expected_turn = receipt["input"]["turn_id"]
+        propagation = time.monotonic() + 1.5
+        while True:
+            session, ticket, _ = self.observe(sid)
+            if ticket["column"] == "REVIEW":
+                raise AssertionError("native lifecycle work moved the ticket before its barrier released")
+            if session.get("codex_turn_id") == expected_turn:
+                break
+            if time.monotonic() >= propagation:
+                raise AssertionError("native lifecycle turn was not observed within the propagation bound")
+            time.sleep(.05)
+        # The external hook receipt can precede the next board observation.
+        # Compare completion only to this operation's exact native turn, not
+        # the previous task's already-published successful result.
         deadline = time.monotonic() + seconds
         explicit_hold_seen = False
         while time.monotonic() < deadline:
