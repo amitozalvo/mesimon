@@ -86,7 +86,9 @@ fn interrupted_turn_demotes_to_idle_without_any_hook() {
             .expect("session")
             .clone()
     };
-    assert_eq!(rec(&mut c).state, SessionState::Running);
+    // Hook transport is one-way: child exit proves the frame was written,
+    // not that the daemon's asynchronous hook reader has applied it.
+    c.await_state(sid, "submitted prompt hook applied", |state| *state == SessionState::Running);
 
     // While the pane paints, quiet never trips: still Running 3 s in.
     std::thread::sleep(Duration::from_secs(3));

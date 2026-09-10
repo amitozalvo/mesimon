@@ -2,6 +2,8 @@
 
 mod history;
 pub mod hooks;
+mod recovery;
+pub mod tail;
 
 use mesimon_core::board::{AgentTools, SessionRecord};
 
@@ -65,6 +67,10 @@ fn launch(
 }
 
 impl AgentAdapter for Claude {
+    fn recovery(&self) -> Box<dyn super::AgentRecovery> {
+        Box::new(recovery::ClaudeRecovery::default())
+    }
+
     fn discover(
         &self,
         roots: &[std::path::PathBuf],

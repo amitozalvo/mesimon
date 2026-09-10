@@ -15,6 +15,143 @@ use serde_json::Value;
 const MAX_IDENTITIES: usize = 1024;
 const MAX_PREVIEW_CHARS: usize = 32_768;
 
+/// Normalized work captured before or after a parent identifies a descendant.
+/// Never retain raw frames or model text, and never interpret child completion
+/// as proof that its approvals, tools or hook continuations have stopped.
+#[derive(Debug, Default)]
+struct ChildWork {
+    known: bool,
+    requests: BTreeMap<String, Reason>,
+    work_requests: BTreeSet<String>,
+    items: BTreeSet<String>,
+    hooks: BTreeSet<String>,
+    descendants: BTreeSet<String>,
+    flags: Vec<Reason>,
+    uncertain: bool,
+}
+
+/// Native active flags summarize the same thread's requests coarsely (a
+/// genuine MCP form also sets waitingOnApproval). Prefer the observed request
+/// kind for display, retaining flags as fallback and independent safety work.
+fn attention_reasons<'a>(
+    requests: &'a BTreeMap<String, Reason>,
+    flags: &'a [Reason],
+) -> impl Iterator<Item = &'a Reason> {
+    requests.values().chain(flags.iter().filter(move |_| requests.is_empty()))
+}
+
+impl ChildWork {
+    fn pending(&self) -> bool {
+        self.uncertain
+            || !self.requests.is_empty()
+            || !self.work_requests.is_empty()
+            || !self.items.is_empty()
+            || !self.hooks.is_empty()
+            || !self.flags.is_empty()
+    }
+
+    fn identities(&self) -> usize {
+        1 + self.requests.len()
+            + self.work_requests.len()
+            + self.items.len()
+            + self.hooks.len()
+            + self.descendants.len()
+    }
+
+    fn item(&mut self, item: &Value, completed: bool) {
+        let (Some(id), Some(kind)) = (string(item, "id"), string(item, "type")) else { return };
+        if !matches!(kind, "agentMessage" | "plan" | "userMessage" | "reasoning" | "hookPrompt") {
+            if item_terminal(item, completed) {
+                self.items.remove(id);
+            } else {
+                self.items.insert(id.into());
+            }
+        }
+        if kind == "collabAgentToolCall" {
+            self.descendants.extend(receiver_ids(item));
+        }
+    }
+
+    fn observe(&mut self, method: &str, frame: &Value) -> bool {
+        let params = &frame["params"];
+        if let Some(reason) = request_reason(method, params) {
+            if let Some(id) = request_id(&frame["id"]) {
+                self.requests.insert(id, reason);
+            } else {
+                self.uncertain = true;
+            }
+            return true;
+        }
+        match method {
+            "turn/started" => {}
+            "turn/completed" => {
+                // Item terminal status is useful; the turn's terminal status
+                // alone never resolves independently outstanding local work.
+                if let Some(items) = params["turn"]["items"].as_array() {
+                    for item in items {
+                        self.item(item, true);
+                    }
+                }
+            }
+            "item/started" | "item/completed" => {
+                self.item(&params["item"], method == "item/completed")
+            }
+            "serverRequest/resolved" => {
+                if let Some(id) = request_id(&params["requestId"]) {
+                    self.requests.remove(&id);
+                    self.work_requests.remove(&id);
+                }
+            }
+            "hook/started" | "hook/completed" => {
+                if let Some(id) = string(&params["run"], "id") {
+                    if method == "hook/started" {
+                        self.hooks.insert(id.into());
+                    } else {
+                        self.hooks.remove(id);
+                    }
+                } else {
+                    self.uncertain = true;
+                }
+            }
+            "thread/status/changed" => {
+                self.flags.clear();
+                match string(&params["status"], "type") {
+                    // A closed native child is eligible for independent audit,
+                    // but closing it does not resolve any recorded request.
+                    Some("idle" | "notLoaded") => {}
+                    Some("active") => {
+                        if let Some(flags) = params["status"]["activeFlags"].as_array() {
+                            for flag in flags {
+                                match flag.as_str() {
+                                    Some("waitingOnApproval") => {
+                                        self.flags.push(Reason::Permission)
+                                    }
+                                    Some("waitingOnUserInput") => self.flags.push(Reason::Question),
+                                    _ => self.uncertain = true,
+                                }
+                            }
+                        } else {
+                            self.uncertain = true;
+                        }
+                    }
+                    _ => self.uncertain = true,
+                }
+            }
+            "item/tool/requestUserInput" if params["isBlocking"].as_bool() == Some(false) => {
+                return false
+            }
+            _ => {
+                if let Some(id) = request_id(&frame["id"]) {
+                    self.work_requests.insert(id);
+                } else {
+                    return false;
+                }
+            }
+        }
+        true
+    }
+}
+
 #[derive(Debug)]
 pub struct Update {
     pub signals: Vec<Signal>,
@@ -42,13 +179,17 @@ pub struct Ledger {
     active_turn: Option<String>,
     terminal: Option<TurnOutcome>,
     terminal_emitted: bool,
+    completed_plan: bool,
+    saw_compaction: bool,
+    saw_task_item: bool,
     retired_turns: BTreeSet<String>,
     requests: BTreeMap<String, Reason>,
     work_requests: BTreeSet<String>,
     items: BTreeSet<String>,
     hooks: BTreeSet<String>,
     children: BTreeSet<String>,
-    child_turns: BTreeMap<String, String>,
+    child_work: BTreeMap<String, ChildWork>,
+    late_work: bool,
     flags: Vec<Reason>,
     last_signal: Option<Signal>,
     state: SessionState,
@@ -65,13 +206,17 @@ impl Ledger {
             active_turn: None,
             terminal: None,
             terminal_emitted: false,
+            completed_plan: false,
+            saw_compaction: false,
+            saw_task_item: false,
             retired_turns: BTreeSet::new(),
             requests: BTreeMap::new(),
             work_requests: BTreeSet::new(),
             items: BTreeSet::new(),
             hooks: BTreeSet::new(),
             children: BTreeSet::new(),
-            child_turns: BTreeMap::new(),
+            child_work: BTreeMap::new(),
+            late_work: false,
             flags: Vec::new(),
             last_signal: None,
             state: SessionState::Unknown { reason: UnknownReason::ObservationLost },
@@ -79,7 +224,15 @@ impl Ledger {
     }
 
     fn held(&self) -> bool {
-        !self.continuous || self.capacity_lost || self.has_pending_work()
+        !self.continuous
+            || self.capacity_lost
+            || self.has_pending_work()
+            || self.late_work
+            || self.plan_dialog_pending()
+    }
+
+    fn plan_dialog_pending(&self) -> bool {
+        self.completed_plan && self.terminal == Some(TurnOutcome::Completed)
     }
 
     fn has_pending_work(&self) -> bool {
@@ -112,6 +265,15 @@ impl Ledger {
         self.active_turn.as_deref()
     }
 
+    /// The transport withheld this successful projection behind independent
+    /// owned work. Its caller must first prove that this exact turn has never
+    /// been published; an already visible completion must not be replayed.
+    pub fn defer_terminal_projection(&mut self) {
+        if self.terminal == Some(TurnOutcome::Completed) {
+            self.terminal_emitted = false;
+        }
+    }
+
     /// Local half of a reconnect audit. The caller must additionally prove
     /// parent/descendant runtime idleness and uninterrupted capture during the
     /// audit. This intentionally ignores continuity itself, but never ignores
@@ -119,8 +281,55 @@ impl Ledger {
     pub fn can_reconcile_idle(&self) -> bool {
         !self.capacity_lost
             && !self.has_pending_work()
+            && !self.late_work
+            && !self.plan_dialog_pending()
             && !self.runtime_active
             && (self.active_turn.is_none() || self.terminal.is_some())
+    }
+
+    /// All discovered descendants, including those previously audited idle.
+    /// Keeping their identities lets late activity reassert the safety hold.
+    pub fn known_children(&self) -> Vec<String> {
+        self.child_work.iter().filter(|(_, work)| work.known).map(|(id, _)| id.clone()).collect()
+    }
+
+    /// Local half of a complete metadata audit. Child identity/activity hints
+    /// and a plan dialog do not prevent an audit, but unresolved work does.
+    pub fn can_reconcile_work(&self) -> bool {
+        !self.capacity_lost
+            && self.requests.is_empty()
+            && self.work_requests.is_empty()
+            && self.items.is_empty()
+            && self.hooks.is_empty()
+            && self.flags.is_empty()
+            && self.child_work.values().filter(|work| work.known).all(|work| !work.pending())
+    }
+
+    pub fn needs_work_audit(&self) -> bool {
+        !self.continuous || !self.children.is_empty() || self.late_work
+    }
+
+    /// Caller proves the parent and every known/loaded descendant quiescent
+    /// with uninterrupted capture. Preserve the observed parent result/plan;
+    /// metadata alone can never synthesize a new successful completion.
+    pub fn reconcile_work(&mut self, generation: u64, thread: &Value) -> Update {
+        let mut update = self.update();
+        if generation != self.generation
+            || string(thread, "id") != Some(&self.thread_id)
+            || string(&thread["status"], "type") != Some("idle")
+            || !self.can_reconcile_work()
+        {
+            return update;
+        }
+        self.continuous = true;
+        self.runtime_active = false;
+        self.children.clear();
+        self.late_work = false;
+        if self.terminal.is_none() {
+            self.active_turn = None;
+        }
+        self.project(&mut update);
+        update
     }
 
     fn emit(&mut self, signal: Signal, update: &mut Update) {
@@ -150,26 +359,54 @@ impl Ledger {
     }
 
     fn project(&mut self, update: &mut Update) {
-        let reason = self
-            .requests
-            .values()
-            .chain(self.flags.iter())
+        let reason = attention_reasons(&self.requests, &self.flags)
+            .chain(
+                self.child_work
+                    .values()
+                    .filter(|work| work.known)
+                    .flat_map(|work| attention_reasons(&work.requests, &work.flags)),
+            )
             .copied()
             .min_by_key(|r| rank(&SessionState::RequiresAction { reason: *r }));
         if let Some(reason) = reason {
             self.emit(Signal::Attention { reason }, update);
         } else if !self.continuous || self.capacity_lost {
             self.emit(Signal::ObservationLost, update);
+        } else if self.plan_dialog_pending() && !self.has_pending_work() && !self.late_work {
+            // Native Codex opens a local implementation dialog after the plan
+            // turn; no server approval request accompanies it. The daemon may
+            // release this hold only after observing that dialog close onto
+            // the native composer, or a subsequent structured turn starts.
+            self.emit(Signal::Attention { reason: Reason::Plan }, update);
         } else if let Some(outcome) = self.terminal {
-            if !self.has_pending_work() {
+            if !self.has_pending_work() && !self.late_work {
                 if !self.terminal_emitted {
-                    self.emit(Signal::TurnEnded { outcome }, update);
+                    if outcome == TurnOutcome::Completed
+                        && self.saw_compaction
+                        && !self.saw_task_item
+                    {
+                        // Native /compact is a real turn with a completed
+                        // contextCompaction item, but completes maintenance,
+                        // not the user's ticket. Automatic compaction inside
+                        // a task keeps its user/output/tool evidence below.
+                        self.emit(Signal::Ready, update);
+                    } else {
+                        self.emit(Signal::TurnEnded { outcome }, update);
+                    }
                     self.terminal_emitted = true;
+                } else if self.state == SessionState::Running {
+                    // Late work has now drained and been audited. The prior
+                    // success was already emitted; do not repeat automation.
+                    self.emit(Signal::Ready, update);
                 }
             } else {
                 self.emit(Signal::TurnStarted, update);
             }
-        } else if self.runtime_active || self.active_turn.is_some() || self.has_pending_work() {
+        } else if self.runtime_active
+            || self.active_turn.is_some()
+            || self.has_pending_work()
+            || self.late_work
+        {
             self.emit(Signal::TurnStarted, update);
         } else {
             self.emit(Signal::Ready, update);
@@ -184,7 +421,8 @@ impl Ledger {
             + self.work_requests.len()
             + self.items.len()
             + self.hooks.len()
-            + self.children.len();
+            + self.children.len()
+            + self.child_work.values().map(ChildWork::identities).sum::<usize>();
         if count > MAX_IDENTITIES {
             // Stop accumulating IDs and fail closed. A fresh audited snapshot
             // is the only safe way to re-establish the baseline.
@@ -219,6 +457,9 @@ impl Ledger {
         let status = &thread["status"];
         let kind = string(status, "type");
         self.continuous = work_reconciled && matches!(kind, Some("idle" | "active"));
+        self.completed_plan = false;
+        self.saw_compaction = false;
+        self.saw_task_item = false;
         // Historical completion must not trigger a new automatic column move.
         self.terminal = None;
         self.terminal_emitted = false;
@@ -230,7 +471,8 @@ impl Ledger {
             self.items.clear();
             self.hooks.clear();
             self.children.clear();
-            self.child_turns.clear();
+            self.child_work.clear();
+            self.late_work = false;
             self.flags.clear();
             self.capacity_lost = false;
             self.retired_turns.clear();
@@ -270,23 +512,20 @@ impl Ledger {
         let params = &frame["params"];
         let Some(thread) = string(params, "threadId") else { return update };
         if thread != self.thread_id {
-            // A known child's explicit terminal turn can release that child's
-            // hold, but can never finish a parent lacking its own completion.
-            if self.children.contains(thread) {
-                if method == "turn/started" {
-                    if let Some(id) = string(&params["turn"], "id") {
-                        self.child_turns.insert(thread.into(), id.into());
-                    }
-                } else if method == "turn/completed"
-                    && self.child_turns.get(thread).map(String::as_str)
-                        == string(&params["turn"], "id")
-                    && self.child_turns.contains_key(thread)
-                    && outcome(&params["turn"]).is_some()
-                {
-                    self.children.remove(thread);
-                    self.child_turns.remove(thread);
-                    self.project(&mut update);
-                }
+            let newly_seen = !self.child_work.contains_key(thread);
+            let work = self.child_work.entry(thread.into()).or_default();
+            let changed = work.observe(method, frame);
+            let known = work.known;
+            if newly_seen && !changed {
+                self.child_work.remove(thread);
+            }
+            if known && changed {
+                self.children.insert(thread.into());
+                self.discover_descendants(thread);
+            }
+            self.enforce_bounds();
+            if known || self.capacity_lost {
+                self.project(&mut update);
             }
             return update;
         }
@@ -302,7 +541,16 @@ impl Ledger {
                 // The native runtime can emit scoped items before any
                 // turn/started notification reaches this connection.
                 self.active_turn = Some(turn.into());
+                self.late_work = false;
             }
+        }
+        if self.terminal_emitted
+            && (frame.get("id").is_some()
+                || matches!(method, "item/started" | "hook/started")
+                || (method == "thread/status/changed"
+                    && string(&params["status"], "type") == Some("active")))
+        {
+            self.late_work = true;
         }
         if let Some(reason) = request_reason(method, params) {
             if let Some(id) = request_id(&frame["id"]) {
@@ -332,6 +580,10 @@ impl Ledger {
                         }
                         self.terminal = None;
                         self.terminal_emitted = false;
+                        self.completed_plan = false;
+                        self.saw_compaction = false;
+                        self.saw_task_item = false;
+                        self.late_work = false;
                     }
                     self.runtime_active = true;
                 }
@@ -366,10 +618,17 @@ impl Ledger {
                         }
                         self.terminal = None;
                         self.terminal_emitted = false;
+                        self.completed_plan = false;
+                        self.saw_compaction = false;
+                        self.saw_task_item = false;
                     }
                     self.read_flags(&params["status"]);
                     match string(&params["status"], "type") {
-                        Some("idle" | "active") => {}
+                        // Native API failures report systemError around their
+                        // failed turn. This is known runtime status, not a
+                        // missing observation: keep the authoritative turn
+                        // outcome and all outstanding work/interaction holds.
+                        Some("idle" | "active" | "systemError") => {}
                         _ => return self.lost(generation),
                     }
                 }
@@ -446,17 +705,19 @@ impl Ledger {
     fn observe_item(&mut self, item: &Value, completed: bool, update: &mut Update) {
         let Some(id) = string(item, "id") else { return };
         let Some(kind) = string(item, "type") else { return };
-        let terminal = match string(item, "status") {
-            Some("inProgress" | "running" | "pendingInit") => false,
-            Some("completed" | "failed" | "interrupted") => true,
-            _ => completed,
-        };
+        let terminal = item_terminal(item, completed);
+        if kind == "contextCompaction" {
+            self.saw_compaction = true;
+        } else if !matches!(kind, "reasoning" | "hookPrompt") {
+            self.saw_task_item = true;
+        }
         match kind {
             "agentMessage" | "plan" => {
                 if terminal {
                     if let Some(text) = string(item, "text") {
                         let text = text.chars().take(MAX_PREVIEW_CHARS).collect();
                         if kind == "plan" {
+                            self.completed_plan = true;
                             update.plan = Some(text);
                         } else {
                             update.reply = Some(text);
@@ -476,21 +737,57 @@ impl Ledger {
             }
         }
         if kind == "collabAgentToolCall" {
-            if let Some(receivers) = item["receiverThreadIds"].as_array() {
-                for child in receivers.iter().filter_map(Value::as_str) {
-                    let state = string(&item["agentsStates"][child], "status");
-                    if matches!(state, Some("completed" | "interrupted" | "errored" | "shutdown")) {
-                        self.children.remove(child);
-                        self.child_turns.remove(child);
-                    } else {
-                        // Unknown/notFound does not prove a formerly active
-                        // child stopped; a caller must reconcile it explicitly.
-                        self.children.insert(child.into());
-                    }
+            for child in receiver_ids(item) {
+                if child == self.thread_id {
+                    continue;
                 }
+                self.child_work.entry(child.clone()).or_default().known = true;
+                // Even agentsStates=completed is only a hint. Independent
+                // runtime metadata plus an empty local ledger releases work.
+                self.children.insert(child.clone());
+                self.discover_descendants(&child);
             }
         }
     }
+
+    fn discover_descendants(&mut self, child: &str) {
+        let mut queue = vec![child.to_owned()];
+        let mut visited = BTreeSet::new();
+        while let Some(id) = queue.pop() {
+            if id == self.thread_id || !visited.insert(id.clone()) {
+                continue;
+            }
+            if visited.len() > MAX_IDENTITIES {
+                self.capacity_lost = true;
+                self.continuous = false;
+                break;
+            }
+            let work = self.child_work.entry(id.clone()).or_default();
+            if !work.known {
+                work.known = true;
+                self.children.insert(id);
+            }
+            queue.extend(work.descendants.iter().cloned());
+        }
+    }
+}
+
+fn item_terminal(item: &Value, completed: bool) -> bool {
+    match string(item, "status") {
+        Some("inProgress" | "running" | "pendingInit") => false,
+        Some("completed" | "failed" | "interrupted") => true,
+        _ => completed,
+    }
+}
+
+fn receiver_ids(item: &Value) -> impl Iterator<Item = String> + '_ {
+    item["receiverThreadIds"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .filter_map(Value::as_str)
+        .take(MAX_IDENTITIES + 1)
+        .map(str::to_owned)
 }
 
 fn string<'a>(value: &'a Value, key: &str) -> Option<&'a str> {
@@ -687,7 +984,7 @@ mod tests {
     }
 
     #[test]
-    fn known_child_completion_requires_matching_child_turn_and_parent_completion() {
+    fn known_child_completion_requires_independent_audit_and_parent_completion() {
         let mut ledger = ready();
         start(&mut ledger, "turn-1");
         let child = json!({"type":"collabAgentToolCall","id":"spawn","status":"completed","receiverThreadIds":["child"],"agentsStates":{"child":{"status":"running"}}});
@@ -699,11 +996,201 @@ mod tests {
         assert!(ledger.observe(7, &json!({"method":"turn/started","params":{"threadId":"child","turn":{"id":"child-turn","status":"inProgress"}}})).observation_hold);
         let child_done = ledger.observe(7, &finish);
         assert!(child_done.signals.is_empty(), "a child cannot complete the parent");
+        assert!(child_done.observation_hold, "child terminal is not a work audit");
         assert_eq!(ledger.state(), &SessionState::Running);
+        assert!(complete(&mut ledger, "turn-1", "completed").observation_hold);
+        assert_eq!(
+            ledger.reconcile_work(7, &snapshot(json!({"type":"idle"}))).signals,
+            vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
+        );
+    }
+
+    fn child_frame(method: &str, params: Value) -> Value {
+        let mut frame = frame(method, params);
+        frame["params"]["threadId"] = json!("child");
+        frame
+    }
+
+    fn discover_child(ledger: &mut Ledger) -> Update {
+        // A terminal summary is deliberately not sufficient to clear work.
+        ledger.observe(
+            7,
+            &frame(
+                "item/completed",
+                json!({"turnId":"turn-1","item":{
+                    "id":"spawn", "type":"collabAgentToolCall", "status":"completed",
+                    "receiverThreadIds":["child"], "agentsStates":{"child":{"status":"completed"}}
+                }}),
+            ),
+        )
+    }
+
+    #[test]
+    fn child_terminal_keeps_pre_discovery_approval_tool_and_hook_until_resolved_and_audited() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        let mut approval =
+            child_frame("item/commandExecution/requestApproval", json!({"turnId":"child-turn"}));
+        approval["id"] = json!(5);
+        let early = ledger.observe(7, &approval);
+        assert!(!early.observation_hold, "unrelated thread is not yet a known descendant");
+        ledger.observe(7, &child_frame("item/started", json!({"turnId":"child-turn","item":{"id":"tool","type":"commandExecution","status":"inProgress"}})));
+        ledger.observe(7, &child_frame("hook/started", json!({"run":{"id":"hook"}})));
+        let discovered = discover_child(&mut ledger);
+        assert_eq!(discovered.signals, vec![Signal::Attention { reason: Reason::Permission }]);
+        assert_eq!(ledger.known_children(), vec!["child"]);
+        let terminal = child_frame(
+            "turn/completed",
+            json!({"turn":{"id":"child-turn","status":"completed","items":[]}}),
+        );
+        assert!(ledger.observe(7, &terminal).observation_hold);
+        complete(&mut ledger, "turn-1", "completed");
+        assert!(!ledger.can_reconcile_work());
+        assert!(ledger.reconcile_work(7, &snapshot(json!({"type":"idle"}))).observation_hold);
+        ledger.observe(7, &child_frame("serverRequest/resolved", json!({"requestId":5})));
+        assert!(!ledger.can_reconcile_work(), "the tool and hook remain");
+        ledger.observe(
+            7,
+            &child_frame(
+                "item/completed",
+                json!({"item":{"id":"tool","type":"commandExecution","status":"completed"}}),
+            ),
+        );
+        assert!(!ledger.can_reconcile_work(), "the hook remains");
+        let drained = ledger.observe(
+            7,
+            &child_frame("hook/completed", json!({"run":{"id":"hook","status":"completed"}})),
+        );
+        assert!(drained.observation_hold);
+        assert!(ledger.can_reconcile_work());
+        assert!(ledger.needs_work_audit());
+        let audited = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert_eq!(audited.signals, vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]);
+        assert!(!audited.observation_hold);
+        assert!(!ledger.needs_work_audit());
+        assert_eq!(ledger.known_children(), vec!["child"], "retain identity for late work");
+        assert!(
+            ledger
+                .observe(7, &child_frame("hook/started", json!({"run":{"id":"late"}})))
+                .observation_hold
+        );
+    }
+
+    #[test]
+    fn closed_child_still_requires_pending_request_resolution_and_work_audit() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        discover_child(&mut ledger);
+        let mut approval = child_frame("item/commandExecution/requestApproval", json!({}));
+        approval["id"] = json!(5);
+        ledger.observe(7, &approval);
+        complete(&mut ledger, "turn-1", "completed");
+        let closed = ledger.observe(
+            7,
+            &child_frame("thread/status/changed", json!({"status":{"type":"notLoaded"}})),
+        );
+        assert!(closed.observation_hold);
+        assert!(!ledger.can_reconcile_work());
+        ledger.observe(7, &child_frame("serverRequest/resolved", json!({"requestId":5})));
+        assert!(ledger.can_reconcile_work(), "normal unload does not poison later audit");
+        assert!(ledger.needs_work_audit());
+        let audited = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert!(!audited.observation_hold);
+        assert_eq!(audited.signals, vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]);
+    }
+
+    #[test]
+    fn early_child_start_and_completion_need_no_repeated_start_to_be_auditable() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        ledger.observe(
+            7,
+            &child_frame("turn/started", json!({"turn":{"id":"child-turn","status":"inProgress"}})),
+        );
+        discover_child(&mut ledger);
+        ledger.observe(
+            7,
+            &child_frame(
+                "turn/completed",
+                json!({"turn":{"id":"child-turn","status":"completed","items":[]}}),
+            ),
+        );
+        assert!(complete(&mut ledger, "turn-1", "completed").observation_hold);
+        assert!(ledger.can_reconcile_work());
+        assert!(ledger.reconcile_work(6, &snapshot(json!({"type":"idle"}))).observation_hold);
+        assert!(
+            ledger
+                .reconcile_work(7, &json!({"id":"foreign","status":{"type":"idle"}}))
+                .observation_hold
+        );
+        assert!(
+            ledger
+                .reconcile_work(7, &snapshot(json!({"type":"active","activeFlags":[]})))
+                .observation_hold
+        );
+        assert!(!ledger.reconcile_work(7, &snapshot(json!({"type":"idle"}))).observation_hold);
+    }
+
+    #[test]
+    fn pre_discovery_grandchild_requests_are_promoted_transitively_and_bounded() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        let mut request = child_frame("item/futureTool/request", json!({}));
+        request["params"]["threadId"] = json!("grandchild");
+        request["id"] = json!(7);
+        ledger.observe(7, &request);
+        ledger.observe(7, &child_frame("item/completed", json!({"item":{
+            "id":"spawn-grandchild","type":"collabAgentToolCall","status":"completed","receiverThreadIds":["grandchild"]}})));
+        discover_child(&mut ledger);
+        assert_eq!(ledger.known_children(), vec!["child", "grandchild"]);
+        assert!(!ledger.can_reconcile_work());
+        for id in 0..=MAX_IDENTITIES {
+            let mut frame =
+                child_frame("turn/started", json!({"turn":{"id":"t","status":"inProgress"}}));
+            frame["params"]["threadId"] = json!(format!("unrelated-{id}"));
+            ledger.observe(7, &frame);
+        }
+        assert!(ledger.capacity_lost);
+        let count = ledger.child_work.len();
+        let mut extra = child_frame("turn/started", json!({"turn":{"id":"t"}}));
+        extra["params"]["threadId"] = json!("exhausted");
+        assert!(ledger.observe(7, &extra).observation_hold);
+        assert_eq!(ledger.child_work.len(), count);
+        assert!(!ledger.can_reconcile_work());
+    }
+
+    #[test]
+    fn work_audit_preserves_plan_and_never_repeats_a_published_completion() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        ledger.observe(
+            7,
+            &frame(
+                "item/completed",
+                json!({"item":{"id":"plan","type":"plan","text":"Synthetic plan"}}),
+            ),
+        );
+        discover_child(&mut ledger);
+        complete(&mut ledger, "turn-1", "completed");
+        assert!(ledger.can_reconcile_work(), "a plan does not bar a work audit");
+        let plan = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert!(plan.observation_hold);
+        assert_eq!(plan.state, SessionState::RequiresAction { reason: Reason::Plan });
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
         assert_eq!(
             complete(&mut ledger, "turn-1", "completed").signals,
             vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
         );
+        let working = ledger.observe(7, &frame("item/started", json!({"turnId":"turn-1","item":{"id":"late","type":"commandExecution","status":"inProgress"}})));
+        assert_eq!(working.signals, vec![Signal::TurnStarted]);
+        let done = ledger.observe(7, &frame("item/completed", json!({"turnId":"turn-1","item":{"id":"late","type":"commandExecution","status":"completed"}})));
+        assert!(done.observation_hold, "late work needs independent idle proof");
+        assert!(done.signals.is_empty());
+        let idle = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert!(!idle.observation_hold);
+        assert_eq!(idle.signals, vec![Signal::Ready]);
+        assert!(ledger.reconcile_work(7, &snapshot(json!({"type":"idle"}))).signals.is_empty());
     }
 
     #[test]
@@ -750,6 +1237,57 @@ mod tests {
         let reply = ledger.observe(7, &frame("item/completed", json!({"turnId":"turn-1","item":{"type":"agentMessage","id":"msg-opaque","text":"א".repeat(MAX_PREVIEW_CHARS + 1)}})));
         assert_eq!(reply.reply_key.as_deref(), Some("msg-opaque"));
         assert_eq!(reply.reply.unwrap().chars().count(), MAX_PREVIEW_CHARS);
+    }
+
+    #[test]
+    fn plan_dialog_dismissal_is_not_eligible_until_child_work_is_audited() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        ledger.observe(
+            7,
+            &frame(
+                "item/completed",
+                json!({"item":{"id":"plan","type":"plan","text":"Synthetic plan"}}),
+            ),
+        );
+        discover_child(&mut ledger);
+        let done = complete(&mut ledger, "turn-1", "completed");
+        assert_eq!(done.state, SessionState::Running);
+        assert!(done.observation_hold);
+        let plan = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+        assert_eq!(plan.state, SessionState::RequiresAction { reason: Reason::Plan });
+        assert!(plan.observation_hold);
+        let late = ledger.observe(7, &child_frame("hook/started", json!({"run":{"id":"late"}})));
+        assert_eq!(late.state, SessionState::Running);
+        assert!(late.observation_hold);
+    }
+
+    #[test]
+    fn completed_plan_holds_until_a_new_native_turn_without_successful_completion() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        ledger.observe(
+            7,
+            &frame(
+                "item/completed",
+                json!({"turnId":"turn-1","item":{"type":"plan","id":"plan","text":"the plan"}}),
+            ),
+        );
+        let done = complete(&mut ledger, "turn-1", "completed");
+        assert_eq!(done.signals, vec![Signal::Attention { reason: Reason::Plan }]);
+        assert!(done.observation_hold);
+        assert!(!ledger.can_reconcile_idle());
+        let idle =
+            ledger.observe(7, &frame("thread/status/changed", json!({"status":{"type":"idle"}})));
+        assert!(idle.observation_hold, "server idleness does not dismiss a local dialog");
+        assert!(idle.signals.is_empty());
+        let accepted = start(&mut ledger, "turn-2");
+        assert_eq!(accepted.signals, vec![Signal::TurnStarted]);
+        assert!(!accepted.observation_hold);
+        assert_eq!(
+            complete(&mut ledger, "turn-2", "completed").signals,
+            vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
+        );
     }
 
     #[test]
@@ -853,6 +1391,120 @@ mod tests {
     }
 
     #[test]
+    fn precise_native_requests_override_coarse_flags_without_releasing_unresolved_holds() {
+        // The native 0.153.4 genuine MCP form capture ac872b39 set
+        // waitingOnApproval without codex_approval_kind=mcp_tool_call.
+        for (method, params, expected) in [
+            (
+                "mcpServer/elicitation/request",
+                json!({
+                    "turnId":"turn-1", "mode":"form", "serverName":"elicitation_fixture",
+                    "message":"Disposable fixture confirmation.",
+                    "requestedSchema":{"type":"object","properties":{
+                        "confirmation":{"type":"string","enum":["ACCEPT_FIXTURE"]}
+                    },"required":["confirmation"]}
+                }),
+                Reason::Elicitation,
+            ),
+            (
+                "item/tool/requestUserInput",
+                json!({
+                    "turnId":"turn-1", "isBlocking":true,
+                    "questions":[{"id":"choice","question":"Fixture choice?","isSecret":false}]
+                }),
+                Reason::Question,
+            ),
+            (
+                "item/tool/requestUserInput",
+                json!({
+                    "turnId":"turn-1", "isBlocking":true,
+                    "questions":[{"id":"secret","question":"Synthetic secret?","isSecret":true}]
+                }),
+                Reason::Secret,
+            ),
+        ] {
+            let mut ledger = ready();
+            start(&mut ledger, "turn-1");
+            let flags = frame(
+                "thread/status/changed",
+                json!({"status":{
+                    "type":"active","activeFlags":["waitingOnApproval","waitingOnUserInput"]
+                }}),
+            );
+            ledger.observe(7, &flags);
+            let mut request = frame(method, params);
+            request["id"] = json!("native-form");
+            let precise = ledger.observe(7, &request);
+            assert_eq!(precise.state, SessionState::RequiresAction { reason: expected });
+            assert!(precise.observation_hold);
+            // A repeated coarse status after the precise request also cannot
+            // relabel it, and a terminal turn cannot hide an unresolved form.
+            assert_eq!(ledger.observe(7, &flags).state, precise.state);
+            assert_eq!(complete(&mut ledger, "turn-1", "completed").state, precise.state);
+            let resolved = resolve(&mut ledger, json!("native-form"));
+            assert_eq!(resolved.state, SessionState::RequiresAction { reason: Reason::Permission });
+            assert!(resolved.observation_hold, "request resolution does not clear status flags");
+            assert!(!ledger.can_reconcile_work());
+            let cleared = ledger
+                .observe(7, &frame("thread/status/changed", json!({"status":{"type":"idle"}})));
+            assert_eq!(
+                cleared.signals,
+                vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
+            );
+            assert!(!cleared.observation_hold);
+        }
+    }
+
+    #[test]
+    fn child_request_specificity_does_not_mask_another_threads_permission() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        let flags = json!({"status":{"type":"active","activeFlags":["waitingOnApproval"]}});
+        ledger.observe(7, &frame("thread/status/changed", flags.clone()));
+        let mut form = frame("mcpServer/elicitation/request", json!({"mode":"form"}));
+        form["id"] = json!("parent-form");
+        ledger.observe(7, &form);
+        discover_child(&mut ledger);
+        let child_wait = ledger.observe(7, &child_frame("thread/status/changed", flags));
+        assert_eq!(child_wait.state, SessionState::RequiresAction { reason: Reason::Permission });
+        form["id"] = json!("child-form");
+        form["params"]["threadId"] = json!("child");
+        let child_form = ledger.observe(7, &form);
+        assert_eq!(child_form.state, SessionState::RequiresAction { reason: Reason::Elicitation });
+        let mut permission =
+            child_frame("item/fileChange/requestApproval", json!({"itemId":"edit"}));
+        permission["id"] = json!("child-permission");
+        assert_eq!(
+            ledger.observe(7, &permission).state,
+            SessionState::RequiresAction { reason: Reason::Permission }
+        );
+        let specific_resolved = ledger.observe(
+            7,
+            &child_frame("serverRequest/resolved", json!({"requestId":"child-permission"})),
+        );
+        assert_eq!(
+            specific_resolved.state,
+            SessionState::RequiresAction { reason: Reason::Elicitation }
+        );
+        let form_resolved = ledger
+            .observe(7, &child_frame("serverRequest/resolved", json!({"requestId":"child-form"})));
+        assert_eq!(
+            form_resolved.state,
+            SessionState::RequiresAction { reason: Reason::Permission }
+        );
+        assert!(form_resolved.observation_hold);
+        let child_clear = ledger
+            .observe(7, &child_frame("thread/status/changed", json!({"status":{"type":"idle"}})));
+        assert_eq!(child_clear.state, SessionState::RequiresAction { reason: Reason::Elicitation });
+        // The parent retains its own unresolved coarse flag independently.
+        assert_eq!(
+            resolve(&mut ledger, json!("parent-form")).state,
+            SessionState::RequiresAction { reason: Reason::Permission }
+        );
+        assert!(!ledger.can_reconcile_work());
+    }
+
+    #[test]
     fn idle_audit_requires_no_known_work_and_memory_exhaustion_fails_closed() {
         let mut ledger = ready();
         assert!(ledger.can_reconcile_idle());
@@ -877,5 +1529,139 @@ mod tests {
         let extra = json!({"method":"item/futureTool/request","id":"extra","params":{"threadId":"thread-a","turnId":"turn-2"}});
         assert!(ledger.observe(7, &extra).observation_hold);
         assert_eq!(ledger.work_requests.len(), count, "bounded after exhaustion");
+    }
+    #[test]
+    fn known_system_error_status_preserves_failed_turn_in_either_event_order() {
+        for status_first in [false, true] {
+            let mut ledger = ready();
+            start(&mut ledger, "failed-api");
+            let status = frame("thread/status/changed", json!({"status":{"type":"systemError"}}));
+            if status_first {
+                let pending = ledger.observe(7, &status);
+                assert_eq!(pending.state, SessionState::Running);
+            }
+            let failed = complete(&mut ledger, "failed-api", "failed");
+            assert_eq!(failed.state, SessionState::Failed { reason: FailReason::Unknown });
+            assert_eq!(
+                failed.signals,
+                vec![Signal::TurnEnded { outcome: TurnOutcome::Failed(FailReason::Unknown) }]
+            );
+            let after = ledger.observe(7, &status);
+            assert_eq!(after.state, failed.state);
+            assert!(after.signals.is_empty());
+            start(&mut ledger, "retry");
+            assert_eq!(
+                complete(&mut ledger, "retry", "completed").state,
+                SessionState::Idle { stop_reason: StopReason::EndTurn }
+            );
+        }
+    }
+
+    #[test]
+    fn manual_compaction_is_ready_unknown_after_maintenance_and_hook_finish() {
+        let mut ledger = ready();
+        start(&mut ledger, "task");
+        assert_eq!(
+            complete(&mut ledger, "task", "completed").signals,
+            vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
+        );
+        start(&mut ledger, "compact");
+        ledger.observe(
+            7,
+            &frame("hook/started", json!({"run":{"id":"precompact","eventName":"preCompact"}})),
+        );
+        ledger.observe(
+            7,
+            &frame(
+                "item/started",
+                json!({"turnId":"compact","item":{"type":"contextCompaction","id":"compact-item"}}),
+            ),
+        );
+        ledger.observe(
+            7,
+            &frame(
+                "item/completed",
+                json!({"turnId":"compact","item":{"type":"contextCompaction","id":"compact-item"}}),
+            ),
+        );
+        let held = complete(&mut ledger, "compact", "completed");
+        assert!(held.observation_hold);
+        assert_eq!(held.state, SessionState::Running);
+        let done = ledger.observe(
+            7,
+            &frame("hook/completed", json!({"run":{"id":"precompact","status":"completed"}})),
+        );
+        assert_eq!(done.signals, vec![Signal::Ready]);
+        assert_eq!(done.state, SessionState::Idle { stop_reason: StopReason::Unknown });
+        assert!(!done.observation_hold);
+        assert!(complete(&mut ledger, "compact", "completed").signals.is_empty());
+        // Maintenance classification belongs to the old turn only.
+        start(&mut ledger, "next-task");
+        assert_eq!(
+            complete(&mut ledger, "next-task", "completed").signals,
+            vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
+        );
+    }
+
+    #[test]
+    fn in_task_compaction_keeps_success_and_missing_start_still_classifies_maintenance() {
+        for kind in ["userMessage", "agentMessage", "commandExecution"] {
+            let mut ledger = ready();
+            start(&mut ledger, "task");
+            ledger.observe(
+                7,
+                &frame(
+                    "item/completed",
+                    json!({"turnId":"task","item":{"type":kind,"id":"task-item","text":"fixture"}}),
+                ),
+            );
+            ledger.observe(7,&frame("item/completed",json!({"turnId":"task","item":{"type":"contextCompaction","id":"compact-item"}})));
+            assert_eq!(
+                complete(&mut ledger, "task", "completed").signals,
+                vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }],
+                "{kind}"
+            );
+        }
+        let mut ledger = ready();
+        start(&mut ledger, "task");
+        ledger.observe(
+            7,
+            &frame(
+                "item/completed",
+                json!({"turnId":"task","item":{"type":"agentMessage","id":"reply","text":"done"}}),
+            ),
+        );
+        complete(&mut ledger, "task", "completed");
+        ledger.observe(
+            7,
+            &frame("thread/status/changed", json!({"status":{"type":"active","activeFlags":[]}})),
+        );
+        ledger.observe(
+            7,
+            &frame(
+                "item/completed",
+                json!({"turnId":"compact","item":{"type":"contextCompaction","id":"compact-item"}}),
+            ),
+        );
+        assert_eq!(complete(&mut ledger, "compact", "completed").signals, vec![Signal::Ready]);
+    }
+
+    #[test]
+    fn completed_turn_items_classify_compaction_without_hiding_failure_or_interruption() {
+        for status in ["completed", "interrupted", "failed"] {
+            let mut ledger = ready();
+            start(&mut ledger, "compact");
+            let done=ledger.observe(7,&frame("turn/completed",json!({"turn":{"id":"compact","status":status,"items":[{"type":"contextCompaction","id":"compact-item"}]}})));
+            if status == "completed" {
+                assert_eq!(done.signals, vec![Signal::Ready]);
+            } else {
+                assert!(matches!(
+                    done.signals.as_slice(),
+                    [Signal::TurnEnded {
+                        outcome: TurnOutcome::Interrupted | TurnOutcome::Failed(_)
+                    }]
+                ));
+            }
+        }
     }
 }

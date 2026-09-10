@@ -703,6 +703,12 @@ pub enum Naming {
 /// the release notes mark `this build`.
 const BUILD_TAG: &str = concat!("v", env!("CARGO_PKG_VERSION"));
 
+fn resume_confirmation_offered(message: &str) -> bool {
+    message.contains("running elsewhere")
+        || (message.contains("cleanup is unverified")
+            && message.contains("resume again to acknowledge"))
+}
+
 /// How often the ticket page re-captures the selected shell's pane. Slow on
 /// purpose: it is a fork per beat, and a terminal a person is reading rather
 /// than driving does not need to be a live mirror.
@@ -4760,9 +4766,8 @@ impl App {
                 self.mode = Mode::Normal;
             }
             Response::Err { message } => {
-                if message.contains("running elsewhere") {
-                    self.resume_refused = Some(claude_session_id);
-                }
+                self.resume_refused =
+                    resume_confirmation_offered(&message).then_some(claude_session_id);
                 self.status = message;
                 self.mode = Mode::Normal;
             }
@@ -6433,7 +6438,7 @@ impl App {
             let exited_claude =
                 rec.kind.is_agent() && matches!(rec.state, SessionState::Exited { .. });
             let (ticket, kind) = (rec.ticket, rec.kind);
-            if observe_only || sleeping || exited_claude {
+            if observe_only || sleeping || exited_claude || rec.codex_stopping {
                 let cmd = if sleeping && rec.kind == SessionKind::Bash {
                     Command::WakeSession { id: sid }
                 } else {
@@ -6454,11 +6459,10 @@ impl App {
                         // fall through to the focus flow below
                     }
                     Response::Err { message } => {
-                        if message.contains("running elsewhere") {
-                            // The daemon's message says "resume again to
-                            // override" — the next Enter carries the confirm.
-                            self.resume_refused = Some(sid);
-                        }
+                        // Only an explicit offer arms the next Enter. Live
+                        // processes, inspection errors and other refusals
+                        // revoke any stale acknowledgement from an earlier try.
+                        self.resume_refused = resume_confirmation_offered(&message).then_some(sid);
                         self.status = message;
                         self.refresh()?;
                         return Ok(());
@@ -6467,7 +6471,8 @@ impl App {
                     // daemon is rebuilding it under the wake: the parked
                     // focus finishes this keypress when the pane lands.
                     Response::Provisioning => {
-                        self.status = "provisioning worktree ∙ claude wakes when ready".into();
+                        let word = kind.provider().map(keymap::agent_word).unwrap_or("shell");
+                        self.status = format!("provisioning worktree ∙ {word} wakes when ready");
                         self.pending_spawn_focus = Some((ticket, kind));
                         self.refresh()?;
                         return Ok(());
@@ -7559,6 +7564,55 @@ mod tests {
         assert!(app.daemon_down);
         assert!(app.board.tickets.is_empty());
         assert!(app.status.contains("reconnecting"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn unknown_cleanup_resume_requires_a_second_gesture_and_revokes_stale_confirmation() {
+        struct Refusals {
+            inner: Box<dyn Transport>,
+            responses: std::collections::VecDeque<String>,
+            confirmations: std::rc::Rc<std::cell::RefCell<Vec<bool>>>,
+        }
+        impl Transport for Refusals {
+            fn request(&mut self, command: Command) -> Result<Response> {
+                if let Command::ResumeSession { confirm, .. } = command {
+                    self.confirmations.borrow_mut().push(confirm);
+                    return Ok(Response::Err { message: self.responses.pop_front().unwrap() });
+                }
+                self.inner.request(command)
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+        }
+        let (mut app, _, sid) = app_with_session(
+            SessionKind::Codex,
+            SessionState::Unknown { reason: mesimon_core::board::UnknownReason::ObservationLost },
+            false,
+        );
+        app.board.sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
+        let confirmations = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let inner = std::mem::replace(&mut app.client, Box::new(Dead));
+        let warning = "Codex cleanup is unverified; unknown child processes may remain; resume again to acknowledge";
+        app.client = Box::new(Refusals {
+            inner,
+            responses: [warning, "Codex is still stopping; known runtime remains live", warning]
+                .into_iter()
+                .map(str::to_string)
+                .collect(),
+            confirmations: confirmations.clone(),
+        });
+        app.focus_session(sid).unwrap();
+        assert_eq!(app.resume_refused, Some(sid));
+        assert_eq!(app.status, warning);
+        // Refresh returns the fake's unmodified board; restore only the
+        // observed stopping projection for the next deliberate gesture.
+        app.board.sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
+        app.focus_session(sid).unwrap();
+        assert_eq!(app.resume_refused, None, "a live-owner refusal revokes acknowledgement");
+        app.board.sessions.iter_mut().find(|s| s.id == sid).unwrap().codex_stopping = true;
+        app.focus_session(sid).unwrap();
+        assert_eq!(&*confirmations.borrow(), &[false, true, false]);
     }
 
     /// Three-column board plus one claude session on ticket 1, request log out.

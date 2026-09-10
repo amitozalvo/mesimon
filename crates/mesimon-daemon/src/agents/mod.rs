@@ -1,5 +1,5 @@
-//! Provider-owned launch configuration. Board policy supplies capabilities;
-//! adapters translate them into the native agent's invocation.
+//! Provider-owned invocation, observation, history and recovery. Board policy
+//! supplies capabilities; adapters return normalized evidence to its writer.
 
 pub mod claude;
 pub mod codex;
@@ -100,8 +100,61 @@ pub struct HookObservation {
     pub metadata_changed: bool,
 }
 
+/// The daemon schedules common evidence sources; adapters decide eligibility,
+/// interpret native records and retain their own recovery cursors.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryChannel {
+    Startup,
+    Activity,
+    Status,
+    Transcript,
+}
+
+pub enum RecoverySample {
+    Startup { has_output: bool, title: Option<String> },
+    Activity { last_output_ms: u64 },
+    Status,
+    Transcript,
+}
+
+pub struct RecoveryObservation {
+    pub signal: mesimon_core::attention::Signal,
+    pub preview: Option<String>,
+    pub source: &'static str,
+}
+
+/// Provider-private transient state. No method may mutate board state; the
+/// daemon authorizes every returned observation before applying it.
+pub trait AgentRecovery: Send {
+    fn needs_poll(
+        &mut self,
+        _record: &SessionRecord,
+        _channel: RecoveryChannel,
+        _now: u64,
+    ) -> bool {
+        false
+    }
+
+    fn poll(
+        &mut self,
+        _record: &SessionRecord,
+        _sample: RecoverySample,
+        _now: u64,
+    ) -> Vec<RecoveryObservation> {
+        Vec::new()
+    }
+}
+
+struct NoPassiveRecovery;
+impl AgentRecovery for NoPassiveRecovery {}
+
 pub trait AgentAdapter {
     fn capabilities(&self) -> AgentCapabilities;
+    /// Structured transports need no heuristic inference from quiet panes or
+    /// history. Providers that support passive recovery explicitly opt in.
+    fn recovery(&self) -> Box<dyn AgentRecovery> {
+        Box::new(NoPassiveRecovery)
+    }
     fn discover(
         &self,
         _roots: &[std::path::PathBuf],
@@ -184,6 +237,46 @@ mod tests {
             let title =
                 adapter(provider).unwrap().normalize_title(&format!("\u{7}{}", "x".repeat(100)));
             assert_eq!(title, "x".repeat(80));
+        }
+    }
+
+    #[test]
+    fn structured_provider_never_infers_state_from_passive_recovery() {
+        use mesimon_core::board::{Provenance, UnknownReason};
+        let mut record = SessionRecord::new(
+            uuid::Uuid::from_u128(1),
+            SessionKind::Codex,
+            ulid::Ulid(1),
+            vec![],
+            "/repo".into(),
+            SessionState::Running,
+        );
+        // Even Claude-shaped legacy fields cannot opt Codex into inference.
+        record.transcript_path = Some("/nonexistent/claude-history.jsonl".into());
+        record.provenance = Provenance::Adopted;
+        let mut recovery = adapter(record.kind).unwrap().recovery();
+        for state in [
+            SessionState::Running,
+            SessionState::Spawning,
+            SessionState::Unknown { reason: UnknownReason::DaemonRestarted },
+        ] {
+            record.state = state;
+            for channel in [
+                RecoveryChannel::Startup,
+                RecoveryChannel::Activity,
+                RecoveryChannel::Status,
+                RecoveryChannel::Transcript,
+            ] {
+                assert!(!recovery.needs_poll(&record, channel, u64::MAX));
+            }
+            for sample in [
+                RecoverySample::Startup { has_output: true, title: None },
+                RecoverySample::Activity { last_output_ms: 0 },
+                RecoverySample::Status,
+                RecoverySample::Transcript,
+            ] {
+                assert!(recovery.poll(&record, sample, u64::MAX).is_empty());
+            }
         }
     }
 }

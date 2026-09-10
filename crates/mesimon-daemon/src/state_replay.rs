@@ -35,6 +35,21 @@ pub struct Step {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Input {
+    /// Raw app-server evidence through the production Codex ledger. A
+    /// snapshot's work_reconciled flag represents the runtime's separate
+    /// outstanding-work audit, not a claim inferred from history idleness.
+    CodexSnapshot {
+        generation: u64,
+        thread: Value,
+        work_reconciled: bool,
+    },
+    CodexFrame {
+        generation: u64,
+        frame: Value,
+    },
+    CodexLost {
+        generation: u64,
+    },
     /// Normalized adapter evidence. These inputs test common projection;
     /// provider-specific raw captures must separately test their adapter.
     AgentReady,
@@ -77,6 +92,8 @@ pub struct Expected {
     pub confidence: Option<Confidence>,
     #[serde(default)]
     pub pending: Option<bool>,
+    #[serde(default)]
+    pub observation_hold: Option<bool>,
 }
 
 #[derive(Debug, Serialize)]
@@ -108,40 +125,79 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
     let mut column = scenario.column.clone();
     let mut tools = ToolLedger::default();
     let mut monitors = Vec::new();
+    let mut codex: Option<crate::agents::codex::observation::Ledger> = None;
+    let mut observation_hold = None;
     let mut report =
         Report { id: scenario.id.clone(), passed: true, failures: vec![], timeline: vec![] };
     let mut last_at = 0;
     for (index, step) in scenario.steps.iter().enumerate() {
         anyhow::ensure!(step.at_ms >= last_at, "step {index}: arrival time runs backwards");
         last_at = step.at_ms;
-        let signal = match &step.input {
-            Input::AgentReady => Some(Signal::Ready),
-            Input::AgentTurnStarted => Some(Signal::TurnStarted),
-            Input::AgentTurnEnded { outcome } => Some(Signal::TurnEnded { outcome: *outcome }),
-            Input::AgentAttention { reason } => Some(Signal::Attention { reason: *reason }),
-            Input::AgentObservationLost => Some(Signal::ObservationLost),
-            Input::Hook { event, reason, payload } => signal_with_monitors(
-                &HookFrame {
-                    session: "lab-session".into(),
-                    event: event.clone(),
-                    reason: reason.clone(),
-                    payload: payload.clone(),
-                },
-                &mut monitors,
+        let codex_update = match &step.input {
+            Input::CodexSnapshot { generation, thread, work_reconciled } => {
+                if codex.is_none() {
+                    let id = thread["id"]
+                        .as_str()
+                        .ok_or_else(|| anyhow::anyhow!("Codex snapshot lacks thread identity"))?;
+                    codex = Some(crate::agents::codex::observation::Ledger::new(
+                        id.into(),
+                        *generation,
+                    ));
+                }
+                Some(codex.as_mut().expect("initialized above").reconcile(
+                    *generation,
+                    thread,
+                    *work_reconciled,
+                ))
+            }
+            Input::CodexFrame { generation, frame } => Some(
+                codex
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("Codex frame requires initial snapshot"))?
+                    .observe(*generation, frame),
             ),
-            Input::Transcript { record } => {
-                tools.observe(record);
-                tail_signal(record)
-            }
-            Input::StatusIdle { turn_done } => {
-                Some(Signal::StatusFileIdle { turn_done: *turn_done })
-            }
-            Input::PermissionResumed => Some(Signal::StatusFilePermissionResumed),
-            Input::PaneQuiet => Some(Signal::PaneQuiet),
-            Input::TranscriptQuiet if !tools.is_busy() => {
-                Some(Signal::TranscriptHint { kind: TailHint::StaleQuiet })
-            }
+            Input::CodexLost { generation } => Some(
+                codex
+                    .as_mut()
+                    .ok_or_else(|| anyhow::anyhow!("Codex loss requires initial snapshot"))?
+                    .lost(*generation),
+            ),
             _ => None,
+        };
+        let signal = if let Some(update) = codex_update {
+            observation_hold = Some(update.observation_hold);
+            anyhow::ensure!(update.signals.len() <= 1, "Codex event emitted multiple transitions");
+            update.signals.into_iter().next()
+        } else {
+            match &step.input {
+                Input::AgentReady => Some(Signal::Ready),
+                Input::AgentTurnStarted => Some(Signal::TurnStarted),
+                Input::AgentTurnEnded { outcome } => Some(Signal::TurnEnded { outcome: *outcome }),
+                Input::AgentAttention { reason } => Some(Signal::Attention { reason: *reason }),
+                Input::AgentObservationLost => Some(Signal::ObservationLost),
+                Input::Hook { event, reason, payload } => signal_with_monitors(
+                    &HookFrame {
+                        session: "lab-session".into(),
+                        event: event.clone(),
+                        reason: reason.clone(),
+                        payload: payload.clone(),
+                    },
+                    &mut monitors,
+                ),
+                Input::Transcript { record } => {
+                    tools.observe(record);
+                    tail_signal(record)
+                }
+                Input::StatusIdle { turn_done } => {
+                    Some(Signal::StatusFileIdle { turn_done: *turn_done })
+                }
+                Input::PermissionResumed => Some(Signal::StatusFilePermissionResumed),
+                Input::PaneQuiet => Some(Signal::PaneQuiet),
+                Input::TranscriptQuiet if !tools.is_busy() => {
+                    Some(Signal::TranscriptHint { kind: TailHint::StaleQuiet })
+                }
+                _ => None,
+            }
         };
         let (change, decision) = if let Some(signal) = signal {
             let (change, decision) = machine.apply_explained(&signal, step.at_ms);
@@ -175,14 +231,21 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
             || column != step.expect.column
             || step.expect.confidence.is_some_and(|c| view.confidence != c)
             || step.expect.pending.is_some_and(|p| view.pending.is_some() != p)
+            || step.expect.observation_hold.is_some_and(|held| observation_hold != Some(held))
         {
             report.failures.push(format!("step {index} at {}ms: expected {:?} in {} ({:?}); got {:?} in {} ({:?}), pending={}",
                 step.at_ms, step.expect.state, step.expect.column, step.expect.confidence,
                 view.state, column, view.confidence, view.pending.is_some()));
+            if step.expect.observation_hold.is_some_and(|held| observation_hold != Some(held)) {
+                report.failures.push(format!(
+                    "step {index}: expected observation_hold={:?}, got {observation_hold:?}",
+                    step.expect.observation_hold
+                ));
+            }
         }
         report.timeline.push(json!({"step": index, "at_ms": step.at_ms, "machine": view,
             "column": column, "decision": decision, "movement": movement, "outstanding_tool": tools.is_busy(),
-            "monitor_task_ids": monitors}));
+            "monitor_task_ids": monitors, "observation_hold": observation_hold}));
     }
     report.passed = report.failures.is_empty();
     Ok(report)

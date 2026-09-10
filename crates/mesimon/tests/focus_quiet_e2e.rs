@@ -142,3 +142,54 @@ fn the_daemon_says_how_long_the_attached_pane_has_been_quiet() {
     assert!(matches!(c.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 }
+
+#[test]
+fn shutdown_reply_survives_process_exit_with_concurrent_snapshot_clients() {
+    if !common::require_tmux() {
+        return;
+    }
+    let fixture = common::TestFixture::new("shutdownreply");
+    let repo = fixture.dir.join("repo");
+    std::fs::create_dir_all(&repo).unwrap();
+    let paths = fixture.paths(&repo);
+    for iteration in 0..8 {
+        let daemon = fixture.daemon(&repo);
+        let mut c = TestClient::connect(&paths.orch_sock());
+        assert!(matches!(
+            c.request(Command::Hello {
+                version: mesimon_core::command::PROTOCOL_VERSION,
+                client: format!("shutdown reply {iteration}"),
+            }),
+            Response::Hello { .. }
+        ));
+        let ready = std::sync::Arc::new(std::sync::Barrier::new(5));
+        let readers: Vec<_> = (0..4)
+            .map(|_| {
+                let ready = ready.clone();
+                let socket = paths.orch_sock();
+                std::thread::spawn(move || {
+                    let mut reader = TestClient::connect(&socket);
+                    let _ = board_of(reader.request(Command::Snapshot));
+                    ready.wait();
+                    for _ in 0..8 {
+                        if reader
+                            .try_send(mesimon_core::Principal::Local, Command::Snapshot)
+                            .is_none()
+                        {
+                            break;
+                        }
+                    }
+                })
+            })
+            .collect();
+        ready.wait();
+        // The daemon's main thread exits as soon as shutdown completes. Its
+        // requesting client must receive the complete response before then,
+        // even when other client threads are runnable at the same time.
+        assert!(matches!(c.request(Command::Shutdown), Response::Ok));
+        daemon.join().unwrap();
+        for reader in readers {
+            reader.join().unwrap();
+        }
+    }
+}

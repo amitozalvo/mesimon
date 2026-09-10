@@ -8389,3 +8389,166 @@ Evidence and unfinished acceptance are tracked in CODEX-IMPLEMENTATION-STATUS.md
 and spikes/codex-runtime-evidence.md. These decisions do not certify the still
 open full acceptance matrix. The connected fixture isolation incident and its
 exact corrective cleanup are recorded there too; no failed capture is a pass.
+
+
+### 2026-09-10 — native Codex plan dialogs and cleanup reserve safety
+
+Codex 0.153.4 opens its implementation choice locally after a successful plan
+turn, without an app-server approval request. A completed plan therefore enters
+Plan attention with a checkout hold. Streaming plan text alone remains work.
+The native user's next turn clears the hold; declining the dialog clears it only
+after the daemon observed that dialog and then the native composer. This yields
+Idle/Unknown, never EndTurn or automatic completion movement. The seen/dismissed
+turn markers persist through handover. Plans are saved as proposed ticket notes;
+the note is not evidence of user approval. Native foreground title notifications
+supply board names, with system-thread titles excluded.
+
+A killed or sleeping Codex runtime reserves its seat and blocks worktree teardown
+until its stop acknowledgement. Archive's empty explicit-session list cannot
+bypass that per-ticket hold. An accepted resume behind worktree provisioning
+reserves the same agent seat as an accepted start. Legacy shell hook handling is
+preserved independently of Codex's structured event adapter.
+
+Observe-only external sessions cannot accept a board prompt until explicit
+takeover gives Mesimon a native pane. Both immediate and queued sends return an
+explanation; automatic note/merge delivery uses the same guard, so no request can
+be silently parked forever against a nonexistent runtime.
+
+
+### 2026-09-10 — passive recovery is an adapter responsibility
+
+AgentAdapter now creates opaque per-session AgentRecovery state. The daemon
+schedules common startup, pane activity, status and history samples, but the
+provider decides eligibility, native interpretation and recovery heuristics.
+Claude owns its startup probe, status cache, transcript cursor and thresholds;
+Codex supplies no passive fallback and cannot infer quiet from a silent pane or
+stored history. Both signal and preview mutations cross the common authorization
+chokepoint before application. Existing Claude replay/status/tail regressions
+remain intact; the old public tail module is a compatibility re-export.
+
+The native startup composer is checked once per Codex runtime generation (and
+again for observed attention), preserving trust/auth attention on wake without
+continuously capturing every idle terminal. External attachment uses the same
+retiring-seat ownership predicate as ordinary starts, so a stopping record cannot
+move to another ticket and release its former checkout's cleanup hold.
+
+Linux verification now retains private audit registries on its named build volume;
+the guard validates their configured parent, ownership and permissions before
+allocating a fixture. Failed or abnormal cleanup remains a failed audit.
+
+### Codex descendant audits and local plan dismissal (2026-09-10)
+
+A completed child turn or terminal collab summary is not proof that its requests,
+tools or hook continuations have stopped. The adapter retains bounded normalized
+work even before the parent discovers the child, promotes descendant identities
+transitively, and audits known closed children as well as every loaded non-system
+thread in the dedicated app-server. Metadata reads never resume/subscribe or answer
+an approval. Native outgoing mutations and incoming events invalidate in-flight
+audits; reconciliation waits until both relay queues have drained. Missing,
+oversized or changing evidence keeps the checkout held.
+
+Changing the native foreground does not discard the previous conversation's
+work. A terminal result withheld by such work can become eligible once audited;
+an already published completion is never replayed after late activity. Native
+plan dismissal is eligible only when independent work has drained: a local plan
+UI cannot clear child, tool, old-conversation or pending-native-RPC holds. Pure
+ledger and runtime regressions cover these cases; native child acceptance is
+still tracked separately in CODEX-IMPLEMENTATION-STATUS.
+
+The connected native Stop check now uses the actual common checkout policy:
+Running/attention/unknown states hold work in addition to the independent
+observation-hold flag. Real Stop-hook barriers and one automatic continuation
+passed without premature completion; a prior fixture requiring that extra flag
+at every instant was incorrect and its failed capture remains recorded.
+
+### Explicit recovery after unverified Codex cleanup (2026-09-10)
+
+Abrupt app-server death can reparent an unobserved escaped tool before the
+supervisor samples it. Absence of the known processes is therefore not a clean
+stop acknowledgement. Such records keep their agent seat and checkout hold;
+automatic wake, queue delivery, worktree provisioning and teardown cannot clear
+that uncertainty.
+
+An explicit local user's resume may recover the exact conversation after two
+separate gestures. The first checks the matching old generation, dead/absent
+native pane, no known runtime/app-server/native owner or live endpoint, no
+positive external writer, and an existing checkout; it warns that unknown child
+processes may remain. The second acknowledges that specific generation. A daemon
+restart or reappearing owner invalidates the offer. Old configuration, stopped=false
+snapshot and a bounded diagnostic are retained privately as unverified evidence;
+a new runtime starts with an observation hold. Failed native launches restore only
+the prepared configuration with a generation check, leaving original failure
+evidence intact. No automatic action manufactures cleanup success. This extends
+the existing explicit resume override policy rather than interpreting missing
+telemetry as permission to operate on the checkout.
+
+### Shutdown response delivery is acknowledged (2026-09-10)
+
+Queueing Shutdown's response to a client thread did not ensure it reached the
+wire before the daemon process exited. The existing client writer now signals
+after newline serialization/write/flush, and shutdown waits at most two seconds
+for that receipt. Disconnected or stalled clients cannot prevent shutdown
+indefinitely. Board-state mutation stays on the main thread; response writes stay
+on the original client thread. A regression exercises eight restart/shutdown
+cycles while four snapshot readers are active. Separately, the interrupt e2e now
+awaits the one-way asynchronous hook input before asserting its initial Running
+state; the later painting and interruption assertions are unchanged.
+
+### Native manual compaction is maintenance (2026-09-10)
+
+Codex 0.153.4's `/compact` creates a separate completed turn containing a
+ContextCompaction item and no task output. Completing that maintenance returns
+Mesimon to Idle/Unknown and does not trigger on_done or move the ticket. A turn
+that also contains user input, assistant output, a plan or task tools retains
+normal task completion semantics, including automatic compaction inside it.
+Independent pending requests, descendants and hooks continue to hold the checkout.
+The native manual-compaction capture `eec3f88a` verifies both the maintenance hold
+and a subsequent successful prompt on the same conversation; earlier failures
+remain documented in the runtime evidence.
+
+### Precise native requests and API failures (2026-09-10)
+
+Within each Codex thread, classified outstanding requests determine attention;
+coarse waitingOnApproval/waitingOnUserInput status flags are a fallback. This
+prevents a real MCP form from being mislabeled Permission and preserves Question
+and Secret distinctions. Independent parent/child requests still compete under
+the common urgency order. Resolving the last request exposes any remaining
+coarse flag again; classification does not release a checkout hold.
+
+The installed protocol's systemError thread status is recognized alongside the
+authoritative failed turn. It does not erase that outcome as missing observation
+or manufacture successful completion. Unknown future status variants still fail
+closed. Regressions exercise both status/turn event orders and a subsequent turn.
+
+### Inner-server loss and accepted adoption reservations (2026-09-10)
+
+The Codex executable can be a launcher whose inner app-server exits first. A
+surviving launcher is insufficient evidence of intact process ancestry. Relay
+failure after launch preserves cleanup uncertainty, and a native successful exit
+or Close requires a positively live dedicated upstream listener before normal
+shutdown. Known-process cleanup cannot turn that uncertainty into stopped=true.
+Native capture `1a9219d7` verifies inner-server loss, the retained checkout hold,
+and explicit warned recovery of the exact conversation without another model
+turn. The earlier incorrect acknowledgement remains recorded as a failure.
+
+External adoption checks accepted pending agent starts and resumes before
+rebinding a record to a ticket. An absent pane during worktree provisioning does
+not make that ticket's reserved seat available. Paused-provisioning regressions
+verify rejection and eventual launch of the originally captured provider.
+
+### Failed startup requires positive conversation evidence (2026-09-10)
+
+A missing Codex thread ID cannot prove that no conversation was created. Runtime
+snapshots now persist BeforeSelection before native launch, SelectionPending
+before forwarding a creation/selection request, and the Selected identity before
+forwarding its response. Phase changes advance the observation sequence. Legacy
+snapshots default to Unknown, never BeforeSelection.
+
+The adapter permits a two-gesture local startup retry only when the matching old
+generation positively proves no selection was forwarded and has no resume,
+thread, turn or history identity. Known-owner absence and retained uncertain
+cleanup evidence are still required. A saved native identity resumes exactly,
+including an identity received just before the daemon missed its projection.
+Pending or absent evidence refuses a fresh replacement. The same record/provider
+and seat survive a valid retry despite a project provider switch. Four supervised
+integration cases and durable pre-forward snapshot regressions cover this policy.

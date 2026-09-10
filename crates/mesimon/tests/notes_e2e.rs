@@ -87,7 +87,7 @@ fn notes_are_files_with_authors_and_the_agent_reads_and_writes_them() {
     );
 
     // ---- no agent yet: telling one is refused, not swallowed -------------
-    err_containing(c.request(Command::NoteToAgent { ticket, note: desc }), "no live claude");
+    err_containing(c.request(Command::NoteToAgent { ticket, note: desc }), "no live agent");
 
     // ---- the agent, through the real shim --------------------------------
     let sid = match c.request(Command::SpawnSession {

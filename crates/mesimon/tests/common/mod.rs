@@ -186,7 +186,9 @@ impl TestClient {
     /// Send as any principal and wait for the reply. Events interleave on a
     /// subscribed connection; they are skipped here.
     pub fn send(&mut self, principal: Principal, command: Command) -> Response {
-        self.try_send(principal, command).expect("the daemon answered")
+        let name = command.wire_name();
+        self.send_result(principal, command)
+            .unwrap_or_else(|error| panic!("daemon response to {name}: {error}"))
     }
 
     /// `send` that reports a dead connection instead of panicking. Every
@@ -194,16 +196,26 @@ impl TestClient {
     /// thread outlives its shutdown, so a late connect succeeds and then
     /// closes — which is why the harness's teardown uses this one.
     pub fn try_send(&mut self, principal: Principal, command: Command) -> Option<Response> {
+        self.send_result(principal, command).ok()
+    }
+
+    fn send_result(&mut self, principal: Principal, command: Command) -> std::io::Result<Response> {
         let env = Envelope { principal, command };
-        writeln!(self.write, "{}", serde_json::to_string(&env).unwrap()).ok()?;
+        writeln!(self.write, "{}", serde_json::to_string(&env).unwrap())?;
         loop {
             let mut buf = String::new();
-            match self.read.read_line(&mut buf) {
-                Ok(0) | Err(_) => return None,
-                Ok(_) => {}
+            if self.read.read_line(&mut buf)? == 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::UnexpectedEof,
+                    "connection closed before response",
+                ));
             }
-            if let Ok(resp) = serde_json::from_str::<Response>(&buf) {
-                return Some(resp);
+            match serde_json::from_str::<Response>(&buf) {
+                Ok(response) => return Ok(response),
+                Err(_) if serde_json::from_str::<Event>(&buf).is_ok() => {}
+                Err(error) => {
+                    return Err(std::io::Error::new(std::io::ErrorKind::InvalidData, error))
+                }
             }
         }
     }

@@ -1,0 +1,256 @@
+{
+  "schema": 1,
+  "adapter_revision": "native-relay-acceptance-1",
+  "provider": "codex",
+  "versions": {
+    "0.153.4": {
+      "captured_at": "2026-09-10",
+      "captured_at_unix_ms": 1788998400000,
+      "model": "gpt-5.6-luna",
+      "reasoning_effort": "low",
+      "mode": [
+        "native_interactive_tmux",
+        "transparent_unix_websocket_relay"
+      ],
+      "document": "docs/spikes/codex-runtime-evidence.md",
+      "implementation_status": "docs/CODEX-IMPLEMENTATION-STATUS.md",
+      "scope": "Selected version-scoped native observations are not proof of every workflow, configuration, model or future upstream version.",
+      "observed": [
+        "baseline",
+        "provider_switch",
+        "sleep_exact_resume",
+        "handover",
+        "scoped_mcp",
+        "interruption",
+        "structured_write_guard",
+        "plan_and_queued_prompt",
+        "additive_brief_exact_wake",
+        "external_discovery_takeover",
+        "stop_continuation",
+        "manual_compaction",
+        "native_identity",
+        "native_question",
+        "initial_child_work",
+        "credential_free_auth",
+        "child_wakeup_after_idle"
+      ],
+      "end_to_end": {
+        "baseline": {
+          "status": "passed",
+          "capture": "20260910T004842Z-codex-state-a172df02",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Native completion, exactly-once board submission and automatic IN PROGRESS to REVIEW movement."
+        },
+        "provider_switch": {
+          "status": "passed",
+          "capture": "20260910T005102Z-codex-state-94ac65d3",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Claude to Codex to Claude while older running and sleeping sessions retain their provider and exact identity."
+        },
+        "sleep_exact_resume": {
+          "status": "passed",
+          "capture": "20260910T005011Z-codex-state-e679e663",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Sleep and exact-session resume after the project provider changes."
+        },
+        "handover": {
+          "status": "passed",
+          "capture": "20260910T005236Z-codex-state-a7c4320a",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Board closure and daemon handover preserve native pane PID and thread."
+        },
+        "scoped_mcp": {
+          "status": "passed",
+          "capture": "20260910T004933Z-codex-state-e1775516",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Native approval and actual bound get_ticket result."
+        },
+        "interruption": {
+          "status": "passed",
+          "capture": "20260910T005317Z-codex-state-df3f6de8",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Native interruption without successful completion movement."
+        },
+        "structured_write_guard": {
+          "status": "retrospectively_verified",
+          "capture": "20260910T011528Z-codex-state-79aaa510",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Allowed two-file patch, protected rename denied, native title and explicit policy settings observed.",
+          "original_runner_status": "inconclusive",
+          "validation": "Separate retained retrospective-verification artifact; original verdict unchanged."
+        },
+        "plan_and_queued_prompt": {
+          "status": "retrospectively_verified",
+          "capture": "20260910T011713Z-codex-state-b2c21fba",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Plan attention/checkout hold, native dismissal to IdleUnknown without movement, queued prompt delivery on the same thread.",
+          "original_runner_status": "inconclusive",
+          "validation": "Separate retained retrospective-verification artifact; original verdict unchanged.",
+          "limitation": "The final optional file-unchanged assertion was not reached and is not claimed."
+        },
+        "additive_brief_exact_wake": {
+          "status": "passed",
+          "capture": "20260910T013144Z-codex-state-4c846d32",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Actual Mesimon hook context alongside existing developer instructions; exact wake with brief off adds no fresh brief."
+        },
+        "external_discovery_takeover": {
+          "status": "passed",
+          "capture": "20260910T012704Z-codex-state-21c022e4",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Live writer refusal, owned shutdown and exact external takeover with prior reply retained."
+        },
+        "stop_continuation": {
+          "status": "passed",
+          "capture": "20260910T074543Z-codex-lifecycle-ea6267a3",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Two Stop barriers hold checkout until the actual continuation completes."
+        },
+        "manual_compaction": {
+          "status": "passed",
+          "capture": "20260910T080901Z-codex-lifecycle-eec3f88a",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Manual maintenance settles IdleUnknown without column movement; subsequent real task on the same thread completes normally."
+        },
+        "native_identity": {
+          "status": "passed",
+          "capture": "20260910T080311Z-codex-lifecycle-9e40c014",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Native new, exact resume and fork preserve scoped Mesimon principal and one seat."
+        },
+        "native_question": {
+          "status": "passed",
+          "capture": "20260910T080427Z-codex-lifecycle-5a26f6b7",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Real request_user_input produces Question attention and native answer completes the same turn."
+        },
+        "initial_child_work": {
+          "status": "passed",
+          "capture": "20260910T075100Z-codex-state-3b7a0d9b",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Parent completion remains held until the active child completes and independent work audit clears it."
+        },
+        "credential_free_auth": {
+          "status": "passed",
+          "capture": "20260910T073456Z-codex-auth-bce38299",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Native sign-in UI produces Auth attention without credentials or model calls.",
+          "model_calls": 0
+        },
+        "child_wakeup_after_idle": {
+          "status": "passed",
+          "capture": "20260910T082112Z-codex-child-wakeup-a69151d3",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Native send_input reactivates the same independently idle child; second parent completion remains held until the active child completes.",
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "low",
+          "foreground_parent_turns": 2,
+          "child_turns": 2,
+          "elapsed_seconds": 73.84,
+          "cleanup_owners": 2
+        },
+        "genuine_mcp_elicitation": {
+          "status": "passed",
+          "capture": "20260910T082536Z-codex-elicitation-545a7a7f",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Genuine native MCP enum form produces Elicitation attention and a checkout hold; native submission reaches the tool and the same turn completes.",
+          "foreground_parent_turns": 1,
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "low",
+          "cleanup_owners": 2
+        },
+        "injected_http_401": {
+          "status": "verified_injected_fault",
+          "capture": "20260910T082707Z-codex-injected-http-be7ef5e5",
+          "kind": "local_http_fault_real_codex_mesimon_e2e",
+          "claim": "Actual native HTTP 401 failure projects Failed without successful completion or REVIEW movement. Owned loopback-only endpoint; no real account fault claimed.",
+          "model_calls": 0,
+          "credentials_imported": false,
+          "cleanup_owners": 2
+        },
+        "injected_http_429": {
+          "status": "verified_injected_fault",
+          "capture": "20260910T082820Z-codex-injected-http-45b9828e",
+          "kind": "local_http_fault_real_codex_mesimon_e2e",
+          "claim": "Actual native HTTP 429 failure projects Failed without successful completion or REVIEW movement. Owned loopback-only endpoint; no real account fault claimed.",
+          "model_calls": 0,
+          "credentials_imported": false,
+          "cleanup_owners": 2
+        },
+        "genuine_mcp_elicitation_cancel": {
+          "status": "passed",
+          "capture": "20260910T083036Z-codex-elicitation-cancel-2e88851f",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Native Escape returns actual MCP action=cancel without accepted content; the same turn handles refusal and completes.",
+          "foreground_parent_turns": 1,
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "low",
+          "cleanup_owners": 2
+        },
+        "native_crash_exact_recovery": {
+          "status": "passed",
+          "capture": "20260910T082900Z-codex-state-1a9219d7",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Hard daemon restart and native quit/wake retain exact history; inner-server loss preserves unverified cleanup until explicit local risk acknowledgement resumes the same thread with retained evidence.",
+          "foreground_parent_turns": 1,
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "low",
+          "cleanup_owners": 2
+        },
+        "native_command_refusal": {
+          "status": "passed",
+          "capture": "20260910T083803Z-codex-approval-no-d3f5bb47",
+          "kind": "real_codex_mesimon_e2e",
+          "claim": "Visible native No refuses the exact command, leaves the owned target absent and interrupts the same turn without REVIEW movement. This CLI maps No to cancel, not a separate Deny RPC; nested command item is not retained in reconstructed code-mode history.",
+          "foreground_parent_turns": 1,
+          "model": "gpt-5.6-luna",
+          "reasoning_effort": "low",
+          "cleanup_owners": 2
+        },
+        "preselection_startup_retry": {
+          "status": "passed",
+          "capture": "20260910T084134Z-codex-startup-recovery-acbf4bfe",
+          "kind": "injected_startup_failure_real_codex_retry_e2e",
+          "claim": "An owned first-launch failure retains positive before-selection evidence; explicit local acknowledgment retries into actual native Codex on the same seat after the project switches to Claude. No user turn or conversation replacement.",
+          "model_calls": 0,
+          "cleanup_owners": 2
+        }
+      },
+      "not_yet_observed": [
+        "default-window automatic compaction in a native user task",
+        "real account quota and quota auto-resume",
+        "arbitrary upstream event reorderings, concurrent dialog combinations and future CLI versions"
+      ],
+      "limitations": [
+        "Evidence age is measured from the UTC capture date; this diagnostic does not automatically refresh or certify evidence.",
+        "Luna with low reasoning is the later bounded verification policy. Early captures used Luna before explicit low-effort pinning; no uniform effort claim is made for those captures.",
+        "Replay and unit coverage are separate from measured native runtime behavior.",
+        "Retrospective validation certifies only retained observations, not missing checkpoints; original inconclusive outcomes remain recorded.",
+        "Real account quota is intentionally not exhausted for verification. Local HTTP fault injection cannot certify actual billing or account quota recovery.",
+        "Billing and some native title/context overhead are unavailable; token counts are retained in captures where supplied."
+      ],
+      "inconclusive_evidence": [
+        {
+          "capture": "20260910T075859Z-codex-lifecycle-455ab3d4",
+          "finding": "Real false task completion from manual compaction; fixed and subsequently verified by eec3f88a."
+        },
+        {
+          "capture_suffix": "97b6fa89",
+          "finding": "First compaction-fix rerun stopped on fixture turn correlation, not a passing result."
+        },
+        {
+          "capture_suffixes": [
+            "92c1a425",
+            "a59b5083",
+            "6813b1ae"
+          ],
+          "finding": "Child prerequisites or fixture arguments failed before the required scenario; later initial-child acceptance does not certify wakeup."
+        },
+        {
+          "source": "docs/CODEX-IMPLEMENTATION-STATUS.md#incidents-and-inconclusive-evidence",
+          "finding": "Isolation remediation, sandbox cleanup failures, startup and other failed attempts remain separately documented."
+        }
+      ]
+    }
+  }
+}

@@ -341,7 +341,7 @@ fn m2_attention_headless() {
         String::from_utf8_lossy(&out.stdout).trim().to_string()
     };
     assert_eq!(cursor_y(&claude_sid16), "0", "a plain spawn must never press Enter");
-    // A ticket holds ONE claude (2026-09-02): while this one is alive a second
+    // A ticket holds one agent: while this one is alive a second
     // is refused, and the message names the gesture that reaches the seat.
     match c.request(Command::SpawnSession {
         ticket,
@@ -349,7 +349,7 @@ fn m2_attention_headless() {
         submit_prompt: true,
     }) {
         Response::Err { message } => {
-            assert!(message.contains("already has a claude"), "{message}");
+            assert!(message.contains("already has an agent session"), "{message}");
             assert!(message.contains("focus"), "{message}");
         }
         other => panic!("a second claude on one ticket must be refused, got {other:?}"),

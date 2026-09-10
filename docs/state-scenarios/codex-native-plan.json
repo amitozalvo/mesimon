@@ -1,0 +1,268 @@
+{
+  "schema": 1,
+  "id": "codex-native-plan",
+  "title": "Completed native plan waits for local implementation choice",
+  "provenance": {
+    "kind": "sanitized_capture",
+    "provider": "codex",
+    "version": "0.153.4",
+    "capture": "20260910T005957Z-codex-plan-f09984c9",
+    "scope": "Measured RPC shapes; opaque IDs and text replaced, clock synthesized. Native dialog dismissal verified separately."
+  },
+  "initial": {
+    "state": "spawning"
+  },
+  "column": "TODO",
+  "steps": [
+    {
+      "at_ms": 0,
+      "input": {
+        "source": "codex_snapshot",
+        "generation": 7,
+        "thread": {
+          "id": "fixture-thread",
+          "status": {
+            "type": "idle"
+          },
+          "turns": []
+        },
+        "work_reconciled": true
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "unknown"
+        },
+        "column": "TODO",
+        "observation_hold": false,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 1,
+      "input": {
+        "source": "codex_frame",
+        "generation": 7,
+        "frame": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "fixture-thread",
+            "turn": {
+              "id": "plan-turn",
+              "status": "inProgress",
+              "items": []
+            }
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": false,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 2,
+      "input": {
+        "source": "codex_frame",
+        "generation": 7,
+        "frame": {
+          "method": "item/plan/delta",
+          "params": {
+            "threadId": "fixture-thread",
+            "turnId": "plan-turn",
+            "itemId": "plan",
+            "delta": "draft"
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": false,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 3,
+      "input": {
+        "source": "codex_frame",
+        "generation": 7,
+        "frame": {
+          "method": "item/completed",
+          "params": {
+            "threadId": "fixture-thread",
+            "turnId": "plan-turn",
+            "item": {
+              "type": "plan",
+              "id": "plan",
+              "text": "A fixture plan."
+            }
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": false,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 4,
+      "input": {
+        "source": "codex_frame",
+        "generation": 7,
+        "frame": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "fixture-thread",
+            "turn": {
+              "id": "plan-turn",
+              "status": "completed",
+              "items": []
+            }
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "plan"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": true,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 2000,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "plan"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": true,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 2001,
+      "input": {
+        "source": "codex_frame",
+        "generation": 7,
+        "frame": {
+          "method": "thread/status/changed",
+          "params": {
+            "threadId": "fixture-thread",
+            "status": {
+              "type": "idle"
+            }
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "plan"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": true,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 2002,
+      "input": {
+        "source": "codex_frame",
+        "generation": 7,
+        "frame": {
+          "method": "turn/started",
+          "params": {
+            "threadId": "fixture-thread",
+            "turn": {
+              "id": "implementation-turn",
+              "status": "inProgress",
+              "items": []
+            }
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "plan"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": false,
+        "pending": true
+      }
+    },
+    {
+      "at_ms": 3502,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": false,
+        "pending": false
+      }
+    },
+    {
+      "at_ms": 3503,
+      "input": {
+        "source": "codex_frame",
+        "generation": 7,
+        "frame": {
+          "method": "turn/completed",
+          "params": {
+            "threadId": "fixture-thread",
+            "turn": {
+              "id": "implementation-turn",
+              "status": "completed",
+              "items": []
+            }
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS",
+        "observation_hold": false,
+        "pending": true
+      }
+    },
+    {
+      "at_ms": 5100,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW",
+        "observation_hold": false,
+        "pending": false
+      }
+    }
+  ]
+}

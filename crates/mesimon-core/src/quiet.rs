@@ -120,6 +120,8 @@ mod tests {
             pending_prefill: false,
             codex_submit_sent: false,
             codex_stopping: false,
+            codex_plan_dialog_seen: false,
+            codex_plan_dismissed_turn: None,
             idle_teammates: vec![],
             monitor_task_ids: vec![],
             plan_note: None,

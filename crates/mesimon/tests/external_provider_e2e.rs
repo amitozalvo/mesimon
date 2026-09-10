@@ -92,6 +92,21 @@ fn codex_external_opaque_identity_survives_provider_switch_and_restart_without_f
     };
     check(&mut client);
     assert!(matches!(client.request(Command::FocusStart { session: id }), Response::Err { .. }));
+    let ticket = client.board().sessions.iter().find(|record| record.id == id).unwrap().ticket;
+    for queued in [false, true] {
+        let response = client.request(Command::PromptSession {
+            ticket,
+            text: "Never silently park this external prompt".into(),
+            queued,
+        });
+        assert!(
+            matches!(response, Response::Err { ref message } if message.contains("resume it to take over")),
+            "{response:?}"
+        );
+        let board = client.board();
+        assert!(!board.sessions.iter().find(|record| record.id == id).unwrap().pending_submit);
+    }
+
     assert!(matches!(
         client.send(Principal::Agent { session: id }, Command::AgentGetTicket),
         Response::Err { .. }

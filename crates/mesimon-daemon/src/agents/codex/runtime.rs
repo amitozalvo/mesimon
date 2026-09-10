@@ -3,9 +3,11 @@
 //! JSON messages cross the relay unchanged. Observation never acknowledges an
 //! approval, starts a turn, or modifies the user's conversation.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, OpenOptions};
 use std::io::{ErrorKind, Read};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::OpenOptionsExt;
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::os::unix::process::CommandExt;
@@ -23,7 +25,7 @@ use tungstenite::protocol::{Message, WebSocketConfig};
 use tungstenite::WebSocket;
 
 use super::observation::{Ledger, Update};
-use super::{write_json, RuntimeConfig, Snapshot};
+use super::{write_json, LaunchPhase, RuntimeConfig, Snapshot};
 use crate::agents::{AgentActivity, AgentPreview};
 
 const MAX_MESSAGE: usize = 32 * 1024 * 1024;
@@ -257,6 +259,16 @@ impl ProcessTree {
         self.extend(&table)?;
         self.last_sample = Some(Instant::now());
         Ok(())
+    }
+
+    fn relay_ended(&mut self, result: &Result<()>) {
+        if result.is_err() && self.server.is_some() {
+            // The launched CLI can be a live Node wrapper around the native
+            // server. A broken relay may mean that an inner ancestor already
+            // exited and reparented children before the next process sample.
+            // Cleaning every remembered PID cannot close that observation gap.
+            self.uncertain = true;
+        }
     }
 
     fn sample(&mut self) -> Result<()> {
@@ -493,12 +505,52 @@ fn stream_deadlines(stream: &UnixStream, handshake: bool) -> Result<()> {
 fn supervise(config: &RuntimeConfig, observation: &mut Observation) -> Result<()> {
     let mut owned = Owned::default();
     let result = relay(config, observation, &mut owned);
+    owned.tree.relay_ended(&result);
     let cleanup = owned.cleanup();
-    observation.snapshot.stopped = cleanup.is_ok();
+    observation.snapshot.stopped = cleanup.is_ok() && !owned.tree.uncertain;
     if let Err(error) = &cleanup {
         eprintln!("Codex runtime cleanup failed: {error}");
     }
     result.and(cleanup)
+}
+
+/// Native success/Close can be a reaction to an inner server crash while its
+/// CLI wrapper is still alive. Require a live private listener before accepting
+/// that as an intentional quit. This nonblocking connect sends no RPC or data.
+fn verify_upstream_listener(path: &Path) -> Result<()> {
+    let bytes = path.as_os_str().as_bytes();
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.contains(&0) || bytes.len() >= address.sun_path.len() {
+        bail!("Codex upstream endpoint cannot be verified on native quit");
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    #[cfg(target_os = "macos")]
+    {
+        address.sun_len = std::mem::size_of_val(&address) as u8;
+    }
+    for (target, source) in address.sun_path.iter_mut().zip(bytes) {
+        *target = *source as libc::c_char;
+    }
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return Err(std::io::Error::last_os_error()).context("create Codex quit liveness probe");
+    }
+    let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+    if unsafe { libc::fcntl(fd.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error()).context("bound Codex quit liveness probe");
+    }
+    if unsafe {
+        libc::connect(
+            fd.as_raw_fd(),
+            (&address as *const libc::sockaddr_un).cast(),
+            std::mem::size_of_val(&address) as libc::socklen_t,
+        )
+    } != 0
+    {
+        return Err(std::io::Error::last_os_error())
+            .context("Codex app-server listener is unavailable or unverified on native quit");
+    }
+    Ok(())
 }
 
 fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owned) -> Result<()> {
@@ -586,38 +638,53 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
         if TERMINATED.load(Ordering::Relaxed) {
             return Ok(());
         }
-        if let Some(child) = &mut owned.native {
-            if let Some(status) = child.try_wait()? {
-                if !status.success() {
-                    bail!("native Codex exited ({status})");
-                }
-                return Ok(());
-            }
-        }
+        // Server loss can also make the native client exit successfully.
+        // Preserve the upstream failure instead of misclassifying that as quit.
         if let Some(child) = &mut owned.server {
             if let Some(status) = child.try_wait()? {
                 bail!("Codex app-server exited ({status})");
             }
         }
+        if let Some(child) = &mut owned.native {
+            if let Some(status) = child.try_wait()? {
+                if !status.success() {
+                    bail!("native Codex exited ({status})");
+                }
+                verify_upstream_listener(&config.upstream_socket)?;
+                return Ok(());
+            }
+        }
         // Small fair batches keep UI traffic and heartbeats moving even during
         // streamed replies. No additional initialize/subscription is injected.
+        let mut native_drained = false;
         for _ in 0..32 {
-            let Some(message) = receive(&mut native).context("read native Codex")? else { break };
+            let Some(message) = receive(&mut native).context("read native Codex")? else {
+                native_drained = true;
+                break;
+            };
             if let Message::Text(text) = &message {
-                observation.outgoing(&serde_json::from_str::<Value>(text)?)?;
+                observation.before_native_forward(config, &serde_json::from_str::<Value>(text)?)?;
             }
             let closed = matches!(message, Message::Close(_));
             upstream.send(message).context("forward native Codex message")?;
             if closed {
+                if let Some(child) = &mut owned.server {
+                    if let Some(status) = child.try_wait()? {
+                        bail!("Codex app-server exited while native client closed ({status})");
+                    }
+                }
+                verify_upstream_listener(&config.upstream_socket)?;
                 return Ok(());
             }
         }
+        let mut upstream_drained = false;
         for _ in 0..32 {
             let Some(message) = receive(&mut upstream).context("read Codex app-server")? else {
+                upstream_drained = true;
                 break;
             };
             if let Message::Text(text) = &message {
-                observation.incoming(config, serde_json::from_str::<Value>(text)?)?;
+                observation.before_server_forward(config, serde_json::from_str::<Value>(text)?)?;
             }
             let closed = matches!(message, Message::Close(_));
             native.send(message).context("forward Codex app-server message")?;
@@ -625,7 +692,11 @@ fn relay(config: &RuntimeConfig, observation: &mut Observation, owned: &mut Owne
                 bail!("Codex app-server disconnected");
             }
         }
-        observation.poll_audit(config);
+        if native_drained && upstream_drained {
+            // A fair-batch boundary is not proof that the observation queue
+            // is empty. Do not apply an audit ahead of already queued work.
+            observation.poll_audit(config);
+        }
         if heartbeat.elapsed() >= HEARTBEAT {
             owned.tree.sample()?;
             observation.publish(config)?;
@@ -675,16 +746,32 @@ struct Selection {
 }
 struct Audit {
     revision: u64,
-    thread: Value,
+    threads: BTreeMap<String, Value>,
 }
-type StateEvidence =
-    (Option<String>, Option<String>, SessionState, bool, Option<String>, bool, Option<String>);
+type StateEvidence = (
+    Option<String>,
+    Option<String>,
+    SessionState,
+    bool,
+    Option<String>,
+    bool,
+    Option<String>,
+    Option<String>,
+    LaunchPhase,
+);
 
 struct Observation {
     published_state: Option<StateEvidence>,
+    published_completions: BTreeSet<(String, String)>,
+    revoked_completions: BTreeSet<(String, String)>,
     snapshot: Snapshot,
     ledger: Option<Ledger>,
+    retired: BTreeMap<String, Ledger>,
+    owned_threads: BTreeSet<String>,
     pending: BTreeMap<String, Selection>,
+    native_requests: BTreeMap<String, bool>,
+    system_threads: BTreeSet<String>,
+    mutation_unobserved: bool,
     buffered: Vec<Value>,
     buffered_bytes: usize,
     preview: AgentPreview,
@@ -698,22 +785,35 @@ impl Observation {
     fn new(config: &RuntimeConfig) -> Self {
         Self {
             published_state: None,
+            published_completions: BTreeSet::new(),
+            revoked_completions: BTreeSet::new(),
             snapshot: Snapshot {
                 session: config.session,
                 generation: config.generation,
                 sequence: 0,
                 heartbeat_ms: 0,
                 thread_id: None,
+                launch_phase: if config.resume.is_none() {
+                    LaunchPhase::BeforeSelection
+                } else {
+                    LaunchPhase::SelectionPending
+                },
                 turn_id: None,
                 state: SessionState::Spawning,
                 observation_hold: true,
                 history_path: None,
+                title: None,
                 plan: None,
                 plan_key: None,
                 stopped: false,
             },
             ledger: None,
+            retired: BTreeMap::new(),
+            owned_threads: BTreeSet::new(),
             pending: BTreeMap::new(),
+            native_requests: BTreeMap::new(),
+            system_threads: BTreeSet::new(),
+            mutation_unobserved: false,
             buffered: Vec::new(),
             buffered_bytes: 0,
             preview: AgentPreview::default(),
@@ -725,13 +825,60 @@ impl Observation {
         }
     }
 
+    fn before_native_forward(&mut self, config: &RuntimeConfig, frame: &Value) -> Result<()> {
+        let before = self.snapshot.launch_phase;
+        self.outgoing(frame)?;
+        if before != self.snapshot.launch_phase {
+            self.publish(config)?;
+        }
+        Ok(())
+    }
+
+    fn before_server_forward(&mut self, config: &RuntimeConfig, frame: Value) -> Result<()> {
+        let before = (self.snapshot.launch_phase, self.snapshot.thread_id.clone());
+        self.incoming(config, frame)?;
+        if before != (self.snapshot.launch_phase, self.snapshot.thread_id.clone()) {
+            self.publish(config)?;
+        }
+        Ok(())
+    }
+
     fn outgoing(&mut self, frame: &Value) -> Result<()> {
+        // Native input is part of continuity too. An audit which raced a
+        // forwarded turn/approval must not release the checkout before its
+        // server-side effects become observable.
+        self.revision = self.revision.wrapping_add(1);
         let Some(method) = frame["method"].as_str() else { return Ok(()) };
+        if let Some(id) = frame.get("id") {
+            if self.native_requests.len() >= 1024 {
+                bail!("too many pending native Codex requests");
+            }
+            let system = frame["params"]["ephemeral"] == true
+                || frame["params"]["threadId"]
+                    .as_str()
+                    .is_some_and(|id| self.system_threads.contains(id));
+            let mutation = !system
+                && (method.starts_with("turn/")
+                    || matches!(
+                        method,
+                        "thread/start"
+                            | "thread/resume"
+                            | "thread/fork"
+                            | "thread/compact/start"
+                            | "review/start"
+                    ));
+            self.native_requests.insert(id.to_string(), mutation);
+            self.mutation_unobserved |= mutation;
+        }
         if !matches!(method, "thread/start" | "thread/resume" | "thread/fork")
             || frame["params"]["ephemeral"] == true
         {
             return Ok(());
         }
+        // This phase is published by the relay before forwarding this native
+        // selection. A later missing response cannot be mistaken for proof
+        // that no conversation was ever created.
+        self.snapshot.launch_phase = LaunchPhase::SelectionPending;
         let Some(id) = frame.get("id") else { return Ok(()) };
         if self.pending.len() >= 128 {
             bail!("too many pending Codex thread selections");
@@ -748,6 +895,18 @@ impl Observation {
 
     fn incoming(&mut self, config: &RuntimeConfig, frame: Value) -> Result<()> {
         if frame.get("method").is_none() {
+            if let Some(id) = frame.get("id") {
+                self.native_requests.remove(&id.to_string());
+            }
+            let returned_thread = &frame["result"]["thread"];
+            if returned_thread["ephemeral"] == true && returned_thread["threadSource"] == "system" {
+                if let Some(id) = returned_thread["id"].as_str() {
+                    if self.system_threads.len() >= 1024 {
+                        bail!("too many native Codex system threads");
+                    }
+                    self.system_threads.insert(id.into());
+                }
+            }
             if let Some(selection) =
                 frame.get("id").and_then(|id| self.pending.remove(&id.to_string()))
             {
@@ -767,13 +926,42 @@ impl Observation {
                         {
                             bail!("native Codex did not resume the captured conversation");
                         }
+                        if self.snapshot.thread_id.as_deref() != Some(id) {
+                            if let (Some(previous), Some(ledger)) =
+                                (self.snapshot.thread_id.clone(), self.ledger.take())
+                            {
+                                if self.retired.len() >= 128 {
+                                    bail!("too many owned Codex foreground conversations");
+                                }
+                                self.retired.insert(previous, ledger);
+                            }
+                            self.preview = AgentPreview::default();
+                            self.snapshot.plan = None;
+                            self.snapshot.plan_key = None;
+                        }
                         self.snapshot.thread_id = Some(id.into());
+                        self.snapshot.launch_phase = LaunchPhase::Selected;
+                        self.owned_threads.insert(id.into());
                         self.snapshot.history_path = thread["path"].as_str().map(str::to_owned);
-                        let mut ledger = Ledger::new(id.into(), config.generation);
-                        self.needs_audit = selection.method != "thread/start";
-                        let update = ledger.reconcile(config.generation, thread, !self.needs_audit);
-                        self.apply(update);
+                        self.snapshot.title =
+                            thread["name"].as_str().map(|name| bound_text(name.into(), 512));
+                        let existing = self.ledger.take().or_else(|| self.retired.remove(id));
+                        let retained = existing.is_some();
+                        let mut ledger =
+                            existing.unwrap_or_else(|| Ledger::new(id.into(), config.generation));
+                        self.needs_audit = retained
+                            || selection.method != "thread/start"
+                            || !self.retired.is_empty();
+                        self.mutation_unobserved = false;
+                        let update = if retained {
+                            // Re-selecting a conversation cannot erase locally
+                            // observed requests or unfinished descendant work.
+                            ledger.observe(config.generation, &json!({}))
+                        } else {
+                            ledger.reconcile(config.generation, thread, !self.needs_audit)
+                        };
                         self.ledger = Some(ledger);
+                        self.apply(update);
                         let buffered = std::mem::take(&mut self.buffered);
                         self.buffered_bytes = 0;
                         for event in buffered {
@@ -796,14 +984,52 @@ impl Observation {
     }
 
     fn observe(&mut self, config: &RuntimeConfig, frame: &Value) {
+        if let Some(thread) = frame["params"]["threadId"].as_str() {
+            if self.owned_threads.contains(thread)
+                && self.snapshot.thread_id.as_deref() != Some(thread)
+                && !self.retired.contains_key(thread)
+                && frame["method"].as_str().is_some_and(|method| {
+                    method.starts_with("turn/")
+                        || method.starts_with("item/")
+                        || method.starts_with("hook/")
+                        || method == "serverRequest/resolved"
+                        || method == "thread/status/changed"
+                })
+            {
+                // An audited idle conversation can become active again after
+                // native foreground selection changes. Keep its identity,
+                // even after discarding its quiescent historical ledger.
+                self.retired.insert(thread.into(), Ledger::new(thread.into(), config.generation));
+                self.needs_audit = true;
+            }
+        }
+        if frame["method"] == "thread/name/updated"
+            && frame["params"]["threadId"].as_str() == self.snapshot.thread_id.as_deref()
+        {
+            if let Some(name) = frame["params"]["threadName"].as_str() {
+                self.snapshot.title = Some(bound_text(name.into(), 512));
+            }
+        }
         if frame.get("method").is_some() {
             // Conservatively invalidate an in-flight audit on every event,
             // including descendant changes which may lack the parent ID.
             self.revision = self.revision.wrapping_add(1);
         }
+        if frame["method"] == "turn/started"
+            && frame["params"]["threadId"].as_str() == self.snapshot.thread_id.as_deref()
+        {
+            self.mutation_unobserved = false;
+        }
+        for ledger in self.retired.values_mut() {
+            ledger.observe(config.generation, frame);
+        }
         if let Some(ledger) = &mut self.ledger {
             let update = ledger.observe(config.generation, frame);
+            self.owned_threads.extend(ledger.known_children());
             self.apply(update);
+        }
+        for ledger in self.retired.values() {
+            self.owned_threads.extend(ledger.known_children());
         }
     }
 
@@ -830,6 +1056,46 @@ impl Observation {
         } else if self.preview.activity.is_none() {
             self.preview.activity = Some(AgentActivity::Thinking);
         }
+        if self.snapshot.state
+            == (SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn })
+        {
+            if let (Some(thread), Some(turn)) = (&self.snapshot.thread_id, &self.snapshot.turn_id) {
+                let identity = (thread.clone(), turn.clone());
+                if self.transport_held() && self.published_completions.contains(&identity) {
+                    self.revoked_completions.insert(identity.clone());
+                }
+                if self.revoked_completions.contains(&identity) {
+                    self.snapshot.state = SessionState::Idle {
+                        stop_reason: mesimon_core::board::StopReason::Unknown,
+                    };
+                } else if self.transport_held() {
+                    if let Some(ledger) = &mut self.ledger {
+                        ledger.defer_terminal_projection();
+                    }
+                }
+            }
+        }
+        self.apply_transport_hold();
+    }
+
+    fn transport_held(&self) -> bool {
+        self.needs_audit
+            || self.mutation_unobserved
+            || !self.retired.is_empty()
+            || self.native_requests.values().any(|mutation| *mutation)
+    }
+
+    fn apply_transport_hold(&mut self) {
+        if self.transport_held() {
+            self.snapshot.observation_hold = true;
+            if matches!(
+                self.snapshot.state,
+                SessionState::Idle { .. }
+                    | SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan }
+            ) {
+                self.snapshot.state = SessionState::Running;
+            }
+        }
     }
 
     fn poll_audit(&mut self, config: &RuntimeConfig) {
@@ -839,16 +1105,7 @@ impl Observation {
                     self.audit = None;
                     self.next_audit = Instant::now() + Duration::from_secs(2);
                     if let Ok(audit) = result {
-                        if audit.revision == self.revision {
-                            if let Some(ledger) = &mut self.ledger {
-                                if ledger.can_reconcile_idle() {
-                                    let update =
-                                        ledger.reconcile(config.generation, &audit.thread, true);
-                                    self.apply(update);
-                                    self.needs_audit = false;
-                                }
-                            }
-                        }
+                        self.apply_audit(config, audit);
                     }
                 }
                 Err(mpsc::TryRecvError::Disconnected) => {
@@ -858,20 +1115,75 @@ impl Observation {
                 Err(mpsc::TryRecvError::Empty) => {}
             }
         }
-        if !self.needs_audit || self.audit.is_some() || Instant::now() < self.next_audit {
+        let Some(ledger) = &self.ledger else { return };
+        let required = self.needs_audit
+            || self.mutation_unobserved
+            || !self.retired.is_empty()
+            || ledger.needs_work_audit();
+        if !required
+            || self.audit.is_some()
+            || Instant::now() < self.next_audit
+            || !self.native_requests.is_empty()
+            || !ledger.can_reconcile_work()
+            || !self.retired.values().all(Ledger::can_reconcile_work)
+        {
             return;
         }
         let Some(thread) = self.snapshot.thread_id.clone() else { return };
+        let mut known: BTreeSet<String> = ledger.known_children().into_iter().collect();
+        for (id, retired) in &self.retired {
+            known.insert(id.clone());
+            known.extend(retired.known_children());
+        }
         let socket = config.upstream_socket.clone();
         let revision = self.revision;
         let (sender, receiver) = mpsc::sync_channel(1);
         self.audit = Some(receiver);
         std::thread::spawn(move || {
-            let _ = sender.send(audit_idle(&socket, &thread, revision));
+            let _ = sender.send(audit_idle(&socket, &thread, &known, revision));
         });
     }
 
+    fn apply_audit(&mut self, config: &RuntimeConfig, audit: Audit) -> bool {
+        if audit.revision != self.revision
+            || !self.native_requests.is_empty()
+            || !self.retired.values().all(Ledger::can_reconcile_work)
+        {
+            return false;
+        }
+        let Some(ledger) = &mut self.ledger else { return false };
+        if !ledger.can_reconcile_work() {
+            return false;
+        }
+        let Some(thread) = self.snapshot.thread_id.as_ref().and_then(|id| audit.threads.get(id))
+        else {
+            return false;
+        };
+        let covered = ledger.known_children().into_iter().chain(
+            self.retired
+                .iter()
+                .flat_map(|(id, old)| std::iter::once(id.clone()).chain(old.known_children())),
+        );
+        if covered.into_iter().any(|id| !audit.threads.contains_key(&id)) {
+            return false;
+        }
+        let update = ledger.reconcile_work(config.generation, thread);
+        self.retired.clear();
+        self.mutation_unobserved = false;
+        self.needs_audit = false;
+        self.apply(update);
+        true
+    }
+
     fn advance_evidence(&mut self) {
+        if !self.snapshot.observation_hold
+            && self.snapshot.state
+                == (SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn })
+        {
+            if let (Some(thread), Some(turn)) = (&self.snapshot.thread_id, &self.snapshot.turn_id) {
+                self.published_completions.insert((thread.clone(), turn.clone()));
+            }
+        }
         let evidence = (
             self.snapshot.thread_id.clone(),
             self.snapshot.turn_id.clone(),
@@ -880,6 +1192,8 @@ impl Observation {
             self.snapshot.history_path.clone(),
             self.snapshot.stopped,
             self.snapshot.plan_key.clone(),
+            self.snapshot.title.clone(),
+            self.snapshot.launch_phase,
         );
         if self.published_state.as_ref() != Some(&evidence) {
             self.snapshot.sequence = self.snapshot.sequence.saturating_add(1);
@@ -888,6 +1202,13 @@ impl Observation {
     }
 
     fn publish(&mut self, config: &RuntimeConfig) -> Result<()> {
+        if self.owned_threads.len() > 1024
+            || self.retired.len() > 1024
+            || self.published_completions.len() > 1024
+        {
+            bail!("owned Codex conversation tracking exceeded its bound");
+        }
+        self.apply_transport_hold();
         self.advance_evidence();
         self.snapshot.heartbeat_ms =
             SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis().try_into()?;
@@ -920,13 +1241,25 @@ fn bound_text(mut text: String, bytes: usize) -> String {
 
 /// No subscription is created: this connection cannot claim native approvals.
 /// The relay remains active on the calling thread throughout these reads.
-fn audit_idle(socket: &Path, thread_id: &str, revision: u64) -> Result<Audit> {
+fn audit_idle(
+    socket: &Path,
+    thread_id: &str,
+    known: &BTreeSet<String>,
+    revision: u64,
+) -> Result<Audit> {
     let deadline = Instant::now() + Duration::from_secs(15);
     let mut client = super::rpc::Client::connect(socket)?;
     let mut unexpected_request = false;
+    let mut activity_changed = false;
     let mut observe = |frame: Value| {
         if frame.get("method").is_some() && frame.get("id").is_some() {
             unexpected_request = true;
+        }
+        if matches!(
+            frame["method"].as_str(),
+            Some("thread/status/changed" | "thread/started" | "thread/closed")
+        ) {
+            activity_changed = true;
         }
     };
     let loaded = client.call("thread/loaded/list", json!({"limit": 1000}), &mut observe)?;
@@ -937,7 +1270,7 @@ fn audit_idle(socket: &Path, thread_id: &str, revision: u64) -> Result<Audit> {
     if !loaded_ids.iter().any(|id| id.as_str() == Some(thread_id)) {
         bail!("Codex parent is not loaded");
     }
-    let descendants = client.call("thread/list", json!({"ancestorThreadId": thread_id, "limit": 100,
+    let descendants = client.call("thread/list", json!({"ancestorThreadId": thread_id, "limit": 1000,
         "sourceKinds": ["cli", "vscode", "exec", "appServer", "subAgent", "subAgentReview", "subAgentCompact", "subAgentThreadSpawn", "subAgentOther", "unknown"]}), &mut observe)?;
     if !complete_page(&descendants) {
         bail!("Codex descendants exceed audit bound");
@@ -945,14 +1278,22 @@ fn audit_idle(socket: &Path, thread_id: &str, revision: u64) -> Result<Audit> {
     // The persistent ancestor index may lag. Inspect *every* loaded thread
     // in this dedicated server; absence from the descendant list is no proof
     // that it cannot still mutate the checkout.
-    for loaded_id in loaded_ids {
+    let mut ids = known.clone();
+    for id in loaded_ids {
+        ids.insert(id.as_str().context("loaded Codex thread lacks identity")?.into());
+    }
+    for child in descendants["data"].as_array().context("invalid Codex descendants")? {
+        ids.insert(child["id"].as_str().context("Codex descendant lacks identity")?.into());
+    }
+    if ids.len() > 1024 {
+        bail!("owned Codex threads exceed audit bound");
+    }
+    let mut threads = BTreeMap::new();
+    for id in ids {
         if Instant::now() >= deadline {
             bail!("Codex reconciliation audit timed out");
         }
-        let id = loaded_id.as_str().context("loaded Codex thread lacks identity")?;
-        if id == thread_id {
-            continue;
-        }
+        let loaded_here = loaded_ids.iter().any(|entry| entry.as_str() == Some(id.as_str()));
         let current = client.call(
             "thread/read",
             json!({"threadId": id, "includeTurns": false}),
@@ -965,9 +1306,11 @@ fn audit_idle(socket: &Path, thread_id: &str, revision: u64) -> Result<Audit> {
         // Native title generation was measured as ephemeral system work; it
         // does not own a ticket turn or a checkout seat.
         let title_thread = thread["ephemeral"] == true && thread["threadSource"] == "system";
-        if !title_thread && thread["status"]["type"] != "idle" {
+        let closed_here = !loaded_here && thread["status"]["type"] == "notLoaded";
+        if !title_thread && thread["status"]["type"] != "idle" && !closed_here {
             bail!("a loaded Codex thread is not idle");
         }
+        threads.insert(id, thread.clone());
     }
     if Instant::now() >= deadline {
         bail!("Codex reconciliation audit timed out");
@@ -981,14 +1324,32 @@ fn audit_idle(socket: &Path, thread_id: &str, revision: u64) -> Result<Audit> {
         json!({"threadId": thread_id, "includeTurns": false}),
         &mut observe,
     )?;
+    // Status notifications are global on the initialized read-only client.
+    // Drain ones queued around the last read; an active child changing while
+    // the metadata walk runs invalidates the walk even if its native UI was
+    // not subscribed to that child's item stream.
+    let mut drained = false;
+    for _ in 0..64 {
+        match client.receive(Duration::from_millis(1))? {
+            Some(frame) => observe(frame),
+            None => {
+                drained = true;
+                break;
+            }
+        }
+    }
     if unexpected_request {
         bail!("read-only Codex audit received a server request");
+    }
+    if activity_changed || !drained {
+        bail!("Codex activity changed during reconciliation");
     }
     let thread = parent.get("thread").context("Codex audit lacks thread")?;
     if thread["id"] != thread_id || thread["status"]["type"] != "idle" {
         bail!("Codex parent is not idle");
     }
-    Ok(Audit { revision, thread: thread.clone() })
+    threads.insert(thread_id.into(), thread.clone());
+    Ok(Audit { revision, threads })
 }
 
 fn complete_page(page: &Value) -> bool {
@@ -1012,6 +1373,437 @@ mod tests {
             resume: None,
             config_flags: vec![],
             env: vec![],
+        }
+    }
+
+    fn selected() -> Observation {
+        let mut observer = Observation::new(&config());
+        observer.outgoing(&json!({"id":1,"method":"thread/start","params":{}})).unwrap();
+        observer
+            .incoming(
+                &config(),
+                json!({"id":1,"result":{"thread":{
+            "id":"main","status":{"type":"idle"},"turns":[]}}}),
+            )
+            .unwrap();
+        observer
+    }
+
+    fn event(observer: &mut Observation, thread: &str, method: &str, mut params: Value) {
+        params["threadId"] = json!(thread);
+        observer.incoming(&config(), json!({"method":method,"params":params})).unwrap();
+    }
+
+    fn idle_audit(observer: &Observation, ids: &[&str]) -> Audit {
+        Audit {
+            revision: observer.revision,
+            threads: ids
+                .iter()
+                .map(|id| ((*id).into(), json!({"id":id,"status":{"type":"idle"},"turns":[]})))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn pending_native_mutation_and_later_input_reject_an_idle_audit() {
+        let mut observer = selected();
+        let stale = idle_audit(&observer, &["main"]);
+        observer
+            .outgoing(&json!({"id":2,"method":"turn/start","params":{"threadId":"main"}}))
+            .unwrap();
+        observer.apply_transport_hold();
+        assert!(observer.snapshot.observation_hold);
+        assert_eq!(observer.snapshot.state, SessionState::Running);
+        assert!(!observer.apply_audit(&config(), stale));
+        assert!(!observer.apply_audit(&config(), idle_audit(&observer, &["main"])));
+        observer
+            .incoming(&config(), json!({"id":2,"error":{"message":"fixture refusal"}}))
+            .unwrap();
+        assert!(observer.snapshot.observation_hold, "an RPC response alone is not a work audit");
+        let audit = idle_audit(&observer, &["main"]);
+        observer.outgoing(&json!({"id":"approval","result":{"decision":"cancel"}})).unwrap();
+        assert!(
+            !observer.apply_audit(&config(), audit),
+            "approval input also invalidates an audit"
+        );
+        assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main"])));
+        assert!(!observer.snapshot.observation_hold);
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown }
+        );
+    }
+
+    #[test]
+    fn foreground_switch_retains_old_tools_and_the_unpublished_new_completion() {
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"old-turn"}}));
+        event(
+            &mut observer,
+            "main",
+            "item/started",
+            json!({"turnId":"old-turn",
+            "item":{"id":"old-tool","type":"commandExecution","status":"inProgress"}}),
+        );
+        observer.outgoing(&json!({"id":2,"method":"thread/start","params":{}})).unwrap();
+        observer
+            .incoming(
+                &config(),
+                json!({"id":2,"result":{"thread":{
+            "id":"new","status":{"type":"idle"},"turns":[]}}}),
+            )
+            .unwrap();
+        assert!(observer.retired.contains_key("main"));
+        assert!(observer.snapshot.observation_hold);
+        assert!(!observer.apply_audit(&config(), idle_audit(&observer, &["main", "new"])));
+        event(&mut observer, "new", "turn/started", json!({"turn":{"id":"new-turn"}}));
+        event(
+            &mut observer,
+            "new",
+            "turn/completed",
+            json!({"turn":{"id":"new-turn","status":"completed","items":[]}}),
+        );
+        assert!(observer.snapshot.observation_hold);
+        event(
+            &mut observer,
+            "main",
+            "item/completed",
+            json!({"turnId":"old-turn",
+            "item":{"id":"old-tool","type":"commandExecution","status":"completed"}}),
+        );
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"old-turn","status":"completed","items":[]}}),
+        );
+        assert!(
+            !observer.apply_audit(&config(), idle_audit(&observer, &["new"])),
+            "audit must cover old foreground"
+        );
+        assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main", "new"])));
+        assert!(!observer.snapshot.observation_hold);
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: mesimon_core::board::StopReason::EndTurn }
+        );
+        assert!(
+            observer.owned_threads.contains("main"),
+            "retain identity after discarding idle history"
+        );
+    }
+
+    #[test]
+    fn reselecting_the_same_thread_does_not_erase_a_native_request() {
+        let mut observer = selected();
+        observer
+            .incoming(
+                &config(),
+                json!({"id":"approval","method":"item/commandExecution/requestApproval",
+            "params":{"threadId":"main","turnId":"turn"}}),
+            )
+            .unwrap();
+        observer
+            .outgoing(&json!({"id":2,"method":"thread/resume","params":{"threadId":"main"}}))
+            .unwrap();
+        observer
+            .incoming(
+                &config(),
+                json!({"id":2,"result":{"thread":{
+            "id":"main","status":{"type":"idle"},"turns":[]}}}),
+            )
+            .unwrap();
+        assert!(!observer.apply_audit(&config(), idle_audit(&observer, &["main"])));
+        event(&mut observer, "main", "serverRequest/resolved", json!({"requestId":"approval"}));
+        assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main"])));
+        assert!(!observer.snapshot.observation_hold);
+    }
+
+    #[test]
+    fn transport_work_cannot_be_hidden_by_a_dismissible_plan_state() {
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"turn"}}));
+        event(
+            &mut observer,
+            "main",
+            "item/completed",
+            json!({"turnId":"turn",
+            "item":{"id":"plan","type":"plan","text":"fixture plan"}}),
+        );
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"turn","status":"completed","items":[]}}),
+        );
+        assert!(matches!(
+            observer.snapshot.state,
+            SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan }
+        ));
+        observer
+            .outgoing(&json!({"id":2,"method":"thread/compact/start","params":{"threadId":"main"}}))
+            .unwrap();
+        observer.apply_transport_hold();
+        assert_eq!(observer.snapshot.state, SessionState::Running);
+        assert!(observer.snapshot.observation_hold);
+    }
+
+    #[test]
+    fn transport_audit_releases_hidden_completion_once_but_not_published_completion() {
+        for published in [false, true] {
+            let mut observer = selected();
+            event(&mut observer, "main", "turn/started", json!({"turn":{"id":"turn"}}));
+            if !published {
+                observer.mutation_unobserved = true;
+            }
+            event(
+                &mut observer,
+                "main",
+                "turn/completed",
+                json!({"turn":{"id":"turn","status":"completed","items":[]}}),
+            );
+            if published {
+                observer.advance_evidence();
+                observer.owned_threads.insert("old".into());
+                event(&mut observer, "old", "turn/started", json!({"turn":{"id":"old-turn"}}));
+                event(
+                    &mut observer,
+                    "old",
+                    "turn/completed",
+                    json!({"turn":{"id":"old-turn","status":"completed","items":[]}}),
+                );
+            }
+            assert!(observer.snapshot.observation_hold);
+            assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main", "old"])));
+            assert_eq!(
+                observer.snapshot.state,
+                SessionState::Idle {
+                    stop_reason: if published {
+                        mesimon_core::board::StopReason::Unknown
+                    } else {
+                        mesimon_core::board::StopReason::EndTurn
+                    }
+                }
+            );
+            if published {
+                event(&mut observer, "main", "thread/name/updated", json!({"threadName":"title"}));
+                assert_eq!(
+                    observer.snapshot.state,
+                    SessionState::Idle { stop_reason: mesimon_core::board::StopReason::Unknown }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn native_compact_maintenance_never_publishes_a_ticket_completion() {
+        use mesimon_core::board::StopReason;
+        let mut observer = selected();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"task"}}));
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"task","status":"completed","items":[]}}),
+        );
+        observer.advance_evidence();
+        assert!(observer.published_completions.contains(&("main".into(), "task".into())));
+        observer
+            .outgoing(&json!({"id":2,"method":"thread/compact/start","params":{"threadId":"main"}}))
+            .unwrap();
+        observer.incoming(&config(), json!({"id":2,"result":{}})).unwrap();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"compact"}}));
+        event(
+            &mut observer,
+            "main",
+            "item/completed",
+            json!({"turnId":"compact","item":{"id":"compact-item","type":"contextCompaction"}}),
+        );
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"compact","status":"completed","items":[]}}),
+        );
+        observer.advance_evidence();
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: StopReason::Unknown }
+        );
+        assert!(!observer.snapshot.observation_hold);
+        assert!(!observer.published_completions.contains(&("main".into(), "compact".into())));
+        assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main"])));
+        observer.advance_evidence();
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: StopReason::Unknown }
+        );
+        assert!(!observer.published_completions.contains(&("main".into(), "compact".into())));
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"next-task"}}));
+        event(
+            &mut observer,
+            "main",
+            "item/completed",
+            json!({"turnId":"next-task","item":{"id":"user","type":"userMessage"}}),
+        );
+        event(
+            &mut observer,
+            "main",
+            "item/completed",
+            json!({"turnId":"next-task","item":{"id":"auto-compact","type":"contextCompaction"}}),
+        );
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"next-task","status":"completed","items":[]}}),
+        );
+        observer.advance_evidence();
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: StopReason::EndTurn }
+        );
+        assert!(observer.published_completions.contains(&("main".into(), "next-task".into())));
+    }
+
+    fn mock_audit(
+        child_status: &str,
+        unrelated_active: bool,
+        inject: Option<&str>,
+    ) -> (Result<Audit>, Vec<Value>) {
+        struct SocketDir(PathBuf);
+        impl Drop for SocketDir {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0.join("rpc.sock"));
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let directory = SocketDir(PathBuf::from(format!(
+            "/tmp/msmn-cdx-audit-{}",
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        )));
+        std::fs::create_dir(&directory.0).unwrap();
+        let path = directory.0.join("rpc.sock");
+        let listener = UnixListener::bind(&path).unwrap();
+        listener.set_nonblocking(true).unwrap();
+        let status = child_status.to_string();
+        let inject = inject.map(str::to_owned);
+        let server = std::thread::spawn(move || {
+            let deadline = Instant::now() + Duration::from_secs(5);
+            let stream = loop {
+                assert!(Instant::now() < deadline, "audit client did not connect");
+                match listener.accept() {
+                    Ok((stream, _)) => break stream,
+                    Err(error) if error.kind() == ErrorKind::WouldBlock => {
+                        std::thread::sleep(Duration::from_millis(1))
+                    }
+                    Err(error) => panic!("audit listener: {error}"),
+                }
+            };
+            stream.set_nonblocking(false).unwrap();
+            stream.set_read_timeout(Some(Duration::from_millis(100))).unwrap();
+            stream.set_write_timeout(Some(Duration::from_secs(1))).unwrap();
+            let mut socket = tungstenite::accept(stream).unwrap();
+            let mut requests = Vec::new();
+            let mut main_reads = 0;
+            while Instant::now() < deadline {
+                let text = match socket.read() {
+                    Ok(Message::Text(text)) => text,
+                    Ok(Message::Close(_)) => break,
+                    Err(tungstenite::Error::Io(error))
+                        if matches!(error.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) =>
+                    {
+                        continue
+                    }
+                    Err(_) => break,
+                    other => panic!("unexpected audit frame: {other:?}"),
+                };
+                let request: Value = serde_json::from_str(&text).unwrap();
+                requests.push(request.clone());
+                let method =
+                    request["method"].as_str().expect("audit must not answer server requests");
+                let result = match method {
+                    "initialized" => continue,
+                    "initialize" => json!({}),
+                    "thread/loaded/list" => {
+                        let mut ids = vec!["main"];
+                        if status != "notLoaded" {
+                            ids.push("child");
+                        }
+                        if unrelated_active {
+                            ids.push("unrelated");
+                        }
+                        json!({"data":ids,"nextCursor":null})
+                    }
+                    "thread/list" => {
+                        json!({"data":[{"id":"child","parentThreadId":"main"}],"nextCursor":null})
+                    }
+                    "thread/read" => {
+                        assert_eq!(request["params"]["includeTurns"], false);
+                        let id = request["params"]["threadId"].as_str().unwrap();
+                        if id == "main" {
+                            main_reads += 1;
+                        }
+                        if id == "main" && main_reads == 2 {
+                            let notification = match inject.as_deref() {
+                                Some("activity") => Some(
+                                    json!({"method":"thread/status/changed","params":{"threadId":"child","status":{"type":"active","activeFlags":[]}}}),
+                                ),
+                                Some("request") => Some(
+                                    json!({"id":"approval","method":"item/commandExecution/requestApproval","params":{"threadId":"child"}}),
+                                ),
+                                _ => None,
+                            };
+                            if let Some(frame) = notification {
+                                socket.send(Message::Text(frame.to_string().into())).unwrap();
+                            }
+                        }
+                        let state = if id == "child" {
+                            status.as_str()
+                        } else if id == "unrelated" {
+                            "active"
+                        } else {
+                            "idle"
+                        };
+                        json!({"thread":{"id":id,"status":{"type":state,"activeFlags":[]},"turns":[]}})
+                    }
+                    other => panic!("audit attempted mutating/subscribing RPC: {other}"),
+                };
+                if socket
+                    .send(Message::Text(
+                        json!({"id":request["id"],"result":result}).to_string().into(),
+                    ))
+                    .is_err()
+                {
+                    break;
+                }
+            }
+            requests
+        });
+        let result = audit_idle(&path, "main", &BTreeSet::from(["child".into()]), 7);
+        (result, server.join().unwrap())
+    }
+
+    #[test]
+    fn read_only_audit_reads_closed_known_children_and_rejects_other_owned_active_threads() {
+        let (closed, requests) = mock_audit("notLoaded", false, None);
+        assert_eq!(closed.unwrap().threads["child"]["status"]["type"], "notLoaded");
+        assert!(requests
+            .iter()
+            .any(|r| r["method"] == "thread/read" && r["params"]["threadId"] == "child"));
+        assert!(mock_audit("active", false, None).0.is_err());
+        assert!(mock_audit("idle", true, None).0.is_err());
+    }
+
+    #[test]
+    fn read_only_audit_rejects_late_child_activity_and_never_answers_native_approvals() {
+        for injected in ["activity", "request"] {
+            let (result, requests) = mock_audit("idle", false, Some(injected));
+            assert!(result.is_err());
+            assert!(requests.iter().all(|r| r.get("method").is_some()));
+            assert!(!requests
+                .iter()
+                .any(|r| matches!(r["method"].as_str(), Some("thread/resume" | "turn/start"))));
         }
     }
 
@@ -1041,6 +1833,120 @@ mod tests {
         recycled.known.insert(root.pid, process(10, 1, 10, 99));
         recycled.extend(&table).unwrap();
         assert_eq!(recycled.known.len(), 1, "a reused PID is not an ancestor we own");
+    }
+
+    #[test]
+    fn launch_evidence_is_saved_before_native_selection_is_forwarded() {
+        struct Directory(PathBuf);
+        impl Drop for Directory {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(self.0.join("snapshot.json"));
+                let _ = std::fs::remove_file(self.0.join("preview.json"));
+                let _ = std::fs::remove_dir(&self.0);
+            }
+        }
+        let directory = Directory(PathBuf::from(format!(
+            "/tmp/msmn-cdx-launch-{}",
+            uuid::Uuid::new_v4().simple()
+        )));
+        let mut config = config();
+        config.snapshot_path = directory.0.join("snapshot.json");
+        config.preview_path = directory.0.join("preview.json");
+        let mut observer = Observation::new(&config);
+        observer.publish(&config).unwrap();
+        let saved = || {
+            serde_json::from_slice::<Snapshot>(&std::fs::read(&config.snapshot_path).unwrap())
+                .unwrap()
+        };
+        assert_eq!(saved().launch_phase, LaunchPhase::BeforeSelection);
+        let initial_sequence = saved().sequence;
+        observer
+            .before_native_forward(&config, &json!({"id": 1, "method":"thread/start", "params":{}}))
+            .unwrap();
+        assert_eq!(saved().launch_phase, LaunchPhase::SelectionPending);
+        assert!(saved().sequence > initial_sequence);
+        assert!(saved().thread_id.is_none());
+        observer.before_server_forward(&config, json!({"id":1,"result":{"thread":{"id":"generated-history", "status":{"type":"idle"}, "turns":[]}}})).unwrap();
+        assert_eq!(saved().launch_phase, LaunchPhase::Selected);
+        assert_eq!(saved().thread_id.as_deref(), Some("generated-history"));
+        observer
+            .before_native_forward(
+                &config,
+                &json!({"id":2,"method":"thread/fork","params":{"threadId":"generated-history"}}),
+            )
+            .unwrap();
+        assert_eq!(saved().launch_phase, LaunchPhase::SelectionPending);
+        assert_eq!(saved().thread_id.as_deref(), Some("generated-history"));
+        config.resume = Some("existing-history".into());
+        assert_eq!(Observation::new(&config).snapshot.launch_phase, LaunchPhase::SelectionPending);
+    }
+
+    #[test]
+    fn lost_inner_server_cannot_be_audited_by_its_surviving_cli_wrapper() {
+        let wrapper = ProcessIdentity {
+            pid: 10,
+            parent: 1,
+            group: 10,
+            started: (1, 0),
+            zombie: false,
+            stopped: false,
+        };
+        let inner = ProcessIdentity {
+            pid: 20,
+            parent: 10,
+            group: 10,
+            started: (2, 0),
+            zombie: false,
+            stopped: false,
+        };
+        let mut tree = ProcessTree {
+            server: Some(wrapper.clone()),
+            known: [(10, wrapper.clone())].into(),
+            ..Default::default()
+        };
+        tree.extend(&[(10, wrapper), (20, inner)].into()).unwrap();
+        // Between samples the inner server dies and a newly created tool can
+        // reparent without ever entering known. Root-wrapper liveness remains
+        // true, just as in captured native app-server SIGKILL 15fa686e.
+        tree.known.remove(&20);
+        assert!(tree.known.contains_key(&tree.server.as_ref().unwrap().pid));
+        tree.relay_ended(&Err(anyhow!("app-server connection reset without closing handshake")));
+        assert!(tree.uncertain, "wrapper liveness cannot prove descendant cleanup");
+        tree.known.clear();
+        tree.relay_ended(&Ok(()));
+        assert!(tree.uncertain, "later cleanup or quit cannot erase the ownership gap");
+
+        let mut graceful = ProcessTree { server: tree.server.clone(), ..Default::default() };
+        graceful.relay_ended(&Ok(()));
+        assert!(
+            !graceful.uncertain,
+            "verified native quit and controlled TERM retain normal cleanup"
+        );
+        let mut unlaunched = ProcessTree::default();
+        unlaunched.relay_ended(&Err(anyhow!("configuration refused before any child launch")));
+        assert!(!unlaunched.uncertain, "no spawned owner means no lost descendants");
+    }
+
+    #[test]
+    fn native_quit_requires_live_listener_not_a_stale_wrapper_socket() {
+        struct SocketPath(PathBuf);
+        impl Drop for SocketPath {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        let socket = SocketPath(PathBuf::from(format!(
+            "/tmp/msmn-cdx-quit-{}.sock",
+            &uuid::Uuid::new_v4().simple().to_string()[..12]
+        )));
+        let path = &socket.0;
+        let listener = UnixListener::bind(path).unwrap();
+        assert!(verify_upstream_listener(path).is_ok());
+        drop(listener);
+        assert!(path.exists(), "a stale socket alone is not evidence of a live server");
+        assert!(verify_upstream_listener(path).is_err());
+        std::fs::remove_file(path).unwrap();
+        assert!(verify_upstream_listener(path).is_err());
     }
 
     #[test]
@@ -1082,7 +1988,10 @@ mod tests {
         let root = PathBuf::from(reply(&mut output).as_str().unwrap());
         let ready = root.join("tool.pid");
         let code = "import pathlib, subprocess, sys, time\nchild=subprocess.Popen([sys.executable, '-c', 'import os,time;os.setsid();time.sleep(60)'])\npathlib.Path(sys.argv[1]).write_text(str(child.pid))\ntime.sleep(60)\n";
-        let request = json!({"op":"spawn", "argv":["python3", "-c", code, ready], "env":{}});
+        // CPython on Linux cannot resolve sys.executable with an empty
+        // PATH; the grandchild would fail before exercising process cleanup.
+        let request = json!({"op":"spawn", "argv":["python3", "-c", code, ready],
+            "env":{"PATH":std::env::var("PATH").unwrap_or_else(|_| "/usr/bin:/bin".into())}});
         writeln!(guard.child.stdin.as_mut().unwrap(), "{request}").unwrap();
         guard.child.stdin.as_mut().unwrap().flush().unwrap();
         let server = reply(&mut output).as_u64().unwrap() as u32;
@@ -1090,7 +1999,11 @@ mod tests {
         tree.root(server, true).unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let tool = loop {
-            assert!(Instant::now() < deadline, "fixture tool did not detach");
+            assert!(
+                Instant::now() < deadline,
+                "fixture tool did not detach: {}",
+                std::fs::read_to_string(root.join("child-0.log")).unwrap_or_default()
+            );
             if let Ok(text) = std::fs::read_to_string(&ready) {
                 if let Ok(pid) = text.parse::<i32>() {
                     if process_identity(pid).unwrap().is_some_and(|entry| entry.group == pid) {
@@ -1192,6 +2105,80 @@ mod tests {
     }
 
     #[test]
+    fn native_title_tracks_only_selected_thread_and_advances_metadata_sequence() {
+        let config = config();
+        let mut observation = Observation::new(&config);
+        observation.outgoing(&json!({"id":1,"method":"thread/start","params":{}})).unwrap();
+        // A notification can precede the selecting response on the native wire.
+        observation
+            .incoming(
+                &config,
+                json!({"method":"thread/name/updated",
+            "params":{"threadId":"main","threadName":"Buffered native title"}}),
+            )
+            .unwrap();
+        observation
+            .incoming(
+                &config,
+                json!({"id":1,"result":{"thread":{
+            "id":"main","name":null,"status":{"type":"idle"},"turns":[]}}}),
+            )
+            .unwrap();
+        assert_eq!(observation.snapshot.title.as_deref(), Some("Buffered native title"));
+        observation.advance_evidence();
+        let sequence = observation.snapshot.sequence;
+        let state = observation.snapshot.state.clone();
+        observation
+            .incoming(
+                &config,
+                json!({"method":"thread/name/updated",
+            "params":{"threadId":"system","threadName":"Unrelated title generator"}}),
+            )
+            .unwrap();
+        observation.advance_evidence();
+        assert_eq!(observation.snapshot.sequence, sequence);
+        assert_eq!(observation.snapshot.title.as_deref(), Some("Buffered native title"));
+        let name = "🙂".repeat(200);
+        observation
+            .incoming(
+                &config,
+                json!({"method":"thread/name/updated",
+            "params":{"threadId":"main","threadName":name}}),
+            )
+            .unwrap();
+        observation.advance_evidence();
+        assert_eq!(observation.snapshot.sequence, sequence + 1);
+        assert_eq!(observation.snapshot.title.as_ref().unwrap().len(), 512);
+        assert_eq!(observation.snapshot.state, state);
+        observation
+            .incoming(
+                &config,
+                json!({"method":"thread/name/updated",
+            "params":{"threadId":"main","threadName":name}}),
+            )
+            .unwrap();
+        observation.advance_evidence();
+        assert_eq!(observation.snapshot.sequence, sequence + 1);
+        observation.preview.text = Some("Previous conversation reply".into());
+        observation.snapshot.plan = Some("Previous plan".into());
+        observation.snapshot.plan_key = Some("previous-plan-key".into());
+        observation
+            .outgoing(&json!({"id":2,"method":"thread/resume","params":{"threadId":"another"}}))
+            .unwrap();
+        observation
+            .incoming(
+                &config,
+                json!({"id":2,"result":{"thread":{
+            "id":"another","name":"Resumed name","status":{"type":"idle"},"turns":[]}}}),
+            )
+            .unwrap();
+        assert_eq!(observation.snapshot.title.as_deref(), Some("Resumed name"));
+        assert_eq!(observation.preview, AgentPreview::default());
+        assert!(observation.snapshot.plan.is_none());
+        assert!(observation.snapshot.plan_key.is_none());
+    }
+
+    #[test]
     fn exact_resume_rejects_different_thread_and_never_clears_hold_from_idle_alone() {
         let mut config = config();
         config.resume = Some("expected".into());
@@ -1208,5 +2195,43 @@ mod tests {
         assert_eq!(observation.snapshot.thread_id.as_deref(), Some("expected"));
         assert!(observation.snapshot.observation_hold);
         assert!(observation.needs_audit);
+    }
+
+    #[test]
+    fn plan_and_reply_artifacts_preserve_markdown_links_and_stable_item_identity() {
+        let config = config();
+        let mut observation = Observation::new(&config);
+        observation.outgoing(&json!({"id":1,"method":"thread/start","params":{}})).unwrap();
+        observation
+            .incoming(
+                &config,
+                json!({"id":1,"result":{"thread":{
+            "id":"main","status":{"type":"idle"},"turns":[]}}}),
+            )
+            .unwrap();
+        observation
+            .incoming(
+                &config,
+                json!({"method":"turn/started","params":{
+            "threadId":"main","turn":{"id":"turn","status":"inProgress","items":[]}}}),
+            )
+            .unwrap();
+        let plan = "1. Review [the fixture](https://example.com/fixture).\n2. Verify.";
+        observation.incoming(&config, json!({"method":"item/completed","params":{
+            "threadId":"main","turnId":"turn","item":{"id":"opaque-plan","type":"plan","text":plan}}})).unwrap();
+        assert_eq!(observation.snapshot.plan.as_deref(), Some(plan));
+        let plan_key = observation.snapshot.plan_key.clone();
+        assert!(plan_key.is_some());
+        let reply = "Verified [the fixture](https://example.com/fixture).";
+        let frame = json!({"method":"item/completed","params":{
+            "threadId":"main","turnId":"turn","item":{"id":"opaque-reply","type":"agentMessage","text":reply}}});
+        observation.incoming(&config, frame.clone()).unwrap();
+        assert_eq!(observation.preview.text.as_deref(), Some(reply));
+        let reply_key = observation.preview.reply_key;
+        assert!(reply_key.is_some());
+        observation.incoming(&config, frame).unwrap();
+        assert_eq!(observation.preview.reply_key, reply_key);
+        assert_eq!(observation.snapshot.plan_key, plan_key);
+        assert_eq!(observation.snapshot.plan.as_deref(), Some(plan));
     }
 }

@@ -12,8 +12,7 @@ use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
 use mesimon_backend_tmux::TmuxBackend;
-use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
-use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
+use mesimon_core::attention::{self, Change, Machine, Signal, StartSource};
 use mesimon_core::board::{
     sanitize_tag, AgentProvider, AgentTools, Archived, Board, Confidence, ExitReason, Provenance,
     SessionKind, SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason,
@@ -29,13 +28,12 @@ use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 
 use crate::agents::claude::user_default_mode;
-use crate::agents::{LaunchContext, LaunchSpec};
+use crate::agents::{AgentRecovery, LaunchContext, LaunchSpec, RecoveryChannel, RecoverySample};
 use crate::feed::FeedWriter;
 use crate::ingest::{self, HookFrame};
 use crate::movegate::{MoveGate, Position};
 use crate::paths::Paths;
 use crate::store;
-use crate::tail::TailCursor;
 use crate::worktree::{self, Binding, BindingStatus};
 
 const GRACE_SECS: u64 = 9;
@@ -68,8 +66,6 @@ const SERVER_GUARD_TICKS: u64 = 60;
 /// Observe-tier transcript polling cadence (2 s) — stat-then-read, adopted
 /// hook-less sessions only.
 const TAIL_POLL_TICKS: u64 = 8;
-/// Transcript quiet past this while "running" (Tier-0) demotes to idle.
-const TAIL_QUIET_MS: u64 = 45_000;
 /// SIGTERM-to-kill-pane grace (docs/19 §1 kill ladder — never SIGKILL).
 /// Gap between presses of an owed, unacknowledged Enter, and how many presses
 /// to spend before giving up. T-5 measured the `UserPromptSubmit` ack at
@@ -82,94 +78,9 @@ const REAP_GRACE: Duration = Duration::from_secs(5);
 const SLEEP_MIN_AGE_MS: u64 = 60_000;
 /// RSS aggregate refresh (10 s) — one `ps` fork, only while panes exist.
 const RSS_TICKS: u64 = 40;
-/// Pane silent past this while `Running` means the turn is no longer in
-/// flight — the recordless Esc-interrupt catch (spike S-E: an interrupt fires
-/// no hook, and one landing before the first assistant output writes nothing
-/// to the transcript either; the pane byte stream is the only evidence left).
-///
-/// This is the FALLBACK, and the number is sized for a fallback. The 8 s it
-/// started at rested on "a turn in flight repaints sub-second (spinner)",
-/// which was true when measured and is not now: on Claude Code 2.1.257 a
-/// working pane holds `#{window_activity}` still for 6–10 s as a matter of
-/// course and for up to ~50 s while the model streams a large tool input (an
-/// `Edit`/`Write` payload — nothing paints until the call is whole). Under
-/// 8 s the probe fired four times in ninety seconds on one ticket, and each
-/// verdict blanked the card until the next `PostToolUse` put the spinner
-/// back (dogfood 2026-09-02, T-71; over the whole activity log 19 of the
-/// probe's 40 verdicts were followed by a `PostToolUse` or `Stop`, i.e. by
-/// the turn it had just declared dead). The primary catch — the transcript's
-/// `[Request interrupted by user]` record, `poll_tails`' abort-only class —
-/// lands in ~2 s regardless, and post-interrupt painting already held the
-/// pane "active" for 60–80 s live (STALE-MAP, T-50), so the recordless case
-/// was never a fast one. Sixty seconds clears every working silence
-/// measured and costs that rare case a minute it was mostly paying anyway.
-const PANE_QUIET_MS: u64 = 60_000;
-/// A `status: idle` in Claude's session file counts only when stamped this
-/// far after the Running spell began: the previous turn's `idle` write and
-/// this turn's `UserPromptSubmit` hook can land in either order (a prompt
-/// typed ahead is submitted the instant the turn ends), and a stale idle read
-/// as this turn's would blank a card that just started working. That hazard
-/// is milliseconds wide. An early Esc can also land inside that window;
-/// such an idle must remain unchanged across a second probe before it counts.
-const STATUS_IDLE_MARGIN_MS: u64 = 250;
-/// How long a Running session with no session file goes between looks for
-/// one (an older Claude Code writes none; a scan is ~40 small reads).
-const STATUS_FILE_RETRY_MS: u64 = 30_000;
 /// A sleep-safe ticket whose sessions have all been asleep this long feeds
 /// the header's archive suggestion (same offer-not-action shape as sleep).
 const ARCHIVE_SUGGEST_MS: u64 = 3_600_000;
-
-/// `probe_status_files`' memory of one Running session's session file.
-struct StatusProbe {
-    path: Option<std::path::PathBuf>,
-    /// Epoch ms of the last failed search; 0 means never looked.
-    looked_at: u64,
-    near_idle: Option<(u64, u64)>,
-    waiting_spell: Option<(u64, u64)>,
-}
-
-impl StatusProbe {
-    fn permission_resumed(&mut self, status: Option<&str>, at: Option<u64>, since: u64) -> bool {
-        if status == Some("waiting") {
-            self.waiting_spell = at.map(|stamp| (since, stamp));
-            return false;
-        }
-        let resumed = status == Some("busy")
-            && self.waiting_spell.is_some_and(|(spell, waiting)| {
-                spell == since && at.is_some_and(|stamp| stamp > since && stamp > waiting)
-            });
-        if status != Some("busy") {
-            self.waiting_spell = None;
-        }
-        resumed
-    }
-
-    /// Near-boundary idle evidence is delayed, never discarded forever. A
-    /// changed status/stamp cancels the confirmation; stale stamps never count.
-    fn confirms_idle(
-        &mut self,
-        status: Option<&str>,
-        at: Option<u64>,
-        since: u64,
-        now: u64,
-    ) -> bool {
-        let Some(at) = at.filter(|at| status == Some("idle") && *at > since) else {
-            self.near_idle = None;
-            return false;
-        };
-        if at >= since.saturating_add(STATUS_IDLE_MARGIN_MS) {
-            self.near_idle = None;
-            return true;
-        }
-        match self.near_idle {
-            Some((stamp, first_seen)) if stamp == at => now.saturating_sub(first_seen) >= 2000,
-            _ => {
-                self.near_idle = Some((at, now));
-                false
-            }
-        }
-    }
-}
 
 /// A worktree waiting to go (12 §12.6.1). `sids` are the panes the reaper
 /// still holds — the teardown waits for every one of them, since a
@@ -234,8 +145,14 @@ pub fn install_sigterm_handler() {
     unsafe { libc::signal(libc::SIGTERM, on_sigterm as *const () as libc::sighandler_t) };
 }
 
+struct ClientReply {
+    response: Response,
+    /// Shutdown waits for the connection writer to put the response on wire.
+    delivered: Option<Sender<()>>,
+}
+
 enum Msg {
-    Request(Envelope, Sender<Response>, Arc<Mutex<UnixStream>>),
+    Request(Envelope, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     Hook(HookFrame),
     CodexSnapshots(Vec<(uuid::Uuid, Option<crate::agents::codex::Snapshot>)>),
     Tick,
@@ -293,9 +210,6 @@ pub struct Daemon {
     worktrees_barred: bool,
     /// One attention machine per session, keyed by session UUID.
     machines: HashMap<uuid::Uuid, Machine>,
-    /// Startup-modal probe progress per Spawning Claude session:
-    /// 1 = the +10s probe ran, 2 = the +30s probe ran (11 §11.5.3 approx).
-    probe_stage: HashMap<uuid::Uuid, u8>,
     /// Sessions whose owed Enter has been pressed but not yet acknowledged:
     /// `(next attempt epoch-ms, attempts left)`. Transient, never persisted —
     /// a daemon restart abandons the offer rather than typing into a pane it
@@ -345,11 +259,11 @@ pub struct Daemon {
     /// Discovered foreign sessions (19 §4 tier 1). Never persisted; refreshed
     /// only on `RescanExternal` (the drawer opening).
     external: Vec<ExternalItem>,
-    /// Observe-tier transcript cursors for adopted hook-less sessions.
-    tails: HashMap<uuid::Uuid, TailCursor>,
-    /// Per Running Claude session: where its `~/.claude/sessions/<pid>.json`
-    /// is, or when we last failed to find it (`probe_status_files`).
-    status_files: HashMap<uuid::Uuid, StatusProbe>,
+    /// Provider-owned passive observation cursors; never persisted.
+    recovery: HashMap<uuid::Uuid, Box<dyn AgentRecovery>>,
+    /// A person has seen the unknown-cleanup warning for this exact generation.
+    /// Never persisted or inherited by queued/automatic resume operations.
+    cleanup_resume_offers: HashMap<uuid::Uuid, u64>,
     /// Panes SIGTERM'd and awaiting their grace-then-kill-pane (by sid16).
     reaping: HashMap<String, Instant>,
     /// (bytes, sessions seen) — `ps` aggregate, refreshed on the 10 s bucket.
@@ -418,6 +332,9 @@ pub struct Daemon {
     tx: Sender<Msg>,
     codex_polling: bool,
     codex_ready: std::collections::HashSet<uuid::Uuid>,
+    /// Native startup UI is checked until its composer is seen once per
+    /// generation. Idle sessions then need no repeated terminal subprocess.
+    codex_native_ready: HashMap<uuid::Uuid, Option<u64>>,
     codex_input_due: HashMap<uuid::Uuid, u64>,
     /// What restrains every mover that is not a person (T-84). See
     /// `crate::movegate` for why authority alone cannot do this job.
@@ -693,7 +610,6 @@ pub fn run(paths: Paths) -> Result<()> {
         sessions_barred: sessions_write_barred,
         worktrees_barred,
         machines,
-        probe_stage: HashMap::new(),
         submit_retry: HashMap::new(),
         pending_prompt: HashMap::new(),
         queued: Vec::new(),
@@ -703,8 +619,8 @@ pub fn run(paths: Paths) -> Result<()> {
         ticks: 0,
         feed,
         external: Vec::new(),
-        tails: HashMap::new(),
-        status_files: HashMap::new(),
+        recovery: HashMap::new(),
+        cleanup_resume_offers: HashMap::new(),
         reaping: HashMap::new(),
         rss_cache: (0, 0),
         rss_by: HashMap::new(),
@@ -737,6 +653,7 @@ pub fn run(paths: Paths) -> Result<()> {
         tx: tx.clone(),
         codex_polling: false,
         codex_ready: std::collections::HashSet::new(),
+        codex_native_ready: HashMap::new(),
         codex_input_due: HashMap::new(),
         moves: MoveGate::new(),
         board_version: 0,
@@ -837,8 +754,15 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
-                let _ = reply.send(resp);
+                let (delivered, receipt) = channel();
+                let _ = reply
+                    .send(ClientReply { response: resp, delivered: shutdown.then_some(delivered) });
                 if shutdown {
+                    // Sending to the connection thread is not delivery: main
+                    // may otherwise exit before that thread writes the final
+                    // newline. A stalled/disconnected client cannot hold the
+                    // daemon indefinitely.
+                    let _ = receipt.recv_timeout(Duration::from_secs(2));
                     break;
                 }
             }
@@ -1241,6 +1165,7 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
         if line.trim().is_empty() {
             continue;
         }
+        let mut delivered = None;
         let resp = match serde_json::from_str::<Envelope>(&line) {
             Ok(env) => match env.command {
                 // Read-only diff service: answered here, never forwarded —
@@ -1251,7 +1176,13 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
                     if tx.send(Msg::Request(env, rtx, writer.clone())).is_err() {
                         break;
                     }
-                    rrx.recv().unwrap_or(Response::Err { message: "daemon gone".into() })
+                    match rrx.recv() {
+                        Ok(reply) => {
+                            delivered = reply.delivered;
+                            reply.response
+                        }
+                        Err(_) => Response::Err { message: "daemon gone".into() },
+                    }
                 }
             },
             Err(e) => Response::Err { message: format!("bad envelope: {e}") },
@@ -1264,8 +1195,11 @@ fn client_loop(stream: UnixStream, tx: Sender<Msg>, diff_ctx: Arc<DiffCtx>) {
             Ok(w) => w,
             Err(_) => break,
         };
-        if writeln!(w, "{json}").is_err() {
+        if writeln!(w, "{json}").and_then(|()| w.flush()).is_err() {
             break;
+        }
+        if let Some(delivered) = delivered {
+            let _ = delivered.send(());
         }
     }
     // Same `tx` as the requests above, so it orders after them: whatever
@@ -1535,7 +1469,8 @@ impl Daemon {
                 }
             }
             Command::ResumeSession { id, confirm } => {
-                let resp = self.resume_session(id, confirm);
+                let resp =
+                    self.resume_session_with_cleanup_ack(id, confirm, env.principal.is_human());
                 self.persist_and_notify();
                 resp
             }
@@ -1717,189 +1652,92 @@ impl Daemon {
         self.shutting_down = true;
     }
 
-    /// 11 §11.5.3, approximated without byte streams: a Spawning Claude pane
-    /// that painted output but never set Claude's OSC-0 title and never sent
-    /// `SessionStart` is a startup modal (trust dialog); a pane with no output
-    /// at all by +30s is `unknown`, never `failed`. Two one-shot tmux forks
-    /// per Claude spawn, only while Spawning.
     fn probe_spawning(&mut self) -> bool {
-        let now = now_ms();
-        let due: Vec<(uuid::Uuid, String, u8)> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| r.kind == SessionKind::Claude && r.state == SessionState::Spawning)
-            .filter_map(|r| {
-                let age = now.saturating_sub(r.state_changed_at.unwrap_or(now));
-                let stage = self.probe_stage.get(&r.id).copied().unwrap_or(0);
-                if age >= 30_000 && stage < 2 {
-                    Some((r.id, r.sid16(), 2))
-                } else if age >= 10_000 && stage < 1 {
-                    Some((r.id, r.sid16(), 1))
-                } else {
-                    None
-                }
-            })
-            .collect();
-        let mut changed = false;
-        for (id, sid, stage) in due {
-            self.probe_stage.insert(id, stage);
-            let bytes =
-                self.backend.capture_tail(&sid, 3).map(|lines| !lines.is_empty()).unwrap_or(false);
-            let osc0 = self
-                .backend
-                .pane_title(&sid)
-                .map(|t| t.contains("Claude") || t.contains('✳'))
-                .unwrap_or(false);
-            // At +10s only the modal case fires; the no-bytes verdict waits
-            // for +30s (a slow spawn is not yet a missing one).
-            if stage == 1 && !(bytes && !osc0) {
-                continue;
-            }
-            let resume = self
-                .board
-                .sessions
-                .iter()
-                .find(|r| r.id == id)
-                .is_some_and(|r| r.argv.iter().any(|a| a == "--resume"));
-            let sig = mesimon_core::attention::Signal::SpawnProbe { bytes, osc0, resume };
-            if let Some(change) = self.observe_signal(id, &sig, now, "probe") {
-                changed |= self.apply_change(id, &change, None, Some("probe"));
-            }
-        }
-        changed
+        self.poll_agent_recovery(RecoveryChannel::Startup)
     }
 
-    /// The `Running` claudes the two quiet probes judge. The observe tier has
-    /// no pane of ours and its quiet detector is the transcript's
-    /// (`poll_tails`), so an adopted record without argv is left out.
-    fn probed_running(&self) -> impl Iterator<Item = &SessionRecord> {
-        self.board.sessions.iter().filter(|r| {
-            r.kind == SessionKind::Claude
-                && r.state == SessionState::Running
-                && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
-        })
-    }
-
-    /// The Esc-interrupt catch (11 §11.7.3's interrupt row, spike S-E): a
-    /// user interrupt fires no hook, so a `Running` pane of ours that has
-    /// stopped painting past the quiet threshold is a turn that ended. One
-    /// `list-panes` fork, and only while something is actually Running.
-    /// Demotion-only — promotion stays hooks-only, so a wrong verdict costs a
-    /// cosmetic "idle" that the next real event corrects.
     fn probe_activity(&mut self) -> bool {
-        let cands: Vec<(uuid::Uuid, String)> =
-            self.probed_running().map(|r| (r.id, r.sid16())).collect();
-        if cands.is_empty() {
-            return false;
-        }
-        let Ok(activity) = self.backend.activity() else { return false };
-        let now = now_ms();
-        let quiet_ms = pane_quiet_ms();
-        let mut changed = false;
-        for (id, sid) in cands {
-            // A pane missing from the listing is pane-died territory, not ours.
-            let Some((_, at)) = activity.iter().find(|(name, _)| *name == sid) else { continue };
-            if now.saturating_sub(at * 1000) < quiet_ms {
-                continue;
-            }
-            if let Some(change) = self.observe_signal(id, &Signal::PaneQuiet, now, "activity") {
-                changed |= self.apply_change(id, &change, None, Some("activity"));
-            }
-        }
-        changed
+        self.poll_agent_recovery(RecoveryChannel::Activity)
     }
 
-    /// The recordless Esc. Pressed before the first assistant output, Claude
-    /// Code hands the prompt back to the box and writes NOTHING to the
-    /// transcript (spike S-E's case, live 2026-09-04: "the conv returned to
-    /// the last message before I prompted") — no hook, no record, and the
-    /// pane-quiet probe a minute later was the whole catch. But Claude Code
-    /// keeps `~/.claude/sessions/<pid>.json` for its own peers (`notify_idle`
-    /// among its `peerFeatures`), and its `status` flips `busy` → `idle` at
-    /// the keypress with `statusUpdatedAt` beside it. Measured over the 40
-    /// live files on this machine 2026-09-04: every `busy` was a Running
-    /// record of ours, every `idle` an Idle one, and the interrupted
-    /// session's stamp was the Esc's own second. Doc 11 §11.3 barred the file
-    /// from setting state as "best-effort enrichment"; the measurement says
-    /// the status is written at every edge, so it gets PaneQuiet's row sixty
-    /// seconds earlier. Fresh idle demotes Running at Medium; near-boundary
-    /// stamps require sustained confirmation. Permission can also clear after
-    /// an observed waiting-to-busy transition in the same spell. The file
-    /// is found by sessionId + live pid
-    /// (`census::status_file_for`), then read in place.
     fn probe_status_files(&mut self) -> bool {
+        self.poll_agent_recovery(RecoveryChannel::Status)
+    }
+
+    /// Batch common pane sampling while providers own eligibility, native
+    /// parsing and recovery heuristics. Only this authorized writer feeds
+    /// normalized evidence into machines and updates board previews.
+    fn poll_agent_recovery(&mut self, channel: RecoveryChannel) -> bool {
         let now = now_ms();
-        let cands: Vec<_> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|r| {
-                r.kind == SessionKind::Claude
-                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty())
-                    && (r.state == SessionState::Running
-                        || r.state
-                            == (SessionState::RequiresAction {
-                                reason: mesimon_core::board::Reason::Permission,
-                            }))
-            })
-            .map(|r| {
-                (
-                    r.id,
-                    r.claude_session_id.unwrap_or(r.id),
-                    r.state_changed_at.unwrap_or(now),
-                    r.transcript_path.as_deref().map(std::path::PathBuf::from),
-                    r.state != SessionState::Running,
-                )
-            })
-            .collect();
-        self.status_files.retain(|id, _| cands.iter().any(|(c, ..)| c == id));
-        if cands.is_empty() {
+        self.recovery.retain(|id, _| self.board.sessions.iter().any(|r| r.id == *id));
+        let mut candidates = Vec::new();
+        for record in &self.board.sessions {
+            let Some(adapter) = crate::agents::adapter(record.kind) else { continue };
+            let recovery = self.recovery.entry(record.id).or_insert_with(|| adapter.recovery());
+            if recovery.needs_poll(record, channel, now) {
+                candidates.push((record.id, record.sid16()));
+            }
+        }
+        if candidates.is_empty() {
             return false;
         }
-        let home = crate::census::claude_home();
+        let activity = if channel == RecoveryChannel::Activity {
+            let Ok(activity) = self.backend.activity() else { return false };
+            activity
+        } else {
+            Vec::new()
+        };
         let mut changed = false;
-        for (id, claude_id, since, transcript, permission) in cands {
-            let probe = self.status_files.entry(id).or_insert(StatusProbe {
-                path: None,
-                looked_at: 0,
-                near_idle: None,
-                waiting_spell: None,
-            });
-            if probe.path.is_none() && now.saturating_sub(probe.looked_at) >= STATUS_FILE_RETRY_MS {
-                probe.path = crate::census::status_file_for(&home, claude_id);
-                probe.looked_at = now;
-            }
-            let Some(path) = probe.path.clone() else { continue };
-            let Ok(text) = std::fs::read_to_string(&path) else {
-                probe.path = None;
+        for (id, sid) in candidates {
+            let sample = match channel {
+                RecoveryChannel::Startup => RecoverySample::Startup {
+                    has_output: self
+                        .backend
+                        .capture_tail(&sid, 3)
+                        .map(|lines| !lines.is_empty())
+                        .unwrap_or(false),
+                    title: self.backend.pane_title(&sid).ok(),
+                },
+                RecoveryChannel::Activity => {
+                    // A missing pane belongs to pane-death reconciliation.
+                    let Some((_, at)) = activity.iter().find(|(name, _)| *name == sid) else {
+                        continue;
+                    };
+                    RecoverySample::Activity { last_output_ms: at.saturating_mul(1000) }
+                }
+                RecoveryChannel::Status => RecoverySample::Status,
+                RecoveryChannel::Transcript => RecoverySample::Transcript,
+            };
+            let Some(record) = self.board.sessions.iter().find(|record| record.id == id) else {
                 continue;
             };
-            let Ok(pf) = serde_json::from_str::<SessionsPidFile>(&text) else { continue };
-            if pf.session_id != Some(claude_id) {
-                probe.path = None;
-                continue;
-            }
-            if permission {
-                if probe.permission_resumed(pf.status.as_deref(), pf.status_updated_at, since) {
-                    let signal = Signal::StatusFilePermissionResumed;
-                    if let Some(change) = self.observe_signal(id, &signal, now, "status") {
-                        changed |= self.apply_change(id, &change, None, Some("status"));
+            let Some(recovery) = self.recovery.get_mut(&id) else { continue };
+            let observations = recovery.poll(record, sample, now);
+            for observation in observations {
+                let principal = Principal::Automation { rule: "agent_recovery".into() };
+                if matches!(
+                    authorize(&principal, &Action::Mutate, &Resource::Session { id }),
+                    Decision::Deny { .. }
+                ) {
+                    continue;
+                }
+                if let Some(change) =
+                    self.observe_signal(id, &observation.signal, now, observation.source)
+                {
+                    changed |= self.apply_change(id, &change, None, Some(observation.source));
+                }
+                // The preview outlives the state word: apply_change may clear
+                // detail, so apply the authorized preview after the transition.
+                if let Some(preview) = observation.preview {
+                    if let Some(record) =
+                        self.board.sessions.iter_mut().find(|record| record.id == id)
+                    {
+                        if record.detail.as_deref() != Some(preview.as_str()) {
+                            record.detail = Some(preview);
+                            changed = true;
+                        }
                     }
                 }
-                continue;
-            }
-            probe.waiting_spell = None;
-            let idle = probe.confirms_idle(pf.status.as_deref(), pf.status_updated_at, since, now);
-            if !idle {
-                continue;
-            }
-            // The file flips idle at the end of every turn, ahead of the
-            // Stop hook; the transcript says whether this is that or an Esc.
-            let turn_done = transcript.is_some_and(|t| crate::tail::turn_done_since(&t, since));
-            let signal = Signal::StatusFileIdle { turn_done };
-            if let Some(change) = self.observe_signal(id, &signal, now, "status") {
-                changed |= self.apply_change(id, &change, None, Some("status"));
             }
         }
         changed
@@ -1970,6 +1808,11 @@ impl Daemon {
         let Ok(titles) = self.backend.titles() else { return false };
         let mut changed = false;
         for rec in self.board.sessions.iter_mut().filter(|r| r.state.has_pane()) {
+            if crate::agents::adapter(rec.kind).is_some_and(|adapter| {
+                adapter.capabilities().observation == crate::agents::ObservationMode::Structured
+            }) {
+                continue;
+            }
             let sid = rec.sid16();
             let Some((_, t)) = titles.iter().find(|(name, _)| *name == sid) else { continue };
             if t.is_empty() || *t == self.hostname {
@@ -1991,144 +1834,8 @@ impl Daemon {
         changed
     }
 
-    /// Observe tier (19 §4 tier 2): adopted sessions with no process of ours
-    /// get their state from the transcript tail, at `Confidence::Low` only.
-    /// Our own Claude sessions borrow the same tier while `Unknown` — a
-    /// daemon restart mid-turn strands them there with no hook due until the
-    /// next turn boundary (dogfood 2026-08-30: "?" while Claude visibly
-    /// streams). Leaving `Unknown` ends the candidacy: hooks own again and
-    /// the cursor is dropped.
-    ///
-    /// Third class, abort-only: our own working or attention-held sessions. An Esc interrupt
-    /// fires no hook, and the pane-quiet probe is defeated by Claude Code's
-    /// post-turn painting (dogfood 2026-08-30: an idle pane kept
-    /// `window_activity` fresh for 60–80 s, so the interrupted card read
-    /// "working" until the user killed it) — but the transcript records
-    /// "[Request interrupted by user]" at the keypress — known by the words,
-    /// since the flag beside them is optional (`adopt::is_interrupt`). Only the Aborted
-    /// hint is forwarded for this class: everything else stays hooks-owned,
-    /// and a silent transcript during a long tool run must never demote.
     fn poll_tails(&mut self) -> bool {
-        let now = now_ms();
-        let cands: Vec<(uuid::Uuid, String, bool)> = self
-            .board
-            .sessions
-            .iter()
-            .filter_map(|r| {
-                let observe_only = r.kind == SessionKind::Claude
-                    && r.provenance == Provenance::Adopted
-                    && r.argv.is_empty()
-                    && r.state.is_live();
-                let ours = r.kind == SessionKind::Claude
-                    && !(r.provenance == Provenance::Adopted && r.argv.is_empty());
-                let ours_lost = ours && matches!(r.state, SessionState::Unknown { .. });
-                let abort_only =
-                    ours && (r.state == SessionState::Running || attention::is_attention(&r.state));
-                if !(observe_only || ours_lost || abort_only) {
-                    return None;
-                }
-                r.transcript_path.clone().map(|t| (r.id, t, abort_only))
-            })
-            .collect();
-        self.tails.retain(|id, _| cands.iter().any(|(cid, _, _)| cid == id));
-
-        let mut changed = false;
-        for (id, tpath, abort_only) in cands {
-            let path = std::path::PathBuf::from(&tpath);
-            // Mint-time backfill for Unknown sessions: a transcript that
-            // never grows again (turn ended before the restart) would leave
-            // the card at "?" until the next prompt. One bounded read of how
-            // the transcript RESTED seeds a state — the only look at history
-            // the "history is not activity" rule permits, because Low
-            // confidence can seed a state but never announce anything.
-            let fresh = self.tails.get(&id).is_none_or(|c| c.path != path);
-            let backfill = if fresh
-                && self
-                    .board
-                    .sessions
-                    .iter()
-                    .any(|r| r.id == id && matches!(r.state, SessionState::Unknown { .. }))
-            {
-                resting_hint(&path, now)
-            } else if fresh && abort_only {
-                // Esc may precede the first poll. Only an explicit, timestamped
-                // abort from this state spell can seed cancellation from history.
-                self.board
-                    .sessions
-                    .iter()
-                    .find(|r| r.id == id)
-                    .and_then(|r| r.state_changed_at)
-                    .filter(|since| crate::tail::aborted_since(&path, *since))
-                    .map(|_| TailHint::AbortedMidStream)
-            } else {
-                None
-            };
-            let cursor =
-                self.tails.entry(id).or_insert_with(|| TailCursor::at_end(path.clone(), now));
-            if cursor.path != path {
-                *cursor = TailCursor::at_end(path.clone(), now);
-            }
-            let lines = cursor.poll(now);
-            let quiet = now.saturating_sub(cursor.grew_at);
-
-            let mut hints: Vec<(TailHint, Option<String>)> = Vec::new();
-            hints.extend(backfill.map(|h| (h, None)));
-            for line in &lines {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(line) else { continue };
-                match classify_tail_record(&v) {
-                    TailEvent::Aborted => hints.push((TailHint::AbortedMidStream, None)),
-                    _ if abort_only => {}
-                    TailEvent::AssistantText { text } => {
-                        hints.push((TailHint::AssistantText, Some(crate::census::sanitize(&text))))
-                    }
-                    TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion } => {
-                        hints.push((TailHint::AskUserQuestion, None))
-                    }
-                    TailEvent::NeedsHuman { tool: TailTool::ExitPlanMode } => {
-                        hints.push((TailHint::ExitPlanMode, None))
-                    }
-                    TailEvent::TurnComplete => hints.push((
-                        TailHint::TurnComplete,
-                        mesimon_core::adopt::assistant_text(&v).map(crate::census::sanitize),
-                    )),
-                    TailEvent::ToolInFlight => hints.push((
-                        TailHint::ToolInFlight,
-                        mesimon_core::adopt::assistant_text(&v).map(crate::census::sanitize),
-                    )),
-                    TailEvent::Latch | TailEvent::Other => {}
-                }
-            }
-            if !abort_only
-                && hints.is_empty()
-                && !cursor.tools.is_busy()
-                && quiet >= TAIL_QUIET_MS
-                && self
-                    .board
-                    .sessions
-                    .iter()
-                    .any(|r| r.id == id && r.state == SessionState::Running)
-            {
-                hints.push((TailHint::StaleQuiet, None));
-            }
-
-            for (hint, preview) in hints {
-                let sig = Signal::TranscriptHint { kind: hint };
-                if let Some(change) = self.observe_signal(id, &sig, now, "tail") {
-                    changed |= self.apply_change(id, &change, None, Some("tail"));
-                }
-                // The preview outlives the state word (apply_change wipes
-                // detail outside attention states) — set it after.
-                if let Some(p) = preview {
-                    if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                        if rec.detail.as_deref() != Some(p.as_str()) {
-                            rec.detail = Some(p);
-                            changed = true;
-                        }
-                    }
-                }
-            }
-        }
-        changed
+        self.poll_agent_recovery(RecoveryChannel::Transcript)
     }
 
     /// pane-died cannot fire for a dead tmux server: if the private server is
@@ -2240,7 +1947,7 @@ impl Daemon {
                         || (now.saturating_sub(s.heartbeat_ms) <= 5_000
                             && s.heartbeat_ms <= now + 1_000))
             });
-            let Some(snapshot) = valid else {
+            let Some(mut snapshot) = valid else {
                 self.codex_ready.remove(&id);
                 // A new runtime gets a bounded startup grace, but holds the
                 // checkout throughout it. Lost evidence never means done.
@@ -2265,6 +1972,30 @@ impl Daemon {
             };
             if snapshot.sequence < rec.codex_observed_seq {
                 continue;
+            }
+            if snapshot.thread_id.is_some() && snapshot.thread_id != rec.codex_thread_id {
+                dirty |= rec.title.is_some();
+                rec.title = None;
+            }
+            if let (Some(title), Some(adapter)) =
+                (&snapshot.title, crate::agents::adapter(rec.kind))
+            {
+                let clean = adapter.normalize_title(title);
+                if !clean.is_empty() && rec.title.as_ref() != Some(&clean) {
+                    rec.title = Some(clean);
+                    dirty = true;
+                }
+            }
+            // Closing the native local plan dialog is not a successful turn.
+            // Preserve the exact dismissed turn across daemon handover while
+            // the runtime continues reporting its structured plan hold.
+            if snapshot.turn_id.is_some()
+                && snapshot.turn_id == rec.codex_plan_dismissed_turn
+                && snapshot.state
+                    == (SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan })
+            {
+                snapshot.state = SessionState::Idle { stop_reason: StopReason::Unknown };
+                snapshot.observation_hold = false;
             }
             if let (Some(plan), Some(key)) = (&snapshot.plan, &snapshot.plan_key) {
                 if rec.agent_plan_key.as_ref() != Some(key) {
@@ -2321,6 +2052,8 @@ impl Daemon {
             rec.codex_turn_id = snapshot.turn_id;
             dirty = true;
             if new_turn {
+                rec.codex_plan_dialog_seen = false;
+                rec.codex_plan_dismissed_turn = None;
                 rec.pending_prefill = false;
                 rec.pending_submit = false;
                 rec.codex_submit_sent = false;
@@ -2395,11 +2128,25 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .filter(|s| s.kind == SessionKind::Codex && s.state.has_pane() && s.pending_prefill)
-            .map(|s| (s.id, s.sid16(), s.state.clone()))
+            .filter(|s| {
+                s.kind == SessionKind::Codex
+                    && s.state.has_pane()
+                    && !s.argv.is_empty()
+                    && (s.pending_prefill
+                        || self.codex_native_ready.get(&s.id) != Some(&s.codex_generation)
+                        || matches!(
+                            s.state,
+                            SessionState::RequiresAction {
+                                reason: mesimon_core::board::Reason::Plan
+                                    | mesimon_core::board::Reason::Trust
+                                    | mesimon_core::board::Reason::Auth,
+                            }
+                        ))
+            })
+            .map(|s| (s.id, s.sid16(), s.state.clone(), s.codex_generation))
             .collect();
         let mut dirty = false;
-        for (id, sid, state) in candidates {
+        for (id, sid, state, generation) in candidates {
             let principal = Principal::Automation { rule: "codex_startup".into() };
             if matches!(
                 authorize(&principal, &Action::Mutate, &Resource::Session { id }),
@@ -2408,7 +2155,30 @@ impl Daemon {
                 continue;
             }
             let Ok(screen) = self.backend.capture_tail(&sid, 40) else { continue };
-            let signal = if let Some(reason) = crate::agents::codex::startup_attention(&screen) {
+            if crate::agents::codex::input_ready(&screen) {
+                self.codex_native_ready.insert(id, generation);
+            }
+            let signal = if state
+                == (SessionState::RequiresAction { reason: mesimon_core::board::Reason::Plan })
+            {
+                let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
+                    continue;
+                };
+                if crate::agents::codex::plan_dialog(&screen) {
+                    dirty |= !rec.codex_plan_dialog_seen;
+                    rec.codex_plan_dialog_seen = true;
+                    continue;
+                }
+                if !rec.codex_plan_dialog_seen || !crate::agents::codex::input_ready(&screen) {
+                    continue;
+                }
+                rec.codex_plan_dismissed_turn = rec.codex_turn_id.clone();
+                rec.codex_plan_dialog_seen = false;
+                rec.observation_hold = rec.pending_submit;
+                self.codex_ready.insert(id);
+                dirty = true;
+                Signal::Ready
+            } else if let Some(reason) = crate::agents::codex::startup_attention(&screen) {
                 Signal::Attention { reason }
             } else if self.codex_ready.contains(&id)
                 && crate::agents::codex::input_ready(&screen)
@@ -2553,8 +2323,15 @@ impl Daemon {
             .iter_mut()
             .find(|s| s.id == id)
             .and_then(|record| {
-                crate::agents::adapter(record.kind)
-                    .map(|adapter| adapter.parse_hook(&frame, record))
+                // Shell panes historically accept the hook protocol too:
+                // an agent launched inside one can report attention and exit.
+                // Keep that compatibility without giving shells agent-seat
+                // capabilities or interpreting Claude hooks for Codex.
+                let hook_kind = match record.kind {
+                    SessionKind::Bash => SessionKind::Claude,
+                    kind => kind,
+                };
+                crate::agents::adapter(hook_kind).map(|adapter| adapter.parse_hook(&frame, record))
             })
             .unwrap_or_default();
         // Pane death is transport lifecycle shared by shells and both agents.
@@ -2671,18 +2448,12 @@ impl Daemon {
         }
     }
 
-    /// Write the plan an approved `ExitPlanMode` carried as a note on the
-    /// session's ticket, authored by the agent (2026-09-03). The plan file
-    /// Claude keeps under `~/.claude/plans/` is off the board; this is the
-    /// same document on it, and the note is fetched exactly the way the
-    /// agent's own `write_note` would be — sanitized, capped and stamped by
-    /// `write_note`, authorized as the agent on the ticket, named in the feed
-    /// and never quoted there. ONE note per session, replaced on every
-    /// approval the way the plan file is, so a re-plan is a revision and not
-    /// a second note; a note the user deleted since is not resurrected, the
-    /// next approval mints a fresh one. On a ticket with no description it
-    /// becomes `notes[0]`, which is what any first note does. Returns
-    /// whether the record changed.
+    /// Publish the adapter's authoritative plan through normal agent-note
+    /// authorization. Claude supplies an approved ExitPlanMode plan; Codex
+    /// supplies a completed plan item, which may still await native approval.
+    /// One note per session is revised on each new plan. A user-deleted note
+    /// gets a fresh identity on the next plan. Content is sanitized and capped
+    /// by write_note, and the feed records metadata only.
     fn record_plan(&mut self, session: uuid::Uuid, plan: String) -> bool {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == session) else {
             return false;
@@ -4422,7 +4193,7 @@ impl Daemon {
             Response::Err { message } => {
                 let why = if message.contains("PTY") || message.contains("memory") {
                     "resources"
-                } else if message.contains("already has a claude") {
+                } else if message.contains("already has an agent") {
                     "seat_taken"
                 } else {
                     "spawn"
@@ -4893,8 +4664,11 @@ impl Daemon {
     /// here; what differs between them is whose words travel.
     fn paste_to_ticket(&mut self, ticket: ulid::Ulid, text: &str) -> Result<(), String> {
         let Some(rec) = self.board.pane_target(ticket) else {
-            return Err("no live claude session on this ticket — start or wake one first".into());
+            return Err("no live agent session on this ticket — start or wake one first".into());
         };
+        if rec.provenance == Provenance::Adopted && rec.argv.is_empty() {
+            return Err("external session — resume it to take over before sending a prompt".into());
+        }
         let sid = rec.sid16();
         if rec.kind == SessionKind::Codex {
             if rec.pending_submit || self.pending_prompt.contains_key(&rec.id) {
@@ -5207,6 +4981,15 @@ impl Daemon {
     /// holds for it in the strongest form the promise has: mesimon does not
     /// add a token, and here it does not author one either.
     fn prompt_session(&mut self, ticket: ulid::Ulid, text: String, queued: bool) -> Response {
+        if self
+            .board
+            .live_agent(ticket)
+            .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty())
+        {
+            return Response::Err {
+                message: "external session — resume it to take over before sending a prompt".into(),
+            };
+        }
         let seat = self.seat_of(ticket);
         // Blank in, nothing out: an empty paste would press Enter on a turn
         // the user never wrote. An EMPTY SEAT is the one exception (T-294):
@@ -5587,7 +5370,7 @@ impl Daemon {
             .map(|s| s.id)
         else {
             return Response::Err {
-                message: "no live claude session on this ticket — start or wake one first".into(),
+                message: "no live agent session on this ticket — start or wake one first".into(),
             };
         };
         let resp = self.resume_session(id, false);
@@ -6202,7 +5985,10 @@ impl Daemon {
             .pending_teardown
             .iter()
             .enumerate()
-            .filter(|(_, t)| !t.sids.iter().any(|s| self.reaping.contains_key(s)))
+            .filter(|(_, t)| {
+                !t.sids.iter().any(|s| self.reaping.contains_key(s))
+                    && !self.board.sessions.iter().any(|s| s.ticket == t.ticket && s.codex_stopping)
+            })
             .map(|(i, _)| i)
             .collect();
         if ready.is_empty() {
@@ -6317,7 +6103,17 @@ impl Daemon {
         // are refused: a record that already exists resumes as it did, so a
         // board that predates this keeps every session it has.
         if kind.is_agent() {
+            if self.pending_resumes.iter().any(|pending| pending.ticket == ticket) {
+                return Response::Err {
+                    message: "an agent resume is already provisioning on this ticket".into(),
+                };
+            }
             if let Some(held) = self.board.live_agent(ticket) {
+                if held.codex_stopping {
+                    return Response::Err {
+                        message: "agent is still stopping — wait for its server cleanup before starting another".into(),
+                    };
+                }
                 let verb =
                     if matches!(held.state, SessionState::Sleeping) { "wake" } else { "focus" };
                 return Response::Err {
@@ -6818,6 +6614,18 @@ impl Daemon {
             if self.board.ticket(t).is_none() {
                 return Err("no such ticket".into());
             }
+            // An accepted start/resume owns the seat before its pane exists.
+            // Adoption must not displace it while the worktree is provisioning.
+            if self
+                .pending_spawns
+                .iter()
+                .any(|pending| pending.ticket == t && pending.kind.is_agent())
+                || self.pending_resumes.iter().any(|pending| pending.ticket == t)
+            {
+                return Err(
+                    "an agent start or resume is already provisioning on this ticket".into()
+                );
+            }
         }
         let item = self.external.iter().find(|item| item.id == selector).cloned();
         let provider = item.as_ref().map(|item| item.provider).unwrap_or(AgentProvider::ClaudeCode);
@@ -6835,7 +6643,7 @@ impl Daemon {
             .board
             .sessions
             .iter()
-            .any(|record| matches_identity(record) && record.state.is_live())
+            .any(|record| matches_identity(record) && record.holds_agent_seat())
         {
             return Err("session already on the board".into());
         }
@@ -6971,17 +6779,118 @@ impl Daemon {
         None
     }
 
+    /// This only establishes absence of known owners. An explicit person must
+    /// separately acknowledge descendants that the crashed runtime could not audit.
+    fn unverified_cleanup_resume_eligible(
+        &self,
+        rec: &SessionRecord,
+    ) -> Result<(u64, crate::agents::codex::RecoveryLaunchTarget), String> {
+        let generation =
+            rec.codex_generation.ok_or_else(|| "Codex cleanup identity is missing".to_string())?;
+        if rec.kind != SessionKind::Codex || rec.argv.is_empty() {
+            return Err("Codex cleanup recovery requires an owned runtime".into());
+        }
+        if !std::path::Path::new(&rec.cwd).is_dir() {
+            return Err("Codex cleanup is unverified and its checkout is missing; recovery cannot recreate it while unknown child processes may remain".into());
+        }
+        let panes = self
+            .backend
+            .snapshot()
+            .map_err(|e| format!("Codex cleanup: cannot verify private pane absence: {e}"))?;
+        if panes.iter().any(|pane| pane.session_name == rec.sid16() && !pane.pane_dead) {
+            return Err("Codex is still stopping; its native pane remains live".into());
+        }
+        // snapshot() also returns an empty list when tmux cannot be reached.
+        // The stale socket left by a dead server is safe only after a bounded
+        // endpoint probe positively excludes its listener.
+        if panes.is_empty() {
+            crate::agents::codex::recovery_endpoint_absent(&self.paths.tmux_sock())?;
+        }
+        let target = crate::agents::codex::recovery_launch_target(&self.paths, rec)?;
+        let mut owner_record = rec.clone();
+        if let crate::agents::codex::RecoveryLaunchTarget::Exact(identity) = &target {
+            owner_record.codex_thread_id = Some(identity.clone());
+        }
+        if let Some(owner) = crate::agents::adapter(rec.kind)
+            .and_then(|adapter| adapter.external_owner(&owner_record))
+        {
+            return Err(format!(
+                "Codex is still stopping; known conversation owner remains ({owner})"
+            ));
+        }
+        crate::agents::codex::recovery_owner_absent(&self.paths, rec)?;
+        Ok((generation, target))
+    }
+
     /// Takeover / wake: spawn `claude --resume` under this record's sid16.
     fn resume_session(&mut self, id: uuid::Uuid, confirm: bool) -> Response {
-        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
+        self.resume_session_with_cleanup_ack(id, confirm, false)
+    }
+
+    fn resume_session_with_cleanup_ack(
+        &mut self,
+        id: uuid::Uuid,
+        confirm: bool,
+        human_resume: bool,
+    ) -> Response {
+        let Some(mut rec) = self.board.sessions.iter().find(|s| s.id == id).cloned() else {
             return Response::Err { message: "no such session".into() };
         };
         if !rec.kind.is_agent() {
             return Response::Err { message: "only agent sessions resume".into() };
         }
-        if rec.codex_stopping {
+        let mut startup_retry = false;
+        let cleanup_generation = if rec.codex_stopping {
+            if !human_resume {
+                return Response::Err {
+                    message: "Codex is still stopping; automatic wake cannot acknowledge unverified cleanup".into(),
+                };
+            }
+            let eligible = self.unverified_cleanup_resume_eligible(&rec);
+            let (generation, target) = match eligible {
+                Ok(target) => target,
+                Err(message) => {
+                    self.cleanup_resume_offers.remove(&id);
+                    return Response::Err { message };
+                }
+            };
+            if !confirm || self.cleanup_resume_offers.get(&id) != Some(&generation) {
+                self.cleanup_resume_offers.insert(id, generation);
+                return Response::Err {
+                    message: format!("Codex cleanup is unverified: the known pane and runtime are absent, but unknown child processes may remain. Check the checkout and resume again to acknowledge this risk and {}", match target {
+                        crate::agents::codex::RecoveryLaunchTarget::Exact(_) => "resume the exact conversation",
+                        crate::agents::codex::RecoveryLaunchTarget::RetryStartup => "retry startup; recorded evidence proves no conversation selection was forwarded",
+                    }),
+                };
+            }
+            match target {
+                crate::agents::codex::RecoveryLaunchTarget::Exact(identity) => {
+                    rec.codex_thread_id = Some(identity)
+                }
+                crate::agents::codex::RecoveryLaunchTarget::RetryStartup => startup_retry = true,
+            }
+            Some(generation)
+        } else {
+            self.cleanup_resume_offers.remove(&id);
+            None
+        };
+        // Git creates the worktree directory before post-checkout finishes. Keep
+        // the accepted resume behind that transaction even once its cwd exists.
+        if self.pending_resumes.iter().any(|pending| pending.session == id) {
+            return Response::Provisioning;
+        }
+        if self
+            .pending_spawns
+            .iter()
+            .any(|pending| pending.ticket == rec.ticket && pending.kind.is_agent())
+            || self
+                .pending_resumes
+                .iter()
+                .any(|pending| pending.ticket == rec.ticket && pending.session != id)
+        {
             return Response::Err {
-                message: "Codex is still stopping; wake after its server cleanup completes".into(),
+                message: "another agent start or resume is already provisioning on this ticket"
+                    .into(),
             };
         }
         if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
@@ -6991,7 +6900,7 @@ impl Daemon {
             other.id != id
                 && other.ticket == rec.ticket
                 && other.kind.is_agent()
-                && other.state.is_live()
+                && (other.state.is_live() || other.codex_stopping)
         }) {
             return Response::Err {
                 message: "ticket already has a live agent session — focus it instead".into(),
@@ -7003,7 +6912,7 @@ impl Daemon {
                 return Response::Err { message: "session is live — focus it instead".into() };
             }
         }
-        if let Some(message) = self.resume_guard(rec, confirm) {
+        if let Some(message) = self.resume_guard(&rec, confirm) {
             return Response::Err { message };
         }
         let adapter = crate::agents::adapter(rec.kind).expect("agent kind checked above");
@@ -7025,22 +6934,46 @@ impl Daemon {
         // and the in-app `/resume` relearn writes it the same way.
         let fresh = (adapter.capabilities().resume
             == crate::agents::ResumePolicy::FreshWhenHistoryMissing
-            && adapter.history_missing(rec))
+            && adapter.history_missing(&rec))
         .then(uuid::Uuid::new_v4);
-        let spec = match fresh {
-            Some(new_id) => {
-                match adapter.start(
-                    &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd)),
-                    &new_id.to_string(),
-                ) {
+        // Preserve the unacknowledged old generation before adapter preparation
+        // writes the configuration for its replacement. This is evidence of a
+        // human risk acceptance, never a fabricated cleanup acknowledgement.
+        let cleanup_evidence = if cleanup_generation.is_some() {
+            if let Some(message) = self.spawn_gate() {
+                return Response::Err { message };
+            }
+            match crate::agents::codex::retain_unverified_cleanup(&self.paths, &rec) {
+                Ok(path) => Some(path),
+                Err(message) => return Response::Err { message },
+            }
+        } else {
+            None
+        };
+        let spec = if startup_retry {
+            match adapter.start(
+                &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd)),
+                &rec.id.to_string(),
+            ) {
+                Ok(spec) => spec,
+                Err(message) => return Response::Err { message },
+            }
+        } else {
+            match fresh {
+                Some(new_id) => {
+                    match adapter.start(
+                        &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd)),
+                        &new_id.to_string(),
+                    ) {
+                        Ok(a) => a,
+                        Err(message) => return Response::Err { message },
+                    }
+                }
+                None => match self.resume_argv(&rec) {
                     Ok(a) => a,
                     Err(message) => return Response::Err { message },
-                }
+                },
             }
-            None => match self.resume_argv(rec) {
-                Ok(a) => a,
-                Err(message) => return Response::Err { message },
-            },
         };
         let argv = spec.argv;
         let (sid, mut cwd, ticket) =
@@ -7089,16 +7022,34 @@ impl Daemon {
         let _ = self.backend.kill_session(&sid); // clear any dead remain-on-exit pane
         let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
         if let Err(e) = self.backend.spawn(&sid, &cwd, &launch) {
+            if let (Some(evidence), Some(prepared_generation)) =
+                (cleanup_evidence.as_deref(), spec.generation)
+            {
+                if let Err(rollback) = crate::agents::codex::restore_unverified_cleanup(
+                    &self.paths,
+                    &rec,
+                    evidence,
+                    prepared_generation,
+                ) {
+                    return Response::Err {
+                        message: format!("resume spawn failed: {e}; original cleanup remains unverified and configuration rollback failed: {rollback}"),
+                    };
+                }
+            }
             return Response::Err { message: format!("resume spawn failed: {e}") };
         }
         let now = now_ms();
+        let resumed_thread = rec.codex_thread_id.clone();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.argv = argv;
             rec.codex_generation = spec.generation;
+            rec.codex_plan_dialog_seen = false;
+            rec.codex_plan_dismissed_turn = None;
             rec.codex_observed_seq = 0;
             rec.codex_pending_seq = None;
             rec.codex_stopping = false;
             if rec.kind == SessionKind::Codex {
+                rec.codex_thread_id = resumed_thread;
                 rec.observation_hold = true;
                 rec.agent_preview_path =
                     Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
@@ -7124,10 +7075,20 @@ impl Daemon {
                 rec.transcript_path = None;
             }
         }
-        self.tails.remove(&id); // hooks own the state from here
-        self.probe_stage.remove(&id);
+        self.cleanup_resume_offers.remove(&id);
+        if let (Some(generation), Some(evidence)) = (cleanup_generation, cleanup_evidence) {
+            self.feed.hook_event(
+                &id.to_string(),
+                "CleanupUnverifiedResume",
+                Some(&format!(
+                    "Local user acknowledged unknown child processes may remain from generation {generation}; retained evidence: {}",
+                    evidence.display()
+                )),
+            );
+        }
+        self.recovery.remove(&id); // reset provider cursors for the new launch
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));
-        Response::Spawned { id, fresh: fresh.is_some() }
+        Response::Spawned { id, fresh: fresh.is_some() || startup_retry }
     }
 
     /// D23 floors, tmux-recast. `Err` carries the user-facing refusal.
@@ -7231,8 +7192,7 @@ impl Daemon {
             rec.detail = None;
         }
         self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
-        self.tails.remove(&id);
-        self.probe_stage.remove(&id);
+        self.recovery.remove(&id);
         let _ = self.backend.signal_session(&sid);
         self.reaping.insert(sid, Instant::now() + REAP_GRACE);
         // The user parked the claude an ask was waiting for: a queued ask
@@ -7319,8 +7279,7 @@ impl Daemon {
             rec.detail = None;
         }
         self.machines.insert(id, Machine::new(SessionState::Sleeping, now));
-        self.tails.remove(&id);
-        self.probe_stage.remove(&id);
+        self.recovery.remove(&id);
         // No SIGTERM: the process left on its own. The pane is only still
         // standing because remain-on-exit is holding the corpse, so hand it
         // to the same reaper sleep uses rather than killing it inline.
@@ -7663,58 +7622,6 @@ fn archive_suggest_ms() -> u64 {
         .unwrap_or(ARCHIVE_SUGGEST_MS)
 }
 
-/// Test seam only — e2e cannot spend a real minute per quiet verdict.
-fn pane_quiet_ms() -> u64 {
-    std::env::var("MESIMON_PANE_QUIET_MS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(PANE_QUIET_MS)
-}
-
-/// How an `Unknown` session's transcript rested → the hint that seeds its
-/// recovered state (Low confidence). Quiet gating uses the file mtime: a
-/// trailing assistant record on a long-quiet file is a turn that died, not
-/// one in flight.
-fn resting_hint(path: &std::path::Path, now: u64) -> Option<TailHint> {
-    let quiet = std::fs::metadata(path)
-        .ok()
-        .and_then(|m| m.modified().ok())
-        .and_then(mesimon_core::clock::epoch_ms)
-        .map(|ms| now.saturating_sub(ms))
-        .unwrap_or(u64::MAX);
-    match crate::tail::last_event(path)? {
-        TailEvent::TurnComplete => Some(TailHint::TurnComplete),
-        TailEvent::Aborted => Some(TailHint::AbortedMidStream),
-        TailEvent::NeedsHuman { tool: TailTool::AskUserQuestion } => {
-            Some(TailHint::AskUserQuestion)
-        }
-        TailEvent::NeedsHuman { tool: TailTool::ExitPlanMode } => Some(TailHint::ExitPlanMode),
-        TailEvent::AssistantText { .. } => {
-            if quiet < TAIL_QUIET_MS {
-                Some(TailHint::AssistantText)
-            } else {
-                Some(TailHint::StaleQuiet)
-            }
-        }
-        // A trailing tool call: the tool is running, and the transcript is
-        // STILL for as long as it does — the file's quiet says nothing here
-        // (T-265: a reload during a 3.5-minute `cargo` call). Seed Running;
-        // a turn that really died is `probe_activity`'s to catch, off the
-        // pane's own quiet, which a tool in flight keeps painting.
-        TailEvent::ToolInFlight => Some(TailHint::ToolInFlight),
-        // A trailing user/attachment record: the turn may be in flight — say
-        // nothing while the file is fresh, idle once it has clearly died.
-        TailEvent::Other => {
-            if quiet >= TAIL_QUIET_MS {
-                Some(TailHint::StaleQuiet)
-            } else {
-                None
-            }
-        }
-        TailEvent::Latch => None,
-    }
-}
-
 /// Direct live children of a pid, by name — the tmux-recast bash-sleep guard.
 fn live_children(pid: i32) -> Vec<String> {
     let Ok(out) = std::process::Command::new("pgrep").args(["-lP", &pid.to_string()]).output()
@@ -7740,31 +7647,4 @@ const AGENT_DESCRIPTION_MAX_BYTES: usize = 4096;
 fn now_iso() -> String {
     // Seconds precision is enough for created_at; avoid a chrono dependency.
     format!("@{}", now_secs())
-}
-
-#[cfg(test)]
-mod status_probe_tests {
-    use super::StatusProbe;
-
-    #[test]
-    fn permission_needs_observed_waiting_and_a_new_busy_stamp_in_same_spell() {
-        let mut p = StatusProbe { path: None, looked_at: 0, near_idle: None, waiting_spell: None };
-        assert!(!p.permission_resumed(Some("busy"), Some(1200), 1000));
-        assert!(!p.permission_resumed(Some("waiting"), Some(1100), 1000));
-        assert!(!p.permission_resumed(Some("busy"), Some(1000), 1000));
-        assert!(p.permission_resumed(Some("busy"), Some(1200), 1000));
-        assert!(!p.permission_resumed(Some("busy"), Some(1600), 1500));
-    }
-
-    #[test]
-    fn early_idle_needs_confirmation_and_busy_cancels_it() {
-        let mut p = StatusProbe { path: None, looked_at: 0, near_idle: None, waiting_spell: None };
-        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1000, 2000));
-        assert!(!p.confirms_idle(Some("busy"), Some(1200), 1000, 4000));
-        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1000, 5000));
-        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1000, 6999));
-        assert!(p.confirms_idle(Some("idle"), Some(1120), 1000, 7000));
-        assert!(!p.confirms_idle(Some("idle"), Some(1120), 1500, 9000));
-        assert!(p.confirms_idle(Some("idle"), Some(1800), 1500, 9000));
-    }
 }

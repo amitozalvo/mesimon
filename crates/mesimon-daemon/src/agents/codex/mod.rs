@@ -2,6 +2,11 @@
 
 pub mod discovery;
 pub mod observation;
+mod recovery;
+pub use recovery::{
+    recovery_endpoint_absent, recovery_launch_target, recovery_owner_absent,
+    restore_unverified_cleanup, retain_unverified_cleanup, RecoveryLaunchTarget,
+};
 pub mod rpc;
 pub mod runtime;
 
@@ -63,10 +68,23 @@ pub fn input_ready(lines: &[String]) -> bool {
         "Do you trust",
         "Select a model",
         "Review hooks",
+        "Implement this plan?",
     ];
     footer.is_some_and(|footer| {
         !lines.iter().skip(footer).any(|line| blocked.iter().any(|marker| line.contains(marker)))
     })
+}
+
+/// The native implementation dialog is local UI, not an app-server request.
+/// Require its choice list as well as the heading to reject conversational text.
+pub fn plan_dialog(lines: &[String]) -> bool {
+    let Some(index) = lines.iter().rposition(|line| line.trim() == "Implement this plan?") else {
+        return false;
+    };
+    let tail = &lines[index..];
+    tail.iter().any(|line| line.contains("Yes, implement this plan"))
+        && tail.iter().any(|line| line.contains("No, stay in Plan mode"))
+        && !input_ready(tail)
 }
 
 pub fn startup_attention(lines: &[String]) -> Option<mesimon_core::board::Reason> {
@@ -268,6 +286,17 @@ pub fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
     result
 }
 
+/// Missing legacy evidence never proves that no conversation was created.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LaunchPhase {
+    #[default]
+    Unknown,
+    BeforeSelection,
+    SelectionPending,
+    Selected,
+}
+
 /// The supervised runtime's current observation, independent of board state.
 /// Only the daemon writer applies this evidence to sessions and automation.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -277,10 +306,15 @@ pub struct Snapshot {
     pub sequence: u64,
     pub heartbeat_ms: u64,
     pub thread_id: Option<String>,
+    #[serde(default)]
+    pub launch_phase: LaunchPhase,
     pub turn_id: Option<String>,
     pub state: SessionState,
     pub observation_hold: bool,
     pub history_path: Option<String>,
+    /// Native foreground thread name, independent of terminal OSC titles.
+    #[serde(default)]
+    pub title: Option<String>,
     /// Complete provider plan item, never a stream delta or an approval claim.
     #[serde(default)]
     pub plan: Option<String>,
@@ -297,6 +331,18 @@ mod input_tests {
     fn screen(text: &str) -> Vec<String> {
         text.lines().map(str::to_string).collect()
     }
+    #[test]
+    fn plan_modal_is_distinct_from_plan_text_and_native_composer() {
+        let screen = |text: &str| text.lines().map(str::to_owned).collect::<Vec<_>>();
+        let modal = screen("Implement this plan?\n› 1. Yes, implement this plan\n  2. Yes, clear context and implement\n  3. No, stay in Plan mode\nPress enter to confirm or esc to go back");
+        assert!(plan_dialog(&modal));
+        assert!(!input_ready(&modal));
+        let composer = screen("Implement this plan?\n› 1. Yes, implement this plan\n  3. No, stay in Plan mode\n› Continue planning\n? for shortcuts");
+        assert!(!plan_dialog(&composer));
+        assert!(input_ready(&composer));
+        assert!(!plan_dialog(&screen("The answer is: Implement this plan?")));
+    }
+
     #[test]
     fn input_footer_accepts_default_and_native_custom_status_but_not_modals() {
         assert!(input_ready(&screen("› Ask Codex to do anything\n\n? for shortcuts")));

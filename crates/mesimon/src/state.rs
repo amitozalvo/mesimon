@@ -47,19 +47,11 @@ fn compatibility(args: &[String]) -> Result<Value> {
         _ => bail!("usage: mesimon state compatibility [claude|codex] <version>"),
     };
     if provider == "codex" {
-        let tested = version == CODEX_TESTED_VERSION;
-        return Ok(json!({"provider": "codex", "codex_version": version,
-            "tested_version": CODEX_TESTED_VERSION,
-            "status": if tested { "partially_observed" } else { "untested" },
-            "evidence": if tested { Some(json!({
-                "document": "docs/spikes/codex-runtime-evidence.md",
-                "measured": ["native_tui_unix_websocket_relay", "completed_and_failed_turns",
-                    "native_approval_cancellation", "scoped_mcp_roundtrip",
-                    "reviewed_hooks_additive_startup_context", "apply_patch_hook_denial",
-                    "active_enter_steers", "active_tab_queues"],
-                "scope": "Installed-runtime experiments; not proof of the complete Mesimon acceptance matrix"
-            })) } else { None },
-            "policy": "No automatic model calls or configuration changes"}));
+        let manifest: Value =
+            serde_json::from_str(include_str!("../../../docs/codex-compatibility.json"))?;
+        let matched = manifest["versions"].get(version);
+        let now_ms = SystemTime::now().duration_since(UNIX_EPOCH)?.as_millis() as u64;
+        return Ok(codex_compatibility(&manifest, version, matched, now_ms));
     }
     let manifest: Value =
         serde_json::from_str(include_str!("../../../docs/claude-compatibility.json"))?;
@@ -67,6 +59,26 @@ fn compatibility(args: &[String]) -> Result<Value> {
     Ok(json!({"provider": "claude_code", "claude_version": version,
         "status": if matched.is_some() { "partially_observed" } else { "untested" },
         "evidence": matched, "policy": "No automatic model calls or configuration changes"}))
+}
+
+fn codex_compatibility(
+    manifest: &Value,
+    version: &str,
+    matched: Option<&Value>,
+    now_ms: u64,
+) -> Value {
+    let age_days = matched
+        .and_then(|evidence| evidence["captured_at_unix_ms"].as_u64())
+        .and_then(|captured| now_ms.checked_sub(captured))
+        .map(|age| age / 86_400_000);
+    json!({"provider": "codex", "codex_version": version,
+        "tested_version": CODEX_TESTED_VERSION,
+        "status": if matched.is_some() { "partially_observed" } else { "untested" },
+        "manifest": "docs/codex-compatibility.json",
+        "adapter_revision": manifest["adapter_revision"],
+        "evidence_age_days": age_days,
+        "evidence": matched,
+        "policy": "No automatic model calls or configuration changes"})
 }
 
 fn capabilities(kind: SessionKind) -> Value {
@@ -126,6 +138,8 @@ fn codex_runtime(path: &Path, session: &SessionRecord, now_ms: u64) -> Value {
     json!({"status": status, "observed": identity_matches && sequence_current && (fresh || snapshot.stopped),
         "session": snapshot.session, "generation": snapshot.generation, "sequence": snapshot.sequence,
         "thread_id": snapshot.thread_id, "turn_id": snapshot.turn_id,
+        "launch_phase": snapshot.launch_phase,
+        "title": snapshot.title,
         "heartbeat_ms": snapshot.heartbeat_ms, "age_ms": age_ms, "fresh": fresh,
         "identity_matches": identity_matches, "conversation_matches": conversation_matches,
         "sequence_current": sequence_current,
@@ -250,6 +264,41 @@ mod tests {
     }
 
     #[test]
+    fn codex_manifest_lookup_retains_capture_scope_and_does_not_borrow_version_evidence() {
+        let manifest: Value =
+            serde_json::from_str(include_str!("../../../docs/codex-compatibility.json")).unwrap();
+        assert_eq!(manifest["schema"], 1);
+        let evidence = &manifest["versions"][CODEX_TESTED_VERSION];
+        let captured = evidence["captured_at_unix_ms"].as_u64().unwrap();
+        let report = codex_compatibility(
+            &manifest,
+            CODEX_TESTED_VERSION,
+            Some(evidence),
+            captured + 3 * 86_400_000,
+        );
+        assert_eq!(report["evidence_age_days"], 3);
+        assert_eq!(report["evidence"]["end_to_end"]["manual_compaction"]["status"], "passed");
+        assert_eq!(
+            report["evidence"]["end_to_end"]["structured_write_guard"]["status"],
+            "retrospectively_verified"
+        );
+        assert_eq!(
+            report["evidence"]["end_to_end"]["plan_and_queued_prompt"]["original_runner_status"],
+            "inconclusive"
+        );
+        assert!(!report["evidence"]["not_yet_observed"].as_array().unwrap().is_empty());
+        let future_clock =
+            codex_compatibility(&manifest, CODEX_TESTED_VERSION, Some(evidence), captured - 1);
+        assert!(future_clock["evidence_age_days"].is_null());
+        for version in ["0.153.3", "0.153.5", "9.0.0"] {
+            let report = compatibility(&["codex".into(), version.into()]).unwrap();
+            assert_eq!(report["status"], "untested");
+            assert!(report["evidence"].is_null());
+            assert!(report["evidence_age_days"].is_null());
+        }
+    }
+
+    #[test]
     fn capabilities_distinguish_exact_resume_and_shells() {
         assert_eq!(capabilities(SessionKind::Codex)["resume"], "exact_session_only");
         assert_eq!(capabilities(SessionKind::Claude)["observation"], "hooks");
@@ -273,6 +322,7 @@ mod tests {
         record.codex_thread_id = Some("opaque-thread-id".into());
         record.codex_observed_seq = 2;
         let mut snapshot = mesimon_daemon::agents::codex::Snapshot {
+            launch_phase: Default::default(),
             session: id,
             generation: 7,
             sequence: 2,
@@ -282,6 +332,7 @@ mod tests {
             state: record.state.clone(),
             observation_hold: false,
             history_path: None,
+            title: None,
             plan: None,
             plan_key: None,
             stopped: false,

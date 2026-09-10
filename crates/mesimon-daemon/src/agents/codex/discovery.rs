@@ -318,7 +318,11 @@ impl ProcessInventory {
     fn owner(&self, conversation: &str, cwd: &Path, transcript: &Path) -> Ownership {
         let mut uncertain = !self.complete;
         for process in &self.processes {
-            if process.files.iter().any(|file| same_path(file, transcript))
+            if (transcript.is_absolute()
+                && process
+                    .files
+                    .iter()
+                    .any(|file| file.is_absolute() && same_path(file, transcript)))
                 || process.args.split_whitespace().any(|arg| arg == conversation)
             {
                 return Ownership::Live(process.pid);
@@ -487,6 +491,13 @@ mod tests {
         assert_eq!(inventory.owner("opaque", cwd, rollout), Ownership::Unknown);
         inventory.processes[0].files.push(rollout.into());
         assert_eq!(inventory.owner("opaque", cwd, rollout), Ownership::Live(12));
+        inventory.processes[0].files = vec![PathBuf::new()];
+        inventory.processes[0].args = "codex app-server".into();
+        assert_eq!(
+            inventory.owner("opaque", cwd, Path::new("")),
+            Ownership::Unknown,
+            "an unnamed lsof descriptor cannot own a missing transcript path"
+        );
         inventory.processes[0].files.clear();
         inventory.processes[0].args = "codex resume opaque".into();
         assert_eq!(inventory.owner("opaque", cwd, rollout), Ownership::Live(12));

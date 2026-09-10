@@ -323,6 +323,10 @@ pub struct SessionRecord {
     /// Cleanup is still pending; even a sleeping record retains its checkout hold.
     #[serde(default)]
     pub codex_stopping: bool,
+    #[serde(default)]
+    pub codex_plan_dialog_seen: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_plan_dismissed_turn: Option<String>,
     /// Named in-process teammates that reported idle and have not been
     /// messaged since (T-135). A Stop payload lists a teammate as `running`
     /// for its whole life, so this is what lets the attention machine tell a
@@ -410,11 +414,19 @@ impl SessionRecord {
             pending_prefill: false,
             codex_submit_sent: false,
             codex_stopping: false,
+            codex_plan_dialog_seen: false,
+            codex_plan_dismissed_turn: None,
             idle_teammates: Vec::new(),
             monitor_task_ids: Vec::new(),
             plan_note: None,
             ticket_read: false,
         }
+    }
+
+    /// A retiring runtime still owns its ticket and conversation until cleanup
+    /// acknowledges that its processes stopped, even if the badge is Exited.
+    pub fn holds_agent_seat(&self) -> bool {
+        self.kind.is_agent() && (self.state.is_live() || self.codex_stopping)
     }
 
     /// The tmux session name for this record: first 16 hex chars of the UUID.
@@ -2070,7 +2082,7 @@ impl Board {
     /// daemon refuses a second spawn by this, and `c` wakes rather than
     /// starts by the same fact. A second seat on a ticket is a shell.
     pub fn live_agent(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
-        self.sessions.iter().find(|s| s.ticket == ticket && s.kind.is_agent() && s.state.is_live())
+        self.sessions.iter().find(|s| s.ticket == ticket && s.holds_agent_seat())
     }
 
     /// Compatibility name for callers migrating to the common agent seat.
@@ -2119,6 +2131,29 @@ mod tests {
             serde_json::from_value::<Board>(legacy).unwrap().agent_provider,
             AgentProvider::ClaudeCode
         );
+    }
+
+    #[test]
+    fn exited_codex_owns_the_agent_seat_until_server_cleanup_finishes() {
+        let ticket = ulid::Ulid::new();
+        let mut session = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Codex,
+            ticket,
+            Vec::new(),
+            "/repo".into(),
+            SessionState::Exited { reason: ExitReason::Killed },
+        );
+        session.codex_stopping = true;
+        let mut board = Board {
+            agent_provider: AgentProvider::ClaudeCode,
+            sessions: vec![session],
+            ..Board::default()
+        };
+        assert!(board.live_agent(ticket).is_some());
+        assert!(board.pane_target(ticket).is_none());
+        board.sessions[0].codex_stopping = false;
+        assert!(board.live_agent(ticket).is_none());
     }
 
     #[test]
