@@ -4226,6 +4226,7 @@ impl Daemon {
             woke_at: None,
             manual_merge: false,
             execution_policy: source.execution_policy,
+            import_origin: source.import_origin,
             raised: None,
             workspace: source.workspace,
             tags: source.tags,
@@ -4277,7 +4278,7 @@ impl Daemon {
         let wants = self
             .board
             .ticket(id)
-            .filter(|t| t.execution_policy.allows_automation())
+            .filter(|t| t.effective_execution_policy().allows_automation())
             .and_then(|t| self.board.column(&t.column))
             .is_some_and(|c| c.settings.auto_run);
         if !wants {
@@ -4337,6 +4338,7 @@ impl Daemon {
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: None,
             workspace,
             tags: Vec::new(),
@@ -4610,7 +4612,9 @@ impl Daemon {
             };
         }
         if let Some(ticket) = self.board.ticket(id) {
-            if mesimon_core::authorize::authorize_execution(by, ticket.execution_policy).denied() {
+            if mesimon_core::authorize::authorize_execution(by, ticket.effective_execution_policy())
+                .denied()
+            {
                 return Response::Merge {
                     outcome: MergeOutcome::Refused,
                     detail: "this ticket requires a human to merge it".into(),
@@ -4727,7 +4731,8 @@ impl Daemon {
             return Response::Err { message: "not allowed".into() };
         }
         if self.board.ticket(id).is_some_and(|ticket| {
-            mesimon_core::authorize::authorize_execution(by, ticket.execution_policy).denied()
+            mesimon_core::authorize::authorize_execution(by, ticket.effective_execution_policy())
+                .denied()
         }) {
             return Response::Err {
                 message: "this ticket requires a human to request a merge or rebase".into(),

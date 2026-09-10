@@ -6,6 +6,10 @@ use crate::Principal;
 pub enum Action {
     Read,
     Mutate,
+    /// Materialize external content as a fresh, inert local ticket. There is
+    /// no wire command for this seam. Existing agents and daemon automation
+    /// do not acquire import authority from ordinary content-write access.
+    ImportContent,
 }
 
 /// What it is being attempted on.
@@ -32,8 +36,8 @@ impl Decision {
 /// The single authorization chokepoint (D32c invariant 2).
 ///
 /// `Local` is the human at the keyboard and is allowed everything. `Automation`
-/// is the daemon's own rules acting without anyone asking — also allowed
-/// everything, because what restrains an automation is not authority but the
+/// is the daemon's own rules acting without anyone asking — allowed ordinary
+/// reads and mutations, because what restrains an automation there is the
 /// ping-pong guard, the flap fuse and the cascade depth limit in
 /// `Daemon::place_ticket`. `Agent` is an agent session asking over MCP, and it
 /// is the one principal this function actually restricts.
@@ -53,8 +57,16 @@ impl Decision {
 ///
 /// Ticket ownership is enforced by construction, not here: no agent command
 /// carries a ticket id, so the daemon can only ever pass the agent's own.
+/// `ImportContent` is a separate local-owner-only action, scoped to a destination
+/// column; ordinary write access does not grant authority to materialize imports.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
+    if *action == Action::ImportContent {
+        return match (principal, resource) {
+            (Principal::Local, Resource::Column { .. }) => Decision::Allow,
+            _ => deny("content import requires a local owner and a destination column"),
+        };
+    }
     match principal {
         Principal::Local | Principal::Automation { .. } => Decision::Allow,
         Principal::Agent { .. } => match (action, resource) {
@@ -66,6 +78,7 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
+            (Action::ImportContent, _) => deny("an agent cannot import external content"),
         },
     }
 }
@@ -105,6 +118,25 @@ mod tests {
         assert!(authorize_execution(&automation(), OwnerOnly).denied());
         assert!(authorize_execution(&agent(), OwnerOnly).denied());
         assert!(authorize_execution(&agent(), LocalAutomation).denied());
+    }
+
+    #[test]
+    fn import_requires_local_owner_and_destination_column() {
+        let destination = Resource::Column { name: "TODO".into() };
+        assert_eq!(
+            authorize(&Principal::Local, &Action::ImportContent, &destination),
+            Decision::Allow
+        );
+        for by in [agent(), automation()] {
+            assert!(authorize(&by, &Action::ImportContent, &destination).denied());
+        }
+        for resource in [
+            Resource::Board,
+            Resource::Ticket { id: ulid::Ulid::nil() },
+            Resource::Session { id: uuid::Uuid::nil() },
+        ] {
+            assert!(authorize(&Principal::Local, &Action::ImportContent, &resource).denied());
+        }
     }
 
     #[test]

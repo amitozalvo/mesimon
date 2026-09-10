@@ -9815,3 +9815,49 @@ list lives for the run. A per-repo TUI file under the state dir would be
 within promise 1 and is the obvious next step if a restart losing the list
 turns out to matter; a wire command to have the daemon remember views was
 judged too much machinery for a convenience.
+## Teams coordinated review and bounded P3/P4 seams (T-215, 2026-09-10)
+
+The owner authorized subagent coordination. [Assignments, independent findings,
+remediation and remaining gates](spikes/T-215-coordinator-review.md) are recorded;
+passing a subagent's bounded task does not complete its milestone package.
+
+Core now has a generic content-only capability floor, a strict title/selected-note
+projection and owner-authorized inert import preparation. Historical/working notes
+are absent unless explicitly selected. No full Ticket, session, local path,
+provider/executable policy or remote claim of authority is accepted as content.
+The writer supplies/reserves local identities and persists the prepared result.
+No remote command or authenticated intake adapter is exposed. Source capabilities
+are not yet connected to a no-repo terminal client.
+
+Import provenance is durable opaque correlation, not a verified identity. Its
+presence independently forces effective OwnerOnly at existing autorun/train and
+merge/rebase gates, even if the stored execution-policy field was omitted. Copy
+and restart preserve it and selected note bodies. Schema 6 refuses schema-5 readers
+that could drop this restriction. Worktree remains the preparation default;
+same-UID local trust is unchanged. TUI edits only initialize the new optional field.
+
+The paid workspace adds a pure ciphertext service domain: current tenant/board/
+device-grant checks precede receipt lookup and transitions; operation IDs bind
+exact request bytes; current heads guard writes; revocation/read removal freezes
+writes until rotation; bounded history/events retain opaque content and metadata.
+Fourteen tests include read-downgrade/restore-before-rotation and recovery grant
+reset. There is no authentication implementation, durable database, listener,
+enterprise audit trail or deployment conformance yet. The actor constructor is
+explicitly an adapter assertion, never evidence that request fields authenticate.
+
+Crypto review repaired incomplete backup artifacts and panic-prone authenticated
+semantic rejection. A fresh process now recovers only from the authenticated
+envelope plus separate key; typed rejections and MLS consumption survive the
+additional 50 failure/crash cases. Live pinned mls-rs/OpenMLS exchange supplies
+positive protocol evidence for both creator directions, commits, messages, exporter
+agreement, removal and stale epochs. Expired historical fixtures still reject.
+Both implementations use RustCrypto; no claim of independent primitives or fixed
+independent known-answer vectors is made.
+
+The review also prevents an overclaim: roster comparison after helper merge is not
+authorization before membership acceptance or Welcome release. That transactional
+composition, enrollment/authority rotation, protected custody and independent
+freshness remain unfinished. A removed mls-rs group can still encrypt old-state
+bytes; current recipients reject them, and broker lifecycle must separately stop
+group use. Production encryption integration stays gated. See the [final measured
+checks](spikes/T-215-mls-validation.md#coordinated-review-follow-up).

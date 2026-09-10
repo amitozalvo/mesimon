@@ -112,7 +112,7 @@ pub fn plan(input: &Input) -> Plan {
                 || f.conflict
                 || f.merged
                 || t.manual_merge
-                || !t.execution_policy.allows_automation()
+                || !t.effective_execution_policy().allows_automation()
                 || t.hand_raised()
             {
                 continue;
@@ -216,6 +216,24 @@ mod tests {
         for needs_rebase in [false, true] {
             let flags = HashMap::from([(t.id, flags(1, needs_rebase))]);
             assert_eq!(run(&b, &flags), Plan::default());
+        }
+    }
+
+    #[test]
+    fn provenance_keeps_partial_imports_off_the_train() {
+        let mut b = board();
+        let mut t = ticket(1, REVIEW, "a");
+        t.import_origin = Some(crate::content::ImportOrigin {
+            source: ulid::Ulid::from(10),
+            item: ulid::Ulid::from(20),
+        });
+        // Missing/default policy cannot widen a ticket carrying import provenance.
+        assert!(t.execution_policy.allows_automation());
+        assert!(!t.effective_execution_policy().allows_automation());
+        b.tickets.push(serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap());
+        b.sessions.push(claude(1, idle(), Confidence::High));
+        for needs_rebase in [false, true] {
+            assert_eq!(run(&b, &HashMap::from([(t.id, flags(1, needs_rebase))])), Plan::default());
         }
     }
 

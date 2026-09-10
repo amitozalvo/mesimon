@@ -56,7 +56,9 @@ pub const COLUMNS_SCHEMA: u32 = 5;
 /// train, re-armed, would merge a branch the user had taken off it.
 /// v5 adds the non-toggleable execution policy. Older readers must refuse
 /// the file instead of dropping the restriction and putting it on the train.
-pub const TICKET_SCHEMA: u32 = 5;
+/// v6 adds import provenance, which also imposes an execution floor. A v5
+/// reader must not discard its correlation or weaken a partially imported ticket.
+pub const TICKET_SCHEMA: u32 = 6;
 /// v2 adds Codex session kinds, exact thread identity and observation holds.
 /// Older readers must refuse before decoding an unfamiliar session kind,
 /// rather than quarantine the file and forget ownership of its live panes.
@@ -759,6 +761,41 @@ mod tests {
         assert!(toml::from_str::<TicketFile>(&unknown).is_err());
     }
 
+    #[test]
+    fn import_provenance_roundtrips_and_imposes_a_durable_floor() {
+        use mesimon_core::board::ExecutionPolicy;
+        use mesimon_core::content::{ImportOrigin, ImportPlacement, PreparedImport, TicketContent};
+        let origin = ImportOrigin { source: ulid::Ulid::from(10), item: ulid::Ulid::from(11) };
+        let prepared = PreparedImport::prepare(
+            &mesimon_core::Principal::Local,
+            TicketContent { title: "Incoming".into(), notes: vec!["Approved context".into()] },
+            origin.clone(),
+            ImportPlacement {
+                id: ulid::Ulid::from(1),
+                short_key: "T-1".into(),
+                column: "TODO".into(),
+                order: "a0".into(),
+                created_at: "@0".into(),
+            },
+            || ulid::Ulid::from(2),
+        )
+        .unwrap();
+        let file = TicketFile { schema_version: TICKET_SCHEMA, ticket: prepared.ticket };
+        let text = toml::to_string_pretty(&file).unwrap();
+        let back: TicketFile = toml::from_str(&text).unwrap();
+        assert_eq!(back.ticket.import_origin, Some(origin.clone()));
+        assert_eq!(back.ticket.notes.len(), 1);
+        assert_eq!(back.ticket.effective_execution_policy(), ExecutionPolicy::OwnerOnly);
+        assert!(matches!(verdict(back.schema_version, 5), Verdict::Newer(6)));
+        // An incomplete local import must not turn into an automatic execution
+        // merely because execution_policy was missing from its serialized form.
+        let missing_policy = text.replace("execution_policy = \"owner_only\"\n", "");
+        let partial: TicketFile = toml::from_str(&missing_policy).unwrap();
+        assert!(partial.ticket.execution_policy.allows_automation());
+        assert_eq!(partial.ticket.effective_execution_policy(), ExecutionPolicy::OwnerOnly);
+        assert_eq!(partial.ticket.import_origin, Some(origin));
+    }
+
     fn quarantined(dir: &Path, stem: &str) -> Vec<std::path::PathBuf> {
         std::fs::read_dir(dir)
             .into_iter()
@@ -1327,6 +1364,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: Some(mesimon_core::board::Raised {
                 at: "@1788046500".into(),
                 by: "agent:00000000-0000-0000-0000-000000000000".into(),
@@ -1371,6 +1409,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: None,
             workspace: None,
             tags: Vec::new(),
@@ -1422,6 +1461,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1467,6 +1507,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1526,6 +1567,7 @@ by = "local"
                 woke_at: None,
                 manual_merge: false,
                 execution_policy: Default::default(),
+                import_origin: None,
                 raised: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
@@ -1874,6 +1916,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1905,6 +1948,7 @@ by = "local"
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: None,
             workspace: None,
             tags: Vec::new(),

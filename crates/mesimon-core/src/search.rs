@@ -230,6 +230,7 @@ mod tests {
             manual_merge: false,
             execution_policy: Default::default(),
             workspace: None,
+            import_origin: None,
             raised: None,
             previous_column: None,
             tags: Vec::new(),

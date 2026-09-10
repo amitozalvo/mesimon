@@ -924,6 +924,13 @@ pub struct Ticket {
     /// scalar fields (TOML serialize order).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub workspace: Option<WorkspaceStrategy>,
+    /// Durable correlation for externally imported content; never an identity
+    /// assertion or an authorization grant. No command edits this field. Copies
+    /// retain it, and its presence imposes the OwnerOnly execution floor even
+    /// when an incomplete import omitted the separate policy field.
+    /// A TOML table, so it follows all scalar fields.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub import_origin: Option<crate::content::ImportOrigin>,
     /// An agent asked for a person and has not been answered (T-107): the
     /// SECOND ticket-level producer of the saturated colour, beside
     /// `woke_at`. A fact about the ticket rather than about the session, so
@@ -1265,6 +1272,16 @@ impl WorkspaceStrategy {
 pub const DEFAULT_WORKSPACE: WorkspaceStrategy = WorkspaceStrategy::SharedCheckout;
 
 impl Ticket {
+    /// Import provenance can only narrow the stored execution policy. This also
+    /// keeps a partial or hand-edited import from silently enabling automation.
+    pub fn effective_execution_policy(&self) -> ExecutionPolicy {
+        if self.import_origin.is_some() {
+            ExecutionPolicy::OwnerOnly
+        } else {
+            self.execution_policy
+        }
+    }
+
     /// An agent minted this ticket (`created_by` is `agent:<uuid>`). A person's
     /// ticket and a pre-field one both answer no: the page says who filed a
     /// ticket only when it was not the person reading it.
@@ -2378,6 +2395,7 @@ mod tests {
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
+            import_origin: None,
             raised: None,
             workspace: None,
             tags: Vec::new(),
