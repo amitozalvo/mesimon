@@ -253,8 +253,10 @@ fn detail_for(board: &Board, ticket: ulid::Ulid, words: bool) -> Option<Detail> 
     let said = words
         .then(|| board.pane_target(ticket))
         .flatten()
-        .and_then(|s| s.transcript_path.as_deref())
-        .and_then(|p| crate::peek::latest_preview(Path::new(p)))
+        .and_then(|session| {
+            let path = crate::peek::preview_path(session)?;
+            mesimon_daemon::agents::read_preview(session.kind, Path::new(path))
+        })
         .filter(|peek| peek.reply_key.is_some())
         .and_then(|peek| peek.text)
         .map(|reply| crate::text::one_line(&reply))
@@ -1032,5 +1034,25 @@ mod tests {
         assert_eq!(title_of(Path::new("/home/a/code/simbly")), "mesimon - simbly");
         assert_eq!(title_of(Path::new("/home/a/code/mesimon")), "mesimon - mesimon");
         assert_eq!(title_of(Path::new("/")), "mesimon", "a root with no name is not a hyphen");
+    }
+    #[test]
+    fn codex_notification_reads_its_preview_artifact_and_respects_words_setting() {
+        let path =
+            std::env::temp_dir().join(format!("msmn-notify-codex-{}.json", uuid::Uuid::new_v4()));
+        let preview = mesimon_daemon::agents::AgentPreview {
+            text: Some("Codex completed\nthe change".into()),
+            activity: None,
+            reply_key: Some(7),
+        };
+        std::fs::write(&path, serde_json::to_vec(&preview).unwrap()).unwrap();
+        let rig = rig(on());
+        let mut board = rig.board.lock().unwrap();
+        board.sessions[0].kind = SessionKind::Codex;
+        board.sessions[0].agent_preview_path = Some(path.display().to_string());
+        board.sessions[0].transcript_path = Some("/unused/native/codex/history.jsonl".into());
+        let ticket = board.tickets[0].id;
+        assert_eq!(detail_for(&board, ticket, true).unwrap().said, "Codex completed the change");
+        assert!(detail_for(&board, ticket, false).unwrap().said.is_empty());
+        std::fs::remove_file(path).unwrap();
     }
 }

@@ -43,7 +43,10 @@ fn the_terminal_zone_reads_the_shell_pane() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "tail".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "tail".into()
+        }),
         Response::Hello { .. }
     ));
     let _ = c.request(Command::CreateTicket {

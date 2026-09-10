@@ -42,10 +42,15 @@ const WT_BRANCH_FLOOR: usize = 16;
 const DESC_MAX_ROWS: usize = 8;
 
 /// Who a note's author string names, in the page's own words: a person at
-/// this board is `you`, an agent session is `claude`.
-pub(super) fn author_word(by: &str) -> &'static str {
-    if by.starts_with("agent:") {
-        "claude"
+/// this board is `you`, and a retained agent record names its provider.
+pub(super) fn author_word(by: &str, app: &App) -> &'static str {
+    if let Some(id) = by.strip_prefix("agent:") {
+        id.parse::<uuid::Uuid>()
+            .ok()
+            .and_then(|id| app.board.sessions.iter().find(|s| s.id == id))
+            .and_then(|s| s.kind.provider())
+            .map(keymap::agent_word)
+            .unwrap_or("agent")
     } else {
         "you"
     }
@@ -146,7 +151,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             .and_then(|from| app.board.ticket(from))
             .map(|parent| format!(" on {}", parent.short_key))
             .unwrap_or_default();
-        format!(" by claude{on}")
+        format!(" by {}{on}", author_word(&ticket.created_by, app))
     } else {
         String::new()
     };
@@ -187,17 +192,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 age => format!(" {age} ago"),
             })
             .unwrap_or_default();
-        ident_spans.push(Span::styled(format!(" ∙ claude asked{when}"), d1));
+        ident_spans.push(Span::styled(format!(" ∙ {} asked{when}", author_word(&r.by, app)), d1));
         ident_spans.push(Span::styled(format!(" ∙ {}", crate::text::one_line(&r.reason)), d1));
     } else if ticket.is_woke() {
         // Back from a snooze and not yet looked at: the page IS the look, so
         // the keypress that opened it is clearing the mark as this draws.
         ident_spans.push(Span::styled(" ∙ back from snooze".to_string(), d1));
     } else if ticket.description().is_some()
-        && app
-            .board
-            .live_claude(ticket.id)
-            .is_some_and(|s| s.state.has_prompted() && !s.ticket_read)
+        && app.board.live_agent(ticket.id).is_some_and(|s| s.state.has_prompted() && !s.ticket_read)
     {
         // The ticket has a brief and its claude has taken a turn without
         // reading it — neither `get_ticket` nor the composed spawn's paste
@@ -420,13 +422,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             Some(RailRow::Note(n)) => Some((n, app.note_text(n))),
             _ => None,
         };
-        let peek =
-            sel.and_then(|s| s.transcript_path.as_deref()).and_then(|p| app.peek_cache.peek(p));
+        let peek = sel.and_then(|s| app.peek_cache.peek_for(s.kind, crate::peek::preview_path(s)?));
         // A mid-turn agent keeps composing past whatever the preview shows,
         // so the zone says so (bash panes work too, but have no transcript
         // for the line to qualify — Claude only).
-        let working =
-            sel.is_some_and(|s| s.kind == SessionKind::Claude && s.state == SessionState::Running);
+        let working = sel.is_some_and(|s| s.kind.is_agent() && s.state == SessionState::Running);
         // A shell keeps no transcript — tmux is its only record — so the zone
         // shows the pane itself, under its own heading. Only ever what the
         // poll already fetched for THIS session: a stale capture under a
@@ -439,7 +439,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // The empty seat (T-308): the cursor is on the `+ claude session`
         // row and there is no document to show, so the zone previews the
         // SESSION the press would start instead of standing empty.
-        let seat = matches!(row, Some(RailRow::NewClaude)).then_some(ticket_id);
+        let seat = matches!(row, Some(RailRow::NewAgent)).then_some(ticket_id);
         let left_w = area.width - RAIL_W - 3; // 1 pad + 2-cell divider gap
         draw_preview(
             f,
@@ -705,7 +705,7 @@ fn quiet_session(
     // row saying something was happening). Never over a corpse, a sleeper, a
     // failure or a raised permission prompt either — the mascot has nothing
     // to say about any of those.
-    let unspoken = rec.kind == SessionKind::Claude
+    let unspoken = rec.kind.is_agent()
         && rec.transcript_path.is_none()
         && matches!(
             rec.state,
@@ -769,6 +769,9 @@ pub(super) fn quiet_words(rec: &mesimon_core::board::SessionRecord) -> (String, 
         // A conversation that was never written down: waking one resumes
         // nothing, so `resume_session` mints a fresh one under a new uuid —
         // which the reader should know BEFORE pressing, not after.
+        SessionState::Sleeping if rec.kind == SessionKind::Codex => {
+            (word, vec!["wake resumes this Codex conversation".into()])
+        }
         SessionState::Sleeping if rec.transcript_path.is_none() => {
             (word, vec!["no conversation to resume ∙ waking it starts a fresh one".into()])
         }
@@ -776,7 +779,9 @@ pub(super) fn quiet_words(rec: &mesimon_core::board::SessionRecord) -> (String, 
             (word, vec!["mesimon lost track of its state ∙ the next thing it does will say".into()])
         }
         _ => {
-            let why = if rec.transcript_path.is_none() {
+            let why = if rec.kind == SessionKind::Codex {
+                "no reply preview available"
+            } else if rec.transcript_path.is_none() {
                 "it left no transcript"
             } else {
                 "nothing to read in its transcript"
@@ -891,8 +896,17 @@ fn seat_rows(app: &App, ticket: &mesimon_core::board::Ticket) -> Vec<String> {
     // differs from what a spawn by hand would get: a column that changes
     // nothing has nothing to preview.
     let settings = app.board.column(&ticket.column).map(|c| &c.settings);
-    if let Some(m) = settings.map(|s| s.claude_mode).filter(|m| *m != ClaudeMode::Inherit) {
-        clauses.push(format!("{} mode", m.word()));
+    if app.board.agent_provider == mesimon_core::board::AgentProvider::ClaudeCode {
+        if let Some(m) = settings.map(|s| s.claude_mode).filter(|m| *m != ClaudeMode::Inherit) {
+            clauses.push(format!("{} mode", m.word()));
+        }
+    } else if let Some(settings) = settings {
+        if !settings.codex_sandbox.is_inherit() {
+            clauses.push(format!("{} sandbox", settings.codex_sandbox.word()));
+        }
+        if !settings.codex_approval.is_inherit() {
+            clauses.push(format!("approvals {}", settings.codex_approval.word()));
+        }
     }
     let tools = settings.map(|s| s.agent_tools).unwrap_or_default();
     if !app.board.mcp_tools || tools == AgentTools::Off {
@@ -903,7 +917,7 @@ fn seat_rows(app: &App, ticket: &mesimon_core::board::Ticket) -> Vec<String> {
     let mut rows = vec![format!("starts {}", clauses.join(" ∙ "))];
     rows.push("types the ticket title into its box, and sends nothing".to_string());
     if app.checkout_busy(ticket.id) {
-        rows.push("another claude is already writing in this checkout".to_string());
+        rows.push("another agent is already writing in this checkout".to_string());
     }
     rows
 }
@@ -1014,7 +1028,7 @@ fn draw_rail(
     // offer's row is added to the offset; getting it from `rail.len()` alone
     // painted the first note and the offer together, and then nothing at all
     // one press down (dogfood, minutes after T-300 shipped).
-    let offer = app.new_claude_row(ticket_id);
+    let offer = app.new_agent_row(ticket_id);
     let notes_start = rail.len() + usize::from(offer);
 
     let mut head = vec![Span::styled(" SESSIONS", theme.dim1().add_modifier(Modifier::BOLD))];
@@ -1076,6 +1090,7 @@ fn draw_rail(
         // breadcrumb leaf) when it set one, else the kind word.
         let kind = s.title.as_deref().unwrap_or(match s.kind {
             SessionKind::Claude => "claude",
+            SessionKind::Codex => "codex",
             SessionKind::Bash => "bash",
         });
         // Row budget: glyph + " {mark} {name}" + ≥1 fill + age. An
@@ -1161,7 +1176,10 @@ fn draw_rail(
     // two words before either meant anything.
     if offer {
         let selected = rail.len() == rail_idx;
-        let name = truncate("+ claude session", w.saturating_sub(2));
+        let name = truncate(
+            &format!("+ {} session", keymap::agent_word(app.board.agent_provider)),
+            w.saturating_sub(2),
+        );
         let style = if selected {
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {
@@ -1180,7 +1198,7 @@ fn draw_rail(
     // is there to wake, `s` only where a ticket may still grow a shell
     // (T-300), `x` only on a selected row. All three can stand down, and
     // then the rail carries no trailer at all.
-    lines.extend(trailer(&[keymap::Verb::Claude, keymap::Verb::Shell, keymap::Verb::Sleep]));
+    lines.extend(trailer(&[keymap::Verb::Agent, keymap::Verb::Shell, keymap::Verb::Sleep]));
 
     // ---- the notes, under the sessions ------------------------------------
     // Same shape as the sessions: a heading with the count, one row each —
@@ -1197,7 +1215,7 @@ fn draw_rail(
         lines.push(Line::default());
         for (j, n) in notes.iter().enumerate() {
             let selected = notes_start + j == rail_idx;
-            let who = author_word(&n.edited_by);
+            let who = author_word(&n.edited_by, app);
             let age = created_at_epoch_ms(&n.edited_at)
                 .map(|ms| age_slot(now, ms, false))
                 .unwrap_or_default();

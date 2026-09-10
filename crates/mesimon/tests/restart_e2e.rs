@@ -56,7 +56,10 @@ fn restart_recovers_state_from_the_transcript() {
     let daemon1 = fixture.daemon(&repo1);
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "restart".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "restart".into()
+        }),
         Response::Hello { .. }
     ));
     let _ = c.request(Command::CreateTicket {
@@ -103,7 +106,10 @@ fn restart_recovers_state_from_the_transcript() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "restart2".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "restart2".into()
+        }),
         Response::Hello { .. }
     ));
     assert_eq!(
@@ -187,7 +193,10 @@ fn restart_recovers_done_from_a_resting_transcript() {
     let daemon1 = fixture.daemon(&repo1);
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "rest".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "rest".into()
+        }),
         Response::Hello { .. }
     ));
     let _ = c.request(Command::CreateTicket {
@@ -245,7 +254,10 @@ fn restart_recovers_done_from_a_resting_transcript() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "rest2".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "rest2".into()
+        }),
         Response::Hello { .. }
     ));
     let deadline = Instant::now() + Duration::from_secs(8);

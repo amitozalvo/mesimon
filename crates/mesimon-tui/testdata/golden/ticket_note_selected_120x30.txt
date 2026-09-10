@@ -19,7 +19,7 @@
     2. press p                                                                             NOTES                     2
     3. watch the peek
                                                                                            ≡ What changed      you >1y
-                                                                                           ≡ Repro steps    claude >1y
+                                                                                           ≡ Repro steps     agent >1y
                                                                                            N new note
 
 

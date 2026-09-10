@@ -157,7 +157,7 @@ class Owner:
                 with socket.socket(socket.AF_UNIX) as client:
                     client.settimeout(0.3)
                     client.connect(orch)
-                    client.sendall(b'{"principal":{"kind":"local"},"command":{"cmd":"hello","version":1,"client":"test-cleanup"}}\n')
+                    client.sendall(b'{"principal":{"kind":"local"},"command":{"cmd":"hello","version":2,"client":"test-cleanup"}}\n')
                     line = client.recv(65536).split(b"\n", 1)[0]
                     pid = json.loads(line).get("daemon_pid")
                     row = table.get(pid)

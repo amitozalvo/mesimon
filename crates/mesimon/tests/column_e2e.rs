@@ -57,7 +57,10 @@ fn columns_are_added_renamed_sorted_deleted_and_survive_a_restart() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "column".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "column".into()
+        }),
         Response::Hello { .. }
     ));
 
@@ -242,7 +245,10 @@ fn columns_are_added_renamed_sorted_deleted_and_survive_a_restart() {
         std::thread::sleep(Duration::from_millis(100));
     }
     let mut c = TestClient::connect(&sock);
-    let _ = c.request(Command::Hello { version: 1, client: "column".into() });
+    let _ = c.request(Command::Hello {
+        version: mesimon_core::command::PROTOCOL_VERSION,
+        client: "column".into(),
+    });
     let board = board_of(c.request(Command::Snapshot));
     assert_eq!(names(&board), ["LATER", "DOING", "QA", "DONE"]);
     assert_eq!(settings(&board, "QA"), s);

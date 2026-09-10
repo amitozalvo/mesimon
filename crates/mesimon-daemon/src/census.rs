@@ -71,23 +71,21 @@ pub fn scan(
                 continue;
             }
             let Some(item) = candidate(&path, roots, &pid_files) else { continue };
-            if known(item.claude_session_id) {
+            if known(item.id) {
                 continue;
             }
             // The same session can leave transcripts in more than one project
             // dir (cross-directory resume) — keep the freshest.
-            match by_session.get(&item.claude_session_id) {
+            match by_session.get(&item.id) {
                 Some(prev) if prev.mtime_ms >= item.mtime_ms => {}
                 _ => {
-                    by_session.insert(item.claude_session_id, item);
+                    by_session.insert(item.id, item);
                 }
             }
         }
     }
     let mut v: Vec<ExternalItem> = by_session.into_values().collect();
-    v.sort_by(|a, b| {
-        b.mtime_ms.cmp(&a.mtime_ms).then(a.claude_session_id.cmp(&b.claude_session_id))
-    });
+    v.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms).then(a.id.cmp(&b.id)));
     v
 }
 
@@ -170,7 +168,9 @@ fn candidate(
         .or(tail.ai_title)
         .map(|n| sanitize(&n));
     Some(ExternalItem {
-        claude_session_id: head.session_id,
+        id: head.session_id,
+        provider: mesimon_core::board::AgentProvider::ClaudeCode,
+        conversation_id: head.session_id.to_string(),
         cwd: head.cwd,
         transcript_path: path.display().to_string(),
         mtime_ms,
@@ -325,7 +325,7 @@ mod tests {
         write_transcript(&home, "-other", "b.jsonl", SID_B, "/elsewhere", "");
         let items = scan(&home, &[PathBuf::from(repo)], &|_| false);
         assert_eq!(items.len(), 1);
-        assert_eq!(items[0].claude_session_id.to_string(), SID_A);
+        assert_eq!(items[0].id.to_string(), SID_A);
         assert_eq!(items[0].preview.as_deref(), Some("did the thing"));
         assert!(!items[0].running_elsewhere);
         std::fs::remove_dir_all(home).ok();

@@ -150,8 +150,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let peek = if open {
             let mut ranked: Vec<&&SessionRecord> = sessions.iter().collect();
             ranked.sort_by_key(|s| (mesimon_core::attention::rank(&s.state), s.id));
-            ranked.iter().find(|s| s.transcript_path.is_some()).and_then(|s| {
-                let pk = app.peek_cache.peek(s.transcript_path.as_deref()?)?;
+            ranked.iter().find(|s| crate::peek::preview_path(s).is_some()).and_then(|s| {
+                let pk = app.peek_cache.peek_for(s.kind, crate::peek::preview_path(s)?)?;
                 // The activity row is a claim about NOW: a parked, finished
                 // or waiting session's last tool call is history.
                 Some(if s.state == SessionState::Running || pk.activity.is_none() {
@@ -195,7 +195,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             // the same rule `commit_input` judges it: drop the entry that is
             // waiting, start claude on the title where the seat is empty and
             // the toggle says now (T-294), or nothing at all.
-            let starts = app.board.live_claude(t.id).is_none();
+            let starts = app.board.live_agent(t.id).is_none();
             let placeholder = if app.ticket_queued(t.id) && !(starts && !queued) {
                 "enter drops"
             } else if starts {

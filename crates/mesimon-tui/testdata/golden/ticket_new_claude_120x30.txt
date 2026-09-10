@@ -25,6 +25,6 @@
 
     starts in the checkout
     types the ticket title into its box, and sends nothing
-    another claude is already writing in this checkout
+    another agent is already writing in this checkout
 
  jk select row ∙ enter start claude ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                  ? keys

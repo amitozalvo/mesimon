@@ -9,14 +9,14 @@
 
 
 
-
                            ╭─ AGENTS ───────────────────────────────────────────────────────╮
+                           │   Provider: Claude Code                                        │
+                           │     new sessions only ∙ enter selects Codex                    │
                            │   Agent brief: off                                             │
                            │     one line: read the ticket first ∙ enter shows it first     │
                            │   Agent tools: on                                              │
                            │     the seven board tools every spawn carries ∙ enter takes t~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

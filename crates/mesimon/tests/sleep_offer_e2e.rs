@@ -46,7 +46,10 @@ fn z_sleeps_only_the_done_column() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "offer".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "offer".into()
+        }),
         Response::Hello { .. }
     ));
 

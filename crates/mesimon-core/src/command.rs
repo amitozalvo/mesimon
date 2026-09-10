@@ -5,10 +5,13 @@
 use crate::authorize::Action;
 use serde::{Deserialize, Serialize};
 
-use crate::board::{Board, ColumnSettings, SessionKind, SortBy, WorkspaceStrategy};
+use crate::board::{AgentProvider, Board, ColumnSettings, SessionKind, SortBy, WorkspaceStrategy};
 use crate::Principal;
 
-pub const PROTOCOL_VERSION: u32 = 1;
+// Codex session variants and provider settings must not be sent to a v1
+// client, which cannot deserialize their enum values. Storage has separate
+// forward-version barriers so a downgraded writer cannot erase provider data.
+pub const PROTOCOL_VERSION: u32 = 2;
 
 /// A build fingerprint for the executable a process runs from: the mtime (ms
 /// since epoch) and length of that file, read when the process started. Not a
@@ -316,6 +319,12 @@ pub enum Command {
     /// off, or back on, would be deciding its own tier.
     SetMcpTools {
         on: bool,
+    },
+    /// Project default for newly accepted agent starts. Existing sessions
+    /// retain their provider. Local only: agents cannot choose who runs
+    /// subsequent sessions on the board.
+    SetAgentProvider {
+        provider: AgentProvider,
     },
     /// Turn the agent brief on or off for this board (T-224): `brief::TEXT`
     /// in the system prompt of every claude mesimon starts here, through
@@ -736,6 +745,7 @@ impl Command {
             // feed is where "who turned the agent tools off" and "who turned
             // the brief on" get answered later.
             | SetMcpTools { .. }
+            | SetAgentProvider { .. }
             | SetSystemPrompt { .. }
             | SetDefaultColumn { .. }
             | IgnoreBriefOffer
@@ -1254,7 +1264,14 @@ pub struct GraceItem {
 /// never persisted; only attach/takeover mints a `SessionRecord` from one.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalItem {
-    pub claude_session_id: uuid::Uuid,
+    /// Mesimon drawer selector. The legacy wire name remains accepted; this
+    /// is not necessarily the provider's conversation identifier.
+    #[serde(rename = "claude_session_id")]
+    pub id: uuid::Uuid,
+    #[serde(default)]
+    pub provider: AgentProvider,
+    #[serde(default)]
+    pub conversation_id: String,
     pub cwd: String,
     pub transcript_path: String,
     pub mtime_ms: u64,
@@ -1262,8 +1279,9 @@ pub struct ExternalItem {
     pub preview: Option<String>,
     /// Display name from `sessions/<pid>.json`, when one matched (11 §11.3).
     pub name: Option<String>,
-    /// A live pid claims this session right now — resuming it would
-    /// interleave two writers into one transcript (09 §9).
+    /// A possible live owner requires takeover confirmation. Positive
+    /// ownership or an unavailable provider inventory cannot establish that
+    /// another writer is absent (09 §9).
     pub running_elsewhere: bool,
 }
 

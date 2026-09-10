@@ -64,7 +64,10 @@ fn interrupt_record_demotes_running_while_pane_still_paints() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "intrtail".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "intrtail".into()
+        }),
         Response::Hello { .. }
     ));
     let _ = c.request(Command::CreateTicket {

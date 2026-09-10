@@ -9,7 +9,7 @@
 use std::path::Path;
 
 use anyhow::Result;
-use mesimon_core::board::{Board, Column, SessionRecord, Ticket, KEY_PREFIX};
+use mesimon_core::board::{AgentProvider, Board, Column, SessionRecord, Ticket, KEY_PREFIX};
 use mesimon_core::command::Notice;
 use serde::{Deserialize, Serialize};
 
@@ -39,7 +39,9 @@ use crate::paths::Paths;
 /// mode back — a widening. Loading a v3 file seeds the four template columns
 /// with what they DID (`Board::seed_template_settings`) and stamps 4; a v4
 /// file is never re-seeded, so a rule removed by hand stays removed.
-pub const COLUMNS_SCHEMA: u32 = 4;
+/// v5 adds the project provider. Older builds must not silently drop Codex
+/// selection and start a different provider on the next request.
+pub const COLUMNS_SCHEMA: u32 = 5;
 /// v2 added `[[notes]]`, on the columns file's reasoning: at v1 an older
 /// build would read the ticket, ignore the array, and on its next
 /// `save_ticket` drop every note's metadata while the files stayed behind
@@ -52,7 +54,10 @@ pub const COLUMNS_SCHEMA: u32 = 4;
 /// `mcp_tools` argument: a v3 build would drop it on its next save and the
 /// train, re-armed, would merge a branch the user had taken off it.
 pub const TICKET_SCHEMA: u32 = 4;
-pub const SESSIONS_SCHEMA: u32 = 1;
+/// v2 adds Codex session kinds, exact thread identity and observation holds.
+/// Older readers must refuse before decoding an unfamiliar session kind,
+/// rather than quarantine the file and forget ownership of its live panes.
+pub const SESSIONS_SCHEMA: u32 = 2;
 
 fn schema_v1() -> u32 {
     1
@@ -70,6 +75,8 @@ struct ColumnsFile {
     #[serde(default = "schema_v1")]
     schema_version: u32,
     next_key: u64,
+    #[serde(default)]
+    agent_provider: AgentProvider,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -373,6 +380,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                             let mut b = Board {
                                 columns: cf.columns,
                                 next_key: cf.next_key,
+                                agent_provider: cf.agent_provider,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -550,6 +558,10 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
 /// question about one. Anything unreadable answers `true`, the shipped
 /// default — doctor reporting "off" for a repo that never said so would be
 /// worse than saying nothing.
+pub fn read_agent_provider(paths: &Paths) -> AgentProvider {
+    read_columns_file(paths).map(|cf| cf.agent_provider).unwrap_or_default()
+}
+
 pub fn read_mcp_tools(paths: &Paths) -> bool {
     read_columns_file(paths).is_none_or(|cf| cf.mcp_tools)
 }
@@ -596,6 +608,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
     let cf = ColumnsFile {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
+        agent_provider: board.agent_provider,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -725,7 +738,7 @@ mod tests {
         assert_eq!(l.board.columns[0].settings.on_working, None);
         assert!(std::fs::read_to_string(dir.join(".mesimon/board/columns.toml"))
             .unwrap()
-            .contains("schema_version = 4"));
+            .contains(&format!("schema_version = {COLUMNS_SCHEMA}")));
         cleanup(&dir, &paths);
     }
 
@@ -759,7 +772,7 @@ mod tests {
         assert_eq!(col("BACKLOG"), Default::default());
         assert!(!l.board.mcp_tools, "the other scalars survive the migration");
         let text = std::fs::read_to_string(&cols).unwrap();
-        assert!(text.contains("schema_version = 4"), "{text}");
+        assert!(text.contains(&format!("schema_version = {COLUMNS_SCHEMA}")), "{text}");
         let todo = text.find("name = \"TODO\"").unwrap();
         let next = text.find("name = \"IN PROGRESS\"").unwrap();
         let rule = text.find("on_working = \"IN PROGRESS\"").unwrap();
@@ -921,6 +934,150 @@ mod tests {
         assert!(l.sessions_write_barred);
         assert_eq!(l.notices.iter().filter(|n| n.kind == "future_version").count(), 2);
         assert!(l.notices[0].text.contains("99"), "{}", l.notices[0].text);
+        cleanup(&dir, &paths);
+    }
+
+    #[test]
+    fn provider_switch_roundtrips_without_changing_existing_session_providers() {
+        use mesimon_core::board::{SessionKind, SessionState};
+        let (dir, paths) = scratch("providers");
+        let mut board = load_with(&paths, false).unwrap().board;
+        let mut claude = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            ulid::Ulid::new(),
+            vec!["claude".into()],
+            dir.display().to_string(),
+            SessionState::Sleeping,
+        );
+        claude.claude_session_id = Some(uuid::Uuid::new_v4());
+        board.sessions.push(claude);
+        board.agent_provider = AgentProvider::Codex;
+        let mut codex = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Codex,
+            ulid::Ulid::new(),
+            vec!["codex".into()],
+            dir.display().to_string(),
+            SessionState::Sleeping,
+        );
+        codex.codex_thread_id = Some("opaque-thread:exact-resume".into());
+        codex.codex_turn_id = Some("opaque-turn:already-observed".into());
+        codex.codex_generation = Some(17);
+        codex.codex_observed_seq = 23;
+        codex.agent_preview_path = Some("/owned/agent-preview.json".into());
+        codex.observation_hold = false;
+        board.sessions.push(codex);
+        for provider in [AgentProvider::Codex, AgentProvider::ClaudeCode] {
+            board.agent_provider = provider;
+            save_columns(&paths, &board).unwrap();
+            save_sessions(&paths, &board).unwrap();
+            let loaded = load_with(&paths, false).unwrap();
+            assert!(loaded.notices.is_empty(), "{:?}", loaded.notices);
+            assert_eq!(loaded.board.agent_provider, provider);
+            assert_eq!(loaded.board.sessions[0].kind, SessionKind::Claude);
+            assert_eq!(loaded.board.sessions[1].kind, SessionKind::Codex);
+            assert_eq!(
+                loaded.board.sessions[0].claude_session_id,
+                board.sessions[0].claude_session_id
+            );
+            assert_eq!(
+                loaded.board.sessions[1].codex_thread_id.as_deref(),
+                Some("opaque-thread:exact-resume")
+            );
+            assert!(!loaded.board.sessions[1].observation_hold);
+            assert_eq!(loaded.board.sessions[1].codex_generation, Some(17));
+            assert_eq!(loaded.board.sessions[1].codex_observed_seq, 23);
+            assert_eq!(
+                loaded.board.sessions[1].codex_turn_id.as_deref(),
+                Some("opaque-turn:already-observed")
+            );
+            assert_eq!(
+                loaded.board.sessions[1].agent_preview_path.as_deref(),
+                Some("/owned/agent-preview.json")
+            );
+            assert!(loaded.board.sessions.iter().all(|s| s.state == SessionState::Sleeping));
+        }
+        // These stamps must trigger the refusal path in the preceding build,
+        // before it attempts to decode the new session kind or loses selection.
+        let columns: toml::Value = toml::from_str(
+            &std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).unwrap(),
+        )
+        .unwrap();
+        assert!(matches!(
+            verdict(columns["schema_version"].as_integer().unwrap() as u32, 4),
+            Verdict::Newer(5)
+        ));
+        let sessions: serde_json::Value =
+            serde_json::from_str(&std::fs::read_to_string(paths.sessions_file()).unwrap()).unwrap();
+        assert!(matches!(
+            verdict(sessions["schema_version"].as_u64().unwrap() as u32, 1),
+            Verdict::Newer(2)
+        ));
+        cleanup(&dir, &paths);
+    }
+
+    #[test]
+    fn legacy_provider_files_keep_claude_and_gain_stamps_only_when_saved() {
+        use mesimon_core::board::{SessionKind, SessionState};
+        let (dir, paths) = scratch("legacyprovider");
+        let columns = paths.board_dir.join("board/columns.toml");
+        let old_columns = "schema_version = 4\nnext_key = 1\ncolumns = []\n";
+        write(&columns, old_columns);
+        let rec = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            ulid::Ulid::new(),
+            Vec::new(),
+            dir.display().to_string(),
+            SessionState::Sleeping,
+        );
+        let mut old_record = serde_json::to_value(rec).unwrap();
+        let object = old_record.as_object_mut().unwrap();
+        object.remove("codex_thread_id");
+        object.remove("observation_hold");
+        object.remove("codex_generation");
+        object.remove("codex_observed_seq");
+        object.remove("codex_turn_id");
+        object.remove("agent_preview_path");
+        object.remove("pending_prefill");
+        object.remove("codex_submit_sent");
+        for old_sessions in [
+            serde_json::json!([old_record.clone()]),
+            serde_json::json!({"schema_version": 1, "sessions": [old_record]}),
+        ] {
+            let old_text = old_sessions.to_string();
+            write(&paths.sessions_file(), &old_text);
+            let loaded = load_with(&paths, false).unwrap();
+            assert!(loaded.notices.is_empty(), "{:?}", loaded.notices);
+            assert_eq!(loaded.board.agent_provider, AgentProvider::ClaudeCode);
+            assert_eq!(loaded.board.sessions[0].kind.provider(), Some(AgentProvider::ClaudeCode));
+            assert_eq!(std::fs::read_to_string(&columns).unwrap(), old_columns);
+            assert_eq!(std::fs::read_to_string(paths.sessions_file()).unwrap(), old_text);
+        }
+        cleanup(&dir, &paths);
+    }
+
+    #[test]
+    fn future_provider_files_preserve_bytes_and_bar_writes() {
+        let (dir, paths) = scratch("futureprovider");
+        let columns = paths.board_dir.join("board/columns.toml");
+        let column_text = format!(
+            "schema_version = {}\nnext_key = 1\nagent_provider = \"future_agent\"\ncolumns = []\n",
+            COLUMNS_SCHEMA + 1
+        );
+        let session_text = format!(
+            "{{\"schema_version\":{},\"sessions\":[{{\"kind\":\"future_agent\"}}]}}",
+            SESSIONS_SCHEMA + 1
+        );
+        write(&columns, &column_text);
+        write(&paths.sessions_file(), &session_text);
+        let loaded = load_with(&paths, false).unwrap();
+        assert!(loaded.columns_write_barred && loaded.sessions_write_barred);
+        assert_eq!(loaded.notices.iter().filter(|n| n.kind == "future_version").count(), 2);
+        assert_eq!(std::fs::read_to_string(&columns).unwrap(), column_text);
+        assert_eq!(std::fs::read_to_string(paths.sessions_file()).unwrap(), session_text);
+        assert!(quarantined(&paths.state_dir, "sessions.json").is_empty());
         cleanup(&dir, &paths);
     }
 
@@ -1520,6 +1677,7 @@ order = "a0"
         let cf = ColumnsFile {
             schema_version: COLUMNS_SCHEMA,
             next_key: 3,
+            agent_provider: AgentProvider::Codex,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
@@ -1532,6 +1690,8 @@ order = "a0"
                     collapsed: true,
                     workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                     claude_mode: mesimon_core::board::ClaudeMode::Plan,
+                    codex_sandbox: mesimon_core::board::CodexSandbox::Inherit,
+                    codex_approval: mesimon_core::board::CodexApproval::Inherit,
                     agent_tools: mesimon_core::board::AgentTools::Read,
                     auto_run: true,
                     on_working: Some("QA".into()),
@@ -1569,6 +1729,8 @@ order = "a0"
         assert!(back.claude_md_ignored);
         assert!(back.system_prompt);
         assert_eq!(back.default_column.as_deref(), Some("TODO"));
+        assert_eq!(back.agent_provider, AgentProvider::Codex);
+        assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
         assert!(
             text.find("system_prompt").expect("system_prompt on disk")
@@ -1583,10 +1745,10 @@ order = "a0"
         // The stamp is what stops an older build silently dropping the
         // registry on its next write: at v1 it would parse, ignore `tags`,
         // and overwrite the file without them.
-        assert_eq!(COLUMNS_SCHEMA, 4);
+        assert_eq!(COLUMNS_SCHEMA, 5);
         assert!(matches!(verdict(1, COLUMNS_SCHEMA), Verdict::Load));
         assert!(matches!(verdict(3, COLUMNS_SCHEMA), Verdict::Load));
-        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(4)));
+        assert!(matches!(verdict(COLUMNS_SCHEMA, 3), Verdict::Newer(5)));
     }
 
     /// Today's ticket.toml carries no stamp; it must read as schema 1 (16 §6.2

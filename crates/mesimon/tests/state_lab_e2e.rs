@@ -209,7 +209,10 @@ fn monitor_identity_survives_daemon_restart_and_does_not_excuse_a_build() {
     let paths = fixture.paths(&repo);
     let daemon = fixture.daemon(&repo);
     let mut client = TestClient::connect(&paths.orch_sock());
-    client.request(Command::Hello { version: 1, client: "monitor".into() });
+    client.request(Command::Hello {
+        version: mesimon_core::command::PROTOCOL_VERSION,
+        client: "monitor".into(),
+    });
     let sid = spawn(&mut client, "Monitor and build");
     let send = |event, body| hook_send(&paths.hook_sock(), &sid.to_string(), event, body);
     send("SessionStart", r#"{"source":"startup"}"#);
@@ -238,7 +241,10 @@ fn monitor_identity_survives_daemon_restart_and_does_not_excuse_a_build() {
     let _ = std::fs::remove_file(paths.orch_sock());
     let daemon = fixture.daemon(&repo);
     let mut client = TestClient::connect(&paths.orch_sock());
-    client.request(Command::Hello { version: 1, client: "monitor-restarted".into() });
+    client.request(Command::Hello {
+        version: mesimon_core::command::PROTOCOL_VERSION,
+        client: "monitor-restarted".into(),
+    });
     assert_eq!(
         client.board().sessions.iter().find(|s| s.id == sid).unwrap().monitor_task_ids,
         vec!["watch"]

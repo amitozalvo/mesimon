@@ -116,7 +116,10 @@ fn m4_worktree_lifecycle() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "wt".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "wt".into()
+        }),
         Response::Hello { .. }
     ));
 

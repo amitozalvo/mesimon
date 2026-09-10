@@ -40,7 +40,10 @@ fn a_card_reorders_inside_its_own_column() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "reorder".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "reorder".into()
+        }),
         Response::Hello { .. }
     ));
 

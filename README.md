@@ -2,7 +2,7 @@
 
 **mesimon** (Hebrew משימון, "the task instrument" — pronounced me-si-**MON**) is a terminal kanban
 board that orchestrates many coding-agent sessions: like Kubernetes is to containers, mesimon is to
-Claude Code (and other agent CLIs). Tickets outlive sessions; columns carry policy; a per-repo
+Claude Code and Codex. Tickets outlive sessions; columns carry policy; a per-repo
 daemon keeps everything alive when the TUI closes.
 
 **Status: v0.1 alpha — early, and shared with a small group for feedback.** It runs, it is
@@ -14,7 +14,7 @@ dogfooded daily, and it will change under you. The current version and its histo
 1. **A strict write allowlist.** On its own, mesimon writes only to `.mesimon/`,
    `$GIT_DIR/info/exclude`, the git worktrees and `msmn/*` branches it created (and their git
    bookkeeping), its state dir under `~/.local/state/mesimon/`, and its runtime dir at
-   `/tmp/mesimon-<uid>/<project key>/` — the sockets, the daemon lock, and the environment file
+   `/tmp/mesimon-<uid>/<project key>/` — the sockets, provider observation snapshots/logs, the daemon lock, and the environment file
    every pane is launched with. That last one is a copy of your login shell's environment,
    secrets and all, so the runtime dir is 0700 and mesimon refuses it unless it owns it; those
    permissions are also the only thing between another user on this machine and the agent tool
@@ -29,7 +29,7 @@ dogfooded daily, and it will change under you. The current version and its histo
      update offer. The download is checked against its published checksum first and refused
      without one.
 
-   Never your shell rc, your git config, your `~/.claude/`, or your tmux config.
+   Never your shell rc, your git config, your `~/.claude/` or `~/.codex/` configuration, or your tmux config. Native agents still own their conversations and native trust decisions.
 2. **No config mutation.** `mesimon doctor` diagnoses and prints copy-pasteable fixes. It has no
    `--fix`.
 3. **Zero prompt injection.** mesimon adds, removes and reorders exactly zero tokens of your
@@ -59,7 +59,14 @@ dogfooded daily, and it will change under you. The current version and its histo
 - **git**. On macOS tmux is *not* required — mesimon ships its own, installed as `mesimon-tmux`
   so it never shadows yours. On Linux, install the distro's (`sudo apt install tmux`, 3.3 or
   newer; `mesimon doctor` names the floor).
-- **[Claude Code](https://claude.com/claude-code)** on your `PATH`, to spawn Claude sessions.
+- **Claude Code or Codex** on your `PATH`, authenticated through its native CLI.
+  Codex runtime integration is tested against `codex-cli 0.153.4`; `mesimon doctor`
+  reports installed versions and the measured compatibility boundary.
+
+Choose the provider for new sessions in **Settings › Agents**. Claude Code is the
+initial default. Switching providers leaves existing sessions, including sleeping
+ones, with their original provider. Accepted queued starts keep their choice.
+Each ticket has one live agent seat across both providers.
 
 ## Install
 
@@ -139,7 +146,7 @@ reference for the current screen.
 
 ## What your agents can see
 
-A Claude session mesimon starts gets the scoped board tools shown by `mesimon doctor --mcp`, so it
+An agent session mesimon starts gets the scoped board tools shown by `mesimon doctor --mcp`, so it
 knows which ticket it is on, can read the ticket's description and notes, write notes of its own,
 move its own card, put one of your tags on it, and file a new ticket for work it found outside its
 scope (the new card has no session; you decide what happens to it). The tags are yours: an agent
@@ -152,7 +159,7 @@ There is no tool, at any tier, to spawn or kill a session, delete or archive or 
 merge a branch, or read a session, a transcript or a cost. Those commands are refused by the
 daemon, not merely absent from the tool list.
 
-An agent's `Edit` and `Write` into `.mesimon/` and mesimon's state directory are refused too —
+Claude's `Edit`/`Write` and Codex's structured `apply_patch` writes into `.mesimon/` and mesimon's state directory are refused too —
 which is why a note, a markdown file under `.mesimon/`, reaches an agent through a tool and not
 through `Write`; the tool stamps who wrote it. Its shell is not: `sed -i` into those paths still
 works, because matching on command strings is security theatre and hooking every `Bash` call
@@ -180,7 +187,7 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 |---|---|
 | `<repo>/.mesimon/` | Your board: columns and tickets. Excluded via `$GIT_DIR/info/exclude`, never `.gitignore`. |
 | `$GIT_DIR/info/exclude` | One line, so `.mesimon/` does not show up in `git status`. |
-| `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, logs, and the private tmux server's conf. (Its socket is in the runtime dir below.) |
+| `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, provider launch settings, normalized previews, logs, and the private tmux server's conf. (Its socket is in the runtime dir below.) |
 | `~/.local/state/mesimon/notifications/` | Notification mascot images and signed Mesimon copies of the installed macOS notification helper. |
 | `~/.local/state/mesimon/update-check.json` | When the release check last answered, and what it heard. One per machine, not per repo. |
 | `~/.local/state/mesimon/prefs.json` | Your theme picks, one for a dark terminal and one for a light one. One per machine, not per repo. |

@@ -42,7 +42,10 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "tags".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "tags".into()
+        }),
         Response::Hello { .. }
     ));
 
@@ -204,7 +207,10 @@ fn tags_round_trip_through_the_daemon_and_the_disk() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "tags".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "tags".into()
+        }),
         Response::Hello { .. }
     ));
     let board = board_of(c.request(Command::Snapshot));

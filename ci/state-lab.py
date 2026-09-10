@@ -39,7 +39,7 @@ class Client:
         self.sock.settimeout(8)
         self.sock.connect(str(runtime / "orch.sock"))
         self.file = self.sock.makefile("rb")
-        self.request("hello", version=1, client="state-lab")
+        self.request("hello", version=2, client="state-lab")
 
     def request(self, cmd, **fields):
         self.sock.sendall((json.dumps({"principal": {"kind": "local"}, "command": {"cmd": cmd, **fields}}) + "\n").encode())

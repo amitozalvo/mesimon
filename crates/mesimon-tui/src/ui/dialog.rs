@@ -288,11 +288,8 @@ pub(super) fn draw_drawer(f: &mut Frame, app: &App, idx: usize) {
     );
     let mut lines: Vec<Line> = Vec::new();
     for (i, item) in app.external.iter().enumerate() {
-        let name = item
-            .name
-            .clone()
-            .unwrap_or_else(|| item.claude_session_id.to_string()[..8].to_string());
-        let mut badges = String::new();
+        let name = item.name.clone().unwrap_or_else(|| item.id.to_string()[..8].to_string());
+        let mut badges = format!("  ∙ {}", item.provider.label());
         if item.running_elsewhere {
             badges.push_str("  ∙ running elsewhere");
         }

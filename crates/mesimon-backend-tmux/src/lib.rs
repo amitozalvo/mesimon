@@ -328,6 +328,13 @@ impl TmuxBackend {
     /// `send-keys Enter`. A single send-keys call truncated 3696→630 bytes and
     /// ate the Enter; `;`-joined tmux commands split — three forks is the shape.
     pub fn paste_text(&self, sid16: &str, text: &str) -> Result<()> {
+        self.paste_input(sid16, text)?;
+        self.send_enter(sid16)
+    }
+
+    /// Bracketed input without submission. The provider owns readiness and
+    /// the delay before Enter; native Codex paste detection needs that gap.
+    pub fn paste_input(&self, sid16: &str, text: &str) -> Result<()> {
         use std::io::Write as _;
         use std::process::Stdio;
         let mut child = self
@@ -349,7 +356,6 @@ impl TmuxBackend {
             bail!("tmux load-buffer failed");
         }
         self.run(&["paste-buffer", "-p", "-b", "msmn-paste", "-d", "-t", sid16])?;
-        self.run(&["send-keys", "-t", sid16, "Enter"])?;
         Ok(())
     }
 

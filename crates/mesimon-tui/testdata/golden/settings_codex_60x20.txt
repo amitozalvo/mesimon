@@ -1,0 +1,20 @@
+ BOARD   mesimon > kanban-tui   7 tickets
+
+    TODO                               2   2   2   1
+
+    Decay treatments                 >1y   I   R   D
+                                           N   E   O
+  ╭─ AGENTS ─────────────────────────────────────────────╮
+  │   Provider: Codex                                    │
+  │     new sessions only ∙ enter selects Claude Code    │
+  │   Agent brief: off                                   │
+  │     one line: read the ticket first ∙ enter shows i~ │
+  │   Agent tools: on                                    │
+  │     the seven board tools every spawn carries ∙ ent~ │
+  ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
+
+
+
+
+
+ SETTINGS                                            ? keys

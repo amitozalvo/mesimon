@@ -343,7 +343,7 @@ fn eased(at: Instant, over: Duration) -> Option<f32> {
 
 /// A claude mid-turn or waiting on the user: Enter goes straight to it.
 fn is_hot(s: &mesimon_core::board::SessionRecord) -> bool {
-    s.kind == SessionKind::Claude
+    s.kind.is_agent()
         && matches!(s.state, SessionState::Running | SessionState::RequiresAction { .. })
 }
 
@@ -492,7 +492,7 @@ pub enum RailRow<'a> {
     /// Enter spawns. It is the rail's first row on a ticket with no session
     /// — ahead of the notes, deliberately (the user's ask): what a ticket
     /// with nothing on it needs first is the agent, not the reading.
-    NewClaude,
+    NewAgent,
     Note(&'a NoteMeta),
 }
 
@@ -1408,7 +1408,7 @@ impl App {
             return None;
         };
         let rec = self.board.sessions.iter().find(|s| s.id == sid)?;
-        matches!(rec.kind, SessionKind::Claude).then_some(rec.ticket)
+        rec.kind.is_agent().then_some(rec.ticket)
     }
 
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
@@ -1851,15 +1851,17 @@ impl App {
     /// verdict moved.
     fn scan_ticket(&mut self, ticket: ulid::Ulid) -> bool {
         let before = self.spoke_unseen(ticket);
-        let target =
-            self.board.pane_target(ticket).and_then(|s| Some((s.id, s.transcript_path.clone()?)));
-        let Some((session, path)) = target else {
+        let target = self
+            .board
+            .pane_target(ticket)
+            .and_then(|s| Some((s.id, s.kind, crate::peek::preview_path(s)?.to_owned())));
+        let Some((session, kind, path)) = target else {
             self.spoke.remove(&ticket);
             return before;
         };
         // An unreadable transcript (not written yet, gone) teaches nothing:
         // keep whatever was known rather than re-baselining on every beat.
-        let Some(peek) = self.peek_cache.peek(&path) else {
+        let Some(peek) = self.peek_cache.peek_for(kind, &path) else {
             return false;
         };
         match self.spoke.get_mut(&ticket) {
@@ -1901,7 +1903,7 @@ impl App {
         }
         self.spoke.retain(|id, _| tickets.contains(id));
         let named: std::collections::HashSet<&str> =
-            self.board.sessions.iter().filter_map(|s| s.transcript_path.as_deref()).collect();
+            self.board.sessions.iter().filter_map(crate::peek::preview_path).collect();
         self.peek_cache.retain(|p| named.contains(p));
         changed
     }
@@ -2003,7 +2005,7 @@ impl App {
             RailRow::Session(s) => {
                 (s.kind == SessionKind::Bash && s.state.has_pane()).then_some(s.id)
             }
-            RailRow::NewClaude | RailRow::Note(_) => None,
+            RailRow::NewAgent | RailRow::Note(_) => None,
         }
     }
 
@@ -2020,7 +2022,7 @@ impl App {
     fn selected_note(&self) -> Option<ulid::Ulid> {
         match self.rail_row()? {
             RailRow::Note(n) => Some(n.id),
-            RailRow::NewClaude | RailRow::Session(_) => None,
+            RailRow::NewAgent | RailRow::Session(_) => None,
         }
     }
 
@@ -2138,7 +2140,7 @@ impl App {
                 self.status = if !self.board.mcp_tools {
                     "agent brief saved ∙ inert until the agent tools are on".into()
                 } else if on {
-                    "agent brief on ∙ new claude sessions and wakes read their ticket first".into()
+                    "agent brief on ∙ new sessions and wakes read their ticket first".into()
                 } else {
                     "agent brief off ∙ new sessions and wakes get no system-prompt line".into()
                 };
@@ -2181,10 +2183,13 @@ impl App {
             .sessions
             .iter()
             .filter(|s| s.ticket == id && s.state.has_pane())
-            .find(|s| {
-                s.kind == SessionKind::Claude && !matches!(s.state, SessionState::Idle { .. })
+            .find(|s| s.kind.is_agent() && !matches!(s.state, SessionState::Idle { .. }))
+            .map(|s| {
+                format!(
+                    "{} still awake — only idle sessions sleep",
+                    keymap::agent_word(s.kind.provider().expect("agent predicate"))
+                )
             })
-            .map(|_| "claude still awake — only idle sessions sleep".to_string())
     }
 
     /// The snooze chord's status: what `z` and Enter do next. Names the
@@ -2560,6 +2565,11 @@ impl App {
         };
         let mut ctx = Ctx {
             settings_section: self.settings_section,
+            agent_provider: self.board.agent_provider,
+            ticket_agent_provider: subject
+                .and_then(|t| self.board.live_agent(t))
+                .and_then(|s| s.kind.provider())
+                .unwrap_or(self.board.agent_provider),
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
@@ -2568,7 +2578,7 @@ impl App {
             ticket_has_sessions: !sessions.is_empty(),
             // The daemon's spawn gate, the same fact: `live_claude` counts a
             // parked one, which holds the seat.
-            ticket_has_claude: subject.is_some_and(|t| self.board.live_claude(t).is_some()),
+            ticket_has_agent: subject.is_some_and(|t| self.board.live_agent(t).is_some()),
             // A pane, not merely a session: `is_live()` counts a parked one,
             // and a prompt needs somewhere to be typed. Mirrors the daemon's
             // `prompt_target`, which is what actually picks the session.
@@ -2598,6 +2608,8 @@ impl App {
                 }
             },
             col_claude_mode_word: cs.claude_mode.word(),
+            col_codex_sandbox_word: cs.codex_sandbox.word(),
+            col_codex_approval_word: cs.codex_approval.word(),
             col_inherit_mode: self.claude_default_mode.clone().unwrap_or_default(),
             col_tools_word: match cs.agent_tools {
                 mesimon_core::board::AgentTools::Full => "full",
@@ -2655,7 +2667,7 @@ impl App {
             git_fetch_note: self.git_fetch_note(),
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
-            sel_new_claude: matches!(row, Some(RailRow::NewClaude)),
+            sel_new_agent: matches!(row, Some(RailRow::NewAgent)),
             ticket_shells: self.ticket_shells,
             ticket_rail_rows: match self.screen {
                 Screen::Ticket { ticket, .. } => self.rail_rows(ticket).len(),
@@ -3314,6 +3326,19 @@ impl App {
             // Board state, not a preference: it goes to the daemon and comes
             // back on the snapshot, so there is nothing local to flip and the
             // row relabels itself off the answer.
+            Verb::AgentProvider => {
+                let provider = self.board.agent_provider.next();
+                match self.client.request(Command::SetAgentProvider { provider })? {
+                    Response::Err { message } => self.status = message,
+                    _ => {
+                        self.refresh()?;
+                        self.status = format!(
+                            "{} for new sessions ∙ existing sessions keep their provider",
+                            self.board.agent_provider.label()
+                        );
+                    }
+                }
+            }
             Verb::McpTools => {
                 let on = !self.board.mcp_tools;
                 match self.client.request(Command::SetMcpTools { on })? {
@@ -3515,9 +3540,12 @@ impl App {
                 self.refresh()?;
             }
             // ---- sessions --------------------------------------------------
-            Verb::Claude | Verb::Shell => {
-                let kind =
-                    if verb == Verb::Claude { SessionKind::Claude } else { SessionKind::Bash };
+            Verb::Agent | Verb::Shell => {
+                let kind = if verb == Verb::Agent {
+                    self.board.agent_provider.session_kind()
+                } else {
+                    SessionKind::Bash
+                };
                 if let Some(id) = self.subject() {
                     self.focus_kind_or_spawn(id, kind)?;
                 }
@@ -3554,7 +3582,7 @@ impl App {
                                 mesimon_core::command::PROMPT_MAX_BYTES,
                             ),
                         };
-                    } else if ctx.ticket_has_claude {
+                    } else if ctx.ticket_has_agent {
                         let queued = !ctx.ticket_promptable && ctx.checkout_busy;
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt { ticket: id, walk: None, queued },
@@ -3775,6 +3803,8 @@ impl App {
                 }
             })?,
             Verb::ColumnClaudeMode => self.set_column(|s| s.claude_mode = s.claude_mode.next())?,
+            Verb::ColumnCodexSandbox => self.set_column(|s| s.codex_sandbox = s.codex_sandbox.next())?,
+            Verb::ColumnCodexApproval => self.set_column(|s| s.codex_approval = s.codex_approval.next())?,
             Verb::ColumnTools => self.set_column(|s| s.agent_tools = s.agent_tools.next())?,
             Verb::ColumnAutoRun => self.set_column(|s| s.auto_run = !s.auto_run)?,
             Verb::ColumnOnWorking => {
@@ -3867,7 +3897,7 @@ impl App {
     fn selected_session(&self) -> Option<uuid::Uuid> {
         match self.rail_row()? {
             RailRow::Session(s) => Some(s.id),
-            RailRow::NewClaude | RailRow::Note(_) => None,
+            RailRow::NewAgent | RailRow::Note(_) => None,
         }
     }
 
@@ -4017,8 +4047,9 @@ impl App {
                     // The `+ claude session` row (T-300): the offer IS the
                     // press. Same road `c` takes on an empty seat — spawn,
                     // then focus — so the two cannot drift.
-                    if matches!(self.rail_row(), Some(RailRow::NewClaude)) {
-                        return self.spawn_and_focus(ticket, SessionKind::Claude);
+                    if matches!(self.rail_row(), Some(RailRow::NewAgent)) {
+                        return self
+                            .spawn_and_focus(ticket, self.board.agent_provider.session_kind());
                     }
                 }
                 if let Some(sid) = self.selected_session() {
@@ -4391,7 +4422,7 @@ impl App {
                 self.screen = Screen::Ticket { ticket, rail_idx };
             }
         } else if fresh {
-            self.spawn_and_focus(ticket, SessionKind::Claude)?;
+            self.spawn_and_focus(ticket, self.board.agent_provider.session_kind())?;
         } else {
             self.screen = Screen::Ticket { ticket, rail_idx: 0 };
         }
@@ -4700,7 +4731,7 @@ impl App {
             return Ok(());
         }
         let idx = idx.min(self.external.len() - 1);
-        let claude_session_id = self.external[idx].claude_session_id;
+        let claude_session_id = self.external[idx].id;
         if !resume {
             match self.req(Command::AttachExternal { claude_session_id, ticket: None }) {
                 Response::Spawned { id, .. } => {
@@ -5132,12 +5163,13 @@ impl App {
                             Response::Err { message } => message,
                             _ => String::new(),
                         },
-                        None => "nothing to tell claude".into(),
+                        None => format!("nothing to tell {}", self.ticket_agent_word(ticket)),
                     };
-                } else if self.board.live_claude(ticket).is_none() {
+                } else if self.board.live_agent(ticket).is_none() {
                     self.start_composed(ticket);
                 } else {
-                    self.status = "claude is asleep ∙ c wakes it".into();
+                    self.status =
+                        format!("{} is asleep ∙ c wakes it", self.ticket_agent_word(ticket));
                 }
                 Ok(())
             }
@@ -5930,12 +5962,23 @@ impl App {
         let existing = self
             .rail_sessions(ticket)
             .iter()
-            .find(|s| s.kind == kind && s.state.is_live())
+            .find(|s| {
+                (s.kind == kind || (kind.is_agent() && s.kind.is_agent())) && s.state.is_live()
+            })
             .map(|s| s.id);
         match existing {
             Some(sid) => self.focus_session(sid),
             None => self.spawn_and_focus(ticket, kind),
         }
+    }
+
+    fn ticket_agent_word(&self, ticket: ulid::Ulid) -> &'static str {
+        keymap::agent_word(
+            self.board
+                .live_agent(ticket)
+                .and_then(|s| s.kind.provider())
+                .unwrap_or(self.board.agent_provider),
+        )
     }
 
     /// `e`: rescan (lazy census — this is the only trigger) and open the drawer.
@@ -6092,7 +6135,7 @@ impl App {
                 // An EMPTY seat can commit a blank field: there the prompt is
                 // the ticket's own title and brief, which is what the press
                 // does with no field at all on a quiet checkout (T-294).
-                let starts = self.board.live_claude(ticket).is_none();
+                let starts = self.board.live_agent(ticket).is_none();
                 // Over a WAITING entry a blank Enter is how it comes off the
                 // board (T-241), and on the one seat that could commit
                 // instead, the toggle tells the two apart: left at `queued`
@@ -6173,7 +6216,10 @@ impl App {
                 // The column started a claude on it already (T-117): the
                 // composer must not start a second, nor offer to.
                 if started {
-                    self.status = "claude started ∙ the column starts one on creation".into();
+                    self.status = format!(
+                        "{} started ∙ the column starts one on creation",
+                        self.ticket_agent_word(id)
+                    );
                     return Ok(());
                 }
                 if start {
@@ -6183,7 +6229,8 @@ impl App {
                 // Enter-Enter: the next plain Enter starts claude on
                 // the fresh ticket (board_enter's fast path).
                 self.just_created = Some(id);
-                self.status = "enter starts claude ∙ space opens the ticket".into();
+                self.status =
+                    format!("enter starts {} ∙ space opens the ticket", self.ticket_agent_word(id));
             }
             Response::Err { message } => {
                 self.status = message;
@@ -6213,13 +6260,14 @@ impl App {
         // Which seat the words are bound for, asked BEFORE they travel: the
         // daemon's answer comes back as a `Response` that cannot tell a
         // started claude from a woken one.
-        let starting = self.board.live_claude(ticket).is_none();
+        let starting = self.board.live_agent(ticket).is_none();
         let waking = !starting && self.board.pane_target(ticket).is_none();
         let own = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
+        let word = self.ticket_agent_word(ticket);
         let (lead, first) = match (starting, waking) {
-            (true, _) => ("claude starts", "claude starts next"),
-            (_, true) => ("claude wakes", "claude wakes next"),
-            _ => ("queued", "queued ∙ sends next"),
+            (true, _) => (format!("{word} starts"), format!("{word} starts next")),
+            (_, true) => (format!("{word} wakes"), format!("{word} wakes next")),
+            _ => ("queued".into(), "queued ∙ sends next".into()),
         };
         self.status = match self.req(Command::PromptSession { ticket, text, queued }) {
             // Deliberately not "sent to claude": what is provably
@@ -6232,7 +6280,7 @@ impl App {
             Response::Ok if !queued && had => "asked ∙ queued ask dropped".into(),
             Response::Ok => "asked".into(),
             // Parked: name what it waits on, the way the card does.
-            Response::Queued { behind } => queued_status(lead, first, &behind, &own),
+            Response::Queued { behind } => queued_status(&lead, &first, &behind, &own),
             // A parked claude: the daemon woke it and holds the
             // words until the pane reads (2026-09-04). `fresh` is
             // the wake road's own word — no conversation was left to
@@ -6240,15 +6288,15 @@ impl App {
             // said here for the same reason `c` says it. An empty seat
             // reports the same way and means something else: a session
             // that did not exist a moment ago (T-294).
-            Response::Spawned { .. } if starting => "claude started ∙ asked".into(),
-            Response::Spawned { fresh: false, .. } => "woke claude ∙ asked".into(),
+            Response::Spawned { .. } if starting => format!("{word} started ∙ asked"),
+            Response::Spawned { fresh: false, .. } => format!("woke {word} ∙ asked"),
             Response::Spawned { fresh: true, .. } => {
                 "nothing to resume ∙ started a fresh conversation ∙ asked".into()
             }
             // Its worktree is being rebuilt under the wake (T-278);
             // the words ride the parked wake.
             Response::Provisioning => {
-                "provisioning worktree ∙ claude wakes when ready ∙ asked".into()
+                format!("provisioning worktree ∙ {word} wakes when ready ∙ asked")
             }
             Response::Err { message } => message,
             _ => String::new(),
@@ -6273,12 +6321,14 @@ impl App {
     /// The fresh-ticket Enter window is not armed either: the agent is already
     /// running, so the next Enter should mean what it always means.
     fn start_composed(&mut self, ticket: ulid::Ulid) {
-        let cmd = Command::SpawnSession { ticket, kind: SessionKind::Claude, submit_prompt: true };
+        let kind = self.board.agent_provider.session_kind();
+        let word = keymap::agent_word(self.board.agent_provider);
+        let cmd = Command::SpawnSession { ticket, kind, submit_prompt: true };
         self.status = match self.req(cmd) {
-            Response::Spawned { .. } => "claude started on the title".into(),
+            Response::Spawned { .. } => format!("{word} started on the title"),
             // M4: the worktree is still being cut. The daemon replays the
             // parked spawn — submit flag and all — when it lands.
-            Response::Provisioning => "provisioning worktree ∙ claude starts when ready".into(),
+            Response::Provisioning => format!("provisioning worktree ∙ {word} starts when ready"),
             Response::Err { message } => message,
             _ => String::new(),
         };
@@ -6304,7 +6354,7 @@ impl App {
             .iter()
             .filter(|s| {
                 s.ticket == ticket
-                    && s.kind == SessionKind::Claude
+                    && s.kind.is_agent()
                     && matches!(s.state, SessionState::Exited { reason } if reason != ExitReason::Dismissed)
             })
             .max_by_key(|s| s.state_changed_at.unwrap_or(0))
@@ -6326,8 +6376,8 @@ impl App {
     pub fn rail_rows(&self, ticket: ulid::Ulid) -> Vec<RailRow<'_>> {
         let mut rows: Vec<RailRow<'_>> =
             self.rail_sessions(ticket).into_iter().map(RailRow::Session).collect();
-        if self.new_claude_row(ticket) {
-            rows.push(RailRow::NewClaude);
+        if self.new_agent_row(ticket) {
+            rows.push(RailRow::NewAgent);
         }
         if let Some(t) = self.board.ticket(ticket) {
             rows.extend(t.notes.iter().map(RailRow::Note));
@@ -6342,8 +6392,8 @@ impl App {
     /// A resumable corpse is neither, so a ticket whose claude died offers
     /// the row beside it: `enter` on the corpse resumes the conversation,
     /// `enter` here starts a new one.
-    pub fn new_claude_row(&self, ticket: ulid::Ulid) -> bool {
-        self.board.live_claude(ticket).is_none()
+    pub fn new_agent_row(&self, ticket: ulid::Ulid) -> bool {
+        self.board.live_agent(ticket).is_none()
             && self.board.ticket(ticket).is_some_and(|t| !t.is_archived())
     }
 
@@ -6381,7 +6431,7 @@ impl App {
             let observe_only = rec.provenance == Provenance::Adopted && rec.argv.is_empty();
             let sleeping = matches!(rec.state, SessionState::Sleeping);
             let exited_claude =
-                rec.kind == SessionKind::Claude && matches!(rec.state, SessionState::Exited { .. });
+                rec.kind.is_agent() && matches!(rec.state, SessionState::Exited { .. });
             let (ticket, kind) = (rec.ticket, rec.kind);
             if observe_only || sleeping || exited_claude {
                 let cmd = if sleeping && rec.kind == SessionKind::Bash {
@@ -6573,8 +6623,9 @@ impl App {
     /// spoke mark and Enter all pick) while a pane lives, and the newest
     /// claude record it has otherwise, because what an agent said last
     /// outlives its pane.
-    fn latest_transcript(&self, ticket: ulid::Ulid) -> Option<&str> {
-        let named = |s: &&mesimon_core::board::SessionRecord| s.transcript_path.is_some();
+    fn latest_transcript(&self, ticket: ulid::Ulid) -> Option<(SessionKind, &str)> {
+        let named =
+            |s: &&mesimon_core::board::SessionRecord| crate::peek::preview_path(s).is_some();
         self.board
             .pane_target(ticket)
             .filter(named)
@@ -6582,11 +6633,11 @@ impl App {
                 self.board
                     .sessions
                     .iter()
-                    .filter(|s| s.ticket == ticket && s.kind == SessionKind::Claude)
+                    .filter(|s| s.ticket == ticket && s.kind.is_agent())
                     .filter(named)
                     .max_by_key(|s| s.state_changed_at.unwrap_or(0))
             })
-            .and_then(|s| s.transcript_path.as_deref())
+            .and_then(|s| Some((s.kind, crate::peek::preview_path(s)?)))
     }
 
     /// Is there anywhere `^k` could look — a description, or a transcript?
@@ -6603,7 +6654,8 @@ impl App {
     /// `None` for a ticket with no claude, no transcript, or an unreadable
     /// one.
     fn latest_words(&self, ticket: ulid::Ulid) -> Option<String> {
-        self.peek_cache.peek(self.latest_transcript(ticket)?)?.text.clone()
+        let (kind, path) = self.latest_transcript(ticket)?;
+        self.peek_cache.peek_for(kind, path)?.text.clone()
     }
 
     /// Resolve every link in one body and append the ones that lead
@@ -7039,7 +7091,7 @@ pub(crate) mod test_support {
                 Command::PromptSession { ticket, queued, .. } => {
                     let seat = if self.board.pane_target(ticket).is_some() {
                         "ask"
-                    } else if self.board.live_claude(ticket).is_some() {
+                    } else if self.board.live_agent(ticket).is_some() {
                         "wake"
                     } else {
                         "start"
@@ -7070,9 +7122,9 @@ pub(crate) mod test_support {
                     }
                     let mut rec = mesimon_core::board::SessionRecord::new(
                         uuid::Uuid::from_u128(4242),
-                        SessionKind::Claude,
+                        self.board.agent_provider.session_kind(),
                         ticket,
-                        vec!["claude".into()],
+                        vec![keymap::agent_word(self.board.agent_provider).into()],
                         "/repo".into(),
                         SessionState::Spawning,
                     );
@@ -7235,8 +7287,7 @@ pub(crate) mod test_support {
                         .collect();
                     if awake.iter().any(|&i| {
                         let s = &self.board.sessions[i];
-                        s.kind == SessionKind::Claude
-                            && !matches!(s.state, SessionState::Idle { .. })
+                        s.kind.is_agent() && !matches!(s.state, SessionState::Idle { .. })
                     }) {
                         return Ok(Response::Err {
                             message: "claude still awake — only idle sessions sleep".into(),
@@ -7265,6 +7316,10 @@ pub(crate) mod test_support {
                 // The daemon's two answers to the agent-brief offer, in the
                 // one respect the client can see: both are board state, so
                 // the very next snapshot carries them.
+                Command::SetAgentProvider { provider } => {
+                    self.board.agent_provider = provider;
+                    Ok(Response::Ok)
+                }
                 Command::SetSystemPrompt { on } => {
                     self.board.system_prompt = on;
                     // The daemon's rule: turning it off is an answer.
@@ -8673,9 +8728,9 @@ mod tests {
     fn the_rail_opens_on_the_offer_and_enter_starts_claude() {
         let (mut app, sent) = app_with_note_and(false);
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-        assert!(matches!(app.rail_row(), Some(RailRow::NewClaude)), "the note does not take it");
+        assert!(matches!(app.rail_row(), Some(RailRow::NewAgent)), "the note does not take it");
         let ctx = app.ctx();
-        assert!(ctx.sel_new_claude && !ctx.sel_note && !ctx.sel_session);
+        assert!(ctx.sel_new_agent && !ctx.sel_note && !ctx.sel_session);
         assert_eq!(
             keymap::hint_for(Scope::Ticket, Verb::Act, &ctx),
             Some(("enter", "start claude")),
@@ -8697,7 +8752,7 @@ mod tests {
         let (mut app, _sent) = app_with_note_and(true);
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
         assert!(matches!(app.rail_row(), Some(RailRow::Session(_))));
-        assert!(!app.new_claude_row(ulid::Ulid(1)));
+        assert!(!app.new_agent_row(ulid::Ulid(1)));
         // Nor does an archived ticket, which may not grow a pane at all.
         let (mut app, _sent) = app_with_note_and(false);
         app.board.tickets[0].archived = Some(mesimon_core::board::Archived {
@@ -8706,7 +8761,7 @@ mod tests {
             until: None,
             needs_you: false,
         });
-        assert!(!app.new_claude_row(ulid::Ulid(1)));
+        assert!(!app.new_agent_row(ulid::Ulid(1)));
     }
 
     /// The two keys that start a ticket's own shell are behind the seam
@@ -8919,16 +8974,117 @@ mod tests {
             assert_eq!(app.settings_section, section);
             assert_eq!(app.mode, Mode::Settings { idx: 0 });
             if section == keymap::SettingsSection::Agents {
+                let brief = app.settings_row(Verb::SystemPrompt);
+                app.mode = Mode::Settings { idx: brief };
                 app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
                 assert!(matches!(app.mode, Mode::Brief { from_settings: true }));
                 app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
                 assert_eq!(app.settings_section, section);
-                assert_eq!(app.mode, Mode::Settings { idx: 0 });
+                assert_eq!(app.mode, Mode::Settings { idx: brief });
             }
             app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
             assert_eq!(app.settings_section, keymap::SettingsSection::Root);
             assert_eq!(app.mode, Mode::Settings { idx });
         }
+    }
+
+    #[test]
+    fn provider_setting_cycles_and_preserves_existing_sleeping_session() {
+        use mesimon_core::board::AgentProvider;
+        let (mut app, sent, sid) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        let idx = app.settings_row(Verb::AgentProvider);
+        app.mode = Mode::Settings { idx };
+        for expected in [AgentProvider::Codex, AgentProvider::ClaudeCode] {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.board.agent_provider, expected);
+            assert_eq!(app.mode, Mode::Settings { idx });
+            let old = app.board.sessions.iter().find(|s| s.id == sid).unwrap();
+            assert_eq!(old.kind, SessionKind::Claude);
+            assert_eq!(old.state, SessionState::Sleeping);
+            assert!(app.status.contains("new sessions"));
+        }
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetAgentProvider")).count(), 2);
+    }
+
+    #[test]
+    fn session_actions_follow_the_existing_provider_after_a_project_switch() {
+        use mesimon_core::board::AgentProvider;
+        for kind in [SessionKind::Claude, SessionKind::Codex] {
+            for state in [SessionState::Running, SessionState::Sleeping] {
+                let (mut app, sent, sid) = app_with_session(kind, state.clone(), false);
+                app.board.agent_provider = match kind {
+                    SessionKind::Claude => AgentProvider::Codex,
+                    SessionKind::Codex => AgentProvider::ClaudeCode,
+                    SessionKind::Bash => unreachable!(),
+                };
+                let ctx = app.ctx();
+                assert!(ctx.ticket_has_agent);
+                assert_eq!(ctx.ticket_agent_provider, kind.provider().unwrap());
+                assert!(!app.new_agent_row(ulid::Ulid(1)), "a parked agent holds the seat");
+                press(&mut app, 'c');
+                assert!(!sent_contains(&sent, "SpawnSession"));
+                assert!(sent_contains(&sent, &sid.to_string()));
+                assert_eq!(sent_contains(&sent, "ResumeSession"), state == SessionState::Sleeping);
+                if state == SessionState::Running {
+                    assert!(sent_contains(&sent, "FocusStart"));
+                    assert_eq!(app.watched_ticket(), Some(ulid::Ulid(1)));
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn codex_project_uses_codex_for_all_new_session_gestures() {
+        use mesimon_core::board::AgentProvider;
+        for gesture in ["c", "rail", "compose", "prompt"] {
+            let mut board = board_three_columns();
+            board.agent_provider = AgentProvider::Codex;
+            let (mut app, sent) = App::for_test_logged(board, theme(), false);
+            match gesture {
+                "c" => press(&mut app, 'c'),
+                "rail" => {
+                    app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+                    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                }
+                "compose" => {
+                    app.just_created = Some(ulid::Ulid(1));
+                    app.board_enter().unwrap();
+                }
+                "prompt" => app.start_composed(ulid::Ulid(1)),
+                _ => unreachable!(),
+            }
+            let sent = sent.borrow();
+            let spawns: Vec<_> = sent.iter().filter(|r| r.contains("SpawnSession")).collect();
+            assert_eq!(spawns.len(), 1, "{gesture}: {sent:?}");
+            assert!(spawns[0].contains("kind: Codex"), "{gesture}: {spawns:?}");
+        }
+    }
+
+    #[test]
+    fn codex_column_settings_cycle_native_policies_without_changing_claude_mode() {
+        use mesimon_core::board::{AgentProvider, ClaudeMode, CodexApproval, CodexSandbox};
+        let mut board = board_three_columns();
+        board.agent_provider = AgentProvider::Codex;
+        board.columns[0].settings.claude_mode = ClaudeMode::Plan;
+        let (mut app, sent) = App::for_test_logged(board, theme(), false);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.column_agents = true;
+        let rows = keymap::column_items(&app.ctx());
+        assert!(!rows.iter().any(|m| m.verb == Verb::ColumnClaudeMode));
+        for verb in [Verb::ColumnCodexSandbox, Verb::ColumnCodexApproval] {
+            let row = keymap::column_items(&app.ctx()).iter().position(|m| m.verb == verb).unwrap();
+            if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+                *idx = row;
+            }
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        }
+        let settings = &app.board.column("todo").unwrap().settings;
+        assert_eq!(settings.codex_sandbox, CodexSandbox::ReadOnly);
+        assert_eq!(settings.codex_approval, CodexApproval::OnRequest);
+        assert_eq!(settings.claude_mode, ClaudeMode::Plan);
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetColumnSettings")).count(), 2);
     }
 
     #[test]
@@ -9501,7 +9657,7 @@ mod tests {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.rich_keys = true;
         assert!(app.ctx().has_ticket);
-        assert!(!app.ctx().ticket_has_claude);
+        assert!(!app.ctx().ticket_has_agent);
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert_eq!(app.mode, Mode::Normal, "no field: the title is the prompt");
         assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
@@ -9526,7 +9682,7 @@ mod tests {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         press(&mut app, 'j');
-        assert!(!app.ctx().ticket_has_claude, "the cursor is on the seatless ticket");
+        assert!(!app.ctx().ticket_has_agent, "the cursor is on the seatless ticket");
         assert!(app.ctx().checkout_busy, "a claude is mid-turn in the same checkout");
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
@@ -9557,7 +9713,7 @@ mod tests {
         assert!(!app.ctx().ask_queued);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.status, "claude started ∙ asked");
-        assert!(app.board.live_claude(ulid::Ulid(2)).is_some());
+        assert!(app.board.live_agent(ulid::Ulid(2)).is_some());
     }
 
     /// T-294. A parked claude is the other seat a press would start a turn
@@ -9635,7 +9791,7 @@ mod tests {
     fn shift_enter_on_a_sleeping_claude_wakes_it_and_asks() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.rich_keys = true;
-        assert!(app.ctx().ticket_has_claude, "the session is live — parked, but live");
+        assert!(app.ctx().ticket_has_agent, "the session is live — parked, but live");
         assert!(!app.ctx().ticket_promptable, "…and has no pane to type into");
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
@@ -9666,7 +9822,7 @@ mod tests {
     fn c_wakes_a_parked_claude_instead_of_starting_a_second() {
         let (mut app, sent, sid) = app_with_claude(SessionState::Sleeping, false);
         assert_eq!(
-            keymap::hint_for(Scope::Board, Verb::Claude, &app.ctx()),
+            keymap::hint_for(Scope::Board, Verb::Agent, &app.ctx()),
             Some(("c", "wake claude"))
         );
         press(&mut app, 'c');
@@ -9678,7 +9834,7 @@ mod tests {
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
 
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
-        assert_eq!(keymap::hint_for(Scope::Board, Verb::Claude, &app.ctx()), Some(("c", "claude")));
+        assert_eq!(keymap::hint_for(Scope::Board, Verb::Agent, &app.ctx()), Some(("c", "claude")));
         press(&mut app, 'c');
         assert!(sent_contains(&sent, "FocusStart"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());

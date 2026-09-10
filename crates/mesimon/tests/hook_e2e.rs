@@ -63,14 +63,20 @@ fn m2_attention_headless() {
 
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "e2e".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "e2e".into()
+        }),
         Response::Hello { .. }
     ));
 
     // A second, subscribed connection watches for pushes.
     let mut watcher = TestClient::connect(&sock);
     assert!(matches!(
-        watcher.request(Command::Hello { version: 1, client: "watch".into() }),
+        watcher.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "watch".into()
+        }),
         Response::Hello { .. }
     ));
     assert!(matches!(watcher.request(Command::Subscribe), Response::Ok));

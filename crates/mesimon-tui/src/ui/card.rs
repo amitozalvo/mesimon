@@ -552,6 +552,7 @@ pub(super) fn render(
             // bar's breadcrumb leaf) when it set one, else the kind word.
             let word = s.title.as_deref().unwrap_or(match s.kind {
                 SessionKind::Claude => "claude",
+                SessionKind::Codex => "codex",
                 SessionKind::Bash => "bash",
             });
             // Row budget: "  {mark} {word}" + ≥1 fill + glyph + " {age:>3}".

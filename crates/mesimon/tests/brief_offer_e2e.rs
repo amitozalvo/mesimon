@@ -50,7 +50,10 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "brief".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "brief".into()
+        }),
         Response::Hello { .. }
     ));
 
@@ -117,7 +120,10 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "brief".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "brief".into()
+        }),
         Response::Hello { .. }
     ));
     let board = board_of(c.request(Command::Snapshot));

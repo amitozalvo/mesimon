@@ -4,7 +4,7 @@
 //! banner (M6), not a per-card flag (D14/D19).
 
 use mesimon_core::board::{
-    Confidence, ExitReason, Reason, SessionKind, SessionRecord, SessionState, StopReason,
+    Confidence, ExitReason, Reason, SessionRecord, SessionState, StopReason,
 };
 
 /// Working-spinner frames. Braille dots on the unicode tier (one cell, Neutral
@@ -327,7 +327,7 @@ pub(crate) enum Tier {
 /// spinner is the one place D19's motion ban bends; it may only bend for
 /// something actually moving.
 pub(crate) fn is_working(rec: &SessionRecord) -> bool {
-    rec.kind == SessionKind::Claude && rec.state == SessionState::Running
+    rec.kind.is_agent() && rec.state == SessionState::Running
 }
 
 /// Is this session still in its launch window — the pane opening, or the
@@ -495,13 +495,15 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
 }
 
 /// The session-kind mark: `✻` is the mark Claude Code itself uses (U+273B,
-/// Emoji=No, Neutral width — one cell), `$` for a shell. Ascii tier: `*`.
+/// Emoji=No, Neutral width — one cell), `>` for Codex, `$` for a shell.
+/// Ascii tier spells Claude's mark `*`; all marks remain one cell.
 pub(crate) fn kind_mark(kind: mesimon_core::board::SessionKind, tier: Tier) -> char {
     use mesimon_core::board::SessionKind;
     match (kind, tier) {
         (SessionKind::Claude, Tier::Unicode) => '✻',
         (SessionKind::Claude, Tier::Ascii) => '*',
         (SessionKind::Bash, _) => '$',
+        (SessionKind::Codex, _) => '>',
     }
 }
 
@@ -543,6 +545,24 @@ pub(crate) fn state_word(state: &SessionState) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn codex_mark_and_activity_obey_common_geometry() {
+        for tier in [Tier::Ascii, Tier::Unicode] {
+            assert_eq!(kind_mark(mesimon_core::board::SessionKind::Codex, tier), '>');
+        }
+        let mut rec = SessionRecord::new(
+            uuid::Uuid::nil(),
+            mesimon_core::board::SessionKind::Codex,
+            ulid::Ulid::nil(),
+            Vec::new(),
+            "/repo".into(),
+            SessionState::Running,
+        );
+        assert!(is_working(&rec));
+        rec.kind = mesimon_core::board::SessionKind::Bash;
+        assert!(!is_working(&rec));
+    }
     use mesimon_core::board::{FailReason, Reason, SessionKind, SessionRecord, UnknownReason};
 
     fn rec(state: SessionState) -> SessionRecord {

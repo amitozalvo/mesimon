@@ -106,7 +106,10 @@ fn m3_adoption_and_sleep() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "m3".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "m3".into()
+        }),
         Response::Hello { .. }
     ));
     let _ = c.request(Command::CreateTicket {
@@ -125,7 +128,7 @@ fn m3_adoption_and_sleep() {
     };
     assert_eq!(external.len(), 1, "census must find the foreign transcript");
     let item = &external[0];
-    assert_eq!(item.claude_session_id.to_string(), FOREIGN_SID);
+    assert_eq!(item.id.to_string(), FOREIGN_SID);
     assert_eq!(item.preview.as_deref(), Some("foreign work in flight"));
     assert!(!item.running_elsewhere);
 
@@ -181,7 +184,10 @@ fn m3_adoption_and_sleep() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "m3b".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "m3b".into()
+        }),
         Response::Hello { .. }
     ));
     let board = board_of(c.request(Command::Snapshot));

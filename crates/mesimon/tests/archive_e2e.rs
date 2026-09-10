@@ -48,7 +48,10 @@ fn archive_gates_suggests_and_restores() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "archive".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "archive".into()
+        }),
         Response::Hello { .. }
     ));
 

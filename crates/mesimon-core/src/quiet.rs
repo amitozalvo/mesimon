@@ -13,19 +13,28 @@
 //! turn), `Idle{Background}` (parked on a task, the turn resumes on its own),
 //! or an owed Enter (`pending_submit`). Everything else is quiet — `EndTurn`
 //! said its piece, `Interrupted` was the user's own Esc, `Unknown` is a
-//! session we lost track of and must not wait for, and a parked or dead
+//! Claude session we lost track of and must not wait for, and a parked or dead
 //! record has no turn at all. A SHELL never counts: the daemon pins a Bash
 //! session at `Running` for the life of its pane (D15), so there `Running`
 //! is liveness, not activity — the same line `glyphs::is_working` draws.
+//! Codex additionally holds its checkout while observation is missing, even
+//! when its last display state said finished. Unknown Codex state cannot
+//! authorize automatic checkout operations; only fresh observation or
+//! explicit parking/termination can release the hold.
 
 use std::collections::HashSet;
 
 use crate::board::{Board, SessionKind, SessionRecord, SessionState, StopReason};
 
-/// A claude session whose turn is in progress or owed.
+/// An agent whose turn is in progress, owed, or cannot be proved quiet.
 pub fn is_working(s: &SessionRecord) -> bool {
-    s.kind == SessionKind::Claude
+    s.kind.is_agent()
         && (s.pending_submit
+            || (s.kind == SessionKind::Codex
+                && (s.codex_stopping || s.state.has_pane())
+                && (s.codex_stopping
+                    || s.observation_hold
+                    || matches!(s.state, SessionState::Unknown { .. })))
             || matches!(
                 s.state,
                 SessionState::Spawning
@@ -99,7 +108,18 @@ mod tests {
             confidence: Confidence::High,
             provenance: Provenance::Spawned,
             claude_session_id: None,
+            codex_thread_id: None,
+            codex_generation: None,
+            codex_observed_seq: 0,
+            codex_pending_seq: None,
+            codex_turn_id: None,
+            agent_preview_path: None,
+            agent_plan_key: None,
+            observation_hold: kind == SessionKind::Codex,
             pending_submit: false,
+            pending_prefill: false,
+            codex_submit_sent: false,
+            codex_stopping: false,
             idle_teammates: vec![],
             monitor_task_ids: vec![],
             plan_note: None,
@@ -148,6 +168,40 @@ mod tests {
     fn a_shell_never_works() {
         let t = ulid::Ulid::new();
         assert!(!is_working(&session(t, SessionKind::Bash, "/r", SessionState::Running)));
+    }
+
+    #[test]
+    fn codex_observation_loss_holds_a_finished_checkout_until_reconciled() {
+        let mut rec = session(
+            ulid::Ulid::new(),
+            SessionKind::Codex,
+            "/r",
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        assert!(is_working(&rec), "a stale completion cannot release a checkout");
+        rec.observation_hold = false;
+        assert!(!is_working(&rec), "fresh completion can release it");
+        rec.state = SessionState::Idle { stop_reason: StopReason::Unknown };
+        assert!(!is_working(&rec), "a reconciled empty input box has no active turn");
+        for state in [
+            SessionState::unknown(),
+            SessionState::Running,
+            SessionState::RequiresAction { reason: Reason::Permission },
+        ] {
+            rec.state = state;
+            assert!(is_working(&rec), "{:?}", rec.state);
+        }
+        rec.observation_hold = true;
+        for state in [
+            SessionState::Sleeping,
+            SessionState::Exited { reason: crate::board::ExitReason::Killed },
+        ] {
+            rec.state = state;
+            assert!(!is_working(&rec), "confirmed stopped sessions release the hold");
+            rec.codex_stopping = true;
+            assert!(is_working(&rec), "cleanup still owns the checkout even after parking");
+            rec.codex_stopping = false;
+        }
     }
 
     #[test]

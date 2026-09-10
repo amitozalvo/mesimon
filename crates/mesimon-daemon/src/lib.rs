@@ -1,6 +1,7 @@
 //! mesimond — the per-repo daemon. Single writer of board state (D22);
 //! owns session lifecycle through the tmux backend (docs/19).
 
+pub mod agents;
 pub mod census;
 pub mod claudemd;
 pub mod diff;

@@ -1,0 +1,20 @@
+ BOARD   mesimon > kanban-tui   7 tickets
+
+  2     IN PROGRESS                        2   2   1
+
+  T     ⠋ Fix OSC-11 detection           >1y   R   D
+  ╭─ AGENT BEHAVIOUR ∙ IN PROGRESS ──────────────────────╮
+  │   Codex sandbox: workspace write                     │
+  │   Codex approvals: on request                        │
+  │   Agent tools: full                                  │
+  │   Start agent on creation: off                       │
+  │   When agent starts working: stay                    │
+  │   When agent ends a turn: stay                       │
+  │                                                      │
+  │     native sandbox policy ∙ inherit keeps Codex con~ │
+  ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
+
+
+
+
+ COLUMN                                              ? keys

@@ -19,11 +19,13 @@
 //! failed.
 
 use std::io::{BufRead, BufReader, Write};
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::Result;
+use mesimon_core::board::AgentProvider;
 
 #[derive(PartialEq, Clone, Copy)]
 enum Level {
@@ -190,12 +192,17 @@ fn tool_version(bin: &str, args: &[&str]) -> Option<String> {
 }
 
 fn which(bin: &str) -> Option<String> {
-    let out = Command::new("sh").arg("-c").arg(format!("command -v {bin}")).output().ok()?;
-    if !out.status.success() {
-        return None;
+    let executable = |path: &Path| {
+        path.metadata()
+            .is_ok_and(|metadata| metadata.is_file() && metadata.permissions().mode() & 0o111 != 0)
+    };
+    if bin.contains('/') {
+        return executable(Path::new(bin)).then(|| bin.to_string());
     }
-    let p = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    (!p.is_empty()).then_some(p)
+    std::env::split_paths(&std::env::var_os("PATH")?)
+        .map(|dir| dir.join(bin))
+        .find(|path| executable(path))
+        .map(|path| path.to_string_lossy().into_owned())
 }
 
 fn environment(verbose: bool) -> Section {
@@ -385,36 +392,75 @@ fn is_wsl() -> bool {
             .is_ok_and(|v| v.to_ascii_lowercase().contains("microsoft"))
 }
 
-fn agents(repo: &Path, verbose: bool) -> Section {
-    let mut records = Vec::new();
-    match which("claude") {
-        None => records.push(
-            rec(Level::Fail, "claude", "not found on PATH").advice(
-                "Without it a Claude ticket spawns a pane that dies instantly and reads as crashed. Install Claude Code, then re-run this.",
-            ),
-        ),
-        Some(p) => {
-            records.push(rec(Level::Ok, "claude", redact(&p, verbose)));
-            match tool_version("claude", &["--version"]) {
-                Some(v) => records.push(rec(Level::Ok, "claude version", v)),
-                None => records.push(
-                    rec(Level::Warn, "claude version", "on PATH but would not report a version")
-                        .advice("Try running `claude --version` yourself; a broken install spawns panes that die immediately."),
-                ),
-            }
+fn provider_installation(
+    provider: AgentProvider,
+    selected: AgentProvider,
+    binary: &str,
+    path: Option<&str>,
+    version: Option<&str>,
+    verbose: bool,
+) -> Vec<Record> {
+    let label = if provider == AgentProvider::Codex { "codex" } else { "claude" };
+    let Some(path) = path else {
+        return vec![rec(if provider == selected { Level::Fail } else { Level::Warn }, label,
+            format!("{} not found; {}", redact(binary, verbose), if provider == selected { "selected for new sessions" } else { "optional provider unavailable" }))
+            .advice(format!("Install {} or select the installed provider under Settings > Agents. Existing sessions retain their original provider.", provider.label()))];
+    };
+    let mut records = vec![rec(Level::Ok, label, redact(path, verbose))];
+    records.push(match version {
+        Some(version) => rec(Level::Ok, &format!("{label} version"), version),
+        None => {
+            rec(Level::Warn, &format!("{label} version"), "executable did not report a version")
+                .advice(format!("Run {label} --version to inspect the installation."))
         }
+    });
+    if provider == AgentProvider::Codex {
+        let measured = version.is_some_and(|version| {
+            version.split_whitespace().last() == Some(crate::state::CODEX_TESTED_VERSION)
+        });
+        records.push(rec(if measured { Level::Ok } else { Level::Warn }, "codex evidence",
+            format!("runtime paths measured on {}; {}", crate::state::CODEX_TESTED_VERSION,
+                if measured { "installed version matches" } else { "installed version untested" }))
+            .advice("Run mesimon state compatibility codex <version> for measured scope. Version matching alone is not proof of the complete workflow acceptance matrix."));
+        records.push(rec(Level::Note, "codex trust", "native /hooks review controls generated hooks")
+            .advice("Review new or changed hook definitions in native Codex. Doctor does not trust hooks, alter approval/sandbox policy, sign in, or submit a model turn."));
+    }
+    records
+}
+
+fn agents(repo: &Path, verbose: bool) -> Section {
+    let paths = mesimon_daemon::Paths::for_repo(repo).ok();
+    let selected =
+        paths.as_ref().map(mesimon_daemon::store::read_agent_provider).unwrap_or_default();
+    let mut records = vec![rec(Level::Ok, "new sessions", selected.label())
+        .advice("Settings > Agents selects the provider for new sessions only. Existing and sleeping sessions keep their original provider.")];
+    for (provider, name, override_key) in [
+        (AgentProvider::ClaudeCode, "claude", "MESIMON_CLAUDE_BIN"),
+        (AgentProvider::Codex, "codex", "MESIMON_CODEX_BIN"),
+    ] {
+        let binary = std::env::var(override_key).unwrap_or_else(|_| name.into());
+        let path = which(&binary);
+        let version = path.as_deref().and_then(|path| tool_version(path, &["--version"]));
+        records.extend(provider_installation(
+            provider,
+            selected,
+            &binary,
+            path.as_deref(),
+            version.as_deref(),
+            verbose,
+        ));
     }
 
     // The agent tool surface, and whether the repo tells a session to use it
     // (T-217). Both read the board's own files; neither writes one.
-    if let Ok(paths) = mesimon_daemon::Paths::for_repo(repo) {
+    if let Some(paths) = paths {
         let on = mesimon_daemon::store::read_mcp_tools(&paths);
         if on {
             records.push(rec(Level::Ok, "agent tools", "on for this repo"));
         } else {
             records.push(
                 rec(Level::Note, "agent tools", "off for this repo").advice(
-                    "Sessions spawn without --mcp-config, so none of them can see which ticket it is on. The Esc menu's Settings > Agent tools row turns them back on; a running session picks it up when you sleep and wake it.",
+                    "Sessions spawn without Mesimon MCP configuration, so these tools cannot identify their ticket. Settings > Agents > Agent tools turns them back on; existing sessions pick up launch settings on sleep/wake.",
                 ),
             );
         }
@@ -429,18 +475,18 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                 rec(
                     Level::Ok,
                     "agent brief",
-                    "on ∙ in the system prompt of every claude mesimon starts here",
+                    "on - optional agent context for sessions Mesimon starts here",
                 )
                 .advice(format!("The line, verbatim:\n\n{}\n", mesimon_core::brief::TEXT)),
             );
         } else if brief {
             records.push(rec(Level::Note, "agent brief", "on, but inert while the agent tools are off").advice(
-                "The brief tells claude to call get_ticket, so it rides the argv only beside the tools. Turn the tools back on and the next spawn or wake carries both.",
+                "The brief tells the agent to call get_ticket and is enabled only beside those tools. Claude receives appended system context; Codex receives a native SessionStart hook subject to native hook trust.",
             ));
         } else {
             records.push(
-                rec(Level::Note, "agent brief", "off ∙ sessions get no system-prompt line").advice(format!(
-                    "A spawned session is often handed only the ticket's TITLE; its description lives in a note that only the get_ticket tool reaches, so agents skip it. The Esc menu's Settings > Agent brief row puts this line — and only this line — in the system prompt of the claude sessions mesimon starts in this repo:\n\n{}\n",
+                rec(Level::Note, "agent brief", "off - no optional Mesimon context").advice(format!(
+                    "A new session may receive only the ticket title; get_ticket reads its description and notes. Settings > Agents > Agent brief opts into this exact context line:\n\n{}\n",
                     mesimon_core::brief::TEXT,
                 )),
             );
@@ -484,7 +530,10 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         let mut sampler = mesimon_daemon::claudemd::Sampler::default();
         sampler.refresh(&paths.repo_root);
         let md = sampler.status();
-        if md.present {
+        if selected == AgentProvider::Codex {
+            records.push(rec(Level::Note, "repo guidance", "Codex uses its native AGENTS.md loading")
+                .advice("Mesimon does not rewrite AGENTS.md. Agent tools and the optional reviewed startup brief are separate settings."));
+        } else if md.present {
             records.push(rec(Level::Ok, "claude.md", "tells sessions to read their ticket"));
         } else if brief {
             records.push(rec(
@@ -722,8 +771,16 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
         mesimon_core::board::AgentTools::Full,
     );
 
-    println!("the flag every mesimon-spawned Claude session carries");
+    println!("Mesimon MCP launch configuration (when agent tools are enabled)");
+    println!("Claude Code:");
     println!("  --mcp-config '{blob}'");
+    let value: serde_json::Value = serde_json::from_str(&blob)?;
+    let server = &value["mcpServers"][mcp::SERVER_NAME];
+    println!("Codex app-server and native TUI:");
+    println!(
+        "  -c 'mcp_servers.mesimon={{command={},args={}}}'",
+        server["command"], server["args"]
+    );
     println!();
     println!("  --strict-mcp-config is NOT passed: your own MCP servers still load.");
     println!("  <session> above is the per-session uuid; nothing else varies.");
@@ -744,14 +801,8 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
         }
     }
     println!();
-    println!("  {total} bytes of tool definitions, on every request of every session.");
-    println!(
-        "  At most ~{} tokens per request: 223 tok was measured on an ~818-byte",
-        mcp::tools().len() * 223
-    );
-    println!("  definition, and every tool here is capped below that. Deferred tool");
-    println!("  search would cut it to ~12/tool, but it is force-disabled for proxy,");
-    println!("  Bedrock and Vertex users, so this is the number to plan with.");
+    println!("  {total} serialized bytes in the complete tools/list response.");
+    println!("  Native providers decide when tool definitions enter model context.");
     println!();
 
     println!("what mesimon does NOT send");
@@ -759,7 +810,12 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     println!("  skills/list               -32601       registers SKILL.md into the system prompt");
     println!("  server/discover           -32601");
     println!("  resources, prompts        not declared");
-    println!("  system prompt, reminders, prompt templates: none, ever");
+    println!("  MCP initialization adds no system prompt, reminders, or prompt templates.");
+    println!();
+    println!("optional agent brief (a separate opt-in setting)");
+    println!("  {}", mesimon_core::brief::TEXT);
+    println!("  Claude Code appends this context; Codex uses a native SessionStart hook.");
+    println!("  Codex hooks require native review/trust. Mesimon never changes hook trust.");
     println!();
 
     println!("what an agent may ask for");
@@ -774,7 +830,9 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     println!();
 
     println!("what the write gate refuses");
-    println!("  Edit / Write / NotebookEdit under:");
+    println!(
+        "  Claude Edit / Write / NotebookEdit; Codex apply_patch sources and destinations under:"
+    );
     println!("    {}", paths.board_dir.display());
     println!("    {}", paths.state_dir.display());
     println!("  Bash is NOT hooked: `sed -i` into those paths still works. The tiers");
@@ -783,8 +841,13 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
 
     println!("files mesimon writes for any of this");
     println!("  {}/<session>.json   the hook settings (0600)", paths.hooks_dir().display());
-    println!("  and nothing else. No .mcp.json, no ~/.claude.json, no settings.local.json,");
-    println!("  no plugin marketplace entry. Revoking is: stop launching from mesimon.");
+    println!(
+        "  {}/<session>.codex.json   Codex runtime configuration (0600)",
+        paths.hooks_dir().display()
+    );
+    println!("  Codex sockets, observation snapshots, and previews use Mesimon's private runtime directory.");
+    println!("  No user .mcp.json, ~/.claude.json, settings.local.json, Codex config, hook trust,");
+    println!("  or plugin marketplace is rewritten. Doctor itself writes none of these files.");
     Ok(())
 }
 
@@ -845,6 +908,65 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn missing_selected_provider_fails_without_requiring_both_installations() {
+        let selected = provider_installation(
+            AgentProvider::Codex,
+            AgentProvider::Codex,
+            "codex",
+            None,
+            None,
+            false,
+        );
+        assert!(selected[0].level == Level::Fail);
+        let other = provider_installation(
+            AgentProvider::ClaudeCode,
+            AgentProvider::Codex,
+            "claude",
+            None,
+            None,
+            false,
+        );
+        assert!(other[0].level == Level::Warn);
+        assert!(other[0].value.contains("optional provider"));
+    }
+
+    #[test]
+    fn codex_version_evidence_never_claims_full_acceptance() {
+        let measured = provider_installation(
+            AgentProvider::Codex,
+            AgentProvider::Codex,
+            "codex",
+            Some("/fixture/codex"),
+            Some("codex-cli 0.153.4"),
+            false,
+        );
+        let evidence = measured.iter().find(|r| r.label == "codex evidence").unwrap();
+        assert!(evidence.level == Level::Ok);
+        assert!(evidence.advice.as_ref().unwrap().contains("not proof"));
+        let unknown = provider_installation(
+            AgentProvider::Codex,
+            AgentProvider::Codex,
+            "codex",
+            Some("/fixture/codex"),
+            Some("codex-cli 9.0.0"),
+            false,
+        );
+        assert!(unknown.iter().any(|r| r.label == "codex evidence" && r.level == Level::Warn));
+    }
+
+    #[test]
+    fn executable_override_is_a_path_not_shell_code() {
+        let path = std::env::temp_dir()
+            .join(format!("msmn-doctor-{}-tool $(false)", uuid::Uuid::new_v4()));
+        std::fs::write(&path, "not executed").unwrap();
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
+        assert_eq!(which(path.to_str().unwrap()), Some(path.display().to_string()));
+        std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        assert_eq!(which(path.to_str().unwrap()), None);
+        std::fs::remove_file(path).unwrap();
+    }
 
     /// Two floors, read differently: 3.3 is where containment starts, 3.1 is
     /// where the conf parses at all. Every distro tmux today sits in or above

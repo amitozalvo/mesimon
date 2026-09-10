@@ -1,11 +1,59 @@
 use serde::{Deserialize, Serialize};
 
-/// Session kinds v0.1 actually spawns. Notes are files, not sessions (D12).
+/// The project default for new agent sessions. A session's `kind` retains
+/// its provider when this setting changes; shells are not agent providers.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AgentProvider {
+    #[default]
+    ClaudeCode,
+    Codex,
+}
+
+impl AgentProvider {
+    pub fn session_kind(self) -> SessionKind {
+        match self {
+            Self::ClaudeCode => SessionKind::Claude,
+            Self::Codex => SessionKind::Codex,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::ClaudeCode => "Claude Code",
+            Self::Codex => "Codex",
+        }
+    }
+
+    pub fn next(self) -> Self {
+        match self {
+            Self::ClaudeCode => Self::Codex,
+            Self::Codex => Self::ClaudeCode,
+        }
+    }
+}
+
+/// Persisted session type and original provider. Notes are files, not sessions.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum SessionKind {
     Claude,
+    Codex,
     Bash,
+}
+
+impl SessionKind {
+    pub fn is_agent(self) -> bool {
+        self.provider().is_some()
+    }
+
+    pub fn provider(self) -> Option<AgentProvider> {
+        match self {
+            Self::Claude => Some(AgentProvider::ClaudeCode),
+            Self::Codex => Some(AgentProvider::Codex),
+            Self::Bash => None,
+        }
+    }
 }
 
 /// The full D15 state enum; the vocabulary is owned by 11 §11.7.1.
@@ -149,6 +197,7 @@ pub enum UnknownReason {
     SupervisorDead,
     AdapterGone,
     DaemonRestarted,
+    ObservationLost,
     #[default]
     NoSignal,
 }
@@ -178,9 +227,9 @@ pub enum Provenance {
     Adopted,
 }
 
-/// A session record the daemon persists. The UUID is minted by mesimon and
-/// passed to the agent (`--session-id`) and to tmux (session name = sid16),
-/// so identity is never discovered (D24).
+/// A session record the daemon persists. Mesimon's UUID names its tmux
+/// session and authorization principal. Provider conversation IDs are
+/// separate: Claude initially accepts this UUID; Codex assigns its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SessionRecord {
     pub id: uuid::Uuid,
@@ -219,6 +268,39 @@ pub struct SessionRecord {
     /// (mesimon-spawned ones pass `--session-id id`, so the two coincide).
     #[serde(default)]
     pub claude_session_id: Option<uuid::Uuid>,
+    /// Codex's exact resumable thread, independent of Mesimon's record UUID.
+    /// Opaque: a provider may change its identifier format without changing
+    /// board identity. Never replace this with a thread-tree session ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_thread_id: Option<String>,
+    /// Identity of the owned Codex runtime process. A launch chooses a fresh
+    /// generation, so an old supervisor cannot overwrite its replacement.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_generation: Option<u64>,
+    /// Last consumed snapshot within that generation. Handover must not
+    /// replay an already-applied successful turn as a new automatic move.
+    #[serde(default)]
+    pub codex_observed_seq: u64,
+    /// Observed evidence awaiting the common state machine settle.
+    #[serde(default)]
+    pub codex_pending_seq: Option<u64>,
+    /// Last externally observed turn. Resuming a historical completed turn
+    /// cannot acknowledge a newly queued prompt merely by showing its ID.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub codex_turn_id: Option<String>,
+    /// Mesimon's bounded normalized preview artifact, separate from native
+    /// provider history in `transcript_path` and never parsed as that format.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub agent_preview_path: Option<String>,
+    /// Last authoritative plan recorded as a ticket note.
+    #[serde(default)]
+    pub agent_plan_key: Option<String>,
+    /// Codex observation has not yet proved the checkout quiet. Persisted
+    /// independently of the display state, so stale completion after an
+    /// observer gap cannot authorize queue delivery or an automatic merge.
+    /// Missing means held; Claude retains its existing observation semantics.
+    #[serde(default = "yes")]
+    pub observation_hold: bool,
     /// The ticket title was typed into this session's box and is still
     /// waiting for its Enter. Spike T-5 arm C (2026-08-31): an Enter sent in
     /// the same breath as the text is swallowed by Claude's paste detection,
@@ -228,6 +310,19 @@ pub struct SessionRecord {
     /// prefill, which is the ordinary spawn's behaviour anyway.
     #[serde(default)]
     pub pending_submit: bool,
+    /// Fresh Codex input has not yet been proven ready for the ticket title.
+    /// Persist separately from the owed Enter so startup modals and handover
+    /// cannot cause Mesimon to type into a dialog or duplicate the title.
+    #[serde(default)]
+    pub pending_prefill: bool,
+    /// The native Codex input already received its one Enter. The pending
+    /// submission still holds the checkout until a new turn acknowledges it;
+    /// daemon handover must not press Enter again and steer or queue a turn.
+    #[serde(default)]
+    pub codex_submit_sent: bool,
+    /// Cleanup is still pending; even a sleeping record retains its checkout hold.
+    #[serde(default)]
+    pub codex_stopping: bool,
     /// Named in-process teammates that reported idle and have not been
     /// messaged since (T-135). A Stop payload lists a teammate as `running`
     /// for its whole life, so this is what lets the attention machine tell a
@@ -271,6 +366,8 @@ impl SessionRecord {
     /// is an ANSWER, and mesimon does not answer dialogs on the user's behalf.
     pub fn pressable(&self) -> bool {
         self.pending_submit
+            && !self.pending_prefill
+            && !self.codex_submit_sent
             && self.state.has_pane()
             && matches!(
                 self.state,
@@ -301,7 +398,18 @@ impl SessionRecord {
             confidence: Confidence::default(),
             provenance: Provenance::default(),
             claude_session_id: None,
+            codex_thread_id: None,
+            codex_generation: None,
+            codex_observed_seq: 0,
+            codex_pending_seq: None,
+            codex_turn_id: None,
+            agent_preview_path: None,
+            agent_plan_key: None,
+            observation_hold: kind == SessionKind::Codex,
             pending_submit: false,
+            pending_prefill: false,
+            codex_submit_sent: false,
+            codex_stopping: false,
             idle_teammates: Vec::new(),
             monitor_task_ids: Vec::new(),
             plan_note: None,
@@ -562,6 +670,63 @@ impl ColumnOffers {
     }
 }
 
+/// Native Codex launch policies. Inherit leaves the user's CLI configuration intact.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexSandbox {
+    #[default]
+    Inherit,
+    ReadOnly,
+    WorkspaceWrite,
+}
+impl CodexSandbox {
+    pub fn is_inherit(&self) -> bool {
+        *self == Self::Inherit
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Self::Inherit => Self::ReadOnly,
+            Self::ReadOnly => Self::WorkspaceWrite,
+            Self::WorkspaceWrite => Self::Inherit,
+        }
+    }
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::ReadOnly => "read only",
+            Self::WorkspaceWrite => "workspace write",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexApproval {
+    #[default]
+    Inherit,
+    OnRequest,
+    Never,
+}
+impl CodexApproval {
+    pub fn is_inherit(&self) -> bool {
+        *self == Self::Inherit
+    }
+    pub fn next(self) -> Self {
+        match self {
+            Self::Inherit => Self::OnRequest,
+            Self::OnRequest => Self::Never,
+            Self::Never => Self::Inherit,
+        }
+    }
+    pub fn word(self) -> &'static str {
+        match self {
+            Self::Inherit => "inherit",
+            Self::OnRequest => "on request",
+            Self::Never => "never",
+        }
+    }
+}
+
 /// Everything a column decides (T-117). Every automation the daemon runs
 /// on a ticket is a field here, read off the ticket's column through
 /// `Board::column` and never off a column NAME: `on_working`/`on_done` ARE
@@ -582,6 +747,10 @@ pub struct ColumnSettings {
     pub workspace: Option<WorkspaceStrategy>,
     #[serde(default, skip_serializing_if = "ClaudeMode::is_inherit")]
     pub claude_mode: ClaudeMode,
+    #[serde(default, skip_serializing_if = "CodexSandbox::is_inherit")]
+    pub codex_sandbox: CodexSandbox,
+    #[serde(default, skip_serializing_if = "CodexApproval::is_inherit")]
+    pub codex_approval: CodexApproval,
     #[serde(default, skip_serializing_if = "AgentTools::is_full")]
     pub agent_tools: AgentTools,
     /// A ticket a PERSON creates here gets claude started on its title, the
@@ -638,11 +807,17 @@ impl ColumnSettings {
         if self.claude_mode != ClaudeMode::Inherit {
             out.push(format!("claude: {}", self.claude_mode.word()));
         }
+        if self.codex_sandbox != CodexSandbox::Inherit {
+            out.push(format!("codex sandbox: {}", self.codex_sandbox.word()));
+        }
+        if self.codex_approval != CodexApproval::Inherit {
+            out.push(format!("codex approvals: {}", self.codex_approval.word()));
+        }
         if self.agent_tools != AgentTools::Full {
             out.push(format!("agent tools: {}", self.agent_tools.word()));
         }
         if self.auto_run {
-            out.push("starts claude on creation".into());
+            out.push("starts agent on creation".into());
         }
         if let Some(c) = &self.on_working {
             out.push(format!("working → {c}"));
@@ -1122,6 +1297,10 @@ pub struct Board {
     pub columns: Vec<Column>,
     pub tickets: Vec<Ticket>,
     pub sessions: Vec<SessionRecord>,
+    /// Provider captured when a new agent start is accepted. Existing
+    /// sessions, including sleeping ones, retain their persisted kind.
+    #[serde(default)]
+    pub agent_provider: AgentProvider,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -1203,6 +1382,7 @@ impl Default for Board {
             columns: Vec::new(),
             tickets: Vec::new(),
             sessions: Vec::new(),
+            agent_provider: AgentProvider::default(),
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -1876,25 +2056,26 @@ impl Board {
     /// Sessions of the ticket that hold (or should hold) a pane. The archive
     /// gate, its TUI advisory, and the header suggestion all share this — the
     /// suggestion never offers what the keystroke would refuse.
-    /// The one live claude a prompt from the board reaches: first in spawn
+    /// The one live agent a prompt from the board reaches: first in spawn
     /// order, the same session `board_enter` focuses, so the key that asks
     /// and the key that goes there land on one pane. `has_pane` and not
     /// `is_live` — a parked session is live and has no process to type at.
     /// The daemon picks by this and the TUI hints by it; one predicate.
     pub fn pane_target(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
-        self.sessions
-            .iter()
-            .find(|s| s.ticket == ticket && s.kind == SessionKind::Claude && s.state.has_pane())
+        self.sessions.iter().find(|s| s.ticket == ticket && s.kind.is_agent() && s.state.has_pane())
     }
 
-    /// The claude a ticket already holds, parked or not — `is_live`, so a
-    /// Sleeping record counts. A ticket holds ONE claude (2026-09-02): the
+    /// The agent a ticket already holds, parked or not — `is_live`, so a
+    /// Sleeping record counts. A ticket holds ONE agent across providers: the
     /// daemon refuses a second spawn by this, and `c` wakes rather than
     /// starts by the same fact. A second seat on a ticket is a shell.
+    pub fn live_agent(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.sessions.iter().find(|s| s.ticket == ticket && s.kind.is_agent() && s.state.is_live())
+    }
+
+    /// Compatibility name for callers migrating to the common agent seat.
     pub fn live_claude(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
-        self.sessions
-            .iter()
-            .find(|s| s.ticket == ticket && s.kind == SessionKind::Claude && s.state.is_live())
+        self.live_agent(ticket)
     }
 
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
@@ -1911,6 +2092,102 @@ impl Board {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_provider_defaults_without_reinterpreting_sessions() {
+        let mut board = Board::default();
+        assert_eq!(board.agent_provider, AgentProvider::ClaudeCode);
+        for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
+            board.agent_provider = provider;
+            board.sessions.push(SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                provider.session_kind(),
+                ulid::Ulid::new(),
+                Vec::new(),
+                "/repo".into(),
+                SessionState::Sleeping,
+            ));
+        }
+        board.agent_provider = AgentProvider::ClaudeCode;
+        let wire = serde_json::to_value(&board).unwrap();
+        let restored: Board = serde_json::from_value(wire.clone()).unwrap();
+        assert_eq!(restored.sessions[0].kind.provider(), Some(AgentProvider::ClaudeCode));
+        assert_eq!(restored.sessions[1].kind.provider(), Some(AgentProvider::Codex));
+        let mut legacy = wire;
+        legacy.as_object_mut().unwrap().remove("agent_provider");
+        assert_eq!(
+            serde_json::from_value::<Board>(legacy).unwrap().agent_provider,
+            AgentProvider::ClaudeCode
+        );
+    }
+
+    #[test]
+    fn sleeping_agents_reserve_the_same_seat_across_provider_switches() {
+        let ticket = ulid::Ulid::new();
+        for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
+            let mut board = Board { agent_provider: provider.next(), ..Board::default() };
+            board.sessions.push(SessionRecord::new(
+                uuid::Uuid::new_v4(),
+                SessionKind::Bash,
+                ticket,
+                Vec::new(),
+                "/repo".into(),
+                SessionState::Running,
+            ));
+            let id = uuid::Uuid::new_v4();
+            board.sessions.push(SessionRecord::new(
+                id,
+                provider.session_kind(),
+                ticket,
+                Vec::new(),
+                "/repo".into(),
+                SessionState::Sleeping,
+            ));
+            assert_eq!(board.live_agent(ticket).unwrap().id, id);
+            assert!(board.pane_target(ticket).is_none());
+            board.sessions[1].state = SessionState::Running;
+            assert_eq!(board.pane_target(ticket).unwrap().id, id);
+        }
+    }
+
+    #[test]
+    fn missing_codex_observation_defaults_to_a_checkout_hold() {
+        let mut record = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Codex,
+            ulid::Ulid::new(),
+            Vec::new(),
+            "/repo".into(),
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        record.codex_thread_id = Some("opaque:thread/with-non-uuid-format".into());
+        let mut wire = serde_json::to_value(&record).unwrap();
+        wire.as_object_mut().unwrap().remove("observation_hold");
+        let restored: SessionRecord = serde_json::from_value(wire).unwrap();
+        assert!(restored.observation_hold);
+        assert_eq!(restored.codex_thread_id, record.codex_thread_id);
+        assert!(crate::quiet::is_working(&restored));
+    }
+
+    #[test]
+    fn owed_submit_cannot_precede_codex_prefill() {
+        let mut record = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Codex,
+            ulid::Ulid::new(),
+            Vec::new(),
+            "/repo".into(),
+            SessionState::Idle { stop_reason: StopReason::Unknown },
+        );
+        record.pending_submit = true;
+        record.pending_prefill = true;
+        assert!(!record.pressable());
+        record.pending_prefill = false;
+        assert!(record.pressable());
+        record.codex_submit_sent = true;
+        assert!(!record.pressable(), "an unacknowledged Enter must not be repeated");
+        assert!(record.pending_submit, "the checkout stays held while acknowledgement is pending");
+    }
 
     #[test]
     fn column_offers_preserve_legacy_settings_and_round_trip_independently() {
@@ -1985,6 +2262,13 @@ mod tests {
         let rec: SessionRecord = serde_json::from_str(m2).unwrap();
         assert_eq!(rec.provenance, Provenance::Spawned);
         assert!(rec.claude_session_id.is_none());
+        assert!(rec.codex_thread_id.is_none());
+        assert!(rec.codex_generation.is_none());
+        assert!(rec.codex_turn_id.is_none());
+        assert_eq!(rec.codex_observed_seq, 0);
+        assert!(rec.agent_preview_path.is_none());
+        assert!(!rec.pending_prefill);
+        assert!(!rec.codex_submit_sent);
     }
 
     fn ticket(id: u128, column: &str, order: &str) -> Ticket {
@@ -2757,6 +3041,24 @@ mod tests {
 
     /// D10: a column narrows what the user configured, never hands out a mode
     /// nobody asked for. The enum cannot spell the two escape hatches.
+    #[test]
+    fn codex_column_policy_defaults_and_roundtrip_do_not_translate_claude_mode() {
+        let legacy: ColumnSettings = serde_json::from_str(r#"{"claude_mode":"plan"}"#).unwrap();
+        assert_eq!(legacy.codex_sandbox, CodexSandbox::Inherit);
+        assert_eq!(legacy.codex_approval, CodexApproval::Inherit);
+        let configured = ColumnSettings {
+            codex_sandbox: CodexSandbox::WorkspaceWrite,
+            codex_approval: CodexApproval::OnRequest,
+            ..legacy
+        };
+        let wire = serde_json::to_string(&configured).unwrap();
+        assert_eq!(serde_json::from_str::<ColumnSettings>(&wire).unwrap(), configured);
+        assert_eq!(configured.claude_mode, ClaudeMode::Plan);
+        let empty = serde_json::to_value(ColumnSettings::default()).unwrap();
+        assert!(empty.get("codex_sandbox").is_none());
+        assert!(empty.get("codex_approval").is_none());
+    }
+
     #[test]
     fn claude_mode_never_emits_bypass() {
         for m in [ClaudeMode::Inherit, ClaudeMode::Auto, ClaudeMode::Plan, ClaudeMode::Manual] {

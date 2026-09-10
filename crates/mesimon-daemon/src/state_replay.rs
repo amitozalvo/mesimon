@@ -3,8 +3,8 @@
 //! through the production classifier. Timing is explicit in the fixture.
 
 use mesimon_core::adopt::{classify_tail_record, TailEvent, TailTool, ToolLedger};
-use mesimon_core::attention::{Machine, Signal, TailHint};
-use mesimon_core::board::{template_settings, Confidence, SessionState};
+use mesimon_core::attention::{Machine, Signal, TailHint, TurnOutcome};
+use mesimon_core::board::{template_settings, Confidence, Reason, SessionState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
@@ -35,6 +35,17 @@ pub struct Step {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "source", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Input {
+    /// Normalized adapter evidence. These inputs test common projection;
+    /// provider-specific raw captures must separately test their adapter.
+    AgentReady,
+    AgentTurnStarted,
+    AgentTurnEnded {
+        outcome: TurnOutcome,
+    },
+    AgentAttention {
+        reason: Reason,
+    },
+    AgentObservationLost,
     Hook {
         event: String,
         #[serde(default)]
@@ -104,6 +115,11 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
         anyhow::ensure!(step.at_ms >= last_at, "step {index}: arrival time runs backwards");
         last_at = step.at_ms;
         let signal = match &step.input {
+            Input::AgentReady => Some(Signal::Ready),
+            Input::AgentTurnStarted => Some(Signal::TurnStarted),
+            Input::AgentTurnEnded { outcome } => Some(Signal::TurnEnded { outcome: *outcome }),
+            Input::AgentAttention { reason } => Some(Signal::Attention { reason: *reason }),
+            Input::AgentObservationLost => Some(Signal::ObservationLost),
             Input::Hook { event, reason, payload } => signal_with_monitors(
                 &HookFrame {
                     session: "lab-session".into(),
@@ -175,6 +191,37 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn normalized_observation_gap_cannot_replay_a_stale_success() {
+        let fixture = json!({
+            "schema": 1,
+            "id": "normalized-gap",
+            "title": "Observation loss cancels a pending successful turn",
+            "provenance": {"kind": "synthetic", "scope": "common projection, not provider capture"},
+            "initial": {"state": "spawning"},
+            "column": "TODO",
+            "steps": [
+                {"at_ms": 0, "input": {"source": "agent_ready"},
+                 "expect": {"state": {"state": "idle", "stop_reason": "unknown"}, "column": "TODO", "pending": false}},
+                {"at_ms": 1, "input": {"source": "agent_turn_started"},
+                 "expect": {"state": {"state": "running"}, "column": "IN PROGRESS", "pending": false}},
+                {"at_ms": 2, "input": {"source": "agent_turn_ended", "outcome": "completed"},
+                 "expect": {"state": {"state": "running"}, "column": "IN PROGRESS", "pending": true}},
+                {"at_ms": 3, "input": {"source": "agent_observation_lost"},
+                 "expect": {"state": {"state": "unknown", "reason": "observation_lost"}, "column": "IN PROGRESS", "pending": false}},
+                {"at_ms": 2000, "input": {"source": "tick"},
+                 "expect": {"state": {"state": "unknown", "reason": "observation_lost"}, "column": "IN PROGRESS", "pending": false}},
+                {"at_ms": 2001, "input": {"source": "agent_attention", "reason": "question"},
+                 "expect": {"state": {"state": "requires_action", "reason": "question"}, "column": "IN PROGRESS", "pending": false}},
+                {"at_ms": 2002, "input": {"source": "agent_turn_ended", "outcome": {"failed": "server"}},
+                 "expect": {"state": {"state": "failed", "reason": "server"}, "column": "IN PROGRESS", "pending": false}}
+            ]
+        });
+        let scenario: Scenario = serde_json::from_value(fixture).unwrap();
+        let report = replay(&scenario).unwrap();
+        assert!(report.passed, "{:?}", report.failures);
+    }
 
     #[test]
     fn checked_in_scenarios_match_production_decisions() {

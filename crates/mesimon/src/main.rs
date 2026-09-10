@@ -22,8 +22,27 @@ fn main() -> Result<()> {
         // are spawned by Claude Code, never by a person.
         Some("gate") => gate::run(&args[1..]),
         Some("mcp") => mcp::run(&args[1..]),
+        // Separate opt-in context handler: the observer remains silent and
+        // the write gate remains deny-only. Native Codex owns hook trust.
+        Some("agent-brief") => {
+            if std::env::var("MESIMON_AGENT_BRIEF").as_deref() == Ok("1") {
+                println!(
+                    "{}",
+                    serde_json::json!({"hookSpecificOutput": {
+                        "hookEventName": "SessionStart",
+                        "additionalContext": mesimon_core::brief::TEXT,
+                    }})
+                );
+            }
+            Ok(())
+        }
         // The pane launcher: applies the captured environment and execs.
         Some("exec") => exec::run(&args[1..]),
+        Some("agent-runtime") => {
+            let path = arg_value(&args, "--config")
+                .ok_or_else(|| anyhow::anyhow!("agent-runtime needs --config"))?;
+            mesimon_daemon::agents::codex::runtime::run(std::path::Path::new(&path))
+        }
         Some("daemon") => {
             let repo =
                 arg_value(&args, "--repo").map(PathBuf::from).unwrap_or(std::env::current_dir()?);
@@ -79,7 +98,7 @@ fn help_text() -> &'static str {
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
          mesimon state explain [session]   explain observed state and movement\n  \
          mesimon state replay <files...>  replay offline state scenarios\n  \
-         mesimon state compatibility <version>   show measured Claude coverage\n  \
+         mesimon state compatibility [claude|codex] <version>   show measured Claude coverage\n  \
          mesimon --version\n\n\
          spawned by Claude Code inside a mesimon session, never run by hand:\n  \
          mesimon hook   observer; reports one event, writes no stdout, exits 0\n  \

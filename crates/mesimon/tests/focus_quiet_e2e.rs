@@ -59,7 +59,10 @@ fn the_daemon_says_how_long_the_attached_pane_has_been_quiet() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "focusquiet".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "focusquiet".into()
+        }),
         Response::Hello { .. }
     ));
 

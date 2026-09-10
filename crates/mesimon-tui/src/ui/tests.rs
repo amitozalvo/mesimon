@@ -512,7 +512,7 @@ fn golden_ticket_raised_120() {
     let mut app = app_graphite(fixture_raised());
     app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("claude asked") && l.contains("Auth0")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("agent asked") && l.contains("Auth0")), "{lines:?}");
     golden("ticket_raised_120x30", &lines);
 }
 
@@ -674,6 +674,26 @@ fn golden_settings_120() {
     let mut app = app_graphite(fixture_archived());
     app.mode = Mode::Settings { idx: 0 };
     golden("settings_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_codex_provider_and_existing_claude() {
+    let mut board = fixture(false);
+    board.agent_provider = mesimon_core::board::AgentProvider::Codex;
+    let mut app = app_graphite(board);
+    app.settings_section = mesimon_core::keymap::SettingsSection::Agents;
+    app.mode = Mode::Settings { idx: 0 };
+    golden("settings_codex_60x20", &render(&app, 60, 20));
+    app.mode = Mode::Normal;
+    app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("+ codex session")));
+    assert!(rows.iter().any(|r| r.contains("start codex")));
+    golden("ticket_new_codex_120x30", &rows);
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("claude")));
+    assert!(!rows.iter().any(|r| r.contains("+ codex session")));
 }
 
 #[test]
@@ -1227,6 +1247,43 @@ fn golden_column_agent_behaviour_120() {
     golden("column_agent_behaviour_120x30", &lines);
 }
 
+#[test]
+fn golden_codex_column_agent_behaviour() {
+    let mut board = fixture(false);
+    board.agent_provider = mesimon_core::board::AgentProvider::Codex;
+    board.columns[1].settings.codex_sandbox = mesimon_core::board::CodexSandbox::WorkspaceWrite;
+    board.columns[1].settings.codex_approval = mesimon_core::board::CodexApproval::OnRequest;
+    let mut app = app_graphite(board);
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    let row = mesimon_core::keymap::column_items(&app.ctx())
+        .iter()
+        .position(|m| m.verb == mesimon_core::keymap::Verb::ColumnAgentBehaviour)
+        .unwrap();
+    if let Mode::ColumnSettings { idx, .. } = &mut app.mode {
+        *idx = row;
+    }
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    for (width, height, name) in
+        [(120, 30, "column_codex_agent_120x30"), (60, 20, "column_codex_agent_60x20")]
+    {
+        let lines = render(&app, width, height);
+        assert!(lines.iter().any(|l| l.contains("Codex sandbox: workspace write")), "{lines:?}");
+        assert!(lines.iter().any(|l| l.contains("Codex approvals: on request")), "{lines:?}");
+        assert!(!lines.iter().any(|l| l.contains("Mode: inherit")), "{lines:?}");
+        golden(name, &lines);
+    }
+}
+
 /// `O`: the dialog on a column that does not exist yet — the Name row alone.
 #[test]
 fn golden_column_add_120() {
@@ -1343,7 +1400,7 @@ fn ticket_page_names_an_agent_creator() {
     let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
     t.created_by = "agent:00000000-0000-0000-0000-000000000003".into();
     let after = render(&app, 120, 30).join("\n");
-    assert!(after.contains("created >1y ago by claude"), "{after}");
+    assert!(after.contains("created >1y ago by agent"), "{after}");
     assert!(!after.contains(" on T-"), "{after}");
 
     // The parent ticket names itself by key while it is on the board…
@@ -1351,13 +1408,22 @@ fn ticket_page_names_an_agent_creator() {
     let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
     t.created_from = Some(ulid_n(4));
     let with_parent = render(&app, 120, 30).join("\n");
-    assert!(with_parent.contains(&format!("by claude on {parent_key}")), "{with_parent}");
+    assert!(with_parent.contains(&format!("by agent on {parent_key}")), "{with_parent}");
 
     // …and a deleted parent takes its key with it, leaving the author.
     app.board.tickets.retain(|t| t.id != ulid_n(4));
     let orphaned = render(&app, 120, 30).join("\n");
-    assert!(orphaned.contains("created >1y ago by claude"), "{orphaned}");
+    assert!(orphaned.contains("created >1y ago by agent"), "{orphaned}");
     assert!(!orphaned.contains(" on T-"), "{orphaned}");
+
+    let session = app.board.sessions.iter_mut().find(|s| s.id == uuid_n(31)).unwrap();
+    session.kind = SessionKind::Codex;
+    let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
+    t.created_by = format!("agent:{}", uuid_n(31));
+    let codex = render(&app, 120, 30).join("\n");
+    assert!(codex.contains("created >1y ago by codex"), "{codex}");
+    assert!(codex.contains("> codex"), "{codex}");
+    assert!(!codex.contains("+ claude session"), "Codex holds the agent seat: {codex}");
 }
 
 #[test]
@@ -4418,7 +4484,7 @@ fn exactly_one_rail_row_wears_the_cursor() {
         t.notes.push(note_meta(90, "What changed", "local"));
     }
     let mut app = app_graphite(b);
-    assert!(app.new_claude_row(ulid_n(3)), "a shell does not fill the claude seat");
+    assert!(app.new_agent_row(ulid_n(3)), "a shell does not fill the claude seat");
     for idx in 0..3 {
         app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: idx };
         one_row(&app, idx, "one shell, the offer, one note");

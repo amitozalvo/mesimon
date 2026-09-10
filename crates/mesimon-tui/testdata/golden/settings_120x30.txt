@@ -15,7 +15,7 @@
                            │   Behaviour                                                    │
                            │     auto merge, snooze, week start, default column             │
                            │   Agents                                                       │
-                           │     brief and tools                                            │
+                           │     provider, brief and tools                                  │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 
 

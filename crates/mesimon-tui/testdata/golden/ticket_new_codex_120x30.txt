@@ -1,0 +1,30 @@
+ TICKET (T-1)   mesimon > kanban-tui
+
+ Decay treatments
+ TODO for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                                                  SESSIONS                  0
+
+                                    ▄█▄                                                    + codex session
+                    ▄█▄    ▄▄▄     ▄███
+                    ▀██▄   ███    ▄███▀
+                     ▀███████████████▀
+                     ████  █████  ████
+                     ▀███▄▄█████▄▄███▀
+                       ▀▀█████████▀▀
+
+    enter start codex
+
+    starts in the checkout
+    types the ticket title into its box, and sends nothing
+    another agent is already writing in this checkout
+
+
+
+
+
+
+
+
+ enter start codex ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                                   ? keys

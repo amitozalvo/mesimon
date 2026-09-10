@@ -6,7 +6,7 @@
 
 use std::collections::BTreeSet;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::board::{
     Board, Confidence, ExitReason, FailReason, Reason, SessionRecord, SessionState, StopReason,
@@ -178,8 +178,36 @@ pub enum NotificationKind {
     Other,
 }
 
+/// A provider's stated outcome after its adapter has accounted for pending
+/// interactions and background work. Interruption and failure never imply
+/// successful completion, regardless of a provider's "idle" status.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum TurnOutcome {
+    Completed,
+    Interrupted,
+    Failed(FailReason),
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Signal {
+    /// Native input is ready, with no turn or unresolved attention request.
+    /// An empty prompt is not evidence of a successfully completed turn.
+    Ready,
+    /// An adapter has established a current active top-level turn. It emits
+    /// this again when all attention requests resolve and that turn continues.
+    TurnStarted,
+    TurnEnded {
+        outcome: TurnOutcome,
+    },
+    /// The adapter's request ledger supplies the highest-priority unresolved
+    /// attention reason. A sibling's resolution must not clear another ask.
+    Attention {
+        reason: Reason,
+    },
+    /// The observer lost continuity. Cancels a pending completion immediately;
+    /// the daemon independently holds checkout operations until reconciliation.
+    ObservationLost,
     SessionStart {
         source: StartSource,
     },
@@ -571,7 +599,11 @@ impl Machine {
                     self.manual_compact_prior = Some((self.state.clone(), self.confidence));
                 }
             }
-            Signal::PreCompact { manual: false } | Signal::UserPromptSubmit => {
+            Signal::PreCompact { manual: false }
+            | Signal::UserPromptSubmit
+            | Signal::TurnStarted
+            | Signal::Ready
+            | Signal::ObservationLost => {
                 self.manual_compact_prior = None;
             }
             Signal::SessionStart { source } if *source != StartSource::Compact => {
@@ -616,7 +648,8 @@ impl Machine {
             return None;
         }
 
-        let delay = delay_for(&self.state, &to);
+        let delay =
+            if matches!(sig, Signal::ObservationLost) { 0 } else { delay_for(&self.state, &to) };
         if delay == 0 {
             self.pending = None;
             Some(self.commit(to, conf, now))
@@ -709,6 +742,15 @@ impl Machine {
         use SessionState as S;
         let t = |s: S| Some((s, Confidence::High));
         match sig {
+            Signal::Ready => t(S::Idle { stop_reason: StopReason::Unknown }),
+            Signal::TurnStarted => t(S::Running),
+            Signal::TurnEnded { outcome } => match outcome {
+                TurnOutcome::Completed => t(S::Idle { stop_reason: StopReason::EndTurn }),
+                TurnOutcome::Interrupted => t(S::Idle { stop_reason: StopReason::Interrupted }),
+                TurnOutcome::Failed(reason) => t(S::Failed { reason: *reason }),
+            },
+            Signal::Attention { reason } => t(S::RequiresAction { reason: *reason }),
+            Signal::ObservationLost => t(S::Unknown { reason: UnknownReason::ObservationLost }),
             // A session that just started sits at the prompt — that is idle,
             // not working (dogfood 2026-08-30: fresh spawns read "working"
             // forever). The one exception: a compact-restart fires
@@ -970,6 +1012,92 @@ mod tests {
     }
 
     const RA_PERM: SessionState = SessionState::RequiresAction { reason: Reason::Permission };
+
+    #[test]
+    fn normalized_turns_preserve_settle_and_only_success_moves_to_done() {
+        let settings = crate::board::template_settings("IN PROGRESS").unwrap();
+        for outcome in [
+            TurnOutcome::Completed,
+            TurnOutcome::Interrupted,
+            TurnOutcome::Failed(FailReason::Server),
+        ] {
+            let mut machine = m(SessionState::Spawning);
+            let ready = machine.apply(&Signal::Ready, 0).expect("ready");
+            assert_eq!(
+                crate::automove::automove(&settings, &ready.to, ready.confidence),
+                None,
+                "a ready prompt must not count as success"
+            );
+            machine.apply(&Signal::TurnStarted, 1).expect("turn starts immediately");
+            let ended = machine.apply(&Signal::TurnEnded { outcome }, 2);
+            let change = match outcome {
+                TurnOutcome::Failed(_) => ended.expect("failure is immediate"),
+                _ => {
+                    assert!(ended.is_none());
+                    assert!(machine.tick(SETTLE_MS + 1).is_none());
+                    machine.tick(SETTLE_MS + 2).expect("completion settles")
+                }
+            };
+            assert_eq!(
+                crate::automove::automove(&settings, &change.to, change.confidence),
+                (outcome == TurnOutcome::Completed).then_some("REVIEW")
+            );
+        }
+    }
+
+    #[test]
+    fn normalized_observation_loss_cancels_pending_completion_immediately() {
+        for state in [SessionState::Running, RA_PERM, SessionState::Throttled] {
+            let mut machine = m(state);
+            assert!(machine
+                .apply(&Signal::TurnEnded { outcome: TurnOutcome::Completed }, 10)
+                .is_none());
+            assert!(machine.view().pending.is_some());
+            let change = machine.apply(&Signal::ObservationLost, 11).expect("gap is immediate");
+            assert_eq!(change.to, SessionState::Unknown { reason: UnknownReason::ObservationLost });
+            assert!(machine.view().pending.is_none());
+            assert!(machine.tick(THROTTLE_LEAVE_MS + 20).is_none());
+            assert!(!matches!(
+                machine.state(),
+                SessionState::Idle { stop_reason: StopReason::EndTurn }
+            ));
+        }
+    }
+
+    #[test]
+    fn normalized_attention_retrigger_cancels_its_pending_leave() {
+        let mut machine = m(SessionState::Running);
+        let question = Signal::Attention { reason: Reason::Question };
+        assert!(machine.apply(&question, 0).unwrap().attention_added);
+        assert!(machine.apply(&Signal::TurnStarted, 10).is_none());
+        assert!(machine.view().pending.is_some());
+        assert!(machine.apply(&question, 20).is_none());
+        assert!(machine.view().pending.is_none());
+        assert!(machine.tick(SETTLE_MS + 20).is_none());
+        assert_eq!(machine.state(), &SessionState::RequiresAction { reason: Reason::Question });
+        assert!(machine.apply(&Signal::TurnStarted, 2000).is_none());
+        assert_eq!(machine.tick(2000 + SETTLE_MS).unwrap().to, SessionState::Running);
+    }
+
+    #[test]
+    fn normalized_signals_do_not_unpark_or_revive_sessions() {
+        for state in [SessionState::Sleeping, SessionState::Exited { reason: ExitReason::Killed }] {
+            let mut machine = m(state.clone());
+            for signal in [
+                Signal::Ready,
+                Signal::TurnStarted,
+                Signal::TurnEnded { outcome: TurnOutcome::Completed },
+                Signal::TurnEnded { outcome: TurnOutcome::Interrupted },
+                Signal::TurnEnded { outcome: TurnOutcome::Failed(FailReason::Server) },
+                Signal::Attention { reason: Reason::Permission },
+                Signal::ObservationLost,
+            ] {
+                assert!(machine.apply(&signal, 10).is_none());
+                assert_eq!(machine.state(), &state);
+                assert!(machine.view().pending.is_none());
+            }
+        }
+    }
 
     #[test]
     fn ranks_are_the_fixed_table() {

@@ -385,7 +385,10 @@ impl Harness {
     pub fn client(&self, name: &str) -> TestClient {
         let mut c = TestClient::connect(&self.paths.orch_sock());
         assert!(matches!(
-            c.request(Command::Hello { version: 1, client: name.into() }),
+            c.request(Command::Hello {
+                version: mesimon_core::command::PROTOCOL_VERSION,
+                client: name.into()
+            }),
             Response::Hello { .. }
         ));
         c

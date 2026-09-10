@@ -9,7 +9,7 @@
 
                            ╭─ MENU ─────────────────────────────────────────────────────────╮
                            │   External sessions                                            │
-                           │     claude sessions in this repo that mesimon did not start    │
+                           │     agent sessions in this repo that mesimon did not start     │
                            │   Archived tickets                                             │
                            │     off the board, still here                                  │
                            │   Settings                                                     │

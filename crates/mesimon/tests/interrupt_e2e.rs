@@ -54,7 +54,10 @@ fn interrupted_turn_demotes_to_idle_without_any_hook() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "intr".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "intr".into()
+        }),
         Response::Hello { .. }
     ));
     let _ = c.request(Command::CreateTicket {

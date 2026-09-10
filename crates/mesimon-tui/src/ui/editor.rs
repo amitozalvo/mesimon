@@ -403,7 +403,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 }
             }
             if let Some(m) = meta {
-                let who = super::ticket::author_word(&m.edited_by);
+                let who = super::ticket::author_word(&m.edited_by, app);
                 let when = created_at_epoch_ms(&m.edited_at)
                     .map(|ms| format!(" {} ago", age_slot(now, ms, false).trim()))
                     .unwrap_or_default();

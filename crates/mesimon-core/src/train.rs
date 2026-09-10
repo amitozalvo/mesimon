@@ -71,7 +71,14 @@ pub enum Seat {
 }
 
 pub fn seat(board: &Board, ticket: ulid::Ulid) -> Seat {
-    match board.live_claude(ticket) {
+    if board
+        .sessions
+        .iter()
+        .any(|session| session.ticket == ticket && crate::quiet::is_working(session))
+    {
+        return Seat::Busy;
+    }
+    match board.live_agent(ticket) {
         None => Seat::Empty,
         Some(s) => match &s.state {
             SessionState::Sleeping => Seat::Parked,

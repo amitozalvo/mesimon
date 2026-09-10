@@ -22,6 +22,25 @@
 
 use std::fmt;
 
+use crate::board::AgentProvider;
+
+/// Compact provider names used in session actions and status lines.
+pub fn agent_word(provider: AgentProvider) -> &'static str {
+    match provider {
+        AgentProvider::ClaudeCode => "claude",
+        AgentProvider::Codex => "codex",
+    }
+}
+
+fn agent_hint(c: &Ctx, claude: &'static str, codex: &'static str) -> &'static str {
+    let provider =
+        if c.composing || c.editor_composing { c.agent_provider } else { c.ticket_agent_provider };
+    match provider {
+        AgentProvider::ClaudeCode => claude,
+        AgentProvider::Codex => codex,
+    }
+}
+
 /// One key atom on 04 §2.0's legacy floor. Deliberately NOT crossterm's
 /// `KeyCode`: core stays free of the input stack, and the TUI does the one
 /// conversion at the edge (`tui/src/keys.rs`).
@@ -387,6 +406,8 @@ pub enum Verb {
     SortColumn,
     ColumnWorkspace,
     ColumnClaudeMode,
+    ColumnCodexSandbox,
+    ColumnCodexApproval,
     ColumnTools,
     ColumnAutoRun,
     ColumnOnWorking,
@@ -399,7 +420,7 @@ pub enum Verb {
     /// often: what changed is a question for after an update, not a key.
     ReleaseNotes,
     // ---- sessions ----
-    Claude,
+    Agent,
     Shell,
     /// Shift+Enter on the board: open a one-line field on the selected card
     /// and put what is typed there in front of the ticket's live claude,
@@ -487,6 +508,8 @@ pub enum Verb {
     /// board (T-217). Board state, not a preference: it is per repo, it
     /// lives in `columns.toml`, and the daemon reads it at every spawn.
     McpTools,
+    /// Project default for newly accepted sessions; existing seats retain theirs.
+    AgentProvider,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -703,7 +726,7 @@ impl SettingsSection {
             | Verb::SnoozeQuiet
             | Verb::WeekStart
             | Verb::DefaultColumn => Self::Behaviour,
-            Verb::SystemPrompt | Verb::McpTools => Self::Agents,
+            Verb::SystemPrompt | Verb::McpTools | Verb::AgentProvider => Self::Agents,
             _ => Self::Root,
         }
     }
@@ -716,6 +739,9 @@ impl SettingsSection {
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
     pub settings_section: SettingsSection,
+    pub agent_provider: AgentProvider,
+    /// The ticket's existing provider, falling back to the project default.
+    pub ticket_agent_provider: AgentProvider,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -728,9 +754,9 @@ pub struct Ctx {
     /// The selected ticket has at least one session record.
     pub ticket_has_sessions: bool,
     /// The selected ticket has a live claude session.
-    pub ticket_has_claude: bool,
+    pub ticket_has_agent: bool,
     /// One of those claude sessions holds a PANE — so there is a box a
-    /// prompt can land in. Narrower than `ticket_has_claude`, which counts a
+    /// prompt can land in. Narrower than `ticket_has_agent`, which counts a
     /// `Sleeping` session: parked is live, but it has no process to type at.
     /// Live and not this is exactly Sleeping, which is how `c` knows to say
     /// `wake` and Shift+Enter to say `wake + ask` (2026-09-04).
@@ -860,7 +886,7 @@ pub struct Ctx {
     /// why the row exists at all: the two spawn keys under an empty rail
     /// asked the reader to know which of `c` and `s` they wanted before
     /// they knew what either was.
-    pub sel_new_claude: bool,
+    pub sel_new_agent: bool,
     /// A ticket may grow its own SHELL session (T-300). Off — the default —
     /// `s` and `S` on the ticket page and `s` on the board are inert and
     /// unhinted; the sessions a board already has are untouched, and
@@ -1010,6 +1036,8 @@ pub struct Ctx {
     pub col_collapsed: bool,
     pub col_workspace_word: &'static str,
     pub col_claude_mode_word: &'static str,
+    pub col_codex_sandbox_word: &'static str,
+    pub col_codex_approval_word: &'static str,
     /// What `inherit` resolves to — the user's own default mode, off the
     /// snapshot. Empty when unknown.
     pub col_inherit_mode: String,
@@ -1270,18 +1298,18 @@ static BOARD: &[Binding] = &[
             // does. Live but paneless is exactly Sleeping.
             if c.ticket_queued {
                 "edit the queued ask"
-            } else if c.ticket_has_claude && !c.ticket_promptable {
-                "wake + ask claude"
-            } else if c.ticket_has_claude {
-                "ask claude"
+            } else if c.ticket_has_agent && !c.ticket_promptable {
+                agent_hint(c, "wake + ask claude", "wake + ask codex")
+            } else if c.ticket_has_agent {
+                agent_hint(c, "ask claude", "ask codex")
             } else if c.checkout_busy {
                 // An empty seat on a checkout somebody else is working in
                 // (T-294): the press opens the field instead of spawning,
                 // so the start can wait its turn. The word names what the
                 // key is for, and the field says now or queued.
-                "start claude"
+                agent_hint(c, "start claude", "start codex")
             } else {
-                "ask claude the title"
+                agent_hint(c, "ask claude the title", "ask codex the title")
             }
         },
         // Every ticket, at every stage of its seat: empty (the title is the
@@ -1330,17 +1358,23 @@ static BOARD: &[Binding] = &[
         // the footer teaches those — so the board's cells go to what only the
         // board can do. The key still works from here for anyone who knows it.
         keys: &[Key::Char('c')],
-        verb: Verb::Claude,
+        verb: Verb::Agent,
         show: "c",
         hint: |c| {
             // Live but paneless is exactly Sleeping: the press wakes the
             // parked conversation and attaches, so the hint says so.
-            if c.ticket_has_claude && !c.ticket_promptable {
-                "wake claude"
-            } else if c.ticket_has_claude {
-                "claude"
+            if c.ticket_has_agent && !c.ticket_promptable {
+                match c.ticket_agent_provider {
+                    AgentProvider::ClaudeCode => "wake claude",
+                    AgentProvider::Codex => "wake codex",
+                }
+            } else if c.ticket_has_agent {
+                agent_word(c.ticket_agent_provider)
             } else {
-                "start claude"
+                match c.agent_provider {
+                    AgentProvider::ClaudeCode => "start claude",
+                    AgentProvider::Codex => "start codex",
+                }
             }
         },
         avail: |c| c.has_ticket,
@@ -1882,8 +1916,11 @@ static TICKET: &[Binding] = &[
         verb: Verb::Act,
         show: "enter",
         hint: |c| {
-            if c.sel_new_claude {
-                "start claude"
+            if c.sel_new_agent {
+                match c.agent_provider {
+                    AgentProvider::ClaudeCode => "start claude",
+                    AgentProvider::Codex => "start codex",
+                }
             } else if c.sel_note {
                 "edit note"
             } else if c.sel_dead {
@@ -1894,7 +1931,7 @@ static TICKET: &[Binding] = &[
                 "focus"
             }
         },
-        avail: |c| c.sel_session || c.sel_note || c.sel_new_claude,
+        avail: |c| c.sel_session || c.sel_note || c.sel_new_agent,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -1902,7 +1939,7 @@ static TICKET: &[Binding] = &[
     },
     Binding {
         keys: &[Key::Char('c')],
-        verb: Verb::Claude,
+        verb: Verb::Agent,
         show: "c",
         hint: |c| {
             // Live but paneless is exactly Sleeping: the press wakes the
@@ -1913,8 +1950,11 @@ static TICKET: &[Binding] = &[
             // and an EMPTY seat is the `+ claude session` row, which says
             // the same thing about starting one (T-300). Both would be a
             // second spelling of a row the reader is looking at.
-            if c.ticket_has_claude && !c.ticket_promptable {
-                "wake claude"
+            if c.ticket_has_agent && !c.ticket_promptable {
+                match c.ticket_agent_provider {
+                    AgentProvider::ClaudeCode => "wake claude",
+                    AgentProvider::Codex => "wake codex",
+                }
             } else {
                 ""
             }
@@ -2917,16 +2957,14 @@ static MENU_ITEMS: &[MenuItem] = &[
         // line down, next to the reach (only sessions mesimon starts) and
         // the promise that nothing is switched blind.
         label: |_| "Tell agents to read the ticket".into(),
-        detail: |_| {
-            "one line in the system prompt of claudes mesimon starts ∙ you see it first".into()
-        },
+        detail: |_| "one line for agents mesimon starts ∙ you see it first".into(),
         avail: |c| c.brief_offer,
         key: "",
     },
     MenuItem {
         verb: Verb::ExternalDrawer,
         label: |_| "External sessions".into(),
-        detail: |_| "claude sessions in this repo that mesimon did not start".into(),
+        detail: |_| "agent sessions in this repo that mesimon did not start".into(),
         avail: always,
         key: "",
     },
@@ -2992,7 +3030,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::SettingsAgents,
         label: |_| "Agents".into(),
-        detail: |_| "brief and tools".into(),
+        detail: |_| "provider, brief and tools".into(),
         avail: always,
         key: "",
     },
@@ -3132,6 +3170,15 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     // preference: it is board state in `columns.toml`, per repo, because
     // "may agents on this board see their ticket" is a property of the
     // board — so it acts over the wire and reads back off the snapshot.
+    MenuItem {
+        verb: Verb::AgentProvider,
+        label: |c| format!("Provider: {}", c.agent_provider.label()),
+        detail: |c| {
+            format!("new sessions only ∙ enter selects {}", c.agent_provider.next().label())
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::McpTools,
         label: |c| {
@@ -3448,7 +3495,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::WeekStart,
             Verb::DefaultColumn,
         ],
-        SettingsSection::Agents => &[Verb::SystemPrompt, Verb::McpTools],
+        SettingsSection::Agents => &[Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools],
     };
     verbs
         .iter()
@@ -3542,7 +3589,26 @@ static COLUMN_ITEMS: &[MenuItem] = &[
             }
         },
         detail: |_| "--permission-mode for a claude started here ∙ a wake picks a change up".into(),
-        avail: |c| !c.col_new,
+        avail: |c| !c.col_new && c.agent_provider == AgentProvider::ClaudeCode,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnCodexSandbox,
+        label: |c| format!("Codex sandbox: {}", or(c.col_codex_sandbox_word, "inherit")),
+        detail: |_| {
+            "native sandbox policy ∙ inherit keeps Codex configuration ∙ applies on launch/wake"
+                .into()
+        },
+        avail: |c| !c.col_new && c.agent_provider == AgentProvider::Codex,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::ColumnCodexApproval,
+        label: |c| format!("Codex approvals: {}", or(c.col_codex_approval_word, "inherit")),
+        detail: |_| {
+            "native approval policy ∙ never refuses requests requiring approval ∙ applies on launch/wake".into()
+        },
+        avail: |c| !c.col_new && c.agent_provider == AgentProvider::Codex,
         key: "",
     },
     MenuItem {
@@ -3559,7 +3625,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
                     "notes + tags" => {
                         "read, plus write_note and tag_ticket ∙ no move, no create".into()
                     }
-                    "off" => "no tools at all ∙ a claude here cannot see its ticket".into(),
+                    "off" => "no tools at all ∙ an agent here cannot see its ticket".into(),
                     _ => "every tool: move_ticket and create_ticket too".into(),
                 }
             }
@@ -3570,7 +3636,12 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnAutoRun,
         label: |c| format!("Start agent on creation: {}", on_off(c.col_auto_run)),
-        detail: |_| "a ticket you create here gets claude on its brief, submitted".into(),
+        detail: |c| {
+            format!(
+                "a ticket you create here gets {} on its brief, submitted",
+                agent_word(c.agent_provider)
+            )
+        },
         avail: |c| !c.col_new,
         key: "",
     },
@@ -3652,6 +3723,8 @@ pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             let agent = matches!(
                 m.verb,
                 Verb::ColumnClaudeMode
+                    | Verb::ColumnCodexSandbox
+                    | Verb::ColumnCodexApproval
                     | Verb::ColumnTools
                     | Verb::ColumnAutoRun
                     | Verb::ColumnOnWorking
@@ -3981,7 +4054,13 @@ static INPUT: &[Binding] = &[
         // Silent while prompting: `enter send` one cell to the left already
         // says it, and two footer cells reading "send" teach nothing twice.
         // Bound but unhinted is the shape `space` and `> <` already use.
-        hint: |c| if c.prompting { "" } else { "save + ask claude" },
+        hint: |c| {
+            if c.prompting {
+                ""
+            } else {
+                agent_hint(c, "save + ask claude", "save + ask codex")
+            }
+        },
         avail: |c| (c.composing || c.prompting) && c.rich_keys,
         class: Class::Plain,
         group: Group::Sessions,
@@ -4232,15 +4311,15 @@ static EDITOR: &[Binding] = &[
         // like new"), and a Sleeping one — live, no pane — leaves it inert.
         hint: |c| {
             if !c.editor_composing && c.ticket_promptable {
-                "save + tell claude"
+                agent_hint(c, "save + tell claude", "save + tell codex")
             } else {
-                "save + ask claude"
+                agent_hint(c, "save + ask claude", "save + ask codex")
             }
         },
         avail: |c| {
             c.editing
                 && c.rich_keys
-                && (c.editor_composing || c.ticket_promptable || !c.ticket_has_claude)
+                && (c.editor_composing || c.ticket_promptable || !c.ticket_has_agent)
         },
         class: Class::Plain,
         group: Group::Sessions,
@@ -4338,7 +4417,7 @@ static EDITOR: &[Binding] = &[
         // Shift+Enter is the SAME newline (2026-09-03, user request). The
         // editor is a body, and every chat-shaped box the user types into —
         // claude's own included — has taught the finger that Shift+Enter
-        // breaks a line; here it briefly meant "save + ask claude" while
+        // breaks a line; here it briefly meant agent_hint(c, "save + ask claude", "save + ask codex") while
         // composing, and the press that wanted a blank line minted a ticket
         // and started an agent. That sentence still has its board home a
         // press after `^s` (an empty seat's Shift+Enter asks the title), so
@@ -4674,6 +4753,35 @@ pub fn overlay(scope: Scope, ctx: &Ctx) -> Vec<(Group, Vec<(&'static str, &'stat
 mod tests {
     use super::*;
 
+    #[test]
+    fn agent_hints_distinguish_project_default_from_existing_seat() {
+        let mut ctx = Ctx {
+            agent_provider: AgentProvider::Codex,
+            ticket_agent_provider: AgentProvider::Codex,
+            has_ticket: true,
+            rich_keys: true,
+            ..Ctx::default()
+        };
+        assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "start codex")));
+        assert_eq!(
+            hint_for(Scope::Board, Verb::Prompt, &ctx),
+            Some(("shift+enter", "ask codex the title"))
+        );
+        ctx.ticket_has_agent = true;
+        ctx.ticket_agent_provider = AgentProvider::ClaudeCode;
+        assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "wake claude")));
+        ctx.agent_provider = AgentProvider::ClaudeCode;
+        ctx.ticket_agent_provider = AgentProvider::Codex;
+        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &ctx), Some(("c", "wake codex")));
+        ctx.ticket_promptable = true;
+        assert_eq!(hint_for(Scope::Board, Verb::Prompt, &ctx), Some(("shift+enter", "ask codex")));
+        ctx.settings_section = SettingsSection::Agents;
+        let provider =
+            settings_items(&ctx).into_iter().find(|r| r.verb == Verb::AgentProvider).unwrap();
+        assert_eq!((provider.label)(&ctx), "Provider: Claude Code");
+        assert!((provider.detail)(&ctx).contains("new sessions only"));
+    }
+
     /// `Scope::ALL` is what every validator below walks, so a scope missing
     /// from it is validated by nothing. The match is exhaustive: adding a
     /// variant fails to compile here, and the length check then fails until
@@ -4822,7 +4930,7 @@ mod tests {
         // inert, the board's Shift+Enter's rule.
         let paned = Ctx {
             editing: true,
-            ticket_has_claude: true,
+            ticket_has_agent: true,
             ticket_promptable: true,
             rich_keys: true,
             ..Default::default()
@@ -4839,7 +4947,7 @@ mod tests {
             Some(("^S", "save + ask claude"))
         );
         let asleep =
-            Ctx { editing: true, ticket_has_claude: true, rich_keys: true, ..Default::default() };
+            Ctx { editing: true, ticket_has_agent: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &asleep), None);
         assert_eq!(hint_for(Scope::Editor, Verb::EditorSaveStart, &asleep), None);
         // And the case is the atom: `^s` and `^S` never collapse in the name.
@@ -4929,7 +5037,7 @@ mod tests {
         assert_eq!(hint_for(Scope::Input, Verb::Save, &queued), Some(("enter", "queue")));
         let onboard = Ctx {
             has_ticket: true,
-            ticket_has_claude: true,
+            ticket_has_agent: true,
             ticket_promptable: true,
             rich_keys: true,
             ticket_queued: true,
@@ -4946,7 +5054,7 @@ mod tests {
         let composing = Ctx { composing: true, rich_keys: true, ..Default::default() };
         let onboard = Ctx {
             has_ticket: true,
-            ticket_has_claude: true,
+            ticket_has_agent: true,
             ticket_promptable: true,
             rich_keys: true,
             ..Default::default()
@@ -5042,7 +5150,7 @@ mod tests {
     fn prompting_a_parked_claude_says_it_wakes() {
         let rich = |promptable| Ctx {
             has_ticket: true,
-            ticket_has_claude: true,
+            ticket_has_agent: true,
             ticket_promptable: promptable,
             rich_keys: true,
             ..Default::default()
@@ -5076,7 +5184,7 @@ mod tests {
             hint_for(Scope::Board, Verb::Prompt, &empty),
             Some(("shift+enter", "ask claude the title"))
         );
-        let parked = Ctx { ticket_has_claude: true, ..empty.clone() };
+        let parked = Ctx { ticket_has_agent: true, ..empty.clone() };
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &parked),
             Some(("shift+enter", "wake + ask claude"))
@@ -5697,7 +5805,7 @@ mod tests {
             ..Default::default()
         };
         for (key, verb) in [
-            (Key::Char('c'), Verb::Claude),
+            (Key::Char('c'), Verb::Agent),
             (Key::Char('s'), Verb::Shell),
             (Key::Char('r'), Verb::Rename),
             (Key::Char('d'), Verb::DeletePrefix),
@@ -6038,17 +6146,17 @@ mod tests {
     /// exactly one word left, and it is for the seat that is already taken.
     #[test]
     fn the_offer_is_a_row_and_the_key_that_said_it_stands_down() {
-        let offered = Ctx { sel_new_claude: true, ticket_rail_rows: 1, ..Default::default() };
+        let offered = Ctx { sel_new_agent: true, ticket_rail_rows: 1, ..Default::default() };
         assert_eq!(resolve(Scope::Ticket, Key::Enter, &offered), Some(Verb::Act));
         assert_eq!(hint_for(Scope::Ticket, Verb::Act, &offered), Some(("enter", "start claude")));
-        assert_eq!(hint_for(Scope::Ticket, Verb::Claude, &offered), None, "no second spelling");
+        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &offered), None, "no second spelling");
         // The one word `c` keeps: a parked claude holds the seat, so there is
         // no row to offer and the key is what wakes it.
-        let parked = Ctx { ticket_has_claude: true, ..Default::default() };
-        assert_eq!(hint_for(Scope::Ticket, Verb::Claude, &parked), Some(("c", "wake claude")));
+        let parked = Ctx { ticket_has_agent: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &parked), Some(("c", "wake claude")));
         // A claude that is up says nothing here either: `enter` on its row does.
         let up = Ctx { ticket_promptable: true, ..parked };
-        assert_eq!(hint_for(Scope::Ticket, Verb::Claude, &up), None);
+        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &up), None);
         // And the rail walks on rows, not on sessions: one row is not a list,
         // two are — whether or not either is a session.
         assert_eq!(resolve(Scope::Ticket, Key::Char('j'), &offered), None);
@@ -6072,7 +6180,7 @@ mod tests {
     #[test]
     fn shift_stays_on_one_axis() {
         let t = Ctx { sel_session: true, ticket_shells: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Ticket, Key::Char('c'), &t), Some(Verb::Claude));
+        assert_eq!(resolve(Scope::Ticket, Key::Char('c'), &t), Some(Verb::Agent));
         // `C` is gone: a ticket holds one claude, and the second seat is a
         // shell (STALE-MAP "One claude per ticket"). Shift on `c` is inert.
         assert_eq!(resolve(Scope::Ticket, Key::Char('C'), &t), None);
@@ -6195,7 +6303,10 @@ mod tests {
                 SettingsSection::Behaviour,
                 vec![Verb::MergeTrain, Verb::SnoozeQuiet, Verb::WeekStart, Verb::DefaultColumn],
             ),
-            (SettingsSection::Agents, vec![Verb::SystemPrompt, Verb::McpTools]),
+            (
+                SettingsSection::Agents,
+                vec![Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools],
+            ),
         ] {
             let c = Ctx { settings_section: section, ..ctx.clone() };
             assert_eq!(settings_items(&c).iter().map(|m| m.verb).collect::<Vec<_>>(), expected);

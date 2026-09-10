@@ -8339,3 +8339,53 @@ Immediate HJKL/Alt-direction nudges and `.` retain their existing behavior.
 This supersedes the earlier freely positioned, wrapping ghost gesture. Tests
 cover cancellation, both directions, edges, source focus and refused moves;
 the move and board-help goldens reflect the new gesture.
+
+
+### 2026-09-10 — providers belong to accepted starts and persisted sessions
+
+The project selects Claude Code (the legacy default) or Codex under Settings >
+Agents. Ordinary starts, auto-start and empty-seat prompts capture that choice;
+queued and provisioning starts keep the captured choice when the setting or
+queued words change. A session's provider remains its own through wake and
+resume. Both providers share one live ticket seat, scoped MCP authorization,
+column movement, notifications and checkout coordination. Legacy records remain
+Claude; columns/session schema bumps prevent an older writer dropping new data.
+
+Provider adapters own launch configuration, native hook/event interpretation,
+conversation identity, preview/history formats and recovery metadata. Claude
+retains its existing missing-history fresh-start rule. Codex resumes only its
+opaque native thread ID and never falls back to a replacement conversation.
+Codex column sandbox and approval settings inherit unless explicitly selected;
+Claude's permission mode is never translated into Codex privileges.
+
+Codex 0.153.4's native terminal talks through an owned transparent Unix WebSocket
+relay to its own app-server. The relay observes the native client's actual
+selection/turn/request traffic, including native approval responses; it never
+answers an approval or submits a model turn. A second resume subscriber was
+refuted by bounded experiments: an empty thread has no persisted rollout yet,
+and subscriptions introduce ownership/ordering problems. Native title-generation
+system threads are not the selected user thread. Snapshots carry generation,
+sequence and heartbeat; only the daemon writer applies normalized evidence.
+
+Missing observation holds automatic checkout operations even when an older
+projection said finished. Sleep and termination retain that hold until the
+runtime confirms its owned server and descendants stopped. Cleanup follows exact
+PID start identities and ancestry, including tools that create another process
+group; a lost ancestry proof remains held. A process-owning regression verifies
+that an escaped tool is stopped before acknowledgement. Pending settle evidence
+is distinguished from consumed sequence so a restart cannot silently discard a
+completion before its common state transition applies.
+
+Native Enter during an active Codex turn was measured to steer it; native Tab
+queues another turn in the client. Mesimon board prompts therefore wait for a
+verified idle input, paste once and send one Enter, retaining the submit latch
+until an observed new turn acknowledges it. Focused native interactions keep
+their own semantics. Complete plan items can become authorized ticket notes;
+plan deltas alone never assert approval or completion. Codex's structured write
+gate checks every Add/Delete/Update/Move-to path while leaving native hook trust
+and existing sandbox/approval policy intact.
+
+Evidence and unfinished acceptance are tracked in CODEX-IMPLEMENTATION-STATUS.md
+and spikes/codex-runtime-evidence.md. These decisions do not certify the still
+open full acceptance matrix. The connected fixture isolation incident and its
+exact corrective cleanup are recorded there too; no failed capture is a pass.

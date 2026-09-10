@@ -85,7 +85,10 @@ fn the_checkout_stands_on_the_wire() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "git".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "git".into()
+        }),
         Response::Hello { .. }
     ));
 

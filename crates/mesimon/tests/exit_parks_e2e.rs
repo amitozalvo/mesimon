@@ -57,7 +57,10 @@ fn leaving_claude_parks_the_session() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "exitpark".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "exitpark".into()
+        }),
         Response::Hello { .. }
     ));
 

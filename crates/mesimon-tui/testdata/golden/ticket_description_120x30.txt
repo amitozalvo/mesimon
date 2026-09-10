@@ -20,7 +20,7 @@
                                                                                            NOTES                     2
 
                                                                                            ≡ What changed      you >1y
-                                                                                           ≡ Repro steps    claude >1y
+                                                                                           ≡ Repro steps     agent >1y
                                                                                            N new note
 
 

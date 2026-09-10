@@ -114,7 +114,10 @@ fn sigterm_takes_the_shutdown_road() {
 
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "sigterm".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "sigterm".into()
+        }),
         Response::Hello { .. }
     ));
     let key = park_a_stop_in_flight(&mut c, &paths.hook_sock());

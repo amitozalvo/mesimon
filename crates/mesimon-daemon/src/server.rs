@@ -15,8 +15,9 @@ use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::adopt::{classify_tail_record, SessionsPidFile, TailEvent, TailTool};
 use mesimon_core::attention::{self, Change, Machine, Signal, StartSource, TailHint};
 use mesimon_core::board::{
-    sanitize_tag, AgentTools, Archived, Board, Confidence, ExitReason, Provenance, SessionKind,
-    SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason, WorkspaceStrategy,
+    sanitize_tag, AgentProvider, AgentTools, Archived, Board, Confidence, ExitReason, Provenance,
+    SessionKind, SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason,
+    WorkspaceStrategy,
 };
 use mesimon_core::command::{
     AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, DiffTarget, Envelope,
@@ -27,8 +28,9 @@ use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
 use mesimon_core::{authorize, fracindex, Action, Decision, Principal, Resource};
 
+use crate::agents::claude::user_default_mode;
+use crate::agents::{LaunchContext, LaunchSpec};
 use crate::feed::FeedWriter;
-use crate::hook_settings::mesimon_bin;
 use crate::ingest::{self, HookFrame};
 use crate::movegate::{MoveGate, Position};
 use crate::paths::Paths;
@@ -235,6 +237,7 @@ pub fn install_sigterm_handler() {
 enum Msg {
     Request(Envelope, Sender<Response>, Arc<Mutex<UnixStream>>),
     Hook(HookFrame),
+    CodexSnapshots(Vec<(uuid::Uuid, Option<crate::agents::codex::Snapshot>)>),
     Tick,
     /// A provisioning thread finished (M4): the binding, or the failing stage.
     Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>),
@@ -413,6 +416,9 @@ pub struct Daemon {
     pending_teardown: Vec<Teardown>,
     /// Writer-thread sender, cloned into provisioning threads.
     tx: Sender<Msg>,
+    codex_polling: bool,
+    codex_ready: std::collections::HashSet<uuid::Uuid>,
+    codex_input_due: HashMap<uuid::Uuid, u64>,
     /// What restrains every mover that is not a person (T-84). See
     /// `crate::movegate` for why authority alone cannot do this job.
     moves: MoveGate,
@@ -544,7 +550,18 @@ pub fn run(paths: Paths) -> Result<()> {
                 continue;
             }
             let was_live = r.state.is_live();
-            r.state = state_for(link, &r.state, r.kind == SessionKind::Claude);
+            let had_pane = r.state.has_pane();
+            r.state = state_for(link, &r.state, r.kind.is_agent());
+            if r.kind == SessionKind::Codex && (had_pane || r.state.has_pane()) {
+                // Unsent words are intentionally in memory (the same policy
+                // as Claude's retry queue). A new daemon must not reconstruct
+                // and submit a partial prompt after losing those words.
+                if r.pending_submit && !r.codex_submit_sent {
+                    r.pending_submit = false;
+                }
+                r.observation_hold = true;
+                r.codex_stopping |= had_pane && !r.state.has_pane();
+            }
             if was_live && matches!(r.state, SessionState::Exited { reason: ExitReason::UserQuit })
             {
                 just_exited.push(*id);
@@ -718,6 +735,9 @@ pub fn run(paths: Paths) -> Result<()> {
         upstream_base: None,
         pending_teardown: Vec::new(),
         tx: tx.clone(),
+        codex_polling: false,
+        codex_ready: std::collections::HashSet::new(),
+        codex_input_due: HashMap::new(),
         moves: MoveGate::new(),
         board_version: 0,
         agent_replay: HashMap::new(),
@@ -745,6 +765,28 @@ pub fn run(paths: Paths) -> Result<()> {
         // it, so a daemon that dies in its first second does not lose it.
         d.persist_sessions();
     }
+    // Deleted tickets may have left an owned server pending cleanup when
+    // the previous daemon stopped. Retain their hold until acknowledgement.
+    let abandoned: Vec<_> = d
+        .board
+        .sessions
+        .iter()
+        .filter(|session| {
+            session.kind == SessionKind::Codex
+                && !session.argv.is_empty()
+                && d.board.ticket(session.ticket).is_none()
+        })
+        .map(|session| session.id)
+        .collect();
+    for id in abandoned {
+        let by = Principal::Automation { rule: "deleted_session_cleanup".into() };
+        if !matches!(
+            authorize(&by, &Action::Mutate, &Resource::Session { id }),
+            Decision::Deny { .. }
+        ) {
+            d.kill_session(id);
+        }
+    }
     d.refresh_worktree_flags();
     // Whether the repo already tells its sessions to read their ticket. One
     // read at startup, then only when a `stat` says the file moved.
@@ -765,6 +807,7 @@ pub fn run(paths: Paths) -> Result<()> {
         let started = Instant::now();
         let what: std::borrow::Cow<'static, str> = match &msg {
             Msg::Tick => "tick".into(),
+            Msg::CodexSnapshots(_) => "Codex observations".into(),
             Msg::Hook(f) => format!("hook {}", f.event).into(),
             Msg::Request(env, ..) => format!("request {}", env.command.wire_name()).into(),
             Msg::Provisioned(..) => "provisioned".into(),
@@ -785,6 +828,7 @@ pub fn run(paths: Paths) -> Result<()> {
             }
             Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
+            Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
             Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
@@ -951,26 +995,6 @@ impl Daemon {
     }
 }
 
-/// The user's own configured permission default mode, read from the same
-/// config-home ladder the census uses (MESIMON_CLAUDE_HOME → CLAUDE_CONFIG_DIR
-/// → ~/.claude). `permissions.defaultMode` first, top-level `defaultMode` as
-/// the legacy spelling. Read-only — mesimon never writes config (doctor rule).
-fn user_default_mode() -> Option<String> {
-    let home = std::env::var("MESIMON_CLAUDE_HOME")
-        .or_else(|_| std::env::var("CLAUDE_CONFIG_DIR"))
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|_| {
-            std::path::PathBuf::from(std::env::var("HOME").unwrap_or_default()).join(".claude")
-        });
-    let text = std::fs::read_to_string(home.join("settings.json")).ok()?;
-    let v: serde_json::Value = serde_json::from_str(&text).ok()?;
-    v.get("permissions")
-        .and_then(|p| p.get("defaultMode"))
-        .or_else(|| v.get("defaultMode"))
-        .and_then(|m| m.as_str())
-        .map(str::to_string)
-}
-
 /// How long a paste of mesimon's own counts as a turn before its
 /// `UserPromptSubmit` is given up on (a modal in the pane, a box that is
 /// not reading).
@@ -1030,7 +1054,7 @@ enum QueuedSeat {
     Wake(uuid::Uuid),
     /// No claude at all: the delivery starts one on the ticket's title, with
     /// the words (if any) under the brief (T-294).
-    Start,
+    Start(AgentProvider),
 }
 
 impl QueuedSeat {
@@ -1040,7 +1064,7 @@ impl QueuedSeat {
         match self {
             QueuedSeat::Pane(_) => "ask",
             QueuedSeat::Wake(_) => "wake",
-            QueuedSeat::Start => "start",
+            QueuedSeat::Start(_) => "start",
         }
     }
 }
@@ -1400,6 +1424,7 @@ impl Daemon {
             Command::LowerHand { id } => self.lower_hand(id),
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
+            Command::SetAgentProvider { provider } => self.set_agent_provider(provider),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
@@ -1445,9 +1470,12 @@ impl Daemon {
             {
                 Response::Err { message: self.barred_message("worktrees") }
             }
-            Command::SpawnSession { ticket, kind, submit_prompt } => {
-                self.spawn_session(ticket, kind, submit_prompt, None)
-            }
+            Command::SpawnSession { ticket, kind, submit_prompt } => self.spawn_session(
+                ticket,
+                if kind.is_agent() { self.board.agent_provider.session_kind() } else { kind },
+                submit_prompt,
+                None,
+            ),
             Command::KillSession { id } => self.kill_session(id),
             Command::FocusStart { session } => self.focus_start(session),
             Command::FocusEnd { session } => {
@@ -1591,10 +1619,12 @@ impl Daemon {
             stage!("sweep_reaping", self.sweep_reaping());
             stage!("process_teardowns", self.process_teardowns());
         }
+        self.poll_codex();
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> =
             self.machines.iter_mut().filter_map(|(id, m)| m.tick(now).map(|c| (*id, c))).collect();
-        let mut changed = false;
+        let mut changed = self.probe_codex_startup(now);
+        changed |= self.drive_codex_inputs(now);
         for (id, change) in fired {
             changed |= stage!("apply_change", self.apply_change(id, &change, None, None));
         }
@@ -1672,10 +1702,11 @@ impl Daemon {
     fn begin_shutdown(&mut self, why: &str) {
         self.journal.line(&format!("stopping: {why}"));
         self.stop_started = Some(Instant::now());
+        self.poll_codex();
         let now = now_ms();
         let fired: Vec<(uuid::Uuid, Change)> =
             self.machines.iter_mut().filter_map(|(id, m)| m.flush(now).map(|c| (*id, c))).collect();
-        let mut changed = false;
+        let mut changed = self.drive_codex_inputs(now);
         for (id, change) in fired {
             changed |= self.apply_change(id, &change, None, Some("shutdown"));
         }
@@ -1944,17 +1975,11 @@ impl Daemon {
             if t.is_empty() || *t == self.hostname {
                 continue;
             }
-            // Bound what rides the wire and the store; control chars out.
-            // Claude Code prefixes its own spinner glyph inside the title
-            // ("✳ fix the parser") — strip leading marks so the TUI's kind
-            // mark isn't doubled (dogfood 2026-08-30: "✻ ✳ name" rows).
-            let clean: String =
-                mesimon_core::text::scrub_cells(t, false).chars().take(80).collect();
-            let clean = clean
-                .trim_start_matches(|c: char| {
-                    matches!(c, '✳' | '✻' | '✽' | '✶' | '✢' | '*' | '·') || c.is_whitespace()
-                })
-                .to_string();
+            let clean = crate::agents::adapter(rec.kind)
+                .map(|adapter| adapter.normalize_title(t))
+                .unwrap_or_else(|| {
+                    mesimon_core::text::scrub_cells(t, false).chars().take(80).collect()
+                });
             if clean.is_empty() {
                 continue;
             }
@@ -1990,8 +2015,10 @@ impl Daemon {
             .sessions
             .iter()
             .filter_map(|r| {
-                let observe_only =
-                    r.provenance == Provenance::Adopted && r.argv.is_empty() && r.state.is_live();
+                let observe_only = r.kind == SessionKind::Claude
+                    && r.provenance == Provenance::Adopted
+                    && r.argv.is_empty()
+                    && r.state.is_live();
                 let ours = r.kind == SessionKind::Claude
                     && !(r.provenance == Provenance::Adopted && r.argv.is_empty());
                 let ours_lost = ours && matches!(r.state, SessionState::Unknown { .. });
@@ -2142,6 +2169,364 @@ impl Daemon {
         changed
     }
 
+    fn poll_codex(&mut self) {
+        if self.codex_polling {
+            return;
+        }
+        let paths: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.kind == SessionKind::Codex
+                    && !s.argv.is_empty()
+                    && (s.state.has_pane() || s.codex_stopping)
+            })
+            .map(|s| (s.id, crate::agents::codex::snapshot_path(&self.paths, s.id)))
+            .collect();
+        if paths.is_empty() {
+            return;
+        }
+        self.codex_polling = true;
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            use std::io::Read;
+            let snapshots = paths
+                .into_iter()
+                .map(|(id, path)| {
+                    let snapshot = (|| {
+                        let mut data = Vec::new();
+                        std::fs::File::open(path).ok()?.take(65537).read_to_end(&mut data).ok()?;
+                        if data.len() > 65536 {
+                            return None;
+                        }
+                        serde_json::from_slice(&data).ok()
+                    })();
+                    (id, snapshot)
+                })
+                .collect();
+            let _ = tx.send(Msg::CodexSnapshots(snapshots));
+        });
+    }
+
+    fn on_codex_snapshots(
+        &mut self,
+        snapshots: Vec<(uuid::Uuid, Option<crate::agents::codex::Snapshot>)>,
+    ) {
+        self.codex_polling = false;
+        let now = now_ms();
+        let mut dirty = false;
+        let mut plans = Vec::new();
+        let mut stopped = Vec::new();
+        for (id, snapshot) in snapshots {
+            let principal = Principal::Automation { rule: "codex_observer".into() };
+            if matches!(
+                authorize(&principal, &Action::Mutate, &Resource::Session { id }),
+                Decision::Deny { .. }
+            ) {
+                continue;
+            }
+            let Some(rec) = self.board.sessions.iter_mut().find(|s| {
+                s.id == id
+                    && s.kind == SessionKind::Codex
+                    && (s.state.has_pane() || s.codex_stopping)
+            }) else {
+                continue;
+            };
+            let valid = snapshot.filter(|s| {
+                s.session == id
+                    && Some(s.generation) == rec.codex_generation
+                    && (s.stopped
+                        || (now.saturating_sub(s.heartbeat_ms) <= 5_000
+                            && s.heartbeat_ms <= now + 1_000))
+            });
+            let Some(snapshot) = valid else {
+                self.codex_ready.remove(&id);
+                // A new runtime gets a bounded startup grace, but holds the
+                // checkout throughout it. Lost evidence never means done.
+                if rec.state == SessionState::Spawning
+                    && now.saturating_sub(rec.state_changed_at.unwrap_or(now)) < 30_000
+                {
+                    continue;
+                }
+                dirty |= !rec.observation_hold;
+                rec.observation_hold = true;
+                rec.codex_pending_seq = None;
+                if rec.codex_stopping {
+                    continue;
+                }
+                if let Some(machine) = self.machines.get_mut(&id) {
+                    if let Some(change) = machine.apply(&Signal::ObservationLost, now) {
+                        dirty |=
+                            self.apply_change(id, &change, None, Some("codex_observation_lost"));
+                    }
+                }
+                continue;
+            };
+            if snapshot.sequence < rec.codex_observed_seq {
+                continue;
+            }
+            if let (Some(plan), Some(key)) = (&snapshot.plan, &snapshot.plan_key) {
+                if rec.agent_plan_key.as_ref() != Some(key) {
+                    plans.push((id, key.clone(), plan.clone()));
+                }
+            }
+            if snapshot.stopped {
+                stopped.push(id);
+                self.codex_ready.remove(&id);
+                dirty |= rec.codex_stopping || rec.observation_hold || rec.pending_submit;
+                rec.codex_stopping = false;
+                rec.observation_hold = false;
+                rec.pending_submit = false;
+                rec.pending_prefill = false;
+                rec.codex_submit_sent = false;
+                rec.codex_pending_seq = None;
+                rec.codex_observed_seq = snapshot.sequence;
+                continue;
+            }
+            if rec.codex_stopping {
+                continue;
+            }
+            if !snapshot.observation_hold && matches!(snapshot.state, SessionState::Idle { .. }) {
+                self.codex_ready.insert(id);
+            } else {
+                self.codex_ready.remove(&id);
+            }
+            let newer = snapshot.sequence > rec.codex_observed_seq;
+            let new_turn = snapshot.turn_id.is_some() && snapshot.turn_id != rec.codex_turn_id;
+            let ticket = rec.ticket;
+            let held = snapshot.observation_hold || (rec.pending_submit && !new_turn);
+            dirty |= rec.observation_hold != held;
+            rec.observation_hold = held;
+            if let Some(thread) = snapshot.thread_id {
+                dirty |= rec.codex_thread_id.as_ref() != Some(&thread);
+                rec.codex_thread_id = Some(thread);
+            }
+            if let Some(history) = snapshot.history_path {
+                rec.transcript_path = Some(history);
+            }
+            if !newer {
+                // Restore the current projection after handover without
+                // replaying an already observed completion as a new automove.
+                if matches!(rec.state, SessionState::Unknown { .. }) && !snapshot.observation_hold {
+                    rec.state = snapshot.state.clone();
+                    rec.confidence = Confidence::High;
+                    self.machines
+                        .insert(id, Machine::restore(snapshot.state, Confidence::High, now));
+                    dirty = true;
+                }
+                continue;
+            }
+            rec.codex_pending_seq = Some(snapshot.sequence);
+            rec.codex_turn_id = snapshot.turn_id;
+            dirty = true;
+            if new_turn {
+                rec.pending_prefill = false;
+                rec.pending_submit = false;
+                rec.codex_submit_sent = false;
+                self.pending_prompt.remove(&id);
+                self.codex_input_due.remove(&id);
+                self.moves.asked_by_hand(ticket);
+                self.ack_owed(ticket);
+                self.lower_hand_on(ticket);
+            }
+            let signal = match snapshot.state {
+                SessionState::Spawning => continue,
+                SessionState::Running => Signal::TurnStarted,
+                SessionState::Idle { stop_reason: StopReason::EndTurn } => {
+                    Signal::TurnEnded { outcome: attention::TurnOutcome::Completed }
+                }
+                SessionState::Idle { stop_reason: StopReason::Interrupted } => {
+                    Signal::TurnEnded { outcome: attention::TurnOutcome::Interrupted }
+                }
+                SessionState::Idle { .. } => Signal::Ready,
+                SessionState::RequiresAction { reason } => Signal::Attention { reason },
+                SessionState::Failed { reason } => {
+                    Signal::TurnEnded { outcome: attention::TurnOutcome::Failed(reason) }
+                }
+                SessionState::Unknown { .. } => Signal::ObservationLost,
+                // Runtime lifecycle cannot silently park or kill a board
+                // record; the tmux supervisor lifecycle owns those transitions.
+                _ => continue,
+            };
+            let machine = self
+                .machines
+                .entry(id)
+                .or_insert_with(|| Machine::new(SessionState::unknown(), now));
+            let (change, decision) = machine.apply_explained(&signal, now);
+            if change.is_none() && machine.view().pending.is_none() {
+                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                    rec.codex_observed_seq = snapshot.sequence;
+                    rec.codex_pending_seq = None;
+                }
+            }
+            self.feed.state_decision(id, "codex", &decision);
+            if let Some(change) = change {
+                dirty |= self.apply_change(id, &change, None, Some("codex"));
+            }
+        }
+        let orphans: Vec<_> = stopped
+            .into_iter()
+            .filter(|id| {
+                self.board.sessions.iter().find(|session| session.id == *id).is_some_and(
+                    |session| {
+                        self.board.ticket(session.ticket).is_none()
+                            && !self.grace.contains_key(&session.ticket)
+                    },
+                )
+            })
+            .collect();
+        self.board.sessions.retain(|session| !orphans.contains(&session.id));
+        dirty |= !orphans.is_empty();
+        for (id, key, plan) in plans {
+            self.record_plan(id, plan);
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.agent_plan_key = Some(key);
+                dirty = true;
+            }
+        }
+        if dirty {
+            self.persist_and_notify();
+        }
+    }
+
+    fn probe_codex_startup(&mut self, now: u64) -> bool {
+        let candidates: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| s.kind == SessionKind::Codex && s.state.has_pane() && s.pending_prefill)
+            .map(|s| (s.id, s.sid16(), s.state.clone()))
+            .collect();
+        let mut dirty = false;
+        for (id, sid, state) in candidates {
+            let principal = Principal::Automation { rule: "codex_startup".into() };
+            if matches!(
+                authorize(&principal, &Action::Mutate, &Resource::Session { id }),
+                Decision::Deny { .. }
+            ) {
+                continue;
+            }
+            let Ok(screen) = self.backend.capture_tail(&sid, 40) else { continue };
+            let signal = if let Some(reason) = crate::agents::codex::startup_attention(&screen) {
+                Signal::Attention { reason }
+            } else if self.codex_ready.contains(&id)
+                && crate::agents::codex::input_ready(&screen)
+                && matches!(
+                    state,
+                    SessionState::RequiresAction {
+                        reason: mesimon_core::board::Reason::Trust
+                            | mesimon_core::board::Reason::Auth
+                    }
+                )
+            {
+                Signal::Ready
+            } else {
+                continue;
+            };
+            if let Some(machine) = self.machines.get_mut(&id) {
+                if let Some(change) = machine.apply(&signal, now) {
+                    dirty |= self.apply_change(id, &change, None, Some("codex_startup"));
+                }
+            }
+        }
+        dirty
+    }
+
+    /// Paste only into an independently visible native input, then send one
+    /// Enter after paste detection settles. The persisted sent latch survives
+    /// daemon replacement; an unacknowledged submission holds the checkout.
+    fn drive_codex_inputs(&mut self, now: u64) -> bool {
+        let ids: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.kind == SessionKind::Codex
+                    && s.state.has_pane()
+                    && (s.pending_prefill
+                        || s.pending_submit
+                        || self.pending_prompt.contains_key(&s.id))
+            })
+            .map(|s| s.id)
+            .collect();
+        let mut dirty = false;
+        for id in ids {
+            let principal = Principal::Automation { rule: "agent_prompt_delivery".into() };
+            if matches!(
+                authorize(&principal, &Action::Mutate, &Resource::Session { id }),
+                Decision::Deny { .. }
+            ) {
+                continue;
+            }
+            let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { continue };
+            if rec.codex_submit_sent
+                || !self.codex_ready.contains(&id)
+                || !matches!(rec.state, SessionState::Idle { .. })
+            {
+                continue;
+            }
+            let sid = rec.sid16();
+            let ticket = rec.ticket;
+            let pending_prefill = rec.pending_prefill;
+            let submit = rec.pending_submit;
+            let Ok(screen) = self.backend.capture_tail(&sid, 40) else { continue };
+            if !crate::agents::codex::input_ready(&screen) {
+                continue;
+            }
+            if let Some(due) = self.codex_input_due.get(&id).copied() {
+                if now < due {
+                    continue;
+                }
+                if submit && self.backend.send_enter(&sid).is_ok() {
+                    if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                        rec.codex_submit_sent = true;
+                        rec.observation_hold = true;
+                    }
+                    dirty = true;
+                }
+                self.codex_input_due.remove(&id);
+                continue;
+            }
+            let mut text = if pending_prefill {
+                self.board.ticket(ticket).map(|t| t.title.clone()).unwrap_or_default()
+            } else {
+                String::new()
+            };
+            let parked = self.pending_prompt.get(&id);
+            let brief = parked.is_some_and(|p| p.brief);
+            if brief {
+                if let Some(body) = self.description_body(ticket) {
+                    if !body.is_empty() {
+                        text.push_str("\n\n");
+                        text.push_str(&body);
+                    }
+                }
+            }
+            if let Some(parked) = parked {
+                if !parked.text.is_empty() {
+                    if !text.is_empty() {
+                        text.push_str("\n\n");
+                    }
+                    text.push_str(&parked.text);
+                }
+            }
+            if !text.is_empty() && self.backend.paste_input(&sid, &text).is_err() {
+                continue;
+            }
+            self.pending_prompt.remove(&id);
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.pending_prefill = false;
+                rec.ticket_read |= brief;
+            }
+            if submit {
+                self.codex_input_due.insert(id, now + 500);
+            }
+            dirty = true;
+        }
+        dirty
+    }
+
     /// One hook frame off the ingest socket (Claude hook or tmux pane-died).
     fn on_hook(&mut self, frame: HookFrame) {
         // Every received frame is feed-logged by NAME only — never its
@@ -2162,42 +2547,24 @@ impl Daemon {
             return;
         }
         let now = now_ms();
-        let mut dirty = false;
-        if let Some(t) = ingest::transcript_of(&frame) {
-            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                if rec.transcript_path.as_deref() != Some(t.as_str()) {
-                    rec.transcript_path = Some(t.clone());
-                    dirty = true;
-                }
-                // The transcript filename IS the conversation id — after an
-                // in-app /resume the pane hosts a conversation that is not
-                // the record's minted uuid, and this stem is the only place
-                // the handoff surfaces (dogfood 2026-08-30: without it,
-                // resume targeted the record's own id — a conversation that
-                // never existed). Resume targets claude_session_id, so
-                // relearn it here.
-                let stem = std::path::Path::new(&t)
-                    .file_stem()
-                    .and_then(|s| s.to_str())
-                    .and_then(|s| s.parse::<uuid::Uuid>().ok());
-                if let Some(cid) = stem {
-                    // Own-id conversations keep the field empty (the rec.id
-                    // fallback covers them); a later handoff back also
-                    // clears a previously learned foreign id.
-                    let learned = (cid != rec.id).then_some(cid);
-                    if rec.claude_session_id != learned {
-                        rec.claude_session_id = learned;
-                        dirty = true;
-                    }
-                }
-            }
+        let mut observation = self
+            .board
+            .sessions
+            .iter_mut()
+            .find(|s| s.id == id)
+            .and_then(|record| {
+                crate::agents::adapter(record.kind)
+                    .map(|adapter| adapter.parse_hook(&frame, record))
+            })
+            .unwrap_or_default();
+        // Pane death is transport lifecycle shared by shells and both agents.
+        if frame.event == "PaneDied" {
+            observation.signal = Some(Signal::PaneDied {
+                status: frame.reason.as_deref().and_then(|s| s.parse().ok()),
+            });
         }
-        let signal = self.board.sessions.iter_mut().find(|s| s.id == id).and_then(|rec| {
-            let previous = rec.monitor_task_ids.clone();
-            let signal = ingest::signal_with_monitors(&frame, &mut rec.monitor_task_ids);
-            dirty |= previous != rec.monitor_task_ids;
-            signal
-        });
+        let mut dirty = observation.metadata_changed;
+        let signal = observation.signal;
         if let Some(sig) = signal {
             // A death that names a pane still ALIVE is the previous tenant's.
             // The pane-died notify carries only the session name, and a
@@ -2211,6 +2578,18 @@ impl Daemon {
             // "listed and not dead" is the one answer that refutes a death.
             if matches!(sig, Signal::PaneDied { .. }) && self.pane_reborn(id) {
                 return;
+            }
+            if matches!(sig, Signal::PaneDied { .. }) {
+                if let Some(record) = self
+                    .board
+                    .sessions
+                    .iter_mut()
+                    .find(|s| s.id == id && s.kind == SessionKind::Codex)
+                {
+                    record.codex_stopping = true;
+                    record.observation_hold = true;
+                    dirty = true;
+                }
             }
             // A prompt reached the agent — every road ends here: the board's
             // Shift+Enter field, the composer's submit, a line typed in the
@@ -2248,8 +2627,7 @@ impl Daemon {
                 }
             }
             if let Some(change) = change {
-                dirty |=
-                    self.apply_change(id, &change, ingest::detail_of(&frame), Some(&frame.event));
+                dirty |= self.apply_change(id, &change, observation.detail, Some(&frame.event));
                 // ...unless the user simply left. A clean exit is a park.
                 dirty |= self.park_on_exit(id);
             }
@@ -2284,7 +2662,7 @@ impl Daemon {
             }
         }
         // An approved plan is the agent's note on the ticket.
-        if let Some(plan) = ingest::plan_of(&frame) {
+        if let Some(plan) = observation.plan {
             dirty |= self.record_plan(id, plan);
         }
         if dirty {
@@ -2541,6 +2919,11 @@ impl Daemon {
             return false;
         };
         let now = now_ms();
+        if rec.kind == SessionKind::Codex {
+            if let Some(sequence) = rec.codex_pending_seq.take() {
+                rec.codex_observed_seq = sequence;
+            }
+        }
         rec.state = change.to.clone();
         rec.confidence = change.confidence;
         if change.from != change.to {
@@ -3928,18 +4311,25 @@ impl Daemon {
     /// 19 §4 tier 1: transcript census, filtered to this repo (and worktrees),
     /// minus sessions already on the board (ours live in the same tree).
     fn rescan_external(&mut self) {
-        let home = crate::census::claude_home();
         let roots = crate::census::repo_roots(&self.paths.repo_root);
-        // Only working-set records hide a drawer row — an Exited import must
-        // be re-importable, not shadow-banned by its own corpse.
-        let known: Vec<uuid::Uuid> = self
-            .board
-            .sessions
-            .iter()
-            .filter(|s| s.state.is_live())
-            .flat_map(|s| [Some(s.id), s.claude_session_id].into_iter().flatten())
-            .collect();
-        self.external = crate::census::scan(&home, &roots, &|id| known.contains(&id));
+        self.external.clear();
+        for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
+            let kind = provider.session_kind();
+            let adapter = crate::agents::adapter(kind).expect("provider is an agent");
+            let known: Vec<_> = self
+                .board
+                .sessions
+                .iter()
+                .filter(|session| {
+                    session.kind == kind && (session.state.is_live() || session.codex_stopping)
+                })
+                .filter_map(|session| adapter.conversation_key(session))
+                .collect();
+            self.external.extend(
+                adapter.discover(&roots, &|identity| known.iter().any(|key| key == identity)),
+            );
+        }
+        self.external.sort_by(|a, b| b.mtime_ms.cmp(&a.mtime_ms).then(a.id.cmp(&b.id)));
     }
 
     fn broadcast(&mut self) {
@@ -4024,7 +4414,7 @@ impl Daemon {
         if !wants {
             return false;
         }
-        match self.spawn_session(id, SessionKind::Claude, true, None) {
+        match self.spawn_session(id, self.board.agent_provider.session_kind(), true, None) {
             Response::Spawned { .. } | Response::Provisioning => {
                 self.feed.board("automation", "auto_run_started", Some(id));
                 true
@@ -4112,7 +4502,14 @@ impl Daemon {
         // Sessions detach and keep running through the grace band (D21).
         let sessions: Vec<SessionRecord> =
             self.board.sessions.iter().filter(|s| s.ticket == id).cloned().collect();
-        self.board.sessions.retain(|s| s.ticket != id);
+        // Keep owned Codex cleanup evidence durable until its separate server
+        // is stopped, including through a crash during the undo window.
+        self.board.sessions.retain(|s| {
+            s.ticket != id
+                || (s.kind == SessionKind::Codex
+                    && !s.argv.is_empty()
+                    && (s.state.has_pane() || s.codex_stopping))
+        });
         // Bodies first, then the directory: what undo will need is in memory
         // before the only copy is removed (dogfood 2026-09-03, T-71: a note
         // written, the ticket deleted and restored, and the editor could only
@@ -4499,6 +4896,17 @@ impl Daemon {
             return Err("no live claude session on this ticket — start or wake one first".into());
         };
         let sid = rec.sid16();
+        if rec.kind == SessionKind::Codex {
+            if rec.pending_submit || self.pending_prompt.contains_key(&rec.id) {
+                return Err("a prompt is already waiting for this session".into());
+            }
+            let id = rec.id;
+            self.park_prompt(id, text.to_string());
+            if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                rec.observation_hold = true;
+            }
+            return Ok(());
+        }
         self.backend.paste_text(&sid, text).map_err(|e| format!("could not deliver: {e}"))
     }
 
@@ -4807,7 +5215,7 @@ impl Daemon {
         // through the same field.
         let text = match (mesimon_core::command::sanitize_prompt(&text), &seat) {
             (Some(text), _) => text,
-            (None, QueuedSeat::Start) => String::new(),
+            (None, QueuedSeat::Start(_)) => String::new(),
             (None, _) => return Response::Err { message: "nothing to send".into() },
         };
         if queued {
@@ -4833,9 +5241,9 @@ impl Daemon {
         // Live and paneless is exactly Sleeping (`has_pane` excludes only
         // `Exited` and `Sleeping`), so this arm is the parked claude, and
         // `prompt_sleeping`'s own filter is the belt under it.
-        match self.board.live_claude(ticket) {
+        match self.board.live_agent(ticket) {
             Some(rec) => QueuedSeat::Wake(rec.id),
-            None => QueuedSeat::Start,
+            None => QueuedSeat::Start(self.board.agent_provider),
         }
     }
 
@@ -4858,9 +5266,9 @@ impl Daemon {
                 Err(message) => Response::Err { message },
             },
             QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text),
-            QueuedSeat::Start => {
+            QueuedSeat::Start(provider) => {
                 let words = (!text.is_empty()).then_some(text);
-                self.spawn_session(ticket, SessionKind::Claude, true, words)
+                self.spawn_session(ticket, provider.session_kind(), true, words)
             }
         }
     }
@@ -4887,9 +5295,10 @@ impl Daemon {
             self.inflight.keys().copied().collect();
         let mut out = mesimon_core::quiet::working_tickets(&self.board, &inflight, cwd);
         for g in self.grace.values() {
-            if g.sessions
-                .iter()
-                .any(|s| cwd.is_none_or(|c| s.cwd == c) && mesimon_core::quiet::is_working(s))
+            if !out.contains(&g.ticket.id)
+                && g.sessions
+                    .iter()
+                    .any(|s| cwd.is_none_or(|c| s.cwd == c) && mesimon_core::quiet::is_working(s))
             {
                 out.push(g.ticket.id);
             }
@@ -4935,7 +5344,7 @@ impl Daemon {
                     None => return Response::Err { message: "no such session".into() },
                 }
             }
-            QueuedSeat::Start => self.paths.repo_root.display().to_string(),
+            QueuedSeat::Start(_) => self.paths.repo_root.display().to_string(),
         };
         // The PTY budget is deliberately NOT consulted here: a start that
         // would be refused for resources now may be fine when its turn comes,
@@ -4944,7 +5353,11 @@ impl Daemon {
         let word = seat.word();
         if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
             q.text = text;
-            q.seat = seat;
+            // Editing queued words does not reinterpret the accepted start
+            // after a project provider switch.
+            if !matches!((&q.seat, &seat), (QueuedSeat::Start(_), QueuedSeat::Start(_))) {
+                q.seat = seat;
+            }
             q.cwd = cwd;
             self.feed.board("local", "queued_ask_replaced", Some(ticket));
         } else {
@@ -4962,7 +5375,7 @@ impl Daemon {
             // A start or a wake delivered on the spot: it holds the checkout
             // through its own record (`Spawning` + an owed Enter), so there
             // is no in-flight marker to look for — the session is the receipt.
-            match self.board.live_claude(ticket) {
+            match self.board.live_agent(ticket) {
                 Some(rec) => Response::Spawned { id: rec.id, fresh: false },
                 None => Response::Err { message: "could not deliver".into() },
             }
@@ -5081,8 +5494,8 @@ impl Daemon {
     fn seat_stands(&self, ticket: ulid::Ulid, seat: &QueuedSeat) -> bool {
         match seat {
             QueuedSeat::Pane(id) => self.prompt_target(ticket) == Some(*id),
-            QueuedSeat::Wake(id) => self.board.live_claude(ticket).map(|s| s.id) == Some(*id),
-            QueuedSeat::Start => self.board.live_claude(ticket).is_none(),
+            QueuedSeat::Wake(id) => self.board.live_agent(ticket).map(|s| s.id) == Some(*id),
+            QueuedSeat::Start(_) => self.board.live_agent(ticket).is_none(),
         }
     }
 
@@ -5169,7 +5582,7 @@ impl Daemon {
     fn prompt_sleeping(&mut self, ticket: ulid::Ulid, text: String) -> Response {
         let Some(id) = self
             .board
-            .live_claude(ticket)
+            .live_agent(ticket)
             .filter(|s| matches!(s.state, SessionState::Sleeping))
             .map(|s| s.id)
         else {
@@ -5198,6 +5611,7 @@ impl Daemon {
         self.pending_prompt.insert(id, Parked { text, brief: false });
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.pending_submit = true;
+            rec.codex_submit_sent = false;
         }
         self.persist_and_notify();
     }
@@ -5218,7 +5632,11 @@ impl Daemon {
         g.ticket.notes.retain(|n| carried.contains(&n.id));
         let _ = store::save_ticket(&self.paths, &g.ticket);
         self.board.tickets.push(g.ticket);
-        self.board.sessions.extend(g.sessions);
+        for session in g.sessions {
+            if !self.board.sessions.iter().any(|existing| existing.id == session.id) {
+                self.board.sessions.push(session);
+            }
+        }
         self.persist_and_notify();
         Response::Ok
     }
@@ -5316,6 +5734,7 @@ impl Daemon {
             if let Err(why) = self.sleep_eligible(rec, now, false) {
                 let who = match kind {
                     SessionKind::Claude => "claude",
+                    SessionKind::Codex => "codex",
                     SessionKind::Bash => "shell",
                 };
                 return Response::Err { message: format!("{who} still awake — {why}") };
@@ -5410,6 +5829,17 @@ impl Daemon {
     /// changes is what the NEXT spawn or wake is built with — a running pane's
     /// argv was fixed at exec and nothing can revise it, which is the sentence
     /// the Settings row spends its detail on.
+    fn set_agent_provider(&mut self, provider: AgentProvider) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.agent_provider != provider {
+            self.board.agent_provider = provider;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
     fn set_mcp_tools(&mut self, on: bool) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -5722,8 +6152,21 @@ impl Daemon {
                 for s in &g.sessions {
                     // SIGTERM the group now; the reaper's grace-then-kill-pane
                     // finishes the ladder (docs/19 §1 — never SIGKILL).
-                    if s.state.has_pane() {
-                        let _ = self.backend.signal_session(&s.sid16());
+                    if (s.state.has_pane() || s.codex_stopping)
+                        && !(s.provenance == Provenance::Adopted && s.argv.is_empty())
+                    {
+                        if s.kind == SessionKind::Codex {
+                            let by =
+                                Principal::Automation { rule: "deleted_session_cleanup".into() };
+                            if !matches!(
+                                authorize(&by, &Action::Mutate, &Resource::Session { id: s.id }),
+                                Decision::Deny { .. }
+                            ) {
+                                self.kill_session(s.id);
+                            }
+                        } else {
+                            let _ = self.backend.signal_session(&s.sid16());
+                        }
                         self.reaping.insert(s.sid16(), Instant::now() + REAP_GRACE);
                         sids.push(s.sid16());
                     }
@@ -5873,12 +6316,12 @@ impl Daemon {
         // wakes it rather than starting a rival beside it. Only NEW records
         // are refused: a record that already exists resumes as it did, so a
         // board that predates this keeps every session it has.
-        if kind == SessionKind::Claude {
-            if let Some(held) = self.board.live_claude(ticket) {
+        if kind.is_agent() {
+            if let Some(held) = self.board.live_agent(ticket) {
                 let verb =
                     if matches!(held.state, SessionState::Sleeping) { "wake" } else { "focus" };
                 return Response::Err {
-                    message: format!("ticket already has a claude session — {verb} it instead"),
+                    message: format!("ticket already has an agent session — {verb} it instead"),
                 };
             }
         }
@@ -5891,7 +6334,9 @@ impl Daemon {
         let cwd = match self.resolve_spawn_cwd(ticket) {
             Ok(Some(p)) => p,
             Ok(None) => {
-                if !self.pending_spawns.iter().any(|s| s.ticket == ticket && s.kind == kind) {
+                if !self.pending_spawns.iter().any(|s| {
+                    s.ticket == ticket && (s.kind == kind || (s.kind.is_agent() && kind.is_agent()))
+                }) {
                     self.pending_spawns.push(PendingSpawn { ticket, kind, submit_prompt, prompt });
                 }
                 self.persist_and_notify();
@@ -5900,24 +6345,30 @@ impl Daemon {
             Err(message) => return Response::Err { message },
         };
         let id = uuid::Uuid::new_v4();
-        let argv: Vec<String> = match kind {
-            SessionKind::Claude => {
-                match self.claude_argv(id, ticket, "--session-id", &id.to_string()) {
-                    Ok(argv) => argv,
-                    Err(message) => return Response::Err { message },
-                }
+        let spec = if let Some(adapter) = crate::agents::adapter(kind) {
+            match adapter.start(&self.launch_context(id, ticket, &cwd), &id.to_string()) {
+                Ok(spec) => spec,
+                Err(message) => return Response::Err { message },
             }
-            SessionKind::Bash => vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())],
+        } else {
+            LaunchSpec::plain(vec![std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into())])
         };
+        let argv = spec.argv;
         // Claude enters Spawning; the SessionStart hook flips it to Running.
         // Bash has no hook surface — a live pane is all "running" means (D15).
         let state = match kind {
-            SessionKind::Claude => SessionState::Spawning,
+            SessionKind::Claude | SessionKind::Codex => SessionState::Spawning,
             SessionKind::Bash => SessionState::Running,
         };
         let mut rec =
             SessionRecord::new(id, kind, ticket, argv.clone(), cwd.display().to_string(), state);
         rec.state_changed_at = Some(now_ms());
+        rec.codex_generation = spec.generation;
+        if kind == SessionKind::Codex {
+            rec.agent_preview_path =
+                Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
+            rec.pending_prefill = true;
+        }
         let launch = self.launch(&argv, &self.session_vars(ticket, &cwd));
         if let Err(e) = self.backend.spawn(&rec.sid16(), &cwd, &launch) {
             return Response::Err { message: format!("spawn failed: {e}") };
@@ -5939,11 +6390,13 @@ impl Daemon {
         // title that happens to name a subcommand ("doctor", "update") to that
         // subcommand instead, silently, and `--` does not shield it (measured
         // 2026-08-31). Keystrokes have no such vocabulary.
-        if kind == SessionKind::Claude {
+        if kind.is_agent() {
             if let Some(title) =
                 self.board.ticket(ticket).map(|t| t.title.trim()).filter(|t| !t.is_empty())
             {
-                if self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok() {
+                if kind == SessionKind::Codex
+                    || self.backend.send_text(&rec.sid16(), &format!("{title} ")).is_ok()
+                {
                     rec.pending_submit = submit_prompt;
                     // And when mesimon is the one pressing Enter, the whole
                     // brief goes with it (T-224, 2026-09-05): the ticket's
@@ -6300,7 +6753,11 @@ impl Daemon {
             };
             // Release the lock once the last session on the ticket is gone.
             if locked && attached {
-                let live = self.board.sessions.iter().any(|s| s.ticket == tid && s.state.is_live());
+                let live = self
+                    .board
+                    .sessions
+                    .iter()
+                    .any(|s| s.ticket == tid && (s.state.is_live() || s.codex_stopping));
                 if !live {
                     if let Some(b) = self.worktrees.get_mut(&tid) {
                         if worktree::unlock(&self.paths.repo_root, &b.path).is_ok() {
@@ -6317,12 +6774,23 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) else {
             return Response::Err { message: "no such session".into() };
         };
-        let reap = rec.state.has_pane().then(|| rec.sid16());
+        let owned = !(rec.provenance == Provenance::Adopted && rec.argv.is_empty());
+        let reap = (owned && (rec.state.has_pane() || rec.codex_stopping)).then(|| rec.sid16());
         // Kill on a live session ends the process; the conversation survives
         // and its corpse stays on the ticket rail. Kill on an already-dead
         // record is the rail's dismissal gesture — the one exit the rail hides.
         let reason = if rec.state.is_live() { ExitReason::Killed } else { ExitReason::Dismissed };
         rec.state = SessionState::Exited { reason };
+        if rec.kind == SessionKind::Codex && reap.is_some() {
+            rec.codex_stopping = true;
+            rec.observation_hold = true;
+        }
+        rec.pending_submit = false;
+        rec.pending_prefill = false;
+        rec.codex_submit_sent = false;
+        self.pending_prompt.remove(&id);
+        self.codex_input_due.remove(&id);
+        self.codex_ready.remove(&id);
         rec.waiting_since = None;
         rec.detail = None;
         let (id, state, ticket) = (rec.id, rec.state.clone(), rec.ticket);
@@ -6343,7 +6811,7 @@ impl Daemon {
     fn attach_external(
         &mut self,
         by: &Principal,
-        claude_session_id: uuid::Uuid,
+        selector: uuid::Uuid,
         ticket: Option<ulid::Ulid>,
     ) -> std::result::Result<uuid::Uuid, String> {
         if let Some(t) = ticket {
@@ -6351,40 +6819,50 @@ impl Daemon {
                 return Err("no such ticket".into());
             }
         }
-        if self.board.sessions.iter().any(|s| {
-            s.state.is_live()
-                && (s.id == claude_session_id || s.claude_session_id == Some(claude_session_id))
-        }) {
+        let item = self.external.iter().find(|item| item.id == selector).cloned();
+        let provider = item.as_ref().map(|item| item.provider).unwrap_or(AgentProvider::ClaudeCode);
+        let identity = item
+            .as_ref()
+            .map(|item| item.conversation_id.clone())
+            .filter(|s| !s.is_empty())
+            .unwrap_or_else(|| selector.to_string());
+        let kind = provider.session_kind();
+        let adapter = crate::agents::adapter(kind).expect("provider is an agent");
+        let matches_identity = |record: &SessionRecord| {
+            record.kind == kind && adapter.conversation_key(record).as_ref() == Some(&identity)
+        };
+        if self
+            .board
+            .sessions
+            .iter()
+            .any(|record| matches_identity(record) && record.state.is_live())
+        {
             return Err("session already on the board".into());
         }
-        // A dead record for this conversation may already sit on the board —
-        // reuse it (and its ticket) instead of minting a duplicate. This is
-        // the other half of rescan_external's "re-importable, not shadow-
-        // banned" rule: the drawer's R lands the session back where it lived.
+        if ticket.is_some_and(|ticket| self.board.live_agent(ticket).is_some()) {
+            return Err("ticket already has a live agent session".into());
+        }
         if let Some(id) = self
             .board
             .sessions
             .iter()
-            .filter(|s| {
-                !s.state.is_live()
-                    && (s.id == claude_session_id || s.claude_session_id == Some(claude_session_id))
-            })
-            .max_by_key(|s| s.state_changed_at.unwrap_or(0))
-            .map(|s| s.id)
+            .filter(|record| matches_identity(record) && !record.state.is_live())
+            .max_by_key(|record| record.state_changed_at.unwrap_or(0))
+            .map(|record| record.id)
         {
-            if let Some(t) = ticket {
-                if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
-                    rec.ticket = t;
+            if let Some(ticket) = ticket {
+                if let Some(record) = self.board.sessions.iter_mut().find(|record| record.id == id)
+                {
+                    record.ticket = ticket;
                 }
             }
-            self.external.retain(|e| e.claude_session_id != claude_session_id);
+            self.external.retain(|item| item.id != selector);
             return Ok(id);
         }
-        let Some(pos) = self.external.iter().position(|e| e.claude_session_id == claude_session_id)
-        else {
+        let Some(item) = item else {
             return Err("unknown external session — reopen the drawer to rescan".into());
         };
-        let item = self.external.remove(pos);
+        self.external.retain(|item| item.id != selector);
         // Import gesture: no target ticket means mint one, named after the
         // session (title latch → preview → id), in the first column.
         let ticket = match ticket {
@@ -6398,7 +6876,7 @@ impl Daemon {
                     .name
                     .clone()
                     .or_else(|| item.preview.clone())
-                    .unwrap_or_else(|| item.claude_session_id.to_string()[..8].to_string());
+                    .unwrap_or_else(|| item.id.to_string()[..8].to_string());
                 let title: String = title.chars().take(48).collect();
                 self.mint_ticket(by, None, column, title, None)
             }
@@ -6406,14 +6884,17 @@ impl Daemon {
         let id = uuid::Uuid::new_v4();
         let mut rec = SessionRecord::new(
             id,
-            SessionKind::Claude,
+            kind,
             ticket,
             vec![], // no process of ours — the discriminator the tail poller keys on
             item.cwd.clone(),
             SessionState::unknown(),
         );
         rec.provenance = Provenance::Adopted;
-        rec.claude_session_id = Some(claude_session_id);
+        match provider {
+            AgentProvider::ClaudeCode => rec.claude_session_id = identity.parse().ok(),
+            AgentProvider::Codex => rec.codex_thread_id = Some(identity),
+        }
         rec.transcript_path = Some(item.transcript_path.clone());
         rec.confidence = Confidence::Low;
         rec.state_changed_at = Some(now_ms());
@@ -6421,12 +6902,6 @@ impl Daemon {
         self.machines.insert(id, Machine::restore(rec.state.clone(), Confidence::Low, now_ms()));
         self.board.sessions.push(rec);
         Ok(id)
-    }
-
-    /// The MCP config this session is launched with. See
-    /// `hook_settings::mcp_config_json` for why it looks the way it does.
-    fn mcp_config_json(&self, session: uuid::Uuid, tier: AgentTools) -> String {
-        crate::hook_settings::mcp_config_json(&self.paths, &mesimon_bin(), session, tier)
     }
 
     /// How far up the tool ladder a claude on `ticket` reaches (T-117): the
@@ -6446,194 +6921,54 @@ impl Daemon {
             .unwrap_or_default()
     }
 
-    /// The `--permission-mode` a claude on `ticket` is spawned with (T-117):
-    /// its column's own word, or — `inherit` — the user's configured default,
-    /// exactly the pass-through every spawn made before columns had a say
-    /// (dogfood 2026-08-30: a session in a fresh worktree lost the global
-    /// defaultMode; the flag is the only mode source Claude Code checks
-    /// deterministically). Never a mode nobody configured:
-    /// `ClaudeMode::flag_word` cannot say `bypassPermissions`.
-    fn permission_mode_for(&self, ticket: ulid::Ulid) -> Option<String> {
-        let mode = self
-            .board
-            .ticket(ticket)
-            .and_then(|t| self.board.column(&t.column))
-            .map(|c| c.settings.claude_mode)
-            .unwrap_or_default();
-        mode.flag_word().map(str::to_string).or_else(user_default_mode)
-    }
-
-    /// The one argv builder for a Claude session. Fresh spawns pass
-    /// `--session-id`; the adopted-resume fallback passes `--resume`.
-    ///
-    /// This existed twice before T-84 — once in `spawn_session`, once in
-    /// `resume_argv` — which meant a flag added to one was silently missing
-    /// for adopted and taken-over sessions.
-    fn claude_argv(
-        &self,
+    fn launch_context<'a>(
+        &'a self,
         id: uuid::Uuid,
         ticket: ulid::Ulid,
-        identity_flag: &str,
-        identity_value: &str,
-    ) -> std::result::Result<Vec<String>, String> {
-        // Per-session observer hooks via --settings (11 §11.2.1).
-        // Never --bare / --safe-mode — both silently clear them (S-D).
-        let settings = crate::hook_settings::write_settings(&self.paths, id, &mesimon_bin())
-            .map_err(|e| format!("hook settings: {e}"))?;
-        let claude = std::env::var("MESIMON_CLAUDE_BIN").unwrap_or_else(|_| "claude".into());
-        let mut argv = vec![claude, "--settings".into(), settings.display().to_string()];
-        argv.extend(self.mesimon_flags(id, ticket));
-        argv.push(identity_flag.to_string());
-        argv.push(identity_value.to_string());
-        Ok(argv)
+        cwd: &'a std::path::Path,
+    ) -> LaunchContext<'a> {
+        LaunchContext {
+            paths: &self.paths,
+            cwd,
+            session: id,
+            tools: self.agent_tier(ticket),
+            brief: self.board.system_prompt,
+            column: self
+                .board
+                .ticket(ticket)
+                .and_then(|t| self.board.column(&t.column))
+                .map(|c| c.settings.clone())
+                .unwrap_or_default(),
+        }
     }
 
-    /// The brief rides the argv only while BOTH switches are on: the sentence
-    /// names `get_ticket`, and a session with no tools has nothing to call —
-    /// and the column's tier counts as a switch (T-117).
-    fn brief_on(&self, ticket: ulid::Ulid) -> bool {
-        self.agent_tier(ticket) != AgentTools::Off && self.board.system_prompt
+    fn resume_argv(&self, rec: &SessionRecord) -> std::result::Result<LaunchSpec, String> {
+        let context = self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd));
+        crate::agents::adapter(rec.kind)
+            .ok_or_else(|| "shells do not have agent conversations".to_string())?
+            .resume(&context, rec)
     }
 
-    /// The pairs mesimon itself puts on a claude's argv, as the board's two
-    /// switches stand now — one builder, so a spawn and a wake cannot differ.
-    /// `--mcp-config <blob>` (T-217): off means the flag is not there at all —
-    /// not an empty config, not a server with no tools: a session that was
-    /// never told about mesimon cannot be told about it later, and that is
-    /// the whole of what "off" is worth promising. Then the agent brief
-    /// (T-224): opt-in, and only beside the tools it names — a system prompt
-    /// telling the model to call a tool it does not have would be the lie
-    /// the switch exists to avoid.
-    /// Then the column's say (T-117): the tier narrows what the blob lists
-    /// and `Off` drops the flag like the board switch does, and the
-    /// permission mode rides here too, so a wake re-applies the column the
-    /// way it re-applies the blob.
-    fn mesimon_flags(&self, id: uuid::Uuid, ticket: ulid::Ulid) -> Vec<String> {
-        let mut out = Vec::new();
-        let tier = self.agent_tier(ticket);
-        if tier != AgentTools::Off {
-            out.push("--mcp-config".into());
-            out.push(self.mcp_config_json(id, tier));
-        }
-        if self.brief_on(ticket) {
-            out.push(mesimon_core::brief::FLAG.into());
-            out.push(mesimon_core::brief::TEXT.into());
-        }
-        if let Some(mode) = self.permission_mode_for(ticket) {
-            out.push("--permission-mode".into());
-            out.push(mode);
-        }
-        out
-    }
-
-    /// The one resume builder (wake and takeover share it). D24: the argv
-    /// array is the mechanism — resume restores neither `--settings` nor
-    /// `--mcp-config` (09 §9), so we replay ours, swapping the identity flag.
-    fn resume_argv(&self, rec: &SessionRecord) -> std::result::Result<Vec<String>, String> {
-        let target = rec.claude_session_id.unwrap_or(rec.id);
-        if !rec.argv.is_empty() {
-            // Every pair mesimon owns comes OUT of the persisted argv and goes
-            // back in fresh behind `--settings <path>`, laid the way
-            // `claude_argv` lays it. The identity becomes `--resume <target>`
-            // — an existing `--resume` operand is never replayed verbatim: an
-            // in-app /resume may have moved the pane onto a different
-            // conversation since the argv was persisted (dogfood 2026-08-30:
-            // a stale target crash-looped "No conversation found" forever).
-            // The MCP blob and the brief are rebuilt by the board's switches
-            // as they stand NOW, both ways (T-217, T-224): the blob names the
-            // mesimon binary by absolute path and a persisted argv outlives
-            // an install (`U` reloads onto a new binary), and a wake is the
-            // road a session takes to pick a switch up or drop it, since a
-            // live pane's argv was fixed at exec — "wake it to pick the
-            // setting up" must be true in both directions.
-            let owned = [
-                "--session-id",
-                "--resume",
-                "--mcp-config",
-                mesimon_core::brief::FLAG,
-                "--permission-mode",
-            ];
-            let mut argv = Vec::with_capacity(rec.argv.len() + 2);
-            let mut it = rec.argv.iter();
-            while let Some(a) = it.next() {
-                if owned.contains(&a.as_str()) {
-                    let _ = it.next();
-                } else {
-                    argv.push(a.clone());
-                }
-            }
-            let at = argv
-                .iter()
-                .position(|a| a == "--settings")
-                .map(|i| (i + 2).min(argv.len()))
-                .unwrap_or(argv.len().min(1));
-            let mut ours = self.mesimon_flags(rec.id, rec.ticket);
-            ours.push("--resume".into());
-            ours.push(target.to_string());
-            argv.splice(at..at, ours);
-            return Ok(argv);
-        }
-        // Adopted with no argv of ours: build the full spawn argv fresh —
-        // hooks via --settings keyed on OUR record uuid (never --bare, S-D).
-        self.claude_argv(rec.id, rec.ticket, "--resume", &target.to_string())
-    }
-
-    /// Double-resume guard (09 §9: two resumes interleave one transcript).
-    fn resume_guard(
-        &self,
-        rec_id: uuid::Uuid,
-        claude_id: uuid::Uuid,
-        confirm: bool,
-    ) -> Option<String> {
-        // Our own board: a second live record for the same claude session is
-        // always a refusal — mesimon would be interleaving with itself.
-        if self.board.sessions.iter().any(|s| {
-            s.id != rec_id
-                && s.state.has_pane()
-                && !matches!(s.state, SessionState::Unknown { .. })
-                && (s.id == claude_id || s.claude_session_id == Some(claude_id))
+    /// A provider supplies conversation identity and external ownership;
+    /// the board enforces its one-writer policy across records.
+    fn resume_guard(&self, rec: &SessionRecord, confirm: bool) -> Option<String> {
+        let adapter = crate::agents::adapter(rec.kind)?;
+        let identity = adapter.conversation_key(rec);
+        if self.board.sessions.iter().any(|other| {
+            other.id != rec.id
+                && other.kind == rec.kind
+                && (other.state.has_pane() || other.codex_stopping)
+                && identity.is_some()
+                && adapter.conversation_key(other) == identity
         }) {
-            return Some("already running under mesimon".into());
+            return Some("conversation already running under Mesimon".into());
         }
         if !confirm {
-            let home = crate::census::claude_home();
-            if let Some(pid) = crate::census::running_pid_for(&home, claude_id) {
-                return Some(format!(
-                    "running elsewhere (pid {pid}) — resuming would interleave transcripts; resume again to override"
-                ));
+            if let Some(owner) = adapter.external_owner(rec) {
+                return Some(format!("running elsewhere ({owner}) — resuming would interleave transcripts; resume again to override"));
             }
         }
         None
-    }
-
-    /// `claude --resume <id>` reads the transcript from Claude's own
-    /// projects dir; a session that ended before its first prompt never
-    /// wrote one, and claude exits 1 ("No conversation found") inside a
-    /// second — which the pane-died path then records as a crash. Refuse
-    /// up front with the honest reason instead.
-    fn resume_transcript_missing(&self, rec: &SessionRecord, claude_id: uuid::Uuid) -> bool {
-        let name = format!("{claude_id}.jsonl");
-        // The record's path only vouches for the TARGET conversation when its
-        // filename matches — after an in-app /resume it names a different
-        // conversation, and trusting it waved a nonexistent target through
-        // (dogfood 2026-08-30).
-        if let Some(t) = &rec.transcript_path {
-            let p = std::path::Path::new(t);
-            if p.file_name().and_then(|f| f.to_str()) == Some(name.as_str()) && p.is_file() {
-                return false;
-            }
-        }
-        // transcript_path stale or never learned — the slug dir tracks cwd,
-        // so scan every project dir for the session's file before refusing.
-        let projects = crate::census::claude_home().join("projects");
-        if let Ok(dirs) = std::fs::read_dir(&projects) {
-            for d in dirs.flatten() {
-                if d.path().join(&name).is_file() {
-                    return false;
-                }
-            }
-        }
-        true
     }
 
     /// Takeover / wake: spawn `claude --resume` under this record's sid16.
@@ -6641,11 +6976,26 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             return Response::Err { message: "no such session".into() };
         };
-        if rec.kind != SessionKind::Claude {
-            return Response::Err { message: "only claude sessions resume".into() };
+        if !rec.kind.is_agent() {
+            return Response::Err { message: "only agent sessions resume".into() };
+        }
+        if rec.codex_stopping {
+            return Response::Err {
+                message: "Codex is still stopping; wake after its server cleanup completes".into(),
+            };
         }
         if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
             return Response::Err { message: "ticket archived — restore it first".into() };
+        }
+        if self.board.sessions.iter().any(|other| {
+            other.id != id
+                && other.ticket == rec.ticket
+                && other.kind.is_agent()
+                && other.state.is_live()
+        }) {
+            return Response::Err {
+                message: "ticket already has a live agent session — focus it instead".into(),
+            };
         }
         if rec.state.has_pane() && !matches!(rec.state, SessionState::Unknown { .. }) {
             // Live states keep their pane; resuming over it would double-run.
@@ -6653,10 +7003,10 @@ impl Daemon {
                 return Response::Err { message: "session is live — focus it instead".into() };
             }
         }
-        let claude_id = rec.claude_session_id.unwrap_or(rec.id);
-        if let Some(message) = self.resume_guard(id, claude_id, confirm) {
+        if let Some(message) = self.resume_guard(rec, confirm) {
             return Response::Err { message };
         }
+        let adapter = crate::agents::adapter(rec.kind).expect("agent kind checked above");
         // Nothing to come back to? Then "resume" and "start fresh" have the
         // SAME outcome — no conversation is lost either way — and refusing was
         // pure friction: the record could never be entered again, and the row
@@ -6673,10 +7023,16 @@ impl Daemon {
         // `claude_session_id` is the field that already exists for exactly
         // this — "the conversation this record hosts is not its own uuid" —
         // and the in-app `/resume` relearn writes it the same way.
-        let fresh = self.resume_transcript_missing(rec, claude_id).then(uuid::Uuid::new_v4);
-        let argv = match fresh {
+        let fresh = (adapter.capabilities().resume
+            == crate::agents::ResumePolicy::FreshWhenHistoryMissing
+            && adapter.history_missing(rec))
+        .then(uuid::Uuid::new_v4);
+        let spec = match fresh {
             Some(new_id) => {
-                match self.claude_argv(rec.id, rec.ticket, "--session-id", &new_id.to_string()) {
+                match adapter.start(
+                    &self.launch_context(rec.id, rec.ticket, std::path::Path::new(&rec.cwd)),
+                    &new_id.to_string(),
+                ) {
                     Ok(a) => a,
                     Err(message) => return Response::Err { message },
                 }
@@ -6686,6 +7042,7 @@ impl Daemon {
                 Err(message) => return Response::Err { message },
             },
         };
+        let argv = spec.argv;
         let (sid, mut cwd, ticket) =
             (rec.sid16(), std::path::PathBuf::from(rec.cwd.clone()), rec.ticket);
         let strategy = self
@@ -6737,6 +7094,15 @@ impl Daemon {
         let now = now_ms();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.argv = argv;
+            rec.codex_generation = spec.generation;
+            rec.codex_observed_seq = 0;
+            rec.codex_pending_seq = None;
+            rec.codex_stopping = false;
+            if rec.kind == SessionKind::Codex {
+                rec.observation_hold = true;
+                rec.agent_preview_path =
+                    Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
+            }
             rec.cwd = cwd.display().to_string();
             rec.state = SessionState::Spawning;
             rec.state_changed_at = Some(now);
@@ -6746,6 +7112,8 @@ impl Daemon {
             // conversation, and the prompt is already in it), so an Enter
             // owed by the old one is stale — never carry it across.
             rec.pending_submit = false;
+            rec.codex_submit_sent = false;
+            rec.pending_prefill = false;
             self.pending_prompt.remove(&id);
             if let Some(new_id) = fresh {
                 // Point the record at the conversation it is actually hosting
@@ -6772,12 +7140,17 @@ impl Daemon {
         enforce_floor: bool,
     ) -> std::result::Result<(), String> {
         match (rec.kind, &rec.state) {
-            (SessionKind::Claude, SessionState::Idle { .. }) => {}
-            (SessionKind::Claude, _) => return Err("only idle sessions sleep".into()),
+            (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. }) => {}
+            (SessionKind::Claude | SessionKind::Codex, _) => {
+                return Err("only idle sessions sleep".into())
+            }
             // Bash has no hook surface: Running IS its only live state, so the
             // manual path accepts it — guarded by the live-children check.
             (SessionKind::Bash, SessionState::Running) => {}
             (SessionKind::Bash, _) => return Err("no live shell to sleep".into()),
+        }
+        if enforce_floor && rec.kind == SessionKind::Codex && rec.observation_hold {
+            return Err("Codex observation has not proved this session quiet".into());
         }
         let age = now.saturating_sub(rec.state_changed_at.unwrap_or(now));
         if enforce_floor && age < sleep_min_age_ms() {
@@ -6837,6 +7210,17 @@ impl Daemon {
 
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.state = SessionState::Sleeping;
+            if rec.kind == SessionKind::Codex {
+                rec.codex_stopping = true;
+                rec.observation_hold = true;
+                rec.pending_submit = false;
+                rec.pending_prefill = false;
+                rec.codex_submit_sent = false;
+                rec.codex_pending_seq = None;
+                self.pending_prompt.remove(&id);
+                self.codex_input_due.remove(&id);
+                self.codex_ready.remove(&id);
+            }
             rec.confidence = Confidence::High;
             rec.waiting_since = None;
             rec.state_changed_at = Some(now);
@@ -6894,14 +7278,14 @@ impl Daemon {
         let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else {
             return false;
         };
-        if rec.kind != SessionKind::Claude
+        if !rec.kind.is_agent()
             || rec.argv.is_empty()
             || !matches!(rec.state, SessionState::Exited { reason: ExitReason::UserQuit })
         {
             return false;
         }
-        let claude_id = rec.claude_session_id.unwrap_or(rec.id);
-        if self.resume_transcript_missing(rec, claude_id) {
+        let adapter = crate::agents::adapter(rec.kind).expect("agent kind checked above");
+        if adapter.history_missing(rec) || adapter.conversation_key(rec).is_none() {
             return false;
         }
         let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
@@ -6918,6 +7302,17 @@ impl Daemon {
         let now = now_ms();
         if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
             rec.state = SessionState::Sleeping;
+            if rec.kind == SessionKind::Codex {
+                rec.codex_stopping = true;
+                rec.observation_hold = true;
+                rec.pending_submit = false;
+                rec.pending_prefill = false;
+                rec.codex_submit_sent = false;
+                rec.codex_pending_seq = None;
+                self.pending_prompt.remove(&id);
+                self.codex_input_due.remove(&id);
+                self.codex_ready.remove(&id);
+            }
             rec.confidence = Confidence::High;
             rec.waiting_since = None;
             rec.state_changed_at = Some(now);
@@ -6952,7 +7347,7 @@ impl Daemon {
             return Response::Err { message: "ticket archived — restore it first".into() };
         }
         match rec.kind {
-            SessionKind::Claude => self.resume_session(id, false),
+            SessionKind::Claude | SessionKind::Codex => self.resume_session(id, false),
             SessionKind::Bash => {
                 let (sid, argv, cwd, ticket) = (
                     rec.sid16(),
@@ -7002,7 +7397,7 @@ impl Daemon {
             .filter(|r| {
                 matches!(
                     (r.kind, &r.state),
-                    (SessionKind::Claude, SessionState::Idle { .. })
+                    (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. })
                         | (SessionKind::Bash, SessionState::Running)
                 )
             })
@@ -7027,6 +7422,11 @@ impl Daemon {
         let due: Vec<String> =
             self.reaping.iter().filter(|(_, t)| **t <= now).map(|(s, _)| s.clone()).collect();
         for sid in due {
+            // Removing the terminal must not kill the supervisor before it
+            // proves its separate app-server and tool process group stopped.
+            if self.board.sessions.iter().any(|s| s.sid16() == sid && s.codex_stopping) {
+                continue;
+            }
             self.reaping.remove(&sid);
             let _ = self.backend.kill_session(&sid);
         }
@@ -7057,6 +7457,7 @@ impl Daemon {
         // else the kind word.
         let kind_word = match kind {
             SessionKind::Claude => "claude",
+            SessionKind::Codex => "codex",
             SessionKind::Bash => "bash",
         };
         self.focus_label = match self.backend.pane_title(&sid16) {

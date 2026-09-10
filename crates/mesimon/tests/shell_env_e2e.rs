@@ -110,7 +110,10 @@ fn an_export_in_the_users_rc_reaches_an_agents_pane() {
     }
     let mut c = TestClient::connect(&sock);
     assert!(matches!(
-        c.request(Command::Hello { version: 1, client: "shellenv".into() }),
+        c.request(Command::Hello {
+            version: mesimon_core::command::PROTOCOL_VERSION,
+            client: "shellenv".into()
+        }),
         Response::Hello { .. }
     ));
 
