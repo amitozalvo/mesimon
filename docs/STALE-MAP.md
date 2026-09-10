@@ -9861,3 +9861,31 @@ freshness remain unfinished. A removed mls-rs group can still encrypt old-state
 bytes; current recipients reject them, and broker lifecycle must separately stop
 group use. Production encryption integration stays gated. See the [final measured
 checks](spikes/T-215-mls-validation.md#coordinated-review-follow-up).
+
+
+## T-215 — runnable encrypted question/reply preview
+
+The earlier statement that Teams has no running client/service is superseded by
+`team/client` and `team/service-server`, separate unpublished paid-workspace crates.
+The first complete local workflow now connects real PostgreSQL ciphertext/receipts,
+pinned two-device MLS enrollment, no-checkout MCP questions, owner-bound daemon
+intake, explicit worktree start, private drafts and exact-audience reply approval.
+See [the executable evidence and limits](spikes/T-215-e2e-preview.md) and
+[the testing guide](../team/client/README.md).
+
+Core's generic `ImportTicket` remains local-owner authorized and is refused through
+the untrusted MCP shim. Its single writer stages complete selected content beneath
+`.mesimon/board/imports/` before atomic ticket materialization, recovers before board
+load and retains exact retry receipts after deletion. Imports remain Worktree and
+OwnerOnly, preserving their independent automatic-merge exclusion and private edits.
+No network worker mutates the board or injects remote content into a conversation.
+
+The preview accepts only contiguous verified history and author chains; unanswered
+checkpoint disagreement stops sync. Reply retries use fully observed revisions,
+so cancellation cannot be skipped by adopting a newer unread head. Unaccepted
+cancelled replies remain private rejected drafts. Native custody selects encrypted
+profile images, with no file-key fallback; same-UID Unix transport and fixed
+two-member enrollment are explicit preview limits. Separate broker, terminal Teams
+UX, broader membership/freshness/recovery, both enterprise deployments and security
+review remain launch gates. The passing fixture uses test custody and a fixture
+agent, not native-keychain or production-provider approval.

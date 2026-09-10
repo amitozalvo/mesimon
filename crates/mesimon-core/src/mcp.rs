@@ -571,6 +571,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::Snapshot
         | Command::Subscribe
         | Command::CreateTicket { .. }
+        | Command::ImportTicket { .. }
         | Command::DuplicateTicket { .. }
         | Command::RenameTicket { .. }
         | Command::DeleteTicket { .. }
@@ -1054,6 +1055,11 @@ mod tests {
             Command::Snapshot,
             Command::Subscribe,
             Command::CreateTicket { column: "TODO".into(), title: "t".into(), workspace: None },
+            Command::ImportTicket {
+                column: "TODO".into(),
+                content: crate::content::TicketContent { title: "incoming".into(), notes: vec![] },
+                origin: crate::content::ImportOrigin { source: t, item: t },
+            },
             Command::RenameTicket { id: t, title: "t".into() },
             Command::DeleteTicket { id: t, discard_worktree: true },
             Command::SetWorkspace { id: t, workspace: None },

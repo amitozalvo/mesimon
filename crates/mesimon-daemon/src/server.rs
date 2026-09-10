@@ -459,8 +459,12 @@ pub fn run(paths: Paths) -> Result<()> {
     // A malformed state file is a NOTICE, not a startup failure: this runs
     // after orch.sock is already bound, so a hard fail here left the client
     // staring at a 5 s blank terminal with the real cause in daemon.log.
+    // Recover only previously authorized local imports, on this sole writer,
+    // before any client can observe or edit their partially accepted tickets.
+    let import_notices = store::imports::recover(&paths);
     let store::Loaded { mut board, mut notices, columns_write_barred, sessions_write_barred } =
         store::load(&paths)?;
+    notices.extend(import_notices);
 
     // Reconcile persisted records against the live private server (D24).
     let snap = backend.snapshot().unwrap_or_default();
@@ -1253,6 +1257,7 @@ impl Daemon {
         // and naming the resource here is what makes that rule reachable
         // rather than merely true.
         let resource = match &env.command {
+            Command::ImportTicket { column, .. } => Resource::Column { name: column.clone() },
             Command::PaneTail { session, .. } => Resource::Session { id: *session },
             // Same rule as the line above, for the pane the user is inside
             // (T-299). `Board` where nothing is focused: there is no session
@@ -1315,6 +1320,9 @@ impl Daemon {
             }
             Command::CreateTicket { column, title, workspace } => {
                 self.create_ticket(&env.principal, column, title, workspace)
+            }
+            Command::ImportTicket { column, content, origin } => {
+                self.import_ticket(&env.principal, column, content, origin)
             }
             Command::DuplicateTicket { id } => self.duplicate_ticket(&env.principal, id),
             Command::RenameTicket { id, title } => {
@@ -4182,6 +4190,96 @@ impl Daemon {
         self.persist_and_notify();
         let started = self.auto_run(id);
         Response::Created { id, started }
+    }
+
+    /// Owner-delegated local adapter intake. The adapter, not this command,
+    /// verifies remote messages. Never forwards remote commands or starts work.
+    fn import_ticket(
+        &mut self,
+        by: &Principal,
+        column: String,
+        content: mesimon_core::content::TicketContent,
+        origin: mesimon_core::content::ImportOrigin,
+    ) -> Response {
+        use mesimon_core::content::{ImportPlacement, PreparedImport};
+        let result = (|| -> Result<(store::imports::Receipt, bool)> {
+            if let Decision::Deny { reason } =
+                authorize(by, &Action::ImportContent, &Resource::Column { name: column.clone() })
+            {
+                anyhow::bail!("{reason}");
+            }
+            content.validate()?;
+            // Reconciliation precedes destination checks: a committed receipt
+            // remains valid after a column rename or original-ticket deletion.
+            if let Some(receipt) = store::imports::replay(&self.paths, &origin, &column, &content)?
+            {
+                return Ok((receipt, false));
+            }
+            if self.columns_barred {
+                anyhow::bail!("{}", self.barred_message("columns"));
+            }
+            if self.board.column(&column).is_none() {
+                anyhow::bail!("no such column: {column}");
+            }
+            // Reserve before journaling; failure can leave a harmless gap but
+            // never lets another ticket reuse a partially accepted display key.
+            self.board.next_key =
+                self.board.next_key.checked_add(1).context("ticket keys exhausted")?;
+            store::save_columns(&self.paths, &self.board)?;
+            let last = self
+                .board
+                .column_tickets(&column)
+                .last()
+                .map(|t| t.order.clone())
+                .unwrap_or_default();
+            let prepared = PreparedImport::prepare(
+                by,
+                content,
+                origin.clone(),
+                ImportPlacement {
+                    id: ulid::Ulid::new(),
+                    short_key: format!(
+                        "{}{}",
+                        mesimon_core::board::KEY_PREFIX,
+                        self.board.next_key
+                    ),
+                    column,
+                    order: fracindex::between(&last, ""),
+                    created_at: now_iso(),
+                },
+                ulid::Ulid::new,
+            )?;
+            Ok((store::imports::commit(&self.paths, prepared)?, true))
+        })();
+        match result {
+            Ok((receipt, created)) => {
+                if self.board.ticket(receipt.id).is_none() {
+                    match store::imports::materialized(&self.paths, &receipt) {
+                        Ok(Some(ticket)) if ticket.import_origin.as_ref() == Some(&origin) => {
+                            self.board.tickets.push(ticket);
+                            self.broadcast();
+                        }
+                        Ok(None) => {} // Accepted original was subsequently deleted.
+                        Ok(Some(_)) => {
+                            return Response::Err {
+                                message:
+                                    "import origin differs from accepted ticket; left untouched"
+                                        .into(),
+                            }
+                        }
+                        Err(e) => {
+                            return Response::Err {
+                                message: format!(
+                                    "import accepted but local projection needs recovery: {e}"
+                                ),
+                            }
+                        }
+                    }
+                }
+                Response::Imported { id: receipt.id, key: receipt.key, created }
+            }
+            Err(e) => Response::Err { message: format!("could not import ticket: {e}") },
+        }
     }
 
     /// Copy content only. Publish after all note bodies and metadata are saved;

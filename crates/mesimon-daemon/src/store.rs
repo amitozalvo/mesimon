@@ -16,6 +16,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
 
+pub(crate) mod imports;
+
 /// On-disk schema stamps (16 §6.2). Four state files, four independent
 /// counters — a ticket change must not force a sessions migration. Absent is
 /// read as 1; newer than ours refuses THAT file and bars writes to it.

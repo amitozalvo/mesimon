@@ -208,7 +208,7 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 
 | Path | What |
 |---|---|
-| `<repo>/.mesimon/` | Your board: columns and tickets. Excluded via `$GIT_DIR/info/exclude`, never `.gitignore`. |
+| `<repo>/.mesimon/` | Your board: columns, tickets, and durable content-import receipts/staging under `board/imports/`. Excluded via `$GIT_DIR/info/exclude`, never `.gitignore`. |
 | `$GIT_DIR/info/exclude` | One line, so `.mesimon/` does not show up in `git status`. |
 | `~/.local/state/mesimon/<project key>/` | Sessions, worktrees, hook settings, provider launch settings, normalized previews, logs, and the private tmux server's conf. (Its socket is in the runtime dir below.) |
 | `~/.local/state/mesimon/notifications/` | Notification mascot images and signed Mesimon copies of the installed macOS notification helper. |
@@ -220,6 +220,14 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting
 above all others.
+
+The separate, unpublished [Teams preview](team/client/README.md) additionally
+writes its explicitly selected private profiles and exchange files (normally
+under `~/.local/state/mesimon/teams/`), identity locks beneath
+`/tmp/mesimon-<uid>/teams/`, and custody anchors in the native credential store
+under `mesimon.teams.preview.v1`. Its administrator explicitly selects the relay
+socket, credential output files and local PostgreSQL database. The ordinary
+Apache-core binary does not initialize these resources.
 
 ## Investigating agent state
 

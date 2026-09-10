@@ -112,8 +112,8 @@ pub struct PreparedImport {
 
 impl PreparedImport {
     /// Owner-authorized local import seam. There is deliberately no conversion
-    /// from an asserted remote identity to Local and no transport command calling
-    /// this function. A future broker must establish its own verified authority.
+    /// from an asserted remote identity to Local. The local import command is
+    /// owner-only; its adapter must establish any remote authority separately.
     pub fn prepare(
         by: &Principal,
         content: TicketContent,
@@ -290,7 +290,7 @@ mod tests {
             });
             assert_eq!(result.unwrap_err(), ContentError::Unauthorized);
         }
-        // There is no caller-forgeable verified-remote principal or local import command.
+        // There is no caller-forgeable verified-remote principal.
         assert!(serde_json::from_str::<Principal>(r#"{"kind":"verified_remote","device":"1"}"#)
             .is_err());
         assert!(

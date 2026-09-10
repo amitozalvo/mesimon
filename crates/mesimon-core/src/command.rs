@@ -91,6 +91,14 @@ pub enum Command {
         #[serde(default)]
         workspace: Option<WorkspaceStrategy>,
     },
+    /// A trusted local adapter materializes owner-delegated external content.
+    /// Same-UID local trust only: origin is correlation, never remote authority.
+    /// No agent MCP tool may call this; it never starts a session or workspace.
+    ImportTicket {
+        column: String,
+        content: crate::content::TicketContent,
+        origin: crate::content::ImportOrigin,
+    },
     /// Copy a ticket's content into a fresh, sessionless card immediately below it.
     DuplicateTicket {
         id: ulid::Ulid,
@@ -723,6 +731,7 @@ impl Command {
             | AgentReadNote { .. }
             | AgentListBoard => m(Read, false, None),
             CreateTicket { .. } => m(Mutate, true, None),
+            ImportTicket { .. } => m(Action::ImportContent, true, None),
             DuplicateTicket { id }
             | RenameTicket { id, .. }
             | DeleteTicket { id, .. }
@@ -862,6 +871,13 @@ pub enum Response {
         id: ulid::Ulid,
         #[serde(default)]
         started: bool,
+    },
+    /// Durable import acceptance. Exact retries retain the original identity,
+    /// including after the ticket was deleted; `created` is false on replay.
+    Imported {
+        id: ulid::Ulid,
+        key: String,
+        created: bool,
     },
     Spawned {
         id: uuid::Uuid,
