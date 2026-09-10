@@ -1,0 +1,24 @@
+ NOTE   mesimon > kanban-tui > Wrap description text
+
+ NEW NOTE ∙ ⎇ shared
+
+ A description can be a long paragraph with several sentences. The editor wraps these words within
+ the dialog and keeps the cursor on the same text when the terminal changes size.
+
+     Indentation and explicit line breaks stay in the saved note.
+ 你 好  café — Unicode text stays whole.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ^s save ∙ esc close

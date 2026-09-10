@@ -4181,7 +4181,7 @@ fn golden_editor_note_120() {
 fn golden_editor_note_100() {
     let mut app = app_noted();
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
-    let long = "a line long enough to need the window to scroll under the cursor, which is what the narrow golden is for, and then some more";
+    let long = "a line long enough to wrap within the editor while keeping the cursor visible, which is what the narrow golden is for, and then some more";
     let body = format!("{long}\nshort\n{long}");
     let mut ed = editor_on(
         crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: None },
@@ -4191,6 +4191,60 @@ fn golden_editor_note_100() {
     ed.body.end();
     app.mode = Mode::Editor(ed);
     golden("editor_note_100x24", &render(&app, 100, 24));
+}
+
+#[test]
+fn golden_editor_wrapped_description_and_visual_navigation() {
+    use crate::app::{EditorPurpose, Field};
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture_tagged());
+    app.cursor_col = 1;
+    let body = "A description can be a long paragraph with several sentences. The editor wraps these words within the dialog and keeps the cursor on the same text when the terminal changes size.\n\n    Indentation and explicit line breaks stay in the saved note.\n你好 cafe\u{301} — Unicode text stays whole.";
+    app.mode = Mode::Editor(editor_on(
+        EditorPurpose::Compose { workspace: None, tags: Vec::new() },
+        "Wrap description text",
+        body,
+    ));
+    golden("editor_wrapped_compose_120x30", &render(&app, 120, 30));
+    let mut terminal = Terminal::new(TestBackend::new(120, 30)).unwrap();
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    let first = terminal.get_cursor_position().unwrap();
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    terminal.draw(|f| super::draw(f, &app)).unwrap();
+    let second = terminal.get_cursor_position().unwrap();
+    assert_eq!(second.x, first.x);
+    assert_eq!(second.y, first.y + 1);
+    // Up from a continuation stays in the body; only Up from its first
+    // visual row returns a composer to its title.
+    app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+    let Mode::Editor(ed) = &app.mode else { panic!("editor") };
+    assert_eq!(ed.focus, Field::Body);
+    assert_eq!(ed.body.cursor(), 0);
+    assert_eq!(ed.body.as_str(), body);
+    app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+    let Mode::Editor(ed) = &app.mode else { panic!("editor") };
+    assert_eq!(ed.focus, Field::Title);
+
+    app.mode = Mode::Editor(editor_on(
+        EditorPurpose::Note { ticket: ulid_n(3), note: None },
+        "Wrap description text",
+        body,
+    ));
+    golden("editor_wrapped_description_120x30", &render(&app, 120, 30));
+
+    app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    app.mode = Mode::Editor(editor_on(
+        EditorPurpose::Note { ticket: ulid_n(3), note: None },
+        "Wrap description text",
+        body,
+    ));
+    golden("editor_wrapped_note_100x24", &render(&app, 100, 24));
+    app.handle_key(KeyCode::Down, KeyModifiers::NONE).unwrap();
+    let Mode::Editor(ed) = &app.mode else { panic!("editor") };
+    assert!(ed.body.cursor() > 0);
+    assert_eq!(ed.body.cursor_line(), 0);
+    assert_eq!(ed.body.as_str(), body);
 }
 
 /// `Tab` on a card: the description in the composer's dialog over the

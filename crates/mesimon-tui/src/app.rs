@@ -307,8 +307,10 @@ pub struct Editor {
     pub esc_armed: bool,
     /// `^s` on an EMPTIED existing note is a delete, and takes two presses.
     pub delete_armed: bool,
-    /// First visible body line; the draw follows the cursor and writes back.
+    /// First visible wrapped body row; the draw follows the cursor and writes back.
     pub top: Cell<usize>,
+    /// Body width from the last draw, shared by wrapping and vertical motion.
+    pub body_width: Cell<usize>,
     /// Where the composer dialog is growing FROM — the phantom card's own
     /// rectangle on the board, and when Tab was pressed. The dialog draws
     /// itself between that rectangle and its resting one for `GROW`, so the
@@ -458,6 +460,7 @@ impl Editor {
             esc_armed: false,
             delete_armed: false,
             top: Cell::new(0),
+            body_width: Cell::new(usize::MAX),
             grow: None,
         }
     }
@@ -5075,18 +5078,18 @@ impl App {
             Some(Verb::EditorUp) => match ed.focus {
                 // Off the top of the body is the title — when it is ours to
                 // edit. A note's title belongs to the ticket.
-                Field::Body if ed.body.cursor_line() == 0 && ed.composing() => {
+                Field::Body if ed.body.cursor_row(ed.body_width.get()) == 0 && ed.composing() => {
                     ed.focus = Field::Title
                 }
-                Field::Body => ed.body.up(),
+                Field::Body => ed.body.move_rows(-1, ed.body_width.get()),
                 Field::Title => {}
             },
             Some(Verb::EditorDown) => match ed.focus {
                 Field::Title => ed.focus = Field::Body,
-                Field::Body => ed.body.down(),
+                Field::Body => ed.body.move_rows(1, ed.body_width.get()),
             },
-            Some(Verb::PageUp) => ed.body.page(-(EDITOR_PAGE as isize)),
-            Some(Verb::PageDown) => ed.body.page(EDITOR_PAGE as isize),
+            Some(Verb::PageUp) => ed.body.move_rows(-(EDITOR_PAGE as isize), ed.body_width.get()),
+            Some(Verb::PageDown) => ed.body.move_rows(EDITOR_PAGE as isize, ed.body_width.get()),
             Some(Verb::EditBackspace) if word => ed.focused().delete_word_back(),
             Some(Verb::EditBackspace) => ed.focused().backspace(),
             Some(Verb::EditDeleteWord) => ed.focused().delete_word_back(),

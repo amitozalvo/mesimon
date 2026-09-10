@@ -9200,3 +9200,17 @@ and diff checks passed. Workspace formatting found existing differences in
 `execution_policy_e2e.rs`, `authorize.rs`, and `train.rs`; those files were left
 untouched. Linux and interactive terminal checks were not run for this TUI input
 adapter change.
+
+
+## Editor word wrapping (T-340, 2026-09-10)
+
+Description and note bodies now soft-wrap at the editor's displayed width,
+including the new-ticket composer. Wrapping prefers whitespace boundaries and
+splits long tokens only between grapheme clusters. Explicit newlines, indentation,
+and all stored text remain unchanged. Up/Down and PageUp/PageDown follow visual
+rows with a sticky display column; the composer returns to its title only above
+the first visual row. Home/End and word deletion retain their logical-line scope.
+The cursor and vertical scrolling use the same byte-range layout as rendering,
+which reflows on resize. A cluster wider than the entire viewport uses the existing
+truncation marker. Unit tests cover navigation, editing, scrolling, resize, and
+Unicode boundaries; editor goldens cover wrapped dialog and full-screen bodies.

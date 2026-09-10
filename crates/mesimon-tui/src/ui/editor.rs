@@ -481,6 +481,7 @@ fn draw_body(
     }
     let pad_s = " ".repeat(pad as usize);
     let width = (area.width as usize).saturating_sub(pad as usize + 1);
+    ed.body_width.set(width);
     let (top_line, rows, (cy, cx)) = area_window(&ed.body, ed.top.get(), body_h, width);
     ed.top.set(top_line);
     let mut lines: Vec<Line<'static>> = Vec::new();

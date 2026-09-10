@@ -354,11 +354,11 @@ pub(crate) struct TextArea {
     text: String,
     /// Byte offset, always on a grapheme boundary.
     cursor: usize,
-    /// The sticky display column (cells) `up`/`down` aim for: set on the
+    /// The viewport width and sticky display column vertical moves aim for: set on the
     /// first vertical move, kept while the walk continues, cleared by any
     /// horizontal edit or motion — so a walk through a short line comes back
-    /// out at the column it went in on.
-    want_col: Option<usize>,
+    /// out at the column it went in on. A width change resets the target.
+    want_col: Option<(usize, usize)>,
     /// Byte cap over the WHOLE text, newlines included.
     limit: usize,
 }
@@ -431,18 +431,6 @@ impl TextArea {
         self.text[self.cursor..].find('\n').map_or(self.text.len(), |i| self.cursor + i)
     }
 
-    /// Byte offset where line `n` starts; the text's end past the last line.
-    fn start_of_line(&self, n: usize) -> usize {
-        let mut start = 0;
-        for (i, line) in self.text.split('\n').enumerate() {
-            if i == n {
-                return start;
-            }
-            start += line.len() + 1;
-        }
-        self.text.len()
-    }
-
     /// Zero-based line the cursor is on.
     pub(crate) fn cursor_line(&self) -> usize {
         self.text[..self.cursor].matches('\n').count()
@@ -450,12 +438,14 @@ impl TextArea {
 
     /// Display cells before the cursor on its line — the column, in the
     /// renderer's unit.
+    #[cfg(test)]
     pub(crate) fn cursor_col_cells(&self) -> usize {
         self.text[self.line_start()..self.cursor].width()
     }
 
     /// An empty text has one empty line; a trailing `'\n'` yields a trailing
     /// empty line — what `lines()` yields, and what the window draws.
+    #[cfg(test)]
     pub(crate) fn line_count(&self) -> usize {
         self.text.split('\n').count()
     }
@@ -583,57 +573,115 @@ impl TextArea {
         self.want_col = None;
     }
 
+    #[cfg(test)]
     pub(crate) fn up(&mut self) {
-        self.vertical(-1);
+        self.page(-1);
     }
 
+    #[cfg(test)]
     pub(crate) fn down(&mut self) {
-        self.vertical(1);
+        self.page(1);
     }
 
-    /// `|delta|` lines up or down, clamped at the ends.
+    /// Move by logical lines when restoring a position after external editing.
     pub(crate) fn page(&mut self, delta: isize) {
-        self.vertical(delta);
+        self.move_rows(delta, usize::MAX);
     }
 
-    /// The one vertical move. The wanted column is the display column the
-    /// cursor had when the walk began, and the landing is the LAST grapheme
-    /// boundary on the target line whose accumulated width is within it —
-    /// so a wide cluster straddling the column is stepped before, never
-    /// split. At the first or last line the move is a no-op that keeps the
-    /// wanted column, so the walk can turn around.
-    fn vertical(&mut self, delta: isize) {
-        let want = *self.want_col.get_or_insert(self.cursor_col_cells());
-        let cur = self.cursor_line();
-        let last = self.line_count() - 1;
-        let target = cur.saturating_add_signed(delta).min(last);
+    pub(crate) fn cursor_row(&self, width: usize) -> usize {
+        self.wrapped_rows(width).cursor_row(self.cursor)
+    }
+
+    /// Move through displayed rows, retaining the desired cell column across
+    /// short rows. A soft boundary belongs to the following row, so landing
+    /// at the end of a continuation must stop before that boundary.
+    pub(crate) fn move_rows(&mut self, delta: isize, width: usize) {
+        let layout = self.wrapped_rows(width);
+        let cur = layout.cursor_row(self.cursor);
+        let col = self.text[layout.rows[cur].start..self.cursor].width();
+        let want = match self.want_col {
+            Some((old_width, want)) if old_width == width => want,
+            _ => col,
+        };
+        self.want_col = Some((width, want));
+        let target = cur.saturating_add_signed(delta).min(layout.rows.len() - 1);
         if target == cur {
             return;
         }
-        let start = self.start_of_line(target);
-        let line = self.text[start..].split('\n').next().unwrap_or("");
-        let mut cursor = start;
-        let mut width = 0usize;
-        for g in line.graphemes(true) {
-            let w = g.width();
-            if width + w > want {
+        let row = &layout.rows[target];
+        let end = if layout.rows.get(target + 1).is_some_and(|next| next.start == row.end) {
+            prev_boundary(&self.text, row.end)
+        } else {
+            row.end
+        };
+        let mut cursor = row.start;
+        let mut cells = 0;
+        for g in self.text[row.start..end].graphemes(true) {
+            if cells + g.width() > want {
                 break;
             }
-            width += w;
+            cells += g.width();
             cursor += g.len();
         }
         self.cursor = cursor;
     }
+
+    /// Byte ranges keep all whitespace and explicit newlines in the buffer.
+    /// Prefer breaks after whitespace; split an oversized word only at a
+    /// grapheme boundary. Even a viewport narrower than a cluster advances.
+    fn wrapped_rows(&self, width: usize) -> AreaLayout {
+        let width = width.max(1);
+        let mut rows = Vec::new();
+        let mut offset = 0;
+        for line in self.lines() {
+            let mut start = 0;
+            while start < line.len() {
+                let mut end = start;
+                let mut cells = 0;
+                let mut word_break = None;
+                let mut has_word = false;
+                for (i, g) in line[start..].grapheme_indices(true) {
+                    if cells + g.width() > width && end > start {
+                        break;
+                    }
+                    cells += g.width();
+                    end = start + i + g.len();
+                    if g.chars().all(char::is_whitespace) {
+                        if has_word {
+                            word_break = Some(end);
+                        }
+                    } else {
+                        has_word = true;
+                    }
+                }
+                if end < line.len() {
+                    end = word_break.unwrap_or(end);
+                }
+                rows.push(offset + start..offset + end);
+                start = end;
+            }
+            if line.is_empty() {
+                rows.push(offset..offset);
+            }
+            offset += line.len() + 1;
+        }
+        AreaLayout { rows }
+    }
 }
 
-/// The rows of a multi-line field that fit `rows` × `width` cells, with the
-/// cursor row kept inside the vertical window and the cursor kept inside its
-/// row horizontally. `top` is the first line shown last frame; it moves only
-/// as far as the cursor forces it, so a cursor walking inside the window
-/// never jitters the text. Returns the corrected top, the rows (the cursor
-/// row through `edit_window`, every other row truncated with a trailing `~`
-/// when cut), and the (row, col) of the hardware cursor within the window.
-/// `rows == 0` is an empty window with the cursor at (0, 0).
+struct AreaLayout {
+    rows: Vec<std::ops::Range<usize>>,
+}
+
+impl AreaLayout {
+    fn cursor_row(&self, cursor: usize) -> usize {
+        self.rows.partition_point(|row| row.start <= cursor).saturating_sub(1)
+    }
+}
+
+/// Soft-wrapped body rows and the hardware cursor within a vertical window.
+/// `top` counts visual rows; follow the cursor with the smallest scroll.
+/// The caller reserves one extra cell after `width` for an end-of-line cursor.
 pub(crate) fn area_window(
     ta: &TextArea,
     top: usize,
@@ -643,23 +691,19 @@ pub(crate) fn area_window(
     if rows == 0 {
         return (0, Vec::new(), (0, 0));
     }
-    let cur = ta.cursor_line();
-    let count = ta.line_count();
-    // Follow the cursor, then never start so far down that the window is
-    // emptier than the text makes it.
+    let layout = ta.wrapped_rows(width);
+    let cur = layout.cursor_row(ta.cursor);
+    let count = layout.rows.len();
     let top = top.min(cur).max((cur + 1).saturating_sub(rows)).min(count.saturating_sub(rows));
-    let mut out = Vec::with_capacity(rows);
-    let mut cursor_col = 0u16;
-    for (i, line) in ta.lines().enumerate().skip(top).take(rows) {
-        if i == cur {
-            let (shown, col) = edit_window(line, ta.cursor_col_cells(), width);
-            cursor_col = col;
-            out.push(shown);
-        } else {
-            out.push(truncate(line, width));
-        }
-    }
-    (top, out, ((cur - top) as u16, cursor_col))
+    let out = layout
+        .rows
+        .iter()
+        .skip(top)
+        .take(rows)
+        .map(|row| truncate(&ta.text[row.clone()], width))
+        .collect();
+    let col = ta.text[layout.rows[cur].start..ta.cursor].width().min(width);
+    (top, out, ((cur - top) as u16, col as u16))
 }
 
 /// `created_at` → epoch ms. The daemon writes `@<epoch-secs>` (server.rs
@@ -1233,18 +1277,90 @@ mod tests {
     }
 
     #[test]
-    fn area_window_scrolls_the_cursor_row_only() {
-        let mut t = TextArea::from_text("abcdefgh\nabcdefgh", 64);
-        t.end();
-        let (top, rows, cursor) = area_window(&t, 0, 2, 4);
-        assert_eq!(top, 0);
-        assert_eq!(rows, vec!["efgh", "abc~"]);
-        assert_eq!(cursor, (0, 4));
-        // The cursor row's scroll follows the cursor; the other row does not.
-        t.home();
-        let (_, rows, cursor) = area_window(&t, 0, 2, 4);
-        assert_eq!(rows, vec!["abcd", "abc~"]);
+    fn area_window_wraps_words_and_long_tokens_without_changing_text() {
+        let text = "one two three\n\nabcdefgh\n";
+        let mut t = TextArea::from_text(text, 128);
+        let (_, rows, cursor) = area_window(&t, 0, 10, 8);
+        assert_eq!(rows, ["one two ", "three", "", "abcdefgh", ""]);
         assert_eq!(cursor, (0, 0));
+        t.end();
+        assert_eq!(area_window(&t, 0, 10, 8).2, (1, 5));
+        let (_, rows, _) = area_window(&t, 0, 10, 4);
+        assert_eq!(rows, ["one ", "two ", "thre", "e", "", "abcd", "efgh", ""]);
+        assert_eq!(t.as_str(), text);
+    }
+
+    #[test]
+    fn area_wrapped_navigation_scrolls_and_edits_at_soft_boundaries() {
+        let mut t = TextArea::from_text("one two three four five", 128);
+        t.right();
+        t.move_rows(1, 8);
+        assert_eq!(t.cursor(), 9); // t|hree
+        t.move_rows(1, 8);
+        assert_eq!(t.cursor(), 15); // f|our
+        let (top, rows, cursor) = area_window(&t, 0, 2, 8);
+        assert_eq!((top, rows, cursor), (1, vec!["three ".into(), "four ".into()], (1, 1)));
+        t.move_rows(-2, 8);
+        assert_eq!(t.cursor(), 1);
+        t.cursor = 8; // the soft boundary belongs to the next row
+        assert_eq!(area_window(&t, 0, 4, 8).2, (1, 0));
+        t.backspace();
+        assert_eq!(t.as_str(), "one twothree four five");
+        t.insert(' ');
+        t.delete();
+        assert_eq!(t.as_str(), "one two hree four five");
+        t.newline();
+        assert_eq!(t.as_str(), "one two \nhree four five");
+    }
+
+    #[test]
+    fn area_wrapped_navigation_keeps_column_across_short_rows() {
+        let mut t = TextArea::from_text("abcdefghi\nx\nabcdefghi", 128);
+        t.cursor = 3;
+        t.move_rows(1, 6);
+        assert_eq!(t.cursor(), 9);
+        t.move_rows(1, 6);
+        assert_eq!(t.cursor(), 11);
+        t.move_rows(1, 6);
+        assert_eq!(t.cursor(), 15);
+        t.move_rows(-3, 6);
+        assert_eq!(t.cursor(), 3);
+        // Do not land on the next row when aiming past a soft row's end.
+        t.cursor = 19;
+        t.want_col = None;
+        t.move_rows(-1, 6);
+        assert_eq!(t.cursor_row(6), 3);
+    }
+
+    #[test]
+    fn area_wraps_unicode_on_grapheme_boundaries_and_handles_narrow_views() {
+        let mut t = TextArea::from_text("你好cafe\u{301}xyz", 128);
+        let (_, rows, _) = area_window(&t, 0, 10, 4);
+        assert_eq!(rows, ["你好", "cafe\u{301}", "xyz"]);
+        t.right();
+        t.move_rows(1, 4);
+        assert_eq!(&t.as_str()[..t.cursor()], "你好ca");
+        t.move_rows(-1, 4);
+        assert_eq!(t.cursor(), "你".len());
+        let (_, rows, cursor) = area_window(&t, 0, 20, 1);
+        assert_eq!(rows, ["~", "~", "c", "a", "f", "e\u{301}", "x", "y", "z"]);
+        assert_eq!(cursor, (1, 0));
+        let (_, rows, cursor) = area_window(&t, 0, 20, 0);
+        assert!(rows.iter().all(String::is_empty));
+        assert_eq!(cursor, (1, 0));
+    }
+
+    #[test]
+    fn area_resize_reflows_and_keeps_cursor_visible() {
+        let mut t = TextArea::from_text("abcdefghijklmnop", 64);
+        t.end();
+        assert_eq!(
+            area_window(&t, 0, 2, 8),
+            (0, vec!["abcdefgh".into(), "ijklmnop".into()], (1, 8))
+        );
+        assert_eq!(area_window(&t, 0, 2, 4), (2, vec!["ijkl".into(), "mnop".into()], (1, 4)));
+        assert_eq!(area_window(&t, 2, 2, 16), (0, vec![t.as_str().into()], (0, 16)));
+        assert_eq!(t.cursor(), 16);
     }
 
     #[test]
