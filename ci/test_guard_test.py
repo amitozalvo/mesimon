@@ -27,6 +27,27 @@ class OwnershipTests(unittest.TestCase):
             run.return_value.stdout = "  42  1 S Sat Sep 5 12:00:00 2026 /bin/sleep 60\n"
             self.assertEqual(process_table()[42], (1, "S", "Sat Sep 5 12:00:00 2026", "/bin/sleep 60"))
 
+    def test_custom_audit_root_retains_owned_registry_and_rejects_other_parents(self):
+        with tempfile.TemporaryDirectory(prefix="msmn-audit-root-") as directory:
+            root = Path(directory)
+            run = root / "msmn-test-run-fixture"
+            run.mkdir(mode=0o700)
+            with patch.dict(os.environ, MESIMON_TEST_AUDIT_ROOT=str(root)):
+                owner = Owner("retained-audit", "/bin/false", run)
+                registry = owner.registry
+                self.assertEqual(registry.parent, run.resolve())
+                self.assertTrue(owner.cleanup("finish"))
+                self.assertEqual(json.loads(registry.read_text())["status"], "cleaned")
+                other = root / "other"
+                other.mkdir(mode=0o700)
+                with patch("test_guard.tempfile.mkdtemp") as allocate:
+                    with self.assertRaises(ValueError):
+                        Owner("invalid-audit", "/bin/false", other)
+                    allocate.assert_not_called()
+                root.chmod(0o755)
+                with self.assertRaises(ValueError):
+                    Owner("shared-audit", "/bin/false", run)
+
     def test_registration_refuses_external_repo_and_existing_socket(self):
         owner = Owner("validation", "/bin/false")
         try:

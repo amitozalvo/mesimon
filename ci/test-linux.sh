@@ -40,6 +40,7 @@ exec docker run --rm --init --cpus 2 --memory 4g --platform linux/arm64 \
   -v msmn-linux-target:/target \
   -w /work \
   -e CARGO_TARGET_DIR=/target \
+  -e MESIMON_TEST_AUDIT_ROOT=/target/test-audits \
   -e CARGO_TERM_COLOR=always \
   -e MESIMON_REQUIRE_TMUX=1 \
   -e MESIMON_CI=1 \

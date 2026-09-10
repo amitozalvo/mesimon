@@ -53,6 +53,18 @@ class Owner:
     def __init__(self, name, tmux, run_dir=None):
         if not name or any(c not in "abcdefghijklmnopqrstuvwxyz0123456789-_" for c in name):
             raise ValueError("invalid fixture name")
+        run = None
+        if run_dir:
+            audit_root = Path(os.environ.get("MESIMON_TEST_AUDIT_ROOT", "/tmp")).resolve(strict=True)
+            if audit_root != Path("/tmp").resolve() and (
+                audit_root.stat().st_uid != os.getuid() or audit_root.stat().st_mode & 0o077
+            ):
+                raise ValueError("custom audit root must be private and owned")
+            run = Path(run_dir).resolve(strict=True)
+            if run.parent != audit_root or not run.name.startswith("msmn-test-run-"):
+                raise ValueError("invalid test-run registry")
+            if run.stat().st_uid != os.getuid() or run.stat().st_mode & 0o077:
+                raise ValueError("test-run registry must be private and owned")
         self.root = Path(tempfile.mkdtemp(prefix=f"msmn-e2e-{name}-", dir="/tmp")).resolve()
         self.tmux = tmux
         self.children = {}
@@ -62,12 +74,7 @@ class Owner:
         self.errors = []
         self.manifest = self.root / "owner.json"
         self.registry = None
-        if run_dir:
-            run = Path(run_dir).resolve(strict=True)
-            if run.parent != Path("/tmp").resolve() or not run.name.startswith("msmn-test-run-"):
-                raise ValueError("invalid test-run registry")
-            if run.stat().st_uid != os.getuid() or run.stat().st_mode & 0o077:
-                raise ValueError("test-run registry must be private and owned")
+        if run is not None:
             self.registry = run / f"{self.root.name}.json"
         self.remember_dir(self.root)
         self.persist("active")

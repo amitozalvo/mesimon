@@ -80,7 +80,11 @@ def main():
         print("Another bounded Mesimon check is running; refusing overlapping workloads.", file=sys.stderr)
         os.close(lock)
         return 2
-    run = Path(tempfile.mkdtemp(prefix="msmn-test-run-", dir="/tmp")).resolve()
+    # Containers can retain audit metadata on their build volume even after
+    # their process namespace and temporary fixture directories disappear.
+    audit_root = Path(os.environ.get("MESIMON_TEST_AUDIT_ROOT", "/tmp"))
+    audit_root.mkdir(parents=True, exist_ok=True, mode=0o700)
+    run = Path(tempfile.mkdtemp(prefix="msmn-test-run-", dir=audit_root)).resolve()
     env = dict(os.environ, MESIMON_TEST_RUN=str(run))
     if args.jobs:
         env.update(CARGO_BUILD_JOBS=str(args.jobs), RUST_TEST_THREADS=str(args.jobs))
@@ -139,7 +143,10 @@ def main():
                 guard.stdin.flush()
             except BrokenPipeError:
                 pass
-            guard.stdin.close()
+            try:
+                guard.stdin.close()
+            except BrokenPipeError:
+                pass
         try:
             if guard.wait(timeout=25) != 0:
                 result = result or 1
