@@ -1379,7 +1379,7 @@ no schema.
 `notifications_120x30`, `settings_120x30`.
 
 **The board keeps the machine awake while an agent is mid-turn (T-288).** Opt-in under
-Settings › Behaviour. While enabled, a fixed one-cell header light is `●` when held and `○`
+Settings › Behaviour. While enabled, a fixed one-cell light beside the board's ticket count is `•` when held and `○`
 when idle (`@` / `o` in ASCII mode); disabling hides it. The header cursor moves left/right
 between the light and git, and Enter on the light opens its selected settings row.
 `caffeine_watch::Monitor`

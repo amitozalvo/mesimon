@@ -225,11 +225,12 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
 }
 
 /// One-cell status light: filled while held, hollow while enabled but idle.
-/// The preference controls visibility; activity never changes its width.
+/// Text bullets sit on the text midline; geometric circles sat low in the
+/// user's terminal font. The preference controls visibility, not activity.
 pub(crate) fn awake_mark(tier: Tier, held: bool) -> char {
     match (tier == Tier::Ascii, held) {
-        (false, true) => '●',
-        (false, false) => '○',
+        (false, true) => '•',
+        (false, false) => '◦',
         (true, true) => '@',
         (true, false) => 'o',
     }
@@ -1057,8 +1058,8 @@ mod tests {
                 assert!(!(0x2500..=0x259F).contains(&(mark as u32)));
             }
         }
-        assert_eq!(awake_mark(Tier::Unicode, true), '●');
-        assert_eq!(awake_mark(Tier::Unicode, false), '○');
+        assert_eq!(awake_mark(Tier::Unicode, true), '•');
+        assert_eq!(awake_mark(Tier::Unicode, false), '◦');
     }
 
     /// The branch glyph and both arrows are one cell at both tiers and stay

@@ -92,6 +92,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     let word = screen_word(app);
     let mut spans = vec![chip(app, &word), Span::raw("  ".to_string())];
     spans.extend(breadcrumb(app, ink));
+    let mut awake = Vec::new();
     // The preference reserves one cell; activity changes only its glyph and
     // brightness. Focus paints that same cell, without changing geometry.
     if app.prefs.keep_awake {
@@ -103,8 +104,12 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
                 style = style.fg(theme.sel.base);
             }
         }
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(mark.to_string(), style));
+        awake.push(Span::raw(" "));
+        awake.push(Span::styled(mark.to_string(), style));
+    }
+    // Other screens have no ticket counter; retain their breadcrumb marker.
+    if word != "BOARD" {
+        spans.append(&mut awake);
     }
     if let Some(leaf) = leaf {
         let used: usize = super::spans_width(&spans);
@@ -129,6 +134,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         let n_tickets = app.board.tickets.iter().filter(|t| !t.is_archived()).count();
         let noun = if n_tickets == 1 { "ticket" } else { "tickets" };
         spans.push(Span::styled(format!("   {n_tickets} {noun}"), theme.dim2()));
+        spans.append(&mut awake);
         // Asleep count cut from the header (author 2026-08-30): sleeping is
         // the quiet, correct condition — the card's own state word carries
         // it; the header only speaks when something is spendable (the offer)

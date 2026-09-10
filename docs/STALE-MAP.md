@@ -8805,3 +8805,28 @@ network test and the restart-skew helper exercised by its parent tests. Clippy a
 formatting, diff checks and `cargo build` passed in the main checkout. Linux and manual TUI
 checks were not repeated for this rendering/navigation change; Unicode and ASCII geometry
 and input behavior are covered by the automated tests.
+
+
+## T-288: wake light beside the board ticket count (2026-09-10)
+
+The user placed the wake light with the board's ticket count, rather than the repository
+breadcrumb. It now follows the count (`7 tickets •` / `7 tickets ◦`), keeping the same fixed
+width and enabled-only visibility. Other screens, which have no ticket count, retain their
+breadcrumb marker. Header navigation follows the new visual order: Right/l from repository
+status selects the light, Left/h returns to repository status, and Enter still opens its
+setting. A running-ticket count is deferred to a separate task as requested.
+
+Existing geometry, visibility and navigation tests now pin the count adjacency and direction;
+the held, idle and focused board goldens reflect the new position.
+
+The user's terminal screenshot showed the geometric hollow circle sitting below the adjacent
+text. The Unicode pair now uses the text bullets `•` / `◦`, rather than geometric `●` / `○`,
+for a midline text glyph. ASCII remains `@` / `o`; width, colors and navigation are unchanged.
+
+Validation: the relocation passed 1343/1343 workspace tests on rerun with two existing skips
+(live release network test and the subprocess helper exercised by its parent tests), and a clean
+81-owner audit. The first run also passed every test but reported one leaky test; the diagnostic
+rerun reported none. The final text-bullet adjustment passed the 604-test TUI suite, with its
+existing live-network test ignored and clean fixture cleanup. All three golden diffs were
+inspected; clippy, formatting, diff checks and the main build passed. Linux and manual terminal
+checks were not repeated for this placement and glyph-only change.

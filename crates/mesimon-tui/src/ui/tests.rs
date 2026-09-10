@@ -5400,11 +5400,13 @@ fn wake_indicator_visibility_follows_preference_on_every_screen() {
             app.caffeinated = held;
             app.prefs.keep_awake = false;
             let off = render(&app, 120, 30)[0].clone();
-            assert!(!off.contains('●') && !off.contains('○'), "disabled: {off}");
+            assert!(!off.contains('•') && !off.contains('◦'), "disabled: {off}");
             app.prefs.keep_awake = true;
-            let mark = if held { '●' } else { '○' };
+            let mark = if held { '•' } else { '◦' };
             let on = render(&app, 120, 30)[0].clone();
-            assert!(on.contains(&format!("kanban-tui {mark}")), "enabled: {on}");
+            let label =
+                if matches!(app.screen, Screen::Board) { "7 tickets" } else { "kanban-tui" };
+            assert!(on.contains(&format!("{label} {mark}")), "enabled: {on}");
         }
     }
 }
@@ -5423,8 +5425,8 @@ fn wake_activity_and_focus_never_move_the_header() {
             let idle_mark = crate::glyphs::awake_mark(app.theme.glyph_tier(), false);
             let active_mark = crate::glyphs::awake_mark(app.theme.glyph_tier(), true);
             let expected = idle.replacen(
-                &format!("kanban-tui {idle_mark}"),
-                &format!("kanban-tui {active_mark}"),
+                &format!("7 tickets {idle_mark}"),
+                &format!("7 tickets {active_mark}"),
                 1,
             );
             app.caffeinated = true;
@@ -5443,7 +5445,7 @@ fn wake_indicator_has_single_cell_ascii_states() {
     for (held, mark) in [(true, '@'), (false, 'o')] {
         app.caffeinated = held;
         let head = render(&app, 120, 30)[0].clone();
-        assert!(head.contains(&format!("kanban-tui {mark}")), "{head:?}");
+        assert!(head.contains(&format!("7 tickets {mark}")), "{head:?}");
     }
 }
 
@@ -5457,7 +5459,7 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
             app.caffeinated = held;
             app.git = git_state("main", 2, 1, 3);
             let plain = cells(&app, 120, 30);
-            let mark = if held { "●" } else { "○" };
+            let mark = if held { "•" } else { "◦" };
             let x = (0..120u16).find(|x| plain[(*x, 0)].symbol() == mark).unwrap();
             assert_eq!(
                 plain[(x, 0)].fg,

@@ -4132,8 +4132,8 @@ impl App {
                 }
             }
             Scope::Header => match verb {
-                Verb::CursorLeft if self.prefs.keep_awake => self.header_awake = true,
-                Verb::CursorRight if self.git.sampled => self.header_awake = false,
+                Verb::CursorLeft if self.git.sampled => self.header_awake = false,
+                Verb::CursorRight if self.prefs.keep_awake => self.header_awake = true,
                 Verb::CursorDown => self.header_focus = false,
                 _ => {}
             },
@@ -11053,11 +11053,11 @@ mod tests {
             assert_eq!(app.scope(), Scope::Header);
             assert_eq!(app.header_awake, !sampled);
             if sampled {
-                app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
-                assert!(app.header_awake);
                 app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+                assert!(app.header_awake);
+                app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
                 assert!(!app.header_awake);
-                press(&mut app, 'h');
+                press(&mut app, 'l');
             }
             assert!(app.header_awake);
             // Activity transitions leave the selection alone.
@@ -11095,13 +11095,13 @@ mod tests {
         app.prefs.keep_awake = true;
         press(&mut app, 'k');
         press(&mut app, 'k');
-        press(&mut app, 'h');
+        press(&mut app, 'l');
         assert!(app.header_awake);
         press(&mut app, 'j');
         assert!(app.on_column_header());
         press(&mut app, 'k');
-        press(&mut app, 'h');
         press(&mut app, 'l');
+        press(&mut app, 'h');
         assert!(!app.header_awake);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.screen, Screen::Diff));

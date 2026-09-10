@@ -1,4 +1,4 @@
- BOARD   mesimon > kanban-tui ○ ⎇ main ↑2 ↓1 ∙ 3 changed   7 tickets
+ BOARD   mesimon > kanban-tui ⎇ main ↑2 ↓1 ∙ 3 changed   7 tickets ◦
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 

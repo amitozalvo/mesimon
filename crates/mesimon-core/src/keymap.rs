@@ -4058,8 +4058,8 @@ static HEADER: &[Binding] = &[
         keys: &[Key::Char('h'), Key::Left],
         verb: Verb::CursorLeft,
         show: "h",
-        hint: |_| "keep awake",
-        avail: |c| c.keep_awake && c.git_repo && !c.header_awake,
+        hint: |_| "repository",
+        avail: |c| c.keep_awake && c.git_repo && c.header_awake,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -4069,8 +4069,8 @@ static HEADER: &[Binding] = &[
         keys: &[Key::Char('l'), Key::Right],
         verb: Verb::CursorRight,
         show: "l",
-        hint: |_| "repository",
-        avail: |c| c.keep_awake && c.git_repo && c.header_awake,
+        hint: |_| "keep awake",
+        avail: |c| c.keep_awake && c.git_repo && !c.header_awake,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -6188,13 +6188,13 @@ mod tests {
     #[test]
     fn wake_header_navigation_and_settings_target_follow_the_selection() {
         let git = Ctx { git_repo: true, keep_awake: true, ..Default::default() };
-        for key in [Key::Char('h'), Key::Left] {
-            assert_eq!(resolve(Scope::Header, key, &git), Some(Verb::CursorLeft));
+        for key in [Key::Char('l'), Key::Right] {
+            assert_eq!(resolve(Scope::Header, key, &git), Some(Verb::CursorRight));
         }
         assert_eq!(hint_for(Scope::Header, Verb::Act, &git), Some(("enter", "diff")));
         let awake = Ctx { header_awake: true, ..git.clone() };
-        for key in [Key::Char('l'), Key::Right] {
-            assert_eq!(resolve(Scope::Header, key, &awake), Some(Verb::CursorRight));
+        for key in [Key::Char('h'), Key::Left] {
+            assert_eq!(resolve(Scope::Header, key, &awake), Some(Verb::CursorLeft));
         }
         assert_eq!(resolve(Scope::Header, Key::Enter, &awake), Some(Verb::Act));
         assert_eq!(
@@ -6203,7 +6203,7 @@ mod tests {
         );
         let alone = Ctx { git_repo: false, ..awake.clone() };
         assert_eq!(resolve(Scope::Header, Key::Enter, &alone), Some(Verb::Act));
-        assert_eq!(resolve(Scope::Header, Key::Right, &alone), None);
+        assert_eq!(resolve(Scope::Header, Key::Left, &alone), None);
         let disabled = Ctx { keep_awake: false, ..alone };
         assert_eq!(resolve(Scope::Header, Key::Enter, &disabled), None);
         assert_eq!(SettingsSection::for_verb(Verb::KeepAwake), SettingsSection::Behaviour);
