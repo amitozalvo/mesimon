@@ -6,6 +6,44 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.19 — 2026-09-10
+
+### Added
+
+- **Run Codex sessions alongside Claude Code.** Choose the provider for new
+  sessions in Settings → Agents. Existing and sleeping sessions retain their
+  original provider, and each ticket has one live agent seat. Codex uses its
+  native CLI authentication and runtime; compatibility was measured against
+  codex-cli 0.153.4.
+- **Keep your machine awake while an agent works.** Enable the option in
+  Settings → Behaviour; it is off by default and also works while attached.
+  A coffee indicator beside the ticket count shows an active hold, and a
+  dimmed moon shows idle. Select the indicator and press Enter to open its
+  setting. Waiting for user action or closing the board releases the hold.
+- **Duplicate a board ticket with `yy`.**
+
+### Changed
+
+- **Settings are grouped by purpose.** Application and column settings have
+  clearer sections, labels, and contextual hints, with independent sleep and
+  archive offers.
+- **Jump half a page with `{` and `}`.** Diff navigation also supports
+  `Ctrl+]` to return to the previous screen.
+- **Board tags are easier to see.** Overflow counts replace faded partial
+  cards at the edges of a column.
+
+### Fixed
+
+- **Agent status and recovery follow more native session events.** Claude
+  compaction, wakeups, and waiting states have improved detection; Codex
+  sessions support recovery with conservative handling of uncertain state.
+- **Upgrade older running daemons with explicit handover.** Protocol-1
+  daemons can be handed over when you request an upgrade.
+- **Navigation keeps focus and movement predictable.** Held-key navigation,
+  header focus, cursor styling, and diff paging are corrected. Moving a ticket
+  to an adjacent column requires matching double presses and retains focus
+  in the source column.
+
 ## v0.1.0-alpha.18 — 2026-09-08
 
 ### Added
