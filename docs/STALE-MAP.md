@@ -8929,3 +8929,47 @@ independent security review before implementation commitments.
 
 This entry records research and explicit product constraints only; no runtime,
 protocol, license, or current README promise changes in this ticket.
+
+## Teams approved scope and first implementation evidence (T-215, 2026-09-10)
+
+The owner approved the proposal and then refined the launch contract: terminal
+Teams only (phone/browser boards are Mesophon), readable local board/notes,
+optional key backup, owner-started ordinary question tickets with Worktree default,
+hard no automatic merge, private working drafts, and human-reviewed replies by
+default with per-ticket fixed-audience automatic publication as an explicit opt-in.
+There is no isolated worker runtime or promise that a worktree contains a hostile
+agent. These decisions supersede the earlier T-215 research's browser-at-launch,
+mandatory recovery and isolated-worker recommendations. The revised scenario
+catalog has 182 rows; the six added rows cover these execution/reply constraints.
+The complete [implementation plan](proposals/T-215-teams-implementation.md) replaces
+a truncated ticket note.
+
+Implemented generic core safety seam: `Ticket::execution_policy` defaults to existing
+local automation, with an `OwnerOnly` floor that is separate from `manual_merge`.
+The merge planner excludes it from merge and rebase; daemon merge/rebase boundaries
+also consult core execution authorization. Creation auto-run checks the policy.
+Copies retain it, the manual-merge toggle cannot clear it, and persistence keeps it
+across daemon restart. Ticket schema 5 prevents schema-4 readers from dropping this
+restriction. Unknown policy values fail decoding. Local human authority retains the
+existing same-UID trust contract; this is not authenticated remote intake or a local
+hostile-agent sandbox. Existing local creation defaults remain unchanged.
+
+Paid work starts in the separate `team/` workspace, not the Apache crates. The
+[OpenMLS validation report](spikes/T-215-mls-validation.md) records ten executable
+scenarios and the [v0 storage contract](../team/docs/crypto-storage-contract-v0.md).
+It demonstrates basic encrypted group journeys and exposes two application hazards:
+corrupt input can consume receive state in the raw memory provider, and restoring
+old valid storage re-enables replay. Test-only transaction rollback repairs the first
+scenario; it supplies no production crash safety. MLS membership also permits
+sending irrespective of application read-only roles. These findings are review
+inputs, not security certification or production adoption. Complete temporary-file reload and a fixed application vector with public test keys
+also pass on Linux at the Teams minimum toolchain. Core MSRV stays 1.85;
+Teams declares 1.91 and pins its own dependencies and lockfile. A separate manual CI
+workflow covers Teams; the root workspace suite does not include it.
+
+Remaining: complete package-2 transactional disk/enrollment/snapshot/known-answer
+validation and independent review; the rest of core remote identity/projection and
+no-repo capability seams; service, broker/sync, terminal Teams UX, scoped reply MCP,
+and enterprise rollout. No Teams service/client or production encryption is exposed
+by this change. The owner will create a separate agent for review of this evidence.
+The milestone remains in progress; the full cross-project journey has not shipped.

@@ -70,6 +70,22 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
     }
 }
 
+/// Additional execution floor for a ticket with durable intake restrictions.
+/// Ordinary resource authorization must also pass. Remote principals are never
+/// converted to Local by an adapter; Local retains the existing same-UID boundary.
+pub fn authorize_execution(
+    principal: &Principal,
+    policy: crate::board::ExecutionPolicy,
+) -> Decision {
+    match principal {
+        Principal::Local => Decision::Allow,
+        Principal::Automation { .. } if policy.allows_automation() => Decision::Allow,
+        Principal::Automation { .. } | Principal::Agent { .. } => Decision::Deny {
+            reason: "execution requires the owner at the keyboard".into(),
+        },
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -79,6 +95,16 @@ mod tests {
     }
     fn automation() -> Principal {
         Principal::Automation { rule: "automove".into() }
+    }
+
+    #[test]
+    fn owner_only_execution_never_inherits_automation_authority() {
+        use crate::board::ExecutionPolicy::{LocalAutomation, OwnerOnly};
+        assert_eq!(authorize_execution(&Principal::Local, OwnerOnly), Decision::Allow);
+        assert_eq!(authorize_execution(&automation(), LocalAutomation), Decision::Allow);
+        assert!(authorize_execution(&automation(), OwnerOnly).denied());
+        assert!(authorize_execution(&agent(), OwnerOnly).denied());
+        assert!(authorize_execution(&agent(), LocalAutomation).denied());
     }
 
     #[test]

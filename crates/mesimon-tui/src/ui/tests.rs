@@ -52,6 +52,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         entered_at: None,
         woke_at: None,
         manual_merge: false,
+        execution_policy: Default::default(),
         raised: None,
         workspace: None,
         tags: Vec::new(),

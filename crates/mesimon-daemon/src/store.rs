@@ -53,7 +53,9 @@ pub const COLUMNS_SCHEMA: u32 = 5;
 /// `manual_merge`, the ticket's opt-out from the merge train — the
 /// `mcp_tools` argument: a v3 build would drop it on its next save and the
 /// train, re-armed, would merge a branch the user had taken off it.
-pub const TICKET_SCHEMA: u32 = 4;
+/// v5 adds the non-toggleable execution policy. Older readers must refuse
+/// the file instead of dropping the restriction and putting it on the train.
+pub const TICKET_SCHEMA: u32 = 5;
 /// v2 adds Codex session kinds, exact thread identity and observation holds.
 /// Older readers must refuse before decoding an unfamiliar session kind,
 /// rather than quarantine the file and forget ownership of its live panes.
@@ -704,6 +706,26 @@ mod tests {
         )
     }
 
+    #[test]
+    fn execution_policy_roundtrips_and_old_readers_refuse_its_schema() {
+        use mesimon_core::board::ExecutionPolicy;
+        let body = format!(
+            "schema_version = 5\n{}execution_policy = \"owner_only\"\n",
+            ticket_body("T-1", "TODO")
+        );
+        let parsed: TicketFile = toml::from_str(&body).unwrap();
+        assert_eq!(parsed.ticket.execution_policy, ExecutionPolicy::OwnerOnly);
+        assert!(!parsed.ticket.manual_merge);
+        let encoded = toml::to_string_pretty(&parsed).unwrap();
+        let back: TicketFile = toml::from_str(&encoded).unwrap();
+        assert_eq!(back.ticket.execution_policy, ExecutionPolicy::OwnerOnly);
+        assert!(matches!(verdict(parsed.schema_version, 4), Verdict::Newer(5)));
+        let old: TicketFile = toml::from_str(&ticket_body("T-1", "TODO")).unwrap();
+        assert_eq!(old.ticket.execution_policy, ExecutionPolicy::LocalAutomation);
+        let unknown = body.replace("owner_only", "future_policy");
+        assert!(toml::from_str::<TicketFile>(&unknown).is_err());
+    }
+
     fn quarantined(dir: &Path, stem: &str) -> Vec<std::path::PathBuf> {
         std::fs::read_dir(dir)
             .into_iter()
@@ -1266,6 +1288,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: Some(mesimon_core::board::Raised {
                 at: "@1788046500".into(),
                 by: "agent:00000000-0000-0000-0000-000000000000".into(),
@@ -1307,6 +1330,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: None,
             workspace: None,
             tags: Vec::new(),
@@ -1356,6 +1380,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1399,6 +1424,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1456,6 +1482,7 @@ by = "local"
                 entered_at: None,
                 woke_at: None,
                 manual_merge: false,
+                execution_policy: Default::default(),
                 raised: None,
                 workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
                 tags: Vec::new(),
@@ -1789,6 +1816,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: None,
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
@@ -1818,6 +1846,7 @@ by = "local"
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: None,
             workspace: None,
             tags: Vec::new(),

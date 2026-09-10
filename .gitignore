@@ -1,5 +1,6 @@
 # Rust
 /target/
+/team/target/
 **/*.rs.bk
 
 # release staging (ci/release.sh)

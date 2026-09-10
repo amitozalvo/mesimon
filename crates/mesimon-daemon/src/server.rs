@@ -4203,6 +4203,7 @@ impl Daemon {
             entered_at: Some(now_iso()),
             woke_at: None,
             manual_merge: false,
+            execution_policy: source.execution_policy,
             raised: None,
             workspace: source.workspace,
             tags: source.tags,
@@ -4254,6 +4255,7 @@ impl Daemon {
         let wants = self
             .board
             .ticket(id)
+            .filter(|t| t.execution_policy.allows_automation())
             .and_then(|t| self.board.column(&t.column))
             .is_some_and(|c| c.settings.auto_run);
         if !wants {
@@ -4311,6 +4313,7 @@ impl Daemon {
             entered_at: Some(now_iso()),
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: None,
             workspace,
             tags: Vec::new(),
@@ -4583,6 +4586,14 @@ impl Daemon {
                 detail: "not allowed".into(),
             };
         }
+        if let Some(ticket) = self.board.ticket(id) {
+            if mesimon_core::authorize::authorize_execution(by, ticket.execution_policy).denied() {
+                return Response::Merge {
+                    outcome: MergeOutcome::Refused,
+                    detail: "this ticket requires a human to merge it".into(),
+                };
+            }
+        }
         // A person's merge clears the train's memory of this ticket the way a
         // hand move clears the movegate's fuse.
         if by.is_human() {
@@ -4691,6 +4702,13 @@ impl Daemon {
     ) -> Response {
         if let Decision::Deny { .. } = authorize(by, &Action::Mutate, &Resource::Ticket { id }) {
             return Response::Err { message: "not allowed".into() };
+        }
+        if self.board.ticket(id).is_some_and(|ticket| {
+            mesimon_core::authorize::authorize_execution(by, ticket.execution_policy).denied()
+        }) {
+            return Response::Err {
+                message: "this ticket requires a human to request a merge or rebase".into(),
+            };
         }
         if by.is_human() {
             self.train.hand_touched(id);

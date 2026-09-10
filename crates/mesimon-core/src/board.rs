@@ -850,6 +850,23 @@ impl ColumnSettings {
     }
 }
 
+/// Durable execution restriction supplied by a trusted intake/import path.
+/// Unlike `manual_merge`, this is not a user preference and has no toggle command.
+/// It restricts Mesimon automation; it is not a sandbox for a local process.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionPolicy {
+    #[default]
+    LocalAutomation,
+    OwnerOnly,
+}
+
+impl ExecutionPolicy {
+    pub fn allows_automation(&self) -> bool {
+        matches!(self, Self::LocalAutomation)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Ticket {
     /// Immutable identity; never appears in a path (D24).
@@ -897,6 +914,10 @@ pub struct Ticket {
     /// omitted from the file while off. A scalar, with the scalars.
     #[serde(default, skip_serializing_if = "is_false")]
     pub manual_merge: bool,
+    /// A durable floor on automatic execution and merge, independent of the
+    /// toggleable `manual_merge` preference. Unknown policies fail decoding.
+    #[serde(default, skip_serializing_if = "ExecutionPolicy::allows_automation")]
+    pub execution_policy: ExecutionPolicy,
     /// Per-ticket workspace strategy (M4 layering: the ticket field is the truth;
     /// a column's `workspace` setting only defaults a NEW ticket, stamped here at
     /// mint — T-117). `None` = inherit the board default. Must stay after the
@@ -2319,6 +2340,7 @@ mod tests {
             entered_at: None,
             woke_at: None,
             manual_merge: false,
+            execution_policy: Default::default(),
             raised: None,
             workspace: None,
             tags: Vec::new(),

@@ -101,7 +101,9 @@ pub fn plan(input: &Input) -> Plan {
     for col in input.board.sorted_columns() {
         for t in input.board.column_tickets(&col.name) {
             let Some(f) = input.flags.get(&t.id) else { continue };
-            if !f.attached || f.conflict || f.merged || t.manual_merge || t.hand_raised() {
+            if !f.attached || f.conflict || f.merged || t.manual_merge
+                || !t.execution_policy.allows_automation() || t.hand_raised()
+            {
                 continue;
             }
             let seat = seat(input.board, t.id);
@@ -187,6 +189,22 @@ mod tests {
             asked: &HashMap::new(),
             fused: &HashSet::new(),
         })
+    }
+
+    #[test]
+    fn owner_only_survives_manual_merge_toggle_and_reload() {
+        let mut b = board();
+        let mut t = ticket(1, REVIEW, "a");
+        t.execution_policy = crate::board::ExecutionPolicy::OwnerOnly;
+        t.manual_merge = true;
+        t.manual_merge = false;
+        // The durable policy survives reload even with the user opt-out disabled.
+        b.tickets.push(serde_json::from_str(&serde_json::to_string(&t).unwrap()).unwrap());
+        b.sessions.push(claude(1, idle(), Confidence::High));
+        for needs_rebase in [false, true] {
+            let flags = HashMap::from([(t.id, flags(1, needs_rebase))]);
+            assert_eq!(run(&b, &flags), Plan::default());
+        }
     }
 
     #[test]
