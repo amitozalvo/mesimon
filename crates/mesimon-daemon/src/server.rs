@@ -2156,7 +2156,7 @@ impl Daemon {
             ) {
                 continue;
             }
-            let Ok(screen) = self.backend.capture_tail(&sid, 40) else { continue };
+            let Ok(screen) = self.backend.capture_input_screen(&sid) else { continue };
             if crate::agents::codex::input_ready(&screen) {
                 self.codex_native_ready.insert(id, generation);
             }
@@ -2242,7 +2242,7 @@ impl Daemon {
             let ticket = rec.ticket;
             let pending_prefill = rec.pending_prefill;
             let submit = rec.pending_submit;
-            let Ok(screen) = self.backend.capture_tail(&sid, 40) else { continue };
+            let Ok(screen) = self.backend.capture_input_screen(&sid) else { continue };
             if !crate::agents::codex::input_ready(&screen) {
                 continue;
             }

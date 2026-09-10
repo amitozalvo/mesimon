@@ -32,14 +32,23 @@ def stop(*_):
     stopping=True
 signal.signal(signal.SIGTERM,stop)
 tty.setcbreak(0)
-print('\x1b[?2004hSynthetic provider fixture\r\n› \r\n100% context left · ? for shortcuts',flush=True)
+def render(screen,cursor):
+    print('\x1b[?25l\x1b[2J\x1b[3J\x1b[H'+screen,end='')
+    if cursor is not None:
+        x,y=cursor
+        print(f'\x1b[{y+1};{x+1}H\x1b[?25h',end='')
+    sys.stdout.flush()
+print('\x1b[?2004h',end='')
+try: initial=json.loads((root/'initial-screen.json').read_text())
+except FileNotFoundError: initial={}
+render(initial.get('screen','Synthetic provider fixture\r\n› \r\nanything the user wants'),initial.get('cursor',[2,1]))
 while not stopping:
     try: instruction=json.loads(control.read_text())
     except (FileNotFoundError,ValueError): instruction={}
     if instruction!=prior:
         if 'state' in instruction: state=instruction['state']
         if 'turn_id' in instruction: turn=instruction['turn_id']
-        if 'screen' in instruction: print('\x1b[2J\x1b[3J\x1b[H'+instruction['screen'],flush=True)
+        if 'screen' in instruction: render(instruction['screen'],instruction.get('cursor',[2,1]))
         sequence+=1; prior=instruction
     if instruction.get('publish',True):
         value={'session':config['session'],'generation':config['generation'],'sequence':sequence,
@@ -302,6 +311,105 @@ fn project_switches_preserve_old_running_and_sleeping_sessions_and_scoped_tools(
     assert_eq!(session(&mut c, codex).kind, SessionKind::Codex);
     assert_eq!(session(&mut c, codex).codex_thread_id.as_deref(), Some(thread.as_str()));
     assert_eq!(session(&mut c, claude).kind, SessionKind::Claude);
+}
+
+fn starts_with_any_status_line(footer: &str) {
+    let Some(h) = Fixture::boot("providercontextstart") else { return };
+    std::fs::write(
+        h.owner.dir.join("initial-screen.json"),
+        json!({
+            "screen":format!("Synthetic provider fixture\r\n› \r\n{footer}")
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let immediate = ticket(&mut c, "immediate start", None);
+    let id = match c.request(Command::SpawnSession {
+        ticket: immediate,
+        kind: SessionKind::Codex,
+        submit_prompt: true,
+    }) {
+        Response::Spawned { id, .. } => id,
+        response => panic!("immediate spawn: {response:?}"),
+    };
+    c.await_state(id, "immediate prompt accepted", |s| *s == SessionState::Running);
+    let waiting = ticket(&mut c, "queued start", None);
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket: waiting,
+            text: "queued instructions".into(),
+            queued: true,
+        }),
+        Response::Queued { .. }
+    ));
+    assert!(c.board().live_agent(waiting).is_none());
+    h.control(id, json!({"state":{"state":"idle","stop_reason":"end_turn"}}));
+    wait_until(Duration::from_secs(15), "queued prompt accepted", || {
+        c.board().live_agent(waiting).is_some_and(|s| s.state == SessionState::Running)
+    });
+    let queued = c.board().live_agent(waiting).unwrap().id;
+    std::thread::sleep(Duration::from_millis(1200));
+    for (sid, title) in [(id, "immediate start"), (queued, "queued start")] {
+        let record = session(&mut c, sid);
+        assert!(!record.pending_prefill && !record.pending_submit && !record.codex_submit_sent);
+        let input = std::fs::read_to_string(h.owner.dir.join(format!("{sid}.input"))).unwrap();
+        assert_eq!(input.matches(title).count(), 1, "{input:?}");
+        if sid == queued {
+            assert_eq!(input.matches("queued instructions").count(), 1, "{input:?}");
+        }
+        assert_eq!(
+            std::fs::read_to_string(h.owner.dir.join(format!("{sid}.submits"))).unwrap(),
+            "1"
+        );
+    }
+}
+
+#[test]
+fn arbitrary_status_line_submits_immediate_and_queued_starts_once() {
+    starts_with_any_status_line("my completely arbitrary status");
+}
+
+#[test]
+fn no_status_line_submits_immediate_and_queued_starts_once() {
+    starts_with_any_status_line("");
+}
+
+#[test]
+fn a_hidden_cursor_keeps_initial_input_out_of_a_startup_dialog() {
+    let Some(h) = Fixture::boot("providercursorhold") else { return };
+    std::fs::write(
+        h.owner.dir.join("initial-screen.json"),
+        json!({
+            "screen":"› old composer\r\n? for shortcuts\r\nUnknown startup dialog\r\n› 1. Continue",
+            "cursor":null
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let ticket = ticket(&mut c, "wait for the actual composer", None);
+    let id = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Codex,
+        submit_prompt: true,
+    }) {
+        Response::Spawned { id, .. } => id,
+        response => panic!("spawn: {response:?}"),
+    };
+    c.await_state(id, "structured idle with a native modal", |s| {
+        matches!(s, SessionState::Idle { .. })
+    });
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(session(&mut c, id).pending_prefill);
+    assert!(!h.owner.dir.join(format!("{id}.input")).exists());
+    h.control(id, json!({"screen":"Synthetic provider fixture\r\n› ","cursor":[2,1]}));
+    c.await_state(id, "composer accepts prompt after dialog closes", |s| {
+        *s == SessionState::Running
+    });
+    assert_eq!(std::fs::read_to_string(h.owner.dir.join(format!("{id}.submits"))).unwrap(), "1");
 }
 
 #[test]
@@ -710,7 +818,7 @@ fn resumed_codex_reports_native_trust_without_fresh_prefill_and_recovers_to_idle
     h.control(
         id,
         json!({"state":{"state":"idle","stop_reason":"unknown"},
-        "screen":"Hooks need review\r\n1. Review hooks\r\n2. Trust all and continue"}),
+        "screen":"Hooks need review\r\n1. Review hooks\r\n2. Trust all and continue", "cursor":null}),
     );
     assert!(matches!(
         c.request(Command::WakeSession { id }),

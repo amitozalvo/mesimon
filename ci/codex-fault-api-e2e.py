@@ -130,6 +130,9 @@ class Verification(state.Verification):
         (self.home / "auth.json").unlink()
         with (self.home / "config.toml").open("a") as config:
             config.write(provider_config(endpoint.base_url, endpoint.status))
+            if args.status_line != "default":
+                items = [] if args.status_line == "none" else ["model-name"]
+                config.write("[tui]\nstatus_line = " + json.dumps(items) + "\n")
         wrapper = guard.root / "codex-isolated"
         # Pin at the final CLI boundary, after Mesimon's login-shell capture.
         # All HTTP(S) proxy traffic is sent to our refusing local endpoint;
@@ -155,6 +158,20 @@ class Verification(state.Verification):
             raise AssertionError("actual native model provider is not the bounded credential-free local fault endpoint")
         if (self.home / "auth.json").exists():
             raise AssertionError("local fault fixture unexpectedly acquired authentication")
+        if self.args.status_line != "default":
+            items = [] if self.args.status_line == "none" else ["model-name"]
+            if value.get("tui", {}).get("status_line") != items:
+                raise AssertionError("native status line does not match the input-readiness fixture")
+
+    def open_model_dialog(self, sid):
+        target = sid.replace("-", "")[:16]
+        self.tm("send-keys", "-t", target, "C-u")
+        self.tm("send-keys", "-t", target, "-l", "/model")
+        time.sleep(0.5)  # Native paste detection must settle before Enter.
+        self.tm("send-keys", "-t", target, "Enter")
+        self.wait(sid, "native model dialog owns input", lambda session,ticket,screen:
+            "select model" in screen.lower() and self.tm("display-message", "-p", "-t", target, "#{cursor_flag}").strip() == "0",
+            consent=False)
 
     def run(self):
         ticket = self.request("create_ticket", column="TODO", title="Local injected HTTP fault", workspace=None)["id"]
@@ -166,7 +183,18 @@ class Verification(state.Verification):
         self.verify_native_home(sid)
         self.mark(assertion="effective provider points only to owned loopback fault endpoint before input", passed=True,
                   base_url=self.endpoint.base_url, injected_status=self.endpoint.status, credentials_imported=False)
+        if self.args.check_input_focus:
+            self.open_model_dialog(sid)
         self.ask(sid, "Reply OK. Do not use tools.")
+        if self.args.check_input_focus:
+            time.sleep(1.5)
+            session, _, screen = self.observe(sid)
+            if (not session.get("pending_submit") or session.get("codex_submit_sent")
+                    or "select model" not in screen.lower() or "Reply OK" in screen
+                    or any(row["local_responses_request"] for row in self.endpoint.rows())):
+                raise AssertionError("parked prompt entered the native model dialog")
+            self.mark(assertion="native dialog holds prompt without a paste or Enter", passed=True)
+            self.tm("send-keys", "-t", sid.replace("-", "")[:16], "Escape")
         while time.monotonic() - self.started < self.args.timeout:
             session, ticket_row, screen = self.observe(sid)
             requests = self.endpoint.rows()
@@ -208,6 +236,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--status", type=int, choices=(401, 429), default=429)
     parser.add_argument("--self-test", action="store_true")
+    parser.add_argument("--status-line", choices=("default", "none", "model-only"), default="default")
+    parser.add_argument("--check-input-focus", action="store_true", help="park the prompt behind a native model dialog, then dismiss it")
     parser.add_argument("--binary", type=Path, default=ROOT / "target/debug/mesimon")
     parser.add_argument("--codex", default=shutil.which("codex"))
     parser.add_argument("--tmux", default=os.environ.get("MESIMON_TMUX_BIN") or shutil.which("tmux"))
@@ -238,6 +268,7 @@ def main():
     out = ROOT / "target/state-lab/captures" / (datetime.datetime.now(datetime.timezone.utc).strftime("%Y%m%dT%H%M%SZ") + "-codex-injected-http-" + uuid.uuid4().hex[:8])
     out.mkdir(parents=True, mode=0o700)
     manifest = dict(kind="locally_injected_native_http_fault", outcome="inconclusive", cleanup=False,
+                    status_line=args.status_line, check_input_focus=args.check_input_focus,
                     injected_status=args.status, billable_model_calls=0, credentials_imported=False,
                     successful_model_responses=0, checkpoints=[], request_bound=MAX_REQUESTS,
                     mesimon_sha256=hashlib.sha256(args.binary.read_bytes()).hexdigest())

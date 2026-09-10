@@ -42,57 +42,43 @@ pub fn preview_path(paths: &crate::paths::Paths, id: uuid::Uuid) -> PathBuf {
     paths.hooks_dir().join(format!("{id}.preview.json"))
 }
 
-/// Input readiness is separate from turn state. A thread can exist while
-/// native startup trust is still on screen. Only the provider examines its
-/// native footer, and never presses Enter into an observed modal.
-pub fn input_ready(lines: &[String]) -> bool {
-    let Some(prompt) = lines.iter().rposition(|line| line.trim_start().starts_with('›')) else {
+/// Input readiness is independent of the configurable status line. Require
+/// the native text cursor in the composer; menus hide it, and tmux copy mode
+/// has no application cursor. Structured idle observation gates delivery too.
+pub fn input_ready(screen: &mesimon_backend_tmux::InputScreen) -> bool {
+    let Some((x, y)) = screen.cursor else { return false };
+    let Some(above) = screen.lines.get(..=y) else { return false };
+    let Some(prompt) = above.iter().rposition(|line| {
+        line.strip_prefix('›').is_some_and(|text| text.is_empty() || text.starts_with(' '))
+    }) else {
         return false;
     };
-    let footer = lines
-        .iter()
-        .enumerate()
-        .skip(prompt + 1)
-        .find(|(_, line)| {
-            line.contains("? for shortcuts") || line.contains("% context left")
-            // Native user-configured status lines can replace the default
-            // footer. The model/cwd/status layout is also an input footer.
-            || (line.contains(" · ") && line.contains('/') && !line.trim_start().starts_with('›'))
-        })
-        .map(|(index, _)| index);
-    let blocked = [
-        "Press enter to continue",
-        "Hooks need review",
-        "Would you like",
-        "Sign in with ChatGPT",
-        "Do you trust",
-        "Select a model",
-        "Review hooks",
-        "Implement this plan?",
-    ];
-    footer.is_some_and(|footer| {
-        !lines.iter().skip(footer).any(|line| blocked.iter().any(|marker| line.contains(marker)))
-    })
+    // Wrapped/multiline input keeps the composer's two-column indentation.
+    // Nothing below the cursor (including any status line) participates.
+    x >= 2 && above[prompt + 1..].iter().all(|line| line.is_empty() || line.starts_with("  "))
 }
 
 /// The native implementation dialog is local UI, not an app-server request.
 /// Require its choice list as well as the heading to reject conversational text.
-pub fn plan_dialog(lines: &[String]) -> bool {
+pub fn plan_dialog(screen: &mesimon_backend_tmux::InputScreen) -> bool {
+    let lines = &screen.lines;
     let Some(index) = lines.iter().rposition(|line| line.trim() == "Implement this plan?") else {
         return false;
     };
     let tail = &lines[index..];
     tail.iter().any(|line| line.contains("Yes, implement this plan"))
         && tail.iter().any(|line| line.contains("No, stay in Plan mode"))
-        && !input_ready(tail)
+        && !input_ready(screen)
 }
 
-pub fn startup_attention(lines: &[String]) -> Option<mesimon_core::board::Reason> {
+pub fn startup_attention(
+    screen: &mesimon_backend_tmux::InputScreen,
+) -> Option<mesimon_core::board::Reason> {
     use mesimon_core::board::Reason;
-    if input_ready(lines) {
+    if input_ready(screen) {
         return None;
     }
-    let text = lines.join("\n");
+    let text = screen.lines.join("\n");
     if text.contains("Hooks need review") || text.contains("Do you trust") {
         Some(Reason::Trust)
     } else if text.contains("Sign in with ChatGPT") || text.contains("Sign in with an API key") {
@@ -328,30 +314,60 @@ pub struct Snapshot {
 #[cfg(test)]
 mod input_tests {
     use super::*;
-    fn screen(text: &str) -> Vec<String> {
-        text.lines().map(str::to_string).collect()
-    }
-    #[test]
-    fn plan_modal_is_distinct_from_plan_text_and_native_composer() {
-        let screen = |text: &str| text.lines().map(str::to_owned).collect::<Vec<_>>();
-        let modal = screen("Implement this plan?\n› 1. Yes, implement this plan\n  2. Yes, clear context and implement\n  3. No, stay in Plan mode\nPress enter to confirm or esc to go back");
-        assert!(plan_dialog(&modal));
-        assert!(!input_ready(&modal));
-        let composer = screen("Implement this plan?\n› 1. Yes, implement this plan\n  3. No, stay in Plan mode\n› Continue planning\n? for shortcuts");
-        assert!(!plan_dialog(&composer));
-        assert!(input_ready(&composer));
-        assert!(!plan_dialog(&screen("The answer is: Implement this plan?")));
+    use mesimon_backend_tmux::InputScreen;
+
+    fn screen(text: &str, cursor: Option<(usize, usize)>) -> InputScreen {
+        InputScreen { lines: text.lines().map(str::to_string).collect(), cursor }
     }
 
     #[test]
-    fn input_footer_accepts_default_and_native_custom_status_but_not_modals() {
-        assert!(input_ready(&screen("› Ask Codex to do anything\n\n? for shortcuts")));
-        assert!(input_ready(&screen("› hello\n\ngpt-6-astra high · /repo · main · Ready")));
-        assert!(!input_ready(&screen(
-            "› Ask Codex to do anything\n? for shortcuts\nHooks need review\n› Review hooks"
-        )));
-        assert!(!input_ready(&screen("Select a model\n› gpt-6-astra\nPress enter to continue")));
-        assert!(!input_ready(&screen("Would you like to run this command?\n› 1. Yes")));
+    fn input_cursor_is_independent_of_every_status_line() {
+        for footer in [
+            "",
+            "? for shortcuts",
+            "100% context left",
+            "my arbitrary status",
+            "mesimon · gpt-6-astra high · Context 0% used · weekly 42% left",
+            "gpt-6-astra high · /repo · main · Ready",
+            "› custom status",
+            "Hooks need review",
+        ] {
+            assert!(
+                input_ready(&screen(
+                    &format!("› Ask Codex to do anything\n{footer}"),
+                    Some((2, 0))
+                )),
+                "{footer}"
+            );
+        }
+        assert!(input_ready(&screen("› multiline\n  continuation\n\n  last line", Some((11, 3)))));
+    }
+
+    #[test]
+    fn input_requires_the_active_cursor_inside_the_composer() {
+        assert!(!input_ready(&screen("› text\n? for shortcuts", None)));
+        assert!(!input_ready(&screen("› text", Some((0, 0)))));
+        assert!(!input_ready(&screen("› text\nloading", Some((7, 1)))));
+        assert!(!input_ready(&screen("› text", Some((2, 5)))));
+        assert!(!input_ready(&screen("loading", Some((2, 0)))));
+        // A stale composer above a different text field is not its cursor.
+        assert!(!input_ready(&screen("› old prompt\nSearch sessions\n  query", Some((7, 2)))));
+        for modal in
+            ["Hooks need review", "Do you trust", "Select a model", "An unknown future dialog"]
+        {
+            assert!(!input_ready(&screen(&format!("› text\n{modal}\n› 1. Yes"), None)));
+        }
+    }
+
+    #[test]
+    fn plan_modal_is_distinct_from_plan_text_and_native_composer() {
+        let modal = screen("Implement this plan?\n› 1. Yes, implement this plan\n  2. Yes, clear context and implement\n  3. No, stay in Plan mode\nPress enter to confirm or esc to go back", None);
+        assert!(plan_dialog(&modal));
+        assert!(!input_ready(&modal));
+        let composer = screen("Implement this plan?\n› 1. Yes, implement this plan\n  3. No, stay in Plan mode\n› Continue planning", Some((2, 3)));
+        assert!(!plan_dialog(&composer));
+        assert!(input_ready(&composer));
+        assert!(!plan_dialog(&screen("The answer is: Implement this plan?", None)));
     }
 }
 

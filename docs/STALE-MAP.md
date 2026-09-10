@@ -9015,6 +9015,44 @@ Teams-only macOS/Linux-minimum tests and scoped formatting/Clippy checks are the
 verification scope; core/tmux and release checks were not rerun. P2 is incomplete;
 no production integration, push, deploy or release is part of this change.
 
+
+### Codex input readiness is independent of the status line (T-339, 2026-09-10)
+
+T-332's queued start reached a native Codex pane, but its title and prompt never
+landed; the same failure affected T-339's immediate Shift+Enter start. The observed
+Codex 0.154.0 composer showed `mesimon · gpt-6-astra high · Context 0% used · weekly
+42% left`. Input readiness recognized the default footer and custom status lines
+with a directory, so this valid custom footer left `pending_prefill` and
+`pending_submit` waiting indefinitely. Queue scheduling itself had delivered the start.
+
+The first patch recognized that particular context-used footer. The user rejected
+that approach: every user can configure a different status line. It is replaced
+by the native application's visible text cursor inside the composer, combined
+with the existing structured idle observation. No footer content is examined.
+The tmux backend captures physical screen rows and cursor metadata in one command
+queue; hidden cursors, dead panes and copy mode supply no application input cursor.
+Wrapped and multiline composer rows preserve their two-column indentation.
+A paste and its later single Enter each recheck readiness. Existing turn
+acknowledgement and handover behavior remain unchanged.
+
+Blind early keystroke streaming remains refuted by T-5's measured truncation and
+lost-Enter startup race; an Enter can also answer a native dialog. Readiness must
+come from the input destination, not the user's decorative status text. The
+provider tests exercise immediate and queued starts with arbitrary and absent
+status lines, exactly-once delivery, and an unknown dialog with a stale composer
+that receives no input until its cursor returns. Backend coverage checks physical
+row indexing, hidden cursors and copy mode. Native local-error verification also
+supports empty/model-only status configuration and holding a prompt behind the
+model-selection dialog, without importing credentials or making paid model calls.
+
+Native capture `9e49ab04` verifies the model-only status configuration, a real
+model dialog holding the board prompt without input, and one native turn after
+Escape. Its owned HTTP endpoint returns 401; no credentials or successful/paid
+model response are involved. Earlier captures `766cab06` and `6d4d1fdb` were
+inconclusive (probe Enter timing and dialog-heading casing); `cb302e56` failed
+because the probe counted blocked startup CONNECTs as model requests. These
+outcomes remain retained, and the corrected assertion counts Responses requests.
+
 ### 2026-09-10 — repository build caches and disk-pressure guard
 
 Seven owned Codex runtimes exited around 21:13 local time with `No space left on

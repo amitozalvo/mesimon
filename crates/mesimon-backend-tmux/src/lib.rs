@@ -123,6 +123,14 @@ pub struct TmuxBackend {
     status_top: bool,
 }
 
+/// Visible physical rows and the application's active text cursor. A hidden
+/// cursor, dead pane or tmux copy mode has no application input cursor.
+#[derive(Debug)]
+pub struct InputScreen {
+    pub lines: Vec<String>,
+    pub cursor: Option<(usize, usize)>,
+}
+
 impl TmuxBackend {
     /// `sock` must be short enough for `sun_path` (checked); `conf_dir` holds the
     /// generated tmux.conf (state dir — long paths fine). `pane_died_cmd` (from
@@ -456,6 +464,37 @@ impl TmuxBackend {
             .collect())
     }
 
+    pub fn capture_input_screen(&self, sid16: &str) -> Result<InputScreen> {
+        // Keep physical rows (no -J and no blank-line filtering): cursor_y
+        // indexes this screen. Read screen and cursor in one tmux command queue.
+        let format = fields(&["cursor_flag", "cursor_x", "cursor_y", "pane_in_mode", "pane_dead"]);
+        let out = self.run(&[
+            "capture-pane",
+            "-p",
+            "-t",
+            sid16,
+            ";",
+            "display-message",
+            "-p",
+            "-t",
+            sid16,
+            &format,
+        ])?;
+        let mut lines: Vec<String> = out.lines().map(str::to_owned).collect();
+        let metadata = lines.pop().context("missing input cursor metadata")?;
+        let parts: Vec<_> = metadata.split(SEP).collect();
+        let cursor = match parts.as_slice() {
+            ["1", x, y, "0", "0"] => {
+                let x = x.parse::<usize>().context("invalid input cursor column")?;
+                let y = y.parse::<usize>().context("invalid input cursor row")?;
+                (y < lines.len()).then_some((x, y))
+            }
+            [_, _, _, _, _] => None,
+            _ => bail!("invalid input cursor metadata"),
+        };
+        Ok(InputScreen { lines, cursor })
+    }
+
     /// How long every client attached to this session has been quiet, in
     /// SECONDS — the freshest one wins, and `None` means nobody is attached
     /// (T-299).
@@ -552,6 +591,36 @@ mod tests {
             [("abc123", "claude | T-12 fix")],
             "split once: the title keeps its own bar"
         );
+    }
+
+    #[test]
+    fn input_screen_preserves_cursor_rows_and_excludes_hidden_and_copy_mode_cursors() {
+        let f = fixture("backend-input-cursor", "t.sock");
+        let be = TmuxBackend::new(f.dir.join("t.sock"), &f.dir, None).unwrap();
+        let code = "import os,tty\ntty.setraw(0)\nos.write(1,b'\\x1b[2J\\x1b[Hheading\\r\\n> prompt\\r\\n\\r\\ncustom footer\\x1b[2;3H\\x1b[?25h')\nwhile True:\n b=os.read(0,1)\n os.write(1,b'\\x1b[?25l' if b==b'h' else b'\\x1b[?25h')\n";
+        be.spawn("cursor", &f.dir, &["python3".into(), "-c".into(), code.into()]).unwrap();
+        let wait = |expected| {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let screen = be.capture_input_screen("cursor").unwrap();
+                if screen.cursor == expected && screen.lines[0] == "heading" {
+                    return screen;
+                }
+                assert!(std::time::Instant::now() < deadline, "{screen:?}");
+                std::thread::sleep(std::time::Duration::from_millis(50));
+            }
+        };
+        let screen = wait(Some((2, 1)));
+        assert_eq!(&screen.lines[..4], &["heading", "> prompt", "", "custom footer"]);
+        be.send_text("cursor", "h").unwrap();
+        wait(None);
+        be.send_text("cursor", "s").unwrap();
+        wait(Some((2, 1)));
+        be.run(&["copy-mode", "-t", "cursor"]).unwrap();
+        assert!(be.capture_input_screen("cursor").unwrap().cursor.is_none());
+        be.run(&["send-keys", "-t", "cursor", "-X", "cancel"]).unwrap();
+        wait(Some((2, 1)));
+        be.kill_server().unwrap();
     }
 
     #[test]
