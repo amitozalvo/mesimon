@@ -25,6 +25,16 @@ use crate::client::Transport;
 use crate::text::{EditBuffer, TextArea};
 use crate::theme::{Flavor, Ground, Theme};
 
+/// Braces move half the measured page, rounded down but at least one row.
+/// A hidden pane has a zero page and must remain still.
+fn page_rows(page: usize, half: bool) -> usize {
+    if half && page > 0 {
+        (page / 2).max(1)
+    } else {
+        page
+    }
+}
+
 /// Which screen owns the keymap and the frame (07 §1). `Mode` remains the
 /// board's sub-state; the ticket screen has no modes yet.
 #[derive(Debug, Clone, PartialEq)]
@@ -3650,14 +3660,16 @@ impl App {
             // One pair of keys, three read-only zones: the diff's hunk pane,
             // the ticket page's preview and the release notes. Which one is
             // the screen's to say.
-            Verb::PageDown | Verb::PageUp => {
-                let dir: isize = if verb == Verb::PageDown { 1 } else { -1 };
+            Verb::PageDown | Verb::PageUp | Verb::HalfPageDown | Verb::HalfPageUp => {
+                let dir: isize =
+                    if matches!(verb, Verb::PageDown | Verb::HalfPageDown) { 1 } else { -1 };
+                let half = matches!(verb, Verb::HalfPageDown | Verb::HalfPageUp);
                 match self.screen {
-                    Screen::Diff => self.diff_page(dir),
-                    Screen::Ticket { .. } => self.preview_page(dir),
+                    Screen::Diff => self.diff_page(dir, half),
+                    Screen::Ticket { .. } => self.preview_page(dir, half),
                     Screen::Releases => {
                         let page = self.releases.as_ref().map(|r| r.view.get().page).unwrap_or(0);
-                        self.releases_scroll(dir * page.max(1) as isize);
+                        self.releases_scroll(dir * page_rows(page.max(1), half) as isize);
                     }
                     Screen::Board => {}
                 }
@@ -4689,11 +4701,11 @@ impl App {
         d.scroll.set(now.saturating_add(delta).clamp(0, d.view.get().max as isize) as usize);
     }
 
-    fn diff_page(&mut self, dir: isize) {
+    fn diff_page(&mut self, dir: isize, half: bool) {
         let Some(d) = self.diff.as_ref() else { return };
         let v = d.view.get();
-        let next =
-            (d.scroll.get() as isize + dir * v.page as isize).clamp(0, v.max as isize) as usize;
+        let next = (d.scroll.get() as isize + dir * page_rows(v.page, half) as isize)
+            .clamp(0, v.max as isize) as usize;
         if next == d.scroll.get() {
             return;
         }
@@ -4702,17 +4714,18 @@ impl App {
         d.scroll.set(next);
     }
 
-    /// `{ }` on the ticket page: move the preview zone one page, by what the
+    /// Page the ticket preview (half a page for `{ }`), by what the
     /// last draw measured. Clamped here AND at draw, so a press past the end
     /// sits on the last full window rather than a blank one; a shell tail
     /// scrolled back to its bottom is released to follow the pane again.
     /// The move is a glide, not a jump: it starts where the window IS this
     /// frame — mid-turn, that is partway to the last target — so a held key
     /// reads as one continuous scroll rather than a stutter of restarts.
-    fn preview_page(&mut self, dir: isize) {
+    fn preview_page(&mut self, dir: isize, half: bool) {
         let v = self.preview_view.get();
         let Some(key) = v.key else { return };
-        let next = (v.offset as isize + dir * v.page as isize).clamp(0, v.max as isize) as usize;
+        let next = (v.offset as isize + dir * page_rows(v.page, half) as isize)
+            .clamp(0, v.max as isize) as usize;
         if v.follows_tail && next >= v.max {
             self.preview_scroll.set(None);
         } else {

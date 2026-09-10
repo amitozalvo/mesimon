@@ -580,6 +580,8 @@ pub enum Verb {
     ScrollUp,
     PageDown,
     PageUp,
+    HalfPageDown,
+    HalfPageUp,
     NextFile,
     PrevFile,
     Refresh,
@@ -4633,7 +4635,11 @@ fn directional(verb: Verb, key: Key) -> Verb {
         (Verb::TagColor, Key::BackTab) => Verb::TagColorBack,
         (Verb::ScrollDown, Key::Char('k') | Key::Up) => Verb::ScrollUp,
         (Verb::EditorDown, Key::Up) => Verb::EditorUp,
-        (Verb::PageDown, Key::Char('{') | Key::PageUp) => Verb::PageUp,
+        // The displayed paging pair uses half pages; physical page keys
+        // retain full pages, including inside the editor (T-318).
+        (Verb::PageDown, Key::Char('}')) => Verb::HalfPageDown,
+        (Verb::PageDown, Key::Char('{')) => Verb::HalfPageUp,
+        (Verb::PageDown, Key::PageUp) => Verb::PageUp,
         (Verb::NextFile, Key::Char('N')) => Verb::PrevFile,
         (v, _) => v,
     }
@@ -5647,6 +5653,28 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('u'), &ctx), Some(Verb::EditKillToStart));
         // And with the editor down, its scope answers nothing at all.
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &Ctx::default()), None);
+    }
+
+    #[test]
+    fn braces_use_half_pages_and_physical_page_keys_use_full_pages() {
+        let ctx = Ctx { preview_scrolls: true, ..Default::default() };
+        for scope in [Scope::Ticket, Scope::Diff, Scope::Releases] {
+            for (key, verb) in [
+                (Key::Char('}'), Verb::HalfPageDown),
+                (Key::Char('{'), Verb::HalfPageUp),
+                (Key::PageDown, Verb::PageDown),
+                (Key::PageUp, Verb::PageUp),
+            ] {
+                assert_eq!(resolve(scope, key, &ctx), Some(verb), "{scope:?} {key:?}");
+                if scope == Scope::Ticket {
+                    assert_eq!(resolve(scope, key, &Ctx::default()), None);
+                }
+            }
+        }
+        let editing = Ctx { editing: true, ..Default::default() };
+        for key in [Key::Char('{'), Key::Char('}')] {
+            assert_eq!(resolve(Scope::Editor, key, &editing), None, "braces remain text");
+        }
     }
 
     /// `^g` opens the user's own editor on the body, and the footer names

@@ -8582,3 +8582,17 @@ proves the upgrade is offered without a changed executable and waits for `U`.
 The user exercised the rebuilt executable in `simbly`, observed the normal
 shutdown wait, and confirmed the board worked after handover. The agent did not
 restart the personal daemon or inspect personal conversations.
+
+## Half-page brace navigation (T-318, 2026-09-10)
+
+`{` and `}` move up and down by half the measured page in the diff hunk
+pane, ticket preview (replies, notes, and shell tails), and release notes.
+The distance rounds down with a one-row minimum for a nonzero page; a hidden
+diff pane stays still. Physical Page Up/Down retain their full-page distance,
+and braces remain ordinary text in the editor. Existing paging hints and
+rendered geometry are unchanged.
+
+The diff and preview keep their glide animation, repeated-key targets, and
+end clamps. Reaching the bottom of a shell preview still resumes tail following.
+Keymap and TUI regressions cover both directions, odd and tiny page heights,
+full-page keys, repeated presses, boundaries, hidden panes, and tail following.

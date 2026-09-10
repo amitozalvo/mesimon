@@ -1548,7 +1548,7 @@ fn golden_ticket_richtext_120() {
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
-/// `{ }` on the ticket page turns the preview a page at a time, the way the
+/// `{ }` on the ticket page turns the preview half a page at a time, the way the
 /// diff's hunk pane does. The keys are hinted only while there is a further
 /// page, the window clamps at the last full one, and a reply that changes
 /// under the reader starts over at its top.
@@ -1582,7 +1582,7 @@ fn test_preview_pages_a_long_reply() {
     // landed, the first row is gone.
     press(&mut app, '}');
     let first = app.preview_view.get().offset;
-    assert_eq!(first, v.page, "the record is already on the next page");
+    assert_eq!(first, v.page / 2, "the record is already half a page down");
     let g = app.preview_glide.get().expect("the press arms a glide");
     assert_eq!((g.key, g.from), (v.key.expect("a document"), 0));
     assert!(app.animating(), "the frame after the press is in motion");
@@ -1631,7 +1631,7 @@ fn test_preview_pages_a_long_reply() {
     press(&mut app, '}');
     let g2 = app.preview_glide.get().expect("glide");
     assert_eq!(g2.from, eye, "the second turn begins where the first had got to");
-    assert_eq!(app.preview_view.get().offset, 2 * v.page);
+    assert_eq!(app.preview_view.get().offset, 2 * (v.page / 2));
     for _ in 0..20 {
         page(&mut app, '{');
     }
@@ -1742,7 +1742,7 @@ fn diff_hints_live_beside_their_panes_and_pages_use_the_viewport() {
         let v = app.diff.as_ref().unwrap().view.get();
         assert_eq!(v.page, height as usize - 9);
         press(&mut app, '}');
-        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), v.page);
+        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), v.page / 2);
         for _ in 0..20 {
             press(&mut app, '}');
         }
@@ -1755,13 +1755,57 @@ fn diff_hints_live_beside_their_panes_and_pages_use_the_viewport() {
 }
 
 #[test]
+fn half_page_jumps_round_small_views_and_preserve_full_page_keys() {
+    use crate::app::{PreviewView, ReleasesView};
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+    for screen in
+        [Screen::Diff, Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 }, Screen::Releases]
+    {
+        for (page, half) in [(1, 1), (2, 1), (11, 5), (20, 10)] {
+            let mut app = app_graphite(fixture(false));
+            install_long_diff(&mut app);
+            install_releases(&mut app);
+            app.screen = screen.clone();
+            let view = PreviewView { key: Some(1), page, max: 97, ..Default::default() };
+            app.preview_view.set(view);
+            app.diff.as_ref().unwrap().view.set(view);
+            app.releases.as_ref().unwrap().view.set(ReleasesView { page, max: 97 });
+            let offset = |app: &App| match screen {
+                Screen::Diff => app.diff.as_ref().unwrap().scroll.get(),
+                Screen::Ticket { .. } => app.preview_view.get().offset,
+                Screen::Releases => app.releases.as_ref().unwrap().scroll.get(),
+                Screen::Board => unreachable!(),
+            };
+            for (key, expected) in [
+                (KeyCode::Char('}'), half),
+                (KeyCode::Char('}'), 2 * half),
+                (KeyCode::Char('{'), half),
+                (KeyCode::PageDown, half + page),
+                (KeyCode::PageUp, half),
+                (KeyCode::Char('{'), 0),
+            ] {
+                app.handle_key(key, KeyModifiers::NONE).unwrap();
+                assert_eq!(offset(&app), expected, "{screen:?}, page {page}, {key:?}");
+            }
+            for (key, expected) in [('}', 97), ('{', 0)] {
+                for _ in 0..100 {
+                    press(&mut app, key);
+                }
+                assert_eq!(offset(&app), expected, "{screen:?}, page {page}, {key}");
+            }
+        }
+    }
+}
+
+#[test]
 fn diff_pages_glide_and_file_changes_cancel_the_motion() {
     use crate::app::{Glide, GLIDE};
     use std::time::{Duration, Instant};
     let mut app = app_graphite(fixture(false));
     install_long_diff(&mut app);
     let before = render(&app, 120, 30);
-    let page = app.diff.as_ref().unwrap().view.get().page;
+    let page = app.diff.as_ref().unwrap().view.get().page / 2;
     press(&mut app, '}');
     let g = app.diff.as_ref().unwrap().glide.get().unwrap();
     assert_eq!(g.from, 0);
@@ -2090,7 +2134,7 @@ fn test_release_notes_from_the_menu() {
     press(&mut app, '}');
     let page = app.releases.as_ref().expect("state").view.get().page;
     assert!(page > 1);
-    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), page);
+    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), page / 2);
     press(&mut app, '{');
     assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 0);
     // `n` lands the second release's band on the first row; `N` comes back.
