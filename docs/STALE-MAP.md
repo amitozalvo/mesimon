@@ -8973,3 +8973,44 @@ no-repo capability seams; service, broker/sync, terminal Teams UX, scoped reply 
 and enterprise rollout. No Teams service/client or production encryption is exposed
 by this change. The owner will create a separate agent for review of this evidence.
 The milestone remains in progress; the full cross-project journey has not shipped.
+
+
+## Teams P2 persistence/enrollment continuation (T-331, 2026-09-10)
+
+Prerequisites checked against the approved T-215 plan and ticket note: P1 scope
+reconciliation and the existing ten-test OpenMLS workspace are present. Independent
+review, protected platform key custody and a real freshness witness are absent;
+they were not assumed. Production encryption integration remains blocked.
+
+The separate test-only Teams workspace now exercises encrypted atomic image
+replacement, exclusive ownership, complete provider reload, and 50 injected-error/
+process-exit cases covering inbound acceptance/rejection, exact ciphertext outbox,
+pending add-member commit/Welcome/tree and accepted membership receipts. Candidate
+groups/providers are discarded after failed operations. A post-replacement error
+means unknown acceptance; retries inspect the durable receipt and reuse exact
+ciphertext. Authenticated invalid application actions consume their message and
+record rejection atomically without applying content.
+
+An independently pinned fixture authority endorses the complete device/key/role
+roster. Signed snapshot actions bind scope, MLS sender, role, audience, schema and
+revision; an independent head digest catches omitted or mixed content. Concurrent
+add/removal rejects the stale add and keeps the removed author inactive. Optional
+content-key backup recovers a body into fresh MLS state; no-backup plaintext restore
+remains supported. These are validation models, not production enrollment or sync.
+
+New evidence also preserves unresolved hazards: old authentic encrypted storage
+can still roll back; a stale snapshot with a stale alleged head cannot prove its
+own freshness. External working-group fixtures expired in 2024 and fail normal
+validation. That rejection is recorded with pinned fixture provenance; it is not
+counted as positive cross-implementation interoperation. No lifetime check, crypto
+primitive, dependency feature, core MSRV or Apache boundary was changed to hide
+these findings.
+
+See the [acceptance/blocker matrix](spikes/T-215-mls-validation.md#t-331-continuation-prerequisites-results-and-open-gates)
+and [v0 contract refinement](../team/docs/crypto-storage-contract-v0.md). Platform
+custody, rollback/erasure, real enrollment/freshness, unexpired independently generated
+vectors and owner-created independent review/remediation remain open. Process-exit
+and injected-I/O tests do not prove power-loss durability or constitute review.
+Teams-only macOS/Linux-minimum tests and scoped formatting/Clippy checks are the
+verification scope; core/tmux and release checks were not rerun. P2 is incomplete;
+no production integration, push, deploy or release is part of this change.
