@@ -5375,77 +5375,108 @@ fn test_git_clause_has_an_ascii_spelling() {
     assert!(head.contains("& main ^2 v1 ∙ 3 changed"), "{head:?}");
 }
 
-/// The board while it is holding the machine awake (T-288): the mark beside
-/// the checkout's own clause, and nothing else on the row moved.
 #[test]
 fn golden_awake_120() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 2, 1, 3);
+    app.prefs.keep_awake = true;
     app.caffeinated = true;
     golden("board_awake_120x30", &render(&app, 120, 30));
+    app.caffeinated = false;
+    golden("board_awake_idle_120x30", &render(&app, 120, 30));
+    app.cursor_row = None;
+    app.header_focus = true;
+    app.header_awake = true;
+    golden("board_awake_focused_120x30", &render(&app, 120, 30));
 }
 
-/// The keep-awake mark (T-288) is on the row only while the machine is
-/// actually being HELD, and it rides every screen because it is a fact about
-/// the machine and not about the board.
 #[test]
-fn test_the_awake_mark_shows_only_while_it_is_held() {
+fn wake_indicator_visibility_follows_preference_on_every_screen() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 2, 1, 3);
-    assert!(!render(&app, 120, 30)[0].contains('☕'), "nothing held, nothing said");
-    app.caffeinated = true;
-    let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("kanban-tui ☕"), "it hangs off the crumb: {head:?}");
-    // And on a screen that is not the board — the state run beside the
-    // ticket count is the board's alone, the crumb is everyone's.
-    app.screen = Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
-    let head = &render(&app, 120, 30)[0];
-    assert!(head.contains('☕'), "the ticket page says it too: {head:?}");
-}
-
-/// It has an ascii spelling, like the branch clause beside it — and `@` is
-/// not `*`, which is the suggestion chip's and rides this same row.
-#[test]
-fn test_the_awake_mark_has_an_ascii_spelling() {
-    let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
-    app.caffeinated = true;
-    let head = &render(&app, 120, 30)[0];
-    assert!(head.contains("kanban-tui @"), "{head:?}");
-}
-
-/// A held machine is a quiet fact, not an alarm: the mark may never reach
-/// the one saturated colour. `test_attn_provenance_calm` cannot cover this —
-/// `caffeinated` is false in every app it builds.
-#[test]
-fn test_the_awake_mark_is_never_attn() {
-    for flavor in Flavor::ALL {
-        let theme = Theme::new(flavor, Profile::TrueColor);
-        let attn = theme.attn;
-        let mut app = App::for_test(fixture(false), theme);
-        app.caffeinated = true;
-        app.git = git_state("main", 2, 1, 3);
-        let buf = cells(&app, 120, 30);
-        for y in 0..30 {
-            for x in 0..120 {
-                assert_ne!(buf[(x, y)].fg, attn, "{flavor:?} attn fg at {x},{y}");
-                assert_ne!(buf[(x, y)].bg, attn, "{flavor:?} attn bg at {x},{y}");
-            }
+    for screen in [Screen::Board, Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 }] {
+        app.screen = screen;
+        for held in [true, false] {
+            app.caffeinated = held;
+            app.prefs.keep_awake = false;
+            let off = render(&app, 120, 30)[0].clone();
+            assert!(!off.contains('●') && !off.contains('○'), "disabled: {off}");
+            app.prefs.keep_awake = true;
+            let mark = if held { '●' } else { '○' };
+            let on = render(&app, 120, 30)[0].clone();
+            assert!(on.contains(&format!("kanban-tui {mark}")), "enabled: {on}");
         }
     }
 }
 
-/// It costs two cells and nothing else: the give-way ladder underneath it is
-/// the git clause's, unchanged, and the offer still ends the row.
 #[test]
-fn test_the_awake_mark_costs_two_cells_and_the_ladder_absorbs_it() {
-    let mut app = app_graphite(fixture(false));
-    app.git = git_state("main", 2, 1, 3);
-    app.force_update_ready();
-    app.caffeinated = true;
-    for w in [160u16, 110, 100, 90] {
-        let head = &render(&app, w, 30)[0];
-        assert!(head.contains('☕'), "the mark is the last thing to give at {w}: {head:?}");
-        assert!(head.trim_end().ends_with("(U ∙ esc)"), "the offer still ends the row at {w}");
+fn wake_activity_and_focus_never_move_the_header() {
+    for profile in [Profile::TrueColor, Profile::Mono] {
+        let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, profile));
+        app.prefs.keep_awake = true;
+        app.git = git_state("main", 2, 1, 3);
+        app.force_update_ready();
+        for w in [60, 80, 90, 100, 110, 120, 160] {
+            app.caffeinated = false;
+            app.header_focus = false;
+            let idle = render(&app, w, 30)[0].clone();
+            let idle_mark = crate::glyphs::awake_mark(app.theme.glyph_tier(), false);
+            let active_mark = crate::glyphs::awake_mark(app.theme.glyph_tier(), true);
+            let expected = idle.replacen(
+                &format!("kanban-tui {idle_mark}"),
+                &format!("kanban-tui {active_mark}"),
+                1,
+            );
+            app.caffeinated = true;
+            assert_eq!(render(&app, w, 30)[0], expected, "activity shifted header at {w}");
+            app.header_focus = true;
+            app.header_awake = true;
+            assert_eq!(render(&app, w, 30)[0], expected, "focus shifted header at {w}");
+        }
+    }
+}
+
+#[test]
+fn wake_indicator_has_single_cell_ascii_states() {
+    let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
+    app.prefs.keep_awake = true;
+    for (held, mark) in [(true, '@'), (false, 'o')] {
+        app.caffeinated = held;
+        let head = render(&app, 120, 30)[0].clone();
+        assert!(head.contains(&format!("kanban-tui {mark}")), "{head:?}");
+    }
+}
+
+#[test]
+fn wake_indicator_is_quiet_and_focus_is_visible() {
+    for flavor in Flavor::ALL {
+        for held in [false, true] {
+            let theme = Theme::new(flavor, Profile::TrueColor);
+            let mut app = App::for_test(fixture(false), theme);
+            app.prefs.keep_awake = true;
+            app.caffeinated = held;
+            app.git = git_state("main", 2, 1, 3);
+            let plain = cells(&app, 120, 30);
+            let mark = if held { "●" } else { "○" };
+            let x = (0..120u16).find(|x| plain[(*x, 0)].symbol() == mark).unwrap();
+            assert_eq!(
+                plain[(x, 0)].fg,
+                if held { app.theme.rest.base } else { app.theme.rest.dim3 }
+            );
+            app.header_focus = true;
+            app.header_awake = true;
+            let focused = cells(&app, 120, 30);
+            assert_ne!(
+                plain[(x, 0)].style(),
+                focused[(x, 0)].style(),
+                "{flavor:?} cursor is invisible"
+            );
+            for buf in [&plain, &focused] {
+                assert_ne!(buf[(x, 0)].fg, app.theme.attn);
+                assert_ne!(buf[(x, 0)].bg, app.theme.attn);
+            }
+            assert!(render(&app, 120, 30).last().unwrap().contains("enter keep awake settings"));
+        }
     }
 }
 

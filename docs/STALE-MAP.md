@@ -8775,3 +8775,33 @@ Clippy at `-D warnings`, formatting and diff checks passed. The initial sandboxe
 bodies passed but its cleanup audit failed because `ps` was denied; the elevated rerun's audit
 was clean, and the earlier registry's two recorded processes were confirmed gone. No live desktop
 suspend, WSL host, or interactive TUI verification was performed.
+
+
+## T-288: fixed-width wake light and header settings shortcut (2026-09-10)
+
+The coffee emoji appeared only during a hold, shifting the rest of the header at each turn
+boundary. The user requested one cell with active/idle states, hidden only when the preference
+is disabled. The enabled light now uses `●` (held, base text) and `○` (idle, dim3), with `@` and
+`o` as ASCII fallbacks. Both states and the focus treatment occupy the same cell. The light
+remains in the common header on ticket, diff and editor screens as well as the board.
+
+On the board, Up/k from a column header reaches the repository clause as before; Left/h selects
+the light and Right/l returns to the repository. With no git sample, the enabled light is still
+reachable directly. Enter opens Behaviour settings at Keep this machine awake, without toggling
+it. Enter there disables it. Removing the light moves header focus to git if available, otherwise
+back to the board, so no invisible cursor target survives. Down/j and Escape retain the existing
+header return behavior. The preference now has an explicit Behaviour mapping in for_verb.
+
+Keymap and app regressions cover both navigation spellings, the unsampled case, the settings
+selection, disable/focus cleanup, and the existing checkout diff action. Rendering checks cover
+active/idle/disabled states, color and focus contrast, ASCII mode, and unchanged header text
+positions at widths 60–160. Goldens show held, idle and focused states. No power-backend behavior
+changes, daemon changes, or wire changes.
+
+Validation: the regenerated TUI suite passed 604 tests with the existing live-network test
+ignored; all changed/new golden diffs were inspected. The full workspace suite passed
+1343/1343 with a clean audit of 81 fixture owners. Its two existing skips are the live release
+network test and the restart-skew helper exercised by its parent tests. Clippy at `-D warnings`,
+formatting, diff checks and `cargo build` passed in the main checkout. Linux and manual TUI
+checks were not repeated for this rendering/navigation change; Unicode and ASCII geometry
+and input behavior are covered by the automated tests.

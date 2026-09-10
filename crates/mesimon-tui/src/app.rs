@@ -840,13 +840,11 @@ pub struct App {
     /// header and `on_column_header` answers yes to both — which keeps a walk
     /// across an empty column on cards.
     pub cursor_row: Option<usize>,
-    /// `k` off a column header lands on the board's own top row (T-305) —
-    /// `Scope::Header`, where Enter opens the checkout diff and `j` comes
-    /// back. One section is focusable today, the git clause, so there is
-    /// nothing to walk sideways and `hl` are unbound there; it is only ever
-    /// set on the board, and only where a git sample has landed for the
-    /// clause to be drawn at all.
+    /// The board header owns the cursor. Left/right select a section;
+    /// down returns to the column header.
     pub header_focus: bool,
+    /// Selected header section: the enabled wake indicator, otherwise git.
+    pub header_awake: bool,
     /// Recent upward travel through tickets. Legacy terminals report held
     /// keys as presses, so a short quiet gap distinguishes reaching the top
     /// from deliberately stepping onto its header.
@@ -1120,6 +1118,7 @@ impl App {
             cursor_col: 0,
             cursor_row: Some(0),
             header_focus: false,
+            header_awake: false,
             last_ticket_up: None,
             settings_section: keymap::SettingsSection::Root,
             column_agents: false,
@@ -2196,6 +2195,10 @@ impl App {
     /// Settings rows' shared tail.
     fn set_pref(&mut self, word: &str, set: impl FnOnce(&mut crate::prefs::Prefs)) {
         set(&mut self.prefs);
+        if !self.prefs.keep_awake && self.header_awake {
+            self.header_awake = false;
+            self.header_focus = self.header_focus && self.git.sampled;
+        }
         self.push_observer_prefs();
         self.status = match self.save_prefs(word) {
             Ok(()) => format!("{word} ∙ saved"),
@@ -2799,6 +2802,7 @@ impl App {
             snooze_needs_you: self.prefs.snooze_needs_you,
             status_top: self.prefs.status_top,
             keep_awake: self.prefs.keep_awake,
+            header_awake: self.header_focus && self.header_awake,
             // False where no keeper was ever built (every test app), which
             // is what keeps a golden on the row's plain words.
             keep_awake_barred: self.caffeine.as_ref().is_some_and(|k| !k.possible()),
@@ -4029,7 +4033,7 @@ impl App {
                 // `k` off the top card lands on the column header (T-117),
                 // and off the column header on the board's own top row
                 // (T-305) — but only where that row has a section to stand
-                // on, which today is the git clause and nothing else. `j`
+                // on: the git clause or the enabled wake indicator. `j`
                 // walks back down the same two steps.
                 Verb::CursorUp => {
                     let now = Instant::now();
@@ -4044,7 +4048,8 @@ impl App {
                     }
                     self.last_ticket_up = self.cursor_row.filter(|r| *r > 0).map(|_| now);
                     if self.on_column_header() {
-                        self.header_focus = self.git.sampled;
+                        self.header_focus = self.git.sampled || self.prefs.keep_awake;
+                        self.header_awake = !self.git.sampled && self.prefs.keep_awake;
                         return;
                     }
                     self.cursor_row = match self.cursor_row {
@@ -4126,9 +4131,12 @@ impl App {
                     }
                 }
             }
-            // The top row's only motion: `j` returns to the column the
-            // cursor left, which kept its painted band the whole time.
-            Scope::Header => self.header_focus = false,
+            Scope::Header => match verb {
+                Verb::CursorLeft if self.prefs.keep_awake => self.header_awake = true,
+                Verb::CursorRight if self.git.sampled => self.header_awake = false,
+                Verb::CursorDown => self.header_focus = false,
+                _ => {}
+            },
             Scope::Theme => {
                 let Mode::Theme { idx } = self.mode else {
                     return;
@@ -4146,8 +4154,10 @@ impl App {
     fn act(&mut self, scope: Scope) -> Result<()> {
         match scope {
             Scope::Board => self.board_enter(),
-            // The one focusable section of the top row is the checkout's git
-            // clause, and reading it is the board's own `v` (T-305).
+            Scope::Header if self.header_awake && self.prefs.keep_awake => {
+                self.return_to_settings(Verb::KeepAwake);
+                Ok(())
+            }
             Scope::Header => self.open_checkout_diff(),
             Scope::Ticket => {
                 if let Screen::Ticket { ticket, .. } = self.screen {
@@ -11026,6 +11036,75 @@ mod tests {
         assert!(app.on_column_header());
         press(&mut app, 'k');
         assert!(app.header_focus);
+    }
+
+    #[test]
+    fn wake_indicator_opens_its_setting_and_disable_removes_its_focus() {
+        for sampled in [false, true] {
+            let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+            app.git = mesimon_core::command::RepoGit {
+                sampled,
+                branch: if sampled { "main".into() } else { String::new() },
+                ..Default::default()
+            };
+            app.prefs.keep_awake = true;
+            press(&mut app, 'k');
+            press(&mut app, 'k');
+            assert_eq!(app.scope(), Scope::Header);
+            assert_eq!(app.header_awake, !sampled);
+            if sampled {
+                app.handle_key(KeyCode::Left, KeyModifiers::NONE).unwrap();
+                assert!(app.header_awake);
+                app.handle_key(KeyCode::Right, KeyModifiers::NONE).unwrap();
+                assert!(!app.header_awake);
+                press(&mut app, 'h');
+            }
+            assert!(app.header_awake);
+            // Activity transitions leave the selection alone.
+            for held in [true, false] {
+                app.caffeinated = held;
+                assert!(app.ctx().header_awake);
+            }
+            let before = sent.borrow().len();
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert!(app.prefs.keep_awake, "opening settings does not toggle the preference");
+            assert_eq!(app.settings_section, keymap::SettingsSection::Behaviour);
+            let Mode::Settings { idx } = app.mode else { panic!("settings did not open") };
+            assert_eq!(keymap::settings_items(&app.ctx())[idx].verb, Verb::KeepAwake);
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert!(!app.prefs.keep_awake);
+            assert!(!app.header_awake, "the removed indicator cannot retain the cursor");
+            assert_eq!(app.header_focus, sampled, "fall back to git, or to the board");
+            assert_eq!(sent.borrow().len(), before, "settings send no daemon commands");
+            for _ in 0..3 {
+                app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+            }
+            assert!(matches!(app.mode, Mode::Normal));
+            assert_eq!(app.scope(), if sampled { Scope::Header } else { Scope::Board });
+        }
+    }
+
+    #[test]
+    fn wake_header_sideways_navigation_preserves_git_enter_and_down() {
+        let mut app = app_three_columns();
+        app.git = mesimon_core::command::RepoGit {
+            sampled: true,
+            branch: "main".into(),
+            ..Default::default()
+        };
+        app.prefs.keep_awake = true;
+        press(&mut app, 'k');
+        press(&mut app, 'k');
+        press(&mut app, 'h');
+        assert!(app.header_awake);
+        press(&mut app, 'j');
+        assert!(app.on_column_header());
+        press(&mut app, 'k');
+        press(&mut app, 'h');
+        press(&mut app, 'l');
+        assert!(!app.header_awake);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Diff));
     }
 
     #[test]

@@ -92,18 +92,19 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     let word = screen_word(app);
     let mut spans = vec![chip(app, &word), Span::raw("  ".to_string())];
     spans.extend(breadcrumb(app, ink));
-    // The machine is being held awake (T-288). It hangs off the crumb the
-    // way `!N` does, and so it rides EVERY screen — the board, a ticket
-    // page, a diff, the note editor — because a machine held awake with
-    // nothing on screen saying so is this feature's whole failure mode, and
-    // the state run below (the ticket count, the ptys, the RSS) is the
-    // board's alone. `dim2` is D33e's register for a board-wide fact, which
-    // is what this is: `calm` says there is something for you to do, and a
-    // held machine asks nothing of anybody. Never `attn` — that is
-    // needs-you's, and only needs-you's.
-    if app.caffeinated {
-        let mark = crate::glyphs::awake_mark(theme.glyph_tier());
-        spans.push(Span::styled(format!(" {mark}"), theme.dim2()));
+    // The preference reserves one cell; activity changes only its glyph and
+    // brightness. Focus paints that same cell, without changing geometry.
+    if app.prefs.keep_awake {
+        let mark = crate::glyphs::awake_mark(theme.glyph_tier(), app.caffeinated);
+        let mut style = if app.caffeinated { theme.base() } else { theme.dim3() };
+        if app.header_focus && app.header_awake && matches!(app.screen, Screen::Board) {
+            style = style.patch(theme.selected_row()).add_modifier(Modifier::BOLD);
+            if theme.selected_bg.is_some() {
+                style = style.fg(theme.sel.base);
+            }
+        }
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(mark.to_string(), style));
     }
     if let Some(leaf) = leaf {
         let used: usize = super::spans_width(&spans);
@@ -166,7 +167,7 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
         // (the Settings row) and what it will actually do is per ticket (the
         // card's `merge ∙ after T-3` row), so both halves already have a home.
         let room = (area.width as usize).saturating_sub(used + reserved);
-        let git = git_clause(app, room, app.header_focus);
+        let git = git_clause(app, room, app.header_focus && !app.header_awake);
         let git_w: usize = super::spans_width(&git);
         spans.splice(git_at..git_at, git);
         let used = used + git_w;

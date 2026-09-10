@@ -13,7 +13,7 @@
                            │   Appearance & notifications                                   │
                            │     theme, notifications, status line                          │
                            │   Behaviour                                                    │
-                           │     auto merge, snooze, week start, default column             │
+                           │     auto merge, keep awake, snooze, week start, default column │
                            │   Agents                                                       │
                            │     provider, brief and tools                                  │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯

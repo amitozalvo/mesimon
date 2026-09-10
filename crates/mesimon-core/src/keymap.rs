@@ -214,9 +214,8 @@ pub enum Scope {
     ColumnSettings,
     /// The board's own top row (T-305): `k` off a column header lands here,
     /// where Enter reads the section under the cursor and `j` goes back to
-    /// the column. One section is focusable today — the checkout's git
-    /// clause, whose Enter is the diff the board's `v` opens — so nothing
-    /// walks sideways and `h`/`l` are unbound. The column header is
+    /// the column. Left/right select the enabled wake indicator or checkout
+    /// git clause; Enter opens its settings row or diff. The column header is
     /// `Ctx::col_header`, a different place a cursor can be.
     Header,
     /// Scope barrier: owns every key, inherits nothing.
@@ -740,7 +739,8 @@ impl SettingsSection {
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
             | Verb::WeekStart
-            | Verb::DefaultColumn => Self::Behaviour,
+            | Verb::DefaultColumn
+            | Verb::KeepAwake => Self::Behaviour,
             Verb::SystemPrompt | Verb::McpTools | Verb::AgentProvider => Self::Agents,
             _ => Self::Root,
         }
@@ -985,6 +985,8 @@ pub struct Ctx {
     /// Hold this machine awake while an agent is mid-turn (T-288) — the
     /// preference; the Settings row flips it.
     pub keep_awake: bool,
+    /// The header cursor is on the wake indicator rather than the git clause.
+    pub header_awake: bool,
     /// And whether anything on this machine CAN hold it: false where the
     /// ladder found no rung, or `MESIMON_CAFFEINATE=off` said not to. False
     /// in a bare `Ctx` and in every test app, where no keeper was ever
@@ -3072,7 +3074,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::SettingsBehaviour,
         label: |_| "Behaviour".into(),
-        detail: |_| "auto merge, snooze, week start, default column".into(),
+        detail: |_| "auto merge, keep awake, snooze, week start, default column".into(),
         avail: always,
         key: "",
     },
@@ -4049,13 +4051,31 @@ static LINKS: &[Binding] = &[
 /// a cursor position, not a screen: nothing is drawn over the board, the
 /// cursor column keeps its painted band, and `j` walks straight back into it.
 ///
-/// One section is focusable — the checkout's git clause (`chrome::git_clause`)
-/// — so Enter IS the board's `v`, and the clause stops spelling that key
-/// beside the count it reads: a section the cursor can stand on says what
-/// Enter does in the footer, which is where the hint belongs once it is one
-/// press away. `h`/`l` are unbound until a second section earns them, and so
-/// is `k`: there is nothing above the top row.
+/// Left/right select the enabled wake indicator or the git clause. Enter
+/// opens its settings row or checkout diff; `k` stays inert above the top row.
 static HEADER: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('h'), Key::Left],
+        verb: Verb::CursorLeft,
+        show: "h",
+        hint: |_| "keep awake",
+        avail: |c| c.keep_awake && c.git_repo && !c.header_awake,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
+    },
+    Binding {
+        keys: &[Key::Char('l'), Key::Right],
+        verb: Verb::CursorRight,
+        show: "l",
+        hint: |_| "repository",
+        avail: |c| c.keep_awake && c.git_repo && c.header_awake,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 15,
+    },
     Binding {
         keys: &[Key::Char('j'), Key::Down],
         verb: Verb::CursorDown,
@@ -4068,14 +4088,11 @@ static HEADER: &[Binding] = &[
         prio: 10,
     },
     Binding {
-        // The board's `v`, on the section that draws the count it opens.
-        // Gated on the sample for the same reason `v` is: with no repository
-        // under the board there is no clause to stand on.
         keys: &[Key::Enter],
         verb: Verb::Act,
         show: "enter",
-        hint: |_| "diff",
-        avail: |c| c.git_repo,
+        hint: |c| if c.header_awake { "keep awake settings" } else { "diff" },
+        avail: |c| if c.header_awake { c.keep_awake } else { c.git_repo },
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -6166,6 +6183,30 @@ mod tests {
         assert_eq!(hint_for(Scope::Header, Verb::Act, &bare), None);
         let shown: Vec<&str> = footer_items(Scope::Header, &repo).iter().map(|b| b.show).collect();
         assert_eq!(shown, vec!["j", "enter", "esc", "?"]);
+    }
+
+    #[test]
+    fn wake_header_navigation_and_settings_target_follow_the_selection() {
+        let git = Ctx { git_repo: true, keep_awake: true, ..Default::default() };
+        for key in [Key::Char('h'), Key::Left] {
+            assert_eq!(resolve(Scope::Header, key, &git), Some(Verb::CursorLeft));
+        }
+        assert_eq!(hint_for(Scope::Header, Verb::Act, &git), Some(("enter", "diff")));
+        let awake = Ctx { header_awake: true, ..git.clone() };
+        for key in [Key::Char('l'), Key::Right] {
+            assert_eq!(resolve(Scope::Header, key, &awake), Some(Verb::CursorRight));
+        }
+        assert_eq!(resolve(Scope::Header, Key::Enter, &awake), Some(Verb::Act));
+        assert_eq!(
+            hint_for(Scope::Header, Verb::Act, &awake),
+            Some(("enter", "keep awake settings"))
+        );
+        let alone = Ctx { git_repo: false, ..awake.clone() };
+        assert_eq!(resolve(Scope::Header, Key::Enter, &alone), Some(Verb::Act));
+        assert_eq!(resolve(Scope::Header, Key::Right, &alone), None);
+        let disabled = Ctx { keep_awake: false, ..alone };
+        assert_eq!(resolve(Scope::Header, Key::Enter, &disabled), None);
+        assert_eq!(SettingsSection::for_verb(Verb::KeepAwake), SettingsSection::Behaviour);
     }
 
     /// Archiving takes two presses; restoring takes one. The chord tail binds
