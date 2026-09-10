@@ -1205,6 +1205,7 @@ id = "01J8ZQ7VJ00000000000000001"
 created_at = "@2"
 "#;
         let t: Ticket = toml::from_str(sparse).unwrap();
+        assert_eq!(t.previous_column, None, "old files have no remembered stay");
         assert_eq!(t.notes.len(), 1);
         assert_eq!(t.notes[0].rev, 0);
         assert_eq!(t.notes[0].name, "");
@@ -1286,6 +1287,10 @@ by = "local"
             created_by: String::new(),
             created_from: None,
             entered_at: None,
+            previous_column: Some(mesimon_core::board::ColumnStay {
+                column: "IN PROGRESS".into(),
+                seconds: 3661,
+            }),
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1305,6 +1310,7 @@ by = "local"
         let s = toml::to_string_pretty(&f).expect("a scalar after a table would error here");
         assert!(s.find("[raised]").unwrap() < s.find("[[tags]]").unwrap(), "{s}");
         let back: TicketFile = toml::from_str(&s).unwrap();
+        assert_eq!(back.ticket.previous_column, t.previous_column);
         assert_eq!(back.ticket.raised, t.raised);
         assert!(back.ticket.hand_raised());
         // No hand, no key — an older build's file and this one agree.
@@ -1328,6 +1334,7 @@ by = "local"
             created_by: String::new(),
             created_from: None,
             entered_at: None,
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1378,6 +1385,7 @@ by = "local"
             created_by: String::new(),
             created_from: None,
             entered_at: None,
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1422,6 +1430,7 @@ by = "local"
             created_by: String::new(),
             created_from: None,
             entered_at: None,
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1480,6 +1489,7 @@ by = "local"
                 created_by: String::new(),
                 created_from: None,
                 entered_at: None,
+                previous_column: None,
                 woke_at: None,
                 manual_merge: false,
                 execution_policy: Default::default(),
@@ -1814,6 +1824,7 @@ by = "local"
             created_by: String::new(),
             created_from: None,
             entered_at: None,
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -1844,6 +1855,7 @@ by = "local"
             created_by: String::new(),
             created_from: None,
             entered_at: None,
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),

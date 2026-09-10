@@ -75,6 +75,27 @@ pub(crate) fn age_in_column(now_ms: u64, then_ms: u64) -> String {
     }
 }
 
+/// Completed work uses minutes even in the age slot's sub-100-second band.
+pub(crate) fn column_duration(seconds: u64) -> String {
+    if seconds < 3600 {
+        format!("{}m", seconds / 60)
+    } else if seconds < 86_400 {
+        let (hours, minutes) = (seconds / 3600, seconds % 3600 / 60);
+        if minutes == 0 {
+            format!("{hours}h")
+        } else {
+            format!("{hours}h {minutes}m")
+        }
+    } else {
+        let (days, hours) = (seconds / 86_400, seconds % 86_400 / 3600);
+        if hours == 0 {
+            format!("{days}d")
+        } else {
+            format!("{days}d {hours}h")
+        }
+    }
+}
+
 /// The age slot's vocabulary pointed forward: how long until `then`. A
 /// snoozed ticket's row in the archived dialog reads `wakes in 3h`; once the
 /// deadline has passed (the tick wheel is about to act) it reads `wakes

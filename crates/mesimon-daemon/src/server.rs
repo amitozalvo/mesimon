@@ -3448,11 +3448,13 @@ impl Daemon {
             self.moves.enter();
         }
         if let Some(t) = self.board.ticket_mut(id) {
+            let stamp = now_iso();
+            t.remember_column_stay(&stamp);
             t.column = dest.to_string();
             t.order = order;
             // The card's age is time in column, so a column change is the
             // one thing that restarts it (a reorder returned above).
-            t.entered_at = Some(now_iso());
+            t.entered_at = Some(stamp);
             let t = t.clone();
             let _ = store::save_ticket(&self.paths, &t);
         }
@@ -4204,6 +4206,7 @@ impl Daemon {
             created_by: by.note_author(),
             created_from: None,
             entered_at: Some(now_iso()),
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: source.execution_policy,
@@ -4314,6 +4317,7 @@ impl Daemon {
             created_by: by.note_author(),
             created_from: from,
             entered_at: Some(now_iso()),
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),

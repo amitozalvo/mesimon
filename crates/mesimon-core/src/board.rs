@@ -936,6 +936,10 @@ pub struct Ticket {
     /// scalar) and before `[[tags]]`; a scalar serialized after it errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub raised: Option<Raised>,
+    /// Most recent completed column stay longer than one minute. Short visits
+    /// leave it intact. Optional for old tickets; a table after all scalars.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub previous_column: Option<ColumnStay>,
     /// Tags, at most one per group (a group is an axis: kind, environment…).
     /// Must stay after every scalar — this serializes as `[[tags]]`, an array
     /// of tables, and a scalar after a table errors. Tables may follow tables,
@@ -953,6 +957,13 @@ pub struct Ticket {
     /// table; any scalar serialized after it errors.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub archived: Option<Archived>,
+}
+
+/// A completed stay, frozen at departure rather than counting up in the UI.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ColumnStay {
+    pub column: String,
+    pub seconds: u64,
 }
 
 /// What a TICKET wears: a pointer into the registry by (group, name).
@@ -1265,6 +1276,17 @@ impl Ticket {
     /// its current column, or its creation where no move has stamped it yet.
     pub fn column_since(&self) -> &str {
         self.entered_at.as_deref().unwrap_or(&self.created_at)
+    }
+
+    /// Remember a departure before changing the column or its arrival stamp.
+    /// The caller supplies the clock; malformed or future stamps add no history.
+    pub fn remember_column_stay(&mut self, departed_at: &str) {
+        let seconds = stamp_secs(departed_at)
+            .zip(stamp_secs(self.column_since()))
+            .and_then(|(end, start)| end.checked_sub(start));
+        if let Some(seconds) = seconds.filter(|seconds| *seconds > 60) {
+            self.previous_column = Some(ColumnStay { column: self.column.clone(), seconds });
+        }
     }
 
     /// Layered resolution: ticket field (a column's default is stamped here
@@ -2338,6 +2360,7 @@ mod tests {
             created_by: String::new(),
             created_from: None,
             entered_at: None,
+            previous_column: None,
             woke_at: None,
             manual_merge: false,
             execution_policy: Default::default(),
@@ -2347,6 +2370,37 @@ mod tests {
             notes: Vec::new(),
             archived: None,
         }
+    }
+
+    #[test]
+    fn column_stay_remembers_only_visits_over_one_minute() {
+        let mut t = ticket(1, "IN PROGRESS", "a0");
+        // Legacy tickets use creation until their first stamped move.
+        for end in ["@0", "@59", "@60", "invalid"] {
+            t.remember_column_stay(end);
+            assert_eq!(t.previous_column, None);
+        }
+        t.remember_column_stay("@61");
+        assert_eq!(
+            t.previous_column,
+            Some(ColumnStay { column: "IN PROGRESS".into(), seconds: 61 })
+        );
+        let remembered = t.previous_column.clone();
+        t.column = "REVIEW".into();
+        t.entered_at = Some("@1000".into());
+        for end in ["@999", "@1060", "invalid"] {
+            t.remember_column_stay(end);
+            assert_eq!(t.previous_column, remembered);
+        }
+        t.remember_column_stay("@4661");
+        assert_eq!(t.previous_column, Some(ColumnStay { column: "REVIEW".into(), seconds: 3661 }));
+        let remembered = t.previous_column.clone();
+        t.entered_at = Some("invalid".into());
+        t.remember_column_stay("@9999");
+        assert_eq!(t.previous_column, remembered);
+        let wire = serde_json::to_string(&t).unwrap();
+        let back: Ticket = serde_json::from_str(&wire).unwrap();
+        assert_eq!(back.previous_column, remembered);
     }
 
     /// A snooze is an archive with a deadline: the deadline and the wake

@@ -9242,3 +9242,19 @@ Coverage includes a real diverged repository, newest-first ordering, the history
 detached HEAD, old snapshot decoding, direction-specific subjects through the daemon
 wire, view switching, scrolling and shrinking lists. New goldens cover 60 and 120
 columns; the existing checkout-diff golden changes only its footer's Tab hint.
+## Remember completed column time (T-319, 2026-09-10)
+
+The ticket page's state row now places `previously IN PROGRESS for 1h 1m`
+between the current column's age and creation details. The daemon freezes the
+most recent completed column stay strictly longer than 60 seconds on an authorized
+column move and persists its column name and duration with the ticket. Shorter
+visits and same-column reorders preserve that last qualifying stay; a later long
+visit replaces it. This is one completed visit, not accumulated time across visits.
+New tickets and duplicates start without history. Old files default to no history;
+the first move uses the existing `column_since` fallback to creation when no arrival
+stamp exists. Invalid or future timestamps do not create a remembered stay. Archive,
+snooze and restore retain the memory without recording a new departure.
+
+Core tests cover the strict boundary and invalid clocks; a daemon integration test
+covers moves, reorder, short visits and restart persistence. TOML/JSON round trips
+and ticket-page goldens at 120×30 and 100×24 cover storage and presentation.

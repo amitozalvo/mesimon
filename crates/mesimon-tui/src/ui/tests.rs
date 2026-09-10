@@ -50,6 +50,7 @@ fn ticket(n: u128, key: &str, title: &str, column: &str, order: &str) -> Ticket 
         created_by: String::new(),
         created_from: None,
         entered_at: None,
+        previous_column: None,
         woke_at: None,
         manual_merge: false,
         execution_policy: Default::default(),
@@ -1388,6 +1389,36 @@ fn golden_ticket_screen_120() {
     let mut app = app_graphite(fixture(true));
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     golden("ticket_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn golden_ticket_previous_column() {
+    let mut app = app_graphite(fixture(true));
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let t = app.board.ticket_mut(ulid_n(3)).unwrap();
+    t.column = "REVIEW".into();
+    t.previous_column =
+        Some(mesimon_core::board::ColumnStay { column: "IN PROGRESS".into(), seconds: 3661 });
+    let lines = render(&app, 120, 30);
+    assert!(lines[3].contains("REVIEW for >1y ∙ previously IN PROGRESS for 1h 1m ∙ created"));
+    golden("ticket_previous_column_120x30", &lines);
+    golden("ticket_previous_column_100x24", &render(&app, 100, 24));
+    for seconds in [0, 60, 61, 99, 3600, 86400, 90000] {
+        app.board.ticket_mut(ulid_n(3)).unwrap().previous_column.as_mut().unwrap().seconds =
+            seconds;
+        let line = render(&app, 120, 30)[3].clone();
+        if seconds <= 60 {
+            assert!(!line.contains("previously"), "{line}");
+        } else {
+            let duration = match seconds {
+                61 | 99 => "1m",
+                3600 => "1h",
+                86400 => "1d",
+                _ => "1d 1h",
+            };
+            assert!(line.contains(&format!("previously IN PROGRESS for {duration} ∙")), "{line}");
+        }
+    }
 }
 
 /// T-253: a ticket an agent filed says so on the state row, beside its

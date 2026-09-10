@@ -158,9 +158,22 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let created = created_at_epoch_ms(&ticket.created_at)
         .map(|ms| format!(" ∙ {}{by}", age_created(now, ms)))
         .unwrap_or_default();
+    let previous = ticket
+        .previous_column
+        .as_ref()
+        .filter(|stay| stay.seconds > 60)
+        .map(|stay| {
+            format!(
+                " ∙ previously {} for {}",
+                crate::text::one_line(&stay.column).to_uppercase(),
+                crate::text::column_duration(stay.seconds)
+            )
+        })
+        .unwrap_or_default();
     let mut ident_spans = vec![
         Span::styled(format!(" {}", ticket.column.to_uppercase()), d2),
         Span::styled(here, d2),
+        Span::styled(previous, d2),
         Span::styled(created, d2),
     ];
     // The m flow's live reply (armed prompt, outcome, refusal) replaces the
