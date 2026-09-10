@@ -8830,3 +8830,20 @@ rerun reported none. The final text-bullet adjustment passed the 604-test TUI su
 existing live-network test ignored and clean fixture cleanup. All three golden diffs were
 inspected; clippy, formatting, diff checks and the main build passed. Linux and manual terminal
 checks were not repeated for this placement and glyph-only change.
+
+### 2026-09-10 — Explicit coffee wake status beside the ticket count
+
+The bullet wake indicator was too small and looked like the adjacent memory separator.
+Use `☕ on ` / `☕ off` (`@ on ` / `@ off` in ASCII mode), padded to the same display width
+so activity cannot move the rest of the header. The setting still controls visibility.
+Idle uses dim3, including sel.dim3 on the focused surface; native color emoji may retain
+their terminal colors, while the state text carries the dimming. Header navigation and
+Enter to open the selected Behaviour setting are unchanged. Rendering tests cover both
+states, focus, width stability with memory usage, all themes, and ASCII fallback.
+
+Validation: the TUI suite passed 604 tests with its existing live-network test ignored;
+all three deliberate golden diffs were inspected. The workspace suite passed 1343 tests
+with two existing skips (the live-network test and a subprocess helper exercised by its
+parent), and a clean 81-owner fixture audit. Clippy with warnings denied, formatting,
+diff checks and the main build passed. Linux and manual terminal checks were not repeated
+for this header-only change.

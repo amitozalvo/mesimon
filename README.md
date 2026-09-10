@@ -142,12 +142,12 @@ finished tickets and lists the archive. **Closing the board
 does not stop your agents** — that is the point of the daemon.
 
 **Settings › Behaviour › Keep this machine awake** prevents sleep while an agent works,
-including while you are attached to its pane. It is off by default. While enabled, a one-cell
-light beside the board's ticket count shows `•` when preventing sleep and `◦` when idle
-(`@` / `o` in ASCII mode).
-The light disappears when the setting is disabled; activity changes do not shift the title.
+including while you are attached to its pane. It is off by default. While enabled, a fixed-width
+label beside the board's ticket count shows `☕ on` when preventing sleep and dimmed `☕ off`
+when enabled but idle (`@ on` / `@ off` in ASCII mode).
+The label disappears when the setting is disabled; activity changes do not shift the title.
 From a column header, press Up / `k` to reach the board header, then Right / `l` to select
-the light beside the ticket count. Enter opens its setting, selected and ready to toggle.
+the label beside the ticket count. Enter opens its setting, selected and ready to toggle.
 Left / `h` returns to repository status; Down / `j` returns to the column.
 A turn waiting for user action releases the hold, as does closing the board.
 On macOS the display and closed-lid behavior are unchanged. Linux requires `systemd-inhibit`;

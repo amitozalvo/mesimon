@@ -224,15 +224,14 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
     }
 }
 
-/// One-cell status light: filled while held, hollow while enabled but idle.
-/// Text bullets sit on the text midline; geometric circles sat low in the
-/// user's terminal font. The preference controls visibility, not activity.
-pub(crate) fn awake_mark(tier: Tier, held: bool) -> char {
+/// Fixed-width wake status: padding keeps the header still as the hold changes.
+/// The preference controls visibility; "off" means enabled but currently idle.
+pub(crate) fn awake_label(tier: Tier, held: bool) -> &'static str {
     match (tier == Tier::Ascii, held) {
-        (false, true) => '•',
-        (false, false) => '◦',
-        (true, true) => '@',
-        (true, false) => 'o',
+        (false, true) => "☕ on ",
+        (false, false) => "☕ off",
+        (true, true) => "@ on ",
+        (true, false) => "@ off",
     }
 }
 
@@ -1048,18 +1047,14 @@ mod tests {
     }
 
     #[test]
-    fn awake_states_are_distinct_single_cells_at_both_tiers() {
-        use unicode_width::UnicodeWidthChar;
-        for tier in [Tier::Unicode, Tier::Ascii] {
-            assert_ne!(awake_mark(tier, true), awake_mark(tier, false));
+    fn awake_states_have_equal_display_width_at_both_tiers() {
+        use unicode_width::UnicodeWidthStr;
+        for (tier, width) in [(Tier::Unicode, 6), (Tier::Ascii, 5)] {
+            assert_ne!(awake_label(tier, true), awake_label(tier, false));
             for held in [false, true] {
-                let mark = awake_mark(tier, held);
-                assert_eq!(mark.width(), Some(1));
-                assert!(!(0x2500..=0x259F).contains(&(mark as u32)));
+                assert_eq!(awake_label(tier, held).width(), width);
             }
         }
-        assert_eq!(awake_mark(Tier::Unicode, true), '•');
-        assert_eq!(awake_mark(Tier::Unicode, false), '◦');
     }
 
     /// The branch glyph and both arrows are one cell at both tiers and stay

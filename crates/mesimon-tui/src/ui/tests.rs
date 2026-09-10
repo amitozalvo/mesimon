@@ -5400,13 +5400,14 @@ fn wake_indicator_visibility_follows_preference_on_every_screen() {
             app.caffeinated = held;
             app.prefs.keep_awake = false;
             let off = render(&app, 120, 30)[0].clone();
-            assert!(!off.contains('•') && !off.contains('◦'), "disabled: {off}");
+            assert!(!off.contains('☕'), "disabled: {off}");
             app.prefs.keep_awake = true;
-            let mark = if held { '•' } else { '◦' };
+            let state = if held { "on" } else { "off" };
             let on = render(&app, 120, 30)[0].clone();
             let label =
                 if matches!(app.screen, Screen::Board) { "7 tickets" } else { "kanban-tui" };
-            assert!(on.contains(&format!("{label} {mark}")), "enabled: {on}");
+            // The buffer dump includes the coffee glyph's second cell.
+            assert!(on.contains(&format!("{label} ☕  {state}")), "enabled: {on}");
         }
     }
 }
@@ -5418,17 +5419,14 @@ fn wake_activity_and_focus_never_move_the_header() {
         app.prefs.keep_awake = true;
         app.git = git_state("main", 2, 1, 3);
         app.force_update_ready();
+        app.resources.rss_measured = 1;
+        app.resources.rss_bytes = 400 * 1024 * 1024;
         for w in [60, 80, 90, 100, 110, 120, 160] {
             app.caffeinated = false;
             app.header_focus = false;
             let idle = render(&app, w, 30)[0].clone();
-            let idle_mark = crate::glyphs::awake_mark(app.theme.glyph_tier(), false);
-            let active_mark = crate::glyphs::awake_mark(app.theme.glyph_tier(), true);
-            let expected = idle.replacen(
-                &format!("7 tickets {idle_mark}"),
-                &format!("7 tickets {active_mark}"),
-                1,
-            );
+            assert!(idle.contains("off"), "missing idle label at {w}: {idle}");
+            let expected = idle.replacen("off", "on ", 1).trim_end().to_string();
             app.caffeinated = true;
             assert_eq!(render(&app, w, 30)[0], expected, "activity shifted header at {w}");
             app.header_focus = true;
@@ -5439,13 +5437,13 @@ fn wake_activity_and_focus_never_move_the_header() {
 }
 
 #[test]
-fn wake_indicator_has_single_cell_ascii_states() {
+fn wake_indicator_has_ascii_states() {
     let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
     app.prefs.keep_awake = true;
-    for (held, mark) in [(true, '@'), (false, 'o')] {
+    for (held, label) in [(true, "@ on"), (false, "@ off")] {
         app.caffeinated = held;
         let head = render(&app, 120, 30)[0].clone();
-        assert!(head.contains(&format!("7 tickets {mark}")), "{head:?}");
+        assert!(head.contains(&format!("7 tickets {label}")), "{head:?}");
     }
 }
 
@@ -5459,7 +5457,7 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
             app.caffeinated = held;
             app.git = git_state("main", 2, 1, 3);
             let plain = cells(&app, 120, 30);
-            let mark = if held { "•" } else { "◦" };
+            let mark = "☕";
             let x = (0..120u16).find(|x| plain[(*x, 0)].symbol() == mark).unwrap();
             assert_eq!(
                 plain[(x, 0)].fg,
@@ -5473,6 +5471,17 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
                 focused[(x, 0)].style(),
                 "{flavor:?} cursor is invisible"
             );
+            let selected_ink =
+                if app.theme.selected_bg.is_some() { &app.theme.sel } else { &app.theme.rest };
+            let expected = if held { selected_ink.base } else { selected_ink.dim3 };
+            // Check the text too: a terminal may paint native emoji in color.
+            for offset in [0, 3, 4, 5] {
+                assert_eq!(focused[(x + offset, 0)].fg, expected, "{flavor:?}, held={held}");
+                assert_eq!(
+                    plain[(x + offset, 0)].fg,
+                    if held { app.theme.rest.base } else { app.theme.rest.dim3 }
+                );
+            }
             for buf in [&plain, &focused] {
                 assert_ne!(buf[(x, 0)].fg, app.theme.attn);
                 assert_ne!(buf[(x, 0)].bg, app.theme.attn);

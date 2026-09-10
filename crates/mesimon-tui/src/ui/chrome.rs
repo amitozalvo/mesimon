@@ -93,19 +93,19 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     let mut spans = vec![chip(app, &word), Span::raw("  ".to_string())];
     spans.extend(breadcrumb(app, ink));
     let mut awake = Vec::new();
-    // The preference reserves one cell; activity changes only its glyph and
-    // brightness. Focus paints that same cell, without changing geometry.
+    // The preference reserves a fixed-width label; activity changes its text
+    // and brightness. Focus preserves both geometry and the idle dimming.
     if app.prefs.keep_awake {
-        let mark = crate::glyphs::awake_mark(theme.glyph_tier(), app.caffeinated);
+        let label = crate::glyphs::awake_label(theme.glyph_tier(), app.caffeinated);
         let mut style = if app.caffeinated { theme.base() } else { theme.dim3() };
         if app.header_focus && app.header_awake && matches!(app.screen, Screen::Board) {
             style = style.patch(theme.selected_row()).add_modifier(Modifier::BOLD);
             if theme.selected_bg.is_some() {
-                style = style.fg(theme.sel.base);
+                style = style.fg(if app.caffeinated { theme.sel.base } else { theme.sel.dim3 });
             }
         }
         awake.push(Span::raw(" "));
-        awake.push(Span::styled(mark.to_string(), style));
+        awake.push(Span::styled(label, style));
     }
     // Other screens have no ticket counter; retain their breadcrumb marker.
     if word != "BOARD" {
