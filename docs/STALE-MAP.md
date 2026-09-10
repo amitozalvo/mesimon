@@ -8903,3 +8903,29 @@ subprocess helper exercised by its parent tests. Workspace clippy with warnings 
 formatting, diff checks, and the main binary build passed. Linux/WSL desktop clipboard
 integration and manual TUI checks were not run in this macOS managed pane; platform
 selection and payload encoding are covered through pure seams and fake helpers.
+
+## Teams research constraints and proposal (T-215, 2026-09-10)
+
+The author requires a paid Teams tier, managed cloud **and** self-hosted deployment
+at launch, and end-to-end encryption of board content with no service-side plaintext
+processing. Cross-project sharing must work without the recipient cloning the repo;
+scoped MCP ticket submission and opt-in agent questions must coexist with the future
+Mesophon phone/browser control surface.
+
+[The research proposal](proposals/T-215-teams-proposal.md),
+[security design](proposals/T-215-teams-security.md), and
+[176-scenario catalog](proposals/T-215-teams-scenarios.md) record the recommended
+architecture and UX. They propose encrypted service authority, verified client key
+custody, client-side search/MCP, inert remote intake, reviewed agent execution/replies,
+and separate host-control capabilities. These are **proposed, not shipped or approved
+implementation decisions**. D30's Git-sharing idea is evaluated, not implemented.
+
+Code inspection confirms that local identity is caller-declared behind the UID
+boundary, local ticket creation may auto-run, and current snapshots/models are not
+safe remote projections. These facts must not be mistaken for enterprise security
+capabilities. Crypto/history composition, browser code-delivery trust, revocation
+freshness, recovery, and OS-enforced worker isolation require dedicated spikes and
+independent security review before implementation commitments.
+
+This entry records research and explicit product constraints only; no runtime,
+protocol, license, or current README promise changes in this ticket.
