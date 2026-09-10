@@ -158,8 +158,22 @@ fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
 
 #[test]
 fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
-    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
-                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    // Idle animation must not block a rebase: session state decides whether
+    // the agent is working, not the time since its terminal last repainted.
+    const STUB: &str = r#"#!/usr/bin/env python3
+import os, select, sys, tty
+from pathlib import Path
+tty.setcbreak(sys.stdin.fileno())
+got = Path(__file__).with_name('got.txt')
+while True:
+    print('.', end='', flush=True)
+    if select.select([sys.stdin], [], [], 0.1)[0]:
+        data = os.read(sys.stdin.fileno(), 4096)
+        if not data:
+            break
+        with got.open('ab') as output:
+            output.write(data)
+"#;
     // The flags (and the train) on a 1 s cadence; the quiet probe kept out.
     let Some(h) = Harness::boot_with_env(
         "train",
@@ -324,15 +338,23 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     init_repo(&repo, "a.txt", "hello\n");
     let hook_sock = h.paths.hook_sock();
     let mut c = h.client("train-blocked");
+    // B needs a rebase; A is already ready to merge onto the newer base.
+    // Rebasing B before A lands would only make B need another rebase.
+    let (b, sb, branch_b, wt_b) = ready(&mut c, "beta");
+    std::fs::write(repo.join("base.txt"), "base advanced\n").unwrap();
+    git(&repo, &["add", "base.txt"]);
+    git(&repo, &["commit", "-qm", "advance base"]);
     let (a, sa, branch_a, _) = ready(&mut c, "alpha");
     // In the way: the ff would create this file, and git will not overwrite
     // one it does not know about.
     std::fs::write(repo.join("alpha.txt"), "not mine\n").unwrap();
     std::thread::sleep(Duration::from_millis(500));
-    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
-    c.await_state(sa, "running", |s| *s == SessionState::Running);
-    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
-    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    for sid in [sa, sb] {
+        hook_send(&hook_sock, &sid.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+        c.await_state(sid, "running", |s| *s == SessionState::Running);
+        hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+        c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    }
     wait_until(Duration::from_secs(5), "A in REVIEW", || {
         c.board().ticket(a).unwrap().column == "REVIEW"
     });
@@ -343,6 +365,14 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     wait_until(Duration::from_secs(15), "the refusal to be recorded", || {
         feed().contains("merge_train_refused:merge")
     });
+    // Cover both the pass that refuses A and later passes that remember
+    // that refusal. Neither may fall through to asking B to rebase.
+    std::thread::sleep(Duration::from_millis(2500));
+    assert!(automation_of(&mut c).train_asked.is_empty(), "rebased past a blocked merge");
+    assert!(!feed().contains("merge_train_rebase_asked"));
+    let rebase = pending_of(&mut c, Some(b));
+    let rebase = rebase.iter().find(|p| p.action == "rebase").expect("B is owed a rebase");
+    assert_eq!(rebase.waits_on, vec![c.board().ticket(a).unwrap().short_key.clone()]);
     // The row carries the reason, and the board says it in a sentence.
     let owed = pending_of(&mut c, Some(a));
     let merge = owed
@@ -359,7 +389,11 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
         .iter()
         .find(|n| n.kind == "merge_train_blocked")
         .unwrap_or_else(|| panic!("a standing notice: {notices:?}"));
-    assert!(n.text.contains("T-1") && n.text.contains(&why), "{}", n.text);
+    assert!(
+        n.text.contains(&c.board().ticket(a).unwrap().short_key) && n.text.contains(&why),
+        "{}",
+        n.text
+    );
     assert!(!git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"]));
     // Out of the way. Neither tip moves — only the checkout's own status —
     // and that is what lets the train try again.
@@ -370,5 +404,26 @@ fn a_merge_the_checkout_refuses_says_why_and_retries_once_it_is_clean() {
     wait_until(Duration::from_secs(5), "the notice to go with it", || {
         !pending_of(&mut c, Some(a)).iter().any(|p| p.action == "merge")
     });
+    wait_until(Duration::from_secs(15), "B to be asked after A merges", || {
+        automation_of(&mut c).train_asked.iter().any(|ask| ask.ticket == b && ask.current)
+    });
+    hook_send(&hook_sock, &sb.to_string(), "UserPromptSubmit", r#"{"prompt":"rebase"}"#);
+    c.await_state(sb, "running", |s| *s == SessionState::Running);
+    git(&wt_b, &["rebase", "-q", "main"]);
+    hook_send(&hook_sock, &sb.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sb, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(15), "B to merge after one rebase onto A", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_b, "main"])
+    });
+    wait_until(Duration::from_secs(5), "both merges in the feed", || {
+        feed().lines().filter(|line| line.contains("merge_train_merged")).count() == 2
+    });
+    let actions: Vec<_> = feed()
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .filter_map(|v| v.get("cmd").and_then(|cmd| cmd.as_str()).map(String::from))
+        .filter(|cmd| matches!(cmd.as_str(), "merge_train_merged" | "merge_train_rebase_asked"))
+        .collect();
+    assert_eq!(actions, ["merge_train_merged", "merge_train_rebase_asked", "merge_train_merged"]);
     let _ = c.request(Command::Shutdown);
 }

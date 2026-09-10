@@ -924,11 +924,6 @@ impl Daemon {
 /// not reading).
 const INFLIGHT_MS: u64 = 10_000;
 
-/// How long a pane must have been silent before the train pastes into it:
-/// a person typing there makes it active, and their half-sentence must not
-/// get mesimon's appended and submitted.
-const TRAIN_PANE_QUIET_MS: u64 = 5_000;
-
 /// A spawn parked behind worktree provisioning, replayed by `on_provisioned`.
 struct PendingSpawn {
     ticket: ulid::Ulid,
@@ -3719,6 +3714,14 @@ impl Daemon {
         if self.train.is_armed() && !self.worktrees_barred {
             let plan = self.train_plan();
             let waits_on = self.keys_of(&self.board_busy());
+            // Rebases wait for pending merges even when the checkout refuses
+            // them: asking against the old base would waste the agent's turn.
+            let mut rebase_waits_on = waits_on.clone();
+            for key in self.keys_of(&plan.merge) {
+                if !rebase_waits_on.contains(&key) {
+                    rebase_waits_on.push(key);
+                }
+            }
             for t in plan.merge {
                 let tip = self.wt_tip.get(&t).cloned().unwrap_or_default();
                 out.push(Pending {
@@ -3733,7 +3736,7 @@ impl Daemon {
                 out.push(Pending {
                     ticket: t,
                     action: "rebase".into(),
-                    waits_on: waits_on.clone(),
+                    waits_on: rebase_waits_on.clone(),
                     text: None,
                     in_flight: false,
                 });
@@ -4849,10 +4852,12 @@ impl Daemon {
     /// merge first — the first REVIEW candidate in board order, through the
     /// same road a hand `m` takes under `Principal::Automation`, then the
     /// merged notice into its agent if that is on (a turn starts; the next
-    /// pass waits for it). Else ONE rebase ask, into a pane that has been
-    /// quiet for `TRAIN_PANE_QUIET_MS` — a user mid-sentence in the pane
-    /// must never get mesimon's appended to theirs. A refused merge is
+    /// pass waits for it). Else ONE rebase ask to an idle agent selected by
+    /// the planner. Terminal output is not work: idle animations must not
+    /// hold the train behind a pane-silence check. A refused merge is
     /// remembered per tip pair so a dirty main is not retried every bucket.
+    /// Pending merges hold further rebase asks until they land or leave the
+    /// train; the next rebase should include the commits they will add.
     fn train_pass(&mut self) -> bool {
         if !self.train.is_armed()
             || self.worktrees_barred
@@ -4867,7 +4872,8 @@ impl Daemon {
         let plan = self.train_plan();
         let by = Principal::Automation { rule: mesimon_core::train::RULE.into() };
         let now = now_ms();
-        for t in plan.merge {
+        let mut refused = false;
+        for t in plan.merge.iter().copied() {
             // The tip the flags were sampled at, like `base_tip` beside it:
             // the refusal memory is keyed on the pair, and the snapshot road
             // (`pending_items`) reads the same map, so neither forks git.
@@ -4904,22 +4910,20 @@ impl Daemon {
                 Response::Merge { outcome: MergeOutcome::Refused, detail } => {
                     self.train.refuse(t, tip, self.base_tip.clone(), detail);
                     self.feed.board("automation", "merge_train_refused:merge", Some(t));
+                    refused = true;
                 }
                 // NeedsRebase / AlreadyMerged: the cached flags lagged git;
                 // the refresh that ran before this pass will not next time.
                 _ => return true,
             }
         }
-        let Some(t) = plan.rebase.first().copied() else { return false };
-        let Some(sid) = self.board.pane_target(t).map(|s| s.sid16()) else { return false };
-        let Ok(activity) = self.backend.activity() else { return false };
-        let quiet = activity
-            .iter()
-            .find(|(name, _)| *name == sid)
-            .is_some_and(|(_, at)| now.saturating_sub(at * 1000) >= TRAIN_PANE_QUIET_MS);
-        if !quiet {
-            return false;
+        if !plan.merge.is_empty() {
+            // Includes remembered refusals. Keep trying other merge candidates,
+            // but do not rebase more branches onto a base we cannot yet advance.
+            // A new refusal must be broadcast even though no merge landed.
+            return refused;
         }
+        let Some(t) = plan.rebase.first().copied() else { return false };
         let was_fused = self.train.is_fused(t);
         match self.merge_to_agent(t, mesimon_core::command::MergeRequest::Rebase, &by) {
             Response::Ok => {

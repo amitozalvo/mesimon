@@ -9104,3 +9104,72 @@ passed in isolation and in the serial unit run. `git diff --check` passed.
 `execution_policy_e2e.rs`, core `authorize.rs` and core `train.rs`; they were left
 untouched. Full integration/nextest, clippy, Linux and manual TUI gates were not
 run for this repository-tooling change; no daemon replacement was needed.
+
+## Idle terminal output does not hold the rebase train (2026-09-10)
+
+T-319 sat in REVIEW with `rebase ask ∙ next` while the board had no working
+agents. The daemon correctly observed its Codex session as high-confidence idle
+after an end of turn, but `train_pass` separately required five seconds without
+tmux `window_activity`. The idle prompt's moving dots refreshed that output
+timestamp continuously. The first rebase candidate therefore never advanced,
+and the remaining three candidates waited behind it. The pending row did not
+represent this extra guard.
+
+Remove the train's terminal-silence check for all providers. Terminal output is
+neither agent work nor proof of user typing, so it cannot decide whether an idle
+agent may receive a rebase request. The existing planner and board-busy checks
+still govern eligibility: a confident end-of-turn idle seat, no working agents
+or in-flight requests, an armed board connection, no manual-merge opt-out or
+raised hand, and the existing per-tip ask memory and fuse. Prompt delivery keeps
+its provider-specific path. This deliberately retires the old five-second
+heuristic; it does not introduce a replacement detector for unfinished user input.
+
+The merge-train lifecycle e2e now uses an agent stub that emits output every
+100 ms even while idle. It must still receive one rebase request, merge after
+rebasing, and stop automation when the arming board disconnects.
+
+Verification: the regression timed out waiting for the rebase request before
+the fix, then all three merge-train e2es passed after it. Bounded workspace
+nextest passed 1,357 tests with clean fixture cleanup; the two existing skips
+are the live-release download and the restart-skew subprocess helper (exercised
+by its parent tests). Workspace Clippy with warnings denied, formatting checks
+on the changed Rust files, and `git diff --check` passed. No manual TUI or Linux
+run; the running daemon still needs the board's `U` handover.
+
+## Refused merges hold later rebase requests (2026-09-11)
+
+The live feed showed T-319's merge refused and T-322 asked to rebase 27 ms
+later, then the same sequence from T-322 to T-340. The board snapshot named
+uncommitted changes in the main checkout as the merge refusal. `train_pass`
+tried merges first, but exhausted both fresh and remembered refusals and fell
+through to a rebase ask. Those agents rebased onto the same base; landing one
+would invalidate the others' work and require more rebase turns.
+
+Pending merge candidates now hold further rebase requests. The pass still
+tries other merge candidates in board order, but if none lands, it waits for
+the merge blocker to clear or the candidates to leave the train. Once a merge
+lands, the next sample plans against the advanced base. Existing refusal
+invalidation on checkout changes supplies the retry; there is no new timer or
+permission gate. A newly recorded refusal counts as a visible change so its
+notice is broadcast even when the pass sends no prompt. Rebase pending rows
+include the merge candidates in `waits_on`, using the existing `after T-N`
+display rather than promising `next` while a merge is blocked.
+
+The blocked-checkout e2e now has a ready merge and a second branch needing a
+rebase. It checks that neither the initial refusal nor subsequent remembered
+refusals sends a rebase request, that the pending row names the merge, and
+that clearing the checkout produces exactly merge A → rebase B → merge B.
+The new regression failed before the fix with `rebased past a blocked merge`.
+
+Verification: all three merge-train e2es passed, then bounded workspace
+nextest passed all 1,357 tests with clean cleanup of 86 fixture owners. The
+two existing skips are the live-release network test and the restart-skew
+subprocess helper exercised by its parents. Workspace Clippy with warnings
+denied, formatting checks on the changed Rust files, and `git diff --check`
+passed. Sandbox attempts failed on socket/process access and cleanup auditing;
+the exact gates were rerun with scoped elevation, and the retained manifests
+were inspected before removing only their verified inactive fixture dirs.
+Linux and manual TUI checks were not run for this daemon scheduling change;
+the existing display grammar is unchanged. The running daemon was not replaced:
+the board's `U` handover is still needed, and conflicting main-checkout edits
+remain a separate merge blocker.
