@@ -128,6 +128,14 @@ fn m2_attention_headless() {
         "attention transition must push without any client request"
     );
 
+    // A queued SessionStart or resource push can arrive before the permission
+    // frame is ingested. As with the settle below, wait for the state being
+    // asserted instead of assuming the first notification describes it.
+    wait_until(Duration::from_secs(5), "permission hook reaches the snapshot", || {
+        board_of(c.request(Command::Snapshot)).0.sessions.iter().any(|s| {
+            s.id == sid && s.state == SessionState::RequiresAction { reason: Reason::Permission }
+        })
+    });
     let (board, _) = board_of(c.request(Command::Snapshot));
     let rec = board.sessions.iter().find(|s| s.id == sid).expect("session");
     assert_eq!(rec.state, SessionState::RequiresAction { reason: Reason::Permission });

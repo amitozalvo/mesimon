@@ -9258,3 +9258,9 @@ snooze and restore retain the memory without recording a new departure.
 Core tests cover the strict boundary and invalid clocks; a daemon integration test
 covers moves, reorder, short visits and restart persistence. TOML/JSON round trips
 and ticket-page goldens at 120×30 and 100×24 cover storage and presentation.
+
+T-319 rebase verification exposed the existing hook e2e's first-notification race:
+a queued SessionStart/resource notification could be read before PermissionRequest
+was ingested, leaving the immediate snapshot Running. The test now uses a bounded
+state wait after its unprompted-notification assertion, matching the settle check
+later in the same test. Permission state, metadata and automove assertions remain.
