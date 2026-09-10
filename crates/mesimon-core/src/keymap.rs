@@ -2359,7 +2359,7 @@ static DIFF: &[Binding] = &[
         prio: 0,
     },
     Binding {
-        keys: &[Key::Char('q'), Key::Esc],
+        keys: &[Key::Char('q'), Key::Esc, Key::Ctrl(']'), Key::Ctrl('5')],
         verb: Verb::Back,
         show: "q",
         hint: |_| "back",

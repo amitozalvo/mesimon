@@ -11526,6 +11526,33 @@ mod tests {
     }
 
     #[test]
+    fn ctrl_bracket_pops_diff_to_its_origin() {
+        for key in [']', '5'] {
+            for target in [DiffTarget::Checkout, DiffTarget::Ticket { id: ulid::Ulid(1) }] {
+                for view_chord in [false, true] {
+                    let mut app = app_three_columns();
+                    // The fake transport serves checkout diffs; seed the return target.
+                    app.enter_diff(DiffTarget::Checkout, 2).unwrap();
+                    app.diff.as_mut().unwrap().target = target;
+                    assert_eq!(app.screen, Screen::Diff);
+                    if view_chord {
+                        press(&mut app, 'z');
+                        assert_eq!(app.scope(), Scope::DiffView);
+                    }
+                    app.handle_key(KeyCode::Char(key), KeyModifiers::CONTROL).unwrap();
+                    let expected = match target {
+                        DiffTarget::Checkout => Screen::Board,
+                        DiffTarget::Ticket { id } => Screen::Ticket { ticket: id, rail_idx: 2 },
+                    };
+                    assert_eq!(app.screen, expected, "ctrl+{key}, chord={view_chord}");
+                    assert!(app.diff.is_none(), "leaving the diff clears its state");
+                    assert!(!app.quit);
+                }
+            }
+        }
+    }
+
+    #[test]
     fn double_move_never_wraps_at_either_board_edge() {
         for (col, key, id) in [(0, '<', ulid::Ulid(1)), (2, '>', ulid::Ulid(3))] {
             let mut app = app_three_columns();

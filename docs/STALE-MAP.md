@@ -8616,3 +8616,12 @@ The diff and preview keep their glide animation, repeated-key targets, and
 end clamps. Reaching the bottom of a shell preview still resumes tail following.
 Keymap and TUI regressions cover both directions, odd and tiny page heights,
 full-page keys, repeated presses, boundaries, hidden panes, and tail following.
+
+## Diff return shortcut (T-321, 2026-09-10)
+
+`Ctrl+]` now leaves the diff viewer through the same Back action as `q` and
+Escape, including the legacy terminal encoding `Ctrl+5`. A checkout diff returns
+to the board; a ticket branch diff restores the ticket page and its rail row.
+The shortcut also works after arming the `z` view chord. Existing hints and
+geometry are unchanged. A TUI regression exercises both encodings, both origins,
+and the armed chord, and checks that leaving clears the diff state without quitting.
