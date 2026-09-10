@@ -141,6 +141,18 @@ exists, and it means *this session is waiting on you*.
 finished tickets and lists the archive. **Closing the board
 does not stop your agents** — that is the point of the daemon.
 
+**Settings › Behaviour › Keep this machine awake** prevents sleep while an agent works,
+including while you are attached to its pane. It is off by default; `☕` in the board header
+means a hold is active. A turn waiting for user action releases it, as does closing the board.
+On macOS the display and closed-lid behavior are unchanged. Linux requires `systemd-inhibit`;
+its sleep lock can also block explicit suspend requests, depending on desktop policy.
+`mesimon doctor` describes the available backend. WSL support remains opt-in and unverified.
+
+`MESIMON_CAFFEINATE=off` overrides the setting. `MESIMON_CAFFEINATE=caffeinate` (or its absolute
+path) uses a guarded macOS subprocess. Any other custom program named by this variable must
+release its hold and terminate its children on stdin EOF; that contract is necessary for
+cleanup after Mesimon is killed.
+
 The footer always names the keys for whatever you are looking at; `?` opens the complete key
 reference for the current screen.
 

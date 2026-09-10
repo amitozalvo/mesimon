@@ -1,67 +1,22 @@
-//! Keeping the machine awake while an agent is mid-turn (T-288).
+//! Power assertion and subprocess backends for the board's keep-awake observer.
 //!
-//! An agent mid-turn on a laptop that idle-sleeps is an agent stopped
-//! mid-turn. So, while the preference is on and `quiet::is_mid_turn` finds
-//! anything on the board, the board holds the machine awake — the SYSTEM's
-//! idle sleep, never the display's, on battery as on wall power. The mark in
-//! the header says it is holding; nothing is ever held invisibly.
+//! `caffeine_watch` tracks activity even during terminal handovers. macOS
+//! uses a process-owned IOKit assertion; the display and closed-lid behavior
+//! are unaffected. Linux uses logind idle AND sleep inhibition so desktop
+//! power managers cannot suspend an active turn. The sleep lock can also
+//! block explicit suspend requests, subject to the desktop's override policy.
 //!
-//! **The BOARD holds it, not the daemon.** That is `notifier.rs`'s argument
-//! again: the daemon would keep a closed board's machine awake with nothing
-//! on screen to say so, and here the process dying is the off switch. Which
-//! also means: close the board and the machine sleeps as it always did.
+//! `MESIMON_CAFFEINATE=off` disables every backend. `windows` opts into the
+//! unverified WSL bridge. `caffeinate` (including an absolute path) wraps
+//! `cat` so closing our stdin pipe ends the assertion even after SIGKILL or
+//! exec. Other values name custom programs: they MUST hold only while stdin
+//! is open and release on EOF, including any children they create. Mesimon
+//! kills the direct child on normal release, but cannot enforce that custom
+//! contract after its own process is killed.
 //!
-//! **The ladder** is `opener.rs`'s, and the rungs are:
-//!
-//! - `MESIMON_CAFFEINATE=off` — nothing, whatever the preference says.
-//! - `MESIMON_CAFFEINATE=windows` — the WSL bridge, below. Opt-in ONLY: it
-//!   is written and unverified, and a rung nobody has watched work must not
-//!   answer on its own.
-//! - `MESIMON_CAFFEINATE=<program>` — a PROGRAM, not a command line
-//!   (`MESIMON_TERM_REVEAL`'s rule), spawned and killed. `caffeinate` is the
-//!   obvious macOS value for somebody who wants the subprocess after all:
-//!   bare, it takes the same assertion this module takes directly.
-//! - macOS — an IOKit power assertion, taken by THIS process. No child, no
-//!   `PATH` lookup, and the kernel drops it if we crash: `caffeinate(8)` is
-//!   only a thin wrapper over the same call, so wrapping the wrapper would
-//!   buy a process and lose the crash safety.
-//! - `systemd-inhibit` on PATH — the Linux rung. Doing it ourselves means a
-//!   D-Bus client (logind's `Inhibit()` hands back a file descriptor over
-//!   SCM_RIGHTS), which is a dependency or a protocol implementation; this
-//!   is one fork that does exactly that dance.
-//! - anything else — nothing, and `doctor` says so rather than letting the
-//!   preference look like it works.
-//!
-//! **Nothing may outlive the board.** The native rung cannot: an assertion
-//! belongs to its process, and powerd drops it when the task dies. A spawned
-//! rung is held open by a PIPE we own and nothing else — `systemd-inhibit`
-//! wraps `cat`, reading the stdin we hold — so the release is the kernel
-//! closing our end: on a clean drop, on a panic, on a SIGKILL, and on the
-//! `U` reload's `exec`, where Rust's `O_CLOEXEC` pipe closes as the image is
-//! replaced. A pid guard (`tail --pid=…`) was the first design and is the
-//! wrong one: `exec` REUSES the pid, so the guard would never fire on the
-//! one edge that runs no `Drop` of ours and still needs the hold gone.
-//!
-//! **The WSL bridge** exists because no Linux call reaches the Windows
-//! host's idle timer; it runs `powershell.exe` through interop, holding
-//! `SetThreadExecutionState`. It has three independent releases — EOF on the
-//! same stdin pipe, an explicit kill with `taskkill.exe` behind it, and a
-//! four-hour cap it enforces on itself — because the failure it must not
-//! have is a host held awake by a process nobody can see.
-//!
-//! Three limits worth knowing before they are filed as bugs. **A closed lid
-//! still sleeps**: that is not idle sleep and no assertion prevents it.
-//! **A handover freezes the level** — `handover::run` blocks the board's
-//! loop for the whole life of an attached pane, so a hold taken before you
-//! attached stands until you come back. It errs AWAKE, which is the
-//! direction this feature exists to protect, and the next tick re-judges
-//! within 100 ms; the notifier went to a thread because it reports EDGES and
-//! a missed one is missed forever, and this is a level. **A dead daemon
-//! freezes it too**: the last board is kept and the panes really are still
-//! running, so the hold stands rather than dropping on a two-second blip.
-//!
-//! Resolved once in `lib.rs::run`, never `App::new`, so no test app and no
-//! golden ever holds anything.
+//! The native assertion belongs to this process. Built-in subprocess
+//! backends terminate when our pipe closes. The WSL bridge also has a
+//! four-hour cap and a taskkill fallback; it remains opt-in and unverified.
 
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
@@ -103,8 +58,10 @@ pub struct Rung {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Kind {
-    /// `systemd-inhibit --what=idle`, wrapped around a reader of our pipe.
+    /// Logind idle and sleep locks, wrapped around a reader of our pipe.
     Systemd,
+    /// Apple's wrapper watches `cat`, which exits when our pipe closes.
+    Caffeinate,
     /// `powershell.exe` through WSL interop, holding the Windows host.
     Windows,
     /// Whatever `MESIMON_CAFFEINATE` named. We hold its stdin and kill it;
@@ -120,7 +77,7 @@ impl Rung {
         let mut v = vec![self.prog.clone()];
         match self.kind {
             Kind::Systemd => {
-                v.push("--what=idle".into());
+                v.push("--what=idle:sleep".into());
                 v.push("--who=mesimon".into());
                 v.push(format!("--why={WHY}"));
                 v.push("--mode=block".into());
@@ -135,6 +92,10 @@ impl Rung {
                 v.push("-NonInteractive".into());
                 v.push("-Command".into());
                 v.push(windows_script());
+            }
+            Kind::Caffeinate => {
+                v.push("-i".into());
+                v.push("cat".into());
             }
             Kind::Custom => {}
         }
@@ -209,7 +170,14 @@ fn find_from(
                 .unwrap_or_else(|| WSL_POWERSHELL.to_string());
             return Hold::Spawn(Rung { kind: Kind::Windows, prog });
         }
-        Some(v) => return Hold::Spawn(Rung { kind: Kind::Custom, prog: v.to_string() }),
+        Some(v) => {
+            let kind = if std::path::Path::new(v).file_name().is_some_and(|n| n == "caffeinate") {
+                Kind::Caffeinate
+            } else {
+                Kind::Custom
+            };
+            return Hold::Spawn(Rung { kind, prog: v.to_string() });
+        }
         None => {}
     }
     if macos {
@@ -248,11 +216,16 @@ pub fn doctor_line() -> String {
             "{} bridges to the Windows host (unverified — MESIMON_CAFFEINATE=windows asked for it)",
             r.prog
         ),
-        (Some(_), Hold::Spawn(r)) => {
-            format!("{} ($MESIMON_CAFFEINATE) ∙ killed on release, and holds our stdin", r.prog)
+        (Some(_), Hold::Spawn(r)) if r.kind == Kind::Caffeinate => {
+            format!("{} -i cat ($MESIMON_CAFFEINATE) ∙ releases on stdin EOF", r.prog)
         }
+        (Some(_), Hold::Spawn(r)) => format!(
+            "{} ($MESIMON_CAFFEINATE) ∙ custom holder MUST release on stdin EOF, including children",
+            r.prog
+        ),
         (_, Hold::Spawn(r)) => format!(
-            "{} --what=idle while an agent is mid-turn ∙ systemd-inhibit --list names it",
+            "{} --what=idle:sleep while an agent is mid-turn ∙ may also block explicit suspend \
+             ∙ systemd-inhibit --list names it",
             r.prog
         ),
         (_, Hold::None) if crate::opener::is_wsl() => {
@@ -304,7 +277,7 @@ impl Caffeine {
         self.held.is_some()
     }
 
-    /// Driven once a frame with the level, not the event. Two jobs: notice a
+    /// Driven once an observer beat with the activity level. Two jobs: notice a
     /// holder that DIED on its own, then act on the edge.
     ///
     /// The poll is not housekeeping. `systemd-inhibit` exists on PATH in
@@ -352,6 +325,10 @@ impl Caffeine {
         self.trouble.take()
     }
 
+    pub(crate) fn report_trouble(&mut self, trouble: String) {
+        self.trouble = Some(trouble);
+    }
+
     fn word(&self) -> &str {
         match &self.hold {
             Hold::Native => "the power assertion",
@@ -376,8 +353,8 @@ impl Drop for Caffeine {
 }
 
 /// Spawn a holder. Its stdin is a pipe WE hold: closing it is the release
-/// every rung can rely on, and the one that still works when we are killed
-/// or exec'd away.
+/// built-in backends rely on, including after SIGKILL or exec. Custom
+/// programs are required to implement that same EOF contract.
 fn spawn(rung: &Rung) -> Result<Held, String> {
     let argv = rung.argv();
     let Some((prog, rest)) = argv.split_first() else {
@@ -576,7 +553,15 @@ mod tests {
         let Hold::Spawn(r) = find_from(Some("caffeinate"), true, false, none) else {
             panic!("a program outranks the native rung — it was asked for by name");
         };
-        assert_eq!(r.argv(), vec!["caffeinate".to_string()], "a PROGRAM, with argv of its own");
+        assert_eq!(
+            r.argv(),
+            vec!["caffeinate", "-i", "cat"],
+            "the wrapper watches our pipe reader"
+        );
+        let Hold::Spawn(r) = find_from(Some("/usr/bin/caffeinate"), true, false, none) else {
+            panic!("absolute caffeinate path");
+        };
+        assert_eq!(r.argv(), vec!["/usr/bin/caffeinate", "-i", "cat"]);
         // An empty value is an absent one, as everywhere else.
         assert_eq!(find_from(Some("   "), false, false, none), find_from(None, false, false, none));
     }
@@ -590,7 +575,10 @@ mod tests {
         };
         let argv = r.argv();
         assert_eq!(argv[0], "systemd-inhibit");
-        assert!(argv.contains(&"--what=idle".to_string()), "idle sleep, never the display's");
+        assert!(
+            argv.contains(&"--what=idle:sleep".to_string()),
+            "cover logind's idle action and desktop-initiated Suspend calls"
+        );
         assert!(argv.contains(&"--mode=block".to_string()));
         assert_eq!(
             argv.last().map(String::as_str),
@@ -701,6 +689,27 @@ mod tests {
         assert!(!c.holding(), "a holder that exited is not a hold");
         let said = said.expect("and it is worth one sentence");
         assert!(said.contains("stopped"), "{said}");
+    }
+
+    /// Close the guard pipe without invoking release/Drop, as the kernel
+    /// does after a board crash or exec. Bare caffeinate fails this test.
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn caffeinate_override_ends_on_pipe_eof_without_a_parent_kill() {
+        let mut c = Caffeine::new(find_from(Some("/usr/bin/caffeinate"), true, false, none));
+        c.drive(true);
+        assert!(c.holding(), "{:?}", c.trouble);
+        let Some(Held::Child { child, .. }) = c.held.as_mut() else {
+            panic!("the override is a subprocess");
+        };
+        drop(child.stdin.take());
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+        while child.try_wait().unwrap().is_none() {
+            assert!(std::time::Instant::now() < deadline, "holder survived EOF");
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        c.drive(true);
+        assert!(!c.holding());
     }
 
     /// The FFI is the risky part, so take a real assertion and put it back.

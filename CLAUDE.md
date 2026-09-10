@@ -1378,38 +1378,22 @@ no schema.
 `doctor` prints a `notifications` line naming the rungs even while it is off. Goldens
 `notifications_120x30`, `settings_120x30`.
 
-**The board keeps the machine awake while an agent is mid-turn (T-288, 2026-09-07).** Opt in
-(`prefs.json::keep_awake`, off — changing what a machine does about power is asked for, never
-started by an update), the Settings row `Keep this machine awake` under BEHAVIOUR, beside the
-merge train — appearance is what the board shows and says, and this is something it DOES outside
-its own window while it is open — and `☕` in the header while it is actually holding. **The BOARD holds it, not the daemon** —
-`notifier.rs`'s argument, so there is no `Command`, no `Snapshot` field, no schema and no daemon
-change at all, and a closed board sleeps like any other machine. `quiet::is_mid_turn` is the
-predicate: `is_working` minus `RequiresAction`, written in terms of it, because a turn stopped on
-a permission prompt is stopped on a PERSON and the machine may idle underneath it — which is also
-how it inherited Codex and Codex's unprovable-quiet hold for free, and that hold errs AWAKE, the
-direction this feature protects;
-`App::anything_mid_turn` is the board-wide read (named apart from `checkout_busy` on purpose) and
-`App::tick` drives `caffeine::Caffeine::drive(want)` once a frame. **`drive` polls as well as
-edges**: `systemd-inhibit` exists on PATH in places with no logind and exits at once, and a mark
-drawn over a dead holder would say the machine is held when it is not; a refused acquire is said
-once and not retried until the want goes away. The ladder is `opener.rs`'s — `MESIMON_CAFFEINATE`
-(`off`, `windows`, or a PROGRAM) → macOS → `systemd-inhibit` → nothing — resolved in `lib.rs::run`
-and never `App::new`. **macOS takes the IOKit assertion ITSELF** (`caffeinate(8)` is a thin wrapper
-over the same call, so wrapping it would buy a process and lose the crash safety: powerd drops an
-assertion when its process dies); two `cfg(target_os = "macos")` framework links, no crate, so
-`ci/build-linux.sh`'s no-C invariant holds. A spawned holder is kept open by a PIPE we own
-(`systemd-inhibit … cat`) and NOT by `tail --pid`, which cannot work here — `exec` reuses the pid,
-so the `U` reload would never fire it; `lib.rs` also drops the keeper beside the notifier's, before
-`reexec`. The WSL bridge (`powershell.exe` holding `SetThreadExecutionState`, three independent
-releases: stdin EOF, a kill with `taskkill.exe` behind it, a four-hour self-cap) is built and
-answers ONLY on `MESIMON_CAFFEINATE=windows` — unverified, and `TERM_BUNDLES`'s rule says a
-confident wrong answer is worse than a blank. `☕` is the product's only emoji and the one two-cell
-glyph on the chrome (ascii `@`); it hangs off the breadcrumb, so it rides every screen, in `dim2`
-and never `attn`. Limits, all documented in the module: the display and a closed lid still sleep,
-and a handover or a dead daemon freezes the level — which errs AWAKE, the direction the feature
-protects. `doctor` prints a `keep awake` line. Goldens `board_awake_120x30`, `settings_120x30`.
-(STALE-MAP "The board keeps the machine awake".)
+**The board keeps the machine awake while an agent is mid-turn (T-288).** Opt-in under
+Settings › Behaviour, with `☕` in the board header while held. `caffeine_watch::Monitor`
+observes snapshots on its own read-only daemon connection, including pending submissions,
+so activity continues to update during attached panes and external editors. It works with
+notifications disabled. `quiet::is_mid_turn` excludes waits for user action and retains
+Codex's conservative observation hold. The observer never starts a daemon. A disconnect
+retains the last activity level; reconnect fetches a complete snapshot. Disabling or dropping
+the monitor releases synchronously even while its observer is blocked on a request.
+
+`caffeine.rs` implements the power backends: process-owned IOKit on macOS,
+`systemd-inhibit --what=idle:sleep … cat` on Linux, and the opt-in, unverified WSL bridge.
+Linux needs the sleep lock because desktop power managers request Suspend independently of
+logind's idle handling; this can also block explicit suspend. The `caffeinate` override wraps
+`cat`, so EOF ends it even after a board crash or exec. Arbitrary custom programs must implement
+the documented stdin-EOF release contract themselves. `doctor` names the backend and its limits.
+The display and closed-lid promises apply to macOS. See STALE-MAP's T-288 review corrections.
 
 **A banner says WHICH BOARD, WHICH TICKET and WHAT HAPPENED (T-292, 2026-09-07, dogfooding: "OS
 notification doesn't show ticket title. and no transcript").** `Post` has three fields — `title`

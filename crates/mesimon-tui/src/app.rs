@@ -972,7 +972,7 @@ pub struct App {
     /// `opener`'s — so no test app and no golden ever takes a real power
     /// assertion or forks a holder. Dropped by `lib.rs` before the reload,
     /// which is what keeps a hold from surviving into the next image.
-    pub caffeine: Option<crate::caffeine::Caffeine>,
+    pub caffeine: Option<crate::caffeine_watch::Monitor>,
     /// Is one held RIGHT NOW? The header's mark draws this and nothing else,
     /// so it is the fact and never the intention — and being a plain field
     /// is what lets a golden seed it with no holder in existence.
@@ -1400,12 +1400,14 @@ impl App {
         }
     }
 
-    /// The five preference fields the notification thread reads (T-291).
-    /// Pushed on every `set_pref`, so a row the user just took can never be
-    /// acted on one more time.
-    fn push_notify_prefs(&self) {
+    /// Push preferences to the board's observers on every `set_pref`.
+    /// Disabling sleep inhibition releases its hold synchronously.
+    fn push_observer_prefs(&self) {
         if let Some(n) = self.notifier.as_ref() {
             n.set_prefs((&self.prefs).into());
+        }
+        if let Some(k) = self.caffeine.as_ref() {
+            k.set_enabled(self.prefs.keep_awake);
         }
     }
 
@@ -2194,7 +2196,7 @@ impl App {
     /// Settings rows' shared tail.
     fn set_pref(&mut self, word: &str, set: impl FnOnce(&mut crate::prefs::Prefs)) {
         set(&mut self.prefs);
-        self.push_notify_prefs();
+        self.push_observer_prefs();
         self.status = match self.save_prefs(word) {
             Ok(()) => format!("{word} ∙ saved"),
             Err(why) => why,
@@ -2330,22 +2332,14 @@ impl App {
             || self.pending.iter().any(|p| p.in_flight && self.shared_checkout(p.ticket))
     }
 
-    /// The keep-awake level (T-288), judged and applied once a frame. A
-    /// LEVEL, not an event: `drive` acts on the edge and otherwise only
-    /// polls the holder it has, so a keeper that died on its own takes the
-    /// mark with it. The want is computed first, on its own line, so the
-    /// immutable read of the board ends before the keeper is borrowed.
-    ///
-    /// Split out of `tick` because `tick` blocks on the event poll and no
-    /// test can call it — and a feature wired to nothing would pass every
-    /// other test in this file.
+    /// Synchronize the preference and display the observer's actual hold.
+    /// Activity is observed on its own thread, including during handover.
     fn drive_caffeine(&mut self) -> bool {
-        let want = self.prefs.keep_awake && self.anything_mid_turn();
         let mut dirty = false;
-        if let Some(k) = self.caffeine.as_mut() {
-            k.drive(want);
-            let held = k.holding();
-            if let Some(trouble) = k.trouble() {
+        if let Some(k) = self.caffeine.as_ref() {
+            k.set_enabled(self.prefs.keep_awake);
+            let (held, trouble) = k.status();
+            if let Some(trouble) = trouble {
                 self.status = trouble;
                 dirty = true;
             }
@@ -2355,21 +2349,6 @@ impl App {
             }
         }
         dirty
-    }
-
-    /// Is ANY claude on this board mid-turn? `checkout_busy`'s board-wide
-    /// counterpart, and a DIFFERENT predicate on purpose: `is_mid_turn`, not
-    /// `is_working`, so a turn stopped on a permission prompt does not keep
-    /// the machine awake — it is stopped on a person, and the machine may as
-    /// well idle underneath it. Snapshot-only like its neighbour, with the
-    /// `in_flight` rows standing in for the daemon's own pastes: a paste
-    /// about to land is not a gap the machine should sleep in.
-    ///
-    /// Named apart from `checkout_busy` deliberately — two similar names
-    /// over two different predicates is how the two would come to drift.
-    pub(crate) fn anything_mid_turn(&self) -> bool {
-        self.board.sessions.iter().any(mesimon_core::quiet::is_mid_turn)
-            || self.pending.iter().any(|p| p.in_flight)
     }
 
     /// An ask is waiting on this ticket — not yet delivered. Any seat: the
@@ -3615,7 +3594,7 @@ impl App {
             }
             // T-288. No push of any kind: the BOARD holds the machine
             // awake, so the daemon is never told — the next tick's `drive`
-            // takes it up, and turning it off lets go within 100 ms, which
+            // reads its state; turning it off releases immediately, which
             // the mark going out is the confirmation of.
             Verb::KeepAwake => {
                 let on = !self.prefs.keep_awake;
@@ -11788,88 +11767,6 @@ mod tests {
         assert!(!app.board.ticket(ulid::Ulid(1)).unwrap().hand_raised(), "read, and lowered");
         assert!(app.board.ticket(ulid::Ulid(2)).unwrap().hand_raised(), "the other is untouched");
         assert_eq!(app.board.needs_you_count(), 1);
-    }
-
-    /// The board-wide read behind the keep-awake hold (T-288): a turn in
-    /// flight counts, a turn waiting on a PERSON does not, and a shell never
-    /// does.
-    #[test]
-    fn anything_mid_turn_counts_the_machine_and_not_the_wait() {
-        use mesimon_core::board::{Reason, SessionKind, SessionState, StopReason};
-        let mut app = app_three_columns();
-        assert!(!app.anything_mid_turn(), "a board with no sessions is quiet");
-        fn push(app: &mut App, n: u128, kind: SessionKind, state: SessionState) {
-            app.board.sessions.push(mesimon_core::board::SessionRecord::new(
-                uuid::Uuid::from_u128(n),
-                kind,
-                ulid::Ulid(1),
-                vec!["claude".into()],
-                "/repo".into(),
-                state,
-            ));
-        }
-        push(&mut app, 1, SessionKind::Bash, SessionState::Running);
-        assert!(!app.anything_mid_turn(), "a shell is liveness, not activity");
-        push(
-            &mut app,
-            2,
-            SessionKind::Claude,
-            SessionState::Idle { stop_reason: StopReason::EndTurn },
-        );
-        assert!(!app.anything_mid_turn(), "a finished turn asks nothing of the machine");
-        push(
-            &mut app,
-            3,
-            SessionKind::Claude,
-            SessionState::RequiresAction { reason: Reason::Permission },
-        );
-        assert!(!app.anything_mid_turn(), "and neither does a turn waiting on a person");
-        push(&mut app, 4, SessionKind::Claude, SessionState::Running);
-        assert!(app.anything_mid_turn(), "this one is being computed");
-        app.board.sessions.clear();
-        assert!(!app.anything_mid_turn());
-        // A paste of the daemon's about to land is a turn about to start —
-        // not a gap the machine should sleep in.
-        app.pending.push(mesimon_core::command::Pending {
-            ticket: ulid::Ulid(1),
-            action: "ask".into(),
-            waits_on: vec![],
-            text: None,
-            in_flight: true,
-        });
-        assert!(app.anything_mid_turn());
-    }
-
-    /// The whole road, in one place: the preference and a turn in flight
-    /// take the hold, the mark follows the holder, and the turn ending puts
-    /// it back. `cat` stands in for a real rung — it blocks on the stdin
-    /// pipe the keeper holds, which is what every spawned rung does.
-    #[test]
-    fn the_board_takes_the_hold_while_a_turn_is_in_flight_and_puts_it_back() {
-        use crate::caffeine::{Caffeine, Hold};
-        use mesimon_core::board::{SessionKind, SessionState, StopReason};
-        let mut app = app_three_columns();
-        app.caffeine = Some(Caffeine::new(Hold::program("cat")));
-        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
-            uuid::Uuid::from_u128(1),
-            SessionKind::Claude,
-            ulid::Ulid(1),
-            vec!["claude".into()],
-            "/repo".into(),
-            SessionState::Running,
-        ));
-        assert!(!app.drive_caffeine(), "the preference is off: a working board changes nothing");
-        assert!(!app.caffeinated, "and nothing is held");
-
-        app.prefs.keep_awake = true;
-        assert!(app.drive_caffeine());
-        assert!(app.caffeinated, "the mark follows the holder: {}", app.status);
-        assert!(!app.drive_caffeine(), "and a second frame changes nothing");
-
-        // The turn ends: the hold goes with it, and so does the mark.
-        app.board.sessions[0].state = SessionState::Idle { stop_reason: StopReason::EndTurn };
-        assert!(app.drive_caffeine());
-        assert!(!app.caffeinated);
     }
 
     /// The Settings row writes the preference and tells no daemon — the

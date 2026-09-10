@@ -3,6 +3,7 @@
 
 mod app;
 mod caffeine;
+mod caffeine_watch;
 mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.
@@ -179,8 +180,15 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.notifier = Some(notifier::Notifier::start(repo_root, notify::find(), (&app.prefs).into()));
     // What holds the machine awake while an agent is mid-turn (T-288) —
     // resolved here and never in `App::new`, the same rule again, so no test
-    // app takes a power assertion or forks a holder. `App::tick` drives it.
-    app.caffeine = Some(caffeine::Caffeine::new(caffeine::find()));
+    // app takes a power assertion or forks a holder. Its observer keeps
+    // tracking activity while the terminal is handed to an agent pane.
+    app.caffeine = Some(caffeine_watch::Monitor::start(
+        repo_root,
+        caffeine::find(),
+        app.prefs.keep_awake,
+        &app.board,
+        &app.pending,
+    ));
     let result = event_loop(&mut terminal, &mut app);
     // The board is done with its terminal, so the notification thread's two
     // escape rungs stop writing to it NOW — taken under the same lock a

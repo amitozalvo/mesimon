@@ -8730,3 +8730,48 @@ its own, and a real IOKit assertion taken and released —
 `the_settings_row_keeps_the_machine_awake` (`tui/src/app.rs`, the second asserting nothing crossed
 the wire), four header tests in `ui/tests.rs`, `the_awake_mark_is_two_cells_and_outside_the_banned_range`,
 and the goldens `board_awake_120x30` and `settings_120x30`.
+
+
+## T-288 review corrections: attachment, desktop suspend, and subprocess lifetime (2026-09-10)
+
+The earlier handover argument was refuted: freezing the last level does not always err awake.
+Attaching to an idle agent and then submitting a prompt left the hold off for the entire turn.
+`caffeine_watch::Monitor` now observes the daemon independently of the terminal loop and of
+notifications. It consumes complete snapshots, including in-flight pending submissions, through
+an observer connection that cannot start or restart the daemon. The board loop reads the actual
+hold for its header. Permission waits and completed turns release even while attached. A daemon
+outage retains the last observed level, and reconnect refreshes it.
+
+The holder is synchronized separately from network I/O. Disabling the preference or dropping the
+board releases immediately, including during a stuck snapshot request; a generation check prevents
+an old response from reviving a hold after a preference change. Re-enabling requires a fresh
+snapshot. An unexpected observer exit releases the holder too. No daemon or wire changes.
+
+The Linux backend now requests `idle:sleep`, not just `idle`. logind's idle lock does not block
+GNOME's own idle timer calling Suspend. The sleep lock covers that path, but can also block
+explicit suspend requests according to the desktop's override policy; README and doctor now state
+that limit. The prior blanket closed-lid claim applies only to macOS. Sources checked during review:
+https://systemd.io/INHIBITOR_LOCKS/ and GNOME's `plugins/power/gsd-power-manager.c`.
+
+The suggested `MESIMON_CAFFEINATE=caffeinate` override was not crash-safe: bare caffeinate ignores
+stdin EOF. It now runs `caffeinate -i cat`, including when an absolute path is supplied. Apple's
+wrapper watches the pipe reader, which exits when the board dies or execs. Arbitrary custom
+programs must release their assertion and children on stdin EOF; this is an explicit contract,
+not a property Mesimon can enforce after its own SIGKILL. README, module docs and doctor say so.
+The WSL bridge remains opt-in and unverified.
+
+Regression coverage runs the observer on a thread with a fake daemon and no App ticks through
+Claude/Codex work, permission waits, completion, and pending-submit transitions. Further tests
+cover synchronous disable, fresh re-enable, disconnect/reconnect, and a late response after
+monitor drop. A macOS subprocess test closes the guarded caffeinate pipe without calling release
+or killing its parent and verifies that it exits. The Linux argv test pins both inhibitor types.
+
+Validation: 14 focused caffeine tests passed on macOS; the full workspace nextest run passed
+1333/1333 with a clean audit of 80 fixture owners. Two existing tests were skipped: the live
+release-network test and the restart-skew subprocess helper (which its parent tests exercise).
+`ci/test-linux.sh -p mesimon-tui --lib` passed the workspace library tests under Debian 12/tmux
+3.3a with a clean audit; that script retains `--workspace` alongside the package selector.
+Clippy at `-D warnings`, formatting and diff checks passed. The initial sandboxed focused run's
+bodies passed but its cleanup audit failed because `ps` was denied; the elevated rerun's audit
+was clean, and the earlier registry's two recorded processes were confirmed gone. No live desktop
+suspend, WSL host, or interactive TUI verification was performed.

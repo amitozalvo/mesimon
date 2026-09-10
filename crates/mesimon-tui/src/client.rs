@@ -238,8 +238,8 @@ impl Client {
         }
     }
 
-    /// A SECOND connection on the same board: the notification thread's
-    /// (T-291, `crate::notifier`).
+    /// An additional connection for a board-owned observer: notifications
+    /// (`crate::notifier`) or sleep inhibition (`crate::caffeine_watch`).
     ///
     /// Two things it deliberately does not do. It never restarts the daemon
     /// over a build skew — the board's own client owns that decision, and two
