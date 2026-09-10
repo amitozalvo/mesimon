@@ -101,6 +101,8 @@ fn the_checkout_stands_on_the_wire() {
     assert_eq!(g.fetch_every_secs, 0, "the periodic fetch is opt-in");
     assert!(!g.fetching);
     assert_eq!(g.fetched_at_ms, 0);
+    assert_eq!(g.to_push, Some(vec![]));
+    assert_eq!(g.to_pull, Some(vec![]));
 
     // ---- a commit here: push due ------------------------------------------
     std::fs::write(repo.join("b.txt"), "two\n").unwrap();
@@ -115,6 +117,11 @@ fn the_checkout_stands_on_the_wire() {
     // so wait for the sample the FETCH produced: the one after it landed.
     let g = wait_git(&mut c, "ahead 1 after the fetch", |g| g.ahead == 1 && !g.fetching);
     assert_eq!(g.behind, 0);
+    let outgoing = g.to_push.as_ref().unwrap();
+    assert_eq!(outgoing.len(), 1);
+    assert_eq!(outgoing[0].subject, "two");
+    assert_eq!(outgoing[0].oid.len(), 40);
+    assert_eq!(g.to_pull, Some(vec![]));
     assert!(g.fetched_at_ms > 0, "the file remote answered: {g:?}");
     assert!(g.fetch_error.is_none(), "{g:?}");
 
@@ -130,6 +137,8 @@ fn the_checkout_stands_on_the_wire() {
     assert!(matches!(c.request(Command::GitFetch), Response::Ok));
     let g = wait_git(&mut c, "behind 1 after the fetch", |g| g.behind == 1);
     assert_eq!(g.ahead, 1, "{g:?}");
+    assert_eq!(g.to_push.as_ref().unwrap()[0].subject, "two");
+    assert_eq!(g.to_pull.as_ref().unwrap()[0].subject, "three");
     assert!(g.fetch_error.is_none(), "{g:?}");
     // The fetch wrote the tracking ref and nothing else: no FETCH_HEAD.
     assert!(!repo.join(".git/FETCH_HEAD").exists(), "FETCH_HEAD must not be written");

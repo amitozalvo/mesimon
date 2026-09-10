@@ -146,6 +146,8 @@ impl ReleasesState {
 pub struct DiffState {
     /// Which diff this is: a ticket's branch, or the board's own checkout.
     pub target: DiffTarget,
+    /// The checkout’s push/pull commit lists, toggled with Tab.
+    pub commits: bool,
     /// Which rail row `q`/`esc` restores. Meaningful only on a ticket target;
     /// the checkout's `q` goes back to the board.
     pub rail_idx: usize,
@@ -1455,7 +1457,7 @@ impl App {
     /// The `Fetch origin` row's detail (T-124): what is out of sync, in
     /// words, and how old the answer is. The header says `↑2 ↓1`; this is
     /// the sentence behind it.
-    fn git_fetch_note(&self) -> String {
+    pub(crate) fn git_fetch_note(&self) -> String {
         let g = &self.git;
         let mut parts: Vec<String> = Vec::new();
         if g.ahead > 0 {
@@ -2760,6 +2762,8 @@ impl App {
                 .is_some_and(|t| t.workspace_strategy() == WorkspaceStrategy::Worktree),
             merge_actionable: merge.is_some(),
             merge_word: merge.unwrap_or("merge"),
+            checkout_diff: self.diff.as_ref().is_some_and(|d| !d.is_branch()),
+            git_commits: self.diff.as_ref().is_some_and(|d| d.commits),
             two_pane: self.diff_two_pane.get(),
             // Whether `!` has a worktree to open. The checkout diff always
             // has a working tree, and offers no shell for it: the user is
@@ -3767,9 +3771,21 @@ impl App {
                     _ => self.diff_nav(dir),
                 }
             }
+            Verb::GitCommits => {
+                if let Some(d) = self.diff.as_mut().filter(|d| !d.is_branch()) {
+                    d.commits = !d.commits;
+                    d.scroll.set(0);
+                    d.view.set(PreviewView::default());
+                    d.glide.set(None);
+                }
+            }
             Verb::Refresh => {
                 if matches!(self.screen, Screen::Diff) {
-                    self.diff_refresh();
+                    if self.diff.as_ref().is_some_and(|d| d.commits) {
+                        self.refresh()?;
+                    } else {
+                        self.diff_refresh();
+                    }
                 }
             }
             Verb::ViewPrefix => {
@@ -5839,6 +5855,7 @@ impl App {
             Response::DiffList { branch, base_oid, branch_oid, files, worktree_present } => {
                 self.diff = Some(DiffState {
                     target,
+                    commits: false,
                     rail_idx,
                     branch,
                     base_oid,
@@ -11740,6 +11757,24 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn checkout_tab_toggles_commits_and_resets_reading_position() {
+        let mut app = app_three_columns();
+        app.enter_diff(DiffTarget::Checkout, 0).unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.diff.as_ref().unwrap().commits);
+        assert!(keymap::binding_for(Scope::Diff, Verb::NextFile, &app.ctx()).is_none());
+        app.diff.as_ref().unwrap().scroll.set(15);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        let d = app.diff.as_ref().unwrap();
+        assert!(!d.commits);
+        assert_eq!(d.scroll.get(), 0);
+        assert!(keymap::binding_for(Scope::Diff, Verb::NextFile, &app.ctx()).is_some());
+        app.diff.as_mut().unwrap().target = DiffTarget::Ticket { id: ulid::Ulid(1) };
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(!app.diff.as_ref().unwrap().commits, "ticket diffs keep their own scope");
     }
 
     #[test]

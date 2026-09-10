@@ -73,13 +73,19 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     } else {
         "uncommitted".to_string()
     };
-    let summary = if n == 0 {
+    let summary = if d.commits {
+        match &app.git.upstream {
+            Some(upstream) => format!("push / pull ∙ {}", crate::text::one_line(upstream)),
+            None => "push / pull".to_string(),
+        }
+    } else if n == 0 {
         "no changes".to_string()
     } else {
         format!("{against} ∙ {n} {noun} ∙ +{adds} -{dels}")
     };
+    let branch = if d.commits { &app.git.branch } else { &d.branch };
     let mut ident = vec![
-        Span::styled(format!(" ⎇ {}", d.branch), theme.dim1()),
+        Span::styled(format!(" ⎇ {}", crate::text::one_line(branch)), theme.dim1()),
         Span::styled(format!(" ∙ {summary}"), theme.dim2()),
     ];
     if d.is_branch() && !d.worktree_present {
@@ -104,7 +110,14 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     // breakpoint) — divider is a painted gap, never a rule (L1).
     let body_y = area.y + 5;
     let body_h = area.height.saturating_sub(6);
-    if area.width >= TWO_PANE_MIN_W {
+    if d.commits {
+        draw_commits(
+            f,
+            Rect { x: area.x + 1, y: body_y, width: area.width.saturating_sub(2), height: body_h },
+            app,
+            d,
+        );
+    } else if area.width >= TWO_PANE_MIN_W {
         let fw = files_w(area.width);
         draw_files(f, Rect { x: area.x + 1, y: body_y, width: fw, height: body_h }, app, d);
         let hx = area.x + 1 + fw + 3;
@@ -144,6 +157,84 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         Paragraph::new(footer),
         Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 },
     );
+}
+
+/// Both directions share the reading keys and a single scroll position.
+/// Counts stay exact even when the snapshot's bounded history is truncated.
+fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
+    let theme = &app.theme;
+    let g = &app.git;
+    let w = area.width as usize;
+    let mut rows = Vec::new();
+    if !g.sampled {
+        rows.push(Line::from(Span::styled(" Git status unavailable", theme.dim2())));
+    } else if g.detached || g.upstream.is_none() {
+        rows.push(Line::from(Span::styled(
+            if g.detached {
+                " Detached HEAD — no upstream comparison"
+            } else {
+                " No upstream configured"
+            },
+            theme.dim2(),
+        )));
+    } else {
+        for (label, count, commits) in
+            [("TO PUSH", g.ahead, &g.to_push), ("TO PULL", g.behind, &g.to_pull)]
+        {
+            rows.push(Line::from(Span::styled(
+                format!(" {label} ({count})"),
+                theme.dim1().add_modifier(Modifier::BOLD),
+            )));
+            rows.push(Line::default());
+            if count == 0 {
+                rows.push(Line::from(Span::styled(" Nothing pending", theme.dim3())));
+            } else if let Some(commits) = commits {
+                for commit in commits {
+                    let oid: String = commit.oid.chars().take(7).collect();
+                    let subject = crate::text::one_line(&commit.subject);
+                    rows.push(Line::from(vec![
+                        Span::styled(format!(" {oid}  "), theme.dim2()),
+                        Span::styled(truncate(&subject, w.saturating_sub(10)), theme.base()),
+                    ]));
+                }
+                let remaining = (count as usize).saturating_sub(commits.len());
+                if remaining > 0 {
+                    rows.push(Line::from(Span::styled(
+                        format!(" … {remaining} more commits"),
+                        theme.dim3(),
+                    )));
+                }
+            } else {
+                rows.push(Line::from(Span::styled(" Commit list unavailable", theme.dim2())));
+            }
+            rows.push(Line::default());
+            rows.push(Line::default());
+        }
+        rows.push(Line::from(Span::styled(
+            truncate(&format!(" {}", app.git_fetch_note()), w),
+            theme.dim2(),
+        )));
+    }
+    let visible = (area.height as usize).saturating_sub(2);
+    let max = rows.len().saturating_sub(visible);
+    let scroll = d.scroll.get().min(max);
+    d.scroll.set(scroll);
+    d.view.set(PreviewView {
+        key: Some(u64::MAX),
+        offset: scroll,
+        max,
+        page: visible.saturating_sub(1).max(1),
+        follows_tail: false,
+    });
+    let at = d
+        .glide
+        .get()
+        .filter(|g| g.key == u64::MAX && g.progress().is_some())
+        .map_or(scroll, |g| g.offset(scroll).min(max));
+    let mut lines =
+        vec![Line::from(hints(app, &[Verb::PageDown, Verb::ScrollDown], w)), Line::default()];
+    lines.extend(rows.into_iter().skip(at).take(visible));
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// The file-list pane: 2-cell gutter (stable letter + in-flight flag), path,

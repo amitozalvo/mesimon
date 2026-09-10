@@ -1,0 +1,30 @@
+ DIFF   mesimon > kanban-tui
+
+ ⎇ main ∙ push / pull ∙ origin/main
+
+
+ { } page ∙ jk scroll
+
+  TO PUSH (2)
+
+  aaaaaaa  Add commit lists
+  bbbbbbb  Prepare Git view
+
+
+  TO PULL (1)
+
+  ccccccc  Fix upstream regression
+
+
+  2 to push ∙ 1 to pull ∙ never fetched
+
+
+
+
+
+
+
+
+
+
+ tab uncommitted changes ∙ R refresh ∙ q back        ? keys

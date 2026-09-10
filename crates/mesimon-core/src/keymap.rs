@@ -594,6 +594,8 @@ pub enum Verb {
     HalfPageDown,
     HalfPageUp,
     NextFile,
+    /// Switch the checkout diff between changes and upstream commit lists.
+    GitCommits,
     PrevFile,
     Refresh,
     ViewPrefix,
@@ -859,6 +861,9 @@ pub struct Ctx {
     /// sampled. `v` on the board diffs its uncommitted work (T-221), and
     /// where there is no repository the key is inert rather than a message.
     pub git_repo: bool,
+    /// The diff belongs to the checkout, so upstream history is available.
+    pub checkout_diff: bool,
+    pub git_commits: bool,
     /// The board sits on a WORKSPACE — a root with repositories nested one
     /// level under it (`RepoGit::repos`, T-225). A worktree there would be a
     /// worktree of the meta repo and none of the code, so the workspace
@@ -2298,6 +2303,17 @@ static TICKET: &[Binding] = &[
 
 static DIFF: &[Binding] = &[
     Binding {
+        keys: &[Key::Tab],
+        verb: Verb::GitCommits,
+        show: "tab",
+        hint: |c| if c.git_commits { "uncommitted changes" } else { "push / pull commits" },
+        avail: |c| c.checkout_diff,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
         // A vertical list takes ↓ ↑ and nothing sideways.
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
         verb: Verb::ScrollDown,
@@ -2317,7 +2333,7 @@ static DIFF: &[Binding] = &[
         verb: Verb::NextFile,
         show: "n N",
         hint: |_| "file",
-        avail: always,
+        avail: |c| !c.git_commits,
         class: Class::Plain,
         group: Group::Navigate,
         mutates: false,
@@ -2339,7 +2355,7 @@ static DIFF: &[Binding] = &[
         verb: Verb::ViewPrefix,
         show: "z",
         hint: |_| "context, layout…",
-        avail: always,
+        avail: |c| !c.git_commits,
         class: Class::Plain,
         group: Group::View,
         mutates: false,

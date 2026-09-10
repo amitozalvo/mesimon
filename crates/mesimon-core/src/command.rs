@@ -1365,6 +1365,13 @@ pub struct ClaudeMdStatus {
     pub present: bool,
 }
 
+/// A commit in one direction of the checkout's upstream comparison.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GitCommit {
+    pub oid: String,
+    pub subject: String,
+}
+
 /// The git state of the checkout the board sits in — the REPO's, not a
 /// ticket's worktree (that is [`WorktreeItem`]). Sampled by the daemon off its
 /// writer thread from one `git status --porcelain=v2 --branch`; the header
@@ -1392,6 +1399,12 @@ pub struct RepoGit {
     /// moves after a fetch, mesimon's (opt-in) or the user's own.
     #[serde(default)]
     pub behind: u32,
+    /// Newest commits first, capped at 100 per direction. None means the
+    /// list is unavailable (including snapshots from older daemons).
+    #[serde(default)]
+    pub to_push: Option<Vec<GitCommit>>,
+    #[serde(default)]
+    pub to_pull: Option<Vec<GitCommit>>,
     /// Entries `git status` lists: modified, staged, unmerged and untracked.
     /// On a workspace (`repos` non-empty) it is the SUM over the root and
     /// every nested repo — the number the board's checkout diff then lists.
@@ -1432,6 +1445,17 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_git_sample_has_unavailable_commit_lists() {
+        let g: RepoGit = serde_json::from_str(
+            r#"{"sampled":true,"branch":"main","upstream":"origin/main","ahead":2}"#,
+        )
+        .unwrap();
+        assert_eq!(g.ahead, 2);
+        assert!(g.to_push.is_none());
+        assert!(g.to_pull.is_none());
+    }
 
     /// An older daemon's Hello — no `build`, no `exe_stamp`, no `detached` —
     /// must still parse. The client's reader thread DROPS a line it cannot

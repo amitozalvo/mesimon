@@ -322,6 +322,7 @@ fn install_diff(app: &mut App) {
         path: Some("/wt/T-3-fix-osc-11-detection".into()),
     }];
     app.diff = Some(crate::app::DiffState {
+        commits: false,
         target: mesimon_core::command::DiffTarget::Ticket { id: ulid_n(3) },
         rail_idx: 0,
         branch: "msmn/T-3-fix-osc-11-detection".into(),
@@ -408,6 +409,7 @@ fn install_checkout_diff(app: &mut App) {
         },
     );
     app.diff = Some(crate::app::DiffState {
+        commits: false,
         target: mesimon_core::command::DiffTarget::Checkout,
         rail_idx: 0,
         branch: "main".into(),
@@ -1861,6 +1863,74 @@ fn golden_checkout_diff_120() {
     let mut app = app_graphite(fixture(false));
     install_checkout_diff(&mut app);
     golden("diff_checkout_120x30", &render(&app, 120, 30));
+}
+
+#[test]
+fn checkout_commits_show_both_directions_and_empty_states() {
+    use mesimon_core::command::GitCommit;
+    let mut app = app_graphite(fixture(false));
+    install_checkout_diff(&mut app);
+    app.diff.as_mut().unwrap().commits = true;
+    app.git = git_state("main", 2, 1, 0);
+    let commit =
+        |oid: &str, subject: &str| GitCommit { oid: oid.repeat(40), subject: subject.into() };
+    app.git.to_push = Some(vec![commit("a", "Add commit lists"), commit("b", "Prepare Git view")]);
+    app.git.to_pull = Some(vec![commit("c", "Fix upstream regression")]);
+    for width in [60, 120] {
+        let rows = render(&app, width, 30);
+        let text = rows.join("\n");
+        assert!(text.contains("TO PUSH (2)"));
+        assert!(text.contains("aaaaaaa  Add commit lists"));
+        assert!(text.contains("TO PULL (1)"));
+        assert!(text.contains("ccccccc  Fix upstream regression"));
+        assert!(text.contains("tab uncommitted changes"));
+        golden(&format!("git_commits_{width}x30"), &rows);
+    }
+    app.git.to_push = None;
+    assert!(render(&app, 120, 30).join("\n").contains("Commit list unavailable"));
+    app.git.ahead = 0;
+    app.git.behind = 0;
+    let text = render(&app, 120, 30).join("\n");
+    assert_eq!(text.matches("Nothing pending").count(), 2);
+    assert!(text.contains("in sync"));
+    app.git.upstream = None;
+    assert!(render(&app, 120, 30).join("\n").contains("No upstream configured"));
+    app.git.detached = true;
+    assert!(render(&app, 120, 30).join("\n").contains("Detached HEAD"));
+    app.git.sampled = false;
+    assert!(render(&app, 120, 30).join("\n").contains("Git status unavailable"));
+}
+
+#[test]
+fn checkout_commits_scroll_to_incoming_and_clamp_after_snapshot_shrinks() {
+    let mut app = app_graphite(fixture(false));
+    install_checkout_diff(&mut app);
+    app.diff.as_mut().unwrap().commits = true;
+    app.git = git_state("main", 105, 1, 0);
+    app.git.to_push = Some(
+        (0..100)
+            .map(|i| mesimon_core::command::GitCommit {
+                oid: "a".repeat(40),
+                subject: format!("outgoing {i} {}", "統一碼".repeat(60)),
+            })
+            .collect(),
+    );
+    app.git.to_pull = Some(vec![mesimon_core::command::GitCommit {
+        oid: "b".repeat(40),
+        subject: "incoming commit".into(),
+    }]);
+    let text = render(&app, 60, 20).join("\n");
+    assert!(text.contains("outgoing 0"));
+    assert!(!text.contains("incoming commit"));
+    app.diff.as_ref().unwrap().scroll.set(usize::MAX);
+    let text = render(&app, 60, 20).join("\n");
+    assert!(text.contains("5 more commits"));
+    assert!(text.contains("incoming commit"));
+    assert!(app.diff.as_ref().unwrap().view.get().max > 0);
+    app.git.ahead = 0;
+    app.git.behind = 0;
+    let _ = render(&app, 60, 20);
+    assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0);
 }
 
 #[test]

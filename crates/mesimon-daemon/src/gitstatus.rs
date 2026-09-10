@@ -2,7 +2,7 @@
 //! uncommitted changes (T-124).
 //!
 //! This is the REPO's state, not a ticket's worktree (`crate::worktree` owns
-//! those). One fork per sample — `git status --porcelain=v2 --branch -z`
+//! those). `git status --porcelain=v2 --branch -z`
 //! carries the branch, the upstream, the ahead/behind pair and every changed
 //! entry in one answer — and it runs OFF the writer thread (`server.rs`
 //! spawns it and takes the result back as a `Msg`), because a `status` on a
@@ -26,7 +26,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, Instant};
 
-use mesimon_core::command::RepoGit;
+use mesimon_core::command::{GitCommit, RepoGit};
 
 /// A fetch that has not answered in this long is killed. A detached daemon
 /// has no tty, so nothing on the other side of a passphrase prompt will ever
@@ -46,6 +46,50 @@ pub fn sample_one(repo: &Path) -> RepoGit {
     }
 }
 
+/// History belongs only to the branch named by the sample. Nested repos
+/// whose dirty counts are merely summed need no history subprocesses.
+fn with_commits(repo: &Path, mut g: RepoGit) -> RepoGit {
+    if g.upstream.is_some() && !g.detached {
+        g.to_push = commits(repo, "@{upstream}..HEAD", g.ahead);
+        g.to_pull = commits(repo, "HEAD..@{upstream}", g.behind);
+    }
+    g
+}
+
+/// Bounded, read-only history on the same worker as status. Only local refs
+/// are read: incoming commits change when the user or Mesimon fetches.
+fn commits(repo: &Path, range: &str, count: u32) -> Option<Vec<GitCommit>> {
+    if count == 0 {
+        return Some(Vec::new());
+    }
+    let out = crate::git::git(repo)
+        .args([
+            "--no-pager",
+            "log",
+            "--no-show-signature",
+            "--format=%H%x00%s",
+            "-z",
+            "--max-count=100",
+            range,
+            "--",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let mut fields = out.stdout.split(|b| *b == 0);
+    let mut commits = Vec::new();
+    while let (Some(oid), Some(subject)) = (fields.next(), fields.next()) {
+        commits.push(GitCommit {
+            oid: String::from_utf8_lossy(oid).into_owned(),
+            subject: String::from_utf8_lossy(subject).chars().take(512).collect(),
+        });
+    }
+    Some(commits)
+}
+
 /// The board root's sample (T-225): the root's own status, plus the census
 /// of nested repositories and, when there are any, their changed counts
 /// summed in. A folder of repos with no repository at the root still reads
@@ -56,7 +100,7 @@ pub fn sample(root: &Path) -> RepoGit {
     let mut g = sample_one(root);
     let repos = census(root);
     if repos.is_empty() {
-        return g;
+        return with_commits(root, g);
     }
     // A root that is a repository keeps its own branch and arrows whatever
     // is nested under it — the mesimon checkout carries `mt/`, a scratch
@@ -66,7 +110,7 @@ pub fn sample(root: &Path) -> RepoGit {
     // branch: there the child is the checkout, and `1 repo` says nothing.
     if !g.sampled {
         if let [only] = &repos[..] {
-            let mut child = sample_one(&root.join(only));
+            let mut child = with_commits(&root.join(only), sample_one(&root.join(only)));
             child.sampled = true;
             child.repos = repos;
             return child;
@@ -77,7 +121,7 @@ pub fn sample(root: &Path) -> RepoGit {
     }
     g.sampled = true;
     g.repos = repos;
-    g
+    with_commits(root, g)
 }
 
 /// Where the sampled branch lives: the root when it is a repository, else
@@ -399,6 +443,51 @@ mod tests {
         assert!(g.upstream.is_none());
         assert_eq!(g.changed, 1);
         assert!(remote_of(&dir, "main").is_none(), "no upstream, no remote");
+        assert!(g.to_push.is_none());
+        assert!(g.to_pull.is_none());
+
+        run(&["branch", "upstream"]);
+        run(&["branch", "--set-upstream-to=upstream", "main"]);
+        let commit = |subject: &str| {
+            run(&[
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                subject,
+            ])
+        };
+        commit("older outgoing");
+        commit("newer outgoing 統一碼");
+        run(&["checkout", "-q", "upstream"]);
+        commit("incoming");
+        run(&["checkout", "-q", "main"]);
+        let g = sample(&dir);
+        assert_eq!((g.ahead, g.behind), (2, 1));
+        let outgoing = g.to_push.unwrap();
+        assert_eq!(
+            outgoing.iter().map(|c| c.subject.as_str()).collect::<Vec<_>>(),
+            ["newer outgoing 統一碼", "older outgoing"]
+        );
+        assert!(outgoing.iter().all(|c| c.oid.len() == 40));
+        assert_eq!(g.to_pull.unwrap()[0].subject, "incoming");
+        assert!(commits(&dir, "missing..HEAD", 1).is_none());
+
+        for _ in 0..100 {
+            commit("another outgoing");
+        }
+        let g = sample(&dir);
+        assert_eq!(g.ahead, 102);
+        assert_eq!(g.to_push.unwrap().len(), 100, "snapshot history is bounded");
+        run(&["checkout", "-q", "--detach"]);
+        let g = sample(&dir);
+        assert!(g.detached);
+        assert!(g.to_push.is_none());
+        assert!(g.to_pull.is_none());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

@@ -9214,3 +9214,31 @@ The cursor and vertical scrolling use the same byte-range layout as rendering,
 which reflows on resize. A cluster wider than the entire viewport uses the existing
 truncation marker. Unit tests cover navigation, editing, scrolling, resize, and
 Unicode boundaries; editor goldens cover wrapped dialog and full-screen bodies.
+
+## Push/pull commit lists on the checkout Git screen (T-322, 2026-09-10)
+
+The board's `v` screen now offers `Tab` to switch between uncommitted changes and
+an upstream comparison. The comparison lists **To push** and **To pull** separately,
+with short object IDs and subjects, newest first. It uses the existing reading keys
+(`j/k`, `{ }`, Page Up/Down), resets the scroll when switching views, and clamps it
+when a newer snapshot shortens the history. Ticket branch diffs retain their existing
+scope. The footer and help describe the switch through the core keymap.
+
+The daemon's existing Git worker adds up to two read-only `git log` calls after
+status, through the scrubbed Git helper. Each direction is capped at 100 commits and
+subjects at 512 characters; exact ahead/behind counts remain visible and the view
+names any omitted commits. Nested repositories whose dirty counts are merely summed
+are not queried for history. A folder containing one repository inherits that
+repository's comparison, matching its existing branch/count behavior.
+
+`RepoGit::to_push` and `to_pull` are additive optional snapshot fields. An older
+daemon or a failed history read produces “Commit list unavailable,” while a zero
+count says “Nothing pending.” Unsampled, detached, and untracked branches have
+explicit empty states. Incoming commits are based on locally fetched refs; the view
+shows the existing fetch-age/error note and never fetches, pushes, or pulls on entry.
+`R` refreshes the snapshot; ordinary daemon samples continue updating the lists.
+
+Coverage includes a real diverged repository, newest-first ordering, the history cap,
+detached HEAD, old snapshot decoding, direction-specific subjects through the daemon
+wire, view switching, scrolling and shrinking lists. New goldens cover 60 and 120
+columns; the existing checkout-diff golden changes only its footer's Tab hint.

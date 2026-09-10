@@ -27,4 +27,4 @@
 
 
 
- z context, layout… ∙ R refresh ∙ q back                                                                         ? keys
+ tab push / pull commits ∙ z context, layout… ∙ R refresh ∙ q back                                               ? keys
