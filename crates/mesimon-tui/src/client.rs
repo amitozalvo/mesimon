@@ -32,6 +32,10 @@ pub trait Transport {
     fn take_notice(&mut self) -> Option<Notice> {
         None
     }
+    /// A known older wire protocol needs an explicit `U` handover.
+    fn daemon_upgrade_needed(&self) -> bool {
+        false
+    }
 }
 
 pub struct Client {
@@ -50,6 +54,22 @@ pub struct Client {
     observer: bool,
     /// Surfaced once, when a skew could not be settled.
     notice: Option<Notice>,
+    legacy_daemon: bool,
+}
+
+#[derive(Debug)]
+struct ProtocolMismatch(u32);
+
+impl std::fmt::Display for ProtocolMismatch {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "daemon speaks protocol {}; this client speaks {PROTOCOL_VERSION}", self.0)
+    }
+}
+
+impl std::error::Error for ProtocolMismatch {}
+
+fn upgradeable(error: &anyhow::Error) -> bool {
+    matches!(error.downcast_ref::<ProtocolMismatch>(), Some(ProtocolMismatch(1)))
 }
 
 /// One live connection's worth of channel plumbing — replaced wholesale on
@@ -117,6 +137,12 @@ impl Transport for Client {
     fn request(&mut self, command: Command) -> Result<Response> {
         let res = match self.conn.as_mut() {
             Some(c) => c.request(command),
+            // Only an explicit local reload uses the compatible v1 control
+            // messages. Never subscribe, fetch a board, or send a mutation
+            // through a downgraded connection; never spawn during shutdown.
+            None if !self.observer && matches!(command, Command::Shutdown) => {
+                shutdown_existing(&Paths::for_repo(&self.repo_root)?.orch_sock())
+            }
             None if self.observer => open_existing(&self.repo_root)
                 .map(|c| self.conn.insert(c))
                 .and_then(|c| c.request(command)),
@@ -133,10 +159,13 @@ impl Transport for Client {
                 })
                 .and_then(|c| c.request(command)),
         };
-        if res.is_err() {
+        if let Err(error) = &res {
             // Connection is toast; drop it so the next request reopens. No
             // blind replay — a mutation may have landed before its reply died.
             self.conn = None;
+            self.legacy_daemon = !self.observer && upgradeable(error);
+        } else {
+            self.legacy_daemon = false;
         }
         res
     }
@@ -159,6 +188,10 @@ impl Transport for Client {
 
     fn take_notice(&mut self) -> Option<Notice> {
         self.notice.take()
+    }
+
+    fn daemon_upgrade_needed(&self) -> bool {
+        self.legacy_daemon
     }
 }
 
@@ -183,16 +216,24 @@ impl Client {
                 restart_suppressed: notice.is_some(),
                 observer: false,
                 notice,
+                legacy_daemon: false,
             }),
             Err(why) => Ok(Client {
                 repo_root: repo_root.to_path_buf(),
                 conn: None,
                 restart_suppressed: false,
                 observer: false,
-                notice: Some(
+                legacy_daemon: upgradeable(&why),
+                notice: Some(if upgradeable(&why) {
+                    Notice::new(
+                        "protocol_mismatch",
+                        "older daemon — press U to upgrade; sessions keep running",
+                    )
+                    .with_detail(why.to_string())
+                } else {
                     Notice::new("daemon_down", format!("no daemon yet — {why}"))
-                        .with_detail("reconnecting on a 2 s cadence; `mesimon doctor` says why a daemon will not start".to_string()),
-                ),
+                        .with_detail("reconnecting on a 2 s cadence; `mesimon doctor` says why a daemon will not start".to_string())
+                }),
             }),
         }
     }
@@ -217,6 +258,7 @@ impl Client {
             restart_suppressed: true,
             observer: true,
             notice: None,
+            legacy_daemon: false,
         })
     }
 }
@@ -468,6 +510,23 @@ fn open(repo_root: &Path) -> Result<Conn> {
 /// Wire up the reader thread, say Hello, subscribe — and record what the
 /// daemon said about itself.
 fn handshake(stream: UnixStream) -> Result<Conn> {
+    let mut c = hello(stream, PROTOCOL_VERSION)?;
+    c.request(Command::Subscribe)?;
+    Ok(c)
+}
+
+/// Hello and Shutdown have the same wire shape in protocols 1 and 2. This
+/// connection is deliberately short-lived and never enters `Client::conn`.
+fn shutdown_existing(sock: &Path) -> Result<Response> {
+    let mut c = match hello(UnixStream::connect(sock)?, PROTOCOL_VERSION) {
+        Ok(c) => c,
+        Err(error) if upgradeable(&error) => hello(UnixStream::connect(sock)?, 1)?,
+        Err(error) => return Err(error),
+    };
+    c.request(Command::Shutdown)
+}
+
+fn hello(stream: UnixStream, version: u32) -> Result<Conn> {
     let write = stream.try_clone()?;
     let (rtx, rrx): (Sender<Response>, Receiver<Response>) = channel();
     let (etx, erx) = channel();
@@ -487,18 +546,35 @@ fn handshake(stream: UnixStream) -> Result<Conn> {
 
     let mut c = Conn { write, responses: rrx, events: erx, daemon: DaemonIdent::default() };
     let hello = c.request(Command::Hello {
-        version: PROTOCOL_VERSION,
+        version,
         client: format!("mesimon-tui/{}", env!("CARGO_PKG_VERSION")),
     })?;
     match hello {
-        Response::Hello { daemon_pid, build, exe_stamp, detached, .. } => {
+        Response::Hello { version: received, daemon_pid, build, exe_stamp, detached }
+            if received == version =>
+        {
             c.daemon = DaemonIdent { pid: daemon_pid, build, exe_stamp, detached };
         }
-        Response::Err { message } => bail!("daemon refused: {message}"),
+        Response::Err { message } => {
+            if let Some(other) = message
+                .strip_prefix(&format!("protocol {version} unsupported; daemon speaks "))
+                .and_then(|other| other.parse::<u32>().ok())
+            {
+                return Err(ProtocolMismatch(other).into());
+            }
+            bail!("daemon refused: {message}");
+        }
         other => bail!("unexpected hello response: {other:?}"),
     }
-    c.request(Command::Subscribe)?;
     Ok(c)
+}
+
+impl Drop for Conn {
+    fn drop(&mut self) {
+        // Wake the reader even when a refused Hello leaves the peer open.
+        // Otherwise each reconnect leaks a reader and its socket descriptor.
+        let _ = self.write.shutdown(std::net::Shutdown::Both);
+    }
 }
 
 impl Conn {
@@ -513,6 +589,135 @@ impl Conn {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn read_command(reader: &mut BufReader<UnixStream>) -> Command {
+        let mut line = String::new();
+        reader.read_line(&mut line).unwrap();
+        let envelope: Envelope = serde_json::from_str(&line).unwrap();
+        assert_eq!(envelope.principal, Principal::Local);
+        envelope.command
+    }
+
+    fn reply(reader: &mut BufReader<UnixStream>, response: Response) {
+        writeln!(reader.get_mut(), "{}", serde_json::to_string(&response).unwrap()).unwrap();
+    }
+
+    /// Reproduce the old daemon's literal refusal on a socket which stays
+    /// open. The normal handshake must neither downgrade nor leave its
+    /// reader alive. Only the explicit shutdown road can use protocol 1.
+    #[test]
+    fn refused_hello_closes_the_connection_without_downgrading() {
+        let (client, server) = UnixStream::pair().unwrap();
+        server.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+        let peer = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server);
+            assert!(matches!(read_command(&mut reader), Command::Hello { version: 2, .. }));
+            reply(
+                &mut reader,
+                Response::Err { message: "protocol 2 unsupported; daemon speaks 1".into() },
+            );
+            let mut line = String::new();
+            assert_eq!(reader.read_line(&mut line).unwrap(), 0, "no fallback or subscription");
+        });
+        let error = handshake(client).err().expect("v1 is not a board connection");
+        assert!(upgradeable(&error));
+        peer.join().unwrap();
+    }
+
+    #[test]
+    fn explicit_shutdown_negotiates_only_the_known_legacy_control_protocol() {
+        use std::os::unix::net::UnixListener;
+        struct SocketFile(PathBuf);
+        impl Drop for SocketFile {
+            fn drop(&mut self) {
+                let _ = std::fs::remove_file(&self.0);
+            }
+        }
+        for version in [1, 2, 3] {
+            // Short enough for macOS sun_path; unique, owned, and removed
+            // on unwind. No daemon, tmux, model, or user repository involved.
+            let socket =
+                SocketFile(PathBuf::from(format!("/tmp/msmn-wire-{}.sock", ulid::Ulid::new())));
+            let listener = UnixListener::bind(&socket.0).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            let peer = std::thread::spawn(move || {
+                let accept = || {
+                    let deadline = Instant::now() + Duration::from_secs(5);
+                    loop {
+                        match listener.accept() {
+                            Ok((stream, _)) => {
+                                stream.set_nonblocking(false).unwrap();
+                                stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
+                                return BufReader::new(stream);
+                            }
+                            Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                                assert!(Instant::now() < deadline, "control connection missing");
+                                std::thread::sleep(Duration::from_millis(5));
+                            }
+                            Err(e) => panic!("accept: {e}"),
+                        }
+                    }
+                };
+                let mut reader = accept();
+                assert!(matches!(read_command(&mut reader), Command::Hello { version: 2, .. }));
+                if version != 2 {
+                    reply(
+                        &mut reader,
+                        Response::Err {
+                            message: format!("protocol 2 unsupported; daemon speaks {version}"),
+                        },
+                    );
+                    assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
+                    if version == 3 {
+                        return;
+                    }
+                    reader = accept();
+                    assert!(matches!(read_command(&mut reader), Command::Hello { version: 1, .. }));
+                }
+                reply(
+                    &mut reader,
+                    Response::Hello {
+                        version,
+                        daemon_pid: 123,
+                        build: "0.0.1".into(),
+                        exe_stamp: None,
+                        detached: false,
+                    },
+                );
+                assert!(matches!(read_command(&mut reader), Command::Shutdown));
+                reply(&mut reader, Response::Ok);
+                assert_eq!(reader.read_line(&mut String::new()).unwrap(), 0);
+            });
+            let result = shutdown_existing(&socket.0);
+            if version == 3 {
+                assert!(result.is_err(), "never downgrade an unknown protocol");
+            } else {
+                assert!(matches!(result.unwrap(), Response::Ok));
+            }
+            peer.join().unwrap();
+        }
+    }
+
+    #[test]
+    fn hello_must_echo_the_requested_version() {
+        let (client, server) = UnixStream::pair().unwrap();
+        let peer = std::thread::spawn(move || {
+            let mut reader = BufReader::new(server);
+            let _ = read_command(&mut reader);
+            reply(
+                &mut reader,
+                Response::Hello {
+                    version: 99,
+                    daemon_pid: 123,
+                    build: String::new(),
+                    exe_stamp: None,
+                    detached: false,
+                },
+            );
+        });
+        assert!(handshake(client).is_err());
+        peer.join().unwrap();
+    }
 
     /// Dropped inside its delay, a late word is never said; kept past it, it
     /// is said exactly once. Driven by channels, not sleeps, so a loaded box

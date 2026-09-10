@@ -1277,7 +1277,12 @@ impl App {
 
     fn note_daemon_down(&mut self) {
         self.daemon_down = true;
-        self.status = "daemon unreachable ∙ reconnecting".into();
+        self.status = if self.client.daemon_upgrade_needed() {
+            "older daemon ∙ U upgrades ∙ sessions keep running"
+        } else {
+            "daemon unreachable ∙ reconnecting"
+        }
+        .into();
     }
 
     /// Request through the reconnect-tolerant seam: a transport failure
@@ -1294,7 +1299,7 @@ impl App {
     }
 
     pub fn update_ready(&self) -> bool {
-        self.update_watch.ready()
+        self.update_watch.ready() || self.client.daemon_upgrade_needed()
     }
 
     /// Render tests need the update offer without a real rebuild on disk.
@@ -7564,6 +7569,42 @@ mod tests {
         assert!(app.daemon_down);
         assert!(app.board.tickets.is_empty());
         assert!(app.status.contains("reconnecting"), "status: {}", app.status);
+    }
+
+    #[test]
+    fn legacy_daemon_offers_explicit_reload_without_a_rebuilt_executable() {
+        struct Legacy(std::rc::Rc<std::cell::Cell<bool>>);
+        impl Transport for Legacy {
+            fn request(&mut self, command: Command) -> Result<Response> {
+                if matches!(command, Command::Shutdown) {
+                    self.0.set(true);
+                    return Ok(Response::Ok);
+                }
+                anyhow::bail!("protocol 2 unsupported; daemon speaks 1")
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+            fn healthy(&mut self) -> bool {
+                false
+            }
+            fn daemon_upgrade_needed(&self) -> bool {
+                true
+            }
+        }
+        let shutdown = std::rc::Rc::new(std::cell::Cell::new(false));
+        let mut app =
+            App::new(Box::new(Legacy(shutdown.clone())), PathBuf::from("/nonexistent"), theme())
+                .unwrap();
+        assert!(!app.update_watch.ready());
+        assert!(app.update_ready());
+        assert!(app.status.contains("U upgrades"), "{}", app.status);
+        app.refresh().unwrap();
+        assert!(!shutdown.get(), "launch and reconnect never upgrade implicitly");
+        assert!(!app.pending_reexec);
+        press(&mut app, 'U');
+        assert!(shutdown.get());
+        assert!(app.pending_reexec);
     }
 
     #[test]

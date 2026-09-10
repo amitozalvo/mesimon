@@ -8558,3 +8558,27 @@ private 14K threshold: one tool result, auto Pre/PostCompact on the same turn,
 checkout hold through compaction, then task completion only after its actual
 reply. This confirms the manual-maintenance/task distinction without exhausting
 the default context window or changing user configuration.
+
+## Explicit protocol-1 daemon upgrade (2026-09-10, user verification)
+
+The Codex wire-version bump exposed a missing upgrade path: the new client was
+refused before it could inspect the old daemon's build, while `U` required an
+on-disk binary update and its Shutdown also passed through the rejected Hello.
+Repeated reconnects therefore never made progress. A known protocol-1 refusal
+now offers `U` even on a freshly started client. Only the human's explicit reload
+can negotiate protocol 1, and that temporary connection sends only the unchanged
+Local Hello and Shutdown envelopes. It never subscribes, reads a board, sends
+ordinary mutations, or becomes the client's retained connection. Normal commands
+still require protocol 2; unknown protocol versions remain refused. Existing
+same-protocol build-skew ordering is unchanged. No mismatched daemon is upgraded
+by opening a board or by the notification observer. The normal handover preserves
+tmux sessions and reexecs the selected binary after daemon shutdown.
+
+Rejected handshakes also used to leave a reader thread and socket alive while the
+peer kept the connection open. Dropping a connection now shuts down both socket
+directions. Socket regressions exercise the literal old refusal, EOF cleanup,
+version validation and the explicit 1/2/3 control negotiation; a TUI regression
+proves the upgrade is offered without a changed executable and waits for `U`.
+The user exercised the rebuilt executable in `simbly`, observed the normal
+shutdown wait, and confirmed the board worked after handover. The agent did not
+restart the personal daemon or inspect personal conversations.
