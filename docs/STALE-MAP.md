@@ -8873,3 +8873,33 @@ Validation: 604 TUI tests passed, with the existing live-network test ignored an
 fixture audit. All three golden diffs were inspected; formatting, diff checks and the main
 build passed. Full workspace, Linux and manual terminal checks were not repeated for this
 glyph-only change.
+
+### 2026-09-10 — T-325: board copies use the local clipboard
+
+Link and agent-brief copy previously only emitted OSC 52, even on local desktops.
+A successful terminal write does not mean the terminal accepted the clipboard request;
+this caused silent failures and the misleading “copied ∙ if your terminal allows it”
+status. Both actions now use `pbcopy` on macOS, `clip.exe` on WSL (UTF-16 with a BOM),
+`wl-copy` on Wayland, or `xclip` / `xsel` on X11. Text goes through stdin, never a shell.
+A native helper must consume the input and exit successfully before the status says
+“link copied” or “brief copied”; errors are reported and helpers have a two-second
+limit, including when they stop reading stdin.
+
+SSH sessions deliberately bypass native helpers so they cannot copy to the remote
+host's desktop. SSH and machines without a clipboard helper retain OSC 52, with an
+explicit “copy requested from terminal” status and manual-selection guidance. This
+fallback still cannot guarantee delivery through terminal or outer-tmux restrictions.
+Dialogs stay open. No terminal settings or private-tmux containment are changed.
+Regression tests cover platform selection, remote exclusion, Unicode, literal stdin,
+helper errors, timeouts, and the distinction between confirmed and requested copying.
+
+Validation: five focused clipboard tests passed with a clean fixture audit after the
+sandbox blocked the initial runner's `ps` cleanup check; the retained registry listed
+no sockets, and its two recorded processes had exited. Workspace nextest ran 1,348 tests
+successfully with 81 owners audited clean. It flagged one archive-reclaim test as leaky
+(output pipe held past the grace period); that exact test passed on rerun without a leak
+and with a clean audit. The two existing skips are the live-network release test and a
+subprocess helper exercised by its parent tests. Workspace clippy with warnings denied,
+formatting, diff checks, and the main binary build passed. Linux/WSL desktop clipboard
+integration and manual TUI checks were not run in this macOS managed pane; platform
+selection and payload encoding are covered through pure seams and fake helpers.

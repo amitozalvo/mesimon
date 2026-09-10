@@ -236,27 +236,8 @@ mod tests {
     }
 }
 
-/// Put `text` on the terminal's clipboard with OSC 52 (T-217).
-///
-/// The counterpart to everything above: this module reads a terminal's
-/// unasked-for OSC, and this one function writes one on purpose.
-///
-/// **Why OSC 52 and not `pbcopy`.** mesimon has no clipboard support at all
-/// today — the only copy code in the workspace is the tmux conf's `pbcopy` /
-/// `wl-copy` / `xclip` pipe, which serves tmux's own copy-mode INSIDE an agent
-/// pane and is unreachable from the board. A native call would also be wrong
-/// here specifically: the board is the thing people run over ssh, and
-/// `pbcopy` on the far side of an ssh session copies to a clipboard nobody is
-/// looking at. OSC 52 travels to the terminal that is actually in front of the
-/// user. (docs/04's `y` specifies a richer future yank — native call first,
-/// OSC 52 only when remote and opted in. This is not that key.)
-///
-/// **It can silently do nothing**, and that is why the caller must not close
-/// the dialog behind it: a terminal may refuse OSC 52 (many do by default),
-/// and an outer tmux swallows it without `set-clipboard on`. There is no reply
-/// to read — the sequence is write-only — so mesimon cannot tell success from
-/// refusal, and must not claim one. The text stays on screen either way, which
-/// is a selection away from the same outcome.
+/// Request a clipboard write from the terminal. OSC 52 has no acknowledgement;
+/// callers must distinguish this request from a successful native copy.
 pub fn copy_to_clipboard(text: &str) -> std::io::Result<()> {
     use std::io::Write;
     let mut out = std::io::stdout();

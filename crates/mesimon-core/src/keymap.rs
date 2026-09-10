@@ -387,9 +387,8 @@ pub enum Verb {
     /// the verb on one axis and never changes it — `^s`/`^S`'s shape — and
     /// on the legacy floor the press arrives as `^k`, the safe half.
     LinkFirst,
-    /// `c` in the links dialog: the row's target to the clipboard (OSC 52,
-    /// the brief dialog's road — write-only, so the dialog stays up and the
-    /// status never claims success).
+    /// `c` in the links dialog: copy the row's target. Native clipboard locally,
+    /// terminal request remotely; keep the dialog open for manual selection.
     LinkCopy,
     /// Open the settings submenu from the menu: the preferences, one level
     /// down, so a menu row is either an action or the door to the settings

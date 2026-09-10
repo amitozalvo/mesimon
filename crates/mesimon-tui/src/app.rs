@@ -3493,15 +3493,7 @@ impl App {
             // only ever turned from inside it, with the words on the screen.
             Verb::BriefOffer => self.mode = Mode::Brief { from_settings: false },
             Verb::BriefCopy => {
-                // The words on the screen, for a user who would rather put
-                // them somewhere of their own. Cannot be verified: OSC 52 is
-                // write-only and a terminal may ignore it. So the status says
-                // what was sent, not that it arrived, and the dialog stays
-                // up with the text on it.
-                self.status = match crate::osc::copy_to_clipboard(mesimon_core::brief::TEXT) {
-                    Ok(()) => "brief copied ∙ if your terminal allows it".into(),
-                    Err(e) => format!("could not write to the terminal: {e}"),
-                };
+                self.status = crate::clipboard::copy_status("brief", mesimon_core::brief::TEXT);
             }
             Verb::BriefIgnore => {
                 match self.client.request(Command::IgnoreBriefOffer)? {
@@ -3853,18 +3845,13 @@ impl App {
                 }
             }
             Verb::LinkCopy => {
-                // The target as written, for a user who wants it somewhere
-                // of their own. OSC 52 is write-only, so the status says what
-                // was sent and the dialog stays up (the brief's `c`).
+                // Keep the target visible so terminal-only copies can be selected manually.
                 let text = match &self.mode {
                     Mode::Links { links, idx, .. } => links.get(*idx).map(|l| l.text.clone()),
                     _ => None,
                 };
                 if let Some(text) = text {
-                    self.status = match crate::osc::copy_to_clipboard(&text) {
-                        Ok(()) => "link copied ∙ if your terminal allows it".into(),
-                        Err(e) => format!("could not write to the terminal: {e}"),
-                    };
+                    self.status = crate::clipboard::copy_status("link", &text);
                 }
             }
             Verb::ThemePick => {
