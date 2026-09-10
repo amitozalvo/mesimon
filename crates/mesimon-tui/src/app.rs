@@ -4434,7 +4434,7 @@ impl App {
     fn key_column_name(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
         let word = crate::keys::word_wise(mods);
         if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
-            match code {
+            match crate::keys::text_code(code, mods) {
                 KeyCode::Backspace if word => buf.delete_word_back(),
                 KeyCode::Backspace => buf.backspace(),
                 KeyCode::Delete => buf.delete(),
@@ -5440,7 +5440,7 @@ impl App {
         // composer's own hints ("shift+enter save + ask claude", "shift+tab
         // workspace") under a field that does none of those things.
         if let Some((_, buf)) = arm.naming.as_mut() {
-            match code {
+            match crate::keys::text_code(code, mods) {
                 KeyCode::Backspace if word => buf.delete_word_back(),
                 KeyCode::Backspace => buf.backspace(),
                 KeyCode::Delete => buf.delete(),
@@ -10912,6 +10912,69 @@ mod tests {
         assert_eq!(buffer.as_str(), "fix the Xthing");
         // And the board did not move underneath it.
         assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+    }
+
+    /// Terminal word-jump sequences reach every text-entry path. Insertions
+    /// expose the cursor position and catch accidentally typing the chord.
+    #[test]
+    fn option_word_jumps_in_every_text_field() {
+        for (left, right, mods) in [
+            (KeyCode::Char('b'), KeyCode::Char('f'), KeyModifiers::ALT),
+            (KeyCode::Left, KeyCode::Right, KeyModifiers::ALT),
+            (KeyCode::Left, KeyCode::Right, KeyModifiers::CONTROL),
+        ] {
+            for field in ["input", "editor title", "editor body", "tag", "column"] {
+                let mut app = app_three_columns();
+                match field {
+                    "input" => press(&mut app, 'o'),
+                    "editor title" | "editor body" => {
+                        press(&mut app, 'o');
+                        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+                        if field == "editor title" {
+                            app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+                        } else {
+                            for c in "first line".chars() {
+                                press(&mut app, c);
+                            }
+                            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                        }
+                    }
+                    "tag" => {
+                        ctrl(&mut app, 't');
+                        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+                    }
+                    "column" => press(&mut app, 'O'),
+                    _ => unreachable!(),
+                }
+                for c in "fix café bug".chars() {
+                    press(&mut app, c);
+                }
+                app.handle_key(left, mods).unwrap();
+                press(&mut app, 'X');
+                app.handle_key(left, mods).unwrap();
+                app.handle_key(left, mods).unwrap();
+                app.handle_key(right, mods).unwrap();
+                press(&mut app, 'Y');
+                let text = if let Some(arm) = &app.tag_armed {
+                    arm.naming.as_ref().expect("still naming").1.as_str()
+                } else {
+                    match &app.mode {
+                        Mode::Input { buffer, .. } => buffer.as_str(),
+                        Mode::Editor(ed) if field == "editor title" => ed.title.as_str(),
+                        Mode::Editor(ed) => ed.body.as_str(),
+                        Mode::ColumnSettings { naming: Some(buf), .. } => buf.as_str(),
+                        _ => panic!("left {field}"),
+                    }
+                };
+                let expected = if field == "editor body" {
+                    "first line\nfix caféY Xbug"
+                } else {
+                    "fix caféY Xbug"
+                };
+                assert_eq!(text, expected, "{field}: {left:?}/{right:?} {mods:?}");
+                assert_eq!(app.board.ticket(ulid::Ulid(1)).unwrap().column, "todo");
+            }
+        }
     }
 
     /// `HJKL` is the nudge on the legacy floor (2026-09-04, user request):

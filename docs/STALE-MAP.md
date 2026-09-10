@@ -9173,3 +9173,30 @@ Linux and manual TUI checks were not run for this daemon scheduling change;
 the existing display grammar is unchanged. The running daemon was not replaced:
 the board's `U` handover is still needed, and conflicting main-checkout edits
 remain a separate merge blocker.
+
+## 2026-09-10 — T-320: Option+Arrow word navigation in text fields
+
+Text input already accepted Alt/Ctrl+Left/Right, but ignored the Alt+b/f
+(ESC b/f) sequences used by terminal profiles for Option+Left/Right. The TUI
+now normalizes those sequences to arrows inside text fields, retaining Alt so
+the existing word-boundary movement applies. This covers the composer and
+other single-line inputs, editor title/body, tag names, and column names.
+Board/picker navigation and Ctrl-letter precedence retain their existing meaning.
+
+Regression tests reproduce the ignored sequence and exercise backward/forward
+movement in all five text-entry paths, including UTF-8 words and a multiline
+body. The same tests cover Alt/Ctrl arrows; adapter tests preserve plain b/f
+text entry and Control precedence. Word boundaries and line-edge behavior are
+unchanged.
+
+Validation: the targeted regression failed before the fix and passed afterward.
+The bounded workspace nextest run passed all 1,354 tests with a clean fixture
+audit; two declared ignores cover the live-network release check and a subprocess
+helper exercised by other tests. The first sandboxed attempt failed on socket
+and process-inspection permissions; its registered fixtures were inspected and
+cleaned. An elevated fail-fast attempt hit `m2_attention_headless`'s hook-state
+assertion; it passed in the complete rerun. Workspace Clippy, TUI formatting,
+and diff checks passed. Workspace formatting found existing differences in
+`execution_policy_e2e.rs`, `authorize.rs`, and `train.rs`; those files were left
+untouched. Linux and interactive terminal checks were not run for this TUI input
+adapter change.

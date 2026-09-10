@@ -66,7 +66,22 @@ pub fn to_key(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
 /// `alt+←` become [`Key::AltLeft`] would stop jumping by word, and the board's
 /// nudge is not something a half-typed title can do anyway.
 pub fn to_key_text(code: KeyCode, mods: KeyModifiers) -> Option<Key> {
-    to_key(code, mods - KeyModifiers::ALT)
+    to_key(text_code(code, mods), mods - KeyModifiers::ALT)
+}
+
+/// Some terminal profiles send Option+Left/Right as ESC b/f (Alt+b/f).
+/// Normalize those to arrows only inside text fields, retaining the modifier
+/// so the existing word movement applies. Control still owns its chords.
+pub(crate) fn text_code(code: KeyCode, mods: KeyModifiers) -> KeyCode {
+    if mods.contains(KeyModifiers::ALT) && !mods.contains(KeyModifiers::CONTROL) {
+        match code {
+            KeyCode::Char('b') => KeyCode::Left,
+            KeyCode::Char('f') => KeyCode::Right,
+            _ => code,
+        }
+    } else {
+        code
+    }
 }
 
 /// Ctrl or Alt both mean "by word" in a text field — terminals disagree about
@@ -115,6 +130,20 @@ mod tests {
         assert_eq!(to_key_text(KeyCode::Left, a), Some(Key::Left));
         assert_eq!(to_key_text(KeyCode::Char('h'), a), Some(Key::Char('h')));
         assert!(word_wise(a));
+    }
+
+    #[test]
+    fn terminal_word_sequences_are_arrows_only_in_text_fields() {
+        for (letter, direction) in [('b', Key::Left), ('f', Key::Right)] {
+            let code = KeyCode::Char(letter);
+            assert_eq!(to_key_text(code, KeyModifiers::ALT), Some(direction));
+            assert_eq!(to_key_text(code, KeyModifiers::NONE), Some(Key::Char(letter)));
+            assert_eq!(to_key(code, KeyModifiers::ALT), Some(Key::Char(letter)));
+            // Control retains precedence over Alt on letter chords.
+            for mods in [KeyModifiers::CONTROL, KeyModifiers::CONTROL | KeyModifiers::ALT] {
+                assert_eq!(to_key_text(code, mods), Some(Key::Ctrl(letter)));
+            }
+        }
     }
 
     #[test]
