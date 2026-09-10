@@ -8847,3 +8847,16 @@ with two existing skips (the live-network test and a subprocess helper exercised
 parent), and a clean 81-owner fixture audit. Clippy with warnings denied, formatting,
 diff checks and the main build passed. Linux and manual terminal checks were not repeated
 for this header-only change.
+
+### 2026-09-10 — Wake status uses coffee and sleep glyphs without text
+
+The author replaced the coffee on/off label with `☕` while held and `💤` while idle,
+without state words. Both occupy two display cells, so the memory counter remains stable;
+ASCII uses `@` / `z` at one cell each. Keep the idle dim3 style, including while focused,
+though native color emoji rendering is terminal-dependent. Disabling still hides the
+indicator, and Enter still opens its Behaviour setting.
+
+Validation: 604 TUI tests passed, with the existing live-network test ignored and a clean
+fixture audit. All three golden diffs were inspected. Workspace clippy with warnings
+denied, formatting, diff checks, and the main build passed. The complete workspace suite,
+Linux suite and manual terminal checks were not repeated for this glyph-only follow-up.

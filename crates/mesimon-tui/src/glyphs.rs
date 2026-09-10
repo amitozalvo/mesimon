@@ -224,14 +224,14 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
     }
 }
 
-/// Fixed-width wake status: padding keeps the header still as the hold changes.
-/// The preference controls visibility; "off" means enabled but currently idle.
+/// Equal-width wake glyphs keep the header still as the hold changes.
+/// The preference controls visibility; the sleep glyph means enabled but idle.
 pub(crate) fn awake_label(tier: Tier, held: bool) -> &'static str {
     match (tier == Tier::Ascii, held) {
-        (false, true) => "☕ on ",
-        (false, false) => "☕ off",
-        (true, true) => "@ on ",
-        (true, false) => "@ off",
+        (false, true) => "☕",
+        (false, false) => "💤",
+        (true, true) => "@",
+        (true, false) => "z",
     }
 }
 
@@ -1049,7 +1049,7 @@ mod tests {
     #[test]
     fn awake_states_have_equal_display_width_at_both_tiers() {
         use unicode_width::UnicodeWidthStr;
-        for (tier, width) in [(Tier::Unicode, 6), (Tier::Ascii, 5)] {
+        for (tier, width) in [(Tier::Unicode, 2), (Tier::Ascii, 1)] {
             assert_ne!(awake_label(tier, true), awake_label(tier, false));
             for held in [false, true] {
                 assert_eq!(awake_label(tier, held).width(), width);

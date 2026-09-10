@@ -1379,10 +1379,11 @@ no schema.
 `notifications_120x30`, `settings_120x30`.
 
 **The board keeps the machine awake while an agent is mid-turn (T-288).** Opt-in under
-Settings › Behaviour. While enabled, a fixed-width label beside the board's ticket count reads `☕ on`
-when held and dimmed `☕ off` when idle (`@ on` / `@ off` in ASCII mode); disabling hides it.
-The header cursor moves left/right between the label and git, and Enter on the label opens
-its selected settings row. Idle stays dimmed even when focused.
+Settings › Behaviour. While enabled, a fixed-width indicator beside the board's ticket count shows `☕`
+when held and `💤` when idle (`@` / `z` in ASCII mode); disabling hides it.
+The header cursor moves left/right between the indicator and git, and Enter on the indicator opens
+its selected settings row. Idle keeps its dimmed style even when focused; native emoji
+colors depend on the terminal.
 `caffeine_watch::Monitor`
 observes snapshots on its own read-only daemon connection, including pending submissions,
 so activity continues to update during attached panes and external editors. It works with

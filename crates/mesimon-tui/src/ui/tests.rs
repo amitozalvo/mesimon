@@ -5400,14 +5400,13 @@ fn wake_indicator_visibility_follows_preference_on_every_screen() {
             app.caffeinated = held;
             app.prefs.keep_awake = false;
             let off = render(&app, 120, 30)[0].clone();
-            assert!(!off.contains('☕'), "disabled: {off}");
+            assert!(!off.contains('☕') && !off.contains('💤'), "disabled: {off}");
             app.prefs.keep_awake = true;
-            let state = if held { "on" } else { "off" };
+            let mark = if held { "☕" } else { "💤" };
             let on = render(&app, 120, 30)[0].clone();
             let label =
                 if matches!(app.screen, Screen::Board) { "7 tickets" } else { "kanban-tui" };
-            // The buffer dump includes the coffee glyph's second cell.
-            assert!(on.contains(&format!("{label} ☕  {state}")), "enabled: {on}");
+            assert!(on.contains(&format!("{label} {mark}")), "enabled: {on}");
         }
     }
 }
@@ -5425,8 +5424,11 @@ fn wake_activity_and_focus_never_move_the_header() {
             app.caffeinated = false;
             app.header_focus = false;
             let idle = render(&app, w, 30)[0].clone();
-            assert!(idle.contains("off"), "missing idle label at {w}: {idle}");
-            let expected = idle.replacen("off", "on ", 1).trim_end().to_string();
+            let idle_label = crate::glyphs::awake_label(app.theme.glyph_tier(), false);
+            let active_label = crate::glyphs::awake_label(app.theme.glyph_tier(), true);
+            let needle = format!("7 tickets {idle_label}");
+            assert!(idle.contains(&needle), "missing idle glyph at {w}: {idle}");
+            let expected = idle.replacen(&needle, &format!("7 tickets {active_label}"), 1);
             app.caffeinated = true;
             assert_eq!(render(&app, w, 30)[0], expected, "activity shifted header at {w}");
             app.header_focus = true;
@@ -5440,7 +5442,7 @@ fn wake_activity_and_focus_never_move_the_header() {
 fn wake_indicator_has_ascii_states() {
     let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
     app.prefs.keep_awake = true;
-    for (held, label) in [(true, "@ on"), (false, "@ off")] {
+    for (held, label) in [(true, "@"), (false, "z")] {
         app.caffeinated = held;
         let head = render(&app, 120, 30)[0].clone();
         assert!(head.contains(&format!("7 tickets {label}")), "{head:?}");
@@ -5457,7 +5459,7 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
             app.caffeinated = held;
             app.git = git_state("main", 2, 1, 3);
             let plain = cells(&app, 120, 30);
-            let mark = "☕";
+            let mark = if held { "☕" } else { "💤" };
             let x = (0..120u16).find(|x| plain[(*x, 0)].symbol() == mark).unwrap();
             assert_eq!(
                 plain[(x, 0)].fg,
@@ -5474,14 +5476,7 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
             let selected_ink =
                 if app.theme.selected_bg.is_some() { &app.theme.sel } else { &app.theme.rest };
             let expected = if held { selected_ink.base } else { selected_ink.dim3 };
-            // Check the text too: a terminal may paint native emoji in color.
-            for offset in [0, 3, 4, 5] {
-                assert_eq!(focused[(x + offset, 0)].fg, expected, "{flavor:?}, held={held}");
-                assert_eq!(
-                    plain[(x + offset, 0)].fg,
-                    if held { app.theme.rest.base } else { app.theme.rest.dim3 }
-                );
-            }
+            assert_eq!(focused[(x, 0)].fg, expected, "{flavor:?}, held={held}");
             for buf in [&plain, &focused] {
                 assert_ne!(buf[(x, 0)].fg, app.theme.attn);
                 assert_ne!(buf[(x, 0)].bg, app.theme.attn);
