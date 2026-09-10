@@ -41,3 +41,7 @@ unwrap_used = "warn"
 # Backtraces keep file:line; the full DWARF was what made every core edit
 # relink 23 test binaries slowly.
 debug = "line-tables-only"
+# Independent ticket builds multiplied incremental caches until the disk filled.
+# Keep dependency artifacts, but rebuild changed workspace crates without this
+# additional cache. A developer can opt back in with CARGO_INCREMENTAL=1.
+incremental = false

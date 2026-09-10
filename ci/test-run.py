@@ -4,6 +4,9 @@
 Default: cargo nextest run --workspace (cargo's own parallelism; --jobs N caps
 build jobs and test threads together).
 Other gates: python3 ci/test-run.py -- cargo test -p mesimon --test hook_e2e.
+Requires 5 GiB free on build and fixture/state volumes, checked every second;
+low space stops this workload through its cleanup supervisor. --min-free-gib
+changes the reserve (0 disables it). This is not a filesystem quota.
 Python 3 is a test dependency only; the shipped binary does not use it.
 """
 import argparse
@@ -18,6 +21,61 @@ import subprocess
 import sys
 import tempfile
 import time
+
+
+def disk_paths(command, env):
+    """Watch build output and fixture/state volumes, including Cargo config."""
+    paths = [Path.cwd(), Path(tempfile.gettempdir()),
+             Path(env.get("MESIMON_TEST_AUDIT_ROOT", "/tmp")),
+             Path.home() / ".local/state/mesimon"]
+    if command[:1] == ["cargo"]:
+        metadata = ["cargo", "metadata", "--offline", "--no-deps", "--format-version=1"]
+        target = None
+        # Metadata reads Cargo's target-dir config and environment. An explicit
+        # build --target-dir wins; metadata itself does not accept that flag.
+        args = iter(command[1:])
+        for arg in args:
+            if arg == "--":
+                break
+            if arg in ("--manifest-path", "--config", "--target-dir"):
+                value = next(args, None)
+                if value is None:
+                    raise ValueError(f"missing value for {arg}")
+                if arg == "--target-dir":
+                    target = value
+                else:
+                    metadata.extend([arg, value])
+            elif arg.startswith("--target-dir="):
+                target = arg.split("=", 1)[1]
+            elif arg.startswith(("--manifest-path=", "--config=")):
+                metadata.append(arg)
+        result = subprocess.run(metadata, env=env, capture_output=True, text=True,
+                                check=True, timeout=30)
+        info = json.loads(result.stdout)
+        paths.append(Path(target or info["target_directory"]))
+        # Newer Cargo can place intermediate artifacts on a separate volume.
+        if info.get("build_directory"):
+            paths.append(Path(info["build_directory"]))
+    return paths
+
+
+def check_disk_space(paths, minimum_gib):
+    """Check existing ancestors without creating output dirs or deleting files."""
+    checked = set()
+    for path in paths:
+        path = path.resolve()
+        while not path.exists() and path != path.parent:
+            path = path.parent
+        device = path.stat().st_dev
+        if device in checked:
+            continue
+        checked.add(device)
+        free = shutil.disk_usage(path).free / 2**30
+        if free < minimum_gib:
+            raise RuntimeError(
+                f"Low disk space at {path}: {free:.1f} GiB free; "
+                f"this check requires {minimum_gib:g} GiB. "
+                "Free unused build output before retrying. No build caches were deleted.")
 
 
 def stamp_pass(command, env):
@@ -58,12 +116,16 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--timeout", type=int, default=1200, help="whole command deadline in seconds")
     parser.add_argument("--jobs", type=int, help="cap cargo build jobs and test threads (default: cargo's own)")
+    parser.add_argument("--min-free-gib", type=int, default=5,
+                        help="stop below this free disk reserve (default: 5 GiB; 0 disables)")
     parser.add_argument("command", nargs=argparse.REMAINDER)
     args = parser.parse_args()
     if args.timeout < 1:
         parser.error("timeout must be positive")
     if args.jobs is not None and args.jobs < 1:
         parser.error("jobs must be positive")
+    if args.min_free_gib < 0:
+        parser.error("min-free-gib must be nonnegative")
     command = args.command
     if command[:1] == ["--"]:
         command = command[1:]
@@ -71,6 +133,12 @@ def main():
         command = ["cargo", "nextest", "run", "--workspace"]
         if args.jobs:
             command += ["--test-threads", str(args.jobs)]
+    try:
+        watched_paths = disk_paths(command, os.environ) if args.min_free_gib else []
+        check_disk_space(watched_paths, args.min_free_gib)
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError) as exc:
+        print(f"Check not started: {exc}", file=sys.stderr)
+        return 2
     os.umask(0o077)
     lock_path = f"/tmp/msmn-test-command-{os.getuid()}.lock"
     lock = os.open(lock_path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
@@ -122,6 +190,7 @@ def main():
         log = open(root / "child-0.log")
         workers = f", {args.jobs} build/test workers" if args.jobs else ""
         print(f"Bounded check ({args.timeout}s deadline{workers}); audit: {run}", flush=True)
+        last_disk_check = time.monotonic()
         while not interrupted:
             output = log.read()
             if output:
@@ -129,7 +198,11 @@ def main():
             code = request(dict(op="poll", pid=pid))
             if code is not None:
                 result = 0 if code == 0 else 1
+                check_disk_space(watched_paths, args.min_free_gib)
                 break
+            if time.monotonic() - last_disk_check >= 1:
+                check_disk_space(watched_paths, args.min_free_gib)
+                last_disk_check = time.monotonic()
             time.sleep(0.2)
         if interrupted:
             result = 128 + interrupted[0]

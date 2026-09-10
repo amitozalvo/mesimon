@@ -84,6 +84,14 @@ timeout, a cleanup failure or a skipped test as what it is, never as a pass. Nev
 Mesimon socket or kill by a broad process-name match: this agent may be inside the user's
 live board. Inspect the retained run registry if cleanup fails.
 
+Do not point concurrent ticket builds at one shared Cargo target directory. Development and test
+profiles disable incremental compilation by default to limit per-worktree disk use;
+`CARGO_INCREMENTAL=1` is an explicit local opt-in. The bounded runner requires 5 GiB
+free on build and fixture/state volumes and checks again during the run. Low space
+stops only that check through its cleanup supervisor and reports failure. Free unused
+build output before retrying; `--min-free-gib N` changes the reserve (`0` disables it).
+This is a periodic guard, not a disk quota, and direct Cargo commands bypass it.
+
 Use the smallest relevant check while iterating, then the repository gates appropriate to the
 change:
 

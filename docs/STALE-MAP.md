@@ -9014,3 +9014,55 @@ and injected-I/O tests do not prove power-loss durability or constitute review.
 Teams-only macOS/Linux-minimum tests and scoped formatting/Clippy checks are the
 verification scope; core/tmux and release checks were not rerun. P2 is incomplete;
 no production integration, push, deploy or release is part of this change.
+
+### 2026-09-10 — repository build caches and disk-pressure guard
+
+Seven owned Codex runtimes exited around 21:13 local time with `No space left on
+device (os error 28)`; the daemon and private tmux server remained alive. Their
+worktrees and transcript paths survived, but failed runtime supervision left
+cleanup unverified, so resume required the existing human acknowledgment. This
+was disk exhaustion, not evidence that seven agents independently quit.
+
+The requested cleanup removed 17 untracked, nonsymlink Cargo `target/` directories
+under this repository's ticket-worktree root (52 GiB reported by `du`). No Rust
+build/test processes were active at inspection. All 17 targets were subsequently
+absent, and free space was 77.7 GiB at cleanup completion. Ticket files, source,
+branches, conversations and the main checkout's target directory were retained.
+
+Prevention is scoped to developing this repository, not product-wide automatic
+cache deletion. `[profile.dev] incremental = false` also applies to the inherited
+test profile; dependency artifacts and line-table backtraces remain. Changed
+workspace crates trade incremental rebuild speed for smaller per-checkout caches.
+On this machine a parent `.cargo/config.toml` under this repository's managed
+`worktrees/` sets `build.incremental = false` for existing branches too, without
+editing those branches. `CARGO_INCREMENTAL=1` explicitly opts back in. Concurrent
+ticket builds retain independent output directories.
+
+`ci/test-run.py` now requires a 5 GiB free-space reserve before launching its
+workload, checks each watched volume every second while it runs and once after
+exit, and reports failure through its existing supervised cleanup path when the
+reserve is breached. It watches the checkout, fixture/audit and Mesimon state
+volumes, plus Cargo's configured output/intermediate directories (including an
+explicit `--target-dir`). It deletes no caches. `--min-free-gib N` changes the
+reserve; `0` disables it. This sampling guard is not a quota: an external writer
+or a sufficiently large burst can still exhaust a disk, and direct Cargo commands
+bypass the runner. Older ticket branches get the runner change when they adopt it.
+
+Seven Python regressions cover reserve boundaries, absent output directories,
+Cargo configuration and explicit output overrides, refusal before process launch,
+and supervised failure/no success stamp when space runs low during execution.
+An actual invocation with an intentionally impossible reserve refused before
+starting the workload. No real disk-filling test is used.
+
+Verification: seven Python regressions passed, plus bounded `cargo ut --
+--test-threads=1` (1,276 passed, the existing real-release-download test ignored;
+six fixture owners cleaned). The first sandboxed run failed socket/process access
+and cleanup; its five inode-verified fixture directories were removed after an
+elevated check proved their processes/listeners absent, retaining the failed audit.
+The elevated parallel unit run hit the existing
+`native_quit_requires_live_listener_not_a_stale_wrapper_socket` assertion; it
+passed in isolation and in the serial unit run. `git diff --check` passed.
+`cargo fmt --all -- --check` found existing formatting differences in
+`execution_policy_e2e.rs`, core `authorize.rs` and core `train.rs`; they were left
+untouched. Full integration/nextest, clippy, Linux and manual TUI gates were not
+run for this repository-tooling change; no daemon replacement was needed.
