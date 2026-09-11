@@ -1778,7 +1778,13 @@ killed and respawned through `Daemon::launch` (the user's exports and PATH; a wo
 gets `MESIMON_TICKET` / `MESIMON_WORKTREE_BRANCH` via `session_vars`, the root's no ticket
 variable). It answers `Response::Attach` and holds the focus token — `Daemon::focus` is
 `Option<Focus>` now, `Session(uuid)` | `Terminal { ticket }`, so a focused session keeps the
-terminal out and the terminal keeps `FocusStart` out — released by `Command::TerminalEnd`; the
+terminal out and the terminal keeps `FocusStart` out — released by `Command::TerminalEnd`, **or
+by the holding CONNECTION dying** (2026-09-11: the token is `FocusHold { what, by }`, a `Weak` on
+the client's writer — the merge train's shape — and `on_client_gone` gives it back, because a
+board killed while it is inside the pane, cmd+W on the window or a crash, never sends the
+`FocusEnd` that comes after a handover it will not return from, and the token stranded for the
+life of the daemon: every later attach answered `another session is focused`. `focus_held()` is
+the one road every reader takes; STALE-MAP "The focus token comes back when its board dies"); the
 tmux status line's leaf reads `terminal`. Both commands are denied to agents. In the TUI the
 attach rides the focus road (`App::focus_target`: GATE first, then the grant, parked as
 `FocusTarget::Terminal` in the slots a session's `FocusTarget::Session(uuid, origin)` uses) and

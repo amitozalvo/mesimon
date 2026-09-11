@@ -7,7 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::os::unix::net::{UnixListener, UnixStream};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Sender};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, Weak};
 use std::time::{Duration, Instant};
 
 use anyhow::{Context, Result};
@@ -42,10 +42,23 @@ const GATE_SESSION: &str = "msmn-gate";
 /// Who holds the exclusive focus token (D22): a ticket's session, or the
 /// project's terminal (T-273) — a named tmux session on the private server
 /// that belongs to no ticket, like the gate's.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Focus {
     Session(uuid::Uuid),
     Terminal { ticket: Option<ulid::Ulid> },
+}
+
+/// The token and the CONNECTION that took it. A board hands it back when its
+/// handover returns (`FocusEnd`/`TerminalEnd`) — but a board KILLED while it
+/// is inside the pane never reaches that line: the terminal window closed
+/// (cmd+W), the process crashed, somebody `kill`ed it. The token would then
+/// strand until the daemon restarted and refuse every later attach with
+/// "another session is focused" — a board that cannot open any of its own
+/// sessions. So the holder is a `Weak` on that client's writer, the merge
+/// train's shape (`train.rs`): the connection dying IS the release.
+struct FocusHold {
+    what: Focus,
+    by: Weak<Mutex<UnixStream>>,
 }
 
 /// The terminal's tmux session name: one per DIRECTORY, so the root's and each
@@ -180,7 +193,7 @@ pub struct Daemon {
     backend: TmuxBackend,
     grace: HashMap<ulid::Ulid, GraceEntry>,
     subscribers: Vec<Arc<Mutex<UnixStream>>>,
-    focus: Option<Focus>,
+    focus: Option<FocusHold>,
     shutting_down: bool,
     /// `daemon.log`: started / stopping / stopped / slow turn (`journal`).
     journal: crate::journal::Journal,
@@ -1244,7 +1257,7 @@ impl Daemon {
             // Same rule as the line above, for the pane the user is inside
             // (T-299). `Board` where nothing is focused: there is no session
             // to name and the command answers `None` anyway.
-            Command::FocusQuiet => match self.focus {
+            Command::FocusQuiet => match self.focus_held() {
                 Some(Focus::Session(id)) => Resource::Session { id },
                 _ => Resource::Board,
             },
@@ -1408,16 +1421,16 @@ impl Daemon {
                 None,
             ),
             Command::KillSession { id } => self.kill_session(id),
-            Command::FocusStart { session } => self.focus_start(session),
+            Command::FocusStart { session } => self.focus_start(session, stream),
             Command::FocusEnd { session } => {
-                if self.focus == Some(Focus::Session(session)) {
+                if self.focus_held() == Some(Focus::Session(session)) {
                     self.focus = None;
                 }
                 Response::Ok
             }
-            Command::OpenTerminal { ticket } => self.open_terminal(ticket),
+            Command::OpenTerminal { ticket } => self.open_terminal(ticket, stream),
             Command::TerminalEnd => {
-                if matches!(self.focus, Some(Focus::Terminal { .. })) {
+                if matches!(self.focus_held(), Some(Focus::Terminal { .. })) {
                     self.focus = None;
                 }
                 Response::Ok
@@ -1782,7 +1795,7 @@ impl Daemon {
     /// away. Only a SESSION attach can answer: the `!` terminal and the gate
     /// are somebody's own shell, and T-292's suppression was never theirs.
     fn focus_quiet(&self) -> Response {
-        let Some(Focus::Session(id)) = self.focus else {
+        let Some(Focus::Session(id)) = self.focus_held() else {
             return Response::FocusQuiet { quiet_ms: None };
         };
         let Some(rec) = self.board.sessions.iter().find(|r| r.id == id) else {
@@ -4811,6 +4824,16 @@ impl Daemon {
     fn on_client_gone(&mut self, stream: &Arc<Mutex<UnixStream>>) {
         self.subscribers.retain(|s| !Arc::ptr_eq(s, stream));
         self.clients.remove(&conn_key(stream));
+        // The board that was inside the pane is gone, however it went: give
+        // the focus token back. Nothing else ever would — `FocusEnd` comes
+        // after a handover this board will not return from.
+        if self
+            .focus
+            .as_ref()
+            .is_some_and(|h| h.by.upgrade().is_some_and(|w| Arc::ptr_eq(&w, stream)))
+        {
+            self.focus = None;
+        }
         if self.train.owned_by(stream) {
             self.train.disarm();
             self.feed.board("automation", "merge_train_disarmed", None);
@@ -7491,9 +7514,16 @@ impl Daemon {
         }
     }
 
-    fn focus_start(&mut self, session: uuid::Uuid) -> Response {
-        if let Some(holder) = &self.focus {
-            if *holder != Focus::Session(session) {
+    /// The token as it stands. A holder whose connection has gone is no
+    /// holder: `on_client_gone` releases it, and this is the second guard —
+    /// a `Weak` that no longer upgrades answers the same way.
+    fn focus_held(&self) -> Option<Focus> {
+        self.focus.as_ref().filter(|h| h.by.strong_count() > 0).map(|h| h.what)
+    }
+
+    fn focus_start(&mut self, session: uuid::Uuid, by: &Arc<Mutex<UnixStream>>) -> Response {
+        if let Some(holder) = self.focus_held() {
+            if holder != Focus::Session(session) {
                 return Response::Err { message: "another session is focused".into() };
             }
         }
@@ -7507,7 +7537,7 @@ impl Daemon {
             // Observe-only: no pane, no hooks, no input (19 §4 tier 2).
             return Response::Err { message: "external session — resume it to take over".into() };
         }
-        self.focus = Some(Focus::Session(session));
+        self.focus = Some(FocusHold { what: Focus::Session(session), by: Arc::downgrade(by) });
         let sid16 = rec.sid16();
         let kind = rec.kind;
         let argv = self.backend.attach_argv(&sid16);
@@ -7540,7 +7570,7 @@ impl Daemon {
     /// flavors) popped out of the reversed bar; tmux chrome is backend-owned
     /// display, not the wire — the daemon still never styles a wire string.
     fn refresh_status_line(&mut self) {
-        let Some(focus) = self.focus.clone() else { return };
+        let Some(focus) = self.focus_held() else { return };
         // The terminal has no session on the board: the breadcrumb names
         // the ticket whose worktree it stands in, or nothing at the root.
         let (focused, terminal_ticket) = match focus {
@@ -7604,10 +7634,14 @@ impl Daemon {
     /// means reused (a `git pull` in flight is never lost; the pane outlives
     /// the TUI and the daemon like every session does); a dead pane (`exit`
     /// typed, `remain-on-exit`) is killed and respawned.
-    fn open_terminal(&mut self, ticket: Option<ulid::Ulid>) -> Response {
+    fn open_terminal(
+        &mut self,
+        ticket: Option<ulid::Ulid>,
+        by: &Arc<Mutex<UnixStream>>,
+    ) -> Response {
         let want = Focus::Terminal { ticket };
-        if let Some(holder) = &self.focus {
-            if *holder != want {
+        if let Some(holder) = self.focus_held() {
+            if holder != want {
                 return Response::Err { message: "another session is focused".into() };
             }
         }
@@ -7638,7 +7672,7 @@ impl Daemon {
                 return Response::Err { message: format!("terminal spawn failed: {e}") };
             }
         }
-        self.focus = Some(want);
+        self.focus = Some(FocusHold { what: want, by: Arc::downgrade(by) });
         self.focus_label = "terminal".to_string();
         self.refresh_status_line();
         Response::Attach { argv: self.backend.attach_argv(&name) }

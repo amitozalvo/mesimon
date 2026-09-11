@@ -9264,3 +9264,30 @@ a queued SessionStart/resource notification could be read before PermissionReque
 was ingested, leaving the immediate snapshot Running. The test now uses a bounded
 state wait after its unprompted-notification assertion, matching the settle check
 later in the same test. Permission state, metadata and automove assertions remain.
+
+## The focus token comes back when its board dies (2026-09-11)
+
+`Daemon::focus` was a bare `Option<Focus>`: the board took it with
+`FocusStart`/`OpenTerminal` and gave it back with `FocusEnd`/`TerminalEnd`,
+which `App::after_handover` sends once the handover RETURNS. A board that
+never returns — cmd+W on the terminal window, a crash, a `kill` — sent
+nothing, and the token stranded for the life of the daemon: every later
+attach, from that board or the next one, answered `another session is
+focused`. Dogfooded from a live board whose private tmux status line still
+read ` mesimon > mesimon > memory issues > CLAUDE.md ` hours after the window
+it named was closed. Restarting the daemon was the only cure, and nothing on
+screen said so.
+
+The token is now `FocusHold { what, by }` — a `Weak` on the client's writer,
+the merge train's shape (`train.rs`), since the train had already answered the
+same question for arming. `on_client_gone` releases a token held by the
+connection that just went, and `focus_held()` is the second guard: a holder
+whose `Weak` no longer upgrades is no holder, and it is the one road every
+reader takes (the refusals, `focus_quiet`, the `Resource` the chokepoint
+names, the status line's breadcrumb). Exclusivity is unchanged while the
+board lives — that is half of `focus_quiet_e2e`'s new test, the other half
+being that dropping the connection is enough.
+
+The stale breadcrumb on the private server is left alone, as a plain
+`FocusEnd` leaves it: nobody is attached to read it, and the next attach
+rewrites it before its pane is on screen.
