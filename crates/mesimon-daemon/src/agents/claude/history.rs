@@ -2,7 +2,7 @@
 //! assistant identity, current-prompt fallback, and post-reply tool activity.
 
 use crate::agents::{AgentActivity, AgentPreview};
-use mesimon_core::adopt::{classify_tail_record, tool_activity, user_prompt, TailEvent};
+use mesimon_core::adopt::{assistant_text, tool_activity, user_prompt};
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
@@ -121,8 +121,15 @@ fn scan_window(path: &Path, len: u64, window: u64) -> Option<Tail> {
             tail.activity.get_or_insert(AgentActivity::Thinking);
             return Some(tail);
         }
-        if let TailEvent::AssistantText { text } = classify_tail_record(&v) {
-            tail.assistant = Some(text);
+        // `adopt::assistant_text`, never `classify_tail_record`: the classifier
+        // answers what STATE a record puts the session in, and the record that
+        // closes a turn — `stop_reason: end_turn`, which is exactly where the
+        // agent's last words live — answers `TurnComplete` there. Reading the
+        // words out of the classifier meant every idle session's peek walked
+        // straight past the reply to the prompt above it and showed the user
+        // their own words back (T-350).
+        if let Some(text) = assistant_text(&v) {
+            tail.assistant = Some(text.to_string());
             tail.assistant_key = v.get("uuid").and_then(serde_json::Value::as_str).map(record_key);
             return Some(tail);
         }
@@ -192,6 +199,33 @@ mod tests {
         let pk = latest_preview(&p).expect("peek");
         assert_eq!(pk.text.as_deref(), Some("latest reply"));
         assert_eq!(pk.activity, None, "the agent spoke last: no step to show");
+        std::fs::remove_dir_all(p.parent().unwrap()).ok();
+    }
+
+    /// The shape every finished turn ends in (Claude Code 2.1.26x): the closing
+    /// assistant record carries `stop_reason: end_turn`, then the stop-hook
+    /// summary, then the latches. T-350: `classify_tail_record` reads that
+    /// record as `TurnComplete` — correct for the state machine, fatal here —
+    /// so the peek walked past the reply and showed the user their own prompt.
+    /// No fixture above carries a `stop_reason`, which is how it shipped.
+    #[test]
+    fn the_closing_reply_of_a_finished_turn_is_the_preview() {
+        let p = tmp("endturn");
+        std::fs::write(
+            &p,
+            format!(
+                "{}{}{}{}",
+                "{\"uuid\":\"p1\",\"type\":\"user\",\"message\":{\"role\":\"user\",\"content\":\"commit\"}}\n",
+                "{\"uuid\":\"u1\",\"type\":\"assistant\",\"timestamp\":\"2026-09-11T11:39:00.203Z\",\"message\":{\"stop_reason\":\"end_turn\",\"content\":[{\"type\":\"text\",\"text\":\"Committed as d5d114e.\"}]}}\n",
+                "{\"uuid\":\"u2\",\"type\":\"system\",\"subtype\":\"stop_hook_summary\",\"timestamp\":\"2026-09-11T11:39:00.500Z\"}\n",
+                "{\"type\":\"last-prompt\",\"lastPrompt\":\"commit\"}\n{\"type\":\"mode\"}\n",
+            ),
+        )
+        .unwrap();
+        let pk = latest_preview(&p).expect("peek");
+        assert_eq!(pk.text.as_deref(), Some("Committed as d5d114e."));
+        assert!(pk.reply_key.is_some(), "a closing reply is a reply, and has a key");
+        assert_eq!(pk.activity, None);
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 

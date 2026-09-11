@@ -9553,3 +9553,58 @@ snapshot does not carry, so full text needs a wire command, a debounce and a
 cancel — docs/07 §10's design — and none of it is needed to find a ticket by
 its title, key, column or tags. Goldens: `search_120x30`,
 `search_open_120x30`, `search_80x24`, `search_no_matches_120x30`.
+
+## The peek reads the words, not the state machine (T-350, 2026-09-11)
+
+Every idle session's card preview and `p` peek showed the **user's own last
+prompt** — `> commit` — instead of the agent's closing reply, for as long as
+the session stayed idle. Reported against T-347's session; it was never about
+that ticket. The transcript was read, in full, and the reply was in the window:
+`latest_preview` walked right past it.
+
+`classify_tail_record` gained a short-circuit on 2026-09-09 (2ce67c8):
+
+```rust
+if matches!(turn_edge(v), TurnEdge::Done(_)) { return TailEvent::TurnComplete; }
+```
+
+That is correct and load-bearing for the attention machine — `AssistantText`
+maps to `Running`, `TurnComplete` to `Idle{EndTurn}`, and a finished turn's
+last record must not read as work in flight. But a finished turn's last record
+is an `assistant` record with `stop_reason: end_turn`, which is **exactly where
+the agent's last words live**. The classifier stopped yielding
+`TailEvent::AssistantText` for it, so `history.rs`'s reverse scan fell through
+to the `user_prompt` above it and rendered `> <prompt>`.
+
+`census.rs` and `recovery.rs` were migrated to `adopt::assistant_text` in that
+same commit — recovery pulls the text out of `TurnComplete`/`ToolInFlight`
+explicitly. `history.rs`, the peek and card-preview reader, was the one caller
+left on the classifier. It now calls `assistant_text` too, which is what that
+function's own doc has always demanded: *display text is independent of
+lifecycle; callers must not use preview selection as a state detector.* The
+rule is now one-directional and worth keeping: **`classify_tail_record` answers
+what state a record puts a session in, and nothing that renders words may ask
+it.**
+
+Two branches widen in principle and neither fires in practice. A record holding
+text *and* a `tool_use` would now show its words beside the step it took
+instead of being skipped as `ToolInFlight`, and an `AskUserQuestion`/
+`ExitPlanMode` record would show the sentence that introduced the choice.
+Measured over 1,583 assistant records in 40 local transcripts: **0 carry both**
+— Claude Code writes text and `tool_use` as separate records (366 text-only,
+1,217 tool-only). So `history.rs`'s `ToolInFlight` branch was extracting text
+from a shape that does not occur, the spoke mark (`reply_key`, T-173) sees no
+new records, and if the shape ever does appear, showing the words beside the
+step is the wanted answer anyway.
+
+It shipped because **no fixture in `history.rs` carried a `stop_reason`** —
+every `reply()` helper writes a bare content array, so the whole suite tested
+only mid-turn records, which still classify as `AssistantText`.
+`the_closing_reply_of_a_finished_turn_is_the_preview` writes the real 2.1.26x
+shape (closing `end_turn` record → `stop_hook_summary` → latches) and fails
+with `Some("> commit")` on the old line. Verified against the live 519-record
+T-347 transcript: `Committed as d5d114e, working tree clean.`, no activity, a
+reply key.
+
+One file, one call. No `Command`, no `Snapshot` field, no key, no schema, no
+golden.
