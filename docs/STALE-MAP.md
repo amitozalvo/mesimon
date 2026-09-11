@@ -9889,3 +9889,61 @@ two-member enrollment are explicit preview limits. Separate broker, terminal Tea
 UX, broader membership/freshness/recovery, both enterprise deployments and security
 review remain launch gates. The passing fixture uses test custody and a fixture
 agent, not native-keychain or production-provider approval.
+
+## T-215 — the Teams relay runs in a container, over TLS
+
+The preview's "same-UID Unix transport" limit recorded in the block above is
+superseded for the service: `team/Dockerfile` and `team/compose.yaml` run the
+relay and its PostgreSQL as containers, and that image is what a self-hosted
+installation deploys. The Unix socket remains, unchanged, for the local
+same-user preview and for the vertical-slice test. `serve` takes `--socket` or
+`--listen` with `--tls-cert`/`--tls-key`, never both.
+
+**Peer UID cannot survive a container boundary, and did not need to.** The Unix
+listener authenticates its caller with `getpeereid`/`SO_PEERCRED`; a client of a
+containerized relay is not a same-host, same-user process. Over TCP the device
+bearer credential is the authenticated principal, which is what `service-server`
+already documented — the socket was never the device identity — and TLS protects
+it in transit. Nothing about authorization changed; one transport simply stopped
+having a local peer to inspect.
+
+**The client pins the server certificate's SHA-256 rather than trusting a CA.**
+A self-hosted install then needs no PKI, and the trust step is one the product
+already asks of people: confirm a fingerprint out of band, exactly as device
+fingerprints are confirmed. Pinning replaces name and chain validation only —
+`PinnedCertificate` still delegates `verify_tls12_signature`/`verify_tls13_signature`
+to the provider, so whoever answers must hold the pinned key, and the fingerprint
+comparison is constant-time. `tls_admits_only_the_pinned_certificate` proves a
+different certificate for the same name is refused.
+
+**PostgreSQL is reached over a Unix socket shared through a volume, not TCP.**
+`Server::connect` admits only a socket or a loopback host because it connects
+with `NoTls`. A compose bridge would have put unencrypted database traffic on a
+virtual network and made that check a formality, so the deployment was shaped to
+keep the guarantee literally true instead of widening the check. PostgreSQL
+publishes no host port.
+
+Two container facts cost a debugging cycle each and are encoded in the files. A
+fresh named volume inherits the ownership and mode of the image directory it
+covers, so `/var/lib/relay/{tls,private,out}` are created and chowned before the
+mount or the relay user cannot write them. And `provision-device --credential-out`
+cannot target a host bind mount, because the relay refuses a credential path whose
+parent it does not own at 0700 and a bind mount carries the host's ownership;
+provisioning output lands in the `relayout` volume and is copied out deliberately.
+The generated certificate lives in a volume because regenerating one invalidates
+every pin a client already confirmed.
+
+`Endpoint` is untagged, so a profile written before this change still loads: a
+bare path deserializes as `Unix`. `tests/tls_relay.rs` is an `#[ignore]`d
+deployment conformance suite that runs against any serving relay — compose,
+self-hosted or managed — so one set of assertions covers every deployment model.
+Verified against the running stack: TLS 1.3, the handshake certificate's SHA-256
+equal to the printed pin, a provisioned credential reading its board, an
+unprovisioned one answered `Denied` rather than dropped, and a wrong pin failing
+the handshake before any credential is sent.
+
+Connections are served one at a time, because the server owns a single writer.
+A slow client delays others for up to its 5 s timeout: bounded, but not
+production admission control. OIDC/PKCE, SCIM, entitlements, certificate rotation
+and independent cryptographic review remain launch gates, and a local compose
+stack is not evidence of a released Internet deployment.
