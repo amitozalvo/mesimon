@@ -25,6 +25,7 @@ pub mod principal;
 pub mod quiet;
 pub mod reconcile;
 pub mod relnotes;
+pub mod search;
 pub mod shellenv;
 pub mod snooze;
 pub mod text;

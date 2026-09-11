@@ -1,0 +1,24 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TODO                          2     IN PROGRESS                  2   2   0
+   ╭─ SEARCH ∙ 2/7 ─────────────────────────────────────────────────────────╮
+   │ › ac                                                                   │D
+   │                                                                        │O
+   │ T-5   Grapheme truncation                                REVIEW        │N
+   │ T-7   Painted accent bar                                 DONE archived │E
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   │                                                                        │
+   ╰──────────── enter go to ticket ∙ ^n ^p select ∙ tab live tickets only ─╯
+
+
+ SEARCH

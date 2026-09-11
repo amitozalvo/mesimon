@@ -11,6 +11,7 @@
                                  │ MOVE AROUND                                        │
                                  │   j         back to the board                      │
                                  │   enter     diff                                   │
+                                 │   /         search                                 │
                                  │   esc       back                                   │
                                  │                                                    │
                                  │ APP                                                │
@@ -18,7 +19,6 @@
                                  │   ^L        redraw                                 │
                                  │   ^Z        suspend mesimon                        │
                                  ╰────────────────────────────────────────────────────╯
-
 
 
 

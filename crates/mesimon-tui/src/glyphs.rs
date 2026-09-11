@@ -540,6 +540,23 @@ pub(crate) fn note_mark(tier: Tier) -> char {
     }
 }
 
+/// The search picker's prompt lead (T-349): the one cell that says "type
+/// here". `>` is the ASCII spelling, and it is also what telescope's own
+/// prompt draws on a terminal without the angle quote.
+///
+/// It spells the same two characters as [`crumb`] and is deliberately NOT
+/// that function. They are two roles that happen to agree today — a step in
+/// a path against a place to type — and each has to be able to move without
+/// dragging the other: `>` for a breadcrumb would not make the prompt an
+/// operator, and `❯` for the prompt would not make a breadcrumb one. Every
+/// mark in this module is named for its role for exactly that reason.
+pub(crate) fn prompt_mark(tier: Tier) -> char {
+    match tier {
+        Tier::Unicode => '\u{203A}',
+        Tier::Ascii => '>',
+    }
+}
+
 /// The session's lowercase state word for the ticket rail (06 §3.2/§3.3:
 /// UPPERCASE ⟺ a human is required — those come from `reason_word`).
 pub(crate) fn state_word(state: &SessionState) -> &'static str {

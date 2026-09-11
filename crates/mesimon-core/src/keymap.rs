@@ -218,6 +218,13 @@ pub enum Scope {
     /// git clause; Enter opens its settings row or diff. The column header is
     /// `Ctx::col_header`, a different place a cursor can be.
     Header,
+    /// The board's search picker (T-349): `/` on the board opens a field
+    /// over a ranked list of every ticket, live cards first and archived
+    /// after them. A text barrier like `Input` — every printable key is
+    /// query — and its own scope rather than `Input`'s because nothing it
+    /// does is saving: Enter goes to a card, `tab` widens or narrows what is
+    /// being searched, and the footer under it must say exactly those.
+    Search,
     /// Scope barrier: owns every key, inherits nothing.
     Input,
     /// The full-screen note editor (a title line over a multi-line markdown
@@ -230,7 +237,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 24] = [
+    pub const ALL: [Scope; 25] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -255,6 +262,7 @@ impl Scope {
         Scope::Input,
         Scope::Editor,
         Scope::DuplicateChord,
+        Scope::Search,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -283,7 +291,8 @@ impl Scope {
             | Scope::SnoozeChord
             | Scope::TagChord
             | Scope::Input
-            | Scope::Editor => None,
+            | Scope::Editor
+            | Scope::Search => None,
         }
     }
 
@@ -311,6 +320,7 @@ impl Scope {
             Scope::Links => "LINKS",
             Scope::ColumnSettings => "COLUMN",
             Scope::Header => "HEADER",
+            Scope::Search => "SEARCH",
             Scope::Input => "INPUT",
             Scope::Editor => "EDIT",
         }
@@ -379,6 +389,15 @@ pub enum Verb {
     Menu,
     ExternalDrawer,
     ArchivedList,
+    /// `/` on the board: the search picker (T-349). The one key that opens
+    /// a text field which names no ticket — what is being typed is a
+    /// question about the board, not a title for it.
+    Search,
+    /// `tab` inside the picker: whether archived tickets are in the list at
+    /// all. They are by default, ranked under every live card; the toggle is
+    /// for the reader who wants the picker to be a picture of the live board
+    /// and nothing else.
+    SearchArchived,
     /// `^k` on the board or the ticket page: the LINKS dialog over the
     /// ticket's notes (T-256). Nothing to list is a status line, never an
     /// empty dialog — the archived list's rule.
@@ -960,6 +979,17 @@ pub struct Ctx {
     /// The subject ticket has an ask waiting (not yet pasted): Shift+Enter
     /// reopens the field on it, and a blank Enter there drops it.
     pub ticket_queued: bool,
+    // ---- search (T-349) ----
+    /// The picker is up. Every binding in its scope is gated on it, so a bare
+    /// `Ctx` hints none of them — the tag picker's `tag_naming` rule.
+    pub searching: bool,
+    /// How many tickets the query currently means. Enter and the motions
+    /// stand down at zero: a picker showing `no matches` offers no row to go
+    /// to, and the footer must not promise one.
+    pub search_hits: usize,
+    /// Archived tickets are in the list (the default). The toggle names
+    /// where the press LEAVES the picker, `t`'s idiom.
+    pub search_archived: bool,
     // ---- tags ----
     /// A tag name is being typed. While true every binding in the tag tail
     /// stands down, so the digits are text and not axis picks.
@@ -1881,6 +1911,30 @@ static BOARD: &[Binding] = &[
         avail: always,
         class: Class::Plain,
         group: Group::View,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        // The one key every reader already owns: vim, less, a browser and
+        // every chat box put a search behind `/`. Unconditional — there is
+        // nothing to select and no repository to have — so it is not a menu
+        // row either (`menu_omits_fetch_and_actions_with_contextual_keys`).
+        //
+        // Overlay-only (`prio: 0`), on two counts. The footer's left cluster
+        // is the SELECTION's — enter, space, `o`, the nudge, rename — and
+        // this key is not about the card under the cursor; and a footer slot
+        // at 120 columns costs another key its place, which here would have
+        // been `tab describe`. Trading a hint nobody can guess for the one
+        // hint everybody already guesses is the wrong way round. `c`, `v`,
+        // `n`, `p`, `a`, `d`, `z` and `^k` sit in the overlay for the same
+        // reason, and `?` is one press away from anywhere.
+        keys: &[Key::Char('/')],
+        verb: Verb::Search,
+        show: "/",
+        hint: |_| "search",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
         mutates: false,
         prio: 0,
     },
@@ -4122,6 +4176,23 @@ static HEADER: &[Binding] = &[
         prio: 20,
     },
     Binding {
+        // The board's search reaches its own top row (T-349). The row is a
+        // cursor position on the board, not a screen, and a reader standing
+        // on the git clause who wants a ticket should not have to walk back
+        // down first — being unable to search from a place you can be
+        // standing is a dead end, and this is the only one `/` would have
+        // left. Overlay-only here for the same reason it is on the board.
+        keys: &[Key::Char('/')],
+        verb: Verb::Search,
+        show: "/",
+        hint: |_| "search",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
         keys: &[Key::Char('q'), Key::Esc],
         verb: Verb::Back,
         show: "esc",
@@ -4374,6 +4445,166 @@ static INPUT: &[Binding] = &[
         avail: always,
         class: Class::Plain,
         group: Group::Ticket,
+        mutates: false,
+        prio: 0,
+    },
+];
+
+/// The search picker (T-349). A text barrier like `Input` and `Editor`: it
+/// owns every key, it inherits nothing, and an atom it does not bind is a
+/// character of the query. What it binds is exactly the four things a picker
+/// does — walk the list, go to a row, widen or narrow what is searched, and
+/// leave — plus the same line-editing atoms every other field here carries,
+/// so a reader's `^w` and `^u` mean what they mean everywhere else.
+///
+/// `jk` cannot be the motion (they are query text), so the list walks on the
+/// arrows and on `^n`/`^p` — telescope's own pair, and every readline list
+/// before it. Everything is gated on `searching`, so a bare `Ctx` hints none
+/// of it and the footer belongs to the picker only while the picker is up.
+static SEARCH: &[Binding] = &[
+    Binding {
+        keys: &[Key::Down, Key::Ctrl('n'), Key::Up, Key::Ctrl('p')],
+        verb: Verb::CursorDown, // placeholder; resolve() re-reads the key
+        show: "^n ^p",
+        hint: |_| "select",
+        avail: |c| c.searching && c.search_hits > 1,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        // Enter is "take me there": the cursor lands on the card and the
+        // board is underneath it again. An ARCHIVED hit has no card to land
+        // on, so it opens the ticket page instead — the archived dialog's
+        // Enter, reached from the picker. The hint says which BEFORE the
+        // press, the board's own Enter rule.
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |_| "go to ticket",
+        avail: |c| c.searching && c.search_hits > 0,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        // The archived half of the list, in or out. It names the
+        // DESTINATION — the workspace toggle's idiom — because the rows
+        // already say which of them are archived.
+        keys: &[Key::Tab],
+        verb: Verb::SearchArchived,
+        show: "tab",
+        hint: |c| {
+            if c.search_archived {
+                "live tickets only"
+            } else {
+                "with archived"
+            }
+        },
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::View,
+        mutates: false,
+        prio: 30,
+    },
+    Binding {
+        keys: &[Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+    Binding {
+        keys: &[Key::Left],
+        verb: Verb::EditLeft,
+        show: "←",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Right],
+        verb: Verb::EditRight,
+        show: "→",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Home, Key::Ctrl('a')],
+        verb: Verb::EditHome,
+        show: "^A",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::End, Key::Ctrl('e')],
+        verb: Verb::EditEnd,
+        show: "^E",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Backspace],
+        verb: Verb::EditBackspace,
+        show: "backspace",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Delete],
+        verb: Verb::EditDelete,
+        show: "delete",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Ctrl('w'), Key::Ctrl('h')],
+        verb: Verb::EditDeleteWord,
+        show: "^W",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
+    Binding {
+        keys: &[Key::Ctrl('u')],
+        verb: Verb::EditKillToStart,
+        show: "^U",
+        hint: |_| "",
+        avail: |c| c.searching,
+        class: Class::Plain,
+        group: Group::Navigate,
         mutates: false,
         prio: 0,
     },
@@ -4697,6 +4928,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         Scope::Links => LINKS,
         Scope::ColumnSettings => COLUMN,
         Scope::Header => HEADER,
+        Scope::Search => SEARCH,
         Scope::Input => INPUT,
         Scope::Editor => EDITOR,
     }
@@ -4734,7 +4966,7 @@ fn directional(verb: Verb, key: Key) -> Verb {
         (Verb::CursorLeft | Verb::CursorRight | Verb::CursorUp | Verb::CursorDown, k) => match k {
             Key::Char('h') | Key::Left => Verb::CursorLeft,
             Key::Char('l') | Key::Right => Verb::CursorRight,
-            Key::Char('k') | Key::Up => Verb::CursorUp,
+            Key::Char('k') | Key::Up | Key::Ctrl('p') => Verb::CursorUp,
             _ => Verb::CursorDown,
         },
         (Verb::TagLeft | Verb::TagRight | Verb::TagUp | Verb::TagDown, k) => match k {
@@ -4965,6 +5197,7 @@ mod tests {
                 Scope::Input => 21,
                 Scope::Editor => 22,
                 Scope::DuplicateChord => 23,
+                Scope::Search => 24,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -6803,6 +7036,7 @@ mod tests {
                 s,
                 Scope::Input
                     | Scope::Move
+                    | Scope::Search
                     | Scope::Editor
                     | Scope::DiffView
                     | Scope::DuplicateChord
@@ -6818,6 +7052,88 @@ mod tests {
     }
 
     /// The footer never crowds out the one hint that finds the others.
+    /// T-349: `/` is the board's, the picker owns every key after it, and
+    /// what it owns is only the four things a picker does. `jk` are query
+    /// text there, which is why the list walks on `^n`/`^p` and the arrows.
+    #[test]
+    fn the_search_picker_is_a_barrier_with_a_pickers_four_keys() {
+        let ctx = Ctx::default();
+        assert_eq!(resolve(Scope::Board, Key::Char('/'), &ctx), Some(Verb::Search));
+        assert_eq!(hint_for(Scope::Board, Verb::Search, &ctx), Some(("/", "search")));
+        // Overlay-only: the footer's left cluster belongs to the selection,
+        // and `/` is not about the card under the cursor.
+        assert!(!footer_items(Scope::Board, &ctx).iter().any(|b| b.verb == Verb::Search));
+        assert!(overlay(Scope::Board, &ctx)
+            .into_iter()
+            .flat_map(|(_, rows)| rows)
+            .any(|(k, hint)| k == "/" && hint == "search"));
+        // And the board's own top row, which is a place a cursor can be
+        // standing (T-305) and would otherwise be the one dead end.
+        assert_eq!(resolve(Scope::Header, Key::Char('/'), &ctx), Some(Verb::Search));
+        // Board-only otherwise: `/` is a question about the board, and the
+        // ticket page is already inside one ticket.
+        assert_eq!(resolve(Scope::Ticket, Key::Char('/'), &ctx), None);
+        assert_eq!(resolve(Scope::Diff, Key::Char('/'), &ctx), None);
+
+        let open = Ctx { searching: true, search_hits: 3, search_archived: true, ..ctx.clone() };
+        for (k, v) in [
+            (Key::Ctrl('n'), Verb::CursorDown),
+            (Key::Down, Verb::CursorDown),
+            (Key::Ctrl('p'), Verb::CursorUp),
+            (Key::Up, Verb::CursorUp),
+            (Key::Enter, Verb::Act),
+            (Key::Tab, Verb::SearchArchived),
+            (Key::Esc, Verb::Back),
+            (Key::Ctrl('w'), Verb::EditDeleteWord),
+            (Key::Ctrl('u'), Verb::EditKillToStart),
+        ] {
+            assert_eq!(resolve(Scope::Search, k, &open), Some(v), "{k:?}");
+        }
+        // Every other atom is a character of the query — the letters the
+        // board steers by, the digits that cycle tags, and `?` itself.
+        for k in [
+            Key::Char('j'),
+            Key::Char('k'),
+            Key::Char('q'),
+            Key::Char('?'),
+            Key::Char('1'),
+            Key::Char('/'),
+            Key::Space,
+            Key::ShiftEnter,
+        ] {
+            assert_eq!(resolve(Scope::Search, k, &open), None, "{k:?}");
+        }
+        assert_eq!(Scope::Search.parent(), None);
+
+        // A hinted key works: with nothing matched there is no row to go to
+        // and no list to walk, and both stand down with their hints.
+        let empty = Ctx { searching: true, search_hits: 0, ..ctx.clone() };
+        assert_eq!(resolve(Scope::Search, Key::Enter, &empty), None);
+        assert_eq!(resolve(Scope::Search, Key::Ctrl('n'), &empty), None);
+        assert_eq!(hint_for(Scope::Search, Verb::Act, &empty), None);
+        // One hit is not a list to walk either, and Enter still goes to it.
+        let one = Ctx { searching: true, search_hits: 1, ..ctx.clone() };
+        assert_eq!(resolve(Scope::Search, Key::Ctrl('n'), &one), None);
+        assert_eq!(resolve(Scope::Search, Key::Enter, &one), Some(Verb::Act));
+        // Esc always leaves, and the archived toggle always toggles: they are
+        // the two keys that must work on an empty query.
+        assert_eq!(resolve(Scope::Search, Key::Esc, &empty), Some(Verb::Back));
+        assert_eq!(resolve(Scope::Search, Key::Tab, &empty), Some(Verb::SearchArchived));
+
+        // The toggle names where the press LEAVES the list.
+        assert_eq!(
+            hint_for(Scope::Search, Verb::SearchArchived, &open),
+            Some(("tab", "live tickets only"))
+        );
+        let live = Ctx { search_archived: false, ..open.clone() };
+        assert_eq!(
+            hint_for(Scope::Search, Verb::SearchArchived, &live),
+            Some(("tab", "with archived"))
+        );
+        // Closed, the scope hints nothing at all.
+        assert!(footer_items(Scope::Search, &ctx).is_empty());
+    }
+
     #[test]
     fn footer_always_keeps_the_help_tail() {
         let ctx = Ctx {

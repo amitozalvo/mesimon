@@ -32,6 +32,11 @@ tracing = "0.1"
 unicode-width = "0.2"
 # 07 §4.1: card truncation is by grapheme cluster, never by char
 unicode-segmentation = "1"
+# T-349: the board's fuzzy search. The matcher behind Helix's picker — fzf's
+# v2 scoring with match indices for highlighting. MPL-2.0, and it adds no
+# transitive dependency the tree did not already carry (memchr,
+# unicode-segmentation).
+nucleo-matcher = "0.3"
 
 [workspace.lints.clippy]
 # D26: silent degradation is banned; unwraps in non-test code are review flags

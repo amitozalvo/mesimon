@@ -283,6 +283,10 @@ pub enum Mode {
         delete_armed: bool,
         from_menu: bool,
     },
+    /// The search picker (T-349): `/` on the board. A mode, not a screen —
+    /// the board stays underneath and Esc puts the reader back on the card
+    /// they left, which is what makes `/` cheap enough to press on a hunch.
+    Search(Search),
     /// The note editor. A mode and not a second slot: it REPLACES the
     /// one-line composer (Tab carries the title over) and never coexists
     /// with a move, a menu or a picker, so `Mode` is where it belongs.
@@ -292,6 +296,56 @@ pub enum Mode {
     /// in view, and it grows out of the phantom card it replaced —
     /// `Editor::grow`); on a note it takes the whole screen.
     Editor(Editor),
+}
+
+/// The search picker's state (T-349): the query, the ranked rows it means,
+/// and the cursor over them.
+///
+/// The hits are recomputed rather than filtered in place — on every keystroke
+/// and on every snapshot — because the board underneath is live: a card can
+/// move, be archived or be deleted while the picker is open, and a list that
+/// went stale is a list that sends `Enter` somewhere the reader did not look.
+/// Ranking a board costs microseconds (`mesimon_core::search`), so there is
+/// nothing to save by being clever.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Search {
+    pub query: EditBuffer,
+    pub hits: Vec<mesimon_core::search::Hit>,
+    /// The row under the cursor. A query EDIT resets it to the best match
+    /// (telescope's rule, and the only one that makes typing feel like
+    /// narrowing); a snapshot underneath keeps it on the same ticket.
+    pub idx: usize,
+    /// Archived tickets are in the list. On by default (user, T-349): they
+    /// rank under every live card, and "where did that ticket go" is the
+    /// question `/` gets asked most.
+    pub archived: bool,
+    /// First visible row, written by the draw and read by the next one —
+    /// the editor's `top`. The picker's height is a fact of the frame, so
+    /// the draw is the only thing that can know it.
+    pub top: Cell<usize>,
+}
+
+impl Search {
+    pub fn new() -> Self {
+        Self {
+            query: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
+            hits: Vec::new(),
+            idx: 0,
+            archived: true,
+            top: Cell::new(0),
+        }
+    }
+
+    /// The ticket the cursor is on, if the list holds one.
+    pub fn selected(&self) -> Option<&mesimon_core::search::Hit> {
+        self.hits.get(self.idx)
+    }
+}
+
+impl Default for Search {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// The note editor's state: a one-line title over a multi-line body.
@@ -881,6 +935,12 @@ pub struct App {
     /// this with it and `P` turning off narrows back to the cursor card.
     pub peek_all: bool,
     pub peek_cache: crate::peek::PeekCache,
+    /// The search picker's matcher (T-349). Minted on the first `/` and kept
+    /// for the life of the board: `nucleo_matcher::Matcher` eagerly allocates
+    /// ~135 KB of scoring matrix, which is cheap once and silly per keystroke
+    /// — and sillier still on every `App` a test builds, which is why it is
+    /// lazy rather than a constructor field.
+    searcher: std::cell::RefCell<Option<mesimon_core::search::Searcher>>,
     /// A quick-tag digit holds the card it tagged open for a moment (the
     /// ticket it landed on, and when). The stripe is one cell at rest and
     /// carries no words — it can say "two tags, these hues" and nothing
@@ -1138,6 +1198,7 @@ impl App {
             peek: false,
             peek_all: false,
             peek_cache: crate::peek::PeekCache::default(),
+            searcher: std::cell::RefCell::new(None),
             tag_flash: None,
             shell_tail: None,
             spoke: std::collections::HashMap::new(),
@@ -1393,6 +1454,11 @@ impl App {
         self.clamp_cursor();
         self.leave_pinned_column(was.as_deref());
         self.clamp_screen();
+        // An open picker is a view of the board, so it re-ranks with it: a
+        // card archived, moved or deleted by an agent while `/` is up must
+        // not leave a row that sends Enter somewhere that is no longer there.
+        // The cursor holds its TICKET across the pass, never its index.
+        self.research(true);
     }
 
     /// A Settings row's sound preview: the ring's cursor IS the preview, the
@@ -2585,6 +2651,7 @@ impl App {
             Mode::Notifications { .. } => Scope::Notifications,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
+            Mode::Search(_) => Scope::Search,
             // Naming a column IS a text field (the tag picker's rule), and
             // saying so is what puts `enter save ∙ esc cancel` in the edge.
             Mode::ColumnSettings { naming: Some(_), .. } => Scope::Input,
@@ -2627,6 +2694,13 @@ impl App {
         // The column the dialog is on, else the cursor's (T-117).
         let col = self.dialog_column().or_else(|| self.cursor_column());
         let cs = col.map(|c| c.settings.clone()).unwrap_or_default();
+        // The picker, when it is up: how many rows it has and which half of
+        // the board it is over. Every `Scope::Search` binding gates on
+        // `searching`, so a bare `Ctx` hints none of them.
+        let search = match &self.mode {
+            Mode::Search(s) => Some(s),
+            _ => None,
+        };
         let (col_new, col_delete_armed, col_sort_word) = match &self.mode {
             Mode::ColumnSettings { subject, delete_armed, sort, .. } => {
                 (matches!(subject, ColumnSubject::New { .. }), *delete_armed, sort.word())
@@ -2664,6 +2738,9 @@ impl App {
                 _ => "undo delete",
             },
             can_nudge: self.can_nudge(),
+            searching: search.is_some(),
+            search_hits: search.map_or(0, |s| s.hits.len()),
+            search_archived: search.is_some_and(|s| s.archived),
             col_header: self.on_column_header(),
             col_name: col.map(|c| c.name.clone()).unwrap_or_default(),
             col_new,
@@ -2961,6 +3038,11 @@ impl App {
         }
         if let Mode::Editor(_) = self.mode {
             return self.key_editor(code, mods);
+        }
+        // The picker is a text barrier too: every key it does not bind is a
+        // character of the query, `?` and `q` included.
+        if let Mode::Search(_) = self.mode {
+            return self.key_search(code, mods);
         }
         if let Mode::ColumnSettings { naming: Some(_), .. } = self.mode {
             return self.key_column_name(code, mods);
@@ -3952,6 +4034,17 @@ impl App {
                     return self.set_ticket_workspace(ticket);
                 }
             }
+            // ---- search (T-349) ---------------------------------------------
+            Verb::Search => {
+                self.mode = Mode::Search(Search::new());
+                // Open on the whole board: an empty query matches everything
+                // at score 0, so the first frame is the list the reader is
+                // about to narrow rather than an empty box.
+                self.research(false);
+            }
+            // The picker is a barrier, so `key_search` answers this one and
+            // dispatch never sees it.
+            Verb::SearchArchived => {}
             // ---- input (handled in key_input; unreachable here) -------------
             Verb::Save
             | Verb::SaveStart
@@ -5025,6 +5118,128 @@ impl App {
         }
         self.mode = Mode::Input { purpose, buffer };
         Ok(())
+    }
+
+    /// The search picker (T-349). A barrier like `key_input` and
+    /// `key_editor`: the mode is taken out for the `Ctx` lookup and put back,
+    /// and every atom the keymap does not bind is a character of the query.
+    fn key_search(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        let word = crate::keys::word_wise(mods);
+        let key = crate::keys::to_key_text(code, mods);
+        // The ctx reads the picker off `self.mode`, so the lookup happens
+        // with it still installed.
+        let ctx = self.ctx();
+        let verb = key.and_then(|k| keymap::resolve(Scope::Search, k, &ctx));
+        let Mode::Search(mut s) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return Ok(());
+        };
+        // A press that changed the query or what is searched re-ranks; one
+        // that only moved the cursor does not.
+        let mut requery = false;
+        match verb {
+            Some(Verb::Back) => return Ok(()),
+            Some(Verb::Act) => {
+                let pick = s.selected().map(|h| (h.id, h.archived));
+                let Some((id, archived)) = pick else { return Ok(()) };
+                if archived {
+                    // An archived ticket has no card to put a cursor on. Its
+                    // page is where it is read — the archived dialog's Enter,
+                    // reached from the picker instead.
+                    self.screen = Screen::Ticket { ticket: id, rail_idx: 0 };
+                } else {
+                    self.select_ticket(id);
+                    // Land on the CARD, never on the column header above it:
+                    // the picker was asked for a ticket.
+                    self.header_focus = false;
+                }
+                return Ok(());
+            }
+            // The list wraps: it is a box of rows, not a document, and
+            // stopping at the end of a short list is a press that does
+            // nothing.
+            Some(Verb::CursorDown) if !s.hits.is_empty() => {
+                s.idx = (s.idx + 1) % s.hits.len();
+            }
+            Some(Verb::CursorUp) if !s.hits.is_empty() => {
+                s.idx = (s.idx + s.hits.len() - 1) % s.hits.len();
+            }
+            Some(Verb::SearchArchived) => {
+                s.archived = !s.archived;
+                requery = true;
+            }
+            Some(Verb::EditBackspace) if word => {
+                s.query.delete_word_back();
+                requery = true;
+            }
+            Some(Verb::EditBackspace) => {
+                s.query.backspace();
+                requery = true;
+            }
+            Some(Verb::EditDeleteWord) => {
+                s.query.delete_word_back();
+                requery = true;
+            }
+            Some(Verb::EditKillToStart) => {
+                s.query.kill_to_start();
+                requery = true;
+            }
+            Some(Verb::EditDelete) => {
+                s.query.delete();
+                requery = true;
+            }
+            Some(Verb::EditLeft) if word => s.query.word_left(),
+            Some(Verb::EditLeft) => s.query.left(),
+            Some(Verb::EditRight) if word => s.query.word_right(),
+            Some(Verb::EditRight) => s.query.right(),
+            Some(Verb::EditHome) => s.query.home(),
+            Some(Verb::EditEnd) => s.query.end(),
+            _ => match code {
+                // An unhandled chord must never type its letter.
+                KeyCode::Char(_) if word => {}
+                KeyCode::Char(c) => {
+                    s.query.insert(c);
+                    requery = true;
+                }
+                _ => {}
+            },
+        }
+        self.mode = Mode::Search(s);
+        if requery {
+            // A narrower query means a different best match, so the cursor
+            // goes back to the top — telescope's rule, and the one that makes
+            // typing read as narrowing rather than as scrolling.
+            self.research(false);
+        }
+        Ok(())
+    }
+
+    /// Re-rank the picker against the board as it stands.
+    ///
+    /// `keep` holds the cursor on the SAME TICKET across the pass, which is
+    /// what a snapshot arriving under an open picker wants (07 §11.1: the
+    /// cursor is a ULID, never an index). A query edit passes false and lands
+    /// on the best match.
+    pub(crate) fn research(&mut self, keep: bool) {
+        // Guarded BEFORE the take: `absorb` calls this on every snapshot, and
+        // a take that put nothing back closed whatever dialog was open (a
+        // column settings dialog, mid-sort, is how this was found).
+        if !matches!(self.mode, Mode::Search(_)) {
+            return;
+        }
+        let Mode::Search(mut s) = std::mem::replace(&mut self.mode, Mode::Normal) else {
+            return;
+        };
+        let held = keep.then(|| s.selected().map(|h| h.id)).flatten();
+        s.hits = {
+            let mut cell = self.searcher.borrow_mut();
+            let searcher = cell.get_or_insert_with(mesimon_core::search::Searcher::new);
+            searcher.rank(&self.board, s.query.as_str(), s.archived)
+        };
+        s.idx = held
+            .and_then(|id| s.hits.iter().position(|h| h.id == id))
+            .unwrap_or(0)
+            .min(s.hits.len().saturating_sub(1));
+        self.mode = Mode::Search(s);
     }
 
     /// The editor. A barrier like `key_input`; the mode is TAKEN rather than
@@ -8940,6 +9155,201 @@ mod tests {
 
     fn press(app: &mut App, c: char) {
         app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+    }
+
+    // ---- the search picker (T-349) ---------------------------------------
+
+    fn search(app: &App) -> &Search {
+        match &app.mode {
+            Mode::Search(s) => s,
+            other => panic!("the picker is not open: {other:?}"),
+        }
+    }
+
+    fn typed(app: &mut App, text: &str) {
+        for c in text.chars() {
+            press(app, c);
+        }
+    }
+
+    /// A board whose titles are worth searching, with one ticket archived.
+    fn app_searchable() -> App {
+        let mut b = board_three_columns();
+        b.tickets[0].title = "Fix auth redirect".into();
+        b.tickets[1].title = "Login page copy".into();
+        b.tickets[2].title = "Auth middleware".into();
+        b.tickets[2].archived = Some(mesimon_core::board::Archived {
+            at: "@100".into(),
+            by: "local".into(),
+            until: None,
+            needs_you: false,
+        });
+        App::for_test(b, theme())
+    }
+
+    #[test]
+    fn slash_opens_the_picker_on_the_whole_board() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        assert_eq!(app.scope(), Scope::Search);
+        // Open on everything: an empty query is the board's own list, live
+        // cards first and the archived one under them.
+        let keys: Vec<&str> = search(&app).hits.iter().map(|h| h.key.text.as_str()).collect();
+        assert_eq!(keys, ["T-1", "T-2", "T-3"]);
+        assert_eq!(search(&app).idx, 0);
+        assert!(search(&app).archived, "archived tickets are in by default");
+    }
+
+    #[test]
+    fn the_picker_is_a_text_field_and_every_board_key_is_query() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        // `j`, `q` and `?` steer the board, cycle tags and open the help
+        // everywhere else; here they are characters.
+        typed(&mut app, "j1q?");
+        assert_eq!(search(&app).query.as_str(), "j1q?");
+        assert!(!app.help, "`?` in a field is a question mark");
+        assert!(!app.quit, "`q` in a field is a letter");
+        // And the editing atoms are the ones every other field here has.
+        app.handle_key(KeyCode::Backspace, KeyModifiers::NONE).unwrap();
+        assert_eq!(search(&app).query.as_str(), "j1q");
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(search(&app).query.as_str(), "");
+    }
+
+    #[test]
+    fn typing_narrows_and_puts_the_cursor_back_on_the_best_match() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        // Walk off the top first: a query EDIT must not leave the cursor
+        // pointing at a row that is no longer the answer.
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(search(&app).idx, 1);
+        typed(&mut app, "auth");
+        let keys: Vec<&str> = search(&app).hits.iter().map(|h| h.key.text.as_str()).collect();
+        assert_eq!(keys, ["T-1", "T-3"], "the live card ranks above the archived one");
+        assert_eq!(search(&app).idx, 0);
+        // The highlight is on characters the reader can SEE in the row.
+        let hit = search(&app).selected().expect("a hit");
+        assert_eq!(hit.title.text, "Fix auth redirect");
+        assert_eq!(hit.title.matched, vec![4, 5, 6, 7]);
+    }
+
+    #[test]
+    fn the_list_walks_on_ctrl_n_and_wraps() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        for want in [1usize, 2, 0] {
+            app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+            assert_eq!(search(&app).idx, want);
+        }
+        app.handle_key(KeyCode::Char('p'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(search(&app).idx, 2, "and the other way round the same ring");
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        assert_eq!(search(&app).idx, 1, "the arrows are the same binding");
+    }
+
+    #[test]
+    fn enter_puts_the_board_cursor_on_the_card_and_closes() {
+        let mut app = app_searchable();
+        // Somewhere else entirely, and on a column header, so the press has
+        // to move both axes.
+        app.cursor_col = 0;
+        app.cursor_row = None;
+        app.header_focus = true;
+        press(&mut app, '/');
+        typed(&mut app, "login");
+        assert_eq!(search(&app).selected().expect("a hit").key.text, "T-2");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal), "the picker closes behind the jump");
+        assert!(matches!(app.screen, Screen::Board), "and lands on the BOARD");
+        assert!(!app.header_focus, "on the card, never the header over it");
+        assert_eq!(app.subject(), Some(ulid::Ulid(2)));
+    }
+
+    #[test]
+    fn enter_on_an_archived_hit_opens_its_page_instead() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        typed(&mut app, "middleware");
+        let hit = search(&app).selected().expect("a hit");
+        assert!(hit.archived, "T-3 is off the board");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        // There is no card to put a cursor on, so the ticket's own page is
+        // where it is read — the archived dialog's Enter, from here.
+        assert!(matches!(app.screen, Screen::Ticket { ticket, .. } if ticket == ulid::Ulid(3)));
+        assert!(matches!(app.mode, Mode::Normal));
+    }
+
+    #[test]
+    fn tab_drops_the_archived_half_and_says_so() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        typed(&mut app, "auth");
+        assert_eq!(search(&app).hits.len(), 2);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(!search(&app).archived);
+        assert_eq!(search(&app).hits.len(), 1, "the archived hit is gone, the query is not");
+        assert_eq!(search(&app).query.as_str(), "auth");
+        let ctx = app.ctx();
+        assert_eq!(
+            keymap::hint_for(Scope::Search, Verb::SearchArchived, &ctx),
+            Some(("tab", "with archived")),
+            "and the key now names the way back",
+        );
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(search(&app).hits.len(), 2);
+    }
+
+    #[test]
+    fn esc_closes_the_picker_and_leaves_the_board_where_it_was() {
+        let mut app = app_searchable();
+        app.cursor_col = 2;
+        press(&mut app, '/');
+        typed(&mut app, "auth");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Normal));
+        assert_eq!(app.cursor_col, 2, "the picker moved nothing on its way in or out");
+        assert_eq!(app.scope(), Scope::Board);
+    }
+
+    /// A board that changes under an open picker: an agent archives the
+    /// ticket the cursor is on. The list re-ranks with the snapshot, and the
+    /// cursor holds its TICKET rather than its index (07 §11.1).
+    #[test]
+    fn a_snapshot_re_ranks_the_open_picker_and_keeps_the_cursor_on_its_ticket() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        app.handle_key(KeyCode::Char('n'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(search(&app).selected().expect("a hit").key.text, "T-2");
+        let mut board = app.board.clone();
+        board.tickets.insert(0, ticket(9, "todo", "aa"));
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert_eq!(search(&app).hits.len(), 4, "the new card is in the list");
+        assert_eq!(
+            search(&app).selected().expect("a hit").key.text,
+            "T-2",
+            "and the cursor did not slide onto its neighbour",
+        );
+    }
+
+    #[test]
+    fn a_query_nothing_matches_keeps_the_field_and_offers_no_row() {
+        let mut app = app_searchable();
+        press(&mut app, '/');
+        typed(&mut app, "zzzz");
+        assert!(search(&app).hits.is_empty());
+        let ctx = app.ctx();
+        // A hinted key works: with no row there is nothing for Enter to do,
+        // and it is unhinted with it.
+        assert_eq!(keymap::resolve(Scope::Search, keymap::Key::Enter, &ctx), None);
+        assert_eq!(keymap::hint_for(Scope::Search, Verb::Act, &ctx), None);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Search(_)), "and the press does not close it");
+        // Backspacing back into a match brings the list back.
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        typed(&mut app, "auth");
+        assert_eq!(search(&app).hits.len(), 2);
     }
 
     fn sent_contains(sent: &std::cell::RefCell<Vec<String>>, needle: &str) -> bool {

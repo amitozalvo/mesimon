@@ -14,6 +14,7 @@ mod editor;
 mod help;
 mod menu;
 mod releases;
+mod search;
 mod tagpicker;
 #[cfg(test)]
 mod tests;
@@ -186,6 +187,14 @@ pub fn draw(f: &mut Frame, app: &App) {
     }
     if let Mode::Theme { idx } = &app.mode {
         themes::draw(f, app, *idx);
+    }
+    // The search picker, over the board it is a view of (T-349). Last of the
+    // dialogs and before the overlay: it is the biggest surface here, and
+    // nothing else may be open at the same time.
+    if let Mode::Search(s) = &app.mode {
+        if let Some((x, y)) = search::draw(f, app, s) {
+            f.set_cursor_position((x.min(f.area().width.saturating_sub(1)), y));
+        }
     }
     // The overlay is the last thing drawn on every screen: it answers a
     // question about whatever is underneath it.

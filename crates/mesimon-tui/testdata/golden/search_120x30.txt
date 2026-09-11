@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
+
+    ╭─ SEARCH ∙ 2/7 ───────────────────────────────────────────────────────────╮╭─ T-5 ────────────────────────────╮
+    │ › ac                                                                     ││   ✓ Grapheme truncation      >1y │
+    │                                                                          ││                                  │
+    │ T-5   Grapheme truncation                                  REVIEW        ││ REVIEW for >1y                   │
+    │ T-7   Painted accent bar                                   DONE archived ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    ╰── enter go to ticket ∙ ^n ^p select ∙ tab live tickets only ∙ esc close ─╯╰──────────────────────────────────╯
+
+
+
+ SEARCH

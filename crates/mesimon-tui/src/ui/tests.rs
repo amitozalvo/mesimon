@@ -5163,6 +5163,18 @@ fn test_no_banned_sgr() {
                 cells(&p, 120, 30)
             },
             {
+                // The search picker (T-349): new vocabulary on a new surface
+                // — a prompt, painted highlight runs, and a whole card
+                // rendered inside a second frame.
+                let sp =
+                    searching(App::for_test(fixture_archived(), Theme::new(flavor, profile)), "ac");
+                assert!(
+                    render(&sp, 120, 30).iter().any(|l| l.contains("SEARCH ∙ 2/7")),
+                    "the picker must be ON SCREEN, or this law does not bite"
+                );
+                cells(&sp, 120, 30)
+            },
+            {
                 // The note editor, holding pane-grade dirt pasted in.
                 let mut e = App::for_test(fixture(false), Theme::new(flavor, profile));
                 let mut ed = editor_on(
@@ -5359,6 +5371,20 @@ fn test_no_drawn_structure() {
                 lines.iter().any(|l| l.contains("this build")),
                 "the notes must be ON SCREEN, or this law does not bite"
             );
+            lines
+        },
+        {
+            // The picker draws TWO frames — the list and the preview beside
+            // it — and every box glyph on either must be a recorded
+            // perimeter, which is the whole reason it uses `dialog::frame`
+            // rather than a rule of its own.
+            let sp = searching(app_graphite(fixture_archived()), "ac");
+            let lines = sweep(&sp);
+            assert!(
+                lines.iter().any(|l| l.contains("SEARCH ∙ 2/7")),
+                "the picker must be ON SCREEN, or this law does not bite"
+            );
+            assert_eq!(sp.frames.borrow().len(), 2, "both panes are recorded frames");
             lines
         },
         // The tag picker, open and mid-rename. It was NOT covered here, and
@@ -6317,4 +6343,142 @@ fn test_git_clause_never_says_one_repo() {
     let head = &render(&app, 120, 30)[0];
     assert!(head.contains("⎇ main ↑2 ∙ 3 changed"), "{head:?}");
     assert!(!head.contains("repo"), "{head:?}");
+}
+
+// ---- the search picker (T-349) ------------------------------------------
+
+use ratatui::crossterm::event as key;
+
+/// Open the picker and type `q` into it.
+fn searching(mut app: App, query: &str) -> App {
+    app.handle_key(key::KeyCode::Char('/'), key::KeyModifiers::NONE).expect("open");
+    for c in query.chars() {
+        app.handle_key(key::KeyCode::Char(c), key::KeyModifiers::NONE).expect("type");
+    }
+    app
+}
+
+/// The picker over a board: the query, the ranked rows with the matched
+/// characters lifted onto the value ramp, and the cursor row's own card in
+/// the frame beside it. T-7 is archived, so the list also shows the tier —
+/// a live card first, the archived one under it with the word that says so.
+#[test]
+fn golden_search_120() {
+    let app = searching(app_graphite(fixture_archived()), "ac");
+    golden("search_120x30", &render(&app, 120, 30));
+}
+
+/// The same picker with nothing typed: the whole board, live cards in board
+/// order and the archived one last, which is what `/` opens on.
+#[test]
+fn golden_search_open_120() {
+    let app = searching(app_graphite(fixture_archived()), "");
+    golden("search_open_120x30", &render(&app, 120, 30));
+}
+
+/// Narrow: the preview goes rather than being squeezed, and the frame's
+/// bottom edge drops keys from the end the way every other footer does.
+#[test]
+fn golden_search_narrow_80() {
+    let app = searching(app_graphite(fixture_archived()), "ac");
+    golden("search_80x24", &render(&app, 80, 24));
+}
+
+/// A query nothing matches says so in a sentence, and names the half of the
+/// board it did not look in when that is the reason.
+#[test]
+fn golden_search_empty_120() {
+    let mut app = searching(app_graphite(fixture_archived()), "zzzz");
+    assert!(render(&app, 120, 30).iter().any(|l| l.contains("no matches on this board")));
+    app.handle_key(key::KeyCode::Tab, key::KeyModifiers::NONE).expect("tab");
+    golden("search_no_matches_120x30", &render(&app, 120, 30));
+}
+
+/// The highlight is the value ramp and nothing else: the matched characters
+/// come up to `base` and go bold, their neighbours sit at `dim1`, and the
+/// saturated colour never appears — it is needs-you's and nothing else's.
+#[test]
+fn search_highlights_on_the_value_ramp_and_never_on_the_attn_colour() {
+    let theme = Theme::new(Flavor::Graphite, Profile::TrueColor);
+    let app = searching(App::for_test(fixture_archived(), theme), "decay");
+    let buf = cells(&app, 120, 30);
+    let theme = &app.theme;
+    // The LIST row, not the preview's copy of the same title: the frame the
+    // draw recorded says where the list pane is, so the sweep cannot wander
+    // into the pane beside it.
+    let pane = app.frames.borrow()[0];
+    let row = lines_of(&buf)
+        .iter()
+        .position(|l| l.contains("T-1") && l.contains("Decay treatments"))
+        .expect("the hit is on screen") as u16;
+    let mut lit = 0usize;
+    let mut rest = 0usize;
+    for x in pane.x + 1..pane.x + pane.width - 1 {
+        let cell = &buf[(x, row)];
+        assert_ne!(cell.fg, theme.attn, "the saturated colour is needs-you's alone");
+        if cell.symbol().trim().is_empty() {
+            continue;
+        }
+        if cell.modifier.contains(Modifier::BOLD) {
+            assert_eq!(cell.fg, theme.sel.base, "a matched cell is the ramp's top");
+            lit += 1;
+        } else if cell.fg == theme.sel.dim1 {
+            rest += 1;
+        }
+    }
+    // `decay` lands on five characters of the title and nothing else; the
+    // rest of the title is the step below.
+    assert_eq!(lit, 5, "exactly the matched characters are lifted");
+    assert!(rest > 0, "and the rest of the row is a step down from them");
+}
+
+/// A list longer than the pane: the window follows the cursor rather than the
+/// other way round, so `^n` at the bottom edge scrolls by exactly one and the
+/// selected row is never off screen. The off-by-one here is the whole reason
+/// this is a render test and not a state one — `top` is written by the draw,
+/// because only the draw knows how tall the pane is.
+#[test]
+fn the_search_list_scrolls_by_one_to_keep_the_cursor_on_screen() {
+    const N: usize = 40;
+    let mut board = fixture(false);
+    for n in 0..N {
+        let key = 20 + n as u128;
+        board.tickets.push(ticket(key, &format!("T-{key}"), &format!("Zebra {key}"), "todo", "z"));
+    }
+    // A query no fixture ticket answers, so the list is exactly these rows.
+    let mut app = searching(app_graphite(board), "zebra");
+    // The LIST's rows: the preview draws the cursor row's title too, and only
+    // a list row carries the ticket's key beside it.
+    fn rows(app: &App) -> Vec<String> {
+        render(app, 120, 30)
+            .into_iter()
+            .filter(|l| l.contains("Zebra ") && l.contains("T-"))
+            .collect()
+    }
+    let down = |app: &mut App| {
+        app.handle_key(key::KeyCode::Char('n'), key::KeyModifiers::CONTROL).expect("down");
+    };
+    let visible = rows(&app).len();
+    assert!(visible < N, "the fixture must be taller than the pane, or this proves nothing");
+    assert!(rows(&app)[0].contains("Zebra 20"), "{:?}", rows(&app));
+
+    // Walk to the last visible row: nothing has scrolled yet.
+    for _ in 0..visible - 1 {
+        down(&mut app);
+    }
+    assert!(rows(&app)[0].contains("Zebra 20"), "{:?}", rows(&app));
+    // One more, and the window steps by exactly one.
+    down(&mut app);
+    let shown = rows(&app);
+    assert!(shown[0].contains("Zebra 21"), "{shown:?}");
+    assert_eq!(shown.len(), visible, "the pane did not change size");
+
+    // On to the last hit, then one more, which wraps the ring and the window
+    // with it.
+    for _ in 0..N - 1 - visible {
+        down(&mut app);
+    }
+    assert!(rows(&app).last().expect("a row").contains(&format!("Zebra {}", 19 + N)));
+    down(&mut app);
+    assert!(rows(&app)[0].contains("Zebra 20"), "{:?}", rows(&app));
 }

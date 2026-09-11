@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
+
+    ╭─ SEARCH ∙ 0/6 ───────────────────────────────────────────────────────────────────────────────────────────────╮
+    │ › zzzz                                                                                                       │
+    │                                                                                                              │
+    │ no matches among the live tickets ∙ tab looks in the archive too                                             │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    │                                                                                                              │
+    ╰────────────────────────────────────────────────────────────────────────────── tab with archived ∙ esc close ─╯
+
+
+
+ SEARCH

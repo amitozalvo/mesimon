@@ -9445,3 +9445,111 @@ Goldens: `diff_checkout_120x30` (now sampled and diverged, so the shipped
 shape is what is minted), `git_commits_120x30`, `git_commits_60x30` — the row
 gains the clause and the footer loses the hint in all three. Nothing else
 moved: no `Command`, no `Snapshot` field, no `Ctx` field, no key, no schema.
+
+## Board search — the picker behind `/` (T-349, 2026-09-11)
+
+`/` on the board opens a ranked fuzzy picker over every ticket, live cards
+first and archived ones under them. Telescope's shape, mesimon's register.
+
+**The matcher is `nucleo-matcher` (MPL-2.0), not ours** — the engine behind
+Helix's picker, chosen over writing one because the part that is hard is not
+the greedy forward match, it is fzf's v2 scoring and the match *indices* that
+make a highlight honest. It adds **no transitive dependency the tree did not
+already carry** (`memchr`, `unicode-segmentation`), and `Pattern::parse`
+brings fzf's query grammar with it for free: space-separated words are ANDed,
+`'foo` is a literal substring, `^foo`/`foo$` anchor, `!foo` excludes. The
+licence was the author's call, taken over MIT `fuzzy-matcher` (unmaintained
+since 2020, and one new transitive dep) and over a hand-rolled fzf-v1.
+MPL-2.0 is file-level: it binds nucleo's own files and reaches neither
+mesimon's code nor the `team/` tier.
+
+**The row IS the haystack.** A hit is scored against the exact text the picker
+draws — `T-3 Fix auth redirect REVIEW FEATURE archived` — and the indices are
+split back over the three fields at the joins. So every highlighted character
+is one the reader can see, there is no hidden field that explains why a card
+matched, and the column, the tags and the words `archived`/`snoozed` become
+filters with no grammar to learn: typing `review feature` narrows to exactly
+that. The column is uppercased into the trail so the row says it the way the
+board does; smart case keeps `todo` matching `TODO`.
+
+**Archived tickets are a TIER, not a penalty** (user's call): every live card
+outranks every archived one, whatever the score says. A penalty makes "where
+did that ticket go" a question about weights whose answer is "keep scrolling".
+`tab` drops the archived half entirely and the title's `3/47` moves with it,
+which is the readout that makes the toggle legible without a chip.
+
+**No index, no debounce, no wire.** The whole board rides the snapshot,
+archived tickets included, so ranking is client-side and synchronous.
+`how_long_a_big_board_takes` (ignored; `--ignored` runs it) measures a debug
+build over 500 tickets: 0.8 ms empty, 1.0 ms one word, 3.1 ms three. That
+budget is what pays for re-ranking on every keystroke instead of filtering the
+last result — a filter cannot recover a hit the previous keystroke dropped —
+and again on every snapshot, so a card an agent archives under an open picker
+cannot leave a row that sends Enter somewhere that is no longer there. The
+cursor holds its **ULID** across a snapshot and resets to the best match on a
+query edit (telescope's rule: typing is narrowing, not scrolling).
+
+**`Scope::Search` is a text barrier** — `j`, `q`, `?` and the tag digits are
+all query — with a picker's four keys: `^n`/`^p` and the arrows walk (and
+wrap), Enter goes to the row, `tab` toggles the archived half, Esc closes.
+`^n`/`^p` because `jk` are text; `Key::Ctrl('p')` joined `directional()`.
+Enter puts the **board cursor** on a live card and closes; an archived hit has
+no card to land on, so it opens the ticket page, which is the archived
+dialog's own Enter reached from here.
+
+`/` is bound on `Scope::Board` and on `Scope::Header` (the board's top row —
+the only place a cursor can stand where it would otherwise be inert), and it
+is **overlay-only** in both. Twice argued: the footer's left cluster is the
+selection's and this key is not about the card under the cursor, and a slot at
+120 columns costs another key its place — which would have been `tab
+describe`. Trading a hint nobody can guess for the one hint everybody already
+guesses is the wrong way round; `c`, `v`, `n`, `p`, `a`, `d`, `z` and `^k` sit
+in the overlay on the same argument. It is not a menu row either, by
+`menu_omits_fetch_and_actions_with_contextual_keys`.
+
+**Two frames, and the preview is a card.** L1 admits a box glyph only on a
+recorded `dialog::frame` perimeter, so the list and the preview are two frames
+side by side (telescope draws three) rather than one surface with a rule
+through it. The preview renders the real `card::render`, opened, plus the
+column and time-in-column line and the ticket's note names — the board's own
+vocabulary, nothing invented. Under 94 outer columns the preview goes rather
+than being squeezed. The surface height is FIXED: one that followed the list
+would move rows under the finger typing at them.
+
+**Highlighting is the value ramp, never a colour.** The one saturated colour
+is needs-you's (L2/L3), so matched characters come up to `base` and go bold
+while their neighbours sit at `dim1`; on mono and 8-colour the ramp collapses
+and the bold carries it alone.
+`search_highlights_on_the_value_ramp_and_never_on_the_attn_colour` holds it,
+and the picker is swept by both `test_no_banned_sgr` and
+`test_no_drawn_structure`.
+
+Trap found on the way in: `App::research` took the mode out with
+`std::mem::replace` and returned early when it was not a picker, which closed
+whatever dialog was open on the next snapshot (a column-settings dialog,
+mid-sort, is how it surfaced). It guards before the take now.
+
+The other one is `truncate`'s `~`. A row cut to its column ends in that
+marker, and it is not part of the haystack: lighting it would be a highlight
+naming a character the reader cannot see. `painted` counts how many of the
+original characters the cut string still carries and stops there. What makes
+the rest of the alignment safe is that nucleo indexes CHARACTERS while
+`truncate` cuts GRAPHEMES — and a grapheme prefix is a character prefix, so
+the indices line up for the whole of what is drawn.
+`the_truncation_marker_is_never_lit` is a unit test on `painted` rather than a
+render test on purpose: a render test would have to guess the pane geometry
+that puts a match exactly at the cut.
+
+Rebased onto T-348 (`›` as the breadcrumb separator, the same day). The two
+commits each added a U+203A helper to `glyphs.rs` — `crumb` for a path step,
+`prompt_mark` for the picker's prompt — and they stay two functions. They are
+two roles that happen to agree today, and each has to be able to move without
+dragging the other; every mark in that module is named for its role for the
+same reason. The four search goldens carry the header row, so they moved with
+the other 117.
+
+Not done, deliberately: note BODIES are not searched. They are files the
+snapshot does not carry, so full text needs a wire command, a debounce and a
+cancel — docs/07 §10's design — and none of it is needed to find a ticket by
+its title, key, column or tags. Goldens: `search_120x30`,
+`search_open_120x30`, `search_80x24`, `search_no_matches_120x30`.

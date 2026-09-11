@@ -123,8 +123,9 @@ here.**
 1. `core/src/keymap.rs`: a `Binding` in that scope's list (keys, `avail` over `Ctx`, `hint`,
    `mutates`) and a `Verb`. A fact `Ctx` lacks is a field on it — `Ctx` derives `Default`, so
    that is the struct plus `App::ctx()` in `tui/src/app.rs`, nothing else. A new `Scope` also
-   goes in `Scope::ALL` and in the test module's length-annotated `ALL_SCOPES`, or it is
-   validated by nothing.
+   goes in `Scope::ALL`, in `parent()`, `word()`, `bindings()` and in `scope_list_is_complete`'s
+   `index()`, or it is validated by nothing; a BARRIER scope (parent `None`, every key its own)
+   joins the exemption list in `q_pops_and_help_is_everywhere` — `?` is text in a text field.
 2. `App::dispatch` in `tui/src/app.rs`: the arm. The match is exhaustive, so the compiler
    points at it.
 3. `cargo ut` runs the keymap validators. A hint that shows on the board changes the board

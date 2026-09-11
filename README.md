@@ -122,6 +122,11 @@ mesimon
 On the board: `a` adds a ticket, `enter` opens it, `space` opens its page, `m` then `<`/`>` moves
 it between columns, `p` peeks at a live pane, `q` quits.
 
+`/` searches. Type any part of a ticket's title, its key, its column or a tag it wears and the
+list narrows as you go; `ctrl-n` / `ctrl-p` walk it, `enter` puts the cursor on that card, `esc`
+leaves the board where it was. Archived tickets are in the list, ranked under every live one and
+marked; `tab` takes them out again.
+
 In the new-ticket composer, `shift-tab` cycles between the shared checkout and a dedicated
 worktree; that choice locks once a session exists. On a ticket page: `c` starts a Claude session,
 `s` a shell, and `enter` focuses a live one — that hands your whole terminal over. Detach with

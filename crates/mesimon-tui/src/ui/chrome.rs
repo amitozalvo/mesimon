@@ -414,6 +414,7 @@ fn dialog_open(app: &App) -> bool {
                 | Mode::External { .. }
                 | Mode::Brief { .. }
                 | Mode::ColumnSettings { .. }
+                | Mode::Search(_)
         )
         || (matches!(app.screen, Screen::Board)
             && matches!(&app.mode, Mode::Editor(ed) if ed.composing()))

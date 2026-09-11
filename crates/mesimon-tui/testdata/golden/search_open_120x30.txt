@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
+
+    ╭─ SEARCH ∙ 7/7 ───────────────────────────────────────────────────────────╮╭─ T-1 ────────────────────────────╮
+    │ ›                                                                        ││   Decay treatments           >1y │
+    │                                                                          ││                                  │
+    │ T-1   Decay treatments                                     TODO          ││ TODO for >1y                     │
+    │ T-2   Keymap validator                                     TODO          ││                                  │
+    │ T-3   Fix OSC-11 detection                                 IN PROGRESS   ││                                  │
+    │ T-4   Adopt drawer import                                  IN PROGRESS   ││                                  │
+    │ T-5   Grapheme truncation                                  REVIEW        ││                                  │
+    │ T-6   Flaky e2e on runner                                  REVIEW        ││                                  │
+    │ T-7   Painted accent bar                                   DONE archived ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    │                                                                          ││                                  │
+    ╰── enter go to ticket ∙ ^n ^p select ∙ tab live tickets only ∙ esc close ─╯╰──────────────────────────────────╯
+
+
+
+ SEARCH

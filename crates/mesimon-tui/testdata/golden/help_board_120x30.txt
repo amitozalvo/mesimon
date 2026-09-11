@@ -3,25 +3,25 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
 
     De╭─ KEYS ∙ board ───────────────────────────────────────────────────────────────────────────────────────────╮ >1y
-      │ MOVE AROUND                                           SESSIONS                                           │
-    Ke│   hjkl      move around                                 c         claude                                 │
-      │   g         top of column                               x         sleep sessions                         │
-      │   G         bottom of column                                                                             │
-      │   enter     go to the agent                           VIEW                                               │
-      │   space     ticket page                                 !         terminal                               │
-      │                                                         p         show replies                           │
-      │ TICKETS                                                 P         show every reply                       │
-      │   o         new ticket                                                                                   │
-      │   > <       move card, twice                          APP                                                │
-      │   HJKL      move card                                   esc       menu                                   │
-      │   O         new column                                  q         quit                                   │
-      │   r         rename                                      ?         keys                                   │
-      │   tab       describe                                    ^L        redraw                                 │
-      │   n         note                                        ^Z        suspend mesimon                        │
-      │   ^t        tags                                                                                         │
-      │   a         archive                                                                                      │
-      │   z         snooze                                                                                       │
-      │   d         delete                                                                                       │
+      │ MOVE AROUND                                           TICKETS                                            │
+    Ke│   hjkl      move around                                 o         new ticket                             │
+      │   g         top of column                               > <       move card, twice                       │
+      │   G         bottom of column                            HJKL      move card                              │
+      │   enter     go to the agent                             O         new column                             │
+      │   space     ticket page                                 r         rename                                 │
+      │   /         search                                      tab       describe                               │
+      │                                                         n         note                                   │
+      │ SESSIONS                                                ^t        tags                                   │
+      │   c         claude                                      a         archive                                │
+      │   x         sleep sessions                              z         snooze                                 │
+      │                                                         d         delete                                 │
+      │ VIEW                                                                                                     │
+      │   !         terminal                                  APP                                                │
+      │   p         show replies                                esc       menu                                   │
+      │   P         show every reply                            q         quit                                   │
+      │                                                         ?         keys                                   │
+      │                                                         ^L        redraw                                 │
+      │                                                         ^Z        suspend mesimon                        │
       ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────╯
 
 
