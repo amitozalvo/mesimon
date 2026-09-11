@@ -634,6 +634,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // agent choosing where its cards go would be choosing what the user
         // sees first. It names a column per call instead, in the open.
         | Command::SetDefaultColumn { .. }
+        // The sentences mesimon types into an agent's box (T-353). An agent
+        // that could rewrite the rebase ask would be writing the prompt that
+        // starts its own next turn — the one thing this tier exists to keep
+        // in the user's hands.
+        | Command::SetAgentPrompt { .. }
         // The column lifecycle (T-117): a tier that could add a column,
         // rename its own, or rewrite its own column's `agent_tools` would be
         // writing its own tier.

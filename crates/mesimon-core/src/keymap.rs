@@ -189,6 +189,13 @@ pub enum Scope {
     /// terminal, and five more rows there would be five rows nobody can
     /// reach.
     Notifications,
+    /// The agent-prompt list, one level under Settings (T-353): the three
+    /// sentences mesimon itself types into an agent's box, each editable in
+    /// place. Its own door for the notifications list's reason — the rows
+    /// are wide and the Settings list is already at the edge of a `MIN_H`
+    /// terminal — and its own scope because the footer must say PROMPTS
+    /// there and not SETTINGS.
+    Prompts,
     /// The agent-brief offer's confirm dialog (T-217, re-aimed at the system
     /// prompt by T-224): the text every claude mesimon starts would carry,
     /// shown verbatim, over the board. The one modal confirmation in mesimon
@@ -237,7 +244,7 @@ impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 25] = [
+    pub const ALL: [Scope; 26] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -254,6 +261,7 @@ impl Scope {
         Scope::Theme,
         Scope::Settings,
         Scope::Notifications,
+        Scope::Prompts,
         Scope::Brief,
         Scope::Releases,
         Scope::Links,
@@ -277,6 +285,7 @@ impl Scope {
             | Scope::Theme
             | Scope::Settings
             | Scope::Notifications
+            | Scope::Prompts
             | Scope::Brief
             | Scope::Releases
             | Scope::Links
@@ -315,6 +324,7 @@ impl Scope {
             Scope::Theme => "THEME",
             Scope::Settings => "SETTINGS",
             Scope::Notifications => "NOTIFICATIONS",
+            Scope::Prompts => "PROMPTS",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
@@ -499,6 +509,14 @@ pub enum Verb {
     /// The Settings row that opens the notifications list (T-282) — a door,
     /// like Settings itself is a door in the menu.
     Notifications,
+    /// The Agents row that opens the agent-prompt list (T-353) — another
+    /// door, for the three sentences mesimon types into an agent's box.
+    AgentPrompts,
+    /// Its three rows: each opens the template as a text field, in place.
+    /// Enter saves it, an emptied field puts mesimon's own words back.
+    PromptRebase,
+    PromptMerged,
+    PromptNote,
     /// The Settings row that holds this machine awake while an agent is
     /// mid-turn (T-288); remembered in `prefs.json`, held by the BOARD, so
     /// the daemon is never told and a closed board sleeps.
@@ -761,7 +779,9 @@ impl SettingsSection {
             | Verb::WeekStart
             | Verb::DefaultColumn
             | Verb::KeepAwake => Self::Behaviour,
-            Verb::SystemPrompt | Verb::McpTools | Verb::AgentProvider => Self::Agents,
+            Verb::SystemPrompt | Verb::McpTools | Verb::AgentProvider | Verb::AgentPrompts => {
+                Self::Agents
+            }
             _ => Self::Root,
         }
     }
@@ -774,6 +794,13 @@ impl SettingsSection {
 #[derive(Debug, Clone, Default)]
 pub struct Ctx {
     pub settings_section: SettingsSection,
+    /// The board's three agent-prompt templates (T-353), as the rows label
+    /// themselves off them. `Default` is "mesimon's own words", which is what
+    /// every board that has never edited one carries.
+    pub prompts: crate::prompts::PromptSet,
+    /// One of those templates is open as a text field right now, so its row's
+    /// detail teaches the placeholders instead of showing the sentence.
+    pub prompt_editing: bool,
     pub agent_provider: AgentProvider,
     /// The ticket's existing provider, falling back to the project default.
     pub ticket_agent_provider: AgentProvider,
@@ -3407,7 +3434,71 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: |c| !c.default_column.is_empty(),
         key: "",
     },
+    // The three sentences mesimon itself types into an agent's box (T-353).
+    // A door, like Notifications: three rows that are each a text field do
+    // not fit a list `draw_list` sizes at two lines a row. Last in Agents,
+    // because the rows above decide whether mesimon says anything to an
+    // agent at all and this decides what it says once it does.
+    MenuItem {
+        verb: Verb::AgentPrompts,
+        label: |c| match c.prompts.custom_count() {
+            0 => "Agent prompts: mesimon's words".into(),
+            n => format!("Agent prompts: {n} of {} yours", crate::prompts::AgentPrompt::ALL.len()),
+        },
+        detail: |_| "what mesimon types at an agent about a rebase, a merge, a note".into(),
+        avail: always,
+        key: "",
+    },
 ];
+
+/// The agent-prompt list, one level under Settings > Agents (T-353).
+///
+/// One row per sentence mesimon writes for an agent, in the order they
+/// happen: the rebase ask, then the merged notice, then the note nudge. Each
+/// row's label says WHOSE words stand there and its detail says when it is
+/// sent and what it says — the value of the setting IS the sentence, so the
+/// sentence is what the list shows. Enter opens it as a text field in place
+/// (the column dialog's Name row), and a field emptied and saved puts
+/// mesimon's own words back.
+pub static PROMPT_ITEMS: &[MenuItem] = &[
+    MenuItem {
+        verb: Verb::PromptRebase,
+        label: |c| prompt_label(c, crate::prompts::AgentPrompt::Rebase),
+        detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::Rebase),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::PromptMerged,
+        label: |c| prompt_label(c, crate::prompts::AgentPrompt::Merged),
+        detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::Merged),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::PromptNote,
+        label: |c| prompt_label(c, crate::prompts::AgentPrompt::NoteUpdated),
+        detail: |c| prompt_detail(c, crate::prompts::AgentPrompt::NoteUpdated),
+        avail: always,
+        key: "",
+    },
+];
+
+/// `Rebase ask: mesimon's words` — the name, then whose text stands there.
+fn prompt_label(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
+    let whose = if ctx.prompts.is_custom(which) { "your words" } else { "mesimon's words" };
+    format!("{}: {whose}", which.label())
+}
+
+/// When it is sent and what it says, or — while the field is open — the
+/// placeholders that get filled in and the way back to mesimon's words.
+fn prompt_detail(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
+    if ctx.prompt_editing {
+        format!("{} get filled in ∙ empty it for mesimon's words", which.fields_hint())
+    } else {
+        format!("{} ∙ {}", which.when(), ctx.prompts.text(which))
+    }
+}
 
 /// The notifications list, one level under Settings (T-282).
 ///
@@ -3657,7 +3748,9 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::WeekStart,
             Verb::DefaultColumn,
         ],
-        SettingsSection::Agents => &[Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools],
+        SettingsSection::Agents => {
+            &[Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools, Verb::AgentPrompts]
+        }
     };
     verbs
         .iter()
@@ -3668,6 +3761,24 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
 /// The notifications list's rows that apply right now (T-282).
 pub fn notify_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     NOTIFY_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+}
+
+/// The agent-prompt list's rows (T-353). All three, always: a sentence
+/// mesimon can send is a sentence somebody can rewrite, whatever else is on.
+pub fn prompt_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
+    PROMPT_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+}
+
+/// Which template a prompt-list row edits. The list and the enum are one
+/// order (`AgentPrompt::ALL`), and this is the seam that says so.
+pub fn prompt_of(verb: Verb) -> Option<crate::prompts::AgentPrompt> {
+    use crate::prompts::AgentPrompt;
+    match verb {
+        Verb::PromptRebase => Some(AgentPrompt::Rebase),
+        Verb::PromptMerged => Some(AgentPrompt::Merged),
+        Verb::PromptNote => Some(AgentPrompt::NoteUpdated),
+        _ => None,
+    }
 }
 
 fn yes_no(b: bool) -> &'static str {
@@ -4922,7 +5033,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         // The same three shapes: a list dialog's keys are the list's, and
         // which list Enter is choosing in is the mode's to know, not the
         // keymap's.
-        Scope::Settings | Scope::Notifications => SETTINGS,
+        Scope::Settings | Scope::Notifications | Scope::Prompts => SETTINGS,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
@@ -5142,6 +5253,51 @@ mod tests {
         assert!((provider.detail)(&ctx).contains("new sessions only"));
     }
 
+    /// The agent-prompt list (T-353): three rows, one per sentence mesimon
+    /// types into an agent's box, each saying whose words stand there and
+    /// what they say. The door is in Agents, and it counts.
+    #[test]
+    fn the_prompt_list_says_whose_words_and_what_they_say() {
+        use crate::prompts::AgentPrompt;
+        let mut ctx = Ctx { settings_section: SettingsSection::Agents, ..Default::default() };
+        let door = settings_items(&ctx).into_iter().find(|m| m.verb == Verb::AgentPrompts).unwrap();
+        assert_eq!((door.label)(&ctx), "Agent prompts: mesimon's words");
+        assert_eq!(SettingsSection::for_verb(Verb::AgentPrompts), SettingsSection::Agents);
+
+        let rows = prompt_items(&ctx);
+        assert_eq!(
+            rows.iter().filter_map(|m| prompt_of(m.verb)).collect::<Vec<_>>(),
+            AgentPrompt::ALL,
+            "the list and the enum are one order"
+        );
+        assert_eq!((rows[0].label)(&ctx), "Rebase ask: mesimon's words");
+        let detail = (rows[0].detail)(&ctx);
+        assert!(detail.starts_with("when the base branch moved past this one"), "{detail}");
+        assert!(detail.contains("{branch}"), "the row shows the sentence as written: {detail}");
+
+        // One rewritten: that row and the door both say so, and the other
+        // two still stand on mesimon's words.
+        ctx.prompts.set(AgentPrompt::Merged, Some("done, {branch} is in".into()));
+        assert_eq!((door.label)(&ctx), "Agent prompts: 1 of 3 yours");
+        let rows = prompt_items(&ctx);
+        assert_eq!((rows[1].label)(&ctx), "Merged notice: your words");
+        assert!((rows[1].detail)(&ctx).ends_with("done, {branch} is in"));
+        assert_eq!((rows[2].label)(&ctx), "Note nudge: mesimon's words");
+
+        // Open as a field, the detail teaches the placeholders instead.
+        ctx.prompt_editing = true;
+        assert_eq!(
+            (rows[0].detail)(&ctx),
+            "{branch} {base} get filled in ∙ empty it for mesimon's words"
+        );
+
+        // Its scope is the list dialogs' three keys, and q pops it.
+        assert_eq!(resolve(Scope::Prompts, Key::Enter, &ctx), Some(Verb::Act));
+        assert_eq!(resolve(Scope::Prompts, Key::Esc, &ctx), Some(Verb::Back));
+        assert_eq!(resolve(Scope::Prompts, Key::Char('q'), &ctx), Some(Verb::Back));
+        assert_eq!(Scope::Prompts.word(), "PROMPTS");
+    }
+
     /// `Scope::ALL` is what every validator below walks, so a scope missing
     /// from it is validated by nothing. The match is exhaustive: adding a
     /// variant fails to compile here, and the length check then fails until
@@ -5189,15 +5345,16 @@ mod tests {
                 Scope::Theme => 13,
                 Scope::Settings => 14,
                 Scope::Notifications => 15,
-                Scope::Brief => 16,
-                Scope::Releases => 17,
-                Scope::Links => 18,
-                Scope::ColumnSettings => 19,
-                Scope::Header => 20,
-                Scope::Input => 21,
-                Scope::Editor => 22,
-                Scope::DuplicateChord => 23,
-                Scope::Search => 24,
+                Scope::Prompts => 16,
+                Scope::Brief => 17,
+                Scope::Releases => 18,
+                Scope::Links => 19,
+                Scope::ColumnSettings => 20,
+                Scope::Header => 21,
+                Scope::Input => 22,
+                Scope::Editor => 23,
+                Scope::DuplicateChord => 24,
+                Scope::Search => 25,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -6745,7 +6902,7 @@ mod tests {
             ),
             (
                 SettingsSection::Agents,
-                vec![Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools],
+                vec![Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools, Verb::AgentPrompts],
             ),
         ] {
             let c = Ctx { settings_section: section, ..ctx.clone() };

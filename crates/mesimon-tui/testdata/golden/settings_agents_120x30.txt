@@ -8,7 +8,6 @@
 
 
 
-
                            ╭─ AGENTS ───────────────────────────────────────────────────────╮
                            │   Provider: Claude Code                                        │
                            │     new sessions only ∙ enter selects Codex                    │
@@ -16,8 +15,9 @@
                            │     one line: read the ticket first ∙ enter shows it first     │
                            │   Agent tools: on                                              │
                            │     the seven board tools every spawn carries ∙ enter takes t~ │
+                           │   Agent prompts: mesimon's words                               │
+                           │     what mesimon types at an agent about a rebase, a merge, a~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

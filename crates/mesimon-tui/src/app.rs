@@ -241,6 +241,20 @@ pub enum Mode {
     Notifications {
         idx: usize,
     },
+    /// The agent-prompt list, one level under Settings > Agents (T-353): the
+    /// three sentences mesimon types into an agent's box. `idx` is the cursor
+    /// over `keymap::prompt_items`; the list STAYS when a row is chosen, the
+    /// Settings list's rule, and Esc returns to the row that opened it.
+    ///
+    /// `editing` is the selected row's template as a text field — the column
+    /// dialog's `naming` shape, down to the scope flip that puts
+    /// `enter save ∙ esc cancel` in the frame's edge. A template is one line
+    /// by law (`sanitize_prompt` removes every newline on the way to a tty),
+    /// so a one-line buffer is the honest field for it.
+    Prompts {
+        idx: usize,
+        editing: Option<EditBuffer>,
+    },
     /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
     /// be written, shown verbatim over the board, with four ways out. No
     /// `idx` — it is a question, not a list, and its answers are its keys.
@@ -413,6 +427,30 @@ fn eased(at: Instant, over: Duration) -> Option<f32> {
 fn is_hot(s: &mesimon_core::board::SessionRecord) -> bool {
     s.kind.is_agent()
         && matches!(s.state, SessionState::Running | SessionState::RequiresAction { .. })
+}
+
+/// One raw key into a one-line text field: the shape every in-place field in
+/// a dialog uses (the column Name row, the agent-prompt rows). Motion, the two
+/// Ctrl kills and the character itself; Enter and Esc are the caller's, because
+/// what they SAVE differs and the field does not know.
+fn edit_buffer_key(buf: &mut EditBuffer, code: KeyCode, mods: KeyModifiers) {
+    let word = crate::keys::word_wise(mods);
+    match crate::keys::text_code(code, mods) {
+        KeyCode::Backspace if word => buf.delete_word_back(),
+        KeyCode::Backspace => buf.backspace(),
+        KeyCode::Delete => buf.delete(),
+        KeyCode::Left if word => buf.word_left(),
+        KeyCode::Left => buf.left(),
+        KeyCode::Right if word => buf.word_right(),
+        KeyCode::Right => buf.right(),
+        KeyCode::Home => buf.home(),
+        KeyCode::End => buf.end(),
+        KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => buf.delete_word_back(),
+        KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => buf.kill_to_start(),
+        KeyCode::Char(_) if word => {}
+        KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => buf.insert(c),
+        _ => {}
+    }
 }
 
 /// One step through a list of `n` rows, clamped at both ends.
@@ -1682,6 +1720,16 @@ impl App {
                 self.mode = Mode::Notifications { idx: n - 1 };
             }
         }
+        // The prompt list's rows never come and go, but the same clamp keeps
+        // the two lists in one shape — and a field mid-edit survives it.
+        if let Mode::Prompts { idx, editing: None } = &self.mode {
+            let n = keymap::prompt_items(&self.ctx()).len();
+            if n == 0 {
+                self.mode = Mode::Normal;
+            } else if *idx >= n {
+                self.mode = Mode::Prompts { idx: n - 1, editing: None };
+            }
+        }
         // A note editor on a ticket that vanished has nowhere to save to.
         if let Mode::Editor(Editor { purpose: EditorPurpose::Note { ticket, .. }, .. }) = &self.mode
         {
@@ -2649,6 +2697,9 @@ impl App {
             Mode::Theme { .. } => Scope::Theme,
             Mode::Settings { .. } => Scope::Settings,
             Mode::Notifications { .. } => Scope::Notifications,
+            // Editing a template IS a text field, the Name row's rule.
+            Mode::Prompts { editing: Some(_), .. } => Scope::Input,
+            Mode::Prompts { .. } => Scope::Prompts,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             Mode::Search(_) => Scope::Search,
@@ -2931,6 +2982,8 @@ impl App {
             editor_dirty: editor.is_some_and(|e| e.dirty()),
             editor_word: self.editor_word,
             rich_keys: self.rich_keys,
+            prompts: self.board.prompts.clone(),
+            prompt_editing: matches!(self.mode, Mode::Prompts { editing: Some(_), .. }),
         };
         // The one field that reads the row list, set once the list can be
         // built: the cursor on the dialog's `Sort now` row.
@@ -3046,6 +3099,9 @@ impl App {
         }
         if let Mode::ColumnSettings { naming: Some(_), .. } = self.mode {
             return self.key_column_name(code, mods);
+        }
+        if let Mode::Prompts { editing: Some(_), .. } = self.mode {
+            return self.key_agent_prompt(code, mods);
         }
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
@@ -3600,6 +3656,25 @@ impl App {
             // one of them through `set_pref`, the tail every preference
             // takes.
             Verb::Notifications => self.mode = Mode::Notifications { idx: 0 },
+            Verb::AgentPrompts => self.mode = Mode::Prompts { idx: 0, editing: None },
+            // The row IS the field: Enter opens the template that stands
+            // there now — theirs if they wrote one, mesimon's otherwise — so
+            // a rewrite starts from the sentence being rewritten and not from
+            // an empty box.
+            Verb::PromptRebase | Verb::PromptMerged | Verb::PromptNote => {
+                let Some(which) = keymap::prompt_of(verb) else { return Ok(()) };
+                let text = self.board.prompts.text(which).to_string();
+                let items = keymap::prompt_items(&self.ctx());
+                let row = items.iter().position(|m| m.verb == verb).unwrap_or(0);
+                let mut buf =
+                    EditBuffer::from_text(text, mesimon_core::command::PROMPT_MAX_BYTES);
+                // At the START, not the end: a column's name is a word you
+                // append to, and this is a sentence you read before you
+                // change it. The field scrolls, so wherever the cursor is is
+                // the half you can see.
+                buf.home();
+                self.mode = Mode::Prompts { idx: row, editing: Some(buf) };
+            }
             Verb::NotifyToggle => {
                 let on = !self.prefs.notify;
                 let word = if on {
@@ -4215,6 +4290,12 @@ impl App {
                 let idx = step(idx, keymap::notify_items(&self.ctx()).len(), down);
                 self.mode = Mode::Notifications { idx };
             }
+            Scope::Prompts => {
+                let n = keymap::prompt_items(&self.ctx()).len();
+                if let Mode::Prompts { idx, .. } = &mut self.mode {
+                    *idx = step(*idx, n, down);
+                }
+            }
             // Up/down select; left/right reach only the sort row (the
             // binding's gate) and step the order it will use.
             Scope::ColumnSettings => {
@@ -4323,6 +4404,20 @@ impl App {
                 let verb = item.verb;
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
+            // A prompt row opens its template as a field in place; the list
+            // stays and the row relabels off the snapshot when it saves.
+            Scope::Prompts => {
+                let Mode::Prompts { idx, .. } = self.mode else {
+                    return Ok(());
+                };
+                let ctx = self.ctx();
+                let items = keymap::prompt_items(&ctx);
+                let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
+                    return Ok(());
+                };
+                let verb = item.verb;
+                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
+            }
             // A column row is a toggle, a cycle, the sort or the delete; the
             // dialog STAYS and the row relabels off the snapshot.
             Scope::ColumnSettings => {
@@ -4413,6 +4508,7 @@ impl App {
                 }
             }
             Scope::Notifications => self.return_to_settings(Verb::Notifications),
+            Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::ColumnSettings => {
                 if self.column_agents {
                     self.column_agents = false;
@@ -4544,26 +4640,8 @@ impl App {
     /// renames an existing column or adds the new one; a refusal keeps the
     /// field open with the daemon's sentence (`commit_tag_name`'s rule).
     fn key_column_name(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
-        let word = crate::keys::word_wise(mods);
         if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
-            match crate::keys::text_code(code, mods) {
-                KeyCode::Backspace if word => buf.delete_word_back(),
-                KeyCode::Backspace => buf.backspace(),
-                KeyCode::Delete => buf.delete(),
-                KeyCode::Left if word => buf.word_left(),
-                KeyCode::Left => buf.left(),
-                KeyCode::Right if word => buf.word_right(),
-                KeyCode::Right => buf.right(),
-                KeyCode::Home => buf.home(),
-                KeyCode::End => buf.end(),
-                KeyCode::Char('w') if mods.contains(KeyModifiers::CONTROL) => {
-                    buf.delete_word_back()
-                }
-                KeyCode::Char('u') if mods.contains(KeyModifiers::CONTROL) => buf.kill_to_start(),
-                KeyCode::Char(_) if word => {}
-                KeyCode::Char(c) if !mods.contains(KeyModifiers::CONTROL) => buf.insert(c),
-                _ => {}
-            }
+            edit_buffer_key(buf, code, mods);
         }
         let ctx = self.ctx();
         let verb = crate::keys::to_key_text(code, mods)
@@ -4612,6 +4690,71 @@ impl App {
                         ColumnSubject::Existing(_) => *naming = None,
                         ColumnSubject::New { .. } => self.mode = Mode::Normal,
                     }
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The agent-prompt field (T-353): the Name row's shape one list over.
+    /// The raw key edits the buffer, then only Enter and Esc still resolve —
+    /// against `Scope::Input`, so the frame's edge reads `enter save ∙ esc
+    /// cancel` — and the list stays open either way.
+    ///
+    /// Enter on a field emptied (or blanked) sends `None`, which is "put
+    /// mesimon's words back": there is one way in and one way out, and
+    /// neither needs a second row to explain it. Enter on a field nobody
+    /// changed sends nothing at all — the daemon would no-op, but a row that
+    /// did not move should not be a line in the activity feed.
+    fn key_agent_prompt(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        // `^u` empties the WHOLE field here, wherever the cursor sits —
+        // the row's detail says "empty it for mesimon's words", so that
+        // gesture has to be one press. It reads as kill-to-start everywhere
+        // else, and the field opens with the cursor at the start, where
+        // kill-to-start does nothing at all.
+        let clear = matches!(code, KeyCode::Char('u')) && mods.contains(KeyModifiers::CONTROL);
+        if let Mode::Prompts { editing: Some(buf), .. } = &mut self.mode {
+            if clear {
+                buf.end();
+                buf.kill_to_start();
+            } else {
+                edit_buffer_key(buf, code, mods);
+            }
+        }
+        let ctx = self.ctx();
+        let verb = crate::keys::to_key_text(code, mods)
+            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        match verb {
+            Some(Verb::Save | Verb::SaveStart) => {
+                let Mode::Prompts { idx, editing } = &self.mode else {
+                    return Ok(());
+                };
+                let (idx, text) = (*idx, editing.as_ref().map(|b| b.as_str().to_string()));
+                let Some(text) = text else { return Ok(()) };
+                let items = keymap::prompt_items(&ctx);
+                let Some(which) = items.get(idx).and_then(|m| keymap::prompt_of(m.verb)) else {
+                    return Ok(());
+                };
+                // Blank, or mesimon's own sentence typed back verbatim, is
+                // the same answer: this board has no template of its own.
+                let text = mesimon_core::command::sanitize_prompt(&text)
+                    .filter(|t| t != which.default_text());
+                if text.as_deref() != self.board.prompts.custom(which) {
+                    match self.req(Command::SetAgentPrompt { which, text }) {
+                        Response::Ok => self.refresh()?,
+                        Response::Err { message } => {
+                            self.status = message;
+                            return Ok(());
+                        }
+                        _ => {}
+                    }
+                }
+                self.mode = Mode::Prompts { idx, editing: None };
+            }
+            Some(Verb::Cancel) => {
+                if let Mode::Prompts { editing, .. } = &mut self.mode {
+                    *editing = None;
                 }
             }
             _ => {}
@@ -7551,6 +7694,13 @@ pub(crate) mod test_support {
                         Err(message) => Response::Err { message },
                     })
                 }
+                // The daemon's own rule, as small as the fake can hold it:
+                // sanitized in, and blank means mesimon's words back (T-353).
+                Command::SetAgentPrompt { which, text } => {
+                    let text = text.as_deref().and_then(mesimon_core::command::sanitize_prompt);
+                    self.board.prompts.set(which, text);
+                    Ok(Response::Ok)
+                }
                 Command::SortColumn { column, by } => {
                     let none = std::collections::HashSet::new();
                     self.board.sort_column(&column, by, &none);
@@ -9460,6 +9610,82 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(matches!(app.mode, Mode::Normal));
         assert!(sent_contains(&sent, "fix the auth bug"));
+    }
+
+    /// Settings > Agents > Agent prompts, end to end (T-353): the door opens
+    /// the list, Enter opens the row's template as a field pre-filled with
+    /// the sentence that stands there now, typing into it and saving sends
+    /// the user's words, and Esc goes back to the row that opened the list.
+    #[test]
+    fn a_prompt_row_edits_the_sentence_mesimon_sends() {
+        use mesimon_core::prompts::AgentPrompt;
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::AgentPrompts) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Prompts { idx: 0, editing: None }), "{:?}", app.mode);
+        assert_eq!(app.scope(), Scope::Prompts);
+        // The field opens on the sentence being rewritten, not on a blank.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let Mode::Prompts { editing: Some(buf), .. } = &app.mode else { panic!("{:?}", app.mode) };
+        assert_eq!(buf.as_str(), AgentPrompt::Rebase.default_text());
+        assert_eq!(app.scope(), Scope::Input, "a template is a text field");
+        // Typing is typing: `q` is a character here, not the way out.
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        for c in "rebase {branch} onto {base}, quietly".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Prompts { idx: 0, editing: None }), "{:?}", app.mode);
+        assert!(sent_contains(&sent, "rebase {branch} onto {base}, quietly"), "{sent:?}");
+        assert_eq!(
+            app.board.prompts.custom(AgentPrompt::Rebase),
+            Some("rebase {branch} onto {base}, quietly")
+        );
+        // The row relabels off the snapshot: whose words stand there now.
+        let ctx = app.ctx();
+        assert_eq!((keymap::prompt_items(&ctx)[0].label)(&ctx), "Rebase ask: your words");
+    }
+
+    /// An emptied field is the way back to mesimon's words, and so is typing
+    /// them in again: both leave the board carrying no template of its own.
+    #[test]
+    fn emptying_a_prompt_row_restores_mesimons_words() {
+        use mesimon_core::prompts::AgentPrompt;
+        let mut app = app_three_columns();
+        app.board.prompts.set(AgentPrompt::Merged, Some("all done".into()));
+        app.mode = Mode::Prompts { idx: 1, editing: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.prompts.is_default(), "empty is 'put mesimon's words back'");
+        // And mesimon's own sentence typed back is the same answer, not a
+        // template that happens to match today's default.
+        app.board.prompts.set(AgentPrompt::Merged, Some("all done".into()));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Char('u'), KeyModifiers::CONTROL).unwrap();
+        for c in AgentPrompt::Merged.default_text().chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.board.prompts.is_default(), "{:?}", app.board.prompts);
+        // Esc on the list goes back to the Settings row that opened it.
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Settings { .. }), "{:?}", app.mode);
+        assert_eq!(app.settings_section, keymap::SettingsSection::Agents);
+    }
+
+    /// Esc inside the field closes the FIELD and leaves the list standing,
+    /// with the sentence untouched — one Esc per room.
+    #[test]
+    fn esc_in_a_prompt_field_keeps_the_list() {
+        let mut app = app_three_columns();
+        app.mode = Mode::Prompts { idx: 2, editing: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'x');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Prompts { idx: 2, editing: None }), "{:?}", app.mode);
+        assert!(app.board.prompts.is_default(), "a cancelled field writes nothing");
     }
 
     /// With no field open a paste is nothing — not a walk through the keymap.

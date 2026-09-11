@@ -22,6 +22,7 @@ pub mod links;
 pub mod mcp;
 pub mod notify;
 pub mod principal;
+pub mod prompts;
 pub mod quiet;
 pub mod reconcile;
 pub mod relnotes;

@@ -1372,6 +1372,7 @@ impl Daemon {
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
+            Command::SetAgentPrompt { which, text } => self.set_agent_prompt(which, text),
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
             Command::AddColumn { name, after } => self.add_column(name, after),
             Command::RenameColumn { name, to } => self.rename_column(&name, &to),
@@ -4741,16 +4742,11 @@ impl Daemon {
             self.base_branch = worktree::default_branch(&self.paths.repo_root).ok();
         }
         let base = self.base_branch.clone().unwrap_or_else(|| "main".into());
-        let text = match request {
-            mesimon_core::command::MergeRequest::Rebase => format!(
-                "Rebase your current branch {branch} onto {base}, resolve any conflicts, \
-                 then run the tests and fix any failures before we merge."
-            ),
-            mesimon_core::command::MergeRequest::MergedNotice => format!(
-                "Your branch {branch} has been merged into {base}. The main checkout now \
-                 contains this work."
-            ),
-        };
+        // The board's template, or mesimon's own words where nobody wrote one
+        // (T-353). The two facts the sentence is about — which branch, which
+        // base — are the only things substituted into it.
+        let text =
+            self.board.prompts.render(request.prompt(), &[("branch", &branch), ("base", &base)]);
         if let Err(message) = self.paste_to_ticket(id, &text) {
             return Response::Err { message };
         }
@@ -5073,9 +5069,10 @@ impl Daemon {
             return Response::Err { message: "no such note".into() };
         };
         let name = mesimon_core::text::scrub_text(&meta.name);
-        let text = format!(
-            "Note \"{name}\" on this ticket was just updated; read_note with id {note} \
-             returns the new text."
+        let note_id = note.to_string();
+        let text = self.board.prompts.render(
+            mesimon_core::prompts::AgentPrompt::NoteUpdated,
+            &[("note", &name), ("id", &note_id)],
         );
         match self.paste_to_ticket(ticket, &text) {
             Ok(()) => Response::Ok,
@@ -5778,6 +5775,33 @@ impl Daemon {
         if !on {
             self.board.claude_md_ignored = true;
         }
+        self.persist_and_notify();
+        Response::Ok
+    }
+
+    /// One of the three sentences mesimon types into an agent's box (T-353).
+    /// A person's row in Settings — `mcp::agent_allows` denies the command —
+    /// and `columns.toml`'s, so it returns early under the bar like the
+    /// switches above it.
+    ///
+    /// The text is sanitized HERE and stored sanitized, through the same
+    /// `sanitize_prompt` a typed ask crosses: the bytes on disk are the bytes
+    /// the tty will receive, and a template cannot carry a CR that would
+    /// split one prompt into two turns. Blank in — which is what an emptied
+    /// field sends — is mesimon's own words back, and writes nothing.
+    fn set_agent_prompt(
+        &mut self,
+        which: mesimon_core::prompts::AgentPrompt,
+        text: Option<String>,
+    ) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        let text = text.as_deref().and_then(mesimon_core::command::sanitize_prompt);
+        if self.board.prompts.custom(which) == text.as_deref() {
+            return Response::Ok;
+        }
+        self.board.prompts.set(which, text);
         self.persist_and_notify();
         Response::Ok
     }

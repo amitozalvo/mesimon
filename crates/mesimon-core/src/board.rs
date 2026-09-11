@@ -1418,6 +1418,19 @@ pub struct Board {
     /// hands nobody anything wider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_column: Option<String>,
+    /// The three sentences mesimon itself types into an agent's box, as this
+    /// board would have them (T-353): the rebase ask, the merged notice and
+    /// the note nudge. Empty — every board before the field, and every board
+    /// nobody has edited — means mesimon's own words, which live in the
+    /// BINARY (`prompts::AgentPrompt::default_text`) and never on disk. Per
+    /// repo like `system_prompt` beside it, because what to say to an agent
+    /// about a rebase is a property of the work, not of the machine.
+    ///
+    /// A plain serde default with no schema bump: a build that drops a
+    /// custom template sends mesimon's own sentence instead, which is the
+    /// text every board sent before the field existed.
+    #[serde(default, skip_serializing_if = "crate::prompts::PromptSet::is_default")]
+    pub prompts: crate::prompts::PromptSet,
 }
 
 /// `Board::mcp_tools` defaults ON: a serde default has to be a function, and
@@ -1445,6 +1458,7 @@ impl Default for Board {
             claude_md_ignored: false,
             system_prompt: false,
             default_column: None,
+            prompts: crate::prompts::PromptSet::default(),
         }
     }
 }

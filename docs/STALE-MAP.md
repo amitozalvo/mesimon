@@ -9647,3 +9647,67 @@ agent anywhere on the board. `ff_merge` writes into the repo-root working tree o
 is HEAD there, and otherwise updates a ref (`git push . branch:refs/heads/base`), so a worktree
 agent mid-turn is untouched by another ticket's merge. The gate wants narrowing to the root
 checkout's own workers plus tickets mid-rebase at the current base tip. Not done here.
+
+## The three sentences mesimon writes are the user's to rewrite (T-353, 2026-09-11, user: "allow the user to change agent notify prompts (for rebase / merge / other things) — in settings, think where appropriate to put based on current settings structure")
+
+Three of mesimon's own sentences reach a live agent, and until now all three were `format!`
+literals in `daemon/src/server.rs`:
+
+| when | was | now |
+|---|---|---|
+| the base moved past a branch (`MergeToAgent { Rebase }`, hand `m` and the train) | *"Rebase your current branch … onto …, resolve any conflicts, then run the tests and fix any failures before we merge."* | `AgentPrompt::Rebase` |
+| the branch merged (`MergeToAgent { MergedNotice }`) | *"Your branch … has been merged into …. The main checkout now contains this work."* | `AgentPrompt::Merged` |
+| a note on the ticket changed (`NoteToAgent`) | *"Note "…" on this ticket was just updated; read_note with id … returns the new text."* | `AgentPrompt::NoteUpdated` |
+
+They are the only text mesimon authors into a conversation besides the agent brief and the MCP
+tool definitions — README promise 3's two named exceptions plus these. Which made the binary the
+author of the words that start somebody's turn, and the words are opinionated: "run the tests and
+fix any failures" is a whole suite run, and T-351 had just finished removing one case where that
+sentence was sent for nothing. The user's answer to the next case was not another clause. It was
+**give me the sentence**.
+
+**`core/src/prompts.rs`** holds `AgentPrompt` (the three, with `label`, `when`, `default_text`,
+`fields`) and `PromptSet` (three `Option<String>`, `None` = mesimon's words). Three decisions
+worth keeping:
+
+- **A template is ONE LINE.** `sanitize_prompt` is what the text crosses on the way to a tty and
+  it removes every newline, ESC and tab — so a multi-line editor would silently flatten what
+  somebody wrote. The field is an `EditBuffer`, the column Name row's shape, not the note editor's
+  `TextArea`. The daemon sanitizes on the way IN and stores the result: the bytes on disk are the
+  bytes the tty receives.
+- **A placeholder is `{name}` from a fixed per-prompt list**, substituted by literal replacement
+  and nothing else. `{branch}`/`{base}` on the two merge prompts, `{note}`/`{id}` on the nudge. An
+  unknown `{word}` is left exactly as written — guessing at somebody's text would be mesimon
+  adding a token again, which is the promise this whole ticket is about.
+- **`None` is the default, and the default is in the BINARY.** Clearing a field writes nothing
+  (`skip_serializing_if`), so a default that improves in a later build reaches every board that
+  never overrode it, and `doctor` can print "default wording" and mean it. Typing mesimon's own
+  sentence back in is recognised as the same answer (`filter(|t| t != which.default_text())`) —
+  there is no second row for "reset".
+
+**Where it lives.** `Board::prompts`, per repo, `columns.toml` — beside `system_prompt` and
+`default_column`, because what to say to an agent about a rebase is a property of the work and not
+of the machine. Three SCALARS on `ColumnsFile` (`prompt_rebase`, `prompt_merged`,
+`prompt_note_updated`) and not one `[prompts]` table: a TOML table may be followed by no scalar,
+and `columns`/`tags` already own that ground. **No schema bump** — a build that drops a custom
+template sends mesimon's own sentence, which is what every board sent before the field.
+
+**In Settings.** Last row of **Agents**, under Provider / Agent brief / Agent tools: those three
+decide *whether* mesimon says anything to an agent, this decides *what* it says once it does. It
+is a door (`Scope::Prompts`, `Mode::Prompts`), the Notifications shape, because `draw_list` sizes
+a list at two lines a row and three rows that each become a text field do not fit beside the rest.
+The list itself is `draw_dense` — the column dialog's surface, whose `field` parameter grew a lead
+string so the row's own name stays in front of the text being edited. The row's label says whose
+words stand there; its detail says when it is sent and what it says, because the value of this
+setting IS the sentence. Enter opens the field on that sentence with the **cursor at the start** (a
+column's name is a word you append to; this is a sentence you read before you change it).
+
+`mcp::agent_allows` denies `SetAgentPrompt` — an agent that could rewrite the rebase ask would be
+writing the prompt that starts its own next turn, which is the one thing the tier exists to keep in
+the user's hands. `doctor`'s new `agent prompts` record prints all three verbatim, whose they are,
+the brief's rule and for the brief's reason: the only words mesimon adds must be answerable without
+opening the TUI.
+
+**Refactor that came with it.** `edit_buffer_key` is now a free function in `app.rs` — the raw-key
+half of every in-place one-line field (the column Name row, the three prompt rows). Enter and Esc
+stay the caller's, because what they save differs and the field does not know.

@@ -735,6 +735,33 @@ fn golden_notifications_120() {
     golden("notifications_120x30", &render(&app, 120, 30));
 }
 
+/// The agent-prompt list (T-353), one level under Settings > Agents: the
+/// three sentences mesimon types into an agent's box, each row saying whose
+/// words stand there and the selected one's detail saying when it is sent
+/// and what it says. `AGENT PROMPTS` in the frame's top edge.
+#[test]
+fn golden_agent_prompts_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Prompts { idx: 0, editing: None };
+    golden("agent_prompts_120x30", &render(&app, 120, 30));
+}
+
+/// The same list with the rebase template open as a field: the row's own
+/// name leads it, the cursor sits in the text, and the detail teaches the
+/// placeholders and the way back to mesimon's words.
+#[test]
+fn golden_agent_prompt_editing_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Prompts { idx: 0, editing: None };
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .expect("enter");
+    assert!(matches!(app.mode, Mode::Prompts { editing: Some(_), .. }), "{:?}", app.mode);
+    golden("agent_prompt_editing_120x30", &render(&app, 120, 30));
+}
+
 /// Off, the list is a SINGLE row: four settings for a thing that is not
 /// happening are four rows saying nothing.
 #[test]

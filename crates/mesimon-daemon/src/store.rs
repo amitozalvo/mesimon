@@ -11,6 +11,7 @@ use std::path::Path;
 use anyhow::Result;
 use mesimon_core::board::{AgentProvider, Board, Column, SessionRecord, Ticket, KEY_PREFIX};
 use mesimon_core::command::Notice;
+use mesimon_core::prompts::PromptSet;
 use serde::{Deserialize, Serialize};
 
 use crate::paths::Paths;
@@ -108,6 +109,17 @@ struct ColumnsFile {
     /// that drops it narrows nothing an agent gets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_column: Option<String>,
+    /// The three agent-prompt templates (`Board::prompts`, T-353), one
+    /// scalar each rather than one `[prompts]` table: a table here could be
+    /// followed by no scalar, and `columns` and `tags` already own that
+    /// ground. Absent — every file before the field, and every board that
+    /// never edited one — means mesimon's own words, which are in the binary.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_rebase: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_merged: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    prompt_note_updated: Option<String>,
     columns: Vec<Column>,
     /// The tag registry (v2). Another array of tables, so it may follow
     /// `columns` but must stay after every scalar.
@@ -389,6 +401,11 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 claude_md_ignored: cf.claude_md_ignored,
                                 system_prompt: cf.system_prompt,
                                 default_column: cf.default_column,
+                                prompts: PromptSet {
+                                    rebase: cf.prompt_rebase,
+                                    merged: cf.prompt_merged,
+                                    note_updated: cf.prompt_note_updated,
+                                },
                                 ..Default::default()
                             };
                             // v3 → v4 (T-117): the template columns get the
@@ -586,6 +603,19 @@ pub fn read_default_column(paths: &Paths) -> Option<String> {
     cf.columns.iter().any(|c| c.name == name).then_some(name)
 }
 
+/// `Board::prompts` off the file, for `doctor` (T-353), on `read_mcp_tools`'s
+/// terms: an unreadable board answers "mesimon's own words", which is what an
+/// unreadable board sends.
+pub fn read_prompts(paths: &Paths) -> PromptSet {
+    read_columns_file(paths)
+        .map(|cf| PromptSet {
+            rebase: cf.prompt_rebase,
+            merged: cf.prompt_merged,
+            note_updated: cf.prompt_note_updated,
+        })
+        .unwrap_or_default()
+}
+
 /// The columns in board order, for `doctor`'s `columns` line (T-117) — read
 /// off the file on `read_mcp_tools`'s terms, and `None` where there is no
 /// board to speak of (doctor never creates one). A v3 file answers with the
@@ -616,6 +646,9 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         claude_md_ignored: board.claude_md_ignored,
         system_prompt: board.system_prompt,
         default_column: board.default_column.clone(),
+        prompt_rebase: board.prompts.rebase.clone(),
+        prompt_merged: board.prompts.merged.clone(),
+        prompt_note_updated: board.prompts.note_updated.clone(),
         columns: board.columns.clone(),
         tags: board.tags.clone(),
     };
@@ -1720,6 +1753,9 @@ order = "a0"
             claude_md_ignored: true,
             system_prompt: true,
             default_column: Some("TODO".into()),
+            prompt_rebase: Some("catch {branch} up to {base}".into()),
+            prompt_merged: None,
+            prompt_note_updated: None,
             columns: vec![Column {
                 name: "TODO".into(),
                 order: "a0".into(),
@@ -1775,6 +1811,16 @@ order = "a0"
         );
         assert!(
             text.find("default_column").expect("default_column on disk")
+                < text.find("[[columns]]").unwrap()
+        );
+        // T-353's three ride the same rule, and an unwritten one stays
+        // unwritten: absent means mesimon's own words, which are in the
+        // binary and never on disk.
+        assert_eq!(back.prompt_rebase.as_deref(), Some("catch {branch} up to {base}"));
+        assert!(back.prompt_merged.is_none());
+        assert!(!text.contains("prompt_merged"), "an unset template is unwritten:\n{text}");
+        assert!(
+            text.find("prompt_rebase").expect("prompt_rebase on disk")
                 < text.find("[[columns]]").unwrap()
         );
         let table = text.find("[[columns]]").expect("the columns table");

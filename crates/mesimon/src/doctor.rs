@@ -496,6 +496,32 @@ fn agents(repo: &Path, verbose: bool) -> Section {
             );
         }
 
+        // The three sentences Mesimon itself types into an agent's box
+        // (T-353). Printed VERBATIM either way, the brief's rule and for the
+        // brief's reason: these are the only words Mesimon adds to a
+        // conversation, so "what does it say" must be answerable without
+        // opening the TUI.
+        let prompts = mesimon_daemon::store::read_prompts(&paths);
+        let custom = prompts.custom_count();
+        let body = mesimon_core::prompts::AgentPrompt::ALL
+            .iter()
+            .map(|w| {
+                let whose = if prompts.is_custom(*w) { "yours" } else { "default" };
+                format!("{} ({whose}):\n  {}\n", w.label(), prompts.text(*w))
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let summary = match custom {
+            0 => "default wording".to_string(),
+            n => format!("{n} of {} rewritten here", mesimon_core::prompts::AgentPrompt::ALL.len()),
+        };
+        records.push(
+            rec(Level::Ok, "agent prompts", summary)
+                .advice(format!(
+                    "Mesimon sends these into a live session: a rebase request, a merge notice, and a note update. Settings > Agents > Agent prompts edits them; an emptied field restores the default wording.\n\n{body}"
+                )),
+        );
+
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
         // that card move". A board with no file prints nothing — doctor

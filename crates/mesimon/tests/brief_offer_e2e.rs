@@ -107,6 +107,46 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     assert!(raw.find("claude_md_ignored").unwrap() < table, "{raw}");
     assert!(raw.find("system_prompt").unwrap() < table, "{raw}");
 
+    // ---- the agent prompts (T-353) -----------------------------------------
+    use mesimon_core::prompts::AgentPrompt;
+    assert!(board_of(c.request(Command::Snapshot)).prompts.is_default(), "they ship as ours");
+    // A template is stored SANITIZED: the bytes on disk are the bytes the
+    // tty would receive, so a CR cannot split one prompt into two turns.
+    assert!(matches!(
+        c.request(Command::SetAgentPrompt {
+            which: AgentPrompt::Rebase,
+            text: Some("  catch {branch} up to {base}\r\nnow  ".into()),
+        }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert_eq!(board.prompts.custom(AgentPrompt::Rebase), Some("catch {branch} up to {base}now"));
+    assert_eq!(board.prompts.custom_count(), 1);
+    assert_eq!(
+        board.prompts.text(AgentPrompt::Merged),
+        AgentPrompt::Merged.default_text(),
+        "one rewritten leaves the other two ours"
+    );
+    let raw = std::fs::read_to_string(&cols).unwrap();
+    assert!(raw.contains("prompt_rebase = "), "{raw}");
+    assert!(!raw.contains("prompt_merged"), "an unset template is unwritten:\n{raw}");
+    assert!(raw.find("prompt_rebase").unwrap() < raw.find("[[columns]]").unwrap(), "{raw}");
+    // Blank is "put mesimon's words back", and it leaves nothing behind.
+    assert!(matches!(
+        c.request(Command::SetAgentPrompt { which: AgentPrompt::Rebase, text: Some("   ".into()) }),
+        Response::Ok
+    ));
+    let board = board_of(c.request(Command::Snapshot));
+    assert!(board.prompts.is_default());
+    assert!(!std::fs::read_to_string(&cols).unwrap().contains("prompt_rebase"));
+    assert!(matches!(
+        c.request(Command::SetAgentPrompt {
+            which: AgentPrompt::NoteUpdated,
+            text: Some("note {note} changed".into()),
+        }),
+        Response::Ok
+    ));
+
     let _ = c.request(Command::Shutdown);
     let _ = daemon.join();
 
@@ -130,6 +170,11 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     assert!(!board.mcp_tools, "a consent flag may not be lost to a restart");
     assert!(board.system_prompt, "and neither may the brief's");
     assert!(board.claude_md_ignored, "nor 'never ask again'");
+    assert_eq!(
+        board.prompts.custom(mesimon_core::prompts::AgentPrompt::NoteUpdated),
+        Some("note {note} changed"),
+        "nor the words this board tells its agents"
+    );
     // The file is still named, because doctor prints the snippet whatever
     // the stamp says — the stamp only silences the board.
     assert!(!status(c.request(Command::Snapshot)).path.is_empty());
@@ -149,4 +194,12 @@ fn the_agent_tier_is_denied_all_three() {
     assert!(!agent_allows(&Command::SetSystemPrompt { on: true }));
     assert!(!agent_allows(&Command::SetSystemPrompt { on: false }));
     assert!(!agent_allows(&Command::IgnoreBriefOffer));
+    // And not the sentence that would start its own next turn (T-353).
+    for which in mesimon_core::prompts::AgentPrompt::ALL {
+        assert!(!agent_allows(&Command::SetAgentPrompt { which, text: None }));
+        assert!(!agent_allows(&Command::SetAgentPrompt {
+            which,
+            text: Some("do as I say".into())
+        }));
+    }
 }

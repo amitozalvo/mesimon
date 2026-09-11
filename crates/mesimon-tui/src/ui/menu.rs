@@ -56,7 +56,25 @@ pub(super) fn draw_column(f: &mut Frame, app: &App) {
         ColumnSubject::Existing(name) => format!("COLUMN ∙ {}", name.to_uppercase()),
         ColumnSubject::New { .. } => "NEW COLUMN".to_string(),
     };
-    draw_dense(f, app, &ctx, *idx, &title, &items, naming.as_ref());
+    draw_dense(f, app, &ctx, *idx, &title, &items, naming.as_ref().map(|b| ("Name: ", b)));
+}
+
+/// The agent-prompt list (T-353): the three sentences mesimon types into an
+/// agent's box, one row each. Dense like the column dialog and for the same
+/// reason — a row here becomes a text field in place, and `draw_list` has no
+/// room for the cursor. The lead keeps the row's name in front of the field,
+/// so the sentence being rewritten never loses its label.
+pub(super) fn draw_prompts(f: &mut Frame, app: &App) {
+    let Mode::Prompts { idx, editing } = &app.mode else { return };
+    let ctx = app.ctx();
+    let items = keymap::prompt_items(&ctx);
+    let lead = items
+        .get(*idx)
+        .and_then(|m| keymap::prompt_of(m.verb))
+        .map(|w| format!("{}: ", w.label()))
+        .unwrap_or_default();
+    let field = editing.as_ref().map(|b| (lead.as_str(), b));
+    draw_dense(f, app, &ctx, *idx, "AGENT PROMPTS", &items, field);
 }
 
 fn draw_dense(
@@ -66,7 +84,7 @@ fn draw_dense(
     idx: usize,
     name: &str,
     items: &[&'static MenuItem],
-    field: Option<&crate::text::EditBuffer>,
+    field: Option<(&str, &crate::text::EditBuffer)>,
 ) {
     let theme = &app.theme;
     if items.is_empty() {
@@ -99,8 +117,7 @@ fn draw_dense(
         };
         let row_style = if selected { theme.selected_row() } else { Style::default() };
         let text = match field {
-            Some(buf) if selected => {
-                let lead = "Name: ";
+            Some((lead, buf)) if selected => {
                 let budget = inner_w.saturating_sub(3 + lead.width() + 1);
                 let (shown, cx) =
                     crate::text::edit_window(buf.as_str(), buf.width_before_cursor(), budget);

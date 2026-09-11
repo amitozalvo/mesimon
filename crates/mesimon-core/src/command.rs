@@ -349,6 +349,20 @@ pub enum Command {
         #[serde(default)]
         column: Option<String>,
     },
+    /// Rewrite one of the three sentences mesimon types into an agent's box
+    /// (T-353): the rebase ask, the merged notice, the note nudge. `None`
+    /// puts mesimon's own words back — so does text that sanitizes to
+    /// nothing, which is what an emptied field sends. The daemon sanitizes
+    /// what it stores (`sanitize_prompt`, the same boundary a typed ask
+    /// crosses), so a template is one line and the stored bytes are the
+    /// bytes the tty will receive. Per repo, persisted in `columns.toml`.
+    /// Local only — an agent that could rewrite the sentence that starts its
+    /// own next turn would be writing its own instructions.
+    SetAgentPrompt {
+        which: crate::prompts::AgentPrompt,
+        #[serde(default)]
+        text: Option<String>,
+    },
     /// The column lifecycle (T-117). All local only: a tier that could add a
     /// column, rename the one it is in, or rewrite its own column's rules
     /// would be writing its own tier. A column's NAME is its identity —
@@ -753,6 +767,7 @@ impl Command {
             | SetAgentProvider { .. }
             | SetSystemPrompt { .. }
             | SetDefaultColumn { .. }
+            | SetAgentPrompt { .. }
             | IgnoreBriefOffer
             // The column lifecycle (T-117): a person's gesture, and the feed
             // is where "who renamed TODO" gets answered.
@@ -1253,6 +1268,18 @@ pub enum MergeRequest {
     Rebase,
     /// "Your branch was merged into <base>" — the post-merge notice.
     MergedNotice,
+}
+
+impl MergeRequest {
+    /// Which of the board's templates writes this one (T-353). The two
+    /// enums stay apart because `MergeRequest` is the stage of the merge
+    /// flow and `AgentPrompt` is a row in Settings; this is the one seam.
+    pub fn prompt(self) -> crate::prompts::AgentPrompt {
+        match self {
+            MergeRequest::Rebase => crate::prompts::AgentPrompt::Rebase,
+            MergeRequest::MergedNotice => crate::prompts::AgentPrompt::Merged,
+        }
+    }
 }
 
 /// A deleted ticket riding out its grace band (D21): shown as a ghost row.
