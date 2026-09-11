@@ -4,19 +4,19 @@
  IN PROGRESS for >1y ∙ created >1y ago ∙ description unread
 
 
-  NOTE
+  DESCRIPTION
 
-    Repro steps
+    What changed
 
-    1. open the board
-    2. press p
-    3. watch the peek
-                                                                                           SESSIONS                  2
+    The OSC-11 query now runs once, before raw mode, and the answer is cached for the
+    session.
 
+    • detect.rs asks the terminal, then hands the flavor to Theme::new                     SESSIONS                  2
+    • the goldens moved with it
                                                                                           ⠋ ✻ claude               >1y
-                                                                                          ◦ $ bash                 >1y
+      cargo test -p mesimon-tui                                                           ◦ $ bash                 >1y
 
-                                                                                           NOTES                     2
+    Still open: the --color=never path is untested covered now.                            NOTES                     2
 
                                                                                            ≡ description       you >1y
                                                                                            ≡ Repro steps     agent >1y

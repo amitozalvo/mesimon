@@ -9291,3 +9291,41 @@ being that dropping the connection is enough.
 The stale breadcrumb on the private server is left alone, as a plain
 `FocusEnd` leaves it: nobody is attached to read it, and the next attach
 rewrites it before its pane is on screen.
+
+## The description is read in one place (T-344, 2026-09-11)
+
+The ticket page held the description twice. `notes[0]` IS the description, so
+the cursor on the rail's first note put a truncated copy of it in the header
+band and the whole of it in the preview zone directly below — the same words,
+one above the other, on the surface with the least room to spare.
+
+The band's excerpt is CONTEXT: it says what the ticket is while the zone
+beside it reads something else. So it now stands down for as long as the zone
+is reading a NOTE — any note, not just the first — and the zone's heading
+carries the role the band used to: `DESCRIPTION` on `notes[0]`, `NOTE` on the
+rest, `PREVIEW` unchanged for a session, a shell's pane and the empty seat.
+The heading never spells the note's own NAME, which is its body's first line:
+that would put the same words in the row under it, which is this ticket again
+one surface smaller. Applying it to every note is what keeps the shape of the
+page from changing on one particular row as the cursor walks the list.
+
+The rail does not move while that happens. `draw` splits the block's rows in
+two: `extra` is the room the description OWNS and is what the rail is placed
+under, drawn or not; `shown` is what the band spends this frame. The space
+comes back on the LEFT — the zone starts where the block did and reads on for
+another six to nine rows — so the row under the cursor stays where the eye
+left it, and the price is that the rail's own heading sits below the zone's
+while a note is open.
+
+Below `TWO_ZONE_MIN_W` the band keeps the excerpt whatever is selected: there
+is no zone there to read a note in, and the one thing the page must not do is
+lose the description entirely.
+
+The rail's first note row says `description` rather than its opening words —
+the role is the one thing about that row the page said nowhere else, and its
+name was a third copy of the same sentence. Nothing daemon-side moved: no
+`Command`, no `Snapshot` field, no `Ctx` field, no key, no schema.
+
+Goldens: `ticket_description_selected_120x30` is new; `ticket_note_selected`,
+`ticket_description` and `ticket_new_claude` moved. The two L1 sweeps used to
+render both markdown surfaces on one screen and now render one each.

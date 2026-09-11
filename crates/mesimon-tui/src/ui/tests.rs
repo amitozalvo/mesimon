@@ -4750,6 +4750,104 @@ fn golden_ticket_note_selected_120() {
     golden("ticket_note_selected_120x30", &lines);
 }
 
+/// The cursor on the DESCRIPTION row: the band's excerpt has gone, the zone
+/// reads the whole thing under its own heading, and the rail has not moved
+/// (T-344).
+#[test]
+fn golden_ticket_description_selected_120() {
+    let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 2 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("DESCRIPTION")), "the zone's heading: {lines:?}");
+    golden("ticket_description_selected_120x30", &lines);
+}
+
+/// The description is on the page ONCE. The band's excerpt is CONTEXT for
+/// whatever the zone is reading; the moment the zone is reading the notes —
+/// and the first of them IS the description — the band would be holding a
+/// truncated copy of the words the zone has whole, which is what T-344
+/// filed. It gives its rows to the zone there, and only its rows: the rail
+/// keeps its `y`, so the row under the cursor does not move as the cursor
+/// walks into the notes.
+#[test]
+fn the_description_leaves_the_band_while_a_note_is_read() {
+    let sentence = "The OSC-11 query now runs once";
+    let bar = " \u{258e} ";
+    let mut app = app_noted();
+    let shot = |app: &mut App, idx: usize, w: u16, h: u16| -> Vec<String> {
+        app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: idx };
+        render(app, w, h)
+    };
+    let says = |lines: &[String], needle: &str| lines.iter().filter(|l| l.contains(needle)).count();
+    let at = |lines: &[String], needle: &str| {
+        lines
+            .iter()
+            .position(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("{needle} is nowhere: {lines:?}"))
+    };
+    // The zone's heading opens its own row (the zone starts one cell in),
+    // which is what tells it from the rail's `NOTES` further along the line.
+    let head_at = |lines: &[String], word: &str| {
+        let head = format!("  {word}");
+        lines
+            .iter()
+            .position(|l| l.starts_with(&head))
+            .unwrap_or_else(|| panic!("no {word} heading: {lines:?}"))
+    };
+
+    // A session row: the excerpt is the band's, under the state line, and
+    // the zone beside it is the session's.
+    let session = shot(&mut app, 0, 120, 30);
+    assert_eq!(says(&session, sentence), 1, "the excerpt, once: {session:?}");
+    assert!(session.iter().any(|l| l.starts_with(bar)), "the block's bar: {session:?}");
+    assert_eq!(head_at(&session, "PREVIEW"), 13, "{session:?}");
+
+    // The description row: the same words, once, in the zone — headed by
+    // the role the band used to carry, with no bar row left above.
+    let desc = shot(&mut app, 2, 120, 30);
+    assert_eq!(says(&desc, sentence), 1, "the description, once: {desc:?}");
+    assert!(!desc.iter().any(|l| l.starts_with(bar)), "the block is gone: {desc:?}");
+    assert_eq!(head_at(&desc, "DESCRIPTION"), 6, "the zone took the band's rows: {desc:?}");
+
+    // Any other note reads the same way — one shape for the whole list —
+    // and the description is nowhere on the page while it does.
+    let note = shot(&mut app, 3, 120, 30);
+    assert_eq!(says(&note, sentence), 0, "no excerpt over another note: {note:?}");
+    assert_eq!(head_at(&note, "NOTE"), 6, "{note:?}");
+
+    // The rail stays where the eye left it, and the rows the band gave up
+    // come back to the zone on the left.
+    for (idx, lines) in [(2usize, &desc), (3, &note)] {
+        assert_eq!(
+            at(lines, "SESSIONS"),
+            at(&session, "SESSIONS"),
+            "the rail moved at rail_idx {idx}: {lines:?}"
+        );
+    }
+
+    // The rail names the first note by its ROLE — its own name is its
+    // body's first line, which is what the band and the zone both show —
+    // and every other note by its name.
+    assert!(desc.iter().any(|l| l.contains("\u{2261} description")), "{desc:?}");
+    assert!(desc.iter().any(|l| l.contains("\u{2261} Repro steps")), "{desc:?}");
+
+    // Narrow: there is no zone to read a note in, so the band keeps the
+    // excerpt whatever the rail's cursor is on.
+    let narrow = shot(&mut app, 2, 100, 24);
+    assert_eq!(says(&narrow, sentence), 1, "the excerpt stays in one zone: {narrow:?}");
+    assert!(narrow.iter().any(|l| l.starts_with(bar)), "{narrow:?}");
+
+    // And a ticket whose description has not been fetched keeps the
+    // geometry it always had: an empty block gives nothing up.
+    app.notes.clear();
+    let bare = shot(&mut app, 2, 120, 30);
+    assert_eq!(
+        at(&bare, "SESSIONS"),
+        head_at(&bare, "DESCRIPTION"),
+        "nothing to give up: {bare:?}"
+    );
+}
+
 /// The ticket page's header section — title, state line, description — is
 /// ONE band on the elevated surface (author 2026-09-03): the chip row above
 /// it and the zones below it stay on the page ground, and the description
@@ -4852,6 +4950,26 @@ fn test_no_banned_sgr() {
                 ratatui::crossterm::event::KeyModifiers::NONE,
             )
             .unwrap();
+        // The ticket page renders markdown on two surfaces, and since T-344
+        // they are never on screen together: the band's description block
+        // while the zone reads something that is not a note, and the note
+        // itself in the zone, which is where the band's rows went.
+        let mut n = App::for_test(fixture(false), Theme::new(flavor, profile));
+        if let Some(t) = n.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
+            t.notes.push(note_meta(90, "What changed", "local"));
+            t.notes.push(note_meta(91, "tree", "local"));
+        }
+        n.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
+        n.remember_note(ulid_n(91), 1, Some(crate::peek::sanitize(&dirty_tail().join("\n"))));
+        n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+        assert!(
+            render(&n, 120, 30).iter().any(|l| l.contains("What changed")),
+            "description on screen"
+        );
+        let desc_band = cells(&n, 120, 30);
+        n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 };
+        assert!(render(&n, 120, 30).iter().any(|l| l.contains("in 2.4s")), "note on screen");
+        let note_zone = cells(&n, 120, 30);
         for buf in [
             {
                 assert!(
@@ -4974,26 +5092,8 @@ fn test_no_banned_sgr() {
                 );
                 cells(&e, 120, 30)
             },
-            {
-                // The ticket page with a description block and a note in the
-                // zone: two more surfaces that render markdown.
-                let mut n = App::for_test(fixture(false), Theme::new(flavor, profile));
-                if let Some(t) = n.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
-                    t.notes.push(note_meta(90, "What changed", "local"));
-                    t.notes.push(note_meta(91, "tree", "local"));
-                }
-                n.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
-                n.remember_note(
-                    ulid_n(91),
-                    1,
-                    Some(crate::peek::sanitize(&dirty_tail().join("\n"))),
-                );
-                n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 3 };
-                let lines = render(&n, 120, 30);
-                assert!(lines.iter().any(|l| l.contains("What changed")), "description on screen");
-                assert!(lines.iter().any(|l| l.contains("in 2.4s")), "note on screen");
-                cells(&n, 120, 30)
-            },
+            desc_band,
+            note_zone,
         ] {
             for y in 0..30 {
                 for x in 0..120 {
@@ -5254,19 +5354,28 @@ fn test_no_drawn_structure() {
             lines.into_iter().chain(sweep(&e)).collect()
         },
         {
+            // The page's two markdown surfaces, which since T-344 are never
+            // on screen together: the band's description block while the
+            // zone reads a session, and a note in the zone, which is where
+            // the band's rows went.
             let mut n = app_noted();
             if let Some(t) = n.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)) {
                 t.notes.push(note_meta(92, "tree", "local"));
             }
             n.remember_note(ulid_n(92), 1, Some(crate::peek::sanitize(&dirty_tail().join("\n"))));
-            n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 4 };
+            n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
             let lines = sweep(&n);
             assert!(lines.iter().any(|l| l.contains("What changed")), "description on screen");
-            assert!(lines.iter().any(|l| l.contains("in 2.4s")), "note on screen");
-            lines
+            n.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 4 };
+            let note = sweep(&n);
+            assert!(note.iter().any(|l| l.contains("in 2.4s")), "note on screen");
+            lines.into_iter().chain(note).collect()
         },
     ];
-    assert_eq!(swept.borrow().len(), screens.len() + 1, "one grid per swept screen");
+    // Two entries sweep a screen of their own besides the one they return:
+    // the note editor over the board, and the ticket page's second markdown
+    // surface.
+    assert_eq!(swept.borrow().len(), screens.len() + 2, "one grid per swept screen");
     let on_perimeter = |frames: &[ratatui::layout::Rect], x: u16, y: u16| {
         frames.iter().any(|r| {
             let inside = x >= r.x && x < r.x + r.width && y >= r.y && y < r.y + r.height;

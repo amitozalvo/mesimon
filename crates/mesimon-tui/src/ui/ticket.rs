@@ -41,6 +41,19 @@ const WT_BRANCH_FLOOR: usize = 16;
 /// read. A third of the body, and never more than this.
 const DESC_MAX_ROWS: usize = 8;
 
+/// The note the preview zone is reading, and which of the ticket's notes it
+/// is: the first one IS the description (`Ticket::description`), and while
+/// the zone holds it the band above says nothing (T-344), so the heading is
+/// what carries the role. The note's own NAME is never the heading — a
+/// note's name is its body's first line, so a heading spelling it would put
+/// the same words in the row under it, which is the duplication this ticket
+/// is about at one surface's scale.
+struct NoteView<'a> {
+    meta: &'a NoteMeta,
+    text: Option<&'a str>,
+    description: bool,
+}
+
 /// Who a note's author string names, in the page's own words: a person at
 /// this board is `you`, and a retained agent record names its provider.
 pub(super) fn author_word(by: &str, app: &App) -> &'static str {
@@ -361,6 +374,18 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // the `sel` ramp with code sunk to the page ground (`Surface::Elevated`).
     // Rich text, capped: what the ticket IS reads before what its sessions
     // are doing. No heading over it; it is the ticket's own words.
+    //
+    // And it is CONTEXT, which is what decides when it is drawn at all
+    // (T-344): the excerpt says what the ticket is while the zone beside it
+    // reads something else. On a note row the zone is reading the notes —
+    // and the description is the first of them — so the band would be
+    // holding a truncated copy of the very words the zone has whole. It
+    // gives its rows up there, and only its rows: the rail keeps the `y` it
+    // had, so the space comes back on the LEFT and the row under the cursor
+    // does not move as the cursor walks into the notes.
+    let two_zone = area.width >= TWO_ZONE_MIN_W;
+    let row = app.rail_rows(ticket_id).get(rail_idx).copied();
+    let reading_note = two_zone && matches!(row, Some(RailRow::Note(_)));
     let body_rows = (area.height as usize).saturating_sub(7);
     let desc: Vec<Line<'static>> = ticket
         .description()
@@ -377,10 +402,13 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         })
         .unwrap_or_default();
     // The description's rows plus its bottom pad; the blank over it is the
-    // band's own fourth row.
+    // band's own fourth row. `extra` is the room the block OWNS — what the
+    // rail is placed under, drawn or not — and `shown` is what the band
+    // spends of it this frame.
     let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 1 };
+    let shown = if reading_note { 0 } else { extra };
     let mut rows = vec![Line::default(), title_row, ident, Line::default()];
-    if !desc.is_empty() {
+    if !desc.is_empty() && !reading_note {
         let (bar_ch, bar_style) = theme.desc_bar();
         for row in desc {
             let mut spans =
@@ -410,29 +438,38 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             x: area.x,
             y: area.y + 1,
             width: area.width,
-            height: (4 + extra).min(area.height.saturating_sub(1)),
+            height: (4 + shown).min(area.height.saturating_sub(1)),
         },
     );
 
     // ---- body zones -------------------------------------------------------
     // One breathing row under the band (06 §5.5) before the zones.
-    let body_y = area.y + 6 + extra;
     // header 1 + band 4 + breathing 1 + footer 1, plus the description rows.
-    let body_h = area.height.saturating_sub(7 + extra);
-    let two_zone = area.width >= TWO_ZONE_MIN_W;
+    // The RAIL is placed under the block the ticket owns (`extra`), never
+    // under the one this frame drew (`shown`): a band that gave its rows to
+    // the zone must not carry the list under the cursor up with it (T-344).
+    let rail_y = area.y + 6 + extra;
+    let rail_h = area.height.saturating_sub(7 + extra);
+    let body_y = area.y + 6 + shown;
+    let body_h = area.height.saturating_sub(7 + shown);
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant
         // reply, read through the same draw cache as the board's `p` peek
         // and the spoke scan (one entry per path since T-173). Bash sessions
         // have no transcript and preview nothing.
-        let row = app.rail_rows(ticket_id).get(rail_idx).copied();
         let sel = match row {
             Some(RailRow::Session(s)) => Some(s),
             _ => None,
         };
-        // A note row: the note itself, whole, once it has been fetched.
+        // A note row: the note itself, whole, once it has been fetched, and
+        // which of the ticket's notes it is — the first one IS the
+        // description, and with the band quiet the heading is what says so.
         let note = match row {
-            Some(RailRow::Note(n)) => Some((n, app.note_text(n))),
+            Some(RailRow::Note(n)) => Some(NoteView {
+                meta: n,
+                text: app.note_text(n),
+                description: ticket.description().is_some_and(|d| d.id == n.id),
+            }),
             _ => None,
         };
         let peek = sel.and_then(|s| app.peek_cache.peek_for(s.kind, crate::peek::preview_path(s)?));
@@ -469,9 +506,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             f,
             Rect {
                 x: area.x + left_w + 3,
-                y: body_y,
+                y: rail_y,
                 width: RAIL_W.saturating_sub(1),
-                height: body_h,
+                height: rail_h,
             },
             app,
             ticket_id,
@@ -483,7 +520,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         app.preview_view.set(PreviewView::default());
         draw_rail(
             f,
-            Rect { x: area.x + 1, y: body_y, width: area.width.saturating_sub(2), height: body_h },
+            Rect { x: area.x + 1, y: rail_y, width: area.width.saturating_sub(2), height: rail_h },
             app,
             ticket_id,
             rail_idx,
@@ -511,7 +548,7 @@ fn draw_preview(
     peek: Option<&crate::peek::Peek>,
     working: bool,
     shell: Option<&[String]>,
-    note: Option<(&NoteMeta, Option<&str>)>,
+    note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
 ) {
     let theme = &app.theme;
@@ -521,14 +558,23 @@ fn draw_preview(
     // overflows (T-158: the hint beside the thing it pages, off the footer)
     // — read from the LAST frame's measurement, before this one resets it.
     let ctx = app.ctx();
-    let heading = || -> Line<'static> {
-        let mut spans = vec![Span::styled(" PREVIEW", theme.dim1().add_modifier(Modifier::BOLD))];
+    // The word names what the zone is holding, in the page's own heading
+    // vocabulary: PREVIEW for a session, because neither a transcript tail
+    // nor a pane capture is the record (author 2026-09-01) — and, since
+    // T-344, DESCRIPTION or NOTE for a note, because a note in this zone IS
+    // the whole document and the band above has stopped saying which.
+    let heading = |word: &str| -> Line<'static> {
+        let word = format!(" {word}");
+        let used = word.width();
+        let mut spans = vec![Span::styled(word, theme.dim1().add_modifier(Modifier::BOLD))];
         let keys = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::PageDown, &ctx)
             .map(|b| chrome::hint_spans(&[b], &ctx, &theme.rest, (area.width as usize) / 2))
             .unwrap_or_default();
         let keys_w: usize = super::spans_width(&keys);
         if keys_w > 0 {
-            spans.push(Span::raw(" ".repeat((area.width as usize).saturating_sub(8 + keys_w + 1))));
+            spans.push(Span::raw(
+                " ".repeat((area.width as usize).saturating_sub(used + keys_w + 1)),
+            ));
             spans.extend(keys);
         }
         Line::from(spans)
@@ -547,7 +593,7 @@ fn draw_preview(
     // side is the record, both are the last of it, and the rail row beside it
     // already says which session the cursor is on (author 2026-09-01).
     if let Some(tail) = shell {
-        lines.push(heading());
+        lines.push(heading("PREVIEW"));
         lines.push(Line::default());
         if tail.is_empty() {
             lines.push(Line::from(Span::styled("   nothing on screen yet", theme.dim3())));
@@ -577,11 +623,13 @@ fn draw_preview(
             spans.extend(row.spans);
             lines.push(Line::from(spans));
         }
-    } else if let Some((meta, text)) = note {
+    } else if let Some(NoteView { meta, text, description }) = note {
         // A note, whole: the same rich text as a reply, paged the same way,
         // keyed to the note and its revision so an agent's rewrite starts
-        // the page at the top.
-        lines.push(heading());
+        // the page at the top. This is the ticket's reading surface now —
+        // the band gave the description's rows up to reach it (T-344) — so
+        // the heading says which of the two a note row is.
+        lines.push(heading(if description { "DESCRIPTION" } else { "NOTE" }));
         lines.push(Line::default());
         match text {
             None => lines.push(Line::from(Span::styled("   fetching", theme.dim3()))),
@@ -599,7 +647,7 @@ fn draw_preview(
             }
         }
     } else if reply.is_some() {
-        lines.push(heading());
+        lines.push(heading("PREVIEW"));
         lines.push(Line::default());
         if let Some(text) = reply {
             // Reserve the indicator's rows so a long reply never pushes it off.
@@ -634,10 +682,10 @@ fn draw_preview(
         // words have not landed, the corpse that never spoke, the shell whose
         // pane has not been captured yet. The zone stood blank for all of
         // them — the same blank the empty seat had, one press later.
-        lines.push(heading());
+        lines.push(heading("PREVIEW"));
         lines.extend(quiet_session(app, rec, peek, area));
     } else if let Some(ticket) = seat.and_then(|id| app.board.ticket(id)) {
-        lines.push(heading());
+        lines.push(heading("PREVIEW"));
         lines.extend(empty_seat(app, ticket, area));
     }
     f.render_widget(Paragraph::new(lines), area);
@@ -1234,7 +1282,14 @@ fn draw_rail(
                 .unwrap_or_default();
             let tail = format!("{who} {age}");
             let budget = w.saturating_sub(4 + tail.width() + 1);
-            let name = truncate(&n.name, budget);
+            // The first note IS the description (`Ticket::description`), and
+            // a note's name is its body's first line — so this row spent its
+            // cells repeating words the band above was already showing. It
+            // says its ROLE instead (T-344): what the row is, not what it
+            // opens with, which is the one thing about it the page says
+            // nowhere else.
+            let label = if j == 0 { "description" } else { n.name.as_str() };
+            let name = truncate(label, budget);
             let name_style = if selected {
                 Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
             } else {

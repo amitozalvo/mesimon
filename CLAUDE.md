@@ -279,7 +279,18 @@ dropped into the draft composing (`^s` still mints). The hint names the program 
 `App::editor_word` is set in `lib.rs`, never `App::new`, so no test or golden sees a developer's
 `$EDITOR` and the key is inert there. `mesimon doctor` prints an `editor` line. (STALE-MAP "A note
 opens in the user's own editor".) The ticket page draws the description under the identity line and
-lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. Agents
+lists notes in the rail (`RailRow`); `App::poll_notes` fetches bodies once per `(id, rev)`. **The
+band's excerpt is CONTEXT, so it stands down while the zone beside it reads a NOTE** (T-344,
+2026-09-11): `notes[0]` IS the description, so the cursor on that row held a truncated copy above
+the whole one. The zone's heading carries the role instead — `DESCRIPTION` on `notes[0]`, `NOTE`
+on the rest, `PREVIEW` for a session, a shell's pane and the empty seat — and never the note's own
+NAME, which is its body's first line and would be the same duplication one surface smaller. `draw`
+splits the block's rows: `extra` is the room the description OWNS and is what the RAIL is placed
+under, drawn or not; `shown` is what the band spends this frame — so the space comes back on the
+LEFT and the row under the cursor does not move. Below `TWO_ZONE_MIN_W` there is no zone to read a
+note in and the band keeps the excerpt whatever is selected. The rail's first note row says
+`description`, not its opening words. Goldens `ticket_description_selected_120x30`,
+`ticket_note_selected_120x30`. (STALE-MAP "The description is read in one place".) Agents
 get `read_note`/`write_note` (eight tools now, with `create_ticket`, `tag_ticket` and
 `raise_hand`) and
 `get_ticket` carries the description. Adding a
