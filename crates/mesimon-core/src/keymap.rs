@@ -2306,12 +2306,20 @@ static DIFF: &[Binding] = &[
         keys: &[Key::Tab],
         verb: Verb::GitCommits,
         show: "tab",
-        hint: |c| if c.git_commits { "uncommitted changes" } else { "push / pull commits" },
+        // The word is the OTHER view's title word, because that is where the
+        // key is drawn (T-347): the identity row spells `push / pull` or
+        // `uncommitted` and this hint sits beside it. `push / pull commits` /
+        // `uncommitted changes` said the same thing one clause longer, and
+        // the longer pair did not fit a 60-column title row.
+        hint: |c| if c.git_commits { "uncommitted" } else { "push / pull" },
         avail: |c| c.checkout_diff,
         class: Class::Plain,
         group: Group::View,
         mutates: false,
-        prio: 10,
+        // Overlay-only: drawn on the identity row beside the `↑N ↓N` that is
+        // the reason to press it — a hint sits where it operates, like
+        // `n N file` beside FILES.
+        prio: 0,
     },
     Binding {
         // A vertical list takes ↓ ↑ and nothing sideways.

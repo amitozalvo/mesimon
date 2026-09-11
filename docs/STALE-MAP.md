@@ -9406,3 +9406,42 @@ compares two byte offsets in one string and never converts either to a column.
 `Command`, no `Snapshot` field, no `Ctx` field, no key, no schema, and no
 width — `›` is one cell, so every hint, budget and truncation lands where it
 landed before.
+
+## The diff title says what is out of sync (T-347, 2026-09-11)
+
+T-322 put the push/pull commit lists one `Tab` away from the checkout diff and
+left the screen with nothing to say about them. The footer's `tab push / pull
+commits` was an *availability*, not a state: it read exactly the same on a
+branch level with its upstream and on one eleven commits ahead, so the only
+way to learn there was anything there was to press the key and look. The board
+header had the answer the whole time — `⎇ main ↑2 ↓1` — and the diff screen,
+which is the screen you are on *because* you are asking about git, did not.
+
+The identity row carries it now: `⎇ main ↑2 ↓1 ∙ uncommitted ∙ 2 files ∙ +14
+-3`, and the commits view spells the same arrows before its own word. They are
+`glyphs::ahead_mark`/`behind_mark` in `theme.calm_text()` — the glyphs doc's
+"one home so the two surfaces cannot drift" now has three surfaces on it (the
+header, the card's `⎇↑`, this row) and one function behind them. `sync_marks`
+is empty on a ticket's branch diff, because a worktree branch is measured
+against the base it forked from and `app.git` is the checkout's upstream;
+empty before a sample lands, because an unknown must not read as "in sync";
+and empty at zero, the same silence `git_clause` keeps.
+
+`tab` moved to `prio: 0` and is drawn at the end of that row instead of in the
+footer — the hint sits beside the state that is the reason to press it, the
+way `n N file` sits beside FILES. Its words shortened to the OTHER view's
+title word (`push / pull` / `uncommitted`) from `push / pull commits` /
+`uncommitted changes`: the key and the row then read as one clause, and the
+long pair did not fit a 60-column title. A row too tight for it drops it —
+`hint_spans`' own arithmetic — and `?` lists it at every width, which is what
+`?` is for.
+
+The alternative was leaving `tab` in the footer and putting only the arrows on
+the row. That keeps a standing cue below 65 columns and was refused because it
+puts the fact and the key at opposite ends of the screen, which is the thing
+the ticket was about (author 2026-09-11, asked and answered before any code).
+
+Goldens: `diff_checkout_120x30` (now sampled and diverged, so the shipped
+shape is what is minted), `git_commits_120x30`, `git_commits_60x30` — the row
+gains the clause and the footer loses the hint in all three. Nothing else
+moved: no `Command`, no `Snapshot` field, no `Ctx` field, no key, no schema.

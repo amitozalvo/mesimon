@@ -84,12 +84,31 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         format!("{against} ∙ {n} {noun} ∙ +{adds} -{dels}")
     };
     let branch = if d.commits { &app.git.branch } else { &d.branch };
-    let mut ident = vec![
-        Span::styled(format!(" ⎇ {}", crate::text::one_line(branch)), theme.dim1()),
-        Span::styled(format!(" ∙ {summary}"), theme.dim2()),
-    ];
+    let mut ident =
+        vec![Span::styled(format!(" ⎇ {}", crate::text::one_line(branch)), theme.dim1())];
+    // The checkout's push/pull state belongs on the title, not behind a key
+    // press (T-347): before this, the only thing the screen said about it was
+    // the footer's standing `tab` — an offer that read the same whether or
+    // not anything was pending, so the only way to learn there were commits
+    // was to go and look. The arrows hang off the branch in the board
+    // header's exact spelling and register, so the two surfaces read alike.
+    let sync = sync_marks(app, d);
+    if !sync.is_empty() {
+        ident.push(Span::styled(sync, theme.calm_text()));
+    }
+    ident.push(Span::styled(format!(" ∙ {summary}"), theme.dim2()));
     if d.is_branch() && !d.worktree_present {
         ident.push(Span::styled(" ∙ worktree evicted".to_string(), theme.dim2()));
+    }
+    // …and the key that crosses to the other view sits beside the state that
+    // is the reason to press it, the way `n N file` sits beside FILES. It is
+    // this row's only hint, so `tab` is off the footer (`prio: 0`); a row too
+    // tight to hold it drops it and `?` still lists it.
+    let used = super::spans_width(&ident);
+    let keys = hints(app, &[Verb::GitCommits], (area.width as usize).saturating_sub(used + 4));
+    if !keys.is_empty() {
+        ident.push(Span::raw("   ".to_string()));
+        ident.extend(keys);
     }
 
     // Real space cells — the empty-Line band idiom paints nothing (see the
@@ -157,6 +176,28 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         Paragraph::new(footer),
         Rect { x: area.x, y: area.y + area.height - 1, width: area.width, height: 1 },
     );
+}
+
+/// The checkout's `↑N ↓N` for the identity row (T-347) — `glyphs`' own
+/// arrows, so "ahead, push due" / "behind, pull due" is spelled here exactly
+/// as the board header spells it. Empty on a ticket's branch diff (the
+/// worktree's branch is not what `app.git` measures), before a sample lands,
+/// and when the branch is level with its upstream — an absent clause reads as
+/// nothing pending, the same silence the header keeps.
+fn sync_marks(app: &App, d: &DiffState) -> String {
+    let g = &app.git;
+    if d.is_branch() || !g.sampled {
+        return String::new();
+    }
+    let tier = app.theme.glyph_tier();
+    let mut out = String::new();
+    if g.ahead > 0 {
+        out.push_str(&format!(" {}{}", crate::glyphs::ahead_mark(tier), g.ahead));
+    }
+    if g.behind > 0 {
+        out.push_str(&format!(" {}{}", crate::glyphs::behind_mark(tier), g.behind));
+    }
+    out
 }
 
 /// Both directions share the reading keys and a single scroll position.

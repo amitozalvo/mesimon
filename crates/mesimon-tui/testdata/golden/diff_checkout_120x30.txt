@@ -1,6 +1,6 @@
  DIFF   mesimon › kanban-tui
 
- ⎇ main ∙ uncommitted ∙ 2 files ∙ +14 -3
+ ⎇ main ↑2 ↓1 ∙ uncommitted ∙ 2 files ∙ +14 -3   tab push / pull
 
 
   FILES  n N file        (2)    crates/mesimon-tui/src/ui/diff.rs ∙ file 1/2 ∙ 1 hunk
@@ -27,4 +27,4 @@
 
 
 
- tab push / pull commits ∙ z context, layout… ∙ R refresh ∙ q back                                               ? keys
+ z context, layout… ∙ R refresh ∙ q back                                                                         ? keys

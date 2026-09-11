@@ -1,6 +1,6 @@
  DIFF   mesimon › kanban-tui
 
- ⎇ main ∙ push / pull ∙ origin/main
+ ⎇ main ↑2 ↓1 ∙ push / pull ∙ origin/main   tab uncommitted
 
 
  { } page ∙ jk scroll
@@ -27,4 +27,4 @@
 
 
 
- tab uncommitted changes ∙ R refresh ∙ q back        ? keys
+ R refresh ∙ q back                                  ? keys

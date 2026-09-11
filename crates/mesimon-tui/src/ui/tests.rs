@@ -1893,7 +1893,63 @@ fn column_header_footer_teaches_new_column() {
 fn golden_checkout_diff_120() {
     let mut app = app_graphite(fixture(false));
     install_checkout_diff(&mut app);
+    // Sampled and out of sync, which is the shape the title has to carry
+    // (T-347): the arrows on the branch and `tab` beside them.
+    app.git = git_state("main", 2, 1, 2);
     golden("diff_checkout_120x30", &render(&app, 120, 30));
+}
+
+/// T-347: the push/pull state is on the identity row, and the key that goes
+/// to it sits beside it rather than in the footer. Before this the row said
+/// nothing at all and the footer's `tab` read the same whether or not
+/// anything was pending.
+#[test]
+fn checkout_diff_title_carries_push_pull_and_its_key() {
+    let mut app = app_graphite(fixture(false));
+    install_checkout_diff(&mut app);
+    let row = |app: &App| render(app, 120, 30)[2].clone();
+    let footer = |app: &App| render(app, 120, 30)[29].clone();
+
+    // Unsampled says nothing — an unknown must not read as "in sync" — but
+    // the key is still offered, because the view exists either way.
+    let r = row(&app);
+    assert!(r.contains("⎇ main ∙ uncommitted"), "{r}");
+    assert!(r.contains("tab push / pull"), "{r}");
+
+    app.git = git_state("main", 2, 1, 2);
+    let r = row(&app);
+    assert!(r.contains("⎇ main ↑2 ↓1 ∙ uncommitted"), "{r}");
+    assert!(r.contains("tab push / pull"), "{r}");
+    // One home for the hint: off the footer since it is drawn on the row.
+    let f = footer(&app);
+    assert!(!f.contains("tab"), "{f}");
+    assert!(f.contains("q back"), "{f}");
+
+    // One direction at a time, and level says nothing.
+    app.git = git_state("main", 3, 0, 0);
+    assert!(row(&app).contains("⎇ main ↑3 ∙"), "{}", row(&app));
+    app.git = git_state("main", 0, 4, 0);
+    assert!(row(&app).contains("⎇ main ↓4 ∙"), "{}", row(&app));
+    app.git = git_state("main", 0, 0, 0);
+    let r = row(&app);
+    assert!(r.contains("⎇ main ∙ uncommitted"), "{r}");
+    assert!(!r.contains('↑') && !r.contains('↓'), "{r}");
+
+    // The other side of the toggle carries the same arrows and the way back.
+    app.git = git_state("main", 2, 1, 2);
+    app.diff.as_mut().unwrap().commits = true;
+    let r = row(&app);
+    assert!(r.contains("⎇ main ↑2 ↓1 ∙ push / pull ∙ origin/main"), "{r}");
+    assert!(r.contains("tab uncommitted"), "{r}");
+
+    // A ticket's branch diff is measured against its base, not against the
+    // checkout's upstream — no arrows there, and no key either.
+    let mut app = app_graphite(fixture(false));
+    install_diff(&mut app);
+    app.git = git_state("main", 2, 1, 2);
+    let r = row(&app);
+    assert!(!r.contains('↑') && !r.contains('↓'), "{r}");
+    assert!(!r.contains("tab"), "{r}");
 }
 
 #[test]
@@ -1914,7 +1970,7 @@ fn checkout_commits_show_both_directions_and_empty_states() {
         assert!(text.contains("aaaaaaa  Add commit lists"));
         assert!(text.contains("TO PULL (1)"));
         assert!(text.contains("ccccccc  Fix upstream regression"));
-        assert!(text.contains("tab uncommitted changes"));
+        assert!(text.contains("tab uncommitted"), "{text}");
         golden(&format!("git_commits_{width}x30"), &rows);
     }
     app.git.to_push = None;
