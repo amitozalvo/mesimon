@@ -11,10 +11,17 @@
 //! attached branch is ahead and fast-forwardable, with its claude idle after
 //! an end of turn or no live claude at all (the card is in REVIEW and there
 //! is nobody to wait for: exactly what a hand `m` would merge). `rebase`: an
-//! IN PROGRESS or REVIEW ticket whose branch the base moved past, with an
-//! idle claude to ask, not fused, and not already asked at THIS base tip —
-//! an agent that finished and is still behind the same tip said no, and the
-//! human's `m` is the road from there. A Sleeping claude is the user's
+//! IN PROGRESS or REVIEW ticket whose branch the base moved past and which
+//! HAS COMMITS TO REPLAY, with an idle claude to ask, not fused, and not
+//! already asked at THIS base tip — an agent that finished and is still
+//! behind the same tip said no, and the human's `m` is the road from there.
+//! The `ahead > 0` clause is T-351: a branch whose tip never left its
+//! creation base has nothing to rebase, and the ask is not free — it spends
+//! an agent's whole turn (the words end "run the tests and fix any failures
+//! before we merge"), counts against the fuse, and lands the agent on a
+//! branch with nothing on it. `merge_ticket` has refused that same state
+//! since 2026-08-30 ("no commits on the branch yet — nothing to merge"); the
+//! rebase road simply never learned it. A Sleeping claude is the user's
 //! parking and never a candidate; `Interrupted` was their Esc. And a ticket
 //! marked `manual_merge` (T-227, the `t` key) is on neither list: the user
 //! took it off the train, and `m` is the only road for it. Neither is one
@@ -120,6 +127,7 @@ pub fn plan(input: &Input) -> Plan {
             }
             if matches!(col.settings.train, TrainReach::Merge | TrainReach::Rebase)
                 && f.needs_rebase
+                && f.ahead > 0
                 && seat == Seat::Idle
                 && !input.fused.contains(&t.id)
                 && input.asked.get(&t.id).is_none_or(|at| at != input.base_tip)
@@ -406,6 +414,26 @@ mod tests {
             t.raised = None;
         }
         assert_eq!(run(&b, &flags).merge, vec![ulid::Ulid(1)], "answered: back on the train");
+    }
+
+    /// T-351: a branch the base moved past but with NO COMMITS ON IT has
+    /// nothing to replay, and the ask costs a whole agent turn. The same
+    /// ticket joins the list the moment it has one commit.
+    #[test]
+    fn a_branch_with_no_commits_is_never_asked_to_rebase() {
+        let mut b = board();
+        b.tickets.push(ticket(1, IN_PROGRESS, "a"));
+        b.tickets.push(ticket(2, REVIEW, "a"));
+        for n in 1..=2 {
+            b.sessions.push(claude(n, idle(), Confidence::High));
+        }
+        // Behind the base, nothing of its own: exactly the state a freshly
+        // cut worktree sits in while main moves under it.
+        let empty: HashMap<_, _> = (1..=2).map(|n| (ulid::Ulid(n), flags(0, true))).collect();
+        assert_eq!(run(&b, &empty), Plan::default());
+        // One commit on each and both are candidates again.
+        let with_work: HashMap<_, _> = (1..=2).map(|n| (ulid::Ulid(n), flags(1, true))).collect();
+        assert_eq!(run(&b, &with_work).rebase, vec![ulid::Ulid(1), ulid::Ulid(2)]);
     }
 
     #[test]

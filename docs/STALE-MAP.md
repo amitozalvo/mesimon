@@ -9608,3 +9608,42 @@ reply key.
 
 One file, one call. No `Command`, no `Snapshot` field, no key, no schema, no
 golden.
+
+## The train stops asking empty branches to rebase (T-351, 2026-09-11, user: "no need to rebase if no committed, no?")
+
+A worktree session was handed *"Rebase your current branch msmn/T-351-… onto main, resolve any
+conflicts, then run the tests and fix any failures before we merge."* Its branch had **zero
+commits**. The rebase was a no-op fast-forward, and the rest of the sentence spent a whole agent
+turn — a full suite run — to report a green branch with nothing on it.
+
+**The asymmetry.** `train::plan`'s two arms disagreed about the same flag. The merge arm has read
+`f.ahead > 0` since the first cut; the rebase arm read only `f.needs_rebase`, which is
+`!merged && !ff` — true for any branch the base moved past, work or no work. A freshly cut
+worktree sits in exactly that state for as long as main moves under it and the agent has not
+committed: `ahead == 0`, `needs_rebase == true`.
+
+`merge_ticket` has refused this same state since dogfood 2026-08-30 — *"no commits on the branch
+yet — nothing to merge"*, keyed on `tip == base_oid`, with the note that ancestry would otherwise
+call an untouched branch "already merged". The hand `m` road therefore could never reach a rebase
+ask on an empty branch; it returns `Refused` before `ff_possible` is consulted. **Only the train
+road had the hole**, and only the train road pays for it automatically, on a bucket, without
+anybody pressing anything.
+
+**The fix is one clause** — `&& f.ahead > 0` on the rebase arm — because the ask is not free.
+It spends the agent's turn, it is recorded in `Train::asked` against the base tip, and it counts
+toward the fuse (6 asks / 2 h). Six empty-branch asks would suspend the train for a ticket that
+never had anything to rebase.
+
+**Deliberately unchanged.** `merge_state_word` still answers `needs_rebase` for such a branch,
+and the card still draws its behind-glyph: the branch *is* behind main, which is true and worth
+seeing. What was wrong was spending an agent on it, not saying it. `WorktreeItem.needs_rebase`
+feeds the TUI on its own road and was not touched, so no golden moves.
+
+Test `train::tests::a_branch_with_no_commits_is_never_asked_to_rebase` pins both directions: the
+empty branch is on neither list, and one commit puts it back on `rebase`.
+
+**Still open (the ticket's own subject).** `train_pass` holds on `board_busy()` — every working
+agent anywhere on the board. `ff_merge` writes into the repo-root working tree only when the base
+is HEAD there, and otherwise updates a ref (`git push . branch:refs/heads/base`), so a worktree
+agent mid-turn is untouched by another ticket's merge. The gate wants narrowing to the root
+checkout's own workers plus tickets mid-rebase at the current base tip. Not done here.
