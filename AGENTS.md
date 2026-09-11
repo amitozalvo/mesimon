@@ -2,8 +2,10 @@
 
 Mesimon is a Rust terminal kanban that coordinates coding-agent sessions through a
 per-repository daemon and a private tmux server. This file is the compact operating
-contract for Codex. `CLAUDE.md` contains Claude-specific history and deeper implementation
-notes; consult it when useful, but do not assume its milestone narrative is current.
+contract for Codex. `CLAUDE.md` is the same contract for Claude Code, plus the change
+recipes and the measured traps; `docs/ARCHITECTURE.md` holds the long-form
+implementation narrative. Consult either when useful, but do not assume its milestone
+narrative is current.
 
 ## Ticket context
 
