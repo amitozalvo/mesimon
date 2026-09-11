@@ -2011,7 +2011,7 @@ fn checkout_diff_says_uncommitted_and_offers_the_checkout_terminal() {
 
     // The header's leaf is the ticket a diff belongs to; this one belongs to
     // the repository, which the breadcrumb already names.
-    assert!(rows[0].starts_with(" DIFF   mesimon > kanban-tui"), "{}", rows[0]);
+    assert!(rows[0].starts_with(" DIFF   mesimon › kanban-tui"), "{}", rows[0]);
     assert!(!rows[0].contains('>') || rows[0].matches('>').count() == 1, "no leaf: {}", rows[0]);
     // Measured against itself, in a word rather than an oid.
     assert!(rows[2].contains("⎇ main ∙ uncommitted ∙ 2 files"), "{}", rows[2]);
@@ -2091,9 +2091,11 @@ fn golden_board_header_bar_120() {
 
     let buf = cells(&app, 120, 30);
     let band = Color::Rgb(0x27, 0x2B, 0x31);
-    // ` ⎇ main ↑2 ↓1 ∙ 3 changed ` starts after `mesimon > kanban-tui`.
-    let row: String = (0..120u16).map(|x| buf[(x, 0)].symbol().to_string()).collect();
-    let at = row.find('⎇').expect("the clause is drawn") as u16;
+    // ` ⎇ main ↑2 ↓1 ∙ 3 changed ` starts after `mesimon › kanban-tui`.
+    // A CELL index, never a byte offset into the row: the breadcrumb ahead of
+    // the clause is not ASCII (`›` is three bytes), so `str::find` would land
+    // two cells late.
+    let at = (0..120u16).find(|&x| buf[(x, 0)].symbol() == "⎇").expect("the clause is drawn");
     for x in [at, at + 12, at + 23] {
         assert_eq!(buf[(x, 0)].bg, band, "the focused clause is painted at {x}");
     }

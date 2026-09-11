@@ -1,4 +1,4 @@
- DIFF   mesimon > kanban-tui
+ DIFF   mesimon › kanban-tui
 
  ⎇ main ∙ push / pull ∙ origin/main
 

@@ -1,4 +1,4 @@
- NOTE   mesimon > kanban-tui
+ NOTE   mesimon › kanban-tui
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
                               ╭─ DESCRIPTION ─────────────────────────────────────────────╮

@@ -7565,7 +7565,7 @@ impl Daemon {
     }
 
     /// The focused status line renders the breadcrumb — same component as the
-    /// TUI header: ` mesimon > project !N > ticket title `. The needs-you
+    /// TUI header: ` mesimon › project !N › ticket title `. The needs-you
     /// count uses terminal yellow (the 16-colour attn of 06 §2.7, both
     /// flavors) popped out of the reversed bar; tmux chrome is backend-owned
     /// display, not the wire — the daemon still never styles a wire string.
@@ -7615,7 +7615,7 @@ impl Daemon {
             String::new()
         };
         let line = format!(
-            " mesimon > #[bold]{repo}#[nobold]{attn} > {title} > #[bold]{}#[nobold] ",
+            " mesimon › #[bold]{repo}#[nobold]{attn} › {title} › #[bold]{}#[nobold] ",
             self.focus_label
         );
         if self.last_status_left.as_deref() != Some(&line)

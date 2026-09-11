@@ -1,4 +1,4 @@
- TICKET (T-2)   mesimon > kanban-tui
+ TICKET (T-2)   mesimon › kanban-tui
 
  Keymap validator
  TODO for >1y ∙ created >1y ago

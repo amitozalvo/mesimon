@@ -24,7 +24,7 @@ use crate::text::truncate;
 use crate::theme::Ramp;
 
 /// The breadcrumb — one component on every screen (author 2026-08-30):
-/// `mesimon > project` with the project bold, and the needs-you `!N` beside
+/// `mesimon › project` with the project bold, and the needs-you `!N` beside
 /// the project when anything waits. In `ink`'s ramp, so it reads on the
 /// page ground and on a band alike.
 pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
@@ -34,9 +34,10 @@ pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
     // Sessions waiting plus tickets a snooze woke lit (T-74) — the daemon's
     // tmux status line counts the same way.
     let needs_you = app.board.needs_you_count();
+    let sep = format!(" {} ", crate::glyphs::crumb(theme.glyph_tier()));
     let mut spans = vec![
         Span::styled("mesimon".to_string(), Style::default().fg(ink.dim2)),
-        Span::styled(" > ".to_string(), Style::default().fg(ink.dim3)),
+        Span::styled(sep, Style::default().fg(ink.dim3)),
         Span::styled(repo, Style::default().fg(ink.base).add_modifier(Modifier::BOLD)),
     ];
     if needs_you > 0 {
@@ -113,7 +114,8 @@ pub(super) fn draw_header(f: &mut Frame, area: Rect, app: &App, leaf: Option<&st
     }
     if let Some(leaf) = leaf {
         let used: usize = super::spans_width(&spans);
-        spans.push(Span::styled(" > ".to_string(), Style::default().fg(ink.dim3)));
+        let sep = format!(" {} ", crate::glyphs::crumb(theme.glyph_tier()));
+        spans.push(Span::styled(sep, Style::default().fg(ink.dim3)));
         let budget = (area.width as usize).saturating_sub(used + 4);
         spans.push(Span::styled(truncate(leaf, budget), Style::default().fg(ink.base)));
     }

@@ -9377,3 +9377,32 @@ Goldens: `ticket_tags`, `ticket_tag_chord` (tags first), and
 `ticket_new_claude_worktree` (the second row, and the branch name whole).
 `the_state_row_never_shows_an_empty_tag_bullet` keeps the bullet rule and the
 chips' new place; `the_workspace_row_keeps_the_branch_name` is its other half.
+
+## The breadcrumb separator is `›` (T-348, 2026-09-11)
+
+`mesimon > kanban-tui > Fix OSC-11 detection` now reads `mesimon › kanban-tui
+› Fix OSC-11 detection`. The bare `>` was an operator sitting in a path: it is
+the same character the cards spend on an age (`>1y`) and the diff spends on a
+hunk, so the one mark that says "a level down" was the least distinctive thing
+on the row. `›` U+203A is EAW=N — one cell, like `∙` and the branch arrows,
+outside the 0x2500–0x259F range the L1 structure law bans — and it is in every
+monospace font a terminal is likely to be running.
+
+It is `glyphs::crumb(tier)`, so the ascii tier (Mono) keeps `>`, and both
+breadcrumb sites in `chrome.rs` — the `mesimon ›` root and the leaf a diff or
+a note hangs off — ask the same function. The daemon's tmux status line spells
+the unicode form directly in its format string: it is theme-blind (06 §2.9)
+and has no tier to ask, the same reason its needs-you chip wears graphite's
+pair on every flavor.
+
+`golden_board_header_bar_120` found the one real hazard. It located the git
+clause with `row.find('⎇')` on a `String` of the row's symbols and used that
+**byte** offset as a cell x — correct only while everything to the clause's
+left was ASCII, which the breadcrumb no longer is. It scans cells now. A
+similar `head.find('◦') > head.find("tickets")` in the header test is safe: it
+compares two byte offsets in one string and never converts either to a column.
+
+117 goldens carry the header row, and all of them moved. Nothing else did: no
+`Command`, no `Snapshot` field, no `Ctx` field, no key, no schema, and no
+width — `›` is one cell, so every hint, budget and truncation lands where it
+landed before.

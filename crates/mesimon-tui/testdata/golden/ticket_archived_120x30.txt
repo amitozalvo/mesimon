@@ -1,4 +1,4 @@
- TICKET (T-7)   mesimon > kanban-tui
+ TICKET (T-7)   mesimon › kanban-tui
 
  Painted accent bar
  DONE for >1y ∙ created >1y ago ∙ archived

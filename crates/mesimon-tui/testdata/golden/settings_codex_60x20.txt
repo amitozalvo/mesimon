@@ -1,4 +1,4 @@
- BOARD   mesimon > kanban-tui   7 tickets
+ BOARD   mesimon › kanban-tui   7 tickets
 
     TODO                               2   2   2   1
 

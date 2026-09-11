@@ -1,4 +1,4 @@
- RELEASES   mesimon > kanban-tui
+ RELEASES   mesimon › kanban-tui
 
  3 releases ∙ newest first ∙ this is v0.9.0-alpha.3
 

@@ -1,5 +1,5 @@
 //! The ticket screen skeleton (07 §14, reshaped by dogfood 2026-08-30).
-//! Header is a breadcrumb — `mesimon > repo > title` — with the needs-you
+//! Header is a breadcrumb — `mesimon › repo › title` — with the needs-you
 //! glyph + count beside the repo name (same accent as the board), and one
 //! quiet identity line (short key ∙ column ∙ created) instead of the full
 //! board strip. `r` edits the title in place. Nothing separates the header

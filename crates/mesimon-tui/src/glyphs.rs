@@ -224,6 +224,19 @@ pub(crate) fn suggest_mark(tier: Tier) -> char {
     }
 }
 
+/// The breadcrumb separator (T-348). `›` U+203A is EAW=N — one cell,
+/// outside the banned box range — and sits in every monospace font; the
+/// bare `>` it replaced read as an operator, not a path step. The ascii
+/// tier keeps `>`, and the daemon's tmux status line spells the unicode
+/// form directly (it is theme-blind, so it has no tier to ask).
+pub(crate) fn crumb(tier: Tier) -> &'static str {
+    if tier == Tier::Ascii {
+        ">"
+    } else {
+        "›"
+    }
+}
+
 /// Equal-width wake glyphs keep the header still as the hold changes.
 /// The preference controls visibility; the crescent means enabled but idle.
 pub(crate) fn awake_label(tier: Tier, held: bool) -> &'static str {

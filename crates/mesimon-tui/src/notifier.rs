@@ -272,7 +272,7 @@ fn detail_for(board: &Board, ticket: ulid::Ulid, words: bool) -> Option<Detail> 
 /// host application's. The title identifies the product on every rung.
 /// The board's name is there because a user with two of them open
 /// has to be told which one, and the checkout's own directory name is what
-/// they call it — the breadcrumb's `mesimon > simbly`, in a field that has
+/// they call it — the breadcrumb's `mesimon › simbly`, in a field that has
 /// no room for a breadcrumb.
 ///
 /// A hyphen rather than mesimon's own `∙`, deliberately: the rungs with one

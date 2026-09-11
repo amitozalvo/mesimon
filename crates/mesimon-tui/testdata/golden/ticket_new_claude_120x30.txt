@@ -1,4 +1,4 @@
- TICKET (T-1)   mesimon > kanban-tui
+ TICKET (T-1)   mesimon › kanban-tui
 
  Decay treatments
  TODO for >1y ∙ created >1y ago

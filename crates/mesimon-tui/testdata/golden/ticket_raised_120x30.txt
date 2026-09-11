@@ -1,4 +1,4 @@
- TICKET (T-5)   mesimon > kanban-tui  !1
+ TICKET (T-5)   mesimon › kanban-tui  !1
 
  Grapheme truncation
  REVIEW for >1y ∙ created >1y ago ∙ agent asked >1y ago ∙ Auth0 or cookie?

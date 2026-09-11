@@ -1,4 +1,4 @@
- BOARD   mesimon > kanban-tui   7 tickets
+ BOARD   mesimon › kanban-tui   7 tickets
 
     TODO                    2     in progress now               REVIEW                  2     DONE                   1
 

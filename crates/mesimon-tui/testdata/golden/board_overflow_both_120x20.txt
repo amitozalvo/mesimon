@@ -1,4 +1,4 @@
- BOARD   mesimon > kanban-tui   13 tickets
+ BOARD   mesimon › kanban-tui   13 tickets
 
     TODO                              12     DONE                               1
 

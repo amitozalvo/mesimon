@@ -1,4 +1,4 @@
- NOTE   mesimon > kanban-tui > Fix OSC-11 detection
+ NOTE   mesimon › kanban-tui › Fix OSC-11 detection
 
  DESCRIPTION ∙ ⎇ shared ∙ edited by you >1y ago
 

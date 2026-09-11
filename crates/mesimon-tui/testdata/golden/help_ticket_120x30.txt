@@ -1,4 +1,4 @@
- TICKET (T-3)   mesimon > kanban-tui  !1
+ TICKET (T-3)   mesimon › kanban-tui  !1
 
  Fix OSC-11 detection
  IN PROGRESS for >1y ∙ created >1╭─ KEYS ∙ ticket ────────────────────────────────────╮

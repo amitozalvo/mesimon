@@ -1,4 +1,4 @@
- DIFF   mesimon > kanban-tui
+ DIFF   mesimon › kanban-tui
 
  ⎇ main ∙ uncommitted ∙ 2 files ∙ +14 -3
 

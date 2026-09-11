@@ -1,4 +1,4 @@
- NOTE   mesimon > kanban-tui > Wrap description text
+ NOTE   mesimon › kanban-tui › Wrap description text
 
  NEW NOTE ∙ ⎇ shared
 
