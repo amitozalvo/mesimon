@@ -6,6 +6,81 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.20 — 2026-09-11
+
+### Added
+
+- **Search the board with `/`.** Type any part of a title, short key, column
+  or tag and the ranked list narrows as you type. `Ctrl+N`/`Ctrl+P` and the
+  arrows walk it, Enter puts the board cursor on that card, Esc leaves the
+  board where it was. Archived tickets are ranked below every live one and
+  marked; `Tab` takes them out. fzf query syntax works (`'literal`,
+  `^prefix`, `suffix$`, `!exclude`; words are ANDed).
+- **See what a checkout has to push and pull.** On the checkout Git screen
+  (`v`), `Tab` switches between uncommitted changes and an upstream
+  comparison listing **To push** and **To pull** with short object IDs and
+  subjects, newest first. Incoming commits come from already-fetched refs —
+  the view never fetches, pushes or pulls. Each direction lists at most 100
+  commits and says when it omitted more. Ticket branch diffs are unchanged.
+- **Rewrite the sentences mesimon sends your agents.** Settings → Agents →
+  Agent prompts holds the three: the rebase ask, the merged notice and the
+  note-changed nudge. Each template is one line and may use `{branch}` and
+  `{base}` (the two merge prompts) or `{note}` and `{id}` (the nudge); an
+  unrecognised `{word}` is left as written. `Ctrl+U` empties a field, which
+  restores mesimon's own wording. Templates are per repo, stored in
+  `columns.toml`; agents cannot change them.
+- **The ticket page remembers the previous column stay**, shown as
+  `previously IN PROGRESS for 1h 1m`. Only visits longer than 60 seconds are
+  recorded; a later long visit replaces the last one. Existing tickets start
+  without history.
+- **Description and note editors soft-wrap at the editor's width**, including
+  the new-ticket composer. Up/Down and PageUp/PageDown follow visual rows.
+  Stored text, explicit newlines and indentation are unchanged.
+
+### Changed
+
+- **Copy actions use the local clipboard.** Copying a board link or the agent
+  brief now runs `pbcopy` on macOS, `clip.exe` on WSL, `wl-copy` on Wayland,
+  or `xclip`/`xsel` on X11, and only says `link copied` / `brief copied` once
+  the helper succeeded. SSH sessions and machines with no helper keep OSC 52
+  and say `copy requested from terminal`, which the terminal may still
+  refuse.
+- **The ticket page's subtitle leads with tags**, and the workspace clause —
+  strategy word, branch, merge state — moved to its own row below. A tagged
+  ticket's branch name is no longer truncated to make room for chips.
+- **The ticket page reads its description in one place.** With a note
+  selected, the header band drops its excerpt and the reading zone's heading
+  says `DESCRIPTION` on the first note and `NOTE` on the rest.
+- **The merge train waits on fewer things.** It no longer holds for agents
+  working in unrelated worktrees, and no longer requires five seconds of
+  terminal silence — an idle agent whose prompt animates is no longer read as
+  busy.
+- **The breadcrumb separator is `›`.** The ASCII theme tier keeps `>`.
+
+### Fixed
+
+- **Idle session previews and the `p` peek show the agent's closing reply
+  again.** They had been showing the user's own last prompt instead.
+- **Branches with no commits are no longer asked to rebase.** The merge train
+  spent a whole agent turn on a fresh worktree every time the base moved
+  under it.
+- **Merging from the ticket page says `merging N commit(s)…` while it runs**,
+  instead of leaving the pre-confirmation frame on screen. Keys typed during
+  that wait are discarded, so holding `m` no longer sends the merged notice
+  to the agent and starts a turn.
+- **A blocked merge no longer lets the train ask other tickets to rebase.**
+  When a merge candidate cannot land — uncommitted changes in the main
+  checkout, for example — the pending row names that ticket instead of
+  promising `next`, and the rebases wait for it.
+- **Codex sessions with a custom status line receive their first prompt.**
+  Input readiness now reads the composer's own text cursor, so any status
+  line configuration works, including none.
+- **Option+Left and Option+Right move by word in text fields.** Terminal
+  profiles that send `ESC b`/`ESC f` for those keys were ignored.
+- **Closing a board while attached to a pane no longer strands the focus
+  token.** Every later attach answered `another session is focused` until the
+  daemon restarted.
+
 ## v0.1.0-alpha.19 — 2026-09-10
 
 ### Added
