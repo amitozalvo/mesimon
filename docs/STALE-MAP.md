@@ -9711,3 +9711,43 @@ opening the TUI.
 **Refactor that came with it.** `edit_buffer_key` is now a free function in `app.rs` — the raw-key
 half of every in-place one-line field (the column Name row, the three prompt rows). Enter and Esc
 stay the caller's, because what they save differs and the field does not know.
+
+## `m` says it is merging (T-352, 2026-09-11, user: "it still says 'm to merge' ... which can cause the user to press m again")
+
+The ticket page's second `m` sent `Command::MergeTicket` from inside the keypress, and the client's
+loop is `draw → tick`: the frame on the screen through that request was the one drawn *before* it,
+which read `merge 2 commit(s) of msmn/T-352-… ? m confirms`. So the whole wait looked like a board
+that had not heard the key, and the answer to that is to press it again.
+
+**The wait is real and it is not a bug to remove.** `Daemon::merge_ticket` runs `ff_merge` — a
+`git merge --ff-only` in the root checkout, which rewrites the working tree — and then
+`refresh_worktree_flags()` **synchronously**, on the writer thread, inside the response. The
+flags pass is a `rev-list --left-right --count` per bound worktree plus up to
+`CONTENT_SCANS_PER_PASS` patch-id scans: 0.28 s for the 24 branches on this board with nothing
+else running, before the merge's own checkout and `persist_and_notify`. Moving it to
+`queue_worktree_flags` would shorten the freeze and reintroduce the ticket: the reply would land
+on flags that still say `2 to merge ∙ m merge`, which is the sentence the user is complaining
+about, only now *after* the merge succeeded. The synchronous refresh is what makes the post-merge
+state truthful on the first frame; it stays.
+
+**So the frame is what moves.** `merge_key`'s `MergeStage::Merge` confirm now sets
+`App::pending_merge` and the note `merging N commit(s)…` and returns; `lib.rs`'s loop calls
+`App::run_pending_merge` in the one place a "working…" note can be seen — **after `terminal.draw`
+and before `app.tick`** — and the request holds the loop with its own word on the screen. The
+identity line needed nothing: a non-empty `merge_note` already replaces the whole branch-state
+clause, so the row reads `⎇ msmn/T-352-… ∙ merging 2 commit(s)…` and the `m` offer is not on it.
+The other two stages (`Rebase`, `Notify`) are a tmux paste and keep sending from the keypress.
+
+**The second half is the harm the words caused.** Keys typed through the freeze are buffered by
+the terminal and delivered afterwards, and `Merged` arms `MergeStage::Notify` deliberately — the
+note promises `m tells the agent` and one press must deliver it. A user holding `m` down through
+a two-second merge therefore pasted the merged notice into the agent and started a turn they
+never asked for. `lib.rs::drop_typeahead` empties crossterm's queue after the request: a press
+aimed at a frame that is already gone is not an answer to the frame that replaced it. Focus
+reports are not typeahead and are passed to `App::saw_focus`; a dropped `Resize` costs nothing,
+since `Terminal::draw` re-measures every frame and `tick` ignores the event anyway.
+
+Tests: `ui::tests::a_confirmed_merge_says_it_is_merging` renders both frames (the confirm still
+asks, the next one says `merging` and no longer names the key), and
+`app::tests::merged_note_arms_notify_so_one_m_delivers` now asserts the confirm sends nothing
+until `run_pending_merge` is called.

@@ -917,6 +917,13 @@ pub struct App {
     /// notice) — what keeps the identity line from offering the same ask
     /// again the moment `merge_note` clears. See `merge_outstanding`.
     merge_sent: Option<(ulid::Ulid, MergeStage, Instant)>,
+    /// The confirmed ff-merge, held for one frame so the "merging…" note is
+    /// on the screen for the whole wait. The request blocks the loop for as
+    /// long as git takes — the merge plus a synchronous flags sample over
+    /// every worktree — and through that wait the old frame stood, still
+    /// reading "m confirms", which is what got `m` pressed twice (T-352).
+    /// `lib.rs`'s loop draws, then runs `run_pending_merge`.
+    pub(crate) pending_merge: Option<ulid::Ulid>,
     /// When `SetAutomation` was last pushed: the reconcile on every snapshot
     /// re-arms the train after a daemon restart, and this is its back-off.
     train_pushed_at: Option<Instant>,
@@ -1214,6 +1221,7 @@ impl App {
             resume_refused: None,
             merge_armed: None,
             merge_sent: None,
+            pending_merge: None,
             train_pushed_at: None,
             status_pushed_at: None,
             merge_note: String::new(),
@@ -6387,27 +6395,16 @@ impl App {
         }
         self.merge_armed = None;
         match stage {
-            MergeStage::Merge => match self.req(Command::MergeTicket { id: ticket }) {
-                Response::Merge { outcome, detail } => {
-                    self.merge_note = match outcome {
-                        // The note promises the next press notifies, so arm
-                        // that stage now — same as the NeedsRebase race below.
-                        MergeOutcome::Merged => {
-                            self.merge_armed = Some((ticket, MergeStage::Notify));
-                            format!("{detail} ∙ m tells the agent")
-                        }
-                        MergeOutcome::AlreadyMerged => detail,
-                        // Raced: main moved between snapshot and keypress.
-                        MergeOutcome::NeedsRebase => {
-                            self.merge_armed = Some((ticket, MergeStage::Rebase));
-                            format!("{detail} ∙ m asks the agent to rebase + test")
-                        }
-                        MergeOutcome::Refused => detail,
-                    };
-                }
-                Response::Err { message } => self.merge_note = message,
-                _ => {}
-            },
+            // Not here: the ff-merge is the one reply of this flow that keeps
+            // the loop waiting, and a frame that still reads "m confirms"
+            // through it is an invitation to press `m` again (T-352). The
+            // note below is drawn first, and `run_pending_merge` — called by
+            // `lib.rs`'s loop straight after that draw — sends the command.
+            MergeStage::Merge => {
+                self.pending_merge = Some(ticket);
+                self.merge_note = format!("merging {ahead} commit(s)…");
+                return Ok(());
+            }
             MergeStage::Rebase => {
                 match self.req(Command::MergeToAgent {
                     id: ticket,
@@ -6434,6 +6431,37 @@ impl App {
                     _ => {}
                 }
             }
+        }
+        self.refresh()
+    }
+
+    /// The merge the last `m` confirmed, sent a frame later so the
+    /// "merging…" note is on the screen for the whole wait. Every reply still
+    /// lands in `merge_note` — the identity line is where this flow talks —
+    /// and the keys typed through the wait are dropped by the caller, since a
+    /// press aimed at a frame that is already gone is not a second answer.
+    pub(crate) fn run_pending_merge(&mut self) -> Result<()> {
+        let Some(ticket) = self.pending_merge.take() else { return Ok(()) };
+        match self.req(Command::MergeTicket { id: ticket }) {
+            Response::Merge { outcome, detail } => {
+                self.merge_note = match outcome {
+                    // The note promises the next press notifies, so arm that
+                    // stage now — same as the NeedsRebase race below.
+                    MergeOutcome::Merged => {
+                        self.merge_armed = Some((ticket, MergeStage::Notify));
+                        format!("{detail} ∙ m tells the agent")
+                    }
+                    MergeOutcome::AlreadyMerged => detail,
+                    // Raced: main moved between snapshot and keypress.
+                    MergeOutcome::NeedsRebase => {
+                        self.merge_armed = Some((ticket, MergeStage::Rebase));
+                        format!("{detail} ∙ m asks the agent to rebase + test")
+                    }
+                    MergeOutcome::Refused => detail,
+                };
+            }
+            Response::Err { message } => self.merge_note = message,
+            _ => {}
         }
         self.refresh()
     }
@@ -11341,7 +11369,11 @@ mod tests {
         app.worktrees.push(wt(false, 2));
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
         press(&mut app, 'm'); // arms the merge confirm
-        press(&mut app, 'm'); // ff merge lands
+        press(&mut app, 'm'); // confirms — the send waits one frame (T-352)
+        assert_eq!(app.merge_note, "merging 2 commit(s)…");
+        assert!(!sent_contains(&sent, "MergeTicket"), "the key only queues the merge");
+        app.run_pending_merge().unwrap(); // the loop's call, after the draw
+        assert!(sent_contains(&sent, "MergeTicket"));
         assert!(app.merge_note.ends_with("∙ m tells the agent"));
         assert_eq!(app.merge_armed, Some((ulid::Ulid(1), MergeStage::Notify)));
         // The refresh's snapshot now carries the merged binding (the fake

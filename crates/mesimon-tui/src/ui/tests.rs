@@ -3353,6 +3353,51 @@ fn golden_merged_upstream_120() {
     );
 }
 
+/// The confirmed merge says it is merging (T-352). The request holds the
+/// client's loop for as long as git takes — the ff-merge plus a flags sample
+/// over every worktree — and the frame that stands through that wait used to
+/// still read "m confirms", which is an invitation to press `m` again. The
+/// second press now only queues the merge; this is the frame the loop draws
+/// before it sends.
+#[test]
+fn a_confirmed_merge_says_it_is_merging() {
+    let mut app = app_graphite(fixture(false));
+    app.worktrees = vec![mesimon_core::command::WorktreeItem {
+        ticket: ulid_n(5),
+        branch: "msmn/T-5-grapheme-truncation".into(),
+        status: "attached".into(),
+        merged: false,
+        merged_in: String::new(),
+        merged_oid: String::new(),
+        conflict: false,
+        ahead: 2,
+        needs_rebase: false,
+        detail: None,
+        path: Some("/wt/T-5-grapheme-truncation".into()),
+    }];
+    app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
+    press(&mut app, 'm');
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("m confirms")),
+        "the first press asks:\n{}",
+        lines.join("\n")
+    );
+    press(&mut app, 'm');
+    assert_eq!(app.pending_merge, Some(ulid_n(5)), "the key queues the merge, never sends it");
+    let lines = render(&app, 120, 30);
+    assert!(
+        lines.iter().any(|l| l.contains("∙ merging 2 commit(s)…")),
+        "the wait says what it is:\n{}",
+        lines.join("\n")
+    );
+    assert!(
+        !lines.iter().any(|l| l.contains("m confirms") || l.contains("to merge")),
+        "and nothing on the page still asks for the key:\n{}",
+        lines.join("\n")
+    );
+}
+
 /// A worktree ticket the train can reach offers `t merge by hand` in the
 /// footer (T-227); taken off the train it wears no owed mark, its row reads
 /// `auto-merge ∙ off`, the hint flips to `t auto-merge`, and the ticket page
