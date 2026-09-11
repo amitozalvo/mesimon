@@ -3725,11 +3725,13 @@ impl Daemon {
                 });
             }
         }
-        // What the train will do once the board is quiet — said before it
-        // happens, so the card can be watched rather than discovered.
+        // What the train will do once its gate is clear — said before it
+        // happens, so the card can be watched rather than discovered. The
+        // gate is `train_busy`, the same one the pass takes, so the card
+        // names exactly what is actually holding it (T-351).
         if self.train.is_armed() && !self.worktrees_barred {
             let plan = self.train_plan();
-            let waits_on = self.keys_of(&self.board_busy());
+            let waits_on = self.keys_of(&self.train_busy());
             // Rebases wait for pending merges even when the checkout refuses
             // them: asking against the old base would waste the agent's turn.
             let mut rebase_waits_on = waits_on.clone();
@@ -4871,7 +4873,9 @@ impl Daemon {
     }
 
     /// One pass of the train (2026-09-04), after `refresh_worktree_flags`
-    /// on its bucket: ONE action, only while the whole board is quiet. A
+    /// on its bucket: ONE action, only while `train_busy` is empty — the
+    /// root checkout's own workers and anything mid-rebase, NOT the whole
+    /// board since T-351. A
     /// merge first — the first REVIEW candidate in board order, through the
     /// same road a hand `m` takes under `Principal::Automation`, then the
     /// merged notice into its agent if that is on (a turn starts; the next
@@ -4889,7 +4893,7 @@ impl Daemon {
         {
             return false;
         }
-        if !self.board_busy().is_empty() {
+        if !self.train_busy().is_empty() {
             return false;
         }
         let plan = self.train_plan();
@@ -5187,9 +5191,37 @@ impl Daemon {
         self.working(Some(cwd))
     }
 
-    /// Every working ticket on the board — the merge train's gate.
-    fn board_busy(&self) -> Vec<ulid::Ulid> {
-        self.working(None)
+    /// The merge train's gate (T-351). It was `working(None)` — every working
+    /// ticket anywhere — until the user asked why three grinding worktrees
+    /// should hold up a fourth ticket's merge. They should not.
+    ///
+    /// An ff-merge writes exactly ONE working tree, and only sometimes: the
+    /// ROOT checkout's, when the base is what is checked out there. Otherwise
+    /// `worktree::ff_merge` is `git push . <branch>:refs/heads/<base>`, a ref
+    /// update that opens no file. A worktree agent mid-turn is untouched by
+    /// another ticket's merge either way, so waiting for it bought nothing.
+    /// We hold for the root checkout's workers whatever it has checked out:
+    /// over-cautious at worst, and the alternative is reading the checkout's
+    /// branch on a road whose whole point is that it forks no git (T-289).
+    ///
+    /// The one board-wide wait that survives: a ticket MID-REBASE at this
+    /// base tip — asked by us, flag still saying it is behind, turn still
+    /// running. Advancing the base under it lands its rebase on a stale one
+    /// and earns it a fresh ask, and six of those in two hours suspend the
+    /// train for that ticket.
+    fn train_busy(&self) -> Vec<ulid::Ulid> {
+        let mut out = self.checkout_holders(&self.paths.repo_root.to_string_lossy());
+        for t in self.working(None) {
+            if out.contains(&t) {
+                continue;
+            }
+            let mid_rebase = self.wt_needs_rebase.get(&t).copied().unwrap_or(false)
+                && self.train.asked().get(&t).is_some_and(|r| r.base_oid == self.base_tip);
+            if mid_rebase {
+                out.push(t);
+            }
+        }
+        out
     }
 
     /// The working tickets, on one checkout (`Some(cwd)`) or the whole board.

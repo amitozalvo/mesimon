@@ -156,6 +156,68 @@ fn a_ticket_taken_off_the_train_is_left_alone_until_put_back() {
     let _ = c.request(Command::Shutdown);
 }
 
+/// T-351: the gate is `train_busy`, not the whole board. A worktree agent
+/// grinding away on ITS OWN ticket cannot be touched by another ticket's
+/// ff-merge — that merge writes the root checkout or nothing at all — so it
+/// must not hold one up. Before this the train sat still while any agent
+/// anywhere was mid-turn, and a busy board never merged anything.
+#[test]
+fn a_grinding_worktree_does_not_hold_another_tickets_merge() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do :; done\n";
+    let Some(h) = Harness::boot_with_env(
+        "train-busy",
+        Some(STUB),
+        &[("MESIMON_WT_REFRESH_TICKS", "4"), ("MESIMON_PANE_QUIET_MS", "600000")],
+    ) else {
+        return;
+    };
+    let repo = h.repo.clone();
+    init_repo(&repo, "a.txt", "hello\n");
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("train-busy");
+    let (a, sa, branch_a, _wt_a) = ready(&mut c, "alpha");
+    let (b, sb, _branch_b, _wt_b) = ready(&mut c, "beta");
+    std::thread::sleep(Duration::from_millis(500));
+
+    // A finishes its turn and lands in REVIEW: a merge candidate.
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "A running", |s| *s == SessionState::Running);
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "A idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(5), "A in REVIEW", || {
+        c.board().ticket(a).unwrap().column == "REVIEW"
+    });
+
+    // B is left MID-TURN in its own worktree — the bystander that used to
+    // stop the whole train. No Stop hook: it grinds for the rest of the test.
+    hook_send(&hook_sock, &sb.to_string(), "UserPromptSubmit", r#"{"prompt":"grind"}"#);
+    c.await_state(sb, "B running", |s| *s == SessionState::Running);
+    assert_eq!(c.board().ticket(b).unwrap().column, "IN PROGRESS");
+
+    assert!(matches!(
+        c.request(Command::SetAutomation { merge_train: true, merge_notice: false }),
+        Response::Ok
+    ));
+    // The card does not claim to be waiting on B: nothing holds this merge.
+    wait_until(Duration::from_secs(10), "A to be owed a merge", || {
+        pending_of(&mut c, Some(a)).iter().any(|p| p.action == "merge")
+    });
+    let owed = pending_of(&mut c, Some(a));
+    let merge = owed.iter().find(|p| p.action == "merge").unwrap();
+    assert!(merge.waits_on.is_empty(), "a worktree bystander is not a wait: {merge:?}");
+
+    // And it merges, with B still running.
+    wait_until(Duration::from_secs(15), "A to merge past a grinding B", || {
+        git_ok(&repo, &["merge-base", "--is-ancestor", &branch_a, "main"])
+    });
+    assert_eq!(
+        c.board().sessions.iter().find(|s| s.id == sb).map(|s| s.state.clone()),
+        Some(SessionState::Running),
+        "B was never waited for, and never disturbed"
+    );
+    let _ = c.request(Command::Shutdown);
+}
+
 #[test]
 fn the_train_merges_asks_to_rebase_once_and_stops_with_its_board() {
     // Idle animation must not block a rebase: session state decides whether

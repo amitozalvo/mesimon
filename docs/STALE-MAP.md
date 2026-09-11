@@ -9642,12 +9642,6 @@ feeds the TUI on its own road and was not touched, so no golden moves.
 Test `train::tests::a_branch_with_no_commits_is_never_asked_to_rebase` pins both directions: the
 empty branch is on neither list, and one commit puts it back on `rebase`.
 
-**Still open (the ticket's own subject).** `train_pass` holds on `board_busy()` — every working
-agent anywhere on the board. `ff_merge` writes into the repo-root working tree only when the base
-is HEAD there, and otherwise updates a ref (`git push . branch:refs/heads/base`), so a worktree
-agent mid-turn is untouched by another ticket's merge. The gate wants narrowing to the root
-checkout's own workers plus tickets mid-rebase at the current base tip. Not done here.
-
 ## The three sentences mesimon writes are the user's to rewrite (T-353, 2026-09-11, user: "allow the user to change agent notify prompts (for rebase / merge / other things) — in settings, think where appropriate to put based on current settings structure")
 
 Three of mesimon's own sentences reach a live agent, and until now all three were `format!`
@@ -9751,3 +9745,43 @@ Tests: `ui::tests::a_confirmed_merge_says_it_is_merging` renders both frames (th
 asks, the next one says `merging` and no longer names the key), and
 `app::tests::merged_note_arms_notify_so_one_m_delivers` now asserts the confirm sends nothing
 until `run_pending_merge` is called.
+## The train's gate stops being the whole board (T-351, 2026-09-11, user: "if another worktree is still working … no need to wait for it before auto-merging other worktree")
+
+`train_pass` held on `board_busy()` — `working(None)`, every mid-turn agent anywhere. One
+grinding worktree therefore stopped every merge and every rebase ask on the board, and a busy
+board merged nothing at all. The gate is now `train_busy`, and `board_busy` is gone: it had no
+other caller.
+
+**What an ff-merge can actually disturb.** Exactly one working tree, and only sometimes.
+`worktree::ff_merge` runs `git merge --ff-only` in the ROOT checkout when the base is what is
+checked out there; otherwise it is `git push . <branch>:refs/heads/<base>`, a ref update that
+opens no file. Either way a worktree agent mid-turn is untouched by another ticket's merge —
+different directory, different branch — so waiting for it bought nothing and cost every merge on
+a busy board. `train_busy` holds for the root checkout's own workers (`checkout_holders` on
+`paths.repo_root`, which is verbatim what `resolve_spawn_cwd` hands a `SharedCheckout` spawn).
+
+**We hold for the root's workers whatever it has checked out.** The narrower question — is the
+base actually HEAD there — is answerable from `git_cache.branch`, and was declined: it buys only
+the case where somebody has the root on a non-base branch AND a shared-checkout agent working in
+it, and being over-cautious there is free. The gate must never fork git (T-289's whole point),
+and one rule that is always safe beats two that need a cache to be fresh.
+
+**The one board-wide wait that survives** is a ticket MID-REBASE at this base tip: asked by us
+(`Train::asked` at `base_tip`), its `needs_rebase` flag still true, its turn still running.
+Advancing the base under it lands its rebase on a stale one and earns it a fresh ask at the new
+tip — and six of those in two hours suspend the train for that ticket. The flag is what makes
+this self-clearing: the moment the agent's rebase lands, `refresh_worktree_flags` (which runs
+immediately before the pass) drops it and the hold goes with it.
+
+**Concurrency is unchanged, and was never possible.** `train_pass` `return`s on the first
+`Merged`, and the daemon is single-writer, so it does ONE thing per bucket (`RSS_TICKS`, ~10 s).
+ff-only serialises the rest for free: when A lands, main moves past B, B's `ff` flag flips and it
+leaves `plan.merge` for `plan.rebase`. Two independent worktrees can never merge back to back —
+the second must rebase first, and mesimon asks rather than rebases. What T-351 changed is whether
+the FIRST merge happens at all, not how many happen at once.
+
+`pending_items` reads the same `train_busy`, so a card's `waits_on` names exactly what is holding
+it and the row cannot disagree with the pass. E2e
+`merge_train_e2e::a_grinding_worktree_does_not_hold_another_tickets_merge` pins it: A in REVIEW
+merges while B grinds mid-turn in its own worktree, B's state untouched, and A's owed row claims
+no wait. It fails on the old gate.
