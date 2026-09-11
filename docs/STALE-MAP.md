@@ -9329,3 +9329,51 @@ name was a third copy of the same sentence. Nothing daemon-side moved: no
 Goldens: `ticket_description_selected_120x30` is new; `ticket_note_selected`,
 `ticket_description` and `ticket_new_claude` moved. The two L1 sweeps used to
 render both markdown surfaces on one screen and now render one each.
+
+## The ticket page's subtitle leads with tags (T-346, 2026-09-11)
+
+The state row under the title carried four kinds of thing in one sentence —
+column, ages, tags, and everything about the ticket's branch. Two of them were
+in a fight over the width: the chips claimed the row first and the worktree
+clause took what was left, so on a tagged ticket the branch name was cut to
+`WT_BRANCH_FLOOR` (`⎇ msmn/T-5-graph~`) while sixteen cells of tag sat beside
+it. The clause that gave way was the one nobody can guess the rest of.
+
+So the row split. The subtitle is what the ticket IS — its tags, then its
+column, its time there and its ages — and the row under it is where its code
+lives: the strategy word until a binding exists, then the branch, its merge
+state and detail, and what mesimon owes the ticket (`queued ∙ after T-3`,
+`auto-merge ∙ off`). Two rows, two questions: what this is against what its
+code is doing.
+
+The tags lead the first row because that is what the eye comes to this page
+for, and because the page is where you came to read — the card already makes
+you decode a pip. They are still budgeted against the width and still give way
+to the ages and the column (a row whose tags ate its column says less than one
+whose tenth tag was dropped), and the ` ∙` separator still belongs to the
+chips, pushed only once one is known to fit — T-163's `created 19m ago ∙ ∙ ⎇
+msmn/…` is the regression that rule exists for, and it is the same rule read
+from the other end now that the chips open the row: the first chip's own
+leading space is the row's left pad.
+
+The second row is drawn only when it has something on it, so a
+shared-checkout ticket with nothing owed keeps the four-row band it had. Its
+first span opens with that same pad instead of the bullet a clause carries
+when it joins a line already in progress — the branch, the bare merge note,
+the `⎇ worktree` strategy word, and the owed row when there is no branch for
+it to join. `wt_row` is the row's height and every geometry below the band
+adds it beside T-344's `extra` and `shown`: it is in neither of those groups,
+because unlike the description it is drawn whenever it exists, so both zones
+and the rail start under it.
+
+The branch's truncation survived the move and got simpler: it is cut against
+its own row now, which at 120 cells means the whole slug fits and `~` appears
+where it always should have — when the name really is longer than the screen.
+Nothing daemon-side moved: no `Command`, no `Snapshot` field, no `Ctx` field,
+no key, no schema.
+
+Goldens: `ticket_tags`, `ticket_tag_chord` (tags first), and
+`ticket_merged_upstream`, `ticket_train_manual`, `ticket_queued`,
+`ticket_new_claude_worktree` (the second row, and the branch name whole).
+`the_state_row_never_shows_an_empty_tag_bullet` keeps the bullet rule and the
+chips' new place; `the_workspace_row_keeps_the_branch_name` is its other half.

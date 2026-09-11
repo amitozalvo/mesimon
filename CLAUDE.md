@@ -417,8 +417,16 @@ where `?` resolves (never in a text field or chord tail; `footer_always_keeps_th
 Hints sit where they operate: the ticket rail's trailer rows carry `c s x` and `N`, the PREVIEW
 heading carries `{ } page` — those bindings are prio 0 on `Scope::Ticket` and reached by
 `keymap::binding_for`. The ticket page has its own title row (bold; `r` edits it there) and a
-state row (`IN PROGRESS ∙ 3d here ∙ created 2w ago ∙ tags ∙ branch`); the note editor's header
-names its ticket. (STALE-MAP "The UI overhaul".)
+state row (`BUG ∙ IN PROGRESS ∙ 3d here ∙ created 2w ago`) — **tags LEAD it and the workspace is a
+row of its own under it** (`⎇ msmn/T-12-… ∙ 2 to merge ∙ m merge ∙ auto-merge ∙ off`, T-346,
+2026-09-11): on one row the branch was the clause that gave way, so a tagged ticket read its name
+cut to `WT_BRANCH_FLOOR`, and the two answer different questions — what the ticket IS against what
+its code is doing. The second row is drawn only when there is something on it (`wt_row`, which
+every geometry below the band adds beside T-344's `extra`/`shown`), so a shared-checkout ticket
+keeps the four-row band; its first span opens with the left pad instead of a bullet, which is what
+the owed row (`queued ∙ after T-3`) inherits when there is no branch to join. The note editor's
+header names its ticket. (STALE-MAP "The UI overhaul" + "The ticket page's subtitle leads with
+tags".)
 
 **Six themes, picked from the Esc menu, saved in two slots (2026-09-02, user request; solarized 2026-09-03).** A
 theme is a `Palette` TABLE in `theme.rs` (truecolor hexes plus hand-authored 256/16/8 forms, the

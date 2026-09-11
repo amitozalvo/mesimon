@@ -1,14 +1,14 @@
  TICKET (T-5)   mesimon > kanban-tui
 
  Grapheme truncation
- REVIEW for >1y ∙ created >1y ago ∙ ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge ∙ auto-merge ∙ off
+ REVIEW for >1y ∙ created >1y ago
+ ⎇ msmn/T-5-grapheme-truncation ∙ 2 to merge ∙ m merge ∙ auto-merge ∙ off
 
 
   PREVIEW                                                                                  SESSIONS                  1
 
     done                                                                                  ✓ ✻ claude               >1y
     it left no transcript                                                                  x sleep
-
 
 
 

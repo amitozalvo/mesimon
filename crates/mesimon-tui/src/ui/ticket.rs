@@ -32,9 +32,9 @@ use super::chrome;
 /// M3.5 has no PTY pane on this screen yet, so the left zone is what yields).
 const TWO_ZONE_MIN_W: u16 = 107;
 const RAIL_W: u16 = 30;
-/// The state row's branch name keeps at least this many cells against the
-/// tag chips: enough for ` ∙ ⎇ msmn/T-163~`, so a heavily tagged ticket
-/// still names where its code lives.
+/// The workspace row's branch name keeps at least this many cells against
+/// the merge state beside it: enough for ` ⎇ msmn/T-163~`, so a narrow
+/// terminal still names where the ticket's code lives.
 const WT_BRANCH_FLOOR: usize = 16;
 
 /// The description block's ceiling in rows; the zone below still has to
@@ -145,16 +145,23 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         ]),
     };
 
-    // ---- row 3: the STATE line — column, time in that column (the card's
-    // own age, `Ticket::column_since`), created age (short keys are hidden
-    // from the UI for now, author 2026-08-30; "created by you" went with
-    // T-158 — single-user v0.1 says nothing by it — and since T-253 the
-    // clause names the author only when it was NOT the person reading:
-    // `created 2d ago by claude on T-241` on a ticket an agent filed through
-    // `create_ticket` — `Ticket::created_by`, and `created_from` resolved to
-    // the parent's key while that ticket is still on the board). M4: the workspace joins
-    // the line — the strategy word until a binding exists, then the branch
-    // and its state (short keys resurface through the branch name).
+    // ---- row 3: the STATE line — the ticket's TAGS, then its column, the
+    // time in that column (the card's own age, `Ticket::column_since`) and
+    // the created age (short keys are hidden from the UI for now, author
+    // 2026-08-30; "created by you" went with T-158 — single-user v0.1 says
+    // nothing by it — and since T-253 the clause names the author only when
+    // it was NOT the person reading: `created 2d ago by claude on T-241` on a
+    // ticket an agent filed through `create_ticket` — `Ticket::created_by`,
+    // and `created_from` resolved to the parent's key while that ticket is
+    // still on the board).
+    //
+    // ---- row 4: WHERE THE CODE LIVES — the workspace strategy word until a
+    // binding exists, then the branch, its merge state and what mesimon owes
+    // the ticket. A line of its own since T-346: on one row the branch was
+    // the clause that gave way, so a tagged ticket read its name cut to the
+    // floor, and the two rows answer different questions anyway — what the
+    // ticket IS against what its code is doing. Drawn only when there is
+    // something to say, so a shared-checkout ticket keeps the four-row band.
     let here = created_at_epoch_ms(ticket.column_since())
         .map(|ms| format!(" {}", age_in_column(now, ms)))
         .unwrap_or_default();
@@ -239,8 +246,11 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     // off the header and the footers before it (T-277): the binding stays,
     // and `?` is where it is taught, like every other overlay-only key of
     // this screen.
-    // The worktree clause is built aside so the tags can sit in front of it:
-    // what a ticket IS reads before where its code lives (author 2026-09-01).
+    // The worktree clause, built aside because it is drawn a row lower
+    // (T-346): what a ticket IS reads before where its code lives (author
+    // 2026-09-01), and now with a row between them. Its first span opens
+    // with the row's left pad instead of the bullet a clause carries when it
+    // is joining a line already in progress.
     let mut wt_spans = Vec::new();
     if let Some(w) = app.wt_item(ticket.id) {
         // Quiet-tickets rule: a mid-turn agent blocks the merge, so the hint
@@ -273,7 +283,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         } else {
             String::new()
         };
-        wt_spans.push(Span::styled(format!(" ∙ ⎇ {}", w.branch), d1));
+        wt_spans.push(Span::styled(format!(" ⎇ {}", w.branch), d1));
         if !state.is_empty() {
             let actionable = !w.merged
                 && w.status == "attached"
@@ -297,34 +307,31 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         }
     } else if let Some(n) = &note {
         // A merge reply with no binding ("no worktree on this ticket").
-        wt_spans.push(Span::styled(format!(" ∙ {n}"), theme.calm_text()));
+        wt_spans.push(Span::styled(format!(" {n}"), theme.calm_text()));
     } else if ticket.workspace_strategy() == mesimon_core::board::WorkspaceStrategy::Worktree {
-        wt_spans.push(Span::styled(" ∙ ⎇ worktree", d2));
+        wt_spans.push(Span::styled(" ⎇ worktree", d2));
     }
     // What mesimon owes this ticket, in the card's own words (2026-09-04):
     // `queued ∙ after T-12`, `train ∙ merges when quiet`. The value step,
     // never calm — calm is the `m` offer's register on this row.
     if let Some(row) = app.pending_row(ticket.id) {
-        wt_spans.push(Span::styled(format!(" ∙ {row}"), d2));
+        let text = if wt_spans.is_empty() { format!(" {row}") } else { format!(" ∙ {row}") };
+        wt_spans.push(Span::styled(text, d2));
     }
-    // Tags, spelled out: the ticket page is where you came to read, so there
-    // is no reason to make you decode a pip here. Budgeted against the width
-    // so a long vocabulary truncates the clause instead of wrapping the row.
-    // The chips have first claim on the row and the branch clause takes what
-    // is left (a 60-byte slug used to budget the tags out entirely — and the
-    // ` ∙` separator was pushed before any chip was tried, so T-163's page
-    // read `created 19m ago ∙ ∙ ⎇ msmn/…`, dogfood 2026-09-03). The clause
-    // keeps a floor so a ticket wearing ten tags still says where it lives.
-    let wt_width: usize = super::spans_width(&wt_spans);
-    // What the clause holds besides its first span (the branch name): the
-    // merge state and detail, which are never cut — only the name gives.
-    let wt_rest = wt_width.saturating_sub(wt_spans.first().map_or(0, |s| s.content.width()));
-    let wt_reserve = wt_width.min(wt_rest + WT_BRANCH_FLOOR);
+    // Tags, spelled out and in FRONT (T-346): the ticket page is where you
+    // came to read, so there is no reason to make you decode a pip here, and
+    // what a ticket IS is the first thing the eye wants off this row. They
+    // are still budgeted against the width — the ages and the column are what
+    // the chips give way to, since a row whose tags ate its column says less
+    // than one whose tenth tag was dropped — and the ` ∙` separator belongs
+    // to the chips, never pushed before one is known to fit (it was, and
+    // T-163's page read `created 19m ago ∙ ∙ ⎇ msmn/…`, dogfood 2026-09-03).
     if !ticket.tags.is_empty() {
         let used: usize = super::spans_width(&ident_spans);
-        let mut budget = (area.width as usize).saturating_sub(used + wt_reserve + 4);
+        let mut budget = (area.width as usize).saturating_sub(used + 4);
         // Each tag as a short painted chip carrying its name — the same paint
-        // the card band uses, so the two surfaces agree at a glance.
+        // the card band uses, so the two surfaces agree at a glance. The
+        // leading space of the first chip is the row's own left pad.
         let mut chips = Vec::new();
         for t in &ticket.tags {
             let text = format!(" {} ", t.name);
@@ -340,34 +347,39 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
                 chips.push(Span::styled(text, d1));
             }
         }
-        // The separator belongs to the chips: none fitting means no bullet.
         if !chips.is_empty() {
-            ident_spans.push(Span::styled(" ∙", d2));
-            ident_spans.extend(chips);
+            chips.push(Span::styled(" ∙", d2));
+            let rest = std::mem::replace(&mut ident_spans, chips);
+            ident_spans.extend(rest);
         }
     }
-    // The branch name fits the room the rest of the row leaves, cut with the
-    // `~` marker (never below its floor) rather than the line running off the
-    // right edge — `truncate` never marks what fits.
-    let used: usize = super::spans_width(&ident_spans);
-    let room = (area.width as usize).saturating_sub(used + 1);
+    let ident = Line::from(ident_spans);
+
+    // The branch name fits the room the rest of ITS OWN row leaves, cut with
+    // the `~` marker (never below its floor) rather than the line running off
+    // the right edge — `truncate` never marks what fits. What the clause
+    // holds besides its first span — the merge state and detail — is never
+    // cut: only the name gives.
+    let wt_width: usize = super::spans_width(&wt_spans);
+    let wt_rest = wt_width.saturating_sub(wt_spans.first().map_or(0, |s| s.content.width()));
+    let room = (area.width as usize).saturating_sub(1);
     if wt_width > room {
         if let Some(first) = wt_spans.first_mut() {
             let cut = truncate(&first.content, room.saturating_sub(wt_rest).max(WT_BRANCH_FLOOR));
             *first = Span::styled(cut, first.style);
         }
     }
-    ident_spans.extend(wt_spans);
-    let ident = Line::from(ident_spans);
+    let workspace = (!wt_spans.is_empty()).then(|| Line::from(wt_spans));
+    let wt_row = u16::from(workspace.is_some());
 
     // Breathing row between the header and the title (06 §5.5); the state
     // line sits directly under the title, the way a card's meta row does.
     // No band under it: the ticket header ends with its metadata (author
     // 2026-08-30).
     // ONE band for the whole header section (author 2026-09-03, third pass):
-    // pad, title, state line, one blank row, the description, pad — every
-    // row painted edge to edge with real space cells, because an empty
-    // `Line` paints nothing. The description is the card's body inside it:
+    // pad, title, state line, the workspace row when there is one, one blank
+    // row, the description, pad — every row painted edge to edge with real
+    // space cells, because an empty `Line` paints nothing. The description is the card's body inside it:
     // `[pad 1][bar 1][pad 1][text]`, the bar the card's NEUTRAL cursor-weight
     // bar thinned to a quarter cell (`Theme::desc_bar`; no tag tints — the
     // state line already names the tags), the text in
@@ -386,7 +398,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
     let two_zone = area.width >= TWO_ZONE_MIN_W;
     let row = app.rail_rows(ticket_id).get(rail_idx).copied();
     let reading_note = two_zone && matches!(row, Some(RailRow::Note(_)));
-    let body_rows = (area.height as usize).saturating_sub(7);
+    let body_rows = (area.height as usize).saturating_sub(7 + wt_row as usize);
     let desc: Vec<Line<'static>> = ticket
         .description()
         .and_then(|m| app.note_text(m))
@@ -402,12 +414,14 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         })
         .unwrap_or_default();
     // The description's rows plus its bottom pad; the blank over it is the
-    // band's own fourth row. `extra` is the room the block OWNS — what the
-    // rail is placed under, drawn or not — and `shown` is what the band
+    // band's own last fixed row. `extra` is the room the block OWNS — what
+    // the rail is placed under, drawn or not — and `shown` is what the band
     // spends of it this frame.
     let extra = if desc.is_empty() { 0 } else { desc.len() as u16 + 1 };
     let shown = if reading_note { 0 } else { extra };
-    let mut rows = vec![Line::default(), title_row, ident, Line::default()];
+    let mut rows = vec![Line::default(), title_row, ident];
+    rows.extend(workspace);
+    rows.push(Line::default());
     if !desc.is_empty() && !reading_note {
         let (bar_ch, bar_style) = theme.desc_bar();
         for row in desc {
@@ -438,20 +452,23 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             x: area.x,
             y: area.y + 1,
             width: area.width,
-            height: (4 + shown).min(area.height.saturating_sub(1)),
+            height: (4 + wt_row + shown).min(area.height.saturating_sub(1)),
         },
     );
 
     // ---- body zones -------------------------------------------------------
     // One breathing row under the band (06 §5.5) before the zones.
-    // header 1 + band 4 + breathing 1 + footer 1, plus the description rows.
+    // header 1 + band 4 + breathing 1 + footer 1, plus the workspace row
+    // (T-346) and the description rows.
     // The RAIL is placed under the block the ticket owns (`extra`), never
     // under the one this frame drew (`shown`): a band that gave its rows to
     // the zone must not carry the list under the cursor up with it (T-344).
-    let rail_y = area.y + 6 + extra;
-    let rail_h = area.height.saturating_sub(7 + extra);
-    let body_y = area.y + 6 + shown;
-    let body_h = area.height.saturating_sub(7 + shown);
+    // The workspace row is in neither group — it is drawn whenever it exists,
+    // so both zones start under it.
+    let rail_y = area.y + 6 + wt_row + extra;
+    let rail_h = area.height.saturating_sub(7 + wt_row + extra);
+    let body_y = area.y + 6 + wt_row + shown;
+    let body_h = area.height.saturating_sub(7 + wt_row + shown);
     if two_zone {
         // Transcript preview: the selected rail session's latest assistant
         // reply, read through the same draw cache as the board's `p` peek

@@ -1,14 +1,14 @@
  TICKET (T-5)   mesimon > kanban-tui
 
  Grapheme truncation
- REVIEW for >1y ∙ created >1y ago ∙ queued ∙ after T-3
+ REVIEW for >1y ∙ created >1y ago
+ queued ∙ after T-3
 
 
   PREVIEW                                                                                  SESSIONS                  1
 
     done                                                                                  ✓ ✻ claude               >1y
     it left no transcript                                                                  x sleep
-
 
 
 
