@@ -80,9 +80,9 @@ pub fn authorize_execution(
     match principal {
         Principal::Local => Decision::Allow,
         Principal::Automation { .. } if policy.allows_automation() => Decision::Allow,
-        Principal::Automation { .. } | Principal::Agent { .. } => Decision::Deny {
-            reason: "execution requires the owner at the keyboard".into(),
-        },
+        Principal::Automation { .. } | Principal::Agent { .. } => {
+            Decision::Deny { reason: "execution requires the owner at the keyboard".into() }
+        }
     }
 }
 

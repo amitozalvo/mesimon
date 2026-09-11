@@ -101,8 +101,12 @@ pub fn plan(input: &Input) -> Plan {
     for col in input.board.sorted_columns() {
         for t in input.board.column_tickets(&col.name) {
             let Some(f) = input.flags.get(&t.id) else { continue };
-            if !f.attached || f.conflict || f.merged || t.manual_merge
-                || !t.execution_policy.allows_automation() || t.hand_raised()
+            if !f.attached
+                || f.conflict
+                || f.merged
+                || t.manual_merge
+                || !t.execution_policy.allows_automation()
+                || t.hand_raised()
             {
                 continue;
             }
