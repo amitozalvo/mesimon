@@ -210,7 +210,23 @@ pub fn run(repo_root: &Path) -> Result<()> {
     if result.is_ok() && app.pending_reexec {
         return reexec(repo_root);
     }
+    if let (Ok(()), Some(root)) = (&result, app.pending_switch.take()) {
+        return switch_board(&root);
+    }
     result
+}
+
+/// Enter on a team board (T-335): this process becomes `mesimon open
+/// <root>` — a board is one process per root, and the joined board's daemon
+/// is a different one, which the new client's connect spawns as usual.
+/// This board's daemon stays up; nothing here asked it to stop.
+fn switch_board(root: &Path) -> Result<()> {
+    let _ = blank_primary_screen();
+    eprintln!("mesimon: opening {}…", root.display());
+    use std::os::unix::process::CommandExt;
+    let exe = mesimon_core::exe::current_exe()?;
+    let err = std::process::Command::new(exe).arg("open").arg(root).exec();
+    Err(anyhow::anyhow!("exec of mesimon open failed: {err}"))
 }
 
 /// U on `update ready`: swap this process for the new binary at our own

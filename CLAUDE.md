@@ -246,7 +246,11 @@ stray key inside one resolves to `None` and cancels rather than acting; a prefix
 single key. `prio: 0` means overlay-only — **a hint sits where it operates**, so a key about one
 section is drawn beside that section and not in the footer. Twenty-four tests enforce the
 product rules: no key bound twice in a scope chain, legacy-floor atoms only, no banned atoms,
-one verb per key across screens, Shift on one axis, `q` pops, `?` everywhere.
+one verb per key across screens, Shift on one axis, `q` pops, `?` everywhere. **Nothing reads
+`avail` directly**: `Binding::live` (and `MenuItem::live`) is the one predicate every reader
+asks, and it adds the two board-wide rules a joined team board carries — no session, worktree
+or git verb on a content-only board, no ticket edit for a viewer — so a new binding never has
+to remember them.
 
 **Two atom families sit off the legacy floor, on two different clauses**, and `OFF_FLOOR` in
 the test module is the whole list. `Key::ShiftEnter` is *ambiguous* — a terminal that cannot

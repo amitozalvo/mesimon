@@ -1308,6 +1308,11 @@ impl Daemon {
         if let Decision::Deny { reason } = authorize(&env.principal, &meta.action, &resource) {
             return Response::Err { message: format!("denied: {reason}") };
         }
+        // A viewer's copy of a team board (T-335): the same chokepoint, one
+        // rule later, so the refusal names the board's owner.
+        if let Some(message) = self.team_read_only(&env.command) {
+            return Response::Err { message };
+        }
         let feed_cmd = meta.logged.then(|| (env.command.wire_name(), meta.subject));
 
         let resp = match env.command {

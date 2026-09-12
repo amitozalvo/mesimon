@@ -197,6 +197,24 @@ impl Daemon {
         self.team.state.as_ref().is_some_and(|s| s.content_only)
     }
 
+    /// A viewer reads and cannot edit (T-335): a command that would change
+    /// a ticket or a note on a board this device only views is refused
+    /// here, before it touches the board, with the reason and the way
+    /// forward. The relay would refuse the record anyway (`Denied`), but by
+    /// then the edit would stand on this copy alone — and the keymap has
+    /// already stood every such key down, so this is the gate a second
+    /// client meets, not a person.
+    pub(super) fn team_read_only(&self, command: &Command) -> Option<String> {
+        let state = self.team.state.as_ref()?;
+        if state.role() != Role::Viewer || !viewer_edit(command) {
+            return None;
+        }
+        Some(format!(
+            "you view this board and cannot edit it ∙ ask {} for a contributor invite",
+            state.owner_name
+        ))
+    }
+
     fn board_title(&self) -> String {
         self.paths
             .repo_root
@@ -252,6 +270,16 @@ impl Daemon {
             invite: s.invites.last().map(|i| i.code.clone()),
             owner_name: s.owner_name.clone(),
             notes_withheld: s.notes_withheld,
+            edited_elsewhere: s
+                .published
+                .iter()
+                .filter(|(_, p)| p.kind == "ticket" || p.kind == "note")
+                .filter_map(|(k, p)| {
+                    let by = p.by.clone()?;
+                    let id = ulid::Ulid::from(ObjectId::parse(k)?);
+                    Some((id.to_string(), by))
+                })
+                .collect(),
         });
         let boards = self
             .team
@@ -883,6 +911,7 @@ impl Daemon {
                         revision: receipt.revision,
                         digest: project::digest(&entry.body),
                         kind,
+                        by: None,
                     },
                 );
                 self.team.state_dirty = true;
@@ -942,7 +971,8 @@ impl Daemon {
         let owner = state.is_owner();
         let notes = !state.notes_withheld;
         let title = self.board_title();
-        let objects = project::project(&self.board, owner, &title, notes);
+        let me = self.team.device.as_ref().map(|d| d.display_name.clone()).unwrap_or_default();
+        let objects = project::project(&self.board, owner, &title, notes, &me);
         let in_flight = self.team.put_inflight().map(str::to_owned);
         let mut changed = false;
         let Some(state) = self.team.state.as_mut() else { return };
@@ -950,6 +980,11 @@ impl Daemon {
             let digest = project::digest(body);
             if state.published.get(&id.to_hex()).is_none_or(|p| p.digest != digest) {
                 state.enqueue(*id, body.clone(), in_flight.as_deref());
+                // Changed here now, whoever changed it last: the card's
+                // initials come off with the same broadcast.
+                if let Some(p) = state.published.get_mut(&id.to_hex()) {
+                    p.by = None;
+                }
                 changed = true;
             }
         }
@@ -998,6 +1033,9 @@ impl Daemon {
                     project::note_body(t.id, body),
                     in_flight.as_deref(),
                 );
+                if let Some(p) = state.published.get_mut(&ObjectId::from(n.id).to_hex()) {
+                    p.by = None;
+                }
                 self.team.note_revs.insert(n.id, (n.rev, t.id));
                 changed = true;
             }
@@ -1081,21 +1119,33 @@ impl Daemon {
         if !state.is_owner() && !author.role.may_write() && author.role != Role::Owner {
             return;
         }
-        let member =
-            Principal::Remote { member: mesimon_core::text::scrub_text(&author.display_name) };
+        let name = mesimon_core::text::scrub_text(&author.display_name);
+        let member = Principal::Remote { member: name.clone() };
         // Published before applied, so the broadcast the apply triggers has
         // nothing to send back.
+        let key = record.object.to_hex();
+        let pending = state.outbox.iter().any(|o| o.object == key);
         if let Some(state) = self.team.state.as_mut() {
             state.published.insert(
-                record.object.to_hex(),
+                key,
                 Published {
                     revision: record.revision,
                     digest: project::digest(&body),
                     kind: kind_of(&body),
+                    by: Some(name),
                 },
             );
         }
         self.team.state_dirty = true;
+        // A local edit to this object is still on its way out (T-335): it is
+        // the later of the two, so theirs is not written over it. The put
+        // goes out against their revision — the diff re-queues the local
+        // body against the digest just recorded — and both copies end on
+        // ours. Applying theirs first was what lost a rename made here
+        // moments before their older record arrived.
+        if pending {
+            return;
+        }
         self.team.applying = true;
         match body.object {
             SharedObject::Ticket(shared) => {
@@ -1155,9 +1205,16 @@ impl Daemon {
                 column,
                 order: shared.order.clone(),
                 created_at: shared.created_at.clone(),
-                // Whoever sealed the record that minted it here is who made
-                // it, whatever word their own daemon used for themselves.
-                created_by: by.note_author(),
+                // The record's own author word — `member:<name>` since the
+                // projection spells every maker that way (T-335) — so every
+                // copy projects the same bytes and none echoes the ticket
+                // back. A record from before that spelling names its
+                // signer, as it did.
+                created_by: if shared.created_by.starts_with("member:") {
+                    shared.created_by.clone()
+                } else {
+                    by.note_author()
+                },
                 created_from: None,
                 entered_at: Some(now.clone()),
                 previous_column: None,
@@ -1301,6 +1358,30 @@ impl Daemon {
     }
 }
 
+/// The commands a viewer may not send: everything that writes a ticket or a
+/// note (`Command::meta` names the ticket) and the two that mint one. Tags
+/// are local and stay a viewer's own; so are the columns, the sessions the
+/// board cannot have anyway, and every preference.
+fn viewer_edit(command: &Command) -> bool {
+    if matches!(
+        command,
+        Command::CreateTicket { .. }
+            | Command::ImportTicket { .. }
+            | Command::MoveTicket { .. }
+            | Command::ArchiveAll
+    ) {
+        return true;
+    }
+    if matches!(
+        command,
+        Command::SetTag { .. } | Command::SeenTicket { .. } | Command::LowerHand { .. }
+    ) {
+        return false;
+    }
+    let meta = command.meta();
+    meta.subject.is_some() && !matches!(meta.action, mesimon_core::authorize::Action::Read)
+}
+
 fn kind_of(body: &RecordBody) -> String {
     match &body.object {
         SharedObject::Ticket(_) => "ticket",
@@ -1326,5 +1407,43 @@ fn other_word(r: &Wire) -> &'static str {
         Wire::Accepted { .. } => "accepted",
         Wire::Records { .. } => "records",
         Wire::Error { .. } => "error",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A viewer may read, tag, and mark a card seen; every write to a
+    /// ticket or a note is refused, and so is minting one.
+    #[test]
+    fn a_viewer_may_read_and_tag_and_nothing_else() {
+        let id = ulid::Ulid::new();
+        let edits = [
+            Command::CreateTicket { column: "TODO".into(), title: "x".into(), workspace: None },
+            Command::RenameTicket { id, title: "y".into() },
+            Command::MoveTicket { id, column: "DOING".into(), before: None },
+            Command::ArchiveTicket { id },
+            Command::UnarchiveTicket { id },
+            Command::DeleteTicket { id, discard_worktree: false },
+            Command::WriteNote { ticket: id, note: None, text: "n".into() },
+            Command::DuplicateTicket { id },
+            Command::ArchiveAll,
+        ];
+        for c in &edits {
+            assert!(viewer_edit(c), "{} should be refused for a viewer", c.wire_name());
+        }
+        let reads = [
+            Command::Snapshot,
+            Command::ReadNote { ticket: id, note: id },
+            Command::SetTag { id, group: 1, name: Some("FEATURE".into()) },
+            Command::SeenTicket { id },
+            Command::TeamRefresh,
+            Command::LeaveBoard,
+            Command::SetStatusLine { top: true },
+        ];
+        for c in &reads {
+            assert!(!viewer_edit(c), "{} is a viewer's own", c.wire_name());
+        }
     }
 }

@@ -4,6 +4,7 @@ mod doctor;
 mod exec;
 mod gate;
 mod hook;
+mod join;
 mod mcp;
 mod state;
 
@@ -59,6 +60,9 @@ fn main() -> Result<()> {
             mesimon_tui::run(&root)
         }
         Some("doctor") => doctor::run(&args[1..]),
+        // Redeem an invite code from the shell (T-335): the current
+        // directory's daemon joins, and the joined board's root is printed.
+        Some("join") => join::run(&args[1..]),
         Some("state") => state::run(&args[1..]),
         Some("--version" | "-V") => {
             println!("mesimon {}", version_line());
@@ -106,6 +110,7 @@ fn help_text() -> &'static str {
          mesimon doctor --mcp           print everything mesimon adds to a session's model input\n  \
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
          mesimon open <dir>             open the board at a directory (a joined team board)\n  \
+         mesimon join <code>            redeem a team invite code; prints the board's directory\n  \
          mesimon state explain [session]   explain observed state and movement\n  \
          mesimon state replay <files...>  replay offline state scenarios\n  \
          mesimon state compatibility [claude|codex] <version>   show measured Claude coverage\n  \

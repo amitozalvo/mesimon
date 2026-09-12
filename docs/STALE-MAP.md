@@ -10151,3 +10151,99 @@ what members already have — both are a decision for when someone asks.
 Goldens: `team`, `team_editing`, `share`, `share_members`; `menu` and
 `settings` reminted for the new row. Not yet: the team boards list, join,
 the remote board screen and its footer (T-335); ask my agent (T-336).
+
+## T-215 — team boards, join, and the remote board screen (T-335)
+
+Fourth package of the v1 plan, and the joiner's side of T-334: a teammate
+with a code gets onto a board and works on it from the TUI. Nothing new
+crosses the relay; every piece here is a reading of what T-333 already
+syncs, plus one map on the snapshot.
+
+**The menu's `Team boards` row is the door.** Signed out it leads to
+`Settings › Team`, the sharing row's rule. Signed in it opens
+`Scope::TeamBoards`: a `Join a board with a code` row that is a text field
+in place (the team list's shape, pastes included), then one row a board
+the relay lists — this one (`open now`), one with a copy here (`enter opens
+it in place of this board`), one joined or owned elsewhere (no word, inert
+Enter). The join's answer is read off the snapshot: the row says
+`Joining…` while the daemon's `busy` says so, an error starting `joining`
+stays under the row, and the board the relay lists next with a root on
+this machine is the one just joined and is opened. `mesimon join CODE`
+does the same from the shell and prints the root.
+
+**Opening a board is `exec mesimon open <root>`.** A board is one process
+per root and a joined root is a different daemon, so the TUI leaves
+(`App::pending_switch`, `lib.rs::switch_board`) the way `U` leaves for a
+new binary — without asking this daemon to stop, because it was not the
+one being replaced. The joined board is then the ordinary board screen.
+
+**Two board-wide rules, in one predicate.** `Binding::live` (and
+`MenuItem::live`) is now the only reader of a binding's `avail`, and it adds
+what a joined board carries: on a **content-only** board (`TeamBoard.
+repository == false`, `Ctx::content_only`) every binding in
+`Group::Sessions` and `Group::Worktree` and every git verb is unbound and
+unhinted, the rail has no `+ claude session` row, and the menu has no
+session rows — the ticket page's Enter excepted, because on a note row it
+is the note's; for a **viewer** (`Ctx::team_viewer`) every ticket mutation
+and every chord prefix whose tail is one stands down, and the ticket
+page's Enter on a note reads `read note`. The daemon holds the same line
+at its chokepoint (`team_read_only`, right after `authorize`): a viewer's
+write to a ticket or a note is refused with the owner's name to ask,
+before it can stand on the local copy alone. Tags, seen-marks and the
+column settings stay a viewer's own — none of them is shared.
+
+**The footer says how the board stands.** `Synced ∙ 3 members`, `Offline ∙
+2 drafts` (drafts outrank members: they are what is not done), and for a
+viewer `∙ you read only` — the passive answer to "why is `r` not here". On
+the board only; a dialog's frame carries its own word.
+
+**Who changed it is on the snapshot, per object.** `Published.by` in
+`team.json` is the member's name when the record was applied from the
+relay and `None` when it was sent from here, cleared the moment
+`team_after_broadcast` queues a local change — so the initials come off in
+the same broadcast as the edit. `TeamBoard.edited_elsewhere` is that map
+by ULID; a card wears the teammate's initials (`AO`, `Da`) beside the
+worktree mark's slot, and a note editor whose note moved on since it
+opened (`Editor::opened_rev`) keeps the draft and says `changed elsewhere
+by Amit ∙ saving overwrites` — saving is still last writer wins, which is
+the T-333 conflict rule, now with the reader warned. The board cursor
+follows its TICKET across a snapshot (`App::follow_ticket`), so a card a
+teammate moved or reordered keeps the selection.
+
+**Two copies of a ticket project the same bytes, and a pending edit is not
+written over.** The relay e2e found both. First, the author word: a maker's
+own copy said `local` (or `agent:<uuid>`) and every other copy said
+`member:<signer>`, so after any teammate's edit the receiving side's diff
+saw a different digest and echoed its own projection back — which cleared
+the teammate's name off the card a moment after it appeared, and on a
+viewer's copy queued a draft the relay would refuse. `project::ticket_body`
+now spells every maker `member:<name>` (`me` for this machine's own words),
+and a ticket minted from a record keeps the record's word rather than its
+signer's. Second, `team_apply` records the revision and digest of a record
+for an object that has a local edit still in the outbox but does not apply
+it to the board: the local edit is the later of the two, its put goes out
+against their revision, and both copies end on it. Applying theirs first
+was what lost a rename made here moments before an older record for the
+same ticket arrived, and then echoed the lost state back as the local
+truth. Conflicts remain last writer wins per object, as T-333 decided;
+what changed is that "last" is now the edit that was made last, not the
+one that happened to be retried last.
+
+**Leaving is a sharing-dialog row.** A member's dialog lists the members
+and ends in `Leave this board`, two presses like the owner's `Stop
+sharing`; the menu row on a joined board reads `Shared by Amit ∙ synced`.
+When the board goes, the dialog closes with `you left the board ∙ this
+copy stays here` — the root and its tickets are still a board.
+
+Goldens: `team_boards`, `team_boards_joining`, `board_remote`,
+`board_viewer_offline`; `menu` and its two variants reminted for the new
+row. The relay e2e (`team/relay/tests/board_e2e.rs`) now also proves the
+per-object names on both copies, two clients converging on different
+objects, a viewer refused by his own daemon, and a used and an unminted
+code both failing without naming the board.
+
+Not here: the breadcrumb on a joined board reads the owner's title for it
+(`App::board_name`), but the short keys are still local (T-333's limit);
+a contributor on a checkout of the same origin is T-338; ask my agent is
+T-336. The CHANGELOG waits for the release that ships Teams, as it did for
+T-333 and T-334.

@@ -56,7 +56,7 @@ struct NoteView<'a> {
 
 /// Who a note's author string names, in the page's own words: a person at
 /// this board is `you`, and a retained agent record names its provider.
-pub(super) fn author_word(by: &str, app: &App) -> &'static str {
+pub(super) fn author_word(by: &str, app: &App) -> String {
     if let Some(id) = by.strip_prefix("agent:") {
         id.parse::<uuid::Uuid>()
             .ok()
@@ -64,8 +64,12 @@ pub(super) fn author_word(by: &str, app: &App) -> &'static str {
             .and_then(|s| s.kind.provider())
             .map(keymap::agent_word)
             .unwrap_or("agent")
+            .to_string()
+    } else if let Some(name) = by.strip_prefix("member:") {
+        // A teammate, by the name they signed in with (T-335).
+        name.to_string()
     } else {
-        "you"
+        "you".to_string()
     }
 }
 

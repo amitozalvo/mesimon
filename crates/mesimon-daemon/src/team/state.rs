@@ -22,6 +22,11 @@ pub struct Published {
     /// vanished from the board can be tombstoned as what it was.
     #[serde(default)]
     pub kind: String,
+    /// The display name of the member whose record this is, when it was
+    /// applied from the relay rather than sent from here (T-335). Cleared
+    /// the moment this machine queues a change to the object.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub by: Option<String>,
 }
 
 /// One edit waiting for the relay. `body` is the plaintext as it stood when
@@ -186,7 +191,7 @@ mod tests {
         assert!(state.outbox[0].dirty);
         state.published.insert(
             object.to_hex(),
-            Published { revision: 4, digest: "d".into(), kind: "board".into() },
+            Published { revision: 4, digest: "d".into(), kind: "board".into(), by: None },
         );
         state.outbox.clear();
         state.enqueue(object, body("four"), None);

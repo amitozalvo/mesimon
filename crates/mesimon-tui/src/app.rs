@@ -206,12 +206,45 @@ pub enum ShareRow {
     /// A member, by device id.
     Member(String),
     Unshare,
+    /// A member's way off a joined board (T-335).
+    Leave,
+}
+
+/// A row of the team boards dialog (T-335): the way onto one more board,
+/// then the boards this device belongs to, as the relay lists them.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum BoardsRow {
+    /// `Join with a code` — a text field while a code is being typed.
+    Join,
+    /// A board, by id.
+    Board(String),
 }
 
 /// A relay address or a display name: the daemon caps the name at
 /// sixty-four characters and says so; the field's own cap only keeps a
 /// paste from running away.
 const TEAM_FIELD_MAX_BYTES: usize = 256;
+
+/// `Dana Levy` → `DL`, `Dana` → `Da`: two cells on a card for who was here.
+pub(crate) fn initials(name: &str) -> String {
+    let words: Vec<&str> = name.split_whitespace().collect();
+    let out: String = match words.as_slice() {
+        [] => String::new(),
+        [one] => one.chars().take(2).collect(),
+        many => many.iter().filter_map(|w| w.chars().next()).take(2).collect(),
+    };
+    let mut chars = out.chars();
+    match (chars.next(), chars.next()) {
+        (Some(a), Some(b)) if words.len() == 1 => format!("{}{}", a.to_uppercase(), b),
+        (Some(a), Some(b)) => format!("{}{}", a.to_uppercase(), b.to_uppercase()),
+        (Some(a), None) => a.to_uppercase().to_string(),
+        _ => String::new(),
+    }
+}
+
+/// An invite code is 39 characters as shown; the cap keeps a paste from
+/// running away and nothing else — the daemon parses it.
+const JOIN_CODE_MAX_BYTES: usize = 64;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Mode {
@@ -292,6 +325,14 @@ pub enum Mode {
     Share {
         idx: usize,
         armed: bool,
+    },
+    /// The team boards dialog (T-335): rows built from `App::boards_rows`.
+    /// `joining` is the Join row as a text field, the team list's rule —
+    /// Enter sends the code and the row reads `Joining…` off the snapshot
+    /// until the daemon answers, then the board it joined is opened.
+    TeamBoards {
+        idx: usize,
+        joining: Option<EditBuffer>,
     },
     /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
     /// be written, shown verbatim over the board, with four ways out. No
@@ -430,6 +471,10 @@ pub struct Editor {
     /// eye is carried from the one-line composer to the bigger room instead
     /// of being dropped into it. `None` on a note, and once settled.
     pub grow: Option<(ratatui::layout::Rect, Instant)>,
+    /// The note's `rev` when the editor opened on it (T-335): a snapshot
+    /// that moves it on means someone else wrote the note, and the row
+    /// says so while the draft stays.
+    pub opened_rev: Option<u64>,
 }
 
 /// How long the composer dialog takes to grow out of its card. One gesture,
@@ -599,6 +644,7 @@ impl Editor {
             top: Cell::new(0),
             body_width: Cell::new(usize::MAX),
             grow: None,
+            opened_rev: None,
         }
     }
 
@@ -1013,6 +1059,14 @@ pub struct App {
     team_drafts_seeded: bool,
     /// The sharing dialog's notes switch, before the board is published.
     pub share_notes: bool,
+    /// A join was sent from the team boards dialog (T-335): the boards the
+    /// relay listed before it, so the one that appears is the one to open.
+    /// Cleared by the daemon's answer, either way.
+    join_watch: Option<Vec<String>>,
+    /// The root of a team board to open instead of this one (T-335): the
+    /// main loop leaves and execs `mesimon open <root>` — a different root
+    /// is a different daemon, and a board is one process per root.
+    pub pending_switch: Option<std::path::PathBuf>,
     pub mode: Mode,
     pub status: String,
     pub quit: bool,
@@ -1302,6 +1356,8 @@ impl App {
             team_name_draft: String::new(),
             team_drafts_seeded: false,
             share_notes: true,
+            join_watch: None,
+            pending_switch: None,
             mode: Mode::Normal,
             status: String::new(),
             quit: false,
@@ -1556,6 +1612,11 @@ impl App {
             team,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
+        // The cursor holds its TICKET across the pass (T-335): a card that
+        // a teammate moved or reordered keeps the selection on it, and one
+        // that left the board lands the cursor where it was.
+        let followed = self.selected_ticket().map(|t| t.id);
+        let joined_before = self.team.board.as_ref().map(|b| b.role != "owner");
         self.board = board;
         self.grace = grace;
         self.external = external;
@@ -1571,7 +1632,18 @@ impl App {
         self.status_top = status_top;
         self.team = team;
         self.seed_team_drafts();
+        self.follow_ticket(followed);
         self.clamp_cursor();
+        self.watch_join();
+        // A member who left (or was removed while the dialog was up): the
+        // dialog's rows are the members, and there are none now.
+        if joined_before == Some(true)
+            && self.team.board.is_none()
+            && matches!(self.mode, Mode::Share { .. })
+        {
+            self.mode = Mode::Normal;
+            self.status = "you left the board ∙ this copy stays here".into();
+        }
         self.leave_pinned_column(was.as_deref());
         self.clamp_screen();
         // An open picker is a view of the board, so it re-ranks with it: a
@@ -1828,6 +1900,12 @@ impl App {
                 self.mode = Mode::Share { idx: n.saturating_sub(1), armed: *armed };
             }
         }
+        if let Mode::TeamBoards { idx, joining: None } = &self.mode {
+            let n = self.boards_rows().len();
+            if *idx >= n {
+                self.mode = Mode::TeamBoards { idx: n.saturating_sub(1), joining: None };
+            }
+        }
         // A note editor on a ticket that vanished has nowhere to save to.
         if let Mode::Editor(Editor { purpose: EditorPurpose::Note { ticket, .. }, .. }) = &self.mode
         {
@@ -2047,6 +2125,9 @@ impl App {
         // address and its pin are exactly what gets pasted (T-334).
         } else if let Mode::Team { editing: Some(buf), .. } = &mut self.mode {
             ("a relay or a name", buf.paste(text), buf.limit())
+        // An invite code is handed over out of band, which is to say pasted.
+        } else if let Mode::TeamBoards { joining: Some(buf), .. } = &mut self.mode {
+            ("an invite code", buf.paste(text), buf.limit())
         } else if let Mode::Prompts { editing: Some(buf), .. } = &mut self.mode {
             ("a prompt", buf.paste(text), buf.limit())
         } else if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
@@ -2809,6 +2890,8 @@ impl App {
             Mode::Team { editing: Some(_), .. } => Scope::Input,
             Mode::Team { .. } => Scope::Team,
             Mode::Share { .. } => Scope::Share,
+            Mode::TeamBoards { joining: Some(_), .. } => Scope::Input,
+            Mode::TeamBoards { .. } => Scope::TeamBoards,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             Mode::Search(_) => Scope::Search,
@@ -3120,7 +3203,22 @@ impl App {
                 .unwrap_or(0),
             team_sync: self.team.board.as_ref().map(|b| b.sync.state.clone()).unwrap_or_default(),
             share_enter_word: "",
+            content_only: self.content_only(),
+            team_viewer: self.team.board.as_ref().is_some_and(|b| b.role == "viewer"),
+            team_owner_name: self
+                .team
+                .board
+                .as_ref()
+                .map(|b| b.owner_name.clone())
+                .unwrap_or_default(),
+            team_boards: self.team.boards.len(),
+            boards_enter_word: "",
         };
+        if let Mode::TeamBoards { idx, .. } = &self.mode {
+            if let Some(row) = self.boards_rows().get(*idx) {
+                ctx.boards_enter_word = self.boards_words(row).2;
+            }
+        }
         // The sharing dialog's Enter reads its word off the row under the
         // cursor, which only the mode knows.
         if let Mode::Share { idx, armed } = &self.mode {
@@ -3269,6 +3367,9 @@ impl App {
         }
         if let Mode::Team { editing: Some(_), .. } = self.mode {
             return self.key_team_field(code, mods);
+        }
+        if let Mode::TeamBoards { joining: Some(_), .. } = self.mode {
+            return self.key_boards_field(code, mods);
         }
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
@@ -3863,6 +3964,17 @@ impl App {
                     self.mode = Mode::Team { idx: 0, editing: None, from_menu: true };
                 } else {
                     self.mode = Mode::Share { idx: 0, armed: false };
+                }
+            }
+            // The same door for the boards (T-335): signed out, the identity
+            // first; otherwise the list, with the cursor on the first board
+            // when there is one and on the join row when there is not.
+            Verb::TeamBoards => {
+                if !self.team.device.as_ref().is_some_and(|d| d.registered) {
+                    self.mode = Mode::Team { idx: 0, editing: None, from_menu: true };
+                } else {
+                    let idx = usize::from(!self.team.boards.is_empty());
+                    self.mode = Mode::TeamBoards { idx, joining: None };
                 }
             }
             // The row IS the field: Enter opens the template that stands
@@ -4519,6 +4631,12 @@ impl App {
                     *armed = false;
                 }
             }
+            Scope::TeamBoards => {
+                let n = self.boards_rows().len();
+                if let Mode::TeamBoards { idx, .. } = &mut self.mode {
+                    *idx = step(*idx, n, down);
+                }
+            }
             // Up/down select; left/right reach only the sort row (the
             // binding's gate) and step the order it will use.
             Scope::ColumnSettings => {
@@ -4656,6 +4774,7 @@ impl App {
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
             Scope::Share => self.share_act(),
+            Scope::TeamBoards => self.boards_act(),
             // A column row is a toggle, a cycle, the sort or the delete; the
             // dialog STAYS and the row relabels off the snapshot.
             Scope::ColumnSettings => {
@@ -4757,6 +4876,10 @@ impl App {
                 }
             }
             Scope::Share => self.mode = Mode::Menu { idx: self.menu_row(Verb::ShareDialog) },
+            Scope::TeamBoards => {
+                self.join_watch = None;
+                self.mode = Mode::Menu { idx: self.menu_row(Verb::TeamBoards) };
+            }
             Scope::ColumnSettings => {
                 if self.column_agents {
                     self.column_agents = false;
@@ -5082,6 +5205,8 @@ impl App {
         rows.extend(board.members.iter().map(|m| ShareRow::Member(m.device.clone())));
         if owner {
             rows.push(ShareRow::Unshare);
+        } else {
+            rows.push(ShareRow::Leave);
         }
         rows
     }
@@ -5152,6 +5277,19 @@ impl App {
                 "Stop sharing".into(),
                 "members lose the board ∙ your copy stays ∙ enter asks once more".into(),
                 "stop sharing",
+            ),
+            ShareRow::Leave if busy == "leaving" => {
+                ("Leaving…".into(), "the relay is taking you off the board".into(), "")
+            }
+            ShareRow::Leave if armed => (
+                "Leave this board?".into(),
+                "nothing new reaches this copy ∙ enter again".into(),
+                "leave",
+            ),
+            ShareRow::Leave => (
+                "Leave this board".into(),
+                "the owner can invite you again ∙ enter asks once more".into(),
+                "leave",
             ),
         }
     }
@@ -5229,11 +5367,246 @@ impl App {
                 self.mode = Mode::Share { idx, armed: false };
                 self.send(Command::UnshareBoard)
             }
-            ShareRow::Member(_) | ShareRow::Unshare => {
+            ShareRow::Leave if armed => {
+                self.mode = Mode::Share { idx, armed: false };
+                self.send(Command::LeaveBoard)
+            }
+            ShareRow::Member(_) | ShareRow::Unshare | ShareRow::Leave => {
                 self.mode = Mode::Share { idx, armed: true };
                 Ok(())
             }
         }
+    }
+
+    // ---- the team boards dialog (T-335) ------------------------------------
+
+    /// This board is a joined team board on a root with no checkout.
+    pub fn content_only(&self) -> bool {
+        self.team.board.as_ref().is_some_and(|b| !b.repository)
+    }
+
+    /// What the breadcrumb calls this board: the directory's name, or on a
+    /// joined board — whose root is a hex id under the state dir — the
+    /// owner's title for it, as the relay listed it.
+    pub fn board_name(&self) -> String {
+        if self.content_only() {
+            let current = self.team.board.as_ref().map(|b| b.board.as_str());
+            if let Some(title) = self
+                .team
+                .boards
+                .iter()
+                .find(|b| Some(b.board.as_str()) == current)
+                .and_then(|b| b.title.clone())
+                .filter(|t| !t.is_empty())
+            {
+                return title;
+            }
+            if let Some(b) = &self.team.board {
+                return format!("{}'s board", b.owner_name);
+            }
+        }
+        self.repo_root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
+    }
+
+    /// The dialog's rows: the join row, then the boards the relay lists.
+    pub fn boards_rows(&self) -> Vec<BoardsRow> {
+        let mut rows = vec![BoardsRow::Join];
+        rows.extend(self.team.boards.iter().map(|b| BoardsRow::Board(b.board.clone())));
+        rows
+    }
+
+    /// A row's label, its detail, and the word Enter's hint wears there —
+    /// empty where the row is only read, which is what makes Enter inert
+    /// on it (`Ctx::boards_enter_word`).
+    pub fn boards_words(&self, row: &BoardsRow) -> (String, String, &'static str) {
+        use mesimon_core::text::plural;
+        let busy = self.team.busy.as_deref().unwrap_or("");
+        let error = self.team.error.as_deref().unwrap_or("");
+        match row {
+            BoardsRow::Join if busy == "joining" => {
+                ("Joining…".into(), "the relay is checking the code".into(), "")
+            }
+            BoardsRow::Join => {
+                let detail = if error.starts_with("joining") {
+                    format!("{error} ∙ enter tries another code")
+                } else {
+                    "a one-time code from the board's owner ∙ opens the board".into()
+                };
+                ("Join a board with a code".into(), detail, "join")
+            }
+            BoardsRow::Board(id) => {
+                let Some(b) = self.team.boards.iter().find(|b| &b.board == id) else {
+                    return (String::new(), String::new(), "");
+                };
+                let name = match &b.title {
+                    Some(t) if !t.is_empty() => t.clone(),
+                    _ if b.role == "owner" => "your board".to_string(),
+                    _ => format!("{}'s board", b.owner_name),
+                };
+                let current = self.team.board.as_ref().is_some_and(|c| c.board == b.board);
+                let mut label = format!("{name} ∙ {}", b.role);
+                if current {
+                    label.push_str(" ∙ open now");
+                }
+                let detail = if current {
+                    let members = self
+                        .team
+                        .board
+                        .as_ref()
+                        .map(|c| c.members.iter().filter(|m| m.status == "active").count())
+                        .unwrap_or(0);
+                    format!("owner {} ∙ {}", b.owner_name, plural(members, "member"))
+                } else if b.root.is_some() {
+                    format!("owner {} ∙ enter opens it in place of this board", b.owner_name)
+                } else if b.role == "owner" {
+                    "shared from a checkout on this machine ∙ open it from there".to_string()
+                } else {
+                    "joined from another machine ∙ no copy here".to_string()
+                };
+                let word = if !current && b.root.is_some() { "open" } else { "" };
+                (label, detail, word)
+            }
+        }
+    }
+
+    /// Enter on the dialog: the join row opens as a field; a board row with
+    /// a copy on this machine is opened in place of this one.
+    fn boards_act(&mut self) -> Result<()> {
+        let Mode::TeamBoards { idx, .. } = self.mode else {
+            return Ok(());
+        };
+        let Some(row) = self.boards_rows().get(idx).cloned() else {
+            return Ok(());
+        };
+        if self.boards_words(&row).2.is_empty() {
+            return Ok(());
+        }
+        match row {
+            BoardsRow::Join => {
+                self.mode =
+                    Mode::TeamBoards { idx, joining: Some(EditBuffer::new(JOIN_CODE_MAX_BYTES)) };
+            }
+            BoardsRow::Board(id) => {
+                if let Some(root) =
+                    self.team.boards.iter().find(|b| b.board == id).and_then(|b| b.root.clone())
+                {
+                    self.pending_switch = Some(root);
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// The join row's field: Enter sends the code — the daemon parses it,
+    /// so a typo comes back as `joining: …` under the row and the field
+    /// reopens on the next Enter — and Esc puts the row back.
+    fn key_boards_field(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        if let Mode::TeamBoards { joining: Some(buf), .. } = &mut self.mode {
+            edit_buffer_key(buf, code, mods);
+        }
+        let ctx = self.ctx();
+        let verb = crate::keys::to_key_text(code, mods)
+            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        match verb {
+            Some(Verb::Save | Verb::SaveStart) => {
+                let Mode::TeamBoards { idx, joining } = &self.mode else {
+                    return Ok(());
+                };
+                let idx = *idx;
+                let text = joining.as_ref().map(|b| b.as_str().trim().to_string());
+                self.mode = Mode::TeamBoards { idx, joining: None };
+                let Some(code) = text.filter(|t| !t.is_empty()) else { return Ok(()) };
+                self.join_watch = Some(self.team.boards.iter().map(|b| b.board.clone()).collect());
+                self.send(Command::JoinBoard { code })?;
+            }
+            Some(Verb::Cancel) => {
+                if let Mode::TeamBoards { joining, .. } = &mut self.mode {
+                    *joining = None;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The join's answer, off the snapshot: a board the relay did not list
+    /// before, with a root on this machine, is the one just joined — open
+    /// it. An error leaves the watch and stays on the row, which reads it.
+    fn watch_join(&mut self) {
+        let Some(before) = self.join_watch.as_ref() else { return };
+        if self.team.error.as_deref().is_some_and(|e| e.starts_with("joining")) {
+            self.join_watch = None;
+            return;
+        }
+        let fresh = self
+            .team
+            .boards
+            .iter()
+            .find(|b| !before.contains(&b.board) && b.root.is_some())
+            .and_then(|b| b.root.clone());
+        if let Some(root) = fresh {
+            self.join_watch = None;
+            self.pending_switch = Some(root);
+        }
+    }
+
+    /// Put the cursor back on `id` wherever the new board holds it, or
+    /// leave it where it was when the ticket is gone or was never selected.
+    fn follow_ticket(&mut self, id: Option<ulid::Ulid>) {
+        let Some(id) = id else { return };
+        if !matches!(self.mode, Mode::Normal | Mode::Menu { .. } | Mode::Share { .. }) {
+            return;
+        }
+        let cols = self.columns();
+        for (c, name) in cols.iter().enumerate() {
+            if let Some(r) = self.board.column_tickets(name).iter().position(|t| t.id == id) {
+                self.cursor_col = c;
+                self.cursor_row = Some(r);
+                return;
+            }
+        }
+    }
+
+    /// The initials a card wears when a teammate made its last change
+    /// (T-335): `DL` for Dana Levy, `Da` for Dana — off the snapshot's
+    /// `edited_elsewhere`, which the daemon clears the moment this machine
+    /// changes the ticket again.
+    pub fn remote_initials(&self, ticket: ulid::Ulid) -> Option<String> {
+        let name = self.team.board.as_ref()?.edited_elsewhere.get(&ticket.to_string())?;
+        Some(initials(name))
+    }
+
+    /// Who changed a note elsewhere since it was opened here, if anyone
+    /// (T-335): the editor keeps the draft and says so on its context row.
+    pub fn note_changed_elsewhere(&self, ed: &Editor) -> Option<String> {
+        let EditorPurpose::Note { ticket, note: Some(note) } = &ed.purpose else { return None };
+        let rev = self.board.ticket(*ticket)?.note(*note)?.rev;
+        if ed.opened_rev.is_some_and(|r| rev <= r) {
+            return None;
+        }
+        self.team.board.as_ref()?.edited_elsewhere.get(&note.to_string()).cloned()
+    }
+
+    /// The footer's sync clause on a team board (T-335): `Synced ∙ 3
+    /// members`, `Offline ∙ 2 drafts`, `Viewer ∙ read only`. Drafts outrank
+    /// the member count because they are the thing that is not done.
+    pub fn sync_clause(&self) -> Option<String> {
+        let b = self.team.board.as_ref()?;
+        let mut word: Vec<char> = b.sync.state.chars().collect();
+        if let Some(first) = word.first_mut() {
+            *first = first.to_ascii_uppercase();
+        }
+        let mut clause: String = word.into_iter().collect();
+        if b.sync.drafts > 0 {
+            clause.push_str(&format!(" ∙ {}", mesimon_core::text::plural(b.sync.drafts, "draft")));
+        } else {
+            let members = b.members.iter().filter(|m| m.status == "active").count();
+            clause.push_str(&format!(" ∙ {}", mesimon_core::text::plural(members, "member")));
+        }
+        if b.role == "viewer" {
+            clause.push_str(" ∙ you read only");
+        }
+        Some(clause)
     }
 
     /// Board Enter is "get me working": a live agent focuses directly, a
@@ -6255,6 +6628,7 @@ impl App {
             return Ok(());
         };
         let title = EditBuffer::from_text(t.title.clone(), mesimon_core::board::TITLE_MAX_BYTES);
+        let opened_rev = note.and_then(|id| t.note(id)).map(|n| n.rev);
         let body = match note {
             Some(id) => match self.req(Command::ReadNote { ticket, note: id }) {
                 Response::Note { text, .. } => {
@@ -6269,6 +6643,7 @@ impl App {
             None => TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
         };
         let mut ed = Editor::new(EditorPurpose::Note { ticket, note }, title, body, Field::Body);
+        ed.opened_rev = opened_rev;
         // Over the board the editor is a dialog, and it grows out of the
         // cursor card the last frame drew — the composer's motion, on a
         // ticket that exists. From the ticket page it takes the screen.
@@ -7386,7 +7761,8 @@ impl App {
     /// the row beside it: `enter` on the corpse resumes the conversation,
     /// `enter` here starts a new one.
     pub fn new_agent_row(&self, ticket: ulid::Ulid) -> bool {
-        self.board.live_agent(ticket).is_none()
+        !self.content_only()
+            && self.board.live_agent(ticket).is_none()
             && self.board.ticket(ticket).is_some_and(|t| !t.is_archived())
     }
 
@@ -8424,6 +8800,83 @@ pub(crate) mod test_support {
 /// A shared board as the snapshot would carry it (T-334), for the app's
 /// tests and the goldens: Amit owns it, Dana contributes, Lee has joined and
 /// waits for a key, Sam was removed; one invite is out and two drafts wait.
+/// A joined board (T-335) as a contributor on a root with no checkout:
+/// Amit owns it, Dana (this machine) contributes, Lee views; synced, no
+/// drafts; the relay lists this board and one more Dana joined, plus a
+/// board she owns from a checkout elsewhere. Ticket 1's last change was
+/// Amit's, note 90's too.
+#[cfg(test)]
+pub(crate) fn joined_team_fixture() -> mesimon_core::team::TeamInfo {
+    use mesimon_core::team::{
+        SyncState, TeamBoard, TeamBoardSummary, TeamDevice, TeamInfo, TeamMember,
+    };
+    let member = |name: &str, hex: &str, role: &str| TeamMember {
+        device: hex.repeat(16),
+        display_name: name.into(),
+        role: role.into(),
+        status: "active".into(),
+        pending: false,
+        unverified: false,
+        me: false,
+    };
+    let mut edited_elsewhere = std::collections::BTreeMap::new();
+    edited_elsewhere.insert(ulid::Ulid(1).to_string(), "Amit Ozalvo".to_string());
+    edited_elsewhere.insert(ulid::Ulid(90).to_string(), "Amit Ozalvo".to_string());
+    TeamInfo {
+        device: Some(TeamDevice {
+            display_name: "Dana".into(),
+            relay: "relay.example".into(),
+            device: "dd".repeat(16),
+            registered: true,
+        }),
+        board: Some(TeamBoard {
+            board: "0b".repeat(16),
+            role: "contributor".into(),
+            repository: false,
+            members: vec![
+                member("Amit Ozalvo", "aa", "owner"),
+                TeamMember { me: true, ..member("Dana", "dd", "contributor") },
+                member("Lee", "ee", "viewer"),
+            ],
+            sync: SyncState {
+                state: "synced".into(),
+                drafts: 0,
+                synced_at_ms: Some(1),
+                detail: None,
+            },
+            invite: None,
+            owner_name: "Amit Ozalvo".into(),
+            notes_withheld: false,
+            edited_elsewhere,
+        }),
+        boards: vec![
+            TeamBoardSummary {
+                board: "0b".repeat(16),
+                role: "contributor".into(),
+                owner_name: "Amit Ozalvo".into(),
+                root: Some(std::path::PathBuf::from("/state/team/boards/0b0b")),
+                title: Some("mesimon".into()),
+            },
+            TeamBoardSummary {
+                board: "0c".repeat(16),
+                role: "viewer".into(),
+                owner_name: "Sam".into(),
+                root: Some(std::path::PathBuf::from("/state/team/boards/0c0c")),
+                title: None,
+            },
+            TeamBoardSummary {
+                board: "0d".repeat(16),
+                role: "owner".into(),
+                owner_name: "Dana".into(),
+                root: None,
+                title: None,
+            },
+        ],
+        busy: None,
+        error: None,
+    }
+}
+
 #[cfg(test)]
 pub(crate) fn shared_team_fixture() -> mesimon_core::team::TeamInfo {
     use mesimon_core::team::{SyncState, TeamBoard, TeamDevice, TeamInfo, TeamMember};
@@ -8462,6 +8915,7 @@ pub(crate) fn shared_team_fixture() -> mesimon_core::team::TeamInfo {
             invite: Some("7A3K-M9Q2-XB4D-H8FN-P5RT-W2CJ-6YZE-K1S0".into()),
             owner_name: "Amit".into(),
             notes_withheld: false,
+            edited_elsewhere: Default::default(),
         }),
         boards: Vec::new(),
         busy: None,
@@ -13752,5 +14206,282 @@ mod tests {
             Mode::Settings { idx: app.settings_row(Verb::Notifications) },
             "back onto the row that opened it"
         );
+    }
+
+    // ---- a joined board (T-335) ----------------------------------------
+
+    fn app_joined() -> App {
+        let mut app = app_three_columns();
+        app.team = super::joined_team_fixture();
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        app
+    }
+
+    fn footer_text(app: &App) -> String {
+        crate::ui::footer_text(app, 140)
+    }
+
+    #[test]
+    fn initials_are_two_cells() {
+        assert_eq!(initials("Dana Levy"), "DL");
+        assert_eq!(initials("dana"), "Da");
+        assert_eq!(initials("Amit Ozalvo Cohen"), "AO");
+        assert_eq!(initials("x"), "X");
+        assert_eq!(initials("  "), "");
+    }
+
+    /// A card a teammate changed last wears their initials; one this
+    /// machine changed does not, and neither does any card off a board
+    /// that is not shared.
+    #[test]
+    fn a_teammates_change_shows_as_initials_on_the_card() {
+        let app = app_joined();
+        assert_eq!(app.remote_initials(ulid::Ulid(1)).as_deref(), Some("AO"));
+        assert_eq!(app.remote_initials(ulid::Ulid(2)), None);
+        let plain = app_three_columns();
+        assert_eq!(plain.remote_initials(ulid::Ulid(1)), None);
+    }
+
+    /// No checkout, no sessions (T-335): on a joined board the session,
+    /// worktree and git keys are inert and unhinted, the ticket page's
+    /// rail has no agent seat, and the menu offers no row about sessions —
+    /// while a rename still works.
+    #[test]
+    fn a_joined_board_offers_no_session_or_repository_key() {
+        let mut app = app_joined();
+        let ctx = app.ctx();
+        assert!(ctx.content_only && !ctx.team_viewer);
+        assert_eq!(keymap::resolve(Scope::Board, Key::Char('c'), &ctx), None);
+        assert_eq!(keymap::resolve(Scope::Board, Key::Char('v'), &ctx), None);
+        assert_eq!(keymap::resolve(Scope::Board, Key::Char('!'), &ctx), None);
+        let footer = footer_text(&app);
+        for absent in ["claude", "codex", "shell", "diff", "merge"] {
+            assert!(!footer.contains(absent), "{absent} is hinted on a joined board: {footer}");
+        }
+        assert!(footer.contains("Synced ∙ 3 members"), "{footer}");
+        assert!(!app.rail_rows(ulid::Ulid(1)).iter().any(|r| matches!(r, RailRow::NewAgent)));
+        let rows: Vec<Verb> = keymap::menu_items(&ctx).iter().map(|m| m.verb).collect();
+        assert!(!rows.contains(&Verb::ExternalDrawer), "{rows:?}");
+        assert!(rows.contains(&Verb::TeamBoards) && rows.contains(&Verb::ShareDialog), "{rows:?}");
+        press(&mut app, 'c');
+        assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
+        press(&mut app, 'r');
+        assert!(matches!(app.mode, Mode::Input { purpose: InputPurpose::Rename { .. }, .. }));
+    }
+
+    /// A viewer's edit keys are inert (T-335), and the footer says why on
+    /// every frame rather than on the press that did nothing.
+    #[test]
+    fn a_viewers_keys_are_inert_and_the_footer_says_why() {
+        let mut app = app_joined();
+        if let Some(b) = app.team.board.as_mut() {
+            b.role = "viewer".into();
+        }
+        assert!(app.ctx().team_viewer);
+        for key in ['r', 'n', 'a', 'd', 'x', 'c'] {
+            press(&mut app, key);
+            assert!(matches!(app.mode, Mode::Normal), "{key} did something: {:?}", app.mode);
+        }
+        let footer = footer_text(&app);
+        assert!(footer.contains("Synced ∙ 3 members ∙ you read only"), "{footer}");
+        assert!(!footer.contains("rename"), "{footer}");
+        // Reading still works: the ticket page opens.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.screen, Screen::Ticket { .. }));
+    }
+
+    /// The footer's clause: drafts outrank members while any wait.
+    #[test]
+    fn the_sync_clause_counts_drafts_before_members() {
+        let mut app = app_joined();
+        assert_eq!(app.sync_clause().as_deref(), Some("Synced ∙ 3 members"));
+        if let Some(b) = app.team.board.as_mut() {
+            b.sync.state = "offline".into();
+            b.sync.drafts = 2;
+        }
+        assert_eq!(app.sync_clause().as_deref(), Some("Offline ∙ 2 drafts"));
+        assert_eq!(app_three_columns().sync_clause(), None);
+    }
+
+    /// A card a teammate moved keeps the cursor on it (T-335): the
+    /// selection follows the ticket, not the row number.
+    #[test]
+    fn the_cursor_follows_its_ticket_across_a_remote_change() {
+        let mut app = app_joined();
+        app.cursor_col = 0;
+        app.cursor_row = Some(1);
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+        // Elsewhere, ticket 2 moved to the top of todo, and then to doing.
+        let mut board = board_three_columns();
+        board.tickets[1].order = "0".into();
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert_eq!((app.cursor_col, app.cursor_row), (0, Some(0)));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+        let mut board = board_three_columns();
+        board.tickets[1].column = "doing".into();
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert_eq!((app.cursor_col, app.cursor_row), (1, Some(0)));
+        assert_eq!(app.selected_ticket().map(|t| t.id), Some(ulid::Ulid(2)));
+        // Gone: the cursor stays where it was and clamps.
+        let mut board = board_three_columns();
+        board.tickets.remove(1);
+        app.absorb(Snapshot { board, ..Default::default() });
+        assert_eq!(app.cursor_col, 1);
+    }
+
+    /// The team boards dialog (T-335): the join row, then the boards; Enter
+    /// on the join row opens the field, the code goes out on Enter, and
+    /// the board the relay lists next is the one to open.
+    #[test]
+    fn joining_from_the_dialog_opens_the_board_the_relay_lists_next() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.team = super::joined_team_fixture();
+        app.team.board = None;
+        app.dispatch(Verb::TeamBoards, Key::Enter, Scope::Board, &app.ctx()).unwrap();
+        assert!(matches!(app.mode, Mode::TeamBoards { idx: 1, joining: None }), "{:?}", app.mode);
+        let rows = app.boards_rows();
+        assert_eq!(rows.len(), 4);
+        let (label, _, word) = app.boards_words(&rows[1]);
+        assert_eq!((label.as_str(), word), ("mesimon ∙ contributor", "open"));
+        let (label, detail, word) = app.boards_words(&rows[3]);
+        assert_eq!(label, "your board ∙ owner");
+        assert!(detail.contains("checkout"), "{detail}");
+        assert_eq!(word, "", "no copy here, nothing to open");
+        // Up to the join row, Enter, a code, Enter.
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::TeamBoards { idx: 0, joining: Some(_) }));
+        assert_eq!(app.scope(), Scope::Input);
+        for c in "7A3K-M9Q2".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::TeamBoards { idx: 0, joining: None }));
+        assert!(sent.borrow().iter().any(|c| c.contains("JoinBoard") && c.contains("7A3K-M9Q2")));
+        assert!(app.join_watch.is_some());
+        // The daemon says joining; then the relay lists one more board.
+        let mut team = super::joined_team_fixture();
+        team.board = None;
+        team.busy = Some("joining".into());
+        app.absorb(Snapshot { board: board_three_columns(), team, ..Default::default() });
+        assert_eq!(app.boards_words(&BoardsRow::Join).0, "Joining…");
+        assert!(app.pending_switch.is_none());
+        let mut team = super::joined_team_fixture();
+        team.board = None;
+        team.boards.push(mesimon_core::team::TeamBoardSummary {
+            board: "0e".repeat(16),
+            role: "contributor".into(),
+            owner_name: "Kim".into(),
+            root: Some(PathBuf::from("/state/team/boards/0e0e")),
+            title: None,
+        });
+        app.absorb(Snapshot { board: board_three_columns(), team, ..Default::default() });
+        assert_eq!(app.pending_switch.as_deref(), Some(Path::new("/state/team/boards/0e0e")));
+        assert!(app.join_watch.is_none());
+    }
+
+    /// A bad code comes back under the row and the watch is dropped: the
+    /// next board the relay lists is not the one this code failed to join.
+    #[test]
+    fn a_failed_join_reads_on_the_row_and_opens_nothing() {
+        let mut app = app_joined();
+        app.team.board = None;
+        app.mode = Mode::TeamBoards { idx: 0, joining: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "nope".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let mut team = super::joined_team_fixture();
+        team.board = None;
+        team.error = Some("joining: not found".into());
+        app.absorb(Snapshot { board: board_three_columns(), team, ..Default::default() });
+        assert!(app.join_watch.is_none());
+        assert!(app.pending_switch.is_none());
+        let (_, detail, word) = app.boards_words(&BoardsRow::Join);
+        assert_eq!(detail, "joining: not found ∙ enter tries another code");
+        assert_eq!(word, "join");
+    }
+
+    /// A member's sharing dialog ends in `Leave this board`, which arms on
+    /// one press and sends on the second (T-335).
+    #[test]
+    fn a_member_leaves_from_the_sharing_dialog() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.team = super::joined_team_fixture();
+        let rows = app.share_rows();
+        assert_eq!(rows.last(), Some(&ShareRow::Leave));
+        assert!(!rows.contains(&ShareRow::Unshare) && !rows.contains(&ShareRow::InviteViewer));
+        app.mode = Mode::Share { idx: rows.len() - 1, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(matches!(app.mode, Mode::Share { armed: true, .. }));
+        assert!(!sent.borrow().iter().any(|c| c.contains("LeaveBoard")));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent.borrow().iter().any(|c| c.contains("LeaveBoard")));
+        // The daemon answers: the board is no longer shared here.
+        let mut team = super::joined_team_fixture();
+        team.board = None;
+        app.absorb(Snapshot { board: board_three_columns(), team, ..Default::default() });
+        assert!(matches!(app.mode, Mode::Normal));
+        assert!(app.status.contains("left the board"), "{}", app.status);
+    }
+
+    /// A note a teammate wrote while it is open here (T-335): the draft
+    /// stays, the context row says who, and saving is still this draft.
+    #[test]
+    fn a_note_edited_elsewhere_keeps_the_draft_and_says_so() {
+        let dir = std::env::temp_dir().join(format!("msmn-elsewhere-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut b = board_three_columns();
+        b.tickets[0].notes.push(note_meta(90, 1, "local"));
+        let sent = std::rc::Rc::new(std::cell::RefCell::new(Vec::new()));
+        let mut notes = std::collections::HashMap::new();
+        notes.insert(ulid::Ulid(90), "the first draft".to_string());
+        let fake = super::test_support::FakeTransport {
+            board: b.clone(),
+            grace: vec![],
+            external: vec![],
+            resources: Resources::default(),
+            shell_env: Default::default(),
+            git: Default::default(),
+            pending: Vec::new(),
+            automation: Default::default(),
+            claude_md: Default::default(),
+            status_top: false,
+            sent: sent.clone(),
+            refuse_focus: false,
+            notes,
+        };
+        let mut app = App::new(Box::new(fake), dir.clone(), theme()).unwrap();
+        let mut team = super::joined_team_fixture();
+        team.board.as_mut().unwrap().edited_elsewhere.clear();
+        app.team = team;
+        app.cursor_col = 0;
+        app.cursor_row = Some(0);
+        press(&mut app, 'n');
+        let Mode::Editor(ed) = &app.mode else { panic!("{:?}", app.mode) };
+        assert_eq!(ed.opened_rev, Some(1));
+        assert!(app.note_changed_elsewhere(ed).is_none());
+        for c in " and more".chars() {
+            app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
+        }
+        // Amit writes the note: rev 2, and the snapshot names him.
+        let mut later = b.clone();
+        later.tickets[0].notes[0].rev = 2;
+        later.tickets[0].notes[0].edited_by = "member:Amit Ozalvo".into();
+        let mut team = super::joined_team_fixture();
+        team.board
+            .as_mut()
+            .unwrap()
+            .edited_elsewhere
+            .insert(ulid::Ulid(90).to_string(), "Amit Ozalvo".into());
+        app.absorb(Snapshot { board: later, team, ..Default::default() });
+        let Mode::Editor(ed) = &app.mode else { panic!("the draft was dropped: {:?}", app.mode) };
+        let body = ed.body.as_str();
+        assert!(body.contains("the first draft") && body.contains(" and more"), "{body}");
+        assert_eq!(app.note_changed_elsewhere(ed).as_deref(), Some("Amit Ozalvo"));
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

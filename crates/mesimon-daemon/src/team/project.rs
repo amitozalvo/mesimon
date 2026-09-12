@@ -23,13 +23,25 @@ pub fn board_id() -> ObjectId {
 
 /// `notes` off is the owner's "titles only" share: the ticket goes out with
 /// no note list, so a member's board never names a body it will not get.
-pub fn ticket_body(t: &Ticket, notes: bool) -> RecordBody {
+///
+/// `me` is this device's display name. The author word goes out as
+/// `member:<name>` on every machine — a ticket this machine made (`local`,
+/// or an agent's) as `member:<me>`, one that arrived from a teammate as the
+/// word it arrived with — so two copies of one ticket project the same
+/// bytes and neither echoes the other's edit back as a change of its own
+/// (T-335: the echo was clearing the teammate's name off the card).
+pub fn ticket_body(t: &Ticket, notes: bool, me: &str) -> RecordBody {
+    let created_by = if t.created_by.starts_with("member:") {
+        t.created_by.clone()
+    } else {
+        format!("member:{me}")
+    };
     RecordBody::new(SharedObject::Ticket(SharedTicket {
         title: t.title.clone(),
         column: t.column.clone(),
         order: t.order.clone(),
         created_at: t.created_at.clone(),
-        created_by: t.created_by.clone(),
+        created_by,
         archived: t.is_archived(),
         notes: if notes { t.notes.iter().map(|n| n.id).collect() } else { Vec::new() },
         deleted: false,
@@ -62,10 +74,11 @@ pub fn project(
     owner: bool,
     title: &str,
     notes: bool,
+    me: &str,
 ) -> BTreeMap<ObjectId, RecordBody> {
     let mut out = BTreeMap::new();
     for t in &board.tickets {
-        out.insert(ObjectId::from(t.id), ticket_body(t, notes));
+        out.insert(ObjectId::from(t.id), ticket_body(t, notes, me));
     }
     if owner {
         out.insert(
@@ -125,7 +138,7 @@ mod tests {
         let note = t.notes[0].id;
         let id = t.id;
         board.tickets.push(t);
-        let objects = project(&board, true, "mesimon", true);
+        let objects = project(&board, true, "mesimon", true, "Amit");
         assert_eq!(objects.len(), 3);
         let text = serde_json::to_string(&objects[&ObjectId::from(id)]).unwrap();
         assert!(
@@ -137,10 +150,10 @@ mod tests {
             assert!(!text.contains(local), "{local} leaked into the projection");
         }
         assert!(
-            project(&board, false, "mesimon", true).len() == 1,
+            project(&board, false, "mesimon", true, "Amit").len() == 1,
             "a joined board publishes no singletons"
         );
-        let withheld = project(&board, true, "mesimon", false);
+        let withheld = project(&board, true, "mesimon", false, "Amit");
         let text = serde_json::to_string(&withheld[&ObjectId::from(id)]).unwrap();
         assert!(text.contains("Share it") && !text.contains(&note.to_string()));
     }
@@ -148,12 +161,17 @@ mod tests {
     #[test]
     fn digests_move_with_content_and_tombstones_differ() {
         let t = ticket("One");
-        let a = digest(&ticket_body(&t, true));
+        let a = digest(&ticket_body(&t, true, "Amit"));
         let mut renamed = t.clone();
         renamed.title = "Two".into();
-        assert_ne!(a, digest(&ticket_body(&renamed, true)));
-        assert_eq!(a, digest(&ticket_body(&t, true)));
-        if let SharedObject::Ticket(shared) = &ticket_body(&t, true).object {
+        assert_ne!(a, digest(&ticket_body(&renamed, true, "Amit")));
+        assert_eq!(a, digest(&ticket_body(&t, true, "Amit")));
+        // Two copies project the same bytes: the maker's `local` and the
+        // teammate's `member:Amit` are one word on the wire.
+        let mut theirs = t.clone();
+        theirs.created_by = "member:Amit".into();
+        assert_eq!(a, digest(&ticket_body(&theirs, true, "Dana")));
+        if let SharedObject::Ticket(shared) = &ticket_body(&t, true, "Amit").object {
             assert_ne!(a, digest(&ticket_tombstone(shared)));
         }
     }

@@ -821,6 +821,81 @@ fn golden_share_members_120() {
     golden("share_members_120x30", &rows);
 }
 
+/// The team boards dialog (T-335): the join row, then the boards the relay
+/// lists — this one (open now), one Dana can open, one she owns from a
+/// checkout elsewhere — with the identity in the frame's title. The cursor
+/// is on the board Enter would open.
+#[test]
+fn golden_team_boards_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.team = crate::app::joined_team_fixture();
+    app.mode = Mode::TeamBoards { idx: 2, joining: None };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("TEAM BOARDS ∙ DANA")), "{rows:?}");
+    golden("team_boards_120x30", &rows);
+}
+
+/// The same dialog with the join row open as a field, a code half pasted:
+/// `Code: ` leads the field and the edge reads the text field's keys.
+#[test]
+fn golden_team_boards_joining_120() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture_archived());
+    app.team = crate::app::joined_team_fixture();
+    app.mode = Mode::TeamBoards { idx: 0, joining: None };
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
+    for c in "7A3K-M9Q2-XB4D".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("type");
+    }
+    assert!(matches!(app.mode, Mode::TeamBoards { joining: Some(_), .. }), "{:?}", app.mode);
+    golden("team_boards_joining_120x30", &render(&app, 120, 30));
+}
+
+/// A joined board as a contributor (T-335): the ordinary board with no
+/// session glyphs, no worktree marks and no session hint in the footer;
+/// the sync clause at the footer's right edge; and the card Amit changed
+/// last wearing his initials.
+#[test]
+fn golden_board_remote_120() {
+    let mut b = fixture(false);
+    b.sessions.clear();
+    let mut app = app_graphite(b);
+    app.team = crate::app::joined_team_fixture();
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    let rows = render(&app, 120, 30);
+    let footer = rows.last().expect("footer");
+    assert!(footer.contains("Synced ∙ 3 members"), "{footer}");
+    assert!(!footer.contains("claude"), "{footer}");
+    assert!(rows.iter().any(|r| r.contains("Decay treatments") && r.contains(" AO ")), "{rows:?}");
+    golden("board_remote_120x30", &rows);
+}
+
+/// The same board as a viewer, offline with two drafts waiting: the footer
+/// carries no edit key and says why, and the drafts outrank the members.
+#[test]
+fn golden_board_viewer_offline_120() {
+    let mut b = fixture(false);
+    b.sessions.clear();
+    let mut app = app_graphite(b);
+    let mut team = crate::app::joined_team_fixture();
+    if let Some(board) = team.board.as_mut() {
+        board.role = "viewer".into();
+        board.sync.state = "offline".into();
+        board.sync.drafts = 2;
+    }
+    app.team = team;
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    let rows = render(&app, 120, 30);
+    let footer = rows.last().expect("footer");
+    assert!(footer.contains("Offline ∙ 2 drafts ∙ you read only"), "{footer}");
+    for absent in ["rename", "note", "archive", "grab"] {
+        assert!(!footer.contains(absent), "{absent}: {footer}");
+    }
+    golden("board_viewer_offline_120x30", &rows);
+}
+
 /// Off, the list is a SINGLE row: four settings for a thing that is not
 /// happening are four rows saying nothing.
 #[test]

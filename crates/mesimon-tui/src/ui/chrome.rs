@@ -29,8 +29,7 @@ use crate::theme::Ramp;
 /// page ground and on a band alike.
 pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
     let theme = &app.theme;
-    let repo =
-        app.repo_root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let repo = app.board_name();
     // Sessions waiting plus tickets a snooze woke lit (T-74) — the daemon's
     // tmux status line counts the same way.
     let needs_you = app.board.needs_you_count();
@@ -505,7 +504,19 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
     }
     let lead: usize = super::spans_width(&spans);
     // The right cluster is reserved first: it is how everything else is found.
-    let right = hint_spans(&right, &ctx, ink, width.saturating_sub(lead + 1));
+    let mut right = hint_spans(&right, &ctx, ink, width.saturating_sub(lead + 1));
+    // A team board's sync clause (T-335) sits at the right edge, past the
+    // app keys: `Synced ∙ 3 members`, `Offline ∙ 2 drafts`, and for a
+    // viewer the reason every edit key is missing. Only while the board
+    // itself is on the screen — a dialog's frame carries its own word.
+    if matches!(app.screen, Screen::Board) && matches!(app.mode, Mode::Normal | Mode::Move { .. }) {
+        if let Some(clause) = app.sync_clause() {
+            if !right.is_empty() {
+                right.push(Span::styled("  ∙  ".to_string(), Style::default().fg(ink.dim3)));
+            }
+            right.push(Span::styled(clause, Style::default().fg(ink.dim2)));
+        }
+    }
     let right_w: usize = super::spans_width(&right);
     let reserved = if right_w == 0 { 1 } else { right_w + 4 };
     spans.extend(hint_spans(&own, &ctx, ink, width.saturating_sub(lead + reserved)));

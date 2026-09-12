@@ -423,6 +423,15 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
     if ed.dirty() {
         ctx_spans.push(Span::styled(" ∙ unsaved".to_string(), dim2));
     }
+    // A teammate wrote the note since it was opened here (T-335): the
+    // draft stays, the row says so in the full register, and a save is
+    // still last writer wins — which is what "overwrites" warns.
+    if let Some(who) = app.note_changed_elsewhere(ed) {
+        ctx_spans.push(Span::styled(
+            format!(" ∙ changed elsewhere by {who} ∙ saving overwrites"),
+            Style::default().fg(ink.base),
+        ));
+    }
     Line::from(ctx_spans)
 }
 

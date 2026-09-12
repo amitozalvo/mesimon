@@ -155,6 +155,12 @@ pub struct TeamBoard {
     /// their machine (`ShareBoard { notes: false }`). Absent means shared.
     #[serde(default)]
     pub notes_withheld: bool,
+    /// Tickets and notes whose last accepted change came from another
+    /// member, by ULID, with that member's display name (T-335): what a
+    /// card's initials and a note editor's `changed elsewhere` read. An
+    /// entry leaves when this machine changes the object again.
+    #[serde(default)]
+    pub edited_elsewhere: std::collections::BTreeMap<String, String>,
 }
 
 /// A board this device belongs to, as the relay lists it.

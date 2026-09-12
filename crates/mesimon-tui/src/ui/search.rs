@@ -322,6 +322,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         None,
         app.owed(ticket.id),
         app.pending_row(ticket.id).as_deref(),
+        app.remote_initials(ticket.id).as_deref(),
     );
     let w = inner.width as usize;
     let now = now_ms();

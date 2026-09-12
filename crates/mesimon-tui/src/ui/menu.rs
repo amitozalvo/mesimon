@@ -120,6 +120,29 @@ pub(super) fn draw_share(f: &mut Frame, app: &App) {
     draw_rows(f, app, *idx, &title, &words, None);
 }
 
+/// The team boards dialog (T-335): the join row — a field while a code is
+/// typed — then one row a board, off `App::boards_rows`. The frame's title
+/// carries the identity the boards belong to.
+pub(super) fn draw_boards(f: &mut Frame, app: &App) {
+    let Mode::TeamBoards { idx, joining } = &app.mode else { return };
+    let rows = app.boards_rows();
+    let words: Vec<(String, String)> = rows
+        .iter()
+        .map(|r| {
+            let (label, detail, _) = app.boards_words(r);
+            (label, detail)
+        })
+        .collect();
+    let title = match &app.team.device {
+        Some(d) if !d.display_name.is_empty() => {
+            format!("TEAM BOARDS ∙ {}", d.display_name.to_uppercase())
+        }
+        _ => "TEAM BOARDS".to_string(),
+    };
+    let field = joining.as_ref().map(|b| ("Code: ", b));
+    draw_rows(f, app, *idx, &title, &words, field);
+}
+
 fn draw_dense(
     f: &mut Frame,
     app: &App,

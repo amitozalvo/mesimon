@@ -191,6 +191,9 @@ pub fn draw(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Share { .. }) {
         menu::draw_share(f, app);
     }
+    if matches!(app.mode, Mode::TeamBoards { .. }) {
+        menu::draw_boards(f, app);
+    }
     if matches!(app.mode, Mode::ColumnSettings { .. }) {
         menu::draw_column(f, app);
     }
@@ -210,6 +213,19 @@ pub fn draw(f: &mut Frame, app: &App) {
     if app.help {
         help::draw(f, app);
     }
+}
+
+/// The footer as plain text at `width` cells, for tests that read what the
+/// board offers without rendering a frame.
+#[cfg(test)]
+pub(crate) fn footer_text(app: &crate::app::App, width: u16) -> String {
+    chrome::footer_line(app, width)
+        .spans
+        .iter()
+        .map(|s| s.content.as_ref())
+        .collect::<String>()
+        .trim_end()
+        .to_string()
 }
 
 /// The picker's visible group rows, and how many cells one holds. Both live

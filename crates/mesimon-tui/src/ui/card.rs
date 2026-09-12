@@ -229,7 +229,7 @@ fn worktree_mark(
     })
 }
 
-#[allow(clippy::too_many_arguments)] // one call site; a params struct would just rename the args
+#[allow(clippy::too_many_arguments)] // two call sites; a params struct would just rename the args
 pub(super) fn render(
     ctx: &CardCtx,
     ticket: &Ticket,
@@ -247,6 +247,7 @@ pub(super) fn render(
     snooze: Option<&str>,
     owed: bool,
     owed_row: Option<&str>,
+    editor: Option<&str>,
 ) -> Vec<Line<'static>> {
     let theme = ctx.theme;
     let t_cells = (ctx.width as usize).saturating_sub(BAR_WIDTH + 2);
@@ -361,8 +362,12 @@ pub(super) fn render(
     let glyph_cells = if glyph.is_some() { 2 } else { 0 };
     let age_cells = age.as_ref().map(|_| 4).unwrap_or(0); // sp + 3-cell slot
     let wt_cells = wt_mark.as_ref().map(|(m, _)| m.width() + 1).unwrap_or(0);
+    // A teammate's initials (T-335): who made the card's last change, in the
+    // quiet register beside the worktree mark's slot. Off the moment this
+    // machine changes the ticket again.
+    let editor_cells = editor.map(|e| e.width() + 1).unwrap_or(0);
     // The fixed bar budget is independent of how many tags the ticket wears.
-    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells);
+    let title_budget = t_cells.saturating_sub(glyph_cells + age_cells + wt_cells + editor_cells);
     // A truncated title on the cursor card reveals itself marquee-style.
     let overflow = ticket.title.width().saturating_sub(title_budget);
     let scroll = match (marquee_ms, overflow) {
@@ -449,6 +454,9 @@ pub(super) fn render(
             }
         };
         spans.push(Span::styled(format!(" {m}"), style));
+    }
+    if let Some(e) = editor {
+        spans.push(Span::styled(format!(" {e}"), quiet_style));
     }
     if let Some(a) = &age {
         spans.push(Span::styled(format!(" {a:>3}"), quiet_style));

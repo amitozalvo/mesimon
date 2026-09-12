@@ -186,6 +186,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             app.snooze_row(t.id).as_deref(),
             app.owed(t.id),
             app.pending_row(t.id).as_deref(),
+            app.remote_initials(t.id).as_deref(),
         );
         // The card is drawn WHOLE first — glyph, title, sessions, peek — and
         // the field is added under it. That order is the point: what you are

@@ -253,13 +253,21 @@ pub enum Scope {
     /// build, not a static list here — Enter's hint reads what the row
     /// under the cursor will do (`Ctx::share_enter_word`).
     Share,
+    /// The team boards dialog (T-335), reached from the menu's `Team
+    /// boards` row: the boards this device belongs to, one row each, and a
+    /// `Join with a code` row that is a text field while a code is being
+    /// typed (then the scope is `Input`). Enter on a board row leaves this
+    /// board for that one — a different root, a different daemon — so its
+    /// hint reads what the row under the cursor can do
+    /// (`Ctx::boards_enter_word`), and a row that can do nothing has none.
+    TeamBoards,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 28] = [
+    pub const ALL: [Scope; 29] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -288,6 +296,7 @@ impl Scope {
         Scope::Search,
         Scope::Team,
         Scope::Share,
+        Scope::TeamBoards,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -309,7 +318,8 @@ impl Scope {
             | Scope::ColumnSettings
             | Scope::Header
             | Scope::Team
-            | Scope::Share => Some(Scope::Global),
+            | Scope::Share
+            | Scope::TeamBoards => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -346,6 +356,7 @@ impl Scope {
             Scope::Prompts => "PROMPTS",
             Scope::Team => "TEAM",
             Scope::Share => "SHARING",
+            Scope::TeamBoards => "TEAM BOARDS",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
@@ -377,6 +388,9 @@ pub enum Verb {
     /// The menu row that opens the sharing dialog — or, signed out, the
     /// team list, which is where sharing starts.
     ShareDialog,
+    /// The menu row that opens the team boards dialog (T-335) — or, signed
+    /// out, the team list, for the same reason.
+    TeamBoards,
     ColumnAgentBehaviour,
     // ---- global ----
     Help,
@@ -1209,6 +1223,23 @@ pub struct Ctx {
     /// `publish`, `switch`, `invite`, `copy`, `remove`, `stop sharing` —
     /// or empty where the row is only read.
     pub share_enter_word: &'static str,
+    // ---- a joined board (T-335) ----
+    /// This board is a joined team board on a root with no checkout: no
+    /// sessions, no worktrees, no git, no merges. `Binding::live` stands
+    /// every repository verb down on it, unhinted, in one place.
+    pub content_only: bool,
+    /// This device is a viewer on the board: it reads and cannot edit, and
+    /// `Binding::live` stands every ticket edit down. The footer's sync
+    /// clause says why.
+    pub team_viewer: bool,
+    /// The owner's display name, for a joined board's menu row.
+    pub team_owner_name: String,
+    /// Boards this device belongs to, as the relay lists them.
+    pub team_boards: usize,
+    /// What Enter does on the team boards dialog's row under the cursor —
+    /// `join`, `open` — or empty where the row is only read (this board, a
+    /// board with no copy on this machine).
+    pub boards_enter_word: &'static str,
 }
 
 /// The four `_word` fields are the hint's text when the verb is live, and
@@ -1245,6 +1276,96 @@ pub struct Binding {
     /// Footer priority: lower comes first, 0 means overlay-only. The footer
     /// fills to the terminal width in this order.
     pub prio: u8,
+}
+
+impl Binding {
+    /// Does this binding apply right now? The binding's own predicate, and
+    /// then the two board-wide rules a joined team board adds (T-335), kept
+    /// here so no binding has to remember them:
+    ///
+    /// - a **content-only** board (a joined board with no checkout) has no
+    ///   sessions, worktrees, git or merges, so every binding in
+    ///   `Group::Sessions` and `Group::Worktree` and every git verb stands
+    ///   down — except a list dialog's own Enter, which is a row's, not a
+    ///   session's;
+    /// - a **viewer** reads and cannot edit, so every ticket mutation
+    ///   stands down.
+    ///
+    /// Every reader of a binding's availability — `resolve`, the footer, the
+    /// overlay, `hint_for` — asks this and never `avail` directly, which is
+    /// what makes a hidden key an inert one.
+    pub fn live(&self, ctx: &Ctx) -> bool {
+        if !(self.avail)(ctx) {
+            return false;
+        }
+        if ctx.content_only && needs_repository(self) {
+            return false;
+        }
+        if ctx.team_viewer && edits_content(self) {
+            return false;
+        }
+        true
+    }
+}
+
+/// A binding a viewer may not have: every ticket mutation, and the chord
+/// prefixes whose only tail is one — a tail that can do nothing is a dead
+/// end, not a chord.
+fn edits_content(b: &Binding) -> bool {
+    (b.mutates && b.group == Group::Ticket)
+        || matches!(
+            b.verb,
+            Verb::DeletePrefix
+                | Verb::ArchivePrefix
+                | Verb::SnoozePrefix
+                | Verb::DuplicatePrefix
+                | Verb::TagPrefix
+        )
+}
+
+/// A binding that means nothing without a checkout: a session, a worktree,
+/// the diff, a fetch, a merge — anything a board with no repository behind
+/// it cannot do. A dialog's Enter (`Verb::Act`) is the row's, whatever group
+/// the ticket page files it under.
+fn needs_repository(b: &Binding) -> bool {
+    if b.verb == Verb::Act {
+        return false;
+    }
+    matches!(b.group, Group::Sessions | Group::Worktree)
+        || matches!(
+            b.verb,
+            Verb::OpenDiff
+                | Verb::GitFetch
+                | Verb::GitCommits
+                | Verb::Terminal
+                | Verb::Peek
+                | Verb::PeekAll
+                | Verb::ExternalDrawer
+        )
+}
+
+impl MenuItem {
+    /// The row's own predicate, then the content-only rule: a row about
+    /// sessions, the shell environment or the agent brief is not offered on
+    /// a board that cannot run one.
+    pub fn live(&self, ctx: &Ctx) -> bool {
+        if !(self.avail)(ctx) {
+            return false;
+        }
+        if ctx.content_only
+            && matches!(
+                self.verb,
+                Verb::ExternalDrawer
+                    | Verb::SleepAllDone
+                    | Verb::BriefOffer
+                    | Verb::ReloadShellEnv
+                    | Verb::ManualMerge
+            )
+        {
+            return false;
+        }
+        true
+    }
 }
 
 /// The workspace toggle's word on the board and the ticket page (T-309), and
@@ -2109,6 +2230,10 @@ static TICKET: &[Binding] = &[
                     AgentProvider::ClaudeCode => "start claude",
                     AgentProvider::Codex => "start codex",
                 }
+            } else if c.sel_note && c.team_viewer {
+                // A viewer opens the note to read it; the editor's save
+                // stands down (`Binding::live`).
+                "read note"
             } else if c.sel_note {
                 "edit note"
             } else if c.sel_dead {
@@ -3092,6 +3217,48 @@ static SHARE: &[Binding] = &[
     },
 ];
 
+/// The team boards dialog's three shapes are the sharing dialog's (T-335):
+/// Enter's hint reads what the row under the cursor can do — `join` on the
+/// code row, `open` on a board this machine holds a copy of — and a row
+/// that can do nothing (this board, a board joined elsewhere) has no word
+/// and an inert Enter. Opening a board leaves this one, so `Act` mutates
+/// nothing here and nothing the daemon owns changes on the press.
+static TEAM_BOARDS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |c| c.boards_enter_word,
+        avail: |c| !c.boards_enter_word.is_empty(),
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The theme picker's three shapes are the menu's. `Act` does not mutate:
 /// nothing the daemon owns changes, and the file it writes is this
 /// machine's own preference.
@@ -3244,7 +3411,9 @@ static MENU_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ShareDialog,
         label: |c| {
-            if c.team_shared {
+            if c.team_shared && !c.team_owner {
+                format!("Shared by {} ∙ {}", c.team_owner_name, c.team_sync)
+            } else if c.team_shared {
                 format!("Shared with {} ∙ {}", plural(c.team_members, "member"), c.team_sync)
             } else {
                 "Share this board".into()
@@ -3253,13 +3422,39 @@ static MENU_ITEMS: &[MenuItem] = &[
         detail: |c| {
             if !c.team_signed_in {
                 "needs a relay identity ∙ enter opens Settings › Team".into()
+            } else if c.team_shared && !c.team_owner {
+                format!("{} ∙ leave this board", plural(c.team_members, "member"))
             } else if c.team_shared {
                 "invite codes, members, stop sharing".into()
             } else {
                 "members read and edit the tickets ∙ sealed on this machine first".into()
             }
         },
-        avail: |c| !c.team_shared || c.team_owner,
+        avail: always,
+        key: "",
+    },
+    // The boards this device belongs to (T-335), and the way onto one more.
+    // Signed out it leads to the identity, the sharing row's rule; a board
+    // is joined with a code typed in the dialog, and opened from there.
+    MenuItem {
+        verb: Verb::TeamBoards,
+        label: |c| {
+            if c.team_boards > 0 {
+                format!("Team boards: {}", c.team_boards)
+            } else {
+                "Team boards".into()
+            }
+        },
+        detail: |c| {
+            if !c.team_signed_in {
+                "needs a relay identity ∙ enter opens Settings › Team".into()
+            } else if c.team_boards > 0 {
+                "open one, or join another with a code".into()
+            } else {
+                "join a board with a code from its owner".into()
+            }
+        },
+        avail: always,
         key: "",
     },
     // The door to the preferences. Never a suggestion — a setting is not
@@ -3729,7 +3924,7 @@ pub static TEAM_ITEMS: &[MenuItem] = &[
 
 /// The team list's rows that apply right now (T-334).
 pub fn team_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    TEAM_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+    TEAM_ITEMS.iter().filter(|m| m.live(ctx)).collect()
 }
 
 fn prompt_label(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
@@ -3967,7 +4162,7 @@ fn menu_row(verb: Verb) -> Option<&'static MenuItem> {
 /// The standing offers right now, highest priority first. Each one's
 /// availability IS its menu row's — that is the whole connection.
 pub fn suggestions(ctx: &Ctx) -> Vec<&'static Suggestion> {
-    SUGGESTIONS.iter().filter(|s| menu_row(s.verb).is_some_and(|m| (m.avail)(ctx))).collect()
+    SUGGESTIONS.iter().filter(|s| menu_row(s.verb).is_some_and(|m| m.live(ctx))).collect()
 }
 
 /// Is this menu row the thing a header chip is pointing at? The menu marks
@@ -4004,19 +4199,19 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     };
     verbs
         .iter()
-        .filter_map(|v| SETTINGS_ITEMS.iter().find(|m| m.verb == *v && (m.avail)(ctx)))
+        .filter_map(|v| SETTINGS_ITEMS.iter().find(|m| m.verb == *v && m.live(ctx)))
         .collect()
 }
 
 /// The notifications list's rows that apply right now (T-282).
 pub fn notify_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    NOTIFY_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+    NOTIFY_ITEMS.iter().filter(|m| m.live(ctx)).collect()
 }
 
 /// The agent-prompt list's rows (T-353). All three, always: a sentence
 /// mesimon can send is a sentence somebody can rewrite, whatever else is on.
 pub fn prompt_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
-    PROMPT_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+    PROMPT_ITEMS.iter().filter(|m| m.live(ctx)).collect()
 }
 
 /// Which template a prompt-list row edits. The list and the enum are one
@@ -4253,7 +4448,7 @@ pub fn column_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
                     | Verb::ColumnOnWorking
                     | Verb::ColumnOnDone
             );
-            (m.avail)(ctx)
+            m.live(ctx)
                 && if ctx.col_new || ctx.col_naming {
                     m.verb == Verb::ColumnName
                 } else {
@@ -4270,9 +4465,7 @@ pub fn menu_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     let top: Vec<&'static MenuItem> =
         suggestions(ctx).into_iter().filter_map(|s| menu_row(s.verb)).collect();
     let mut rows = top.clone();
-    rows.extend(
-        MENU_ITEMS.iter().filter(|m| (m.avail)(ctx) && !top.iter().any(|t| t.verb == m.verb)),
-    );
+    rows.extend(MENU_ITEMS.iter().filter(|m| m.live(ctx) && !top.iter().any(|t| t.verb == m.verb)));
     rows
 }
 
@@ -5285,6 +5478,7 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         // keymap's.
         Scope::Settings | Scope::Notifications | Scope::Prompts | Scope::Team => SETTINGS,
         Scope::Share => SHARE,
+        Scope::TeamBoards => TEAM_BOARDS,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
@@ -5313,7 +5507,7 @@ pub fn chain(scope: Scope) -> Vec<Scope> {
 pub fn resolve(scope: Scope, key: Key, ctx: &Ctx) -> Option<Verb> {
     for s in chain(scope) {
         for b in bindings(s) {
-            if b.keys.contains(&key) && (b.avail)(ctx) {
+            if b.keys.contains(&key) && b.live(ctx) {
                 return Some(directional(b.verb, key));
             }
         }
@@ -5368,7 +5562,7 @@ pub fn footer_items(scope: Scope, ctx: &Ctx) -> Vec<&'static Binding> {
     for s in chain(scope) {
         for b in bindings(s) {
             if b.prio > 0
-                && (b.avail)(ctx)
+                && b.live(ctx)
                 && !(b.hint)(ctx).is_empty()
                 && (b.verb != Verb::AddColumn || ctx.col_header)
             {
@@ -5434,7 +5628,7 @@ pub fn hint_for(scope: Scope, verb: Verb, ctx: &Ctx) -> Option<(&'static str, &'
 pub fn binding_for(scope: Scope, verb: Verb, ctx: &Ctx) -> Option<&'static Binding> {
     for s in chain(scope) {
         for b in bindings(s) {
-            if b.verb == verb && (b.avail)(ctx) {
+            if b.verb == verb && b.live(ctx) {
                 if (b.hint)(ctx).is_empty() {
                     return None;
                 }
@@ -5454,7 +5648,7 @@ pub fn overlay(scope: Scope, ctx: &Ctx) -> Vec<(Group, Vec<(&'static str, &'stat
         let mut rows: Vec<(&'static str, &'static str)> = Vec::new();
         for s in chain(scope) {
             for b in bindings(s) {
-                if b.group != g || !(b.avail)(ctx) {
+                if b.group != g || !b.live(ctx) {
                     continue;
                 }
                 let hint = (b.hint)(ctx);
@@ -5608,6 +5802,7 @@ mod tests {
                 Scope::Search => 25,
                 Scope::Team => 26,
                 Scope::Share => 27,
+                Scope::TeamBoards => 28,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -7459,12 +7654,21 @@ mod tests {
         );
         assert_eq!((sign_in.label)(&retyped), "Sign in again");
         // The menu row: signed out it leads to the identity; a joined
-        // board (shared, not owned) has no row at all.
+        // board (shared, not owned) names its owner and the way off (T-335).
         let share = MENU_ITEMS.iter().find(|m| m.verb == Verb::ShareDialog).expect("row");
         assert!((share.detail)(&out).contains("Settings › Team"));
         assert!(menu_items(&signed).iter().any(|m| m.verb == Verb::ShareDialog));
-        let joined = Ctx { team_shared: true, team_owner: false, ..signed.clone() };
-        assert!(!menu_items(&joined).iter().any(|m| m.verb == Verb::ShareDialog));
+        let joined = Ctx {
+            team_shared: true,
+            team_owner: false,
+            team_owner_name: "Amit".into(),
+            team_members: 2,
+            team_sync: "synced".into(),
+            ..signed.clone()
+        };
+        assert!(menu_items(&joined).iter().any(|m| m.verb == Verb::ShareDialog));
+        assert_eq!((share.label)(&joined), "Shared by Amit ∙ synced");
+        assert!((share.detail)(&joined).contains("leave this board"));
         let owned = Ctx {
             team_shared: true,
             team_owner: true,
@@ -7480,6 +7684,155 @@ mod tests {
         assert_eq!(resolve(Scope::Share, Key::Enter, &acting), Some(Verb::Act));
         assert!(footer_items(Scope::Share, &acting).iter().any(|b| (b.hint)(&acting) == "publish"));
         assert_eq!(resolve(Scope::Team, Key::Enter, &out), Some(Verb::Act));
+    }
+
+    /// A joined board with no checkout (T-335): every session, worktree and
+    /// git verb is unbound AND unhinted, in every scope, however much the
+    /// rest of the context says the board could do — and the menu offers
+    /// no row about sessions. One predicate (`Binding::live`) does both.
+    #[test]
+    fn no_repository_verb_survives_a_content_only_board() {
+        let everything = Ctx {
+            has_ticket: true,
+            multi_column: true,
+            ticket_has_agent: true,
+            ticket_promptable: true,
+            workspace_open: true,
+            train_reaches: true,
+            git_repo: true,
+            checkout_diff: true,
+            git_commits: true,
+            git_upstream: true,
+            has_worktree: true,
+            bulk_sleep: 2,
+            shell_env_stale: true,
+            brief_offer: true,
+            sel_new_agent: true,
+            rich_keys: true,
+            team_signed_in: true,
+            team_shared: true,
+            team_boards: 1,
+            ..Default::default()
+        };
+        let remote = Ctx { content_only: true, ..everything.clone() };
+        let repo_verbs = [
+            Verb::Agent,
+            Verb::Shell,
+            Verb::ShellNew,
+            Verb::Prompt,
+            Verb::Sleep,
+            Verb::SleepAllDone,
+            Verb::Merge,
+            Verb::OpenDiff,
+            Verb::GitFetch,
+            Verb::GitCommits,
+            Verb::Terminal,
+            Verb::CycleWorkspace,
+            Verb::ManualMerge,
+            Verb::Peek,
+            Verb::PeekAll,
+            Verb::ExternalDrawer,
+            Verb::SaveStart,
+            Verb::EditorSaveStart,
+            Verb::AdoptObserve,
+        ];
+        let mut seen_somewhere = 0;
+        for s in Scope::ALL {
+            for b in bindings(s) {
+                if !repo_verbs.contains(&b.verb) {
+                    continue;
+                }
+                if b.live(&everything) {
+                    seen_somewhere += 1;
+                }
+                assert!(!b.live(&remote), "{:?} is live on a content-only board in {s:?}", b.verb);
+                for key in b.keys {
+                    assert_ne!(
+                        resolve(s, *key, &remote),
+                        Some(b.verb),
+                        "{key:?} still reaches {:?} in {s:?}",
+                        b.verb
+                    );
+                }
+                assert!(hint_for(s, b.verb, &remote).is_none(), "{:?} is hinted in {s:?}", b.verb);
+            }
+        }
+        assert!(seen_somewhere > 10, "the repository verbs are live on a repository board");
+        // The ticket page's Enter is a row's, and the rows a content-only
+        // board keeps (the notes) still take it.
+        assert_eq!(resolve(Scope::Ticket, Key::Enter, &remote), Some(Verb::Act));
+        // Editing content is untouched: rename, move, tag, notes, archive.
+        for v in [Verb::Rename, Verb::Grab, Verb::TagPrefix, Verb::NoteEdit, Verb::ArchivePrefix] {
+            assert!(
+                bindings(Scope::Board).iter().any(|b| b.verb == v && b.live(&remote)),
+                "{v:?} should still be live on a joined board"
+            );
+        }
+        for v in [Verb::ExternalDrawer, Verb::SleepAllDone, Verb::BriefOffer, Verb::ReloadShellEnv]
+        {
+            assert!(menu_items(&everything).iter().any(|m| m.verb == v), "{v:?} row missing");
+            assert!(
+                !menu_items(&remote).iter().any(|m| m.verb == v),
+                "{v:?} row on a joined board"
+            );
+        }
+        assert!(menu_items(&remote).iter().any(|m| m.verb == Verb::TeamBoards));
+    }
+
+    /// A viewer reads and cannot edit (T-335): every ticket mutation is
+    /// inert and unhinted, while moving around, opening a ticket, reading a
+    /// note and the dialogs still work.
+    #[test]
+    fn a_viewer_cannot_edit_and_can_still_read() {
+        let ctx = Ctx {
+            has_ticket: true,
+            sel_note: true,
+            content_only: true,
+            team_viewer: true,
+            team_signed_in: true,
+            team_shared: true,
+            ..Default::default()
+        };
+        assert_eq!(hint_for(Scope::Ticket, Verb::Act, &ctx), Some(("enter", "read note")));
+        for s in Scope::ALL {
+            for b in bindings(s) {
+                if b.mutates && b.group == Group::Ticket {
+                    assert!(!b.live(&ctx), "{:?} is live for a viewer in {s:?}", b.verb);
+                }
+            }
+        }
+        for key in ['d', 'a', 'z', 'y', 't'] {
+            assert_eq!(
+                resolve(Scope::Board, Key::Char(key), &ctx),
+                None,
+                "{key} chord for a viewer"
+            );
+        }
+        for (s, key, verb) in [
+            (Scope::Board, Key::Char('j'), Verb::CursorDown),
+            (Scope::Board, Key::Enter, Verb::Act),
+            (Scope::Board, Key::Esc, Verb::Menu),
+            (Scope::Board, Key::Char('/'), Verb::Search),
+            (Scope::Ticket, Key::Enter, Verb::Act),
+        ] {
+            assert_eq!(resolve(s, key, &ctx), Some(verb), "{key:?} in {s:?}");
+        }
+        for (s, key) in [
+            (Scope::Board, Key::Char('r')),
+            (Scope::Board, Key::Char('n')),
+            (Scope::Board, Key::Char('a')),
+            (Scope::Board, Key::Char('d')),
+            (Scope::Board, Key::Char('c')),
+        ] {
+            assert_eq!(resolve(s, key, &ctx), None, "{key:?} in {s:?} edits for a viewer");
+        }
+        // The team boards dialog: Enter reads its word off the row.
+        assert_eq!(resolve(Scope::TeamBoards, Key::Enter, &ctx), None);
+        let opening = Ctx { boards_enter_word: "open", ..ctx.clone() };
+        assert_eq!(resolve(Scope::TeamBoards, Key::Enter, &opening), Some(Verb::Act));
+        assert!(footer_items(Scope::TeamBoards, &opening)
+            .iter()
+            .any(|b| (b.hint)(&opening) == "open"));
     }
 
     /// `q` pops one level and `?` is reachable from every screen — the two
@@ -7502,6 +7855,7 @@ mod tests {
             Scope::Header,
             Scope::Team,
             Scope::Share,
+            Scope::TeamBoards,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");
