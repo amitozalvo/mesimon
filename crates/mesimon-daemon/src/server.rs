@@ -1407,7 +1407,7 @@ impl Daemon {
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
             Command::TeamSignIn { relay, display_name } => self.team_sign_in(relay, display_name),
             Command::TeamSignOut => self.team_sign_out(),
-            Command::ShareBoard => self.team_share(),
+            Command::ShareBoard { notes } => self.team_share(notes),
             Command::UnshareBoard => self.team_unshare(),
             Command::MintInvite { role } => self.team_mint_invite(role),
             Command::RevokeMember { device } => self.team_revoke(device),

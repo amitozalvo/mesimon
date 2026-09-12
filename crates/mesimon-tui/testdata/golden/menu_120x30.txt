@@ -6,12 +6,13 @@
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
-
                            ╭─ MENU ─────────────────────────────────────────────────────────╮
                            │   External sessions                                            │
                            │     agent sessions in this repo that mesimon did not start     │
                            │   Archived tickets                                             │
                            │     off the board, still here                                  │
+                           │   Share this board                                             │
+                           │     needs a relay identity ∙ enter opens Settings › Team       │
                            │   Settings                                                     │
                            │     appearance & notifications, behaviour, agents              │
                            │   Release notes                                                │
@@ -19,7 +20,6 @@
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
 

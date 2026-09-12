@@ -10087,3 +10087,61 @@ Known v1 limits, on purpose: short keys are local (Dana's `T-3` is Amit's
 are not shared; a conflict is last writer wins by retry (a stale put pulls,
 applies theirs, and sends the local body again); one request per relay
 connection.
+
+## T-215 — sign in, share, invite, revoke, from the TUI (T-334)
+
+Third package of the v1 plan, and the first the person can reach: the eight
+team commands T-333 answered `Ok` to now have keys. Nothing here is a new
+mechanism — a settings list with two fields in place (the prompt list's
+shape, T-353), a list dialog over the board (the archived list's), and the
+menu row that is their door.
+
+**Identity is a Settings row, not a dialog of its own.** `Settings › Team`
+(`Scope::Team`, a fourth root row beside the three groups) is three or four
+rows: `Relay`, `Display name` — Enter opens the draft as a field, Enter keeps
+it, nothing is sent — and `Sign in`, which sends both words and says on its
+own row what it needs (`needs the relay and a display name above`) or what
+failed (`signing in: denied ∙ enter tries again`). Signed in, that row is
+`Signed in as Dana on relay.example ∙ enter signs out`, and `Sign in again`
+stands beside it only while the drafts differ from the identity — a new name
+on the same relay keeps the key; a new relay is a new identity (T-333's
+rule, now on the row). The drafts are seeded once from the snapshot's
+device and survive a sign-out, so the next sign-in starts from the last
+words.
+
+**The sharing row leads wherever sharing can go next.** The menu's `Share
+this board` row is one row in three states: signed out its detail says
+`needs a relay identity ∙ enter opens Settings › Team` and Enter opens the
+team list (Esc returns to the row); signed in it opens the dialog; shared
+it reads `Shared with 3 members ∙ synced` and opens the same dialog. A
+joined board — shared, not owned — has no row: its screen is T-335's.
+
+**The dialog's rows are the members, so the mode builds them.** `MenuItem`
+is a static list with `fn(&Ctx)` words; a member list is not static. So
+`App::share_rows` builds `ShareRow`s off the snapshot — `Publish` and
+`Notes` while the board is only here; `Invite a contributor`, `Invite a
+viewer`, the last `Invite code`, one row a member, `Stop sharing` once it is
+shared — and `App::share_words` gives each its label, detail and the word
+Enter's hint wears there. That word rides `Ctx::share_enter_word`, and the
+Share scope's Enter is gated on it: a row that is only read (your own, the
+owner's, a removed member's) has no word, so Enter is unhinted and inert
+there in one predicate, the keymap's rule. Removing a member and stopping
+the share arm on one press (`Remove Dana?` / `Stop sharing?`), disarm on
+any motion, and act on the second — the column dialog's delete, not a
+modal. The frame's title carries the sync word and the drafts waiting
+(`SHARING ∙ OFFLINE ∙ 2 DRAFTS`). Members wear their state as a last
+clause: `you`, `waiting for a key`, `unverified`, `removed`, `left`.
+
+**Notes are a choice at publish time.** `ShareBoard { notes }` (serde
+default `true`, so T-333's callers are unchanged) records `notes_withheld`
+on the board's `team.json`; `project::ticket_body` then ships every ticket
+with an empty note list and `team_after_broadcast` never reads a note body.
+The dialog's `Notes: included ∙ enter keeps them on this machine` is the
+switch, and the snapshot's `TeamBoard.notes_withheld` says what was chosen.
+There is no switch after publishing: turning notes on later would mean
+sealing every body at once and turning them off would mean tombstoning
+what members already have — both are a decision for when someone asks.
+
+Goldens: `team`, `team_editing`, `share`, `share_members`; `menu` and
+`settings` reminted for the new row. Not yet: the team boards list, join,
+the remote board screen and its footer (T-335); ask my agent (T-336).

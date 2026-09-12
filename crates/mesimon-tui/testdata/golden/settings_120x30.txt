@@ -8,7 +8,6 @@
 
 
 
-
                            ╭─ SETTINGS ─────────────────────────────────────────────────────╮
                            │   Appearance & notifications                                   │
                            │     theme, notifications, status line                          │
@@ -16,8 +15,9 @@
                            │     auto merge, keep awake, snooze, week start, default column │
                            │   Agents                                                       │
                            │     provider, brief and tools                                  │
+                           │   Team: not signed in                                          │
+                           │     sign in to a relay to share a board or join one            │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

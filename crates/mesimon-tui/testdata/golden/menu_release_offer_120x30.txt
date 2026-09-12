@@ -5,7 +5,6 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-
                            ╭─ MENU ─────────────────────────────────────────────────────────╮
                            │ ◦ Install v0.1.0-alpha.5                                       │
                            │     downloads and verifies it ∙ nothing restarts yet           │
@@ -13,6 +12,8 @@
                            │     agent sessions in this repo that mesimon did not start     │
                            │   Archived tickets                                             │
                            │     off the board, still here                                  │
+                           │   Share this board                                             │
+                           │     needs a relay identity ∙ enter opens Settings › Team       │
                            │   Settings                                                     │
                            │     appearance & notifications, behaviour, agents              │
                            │   Release notes                                                │
@@ -20,7 +21,6 @@
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
-
 
 
 

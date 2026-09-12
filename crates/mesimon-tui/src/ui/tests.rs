@@ -763,6 +763,64 @@ fn golden_agent_prompt_editing_120() {
     golden("agent_prompt_editing_120x30", &render(&app, 120, 30));
 }
 
+/// The team list (T-334), one level under Settings, signed out: the two
+/// fields unset and `Sign in` saying what it needs. `TEAM` in the frame's
+/// top edge, the list's keys in its bottom one.
+#[test]
+fn golden_team_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.mode = Mode::Team { idx: 0, editing: None, from_menu: false };
+    golden("team_120x30", &render(&app, 120, 30));
+}
+
+/// The same list with the relay row open as a field, an address half typed:
+/// the row's name leads the field, the cursor sits at its end, and the
+/// detail teaches the address form.
+#[test]
+fn golden_team_editing_120() {
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+    let mut app = app_graphite(fixture_archived());
+    app.team_name_draft = "Dana".into();
+    app.mode = Mode::Team { idx: 0, editing: None, from_menu: false };
+    app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
+    for c in "relay.example".chars() {
+        app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("type");
+    }
+    assert!(matches!(app.mode, Mode::Team { editing: Some(_), .. }), "{:?}", app.mode);
+    golden("team_editing_120x30", &render(&app, 120, 30));
+}
+
+/// The sharing dialog before the board is published (T-334): the publish
+/// row counting what goes out and the notes switch, `SHARING` in the top
+/// edge and `enter publish` in the bottom one.
+#[test]
+fn golden_share_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.team.device = crate::app::shared_team_fixture().device;
+    app.mode = Mode::Share { idx: 0, armed: false };
+    golden("share_120x30", &render(&app, 120, 30));
+}
+
+/// The same dialog once shared: the two invite rows, the code that is out,
+/// four members in four states — the owner, a contributor, one waiting for
+/// a key, one removed — and the way to stop; the sync word and the drafts
+/// waiting in the frame's title. The cursor is on the contributor, whose
+/// detail says what Enter does to them.
+#[test]
+fn golden_share_members_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.team = crate::app::shared_team_fixture();
+    let dana = app
+        .share_rows()
+        .iter()
+        .position(|r| matches!(r, crate::app::ShareRow::Member(d) if d.starts_with("dd")))
+        .expect("dana");
+    app.mode = Mode::Share { idx: dana, armed: false };
+    let rows = render(&app, 120, 30);
+    assert!(rows.iter().any(|r| r.contains("SHARING ∙ OFFLINE ∙ 2 DRAFTS")), "{rows:?}");
+    golden("share_members_120x30", &rows);
+}
+
 /// Off, the list is a SINGLE row: four settings for a thing that is not
 /// happening are four rows saying nothing.
 #[test]

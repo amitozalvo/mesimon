@@ -62,6 +62,9 @@ pub(super) struct TeamCtx {
     want_members: bool,
     /// The invite being minted, until the relay names it.
     minting: Option<(InviteCode, Role)>,
+    /// The share in flight keeps its notes, or not — decided by the person
+    /// and recorded on the state once the relay names the board.
+    share_notes: bool,
     /// The code being redeemed, to check the owner the relay names.
     joining: Option<InviteCode>,
     /// The key of the next epoch, until the relay accepts it.
@@ -96,6 +99,7 @@ impl TeamCtx {
             want_keys: false,
             want_members: false,
             minting: None,
+            share_notes: true,
             joining: None,
             rotating: None,
             rotate_after_members: false,
@@ -246,6 +250,7 @@ impl Daemon {
             },
             invite: s.invites.last().map(|i| i.code.clone()),
             owner_name: s.owner_name.clone(),
+            notes_withheld: s.notes_withheld,
         });
         let boards = self
             .team
@@ -318,7 +323,7 @@ impl Daemon {
         Response::Ok
     }
 
-    pub(super) fn team_share(&mut self) -> Response {
+    pub(super) fn team_share(&mut self, notes: bool) -> Response {
         if !self.team.signed_in() {
             return err("sign in to the relay first");
         }
@@ -328,6 +333,7 @@ impl Daemon {
         if self.columns_barred {
             return err(self.barred_message("columns"));
         }
+        self.team.share_notes = notes;
         self.team.error = None;
         self.team.busy = Some("sharing");
         self.team.call(Tag::Share, Request::CreateBoard);
@@ -692,6 +698,7 @@ impl Daemon {
         let key = BoardKey::generate();
         state.add_key(0, &key);
         state.title = Some(self.board_title());
+        state.notes_withheld = !self.team.share_notes;
         self.team.state = Some(state);
         self.team.note_revs.clear();
         self.team_save();
@@ -932,8 +939,9 @@ impl Daemon {
         }
         let Some(state) = self.team.state.as_ref() else { return };
         let owner = state.is_owner();
+        let notes = !state.notes_withheld;
         let title = self.board_title();
-        let objects = project::project(&self.board, owner, &title);
+        let objects = project::project(&self.board, owner, &title, notes);
         let in_flight = self.team.put_inflight().map(str::to_owned);
         let mut changed = false;
         let Some(state) = self.team.state.as_mut() else { return };
@@ -974,9 +982,10 @@ impl Daemon {
                 state.published.remove(&key);
             }
         }
-        // Notes: bodies are files, read only when a rev moved.
+        // Notes: bodies are files, read only when a rev moved — and never
+        // when the owner kept them here.
         let mut seen = HashSet::new();
-        for t in &self.board.tickets {
+        for t in self.board.tickets.iter().filter(|_| notes) {
             for n in &t.notes {
                 seen.insert(n.id);
                 if self.team.note_revs.get(&n.id).map(|(rev, _)| *rev) == Some(n.rev) {

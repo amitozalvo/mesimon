@@ -146,6 +146,10 @@ pub struct TeamBoard {
     /// The owner's display name.
     #[serde(default)]
     pub owner_name: String,
+    /// The owner shared titles, columns and order and kept the notes on
+    /// their machine (`ShareBoard { notes: false }`). Absent means shared.
+    #[serde(default)]
+    pub notes_withheld: bool,
 }
 
 /// A board this device belongs to, as the relay lists it.

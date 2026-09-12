@@ -576,7 +576,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // with whom, who to let in and who to remove (T-215).
         | Command::TeamSignIn { .. }
         | Command::TeamSignOut
-        | Command::ShareBoard
+        | Command::ShareBoard { .. }
         | Command::UnshareBoard
         | Command::MintInvite { .. }
         | Command::RevokeMember { .. }
@@ -1075,7 +1075,7 @@ mod tests {
             Command::DeleteTicket { id: t, discard_worktree: true },
             Command::TeamSignIn { relay: "relay.example".into(), display_name: "Dana".into() },
             Command::TeamSignOut,
-            Command::ShareBoard,
+            Command::ShareBoard { notes: true },
             Command::UnshareBoard,
             Command::MintInvite { role: "viewer".into() },
             Command::RevokeMember { device: "00".repeat(16) },

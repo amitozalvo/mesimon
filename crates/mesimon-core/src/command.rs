@@ -109,8 +109,13 @@ pub enum Command {
     },
     TeamSignOut,
     /// Publish this board: mint a key, create the board on the relay, send
-    /// every ticket and note. The daemon becomes the board's owner.
-    ShareBoard,
+    /// every ticket — and every note, unless `notes` is off, in which case
+    /// members see titles, columns and order and the notes stay on this
+    /// machine. The daemon becomes the board's owner.
+    ShareBoard {
+        #[serde(default = "default_true")]
+        notes: bool,
+    },
     /// Stop sharing: the board vanishes for every member.
     UnshareBoard,
     /// Mint a one-time invite code for `role` (`contributor` or `viewer`);
@@ -662,6 +667,10 @@ pub enum Command {
     },
 }
 
+fn default_true() -> bool {
+    true
+}
+
 fn default_diff_context() -> u32 {
     3
 }
@@ -766,7 +775,7 @@ impl Command {
             TeamRefresh => m(Read, false, None),
             TeamSignIn { .. }
             | TeamSignOut
-            | ShareBoard
+            | ShareBoard { .. }
             | UnshareBoard
             | MintInvite { .. }
             | RevokeMember { .. }

@@ -58,6 +58,10 @@ pub struct TeamState {
     pub owner_name: String,
     #[serde(default)]
     pub title: Option<String>,
+    /// The owner chose to keep the notes on their machine: tickets go out
+    /// with an empty note list and no note body is ever sealed.
+    #[serde(default)]
+    pub notes_withheld: bool,
     /// epoch → key, hex.
     #[serde(default)]
     pub keys: BTreeMap<u32, String>,
@@ -82,6 +86,7 @@ impl TeamState {
             content_only,
             owner_name,
             title: None,
+            notes_withheld: false,
             keys: BTreeMap::new(),
             cursor: 0,
             published: BTreeMap::new(),

@@ -21,7 +21,9 @@ pub fn board_id() -> ObjectId {
     ObjectId(BOARD_OBJECT)
 }
 
-pub fn ticket_body(t: &Ticket) -> RecordBody {
+/// `notes` off is the owner's "titles only" share: the ticket goes out with
+/// no note list, so a member's board never names a body it will not get.
+pub fn ticket_body(t: &Ticket, notes: bool) -> RecordBody {
     RecordBody::new(SharedObject::Ticket(SharedTicket {
         title: t.title.clone(),
         column: t.column.clone(),
@@ -29,7 +31,7 @@ pub fn ticket_body(t: &Ticket) -> RecordBody {
         created_at: t.created_at.clone(),
         created_by: t.created_by.clone(),
         archived: t.is_archived(),
-        notes: t.notes.iter().map(|n| n.id).collect(),
+        notes: if notes { t.notes.iter().map(|n| n.id).collect() } else { Vec::new() },
         deleted: false,
     }))
 }
@@ -55,10 +57,15 @@ pub fn digest(body: &RecordBody) -> String {
 /// Every ticket on the board as a shared object, plus the column list and
 /// the board's name when this daemon owns the board. A joined board never
 /// publishes the two singletons: the owner's daemon is their author.
-pub fn project(board: &Board, owner: bool, title: &str) -> BTreeMap<ObjectId, RecordBody> {
+pub fn project(
+    board: &Board,
+    owner: bool,
+    title: &str,
+    notes: bool,
+) -> BTreeMap<ObjectId, RecordBody> {
     let mut out = BTreeMap::new();
     for t in &board.tickets {
-        out.insert(ObjectId::from(t.id), ticket_body(t));
+        out.insert(ObjectId::from(t.id), ticket_body(t, notes));
     }
     if owner {
         out.insert(
@@ -118,7 +125,7 @@ mod tests {
         let note = t.notes[0].id;
         let id = t.id;
         board.tickets.push(t);
-        let objects = project(&board, true, "mesimon");
+        let objects = project(&board, true, "mesimon", true);
         assert_eq!(objects.len(), 3);
         let text = serde_json::to_string(&objects[&ObjectId::from(id)]).unwrap();
         assert!(
@@ -130,20 +137,23 @@ mod tests {
             assert!(!text.contains(local), "{local} leaked into the projection");
         }
         assert!(
-            project(&board, false, "mesimon").len() == 1,
+            project(&board, false, "mesimon", true).len() == 1,
             "a joined board publishes no singletons"
         );
+        let withheld = project(&board, true, "mesimon", false);
+        let text = serde_json::to_string(&withheld[&ObjectId::from(id)]).unwrap();
+        assert!(text.contains("Share it") && !text.contains(&note.to_string()));
     }
 
     #[test]
     fn digests_move_with_content_and_tombstones_differ() {
         let t = ticket("One");
-        let a = digest(&ticket_body(&t));
+        let a = digest(&ticket_body(&t, true));
         let mut renamed = t.clone();
         renamed.title = "Two".into();
-        assert_ne!(a, digest(&ticket_body(&renamed)));
-        assert_eq!(a, digest(&ticket_body(&t)));
-        if let SharedObject::Ticket(shared) = &ticket_body(&t).object {
+        assert_ne!(a, digest(&ticket_body(&renamed, true)));
+        assert_eq!(a, digest(&ticket_body(&t, true)));
+        if let SharedObject::Ticket(shared) = &ticket_body(&t, true).object {
             assert_ne!(a, digest(&ticket_tombstone(shared)));
         }
     }

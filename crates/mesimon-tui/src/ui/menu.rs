@@ -15,7 +15,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap::{self, MenuItem, Scope};
+use mesimon_core::keymap::{self, MenuItem, Scope, Verb};
 
 use crate::app::{App, ColumnSubject, Mode};
 use crate::text::{marquee_offset, marquee_window, truncate};
@@ -77,6 +77,49 @@ pub(super) fn draw_prompts(f: &mut Frame, app: &App) {
     draw_dense(f, app, &ctx, *idx, "AGENT PROMPTS", &items, field);
 }
 
+/// The team list (T-334), one level under Settings: the relay and the
+/// display name are fields in place like the prompt list's rows, and the
+/// lead keeps the row's name in front of the field.
+pub(super) fn draw_team(f: &mut Frame, app: &App) {
+    let Mode::Team { idx, editing, .. } = &app.mode else { return };
+    let ctx = app.ctx();
+    let items = keymap::team_items(&ctx);
+    let lead = match items.get(*idx).map(|m| m.verb) {
+        Some(Verb::TeamRelay) => "Relay: ",
+        Some(Verb::TeamName) => "Display name: ",
+        _ => "",
+    };
+    let field = editing.as_ref().map(|b| (lead, b));
+    draw_dense(f, app, &ctx, *idx, "TEAM", &items, field);
+}
+
+/// The sharing dialog (T-334). Its rows are the board's members, so they
+/// come from `App::share_rows` rather than a static list, and the frame's
+/// title carries the sync word and the drafts waiting to go.
+pub(super) fn draw_share(f: &mut Frame, app: &App) {
+    let Mode::Share { idx, armed } = &app.mode else { return };
+    let rows = app.share_rows();
+    let words: Vec<(String, String)> = rows
+        .iter()
+        .enumerate()
+        .map(|(i, r)| {
+            let (label, detail, _) = app.share_words(r, *armed && i == *idx);
+            (label, detail)
+        })
+        .collect();
+    let title = match &app.team.board {
+        Some(b) => {
+            let mut t = format!("SHARING ∙ {}", b.sync.state.to_uppercase());
+            if b.sync.drafts > 0 {
+                t.push_str(&format!(" ∙ {} DRAFTS", b.sync.drafts));
+            }
+            t
+        }
+        None => "SHARING".to_string(),
+    };
+    draw_rows(f, app, *idx, &title, &words, None);
+}
+
 fn draw_dense(
     f: &mut Frame,
     app: &App,
@@ -84,6 +127,21 @@ fn draw_dense(
     idx: usize,
     name: &str,
     items: &[&'static MenuItem],
+    field: Option<(&str, &crate::text::EditBuffer)>,
+) {
+    let words: Vec<(String, String)> =
+        items.iter().map(|m| ((m.label)(ctx), (m.detail)(ctx))).collect();
+    draw_rows(f, app, idx, name, &words, field);
+}
+
+/// One line a row, the selected row's detail on the last inner line, and
+/// an optional text field in place of the selected row's label.
+fn draw_rows(
+    f: &mut Frame,
+    app: &App,
+    idx: usize,
+    name: &str,
+    items: &[(String, String)],
     field: Option<(&str, &crate::text::EditBuffer)>,
 ) {
     let theme = &app.theme;
@@ -124,7 +182,7 @@ fn draw_dense(
                 cursor_at = Some((inner.x + 3 + lead.width() as u16 + cx, inner.y + i as u16));
                 format!("{lead}{shown}")
             }
-            _ => truncate(&(item.label)(ctx), inner_w.saturating_sub(4)),
+            _ => truncate(&item.0, inner_w.saturating_sub(4)),
         };
         let pad = inner_w.saturating_sub(3 + text.width());
         lines.push(
@@ -140,7 +198,7 @@ fn draw_dense(
     // The selected row's detail, marquee-revealed when it overflows — the
     // same clock `draw_list` runs.
     let budget = inner_w.saturating_sub(6);
-    let detail = (items[idx].detail)(ctx);
+    let detail = items[idx].1.clone();
     let overflow = detail.width().saturating_sub(budget);
     let scroll = if overflow > 0 {
         let key = words_key(&detail);

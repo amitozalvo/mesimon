@@ -185,6 +185,12 @@ pub fn draw(f: &mut Frame, app: &App) {
     if matches!(app.mode, Mode::Prompts { .. }) {
         menu::draw_prompts(f, app);
     }
+    if matches!(app.mode, Mode::Team { .. }) {
+        menu::draw_team(f, app);
+    }
+    if matches!(app.mode, Mode::Share { .. }) {
+        menu::draw_share(f, app);
+    }
     if matches!(app.mode, Mode::ColumnSettings { .. }) {
         menu::draw_column(f, app);
     }

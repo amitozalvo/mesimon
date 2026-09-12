@@ -238,13 +238,28 @@ pub enum Scope {
     /// body): a second text barrier. Reached by `Tab` from the composer,
     /// where it keeps the composer's keys, and by `n`/`N` on a ticket.
     Editor,
+    /// The team list, one level under Settings (T-334): who this machine is
+    /// on the relay — the relay's address, a display name, and signing in
+    /// or out. Its own door for the prompt list's reason: two of its rows
+    /// are text fields in place, which `draw_list` cannot hold, and the
+    /// footer must say TEAM there. When a row is being typed in the scope
+    /// is `Input`.
+    Team,
+    /// The sharing dialog (T-334), reached from the menu's `Share this
+    /// board` row: before the board is shared, the publish row and the
+    /// notes switch; after, the invite rows, the members and the way to
+    /// stop. A list dialog like the archived one, over the board it is
+    /// about. Its rows are the board's members, so they are the mode's to
+    /// build, not a static list here — Enter's hint reads what the row
+    /// under the cursor will do (`Ctx::share_enter_word`).
+    Share,
 }
 
 impl Scope {
     /// Every scope, for the validators. Beside the enum so a new variant is
     /// added here in the same edit; `scope_list_is_complete` catches the one
     /// that is not.
-    pub const ALL: [Scope; 26] = [
+    pub const ALL: [Scope; 28] = [
         Scope::Global,
         Scope::Board,
         Scope::Ticket,
@@ -271,6 +286,8 @@ impl Scope {
         Scope::Editor,
         Scope::DuplicateChord,
         Scope::Search,
+        Scope::Team,
+        Scope::Share,
     ];
 
     /// The scope a key falls through to when this one does not bind it.
@@ -290,7 +307,9 @@ impl Scope {
             | Scope::Releases
             | Scope::Links
             | Scope::ColumnSettings
-            | Scope::Header => Some(Scope::Global),
+            | Scope::Header
+            | Scope::Team
+            | Scope::Share => Some(Scope::Global),
             Scope::Global
             | Scope::Move
             | Scope::DiffView
@@ -325,6 +344,8 @@ impl Scope {
             Scope::Settings => "SETTINGS",
             Scope::Notifications => "NOTIFICATIONS",
             Scope::Prompts => "PROMPTS",
+            Scope::Team => "TEAM",
+            Scope::Share => "SHARING",
             Scope::Brief => "AGENT BRIEF",
             Scope::Releases => "RELEASES",
             Scope::Links => "LINKS",
@@ -344,6 +365,18 @@ pub enum Verb {
     SettingsAppearance,
     SettingsBehaviour,
     SettingsAgents,
+    // ---- board sharing (T-334) ----
+    /// The Settings row that opens the team list.
+    SettingsTeam,
+    /// The relay row: a text field in place.
+    TeamRelay,
+    /// The display-name row: a text field in place.
+    TeamName,
+    TeamSignIn,
+    TeamSignOut,
+    /// The menu row that opens the sharing dialog — or, signed out, the
+    /// team list, which is where sharing starts.
+    ShareDialog,
     ColumnAgentBehaviour,
     // ---- global ----
     Help,
@@ -1144,6 +1177,38 @@ pub struct Ctx {
     /// distinguishable from `Enter`. False on the legacy floor, where every
     /// binding on `Key::ShiftEnter` must stay inert and unhinted.
     pub rich_keys: bool,
+    // ---- board sharing (T-334) ----
+    /// This machine has a relay identity (`Snapshot.team.device`).
+    pub team_signed_in: bool,
+    /// `<name> on <relay>`, as signed in — the device's own words, not the
+    /// drafts.
+    pub team_identity: String,
+    /// The relay and name as typed in the team list — the drafts, which
+    /// are the device's own until edited.
+    pub team_relay: String,
+    pub team_name: String,
+    /// The drafts differ from the identity signed in with, so `Sign in`
+    /// stands beside `Sign out`.
+    pub team_drafts_differ: bool,
+    /// A team-list row is a text field right now.
+    pub team_editing: bool,
+    /// What the daemon's relay thread is doing for a person: `signing in`,
+    /// `sharing`, `inviting`, `removing`, … Empty when idle.
+    pub team_busy: String,
+    /// The last thing that failed, in mesimon's words. Empty when nothing.
+    pub team_error: String,
+    /// This board is shared or joined; `team_owner` when this daemon owns it.
+    pub team_shared: bool,
+    pub team_owner: bool,
+    /// Active members, this machine included.
+    pub team_members: usize,
+    /// The sync word: `synced` | `syncing` | `offline` | `frozen` | `gone`
+    /// | `error`. Empty when the board is not shared.
+    pub team_sync: String,
+    /// What Enter does on the sharing dialog's row under the cursor —
+    /// `publish`, `switch`, `invite`, `copy`, `remove`, `stop sharing` —
+    /// or empty where the row is only read.
+    pub share_enter_word: &'static str,
 }
 
 /// The four `_word` fields are the hint's text when the verb is live, and
@@ -2986,6 +3051,47 @@ static BRIEF: &[Binding] = &[
     },
 ];
 
+/// The sharing dialog's three shapes are the menu's (T-334), with Enter's
+/// hint read off the row under the cursor — the rows are the board's
+/// members and the mode builds them, so the keymap cannot know which of
+/// `publish`, `invite`, `copy`, `remove` the press is. A row that is only
+/// read has no word, and the same emptiness makes Enter inert there.
+static SHARE: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
+        verb: Verb::CursorDown,
+        show: "jk",
+        hint: |_| "select",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Enter],
+        verb: Verb::Act,
+        show: "enter",
+        hint: |c| c.share_enter_word,
+        avail: |c| !c.share_enter_word.is_empty(),
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: true,
+        prio: 20,
+    },
+    Binding {
+        keys: &[Key::Char('q'), Key::Esc],
+        verb: Verb::Back,
+        show: "esc",
+        hint: |_| "close",
+        avail: always,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 250,
+    },
+];
+
 /// The theme picker's three shapes are the menu's. `Act` does not mutate:
 /// nothing the daemon owns changes, and the file it writes is this
 /// machine's own preference.
@@ -3130,6 +3236,32 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.has_archived,
         key: "",
     },
+    // Board sharing (T-334). One row in three states: signed out it is the
+    // door to the team list, because sharing starts with an identity;
+    // shared it names the members and the sync and opens the same dialog;
+    // otherwise it offers the dialog that publishes. A joined board is a
+    // member's, not the owner's, so its row is the next ticket's (T-335).
+    MenuItem {
+        verb: Verb::ShareDialog,
+        label: |c| {
+            if c.team_shared {
+                format!("Shared with {} ∙ {}", plural(c.team_members, "member"), c.team_sync)
+            } else {
+                "Share this board".into()
+            }
+        },
+        detail: |c| {
+            if !c.team_signed_in {
+                "needs a relay identity ∙ enter opens Settings › Team".into()
+            } else if c.team_shared {
+                "invite codes, members, stop sharing".into()
+            } else {
+                "members read and edit the tickets ∙ sealed on this machine first".into()
+            }
+        },
+        avail: |c| !c.team_shared || c.team_owner,
+        key: "",
+    },
     // The door to the preferences. Never a suggestion — a setting is not
     // something worth doing right now — and it names what is behind it, so
     // nobody opens it to find out.
@@ -3186,6 +3318,29 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::SettingsAgents,
         label: |_| "Agents".into(),
         detail: |_| "provider, brief and tools".into(),
+        avail: always,
+        key: "",
+    },
+    // The team list (T-334): who this machine is on the relay. A fourth
+    // door beside the three groups, because an identity is not appearance,
+    // behaviour or agents — and the row says whether one exists before it
+    // is opened.
+    MenuItem {
+        verb: Verb::SettingsTeam,
+        label: |c| {
+            if c.team_signed_in && !c.team_identity.is_empty() {
+                format!("Team: {}", c.team_identity)
+            } else {
+                "Team: not signed in".into()
+            }
+        },
+        detail: |c| {
+            if c.team_signed_in {
+                "your relay identity ∙ sign out here".into()
+            } else {
+                "sign in to a relay to share a board or join one".into()
+            }
+        },
         avail: always,
         key: "",
     },
@@ -3485,6 +3640,98 @@ pub static PROMPT_ITEMS: &[MenuItem] = &[
 ];
 
 /// `Rebase ask: mesimon's words` — the name, then whose text stands there.
+/// The team list's rows (T-334): the two fields, then the one gesture that
+/// applies — `Sign in` while there is no identity (or the drafts name a new
+/// one), `Sign out` while there is.
+pub static TEAM_ITEMS: &[MenuItem] = &[
+    MenuItem {
+        verb: Verb::TeamRelay,
+        label: |c| {
+            if c.team_relay.is_empty() {
+                "Relay: not set".into()
+            } else {
+                format!("Relay: {}", c.team_relay)
+            }
+        },
+        detail: |c| {
+            if c.team_editing {
+                "host[:port] ∙ self-hosted: add a space and its pin".into()
+            } else {
+                "where shared boards meet ∙ enter edits".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TeamName,
+        label: |c| {
+            if c.team_name.is_empty() {
+                "Display name: not set".into()
+            } else {
+                format!("Display name: {}", c.team_name)
+            }
+        },
+        detail: |c| {
+            if c.team_editing {
+                "what teammates see on your edits ∙ up to sixty-four characters".into()
+            } else {
+                "what teammates see on your edits ∙ enter edits".into()
+            }
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TeamSignIn,
+        label: |c| {
+            if c.team_busy == "signing in" {
+                "Signing in…".into()
+            } else if c.team_signed_in {
+                "Sign in again".into()
+            } else {
+                "Sign in".into()
+            }
+        },
+        // The failure comes first: a row offering a retry has to say what
+        // it is retrying.
+        detail: |c| {
+            if !c.team_error.is_empty() {
+                format!("{} ∙ enter tries again", c.team_error)
+            } else if c.team_relay.is_empty() || c.team_name.is_empty() {
+                "needs the relay and a display name above".into()
+            } else if c.team_signed_in {
+                "a new name on the same relay keeps your key ∙ a new relay is a new identity".into()
+            } else {
+                "mints a device key on this machine ∙ the relay learns your name and public key"
+                    .into()
+            }
+        },
+        avail: |c| !c.team_signed_in || c.team_drafts_differ,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::TeamSignOut,
+        label: |c| {
+            if c.team_identity.is_empty() {
+                "Signed in".into()
+            } else {
+                format!("Signed in as {}", c.team_identity)
+            }
+        },
+        detail: |_| {
+            "enter signs out ∙ this machine forgets its key and shared boards stop syncing".into()
+        },
+        avail: |c| c.team_signed_in,
+        key: "",
+    },
+];
+
+/// The team list's rows that apply right now (T-334).
+pub fn team_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
+    TEAM_ITEMS.iter().filter(|m| (m.avail)(ctx)).collect()
+}
+
 fn prompt_label(ctx: &Ctx, which: crate::prompts::AgentPrompt) -> String {
     let whose = if ctx.prompts.is_custom(which) { "your words" } else { "mesimon's words" };
     format!("{}: {whose}", which.label())
@@ -3733,9 +3980,12 @@ pub fn is_suggested(verb: Verb, ctx: &Ctx) -> bool {
 /// filter is the menu's so a conditional preference costs nothing later.
 pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     let verbs: &[Verb] = match ctx.settings_section {
-        SettingsSection::Root => {
-            &[Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
-        }
+        SettingsSection::Root => &[
+            Verb::SettingsAppearance,
+            Verb::SettingsBehaviour,
+            Verb::SettingsAgents,
+            Verb::SettingsTeam,
+        ],
         SettingsSection::Appearance => &[Verb::ThemePick, Verb::Notifications, Verb::StatusLine],
         SettingsSection::Behaviour => &[
             Verb::MergeTrain,
@@ -5033,7 +5283,8 @@ pub fn bindings(scope: Scope) -> &'static [Binding] {
         // The same three shapes: a list dialog's keys are the list's, and
         // which list Enter is choosing in is the mode's to know, not the
         // keymap's.
-        Scope::Settings | Scope::Notifications | Scope::Prompts => SETTINGS,
+        Scope::Settings | Scope::Notifications | Scope::Prompts | Scope::Team => SETTINGS,
+        Scope::Share => SHARE,
         Scope::Brief => BRIEF,
         Scope::Releases => RELEASES,
         Scope::Links => LINKS,
@@ -5355,6 +5606,8 @@ mod tests {
                 Scope::Editor => 23,
                 Scope::DuplicateChord => 24,
                 Scope::Search => 25,
+                Scope::Team => 26,
+                Scope::Share => 27,
             }
         }
         for (i, s) in Scope::ALL.iter().enumerate() {
@@ -6872,6 +7125,7 @@ mod tests {
             Verb::ArchivedList,
             Verb::SleepAllDone,
             Verb::ArchiveAllDone,
+            Verb::ShareDialog,
             Verb::Settings,
             Verb::ReleaseNotes,
             Verb::Quit,
@@ -6883,7 +7137,12 @@ mod tests {
         let prefs: Vec<Verb> = settings_items(&ctx).iter().map(|m| m.verb).collect();
         assert_eq!(
             prefs,
-            [Verb::SettingsAppearance, Verb::SettingsBehaviour, Verb::SettingsAgents]
+            [
+                Verb::SettingsAppearance,
+                Verb::SettingsBehaviour,
+                Verb::SettingsAgents,
+                Verb::SettingsTeam
+            ]
         );
         for (section, expected) in [
             (
@@ -7060,9 +7319,13 @@ mod tests {
             theme_blurb: "dark, the default",
             theme_slot_word: "dark",
             default_column: "TODO".into(),
+            team_signed_in: true,
+            team_shared: true,
+            team_members: 2,
+            team_sync: "synced".into(),
             ..Default::default()
         };
-        for m in MENU_ITEMS.iter().chain(SETTINGS_ITEMS).chain(COLUMN_ITEMS) {
+        for m in MENU_ITEMS.iter().chain(SETTINGS_ITEMS).chain(COLUMN_ITEMS).chain(TEAM_ITEMS) {
             let label = (m.label)(&ctx);
             assert!(!label.is_empty(), "{:?} has no label", m.verb);
             // A label built from a Ctx value can end up a stem — "Install "
@@ -7165,6 +7428,60 @@ mod tests {
         assert!(checked >= 12, "only {checked} motion aliases checked — is `motion` stale?");
     }
 
+    /// The team list and the sharing row (T-334): the list offers the one
+    /// gesture that applies, the menu row is there in every state but a
+    /// joined board's, and the dialog's Enter is inert where a row is only
+    /// read.
+    #[test]
+    fn the_team_list_offers_one_gesture_and_the_share_row_is_everywhere() {
+        let out = Ctx::default();
+        let rows = |c: &Ctx| team_items(c).iter().map(|m| m.verb).collect::<Vec<_>>();
+        assert_eq!(rows(&out), [Verb::TeamRelay, Verb::TeamName, Verb::TeamSignIn]);
+        let sign_in = TEAM_ITEMS.iter().find(|m| m.verb == Verb::TeamSignIn).expect("row");
+        assert!((sign_in.detail)(&out).contains("needs the relay"));
+        let typed = Ctx {
+            team_relay: "relay.example".into(),
+            team_name: "Dana".into(),
+            team_error: "signing in: denied".into(),
+            ..Default::default()
+        };
+        assert!((sign_in.detail)(&typed).starts_with("signing in: denied ∙"));
+        let signed = Ctx {
+            team_signed_in: true,
+            team_identity: "Dana on relay.example".into(),
+            ..typed.clone()
+        };
+        assert_eq!(rows(&signed), [Verb::TeamRelay, Verb::TeamName, Verb::TeamSignOut]);
+        let retyped = Ctx { team_drafts_differ: true, ..signed.clone() };
+        assert_eq!(
+            rows(&retyped),
+            [Verb::TeamRelay, Verb::TeamName, Verb::TeamSignIn, Verb::TeamSignOut]
+        );
+        assert_eq!((sign_in.label)(&retyped), "Sign in again");
+        // The menu row: signed out it leads to the identity; a joined
+        // board (shared, not owned) has no row at all.
+        let share = MENU_ITEMS.iter().find(|m| m.verb == Verb::ShareDialog).expect("row");
+        assert!((share.detail)(&out).contains("Settings › Team"));
+        assert!(menu_items(&signed).iter().any(|m| m.verb == Verb::ShareDialog));
+        let joined = Ctx { team_shared: true, team_owner: false, ..signed.clone() };
+        assert!(!menu_items(&joined).iter().any(|m| m.verb == Verb::ShareDialog));
+        let owned = Ctx {
+            team_shared: true,
+            team_owner: true,
+            team_members: 3,
+            team_sync: "synced".into(),
+            ..signed.clone()
+        };
+        assert_eq!((share.label)(&owned), "Shared with 3 members ∙ synced");
+        // The dialog's Enter reads its word off the row, and is inert
+        // where there is none.
+        assert_eq!(resolve(Scope::Share, Key::Enter, &out), None);
+        let acting = Ctx { share_enter_word: "publish", ..Default::default() };
+        assert_eq!(resolve(Scope::Share, Key::Enter, &acting), Some(Verb::Act));
+        assert!(footer_items(Scope::Share, &acting).iter().any(|b| (b.hint)(&acting) == "publish"));
+        assert_eq!(resolve(Scope::Team, Key::Enter, &out), Some(Verb::Act));
+    }
+
     /// `q` pops one level and `?` is reachable from every screen — the two
     /// rules a new user needs before any other key matters.
     #[test]
@@ -7183,6 +7500,8 @@ mod tests {
             Scope::Links,
             Scope::ColumnSettings,
             Scope::Header,
+            Scope::Team,
+            Scope::Share,
         ] {
             assert_eq!(resolve(s, Key::Char('q'), &ctx), Some(Verb::Back), "{s:?}");
             assert_eq!(resolve(s, Key::Esc, &ctx), Some(Verb::Back), "{s:?}");
