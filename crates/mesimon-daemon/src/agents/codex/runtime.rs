@@ -1944,6 +1944,17 @@ mod tests {
         assert!(verify_upstream_listener(path).is_ok());
         drop(listener);
         assert!(path.exists(), "a stale socket alone is not evidence of a live server");
+        // Measured 2026-09-12 (T-357): for a few hundred microseconds after
+        // `close()` returns, XNU still routes a `connect()` on the path into
+        // the closed listener's backlog and reports success. Under the load
+        // of the whole `agents::codex` group that window is hit reliably. The
+        // probe is right to call that "live" — a false live errs towards not
+        // trusting a native quit — so the test waits the kernel out, bounded.
+        let deadline = Instant::now() + Duration::from_secs(1);
+        while verify_upstream_listener(path).is_ok() {
+            assert!(Instant::now() < deadline, "a closed listener kept accepting connections");
+            std::thread::sleep(Duration::from_millis(1));
+        }
         assert!(verify_upstream_listener(path).is_err());
         std::fs::remove_file(path).unwrap();
         assert!(verify_upstream_listener(path).is_err());

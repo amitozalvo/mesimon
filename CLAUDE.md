@@ -359,6 +359,10 @@ will not show up in our tests until they break something.
 - **A pty in canonical mode keeps only 1 KiB of a line**, which is why long prompts are pasted
   rather than typed.
 - **macOS caps unix datagrams at 2 KB**, which is why the hook transport is SOCK_STREAM one-shot.
+- **A `connect()` on a unix socket path can still succeed for a few hundred microseconds after
+  its listener's `close()` returned** — XNU routes it into the dying backlog. A liveness probe
+  that reads "connected" as live is right to; a test that closes and probes at once must wait
+  the kernel out (`native_quit_requires_live_listener_not_a_stale_wrapper_socket`).
 - **The hook exec form is `"command": <exe>` plus `"args": [...]`** — docs/11's bare-`args`
   example fails the live validator. No `if` off tool events; matchers only where supported.
 - **`git diff --raw HEAD` writes the destination blob as forty zeros**, so a mode-only test
