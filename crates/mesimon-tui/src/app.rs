@@ -2043,6 +2043,14 @@ impl App {
                 Field::Body => ("a note", ed.body.paste(text), ed.body.limit()),
                 Field::Title => ("a title", ed.title.paste(text), ed.title.limit()),
             }
+        // The three lists whose selected row is a field in place: a relay
+        // address and its pin are exactly what gets pasted (T-334).
+        } else if let Mode::Team { editing: Some(buf), .. } = &mut self.mode {
+            ("a relay or a name", buf.paste(text), buf.limit())
+        } else if let Mode::Prompts { editing: Some(buf), .. } = &mut self.mode {
+            ("a prompt", buf.paste(text), buf.limit())
+        } else if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
+            ("a column name", buf.paste(text), buf.limit())
         } else {
             return Ok(false);
         };
@@ -10476,6 +10484,26 @@ mod tests {
         assert_eq!(app.mode, Mode::Team { idx: 0, editing: None, from_menu: false });
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Settings { idx: team });
+    }
+
+    /// A relay address and its pin arrive by paste, so the team list's
+    /// field takes one (T-334) — and the two lists of the same shape too.
+    #[test]
+    fn the_in_place_fields_take_a_paste() {
+        let mut app = app_three_columns();
+        app.mode = Mode::Team { idx: 0, editing: None, from_menu: false };
+        assert!(!app.on_paste("nowhere").unwrap(), "a list row is not a field");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        let line = format!("127.0.0.1 {}", "ab".repeat(32));
+        assert!(app.on_paste(&line).unwrap());
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.team_relay_draft, line);
+        app.mode = Mode::Prompts { idx: 0, editing: None };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.on_paste("rebase please").unwrap());
+        let Mode::Prompts { editing: Some(buf), .. } = &app.mode else { panic!("{:?}", app.mode) };
+        // The prompt field opens with its cursor at the start.
+        assert!(buf.as_str().starts_with("rebase please"));
     }
 
     /// The sharing dialog (T-334): the notes switch rides the publish; a
