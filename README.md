@@ -221,13 +221,9 @@ Inside the board, `X` parks every idle agent in DONE, which is the gentler versi
 Nothing else. If you ever find mesimon writing outside that list, that is a bug worth reporting
 above all others.
 
-The separate, unpublished [Teams preview](team/client/README.md) additionally
-writes its explicitly selected private profiles and exchange files (normally
-under `~/.local/state/mesimon/teams/`), identity locks beneath
-`/tmp/mesimon-<uid>/teams/`, and custody anchors in the native credential store
-under `mesimon.teams.preview.v1`. Its administrator explicitly selects the relay
-socket, credential output files and local PostgreSQL database. The ordinary
-Apache-core binary does not initialize these resources.
+The [Teams relay](team/README.md) is a separate server binary with its own
+database; nothing in this list is written by it, and nothing it stores is
+readable to it.
 
 ## Investigating agent state
 

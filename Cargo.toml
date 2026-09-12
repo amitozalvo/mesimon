@@ -6,6 +6,18 @@ members = [
     "crates/mesimon-daemon",
     "crates/mesimon-tui",
     "crates/mesimon-backend-tmux",
+    "crates/mesimon-team",
+    "team/relay",
+]
+# `team/relay` is the paid relay (T-332): `--workspace` commands cover it, a
+# plain `cargo build`/`cargo run` does not, and neither does the release build.
+default-members = [
+    "crates/mesimon",
+    "crates/mesimon-core",
+    "crates/mesimon-daemon",
+    "crates/mesimon-tui",
+    "crates/mesimon-backend-tmux",
+    "crates/mesimon-team",
 ]
 
 [workspace.package]
@@ -20,6 +32,7 @@ mesimon-core = { path = "crates/mesimon-core" }
 mesimon-daemon = { path = "crates/mesimon-daemon" }
 mesimon-tui = { path = "crates/mesimon-tui" }
 mesimon-backend-tmux = { path = "crates/mesimon-backend-tmux" }
+mesimon-team = { path = "crates/mesimon-team" }
 anyhow = "1"
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }

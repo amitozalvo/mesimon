@@ -9947,3 +9947,68 @@ A slow client delays others for up to its 5 s timeout: bounded, but not
 production admission control. OIDC/PKCE, SCIM, entitlements, certificate rotation
 and independent cryptographic review remain launch gates, and a local compose
 stack is not evidence of a released Internet deployment.
+
+## T-215 — Teams v1: the daemon is the client, MLS is out, the relay is one crate
+
+The 2026-09-12 review of the ticket (note "Teams v1: TUI plan and scope
+relaxation") found that the branch shipped an encrypted question-and-reply pipe
+between two CLI binaries — title, question, reply and cancel; one owner plus one
+teammate, hard-capped; no removal, rekey, second device or key backup; about 19
+hand-typed commands per question — and none of it reachable from the TUI. The
+owner accepted five relaxations and this block records the first package
+(T-332) that implements them. The blocks above describe the preview they replace.
+
+**A board key replaces MLS.** `crates/mesimon-team/src/crypto.rs`: one random
+256-bit key per board, wrapped to each member's X25519 key with an ephemeral
+ECDH and signed by the wrapper's Ed25519 key (`wrap`/`unwrap`), records sealed
+with XChaCha20-Poly1305 under the key (`seal`/`open`) with the board, object and
+revision as associated data and the author's signature over the result. A new
+epoch is a new key; removal mints one and re-wraps it to whoever remains. Forward
+secrecy is gone on purpose — a board is a shared document and a joiner must read
+what is already there — and with it OpenMLS, Welcome and ratchet-tree handling,
+the Rust 1.91 workspace split, `team/Cargo.toml`, `ci/test-teams.py`, the 2,200-line
+`crypto-validation` crate, the mls-rs interop and the expired working-group vectors.
+`a_removed_member_cannot_read_the_next_epoch` and
+`a_wrapped_key_opens_for_its_recipient_and_no_one_else` are the two properties
+that matter; a relay relabelling the sender of a wrapped key is refused there.
+
+**An invite code replaces the fingerprint ceremony.** `invite.rs`: 20 bytes in
+Crockford base32, `XXXX-XXXX-…` eight groups. Twelve bytes are a one-time secret
+the relay knows by hash; eight commit to the owner's device id. The code already
+travels out of band, which is the channel a fingerprint ceremony would have needed,
+so the ceremony is free: the joiner checks the owner's key against the hint
+(`names_owner`), the owner checks the joiner's key against an HMAC under the secret
+(`proof`). Parsing accepts case, spaces and the Crockford look-alikes.
+
+**The relay is one crate with current-state rows.** `team/relay` replaces
+`service-domain` + `service-server`: `objects` holds the current sealed record per
+object and `journal` the history, so a read is a query, not a replay of every
+operation since the board was born, and the 4,096-operation cap is gone. Every
+request is one transaction with the board row locked `FOR UPDATE`. The only
+transport is TLS; the Unix socket and its peer-UID checks went, and with them the
+second and third hand-written line framers — `wire::read_frame`/`write_frame`
+are the one. The client trusts either a pinned certificate (self-hosted) or the
+Mozilla roots (managed). Provisioning subcommands are gone: devices `register`
+over the wire and boards come from `create_board`, so no operator ever types a
+32-hex id. Authorization is `policy.rs`, pure and in `cargo ut`: outsiders and
+former members get `not_found`, short roles get `denied`. `tests/postgres.rs`
+runs the whole life of a board against real PostgreSQL — register, create,
+invite, join with proof, keys, write, exact retry, changed retry, conflict,
+viewer, revoke, freeze, rotation coverage, stale epoch, leave, unshare — and then
+dumps every row of every table and asserts no typed word is in any of them; a
+second test proves TLS admits only the pinned certificate and refuses a bad
+credential with an answer rather than a dropped connection.
+
+**Layout follows the licence line.** The daemon is the Teams client, so keys,
+sealing, invite codes, the wire types and the TLS client are the Apache crate
+`crates/mesimon-team`; only the relay stays under `team/`. The relay is a root
+workspace member so `--workspace` commands and the release clippy cover it, and
+not a default member so `cargo build`, `cargo run` and the release build skip it.
+Its manifest carries `workspace = "../.."` because the old `team/Cargo.toml`
+still exists until it is deleted, and cargo would otherwise let that stale
+workspace capture the crate.
+
+Not yet: the daemon does not speak any of this (T-333), nothing is on the
+snapshot or the keymap (T-334 to T-336), and the display name is the one piece
+of plaintext the relay holds, by design — the owner has to see who redeemed an
+invite before wrapping them a key.
