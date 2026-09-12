@@ -62,7 +62,9 @@ fn main() -> Result<()> {
         Some("doctor") => doctor::run(&args[1..]),
         // Redeem an invite code from the shell (T-335): the current
         // directory's daemon joins, and the joined board's root is printed.
-        Some("join") => join::run(&args[1..]),
+        Some("join") if cfg!(debug_assertions) || std::env::var_os("MESIMON_TEAMS").is_some() => {
+            join::run(&args[1..])
+        }
         Some("state") => state::run(&args[1..]),
         Some("--version" | "-V") => {
             println!("mesimon {}", version_line());

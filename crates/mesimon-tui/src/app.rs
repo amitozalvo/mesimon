@@ -1063,6 +1063,9 @@ pub struct App {
     /// relay listed before it, so the one that appears is the one to open.
     /// Cleared by the daemon's answer, either way.
     join_watch: Option<Vec<String>>,
+    /// Board sharing's doors are offered (`Ctx::teams`): a development
+    /// build, or `MESIMON_TEAMS=1`, which `lib.rs` reads — never `App::new`.
+    pub teams: bool,
     /// The root of a team board to open instead of this one (T-335): the
     /// main loop leaves and execs `mesimon open <root>` — a different root
     /// is a different daemon, and a board is one process per root.
@@ -1358,6 +1361,7 @@ impl App {
             share_notes: true,
             join_watch: None,
             pending_switch: None,
+            teams: cfg!(debug_assertions),
             mode: Mode::Normal,
             status: String::new(),
             quit: false,
@@ -3213,6 +3217,7 @@ impl App {
                 .unwrap_or_default(),
             team_boards: self.team.boards.len(),
             boards_enter_word: "",
+            teams: self.teams,
         };
         if let Mode::TeamBoards { idx, .. } = &self.mode {
             if let Some(row) = self.boards_rows().get(*idx) {

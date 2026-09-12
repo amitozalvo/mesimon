@@ -1240,6 +1240,12 @@ pub struct Ctx {
     /// `join`, `open` — or empty where the row is only read (this board, a
     /// board with no copy on this machine).
     pub boards_enter_word: &'static str,
+    /// Board sharing is offered at all: a development build, or
+    /// `MESIMON_TEAMS=1`. Off, the three doors — `Settings › Team`, `Share
+    /// this board`, `Team boards` — are not rows, and nothing else changes.
+    /// A board already shared or joined keeps working: the daemon syncs
+    /// whatever its state file says, and the gate is only on the doors.
+    pub teams: bool,
 }
 
 /// The four `_word` fields are the hint's text when the verb is live, and
@@ -3430,7 +3436,7 @@ static MENU_ITEMS: &[MenuItem] = &[
                 "members read and edit the tickets ∙ sealed on this machine first".into()
             }
         },
-        avail: always,
+        avail: |c| c.teams,
         key: "",
     },
     // The boards this device belongs to (T-335), and the way onto one more.
@@ -3454,7 +3460,7 @@ static MENU_ITEMS: &[MenuItem] = &[
                 "join a board with a code from its owner".into()
             }
         },
-        avail: always,
+        avail: |c| c.teams,
         key: "",
     },
     // The door to the preferences. Never a suggestion — a setting is not
@@ -3536,7 +3542,7 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
                 "sign in to a relay to share a board or join one".into()
             }
         },
-        avail: always,
+        avail: |c| c.teams,
         key: "",
     },
     MenuItem {
@@ -7311,6 +7317,7 @@ mod tests {
             has_archived: true,
             update_ready: true,
             default_column: "TODO".into(),
+            teams: true,
             ..Default::default()
         };
         assert_eq!(resolve(Scope::Board, Key::Esc, &ctx), Some(Verb::Menu));
@@ -7629,7 +7636,7 @@ mod tests {
     /// read.
     #[test]
     fn the_team_list_offers_one_gesture_and_the_share_row_is_everywhere() {
-        let out = Ctx::default();
+        let out = Ctx { teams: true, ..Default::default() };
         let rows = |c: &Ctx| team_items(c).iter().map(|m| m.verb).collect::<Vec<_>>();
         assert_eq!(rows(&out), [Verb::TeamRelay, Verb::TeamName, Verb::TeamSignIn]);
         let sign_in = TEAM_ITEMS.iter().find(|m| m.verb == Verb::TeamSignIn).expect("row");
@@ -7638,6 +7645,7 @@ mod tests {
             team_relay: "relay.example".into(),
             team_name: "Dana".into(),
             team_error: "signing in: denied".into(),
+            teams: true,
             ..Default::default()
         };
         assert!((sign_in.detail)(&typed).starts_with("signing in: denied ∙"));
@@ -7712,6 +7720,7 @@ mod tests {
             team_signed_in: true,
             team_shared: true,
             team_boards: 1,
+            teams: true,
             ..Default::default()
         };
         let remote = Ctx { content_only: true, ..everything.clone() };
@@ -7833,6 +7842,22 @@ mod tests {
         assert!(footer_items(Scope::TeamBoards, &opening)
             .iter()
             .any(|b| (b.hint)(&opening) == "open"));
+    }
+
+    /// Sharing is behind a door that only a development build (or
+    /// `MESIMON_TEAMS=1`) opens: without `Ctx::teams` none of the three
+    /// rows is offered, and with it all three are.
+    #[test]
+    fn the_team_doors_are_closed_unless_teams_is_on() {
+        let doors = [Verb::ShareDialog, Verb::TeamBoards, Verb::SettingsTeam];
+        let off = Ctx::default();
+        let on = Ctx { teams: true, ..Default::default() };
+        for v in doors {
+            let row =
+                |c: &Ctx| menu_items(c).iter().chain(settings_items(c).iter()).any(|m| m.verb == v);
+            assert!(!row(&off), "{v:?} is offered without teams");
+            assert!(row(&on), "{v:?} is missing with teams");
+        }
     }
 
     /// `q` pops one level and `?` is reachable from every screen — the two

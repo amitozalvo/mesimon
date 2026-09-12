@@ -172,6 +172,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.opener = opener::find();
     // Whether a ticket may grow its own shell (T-300) — same rule again.
     app.ticket_shells = ticket_shells();
+    // Board sharing (T-335): a development build offers it; a release build
+    // only with `MESIMON_TEAMS=1`, until it ships.
+    app.teams = app.teams || std::env::var_os("MESIMON_TEAMS").is_some_and(|v| v == "1");
     // The board's outward voice (T-282), on a thread of its own since T-291:
     // it owns a second daemon connection and keeps speaking through a
     // handover, when this loop is stopped inside `cmd.status()`. Started
