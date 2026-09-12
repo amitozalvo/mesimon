@@ -3848,13 +3848,12 @@ impl App {
                     self.status = "the relay and a display name first".into();
                     return Ok(());
                 }
-                self.status = "signing in…".into();
+                // No status line: the row itself reads `Signing in…` and
+                // then the identity, off the snapshot, while a status would
+                // outlive the answer until the next key.
                 self.send(Command::TeamSignIn { relay, display_name })?;
             }
-            Verb::TeamSignOut => {
-                self.status = "signed out".into();
-                self.send(Command::TeamSignOut)?;
-            }
+            Verb::TeamSignOut => self.send(Command::TeamSignOut)?,
             // Signed out, the row leads to the identity; otherwise to the
             // dialog, which reads what it offers off the snapshot.
             Verb::ShareDialog => {
@@ -5207,10 +5206,7 @@ impl App {
             return Ok(());
         }
         match row {
-            ShareRow::Publish => {
-                self.status = "publishing…".into();
-                self.send(Command::ShareBoard { notes: self.share_notes })
-            }
+            ShareRow::Publish => self.send(Command::ShareBoard { notes: self.share_notes }),
             ShareRow::Notes => {
                 self.share_notes = !self.share_notes;
                 Ok(())
