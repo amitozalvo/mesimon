@@ -31,6 +31,7 @@ pub mod relnotes;
 pub mod search;
 pub mod shellenv;
 pub mod snooze;
+pub mod team;
 pub mod text;
 pub mod train;
 pub mod verdict;

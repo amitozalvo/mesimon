@@ -36,6 +36,8 @@ use crate::paths::Paths;
 use crate::store;
 use crate::worktree::{self, Binding, BindingStatus};
 
+mod teamglue;
+
 const GRACE_SECS: u64 = 9;
 const GATE_SESSION: &str = "msmn-gate";
 
@@ -185,6 +187,9 @@ enum Msg {
     /// the `wt_gen` the sample started under: a synchronous refresh in the
     /// meantime (a merge, a teardown) makes it stale, and it is dropped.
     WorktreeFlags(u64, worktree::WtFlags),
+    /// The relay executor finished a job (T-215). What it means is decided
+    /// here, on the writer, in `teamglue`.
+    Team(crate::team::sync::Done),
 }
 
 pub struct Daemon {
@@ -343,6 +348,9 @@ pub struct Daemon {
     pending_teardown: Vec<Teardown>,
     /// Writer-thread sender, cloned into provisioning threads.
     tx: Sender<Msg>,
+    /// Board sharing (T-215): identity, this board's sharing state, and the
+    /// relay executor's handle.
+    team: teamglue::TeamCtx,
     codex_polling: bool,
     codex_ready: std::collections::HashSet<uuid::Uuid>,
     /// Native startup UI is checked until its composer is seen once per
@@ -668,6 +676,7 @@ pub fn run(paths: Paths) -> Result<()> {
         upstream_base: None,
         pending_teardown: Vec::new(),
         tx: tx.clone(),
+        team: teamglue::TeamCtx::new(tx.clone()),
         codex_polling: false,
         codex_ready: std::collections::HashSet::new(),
         codex_native_ready: HashMap::new(),
@@ -690,6 +699,10 @@ pub fn run(paths: Paths) -> Result<()> {
         git_fetched_at_ms: 0,
         git_fetch_error: None,
     };
+    // Board sharing (T-215): identity, this board's sharing state, the
+    // relay executor. Before any client can observe the board, so the first
+    // snapshot already says whether it is shared.
+    d.team_start();
     let mut parked = false;
     for id in just_exited {
         parked |= d.park_on_exit(id);
@@ -749,6 +762,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(..) => "git sampled".into(),
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
+            Msg::Team(_) => "team".into(),
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
@@ -768,6 +782,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
             Msg::ClientGone(stream) => d.on_client_gone(&stream),
             Msg::WorktreeFlags(gen, flags) => d.on_worktree_flags(gen, flags),
+            Msg::Team(done) => d.on_team(done),
             Msg::Request(env, reply, stream) => {
                 let resp = d.handle(env, &stream);
                 let shutdown = matches!(resp, Response::Ok) && d.shutting_down;
@@ -1248,6 +1263,14 @@ impl Daemon {
                 message: "automation is not a principal a client may claim".into(),
             };
         }
+        // `Remote` is minted by the daemon's own sync from a record whose
+        // signature verified (T-215). Over the socket it is a same-uid
+        // client dressing up as a teammate.
+        if let Principal::Remote { .. } = env.principal {
+            return Response::Err {
+                message: "a teammate is not a principal a client may claim".into(),
+            };
+        }
         // D32c invariant 2: the chokepoint is on every path, even though v0.1
         // allows. What a command IS — read or mutate, logged or not, about
         // which ticket — is `Command::meta`, one exhaustive table in core.
@@ -1382,6 +1405,15 @@ impl Daemon {
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
             Command::SetAgentPrompt { which, text } => self.set_agent_prompt(which, text),
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
+            Command::TeamSignIn { relay, display_name } => self.team_sign_in(relay, display_name),
+            Command::TeamSignOut => self.team_sign_out(),
+            Command::ShareBoard => self.team_share(),
+            Command::UnshareBoard => self.team_unshare(),
+            Command::MintInvite { role } => self.team_mint_invite(role),
+            Command::RevokeMember { device } => self.team_revoke(device),
+            Command::JoinBoard { code } => self.team_join(code),
+            Command::LeaveBoard => self.team_leave(),
+            Command::TeamRefresh => self.team_refresh(),
             Command::AddColumn { name, after } => self.add_column(name, after),
             Command::RenameColumn { name, to } => self.rename_column(&name, &to),
             Command::DeleteColumn { name } => self.delete_column(&name),
@@ -1555,6 +1587,7 @@ impl Daemon {
     /// margin; 10 attempts covers ~5 s of Claude startup.
     fn on_tick(&mut self) {
         self.ticks += 1;
+        self.team_tick();
         // Every stage is timed and the slowest remembered, so a slow tick's
         // journal line can name the probe that took the second.
         macro_rules! stage {
@@ -3664,6 +3697,7 @@ impl Daemon {
             ));
         }
         Response::Board {
+            team: self.team_info(),
             board: self.board.clone(),
             grace,
             external: self.external.clone(),
@@ -4147,6 +4181,7 @@ impl Daemon {
             let Ok(mut w) = s.lock() else { return false };
             writeln!(w, "{line}").is_ok()
         });
+        self.team_after_broadcast();
     }
 
     fn persist_and_notify(&mut self) {
@@ -6372,6 +6407,13 @@ impl Daemon {
         // An archived ticket must not grow a live pane no board surface shows.
         if self.board.ticket(ticket).is_some_and(|t| t.is_archived()) {
             return Response::Err { message: "ticket archived — restore it first".into() };
+        }
+        // A joined board has no checkout here (T-215): nothing to run in.
+        if self.team_content_only() {
+            return Response::Err {
+                message: "this board has no repository on this machine — open it where the code is"
+                    .into(),
+            };
         }
         // One claude per ticket (2026-09-02). Everything that has to pick
         // "the" agent of a ticket — the board's prompt, the merge notice,

@@ -1,0 +1,1320 @@
+//! Board sharing on the writer (T-215 v1). Every decision about the relay
+//! is made here, on the single writer, with the board in hand: what to send,
+//! what a result means, how a record becomes a ticket. The executor thread in
+//! `crate::team::sync` only carries frames.
+//!
+//! Outgoing changes are found by diffing, not by instrumenting every
+//! mutation: `team_after_broadcast` runs at the end of `broadcast()`, projects
+//! the board, and queues every object whose digest moved. Incoming records
+//! set the published digest before they touch the board, so the diff that
+//! follows their broadcast sees nothing to send.
+use super::*;
+use crate::team::device::DeviceFile;
+use crate::team::project;
+use crate::team::state::{PendingInvite, Published, TeamState};
+use crate::team::sync::{Done, Job, Tag};
+use mesimon_core::board::{
+    note_name, sanitize_note, sanitize_title, Archived, ExecutionPolicy, NoteMeta,
+};
+use mesimon_core::team::{
+    RecordBody, SharedObject, SyncState, TeamBoard, TeamBoardSummary, TeamDevice, TeamInfo,
+    TeamMember, RECORD_SCHEMA,
+};
+use mesimon_team::crypto::{self, BoardId, BoardKey, DeviceId, ObjectId, OperationId, RecordScope};
+use mesimon_team::invite::InviteCode;
+use mesimon_team::relay::RelayEndpoint;
+use mesimon_team::wire::{
+    BoardSummary, ErrorCode, Member, MemberStatus, Request, Response as Wire, Role, StoredRecord,
+    MAX_SYNC_RECORDS,
+};
+use std::collections::HashSet;
+use std::path::PathBuf;
+
+/// Ticks between pulls (250 ms each): 3 s. `MESIMON_TEAM_SYNC_MS` overrides
+/// for tests.
+fn pull_every() -> u64 {
+    std::env::var("MESIMON_TEAM_SYNC_MS")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .map_or(12, |ms| (ms / TICK_MS).max(1))
+}
+const MEMBERS_EVERY: u64 = 120;
+const OFFLINE_BACKOFF: u64 = 20;
+
+pub(super) struct TeamCtx {
+    jobs: Sender<Job>,
+    device: Option<DeviceFile>,
+    state: Option<TeamState>,
+    inflight: HashSet<Tag>,
+    busy: Option<&'static str>,
+    error: Option<String>,
+    boards: Vec<BoardSummary>,
+    sync_word: &'static str,
+    synced_at_ms: Option<u64>,
+    last_pull: u64,
+    last_members: u64,
+    backoff_until: u64,
+    applying: bool,
+    pending: Vec<StoredRecord>,
+    /// note id → (rev, ticket): what the relay has of each note body.
+    note_revs: HashMap<ulid::Ulid, (u64, ulid::Ulid)>,
+    want_keys: bool,
+    want_members: bool,
+    /// The invite being minted, until the relay names it.
+    minting: Option<(InviteCode, Role)>,
+    /// The code being redeemed, to check the owner the relay names.
+    joining: Option<InviteCode>,
+    /// The key of the next epoch, until the relay accepts it.
+    rotating: Option<(u32, BoardKey)>,
+    /// Rotate once the next member list lands: a rotation must name exactly
+    /// the members the relay still counts, so it never works from a cache.
+    rotate_after_members: bool,
+    state_dirty: bool,
+}
+
+impl TeamCtx {
+    pub(super) fn new(tx: Sender<Msg>) -> Self {
+        let jobs = crate::team::sync::spawn(move |done| {
+            let _ = tx.send(Msg::Team(done));
+        });
+        Self {
+            jobs,
+            device: None,
+            state: None,
+            inflight: HashSet::new(),
+            busy: None,
+            error: None,
+            boards: Vec::new(),
+            sync_word: "offline",
+            synced_at_ms: None,
+            last_pull: 0,
+            last_members: 0,
+            backoff_until: 0,
+            applying: false,
+            pending: Vec::new(),
+            note_revs: HashMap::new(),
+            want_keys: false,
+            want_members: false,
+            minting: None,
+            joining: None,
+            rotating: None,
+            rotate_after_members: false,
+            state_dirty: false,
+        }
+    }
+
+    fn call(&mut self, tag: Tag, request: Request) {
+        if self.inflight.contains(&tag) {
+            return;
+        }
+        self.inflight.insert(tag.clone());
+        let _ = self.jobs.send(Job::Call { tag, request });
+    }
+
+    fn connect(&mut self) {
+        if let Some(d) = &self.device {
+            let _ = self
+                .jobs
+                .send(Job::Connect { endpoint: d.relay.clone(), credential: d.credential.clone() });
+        }
+    }
+
+    fn signed_in(&self) -> bool {
+        self.device.as_ref().is_some_and(|d| d.credential.is_some())
+    }
+
+    fn board(&self) -> Option<BoardId> {
+        self.state.as_ref().and_then(TeamState::board_id)
+    }
+
+    fn put_inflight(&self) -> Option<&str> {
+        self.inflight.iter().find_map(|t| match t {
+            Tag::Put(op) => Some(op.as_str()),
+            _ => None,
+        })
+    }
+
+    fn fail(&mut self, what: &str, code: ErrorCode) {
+        self.busy = None;
+        self.error = Some(format!("{what}: {code}"));
+    }
+}
+
+fn err(message: impl Into<String>) -> Response {
+    Response::Err { message: message.into() }
+}
+
+impl Daemon {
+    /// At startup: load the identity and this board's sharing state, start
+    /// the executor, and queue whatever changed while the daemon was down.
+    pub(super) fn team_start(&mut self) {
+        match Paths::team_device_file().and_then(|p| DeviceFile::load(&p)) {
+            Ok(device) => self.team.device = device,
+            Err(e) => self.team.error = Some(format!("device file: {e}")),
+        }
+        match TeamState::load(&self.paths.team_file()) {
+            Ok(state) => self.team.state = state,
+            Err(e) => {
+                self.notices.push(
+                    Notice::new("team_state", format!("board sharing is off: {e}"))
+                        .with_path(self.paths.team_file().display()),
+                );
+            }
+        }
+        if let Some(state) = &self.team.state {
+            // What the relay already has of each note: every note whose
+            // ticket object was published. Anything newer is queued below.
+            for t in &self.board.tickets {
+                for n in &t.notes {
+                    if state.published.contains_key(&ObjectId::from(n.id).to_hex()) {
+                        self.team.note_revs.insert(n.id, (n.rev, t.id));
+                    }
+                }
+            }
+        }
+        self.team.connect();
+        self.team.want_members = true;
+        self.team_after_broadcast();
+        if self.team.signed_in() {
+            self.team.call(Tag::Boards, Request::Boards);
+        }
+    }
+
+    fn team_save(&mut self) {
+        if let Some(state) = &self.team.state {
+            if let Err(e) = state.save(&self.paths.team_file()) {
+                self.team.error = Some(format!("saving sharing state: {e}"));
+            }
+        }
+        self.team.state_dirty = false;
+    }
+
+    pub(super) fn team_content_only(&self) -> bool {
+        self.team.state.as_ref().is_some_and(|s| s.content_only)
+    }
+
+    fn board_title(&self) -> String {
+        self.paths
+            .repo_root
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_default()
+    }
+
+    // ---- what the snapshot says -------------------------------------------
+
+    pub(super) fn team_info(&self) -> TeamInfo {
+        let device = self.team.device.as_ref().map(|d| TeamDevice {
+            display_name: d.display_name.clone(),
+            relay: d.relay.display(),
+            device: d.keys().map(|k| k.id().to_hex()).unwrap_or_default(),
+        });
+        let me = self.team.device.as_ref().and_then(|d| d.keys()).map(|k| k.id());
+        let board = self.team.state.as_ref().map(|s| TeamBoard {
+            board: s.board.clone(),
+            role: s.role.clone(),
+            repository: !s.content_only,
+            members: s
+                .members
+                .iter()
+                .map(|m| {
+                    let verified = s.invites.iter().any(|i| {
+                        InviteCode::parse(&i.code)
+                            .is_ok_and(|c| Some(c.proof(&m.public)) == m.proof)
+                    });
+                    TeamMember {
+                        device: m.device.to_hex(),
+                        display_name: m.display_name.clone(),
+                        role: m.role.word().into(),
+                        status: m.status.word().into(),
+                        pending: m.status == MemberStatus::Active
+                            && m.epochs.is_empty()
+                            && m.role != Role::Owner,
+                        unverified: m.status == MemberStatus::Active
+                            && m.epochs.is_empty()
+                            && m.role != Role::Owner
+                            && !verified,
+                        me: Some(m.device) == me,
+                    }
+                })
+                .collect(),
+            sync: SyncState {
+                state: self.team.sync_word.into(),
+                drafts: s.outbox.len(),
+                synced_at_ms: self.team.synced_at_ms,
+                detail: (self.team.sync_word == "error").then(|| self.team.error.clone()).flatten(),
+            },
+            invite: s.invites.last().map(|i| i.code.clone()),
+            owner_name: s.owner_name.clone(),
+        });
+        let boards = self
+            .team
+            .boards
+            .iter()
+            .map(|b| TeamBoardSummary {
+                board: b.board.to_hex(),
+                role: b.role.word().into(),
+                owner_name: b.owner_name.clone(),
+                root: Paths::board_root_for(&b.board.to_hex()).ok().filter(|r| r.is_dir()),
+                title: self
+                    .team
+                    .state
+                    .as_ref()
+                    .filter(|s| s.board == b.board.to_hex())
+                    .and_then(|s| s.title.clone()),
+            })
+            .collect();
+        TeamInfo {
+            device,
+            board,
+            boards,
+            busy: self.team.busy.map(str::to_owned),
+            error: self.team.error.clone(),
+        }
+    }
+
+    // ---- the person's commands --------------------------------------------
+
+    pub(super) fn team_sign_in(&mut self, relay: String, display_name: String) -> Response {
+        let Some(endpoint) = RelayEndpoint::parse(&relay) else {
+            return err("relay is host[:port], then a space and the pin for a self-hosted relay");
+        };
+        let name = mesimon_core::text::scrub_text(display_name.trim());
+        if name.is_empty() || name.chars().count() > 64 {
+            return err("a display name is one to sixty-four characters");
+        }
+        // Keep the keys across sign-ins to the same relay: the boards this
+        // device belongs to stay reachable. A new relay is a new identity.
+        let device = match self.team.device.take() {
+            Some(d) if d.relay == endpoint && d.credential.is_some() => {
+                DeviceFile { display_name: name, ..d }
+            }
+            _ => DeviceFile::fresh(name, endpoint),
+        };
+        let Some(keys) = device.keys() else { return err("could not derive device keys") };
+        if let Err(e) = Paths::team_device_file().and_then(|p| device.save(&p)) {
+            return err(format!("could not save the identity: {e}"));
+        }
+        let display_name = device.display_name.clone();
+        self.team.device = Some(device);
+        self.team.error = None;
+        self.team.busy = Some("signing in");
+        self.team.connect();
+        // A key the relay already knows is refused with `Denied` and keeps
+        // its credential; `on_team` reads that as "only the name changed".
+        self.team.call(Tag::SignIn, Request::Register { display_name, public: keys.public() });
+        Response::Ok
+    }
+
+    pub(super) fn team_sign_out(&mut self) -> Response {
+        if let Ok(path) = Paths::team_device_file() {
+            let _ = std::fs::remove_file(path);
+        }
+        self.team.device = None;
+        self.team.boards.clear();
+        self.team.error = None;
+        self.team.busy = None;
+        self.broadcast();
+        Response::Ok
+    }
+
+    pub(super) fn team_share(&mut self) -> Response {
+        if !self.team.signed_in() {
+            return err("sign in to the relay first");
+        }
+        if self.team.state.is_some() {
+            return err("this board is already shared");
+        }
+        if self.columns_barred {
+            return err(self.barred_message("columns"));
+        }
+        self.team.error = None;
+        self.team.busy = Some("sharing");
+        self.team.call(Tag::Share, Request::CreateBoard);
+        Response::Ok
+    }
+
+    pub(super) fn team_unshare(&mut self) -> Response {
+        let Some(board) = self.team.board() else { return err("this board is not shared") };
+        if !self.team.state.as_ref().is_some_and(TeamState::is_owner) {
+            return err("only the owner can stop sharing; leave the board instead");
+        }
+        self.team.busy = Some("unsharing");
+        self.team.call(Tag::Unshare, Request::Unshare { board });
+        Response::Ok
+    }
+
+    pub(super) fn team_mint_invite(&mut self, role: String) -> Response {
+        let Some(board) = self.team.board() else { return err("share the board first") };
+        let Some(role) = Role::parse(&role).filter(|r| *r != Role::Owner) else {
+            return err("an invite is for a contributor or a viewer");
+        };
+        if !self.team.state.as_ref().is_some_and(TeamState::is_owner) {
+            return err("only the owner can invite");
+        }
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else {
+            return err("sign in first");
+        };
+        let code = InviteCode::mint(&keys.public());
+        self.team.minting = Some((code.clone(), role));
+        self.team.busy = Some("inviting");
+        self.team.call(
+            Tag::Invite,
+            Request::MintInvite { board, role, secret_hash: code.secret_hash() },
+        );
+        Response::Ok
+    }
+
+    pub(super) fn team_revoke(&mut self, device: String) -> Response {
+        let Some(board) = self.team.board() else { return err("this board is not shared") };
+        let Some(device) = DeviceId::parse(&device) else { return err("no such member") };
+        if !self.team.state.as_ref().is_some_and(TeamState::is_owner) {
+            return err("only the owner can remove a member");
+        }
+        self.team.busy = Some("removing");
+        self.team.call(Tag::Revoke, Request::Revoke { board, device });
+        Response::Ok
+    }
+
+    pub(super) fn team_join(&mut self, code: String) -> Response {
+        if !self.team.signed_in() {
+            return err("sign in to the relay first");
+        }
+        let Ok(code) = InviteCode::parse(&code) else {
+            return err("an invite code is 32 letters and digits, in groups of four");
+        };
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else {
+            return err("sign in first");
+        };
+        let proof = code.proof(&keys.public());
+        let secret = *code.secret();
+        self.team.joining = Some(code);
+        self.team.error = None;
+        self.team.busy = Some("joining");
+        self.team.call(Tag::Join, Request::Join { secret, proof });
+        Response::Ok
+    }
+
+    pub(super) fn team_leave(&mut self) -> Response {
+        let Some(board) = self.team.board() else { return err("this board is not shared") };
+        if self.team.state.as_ref().is_some_and(TeamState::is_owner) {
+            return err("the owner cannot leave; stop sharing instead");
+        }
+        self.team.busy = Some("leaving");
+        self.team.call(Tag::Leave, Request::Leave { board });
+        Response::Ok
+    }
+
+    pub(super) fn team_refresh(&mut self) -> Response {
+        if !self.team.signed_in() {
+            return err("sign in to the relay first");
+        }
+        self.team.call(Tag::Boards, Request::Boards);
+        self.team.want_members = true;
+        Response::Ok
+    }
+
+    // ---- the wheel ----------------------------------------------------------
+
+    pub(super) fn team_tick(&mut self) {
+        if !self.team.signed_in() || self.ticks < self.team.backoff_until {
+            return;
+        }
+        let Some(board) = self.team.board() else { return };
+        let ticks = self.ticks;
+        // A join in progress is a conversation, not a heartbeat: the joiner
+        // has no key yet and asks after one at every pull, and an owner with
+        // an invite out looks for the joiner just as often.
+        let pull_due = ticks.saturating_sub(self.team.last_pull) >= pull_every();
+        if pull_due {
+            if let Some(state) = &self.team.state {
+                if state.current_epoch().is_none() {
+                    self.team.want_members = true;
+                    self.team.want_keys = true;
+                } else if state.is_owner() && !state.invites.is_empty() {
+                    self.team.want_members = true;
+                }
+            }
+        }
+        if self.team.want_keys && !self.team.inflight.contains(&Tag::MyKeys) {
+            self.team.want_keys = false;
+            self.team.call(Tag::MyKeys, Request::MyKeys { board });
+        }
+        if (self.team.want_members || ticks.saturating_sub(self.team.last_members) >= MEMBERS_EVERY)
+            && !self.team.inflight.contains(&Tag::Members)
+        {
+            self.team.want_members = false;
+            self.team.last_members = ticks;
+            self.team.call(Tag::Members, Request::Members { board });
+        }
+        if pull_due
+            && !self.team.inflight.contains(&Tag::Head)
+            && !self.team.inflight.contains(&Tag::Sync)
+        {
+            self.team.last_pull = ticks;
+            self.team.call(Tag::Head, Request::Head { board });
+        }
+        self.team_pump();
+        if self.team.state_dirty {
+            self.team_save();
+        }
+    }
+
+    /// Send the next queued edit, if nothing is in flight and the key for
+    /// the current epoch is in hand.
+    fn team_pump(&mut self) {
+        if self.team.put_inflight().is_some()
+            || self.team.sync_word == "frozen"
+            || self.team.sync_word == "gone"
+        {
+            return;
+        }
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
+        let Some(state) = self.team.state.as_mut() else { return };
+        let Some(board) = state.board_id() else { return };
+        let Some(epoch) = state.current_epoch() else {
+            self.team.want_keys = true;
+            return;
+        };
+        let Some(key) = state.key(epoch) else { return };
+        let Some(entry) = state.outbox.first_mut() else { return };
+        // Expected is read now, not when queued: a pull in between may have
+        // moved the object on, and the retry must name the revision it saw.
+        entry.expected = state.published.get(&entry.object).map(|p| p.revision);
+        let Some(object) = ObjectId::parse(&entry.object) else {
+            state.outbox.remove(0);
+            return;
+        };
+        let Some(operation) = OperationId::parse(&entry.operation) else {
+            state.outbox.remove(0);
+            return;
+        };
+        let scope = RecordScope { board, object, revision: entry.expected.map_or(1, |e| e + 1) };
+        let plaintext = serde_json::to_vec(&entry.body).unwrap_or_default();
+        let record = match crypto::seal(&key, epoch, scope, &keys, &plaintext) {
+            Ok(record) => record,
+            Err(e) => {
+                self.team.error = Some(format!("could not seal an edit: {e}"));
+                state.outbox.remove(0);
+                return;
+            }
+        };
+        let expected = entry.expected;
+        let tag = Tag::Put(entry.operation.clone());
+        self.team.call(tag, Request::Put { board, operation, object, expected, record });
+    }
+
+    // ---- results ------------------------------------------------------------
+
+    pub(super) fn on_team(&mut self, done: Done) {
+        let Done { tag, result } = done;
+        self.team.inflight.remove(&tag);
+        if let Err(ErrorCode::Unavailable) = &result {
+            self.team.sync_word = "offline";
+            self.team.backoff_until = self.ticks + OFFLINE_BACKOFF;
+            if self.team.busy.is_some() {
+                self.team.busy = None;
+                self.team.error = Some("the relay did not answer".into());
+            }
+            self.broadcast();
+            return;
+        }
+        match (tag, result) {
+            (Tag::SignIn, Ok(Wire::Registered { credential, .. })) => {
+                if let Some(d) = &mut self.team.device {
+                    d.credential = Some(credential);
+                    let _ = Paths::team_device_file().and_then(|p| d.save(&p));
+                }
+                self.team.busy = None;
+                self.team.connect();
+                self.team.call(Tag::Boards, Request::Boards);
+            }
+            (Tag::SignIn, Err(ErrorCode::Denied))
+                if self.team.device.as_ref().is_some_and(|d| d.credential.is_some()) =>
+            {
+                // Known key, kept credential: the name is all that changed.
+                self.team.busy = None;
+                self.team.connect();
+            }
+            (Tag::SignIn, Err(code)) => self.team.fail("signing in", code),
+            (Tag::Share, Ok(Wire::BoardCreated { board })) => self.team_on_shared(board),
+            (Tag::Share, Err(code)) => self.team.fail("sharing", code),
+            (Tag::Keys, Ok(_)) => {
+                if let Some((epoch, key)) = self.team.rotating.take() {
+                    if let Some(state) = self.team.state.as_mut() {
+                        state.add_key(epoch, &key);
+                    }
+                    self.team.state_dirty = true;
+                }
+                if self.team.busy == Some("removing") {
+                    self.team.busy = None;
+                }
+                self.team.sync_word = "synced";
+                self.team.want_members = true;
+            }
+            (Tag::Keys, Err(code)) => {
+                self.team.rotating = None;
+                self.team.want_members = true;
+                self.team.fail("handing out keys", code);
+            }
+            (Tag::Invite, Ok(Wire::InviteMinted { invite, .. })) => {
+                if let (Some((code, role)), Some(state)) =
+                    (self.team.minting.take(), self.team.state.as_mut())
+                {
+                    state.invites.push(PendingInvite {
+                        invite: invite.to_hex(),
+                        secret: mesimon_team::hex::encode(code.secret()),
+                        role: role.word().into(),
+                        code: code.encode(),
+                    });
+                    self.team.state_dirty = true;
+                }
+                self.team.busy = None;
+            }
+            (Tag::Invite, Err(code)) => {
+                self.team.minting = None;
+                self.team.fail("inviting", code);
+            }
+            (Tag::Join, Ok(Wire::Joined { board, role, owner })) => {
+                self.team_on_joined(board, role, owner)
+            }
+            (Tag::Join, Err(code)) => {
+                self.team.joining = None;
+                self.team.fail("joining", code);
+            }
+            (Tag::Revoke, Ok(_)) => {
+                self.team.rotate_after_members = true;
+                self.team.want_members = true;
+            }
+            (Tag::Revoke, Err(code)) => self.team.fail("removing", code),
+            (Tag::Unshare, Ok(_)) | (Tag::Leave, Ok(_)) => {
+                let _ = std::fs::remove_file(self.paths.team_file());
+                self.team.state = None;
+                self.team.busy = None;
+                self.team.sync_word = "offline";
+                self.team.call(Tag::Boards, Request::Boards);
+            }
+            (Tag::Unshare, Err(code)) => self.team.fail("unsharing", code),
+            (Tag::Leave, Err(code)) => self.team.fail("leaving", code),
+            (Tag::Boards, Ok(Wire::Boards { boards })) => self.team.boards = boards,
+            (Tag::Boards, Err(code)) => self.team.error = Some(format!("listing boards: {code}")),
+            (Tag::Members, Ok(Wire::Members { members })) => self.team_on_members(members),
+            (Tag::Members, Err(ErrorCode::NotFound)) => self.team_gone(),
+            (Tag::Members, Err(_)) => {}
+            (Tag::Head, Ok(Wire::Head { head })) => {
+                let Some(state) = self.team.state.as_ref() else { return };
+                let board = state.board_id();
+                self.team.synced_at_ms = Some(now_ms());
+                if head.rotation_required && !state.is_owner() {
+                    self.team.sync_word = "frozen";
+                } else if self.team.sync_word != "syncing" {
+                    self.team.sync_word = "synced";
+                }
+                // The owner heals a pending rotation whenever it sees one: a
+                // removal whose rotation failed, or one asked from elsewhere.
+                if head.rotation_required
+                    && state.is_owner()
+                    && self.team.rotating.is_none()
+                    && !self.team.inflight.contains(&Tag::Keys)
+                {
+                    self.team.rotate_after_members = true;
+                    self.team.want_members = true;
+                }
+                if state.current_epoch().is_none_or(|e| head.epoch > e) {
+                    self.team.want_keys = true;
+                }
+                if head.seq > state.cursor {
+                    if let Some(board) = board {
+                        self.team.sync_word = "syncing";
+                        let after = state.cursor;
+                        self.team.call(
+                            Tag::Sync,
+                            Request::Sync { board, after, limit: MAX_SYNC_RECORDS },
+                        );
+                    }
+                }
+            }
+            (Tag::Head, Err(ErrorCode::NotFound)) => self.team_gone(),
+            (Tag::Head, Err(code)) => {
+                self.team.sync_word = "error";
+                self.team.error = Some(format!("relay: {code}"));
+            }
+            (Tag::Sync, Ok(Wire::Records { records, next, more })) => {
+                for record in records {
+                    self.team_apply(record);
+                }
+                self.team_retry_pending();
+                if let Some(state) = self.team.state.as_mut() {
+                    state.cursor = state.cursor.max(next);
+                }
+                self.team.state_dirty = true;
+                if more {
+                    if let (Some(board), Some(after)) =
+                        (self.team.board(), self.team.state.as_ref().map(|s| s.cursor))
+                    {
+                        self.team.call(
+                            Tag::Sync,
+                            Request::Sync { board, after, limit: MAX_SYNC_RECORDS },
+                        );
+                    }
+                } else {
+                    self.team.sync_word = "synced";
+                }
+                self.persist_and_notify();
+            }
+            (Tag::Sync, Err(ErrorCode::NotFound)) => self.team_gone(),
+            (Tag::Sync, Err(code)) => {
+                self.team.sync_word = "error";
+                self.team.error = Some(format!("relay: {code}"));
+            }
+            (Tag::MyKeys, Ok(Wire::Keys { wrapped })) => self.team_on_keys(wrapped),
+            (Tag::MyKeys, Err(_)) => {}
+            (Tag::Put(operation), result) => self.team_on_put(&operation, result),
+            (tag, Ok(other)) => {
+                self.team.error =
+                    Some(format!("unexpected relay answer to {tag:?}: {}", other_word(&other)));
+            }
+        }
+        if self.team.state_dirty {
+            self.team_save();
+        }
+        self.broadcast();
+    }
+
+    fn team_gone(&mut self) {
+        self.team.sync_word = "gone";
+        self.team.error = Some("the owner stopped sharing this board".into());
+    }
+
+    fn team_on_shared(&mut self, board: BoardId) {
+        let name = self.team.device.as_ref().map(|d| d.display_name.clone()).unwrap_or_default();
+        let mut state = TeamState::new(board, Role::Owner, false, name);
+        let key = BoardKey::generate();
+        state.add_key(0, &key);
+        state.title = Some(self.board_title());
+        self.team.state = Some(state);
+        self.team.note_revs.clear();
+        self.team_save();
+        if let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) {
+            let wrapped = vec![crypto::wrap(&key, 0, board, &keys, &keys.public())];
+            self.team.call(Tag::Keys, Request::PutKeys { board, epoch: 0, wrapped });
+        }
+        self.team.busy = None;
+        self.team.sync_word = "syncing";
+        self.team.want_members = true;
+        self.team_after_broadcast();
+        self.team.call(Tag::Boards, Request::Boards);
+    }
+
+    fn team_on_joined(&mut self, board: BoardId, role: Role, owner: Member) {
+        let Some(code) = self.team.joining.take() else { return };
+        if !code.names_owner(&owner.public) {
+            self.team.busy = None;
+            self.team.error =
+                Some("the relay named an owner the invite code does not vouch for".into());
+            self.team.call(Tag::Leave, Request::Leave { board });
+            return;
+        }
+        let result = (|| -> Result<PathBuf> {
+            let root = Paths::board_root_for(&board.to_hex())?;
+            crate::paths::own_private_dir(&root)?;
+            let paths = Paths::for_repo(&root)?;
+            paths.ensure_dirs()?;
+            let mut state = TeamState::new(board, role, true, owner.display_name.clone());
+            state.members = vec![owner];
+            state.save(&paths.team_file())?;
+            Ok(root)
+        })();
+        match result {
+            Ok(_) => {
+                self.team.busy = None;
+                self.team.call(Tag::Boards, Request::Boards);
+            }
+            Err(e) => {
+                self.team.busy = None;
+                self.team.error = Some(format!("joined, but could not create the board root: {e}"));
+            }
+        }
+    }
+
+    /// The owner, after a removal: a new key for everyone who remains.
+    fn team_rotate(&mut self) {
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
+        let Some(state) = self.team.state.as_ref() else { return };
+        let Some(board) = state.board_id() else { return };
+        let Some(current) = state.current_epoch() else { return };
+        let epoch = current + 1;
+        let key = BoardKey::generate();
+        let wrapped: Vec<_> = state
+            .members
+            .iter()
+            .filter(|m| m.status == MemberStatus::Active)
+            .map(|m| crypto::wrap(&key, epoch, board, &keys, &m.public))
+            .collect();
+        self.team.rotating = Some((epoch, key));
+        self.team.want_members = true;
+        self.team.call(Tag::Keys, Request::PutKeys { board, epoch, wrapped });
+    }
+
+    /// The member list landed. The owner hands keys to every verified joiner
+    /// who has none; everyone learns who is on the board.
+    fn team_on_members(&mut self, members: Vec<Member>) {
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
+        let me = keys.id();
+        let Some(state) = self.team.state.as_mut() else { return };
+        let Some(board) = state.board_id() else { return };
+        // A joined board remembers who was named the owner at join time; the
+        // relay's list must agree before it replaces what the invite vouched for.
+        if state.content_only {
+            let owner_then = state.members.iter().find(|m| m.role == Role::Owner).map(|m| m.public);
+            let owner_now = members.iter().find(|m| m.role == Role::Owner).map(|m| m.public);
+            if owner_then.is_some() && owner_then != owner_now {
+                self.team.error = Some("the relay changed the board's owner; sync stopped".into());
+                self.team.sync_word = "error";
+                return;
+            }
+        }
+        state.members = members;
+        self.team.state_dirty = true;
+        if state.members.iter().any(|m| m.device == me && m.status != MemberStatus::Active) {
+            self.team_gone();
+            return;
+        }
+        if !state.is_owner() {
+            return;
+        }
+        if std::mem::take(&mut self.team.rotate_after_members) {
+            self.team_rotate();
+            return;
+        }
+        let epochs: Vec<(u32, BoardKey)> =
+            state.keys.keys().filter_map(|e| state.key(*e).map(|k| (*e, k))).collect();
+        let Some(current) = state.current_epoch() else { return };
+        let mut wrapped = Vec::new();
+        let mut consumed = Vec::new();
+        for m in state.members.iter().filter(|m| m.status == MemberStatus::Active && m.device != me)
+        {
+            let missing: Vec<&(u32, BoardKey)> =
+                epochs.iter().filter(|(e, _)| !m.epochs.contains(e)).collect();
+            if missing.is_empty() {
+                continue;
+            }
+            let verified = m.epochs.is_empty() && {
+                let Some(proof) = m.proof else { continue };
+                match state.invites.iter().position(|i| {
+                    InviteCode::parse(&i.code).is_ok_and(|c| c.proof(&m.public) == proof)
+                }) {
+                    Some(at) => {
+                        consumed.push(at);
+                        true
+                    }
+                    None => false,
+                }
+            };
+            // A member who already holds a key is trusted with the rest; a
+            // new one must have redeemed a code minted here.
+            if !verified && m.epochs.is_empty() {
+                continue;
+            }
+            for (e, k) in missing {
+                wrapped.push(crypto::wrap(k, *e, board, &keys, &m.public));
+            }
+        }
+        consumed.sort_unstable_by(|a, b| b.cmp(a));
+        for at in consumed {
+            state.invites.remove(at);
+        }
+        if !wrapped.is_empty() {
+            self.team.call(Tag::Keys, Request::PutKeys { board, epoch: current, wrapped });
+        }
+    }
+
+    fn team_on_keys(&mut self, wrapped: Vec<crypto::WrappedKey>) {
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
+        let Some(state) = self.team.state.as_mut() else { return };
+        let Some(board) = state.board_id() else { return };
+        let mut added = false;
+        for w in wrapped {
+            if state.keys.contains_key(&w.epoch) {
+                continue;
+            }
+            let Some(sender) = state.members.iter().find(|m| m.device == w.sender) else {
+                self.team.want_members = true;
+                self.team.want_keys = true;
+                continue;
+            };
+            match crypto::unwrap(&w, board, &keys, &sender.public) {
+                Ok(key) => {
+                    state.add_key(w.epoch, &key);
+                    added = true;
+                }
+                Err(e) => {
+                    self.team.error = Some(format!("a key for epoch {} did not open: {e}", w.epoch))
+                }
+            }
+        }
+        if added {
+            self.team.state_dirty = true;
+            if self.team.sync_word == "frozen" {
+                self.team.sync_word = "synced";
+            }
+            self.team_retry_pending();
+        }
+    }
+
+    fn team_on_put(&mut self, operation: &str, result: Result<Wire, ErrorCode>) {
+        let Some(state) = self.team.state.as_mut() else { return };
+        let Some(at) = state.outbox.iter().position(|o| o.operation == operation) else { return };
+        match result {
+            Ok(Wire::Accepted { receipt }) => {
+                let entry = state.outbox.remove(at);
+                let kind = kind_of(&entry.body);
+                state.published.insert(
+                    entry.object.clone(),
+                    Published {
+                        revision: receipt.revision,
+                        digest: project::digest(&entry.body),
+                        kind,
+                    },
+                );
+                self.team.state_dirty = true;
+                self.team.synced_at_ms = Some(now_ms());
+                if self.team.sync_word == "error" {
+                    self.team.sync_word = "synced";
+                }
+                if entry.dirty {
+                    self.team_after_broadcast();
+                }
+            }
+            Err(ErrorCode::StaleRevision) => {
+                // Someone else got there first: pull, apply theirs, then this
+                // entry goes again against the revision it now sees.
+                self.team.last_pull = 0;
+            }
+            Err(ErrorCode::StaleEpoch) => self.team.want_keys = true,
+            Err(ErrorCode::RotationRequired) => {
+                if state.is_owner() {
+                    self.team.want_members = true;
+                } else {
+                    self.team.sync_word = "frozen";
+                }
+            }
+            Err(ErrorCode::Denied) => {
+                state.outbox.remove(at);
+                self.team.error =
+                    Some("this board is read-only for you; the edit stays here".into());
+                self.team.state_dirty = true;
+            }
+            Err(ErrorCode::NotFound) => self.team_gone(),
+            Err(ErrorCode::OperationMismatch) => {
+                state.outbox[at].operation = OperationId::random().to_hex();
+                self.team.state_dirty = true;
+            }
+            Err(code) => {
+                self.team.sync_word = "error";
+                self.team.error = Some(format!("relay refused an edit: {code}"));
+            }
+            Ok(other) => {
+                self.team.error =
+                    Some(format!("unexpected relay answer to a put: {}", other_word(&other)))
+            }
+        }
+    }
+
+    // ---- outgoing: the diff -------------------------------------------------
+
+    /// At the end of every `broadcast()`: queue whatever the relay does not
+    /// have yet. Silent while a remote record is being applied, because that
+    /// record's digest was published before it touched the board.
+    pub(super) fn team_after_broadcast(&mut self) {
+        if self.team.applying {
+            return;
+        }
+        let Some(state) = self.team.state.as_ref() else { return };
+        let owner = state.is_owner();
+        let title = self.board_title();
+        let objects = project::project(&self.board, owner, &title);
+        let in_flight = self.team.put_inflight().map(str::to_owned);
+        let mut changed = false;
+        let Some(state) = self.team.state.as_mut() else { return };
+        for (id, body) in &objects {
+            let digest = project::digest(body);
+            if state.published.get(&id.to_hex()).is_none_or(|p| p.digest != digest) {
+                state.enqueue(*id, body.clone(), in_flight.as_deref());
+                changed = true;
+            }
+        }
+        // Tickets that are gone: a tombstone, once, then forgotten.
+        let gone: Vec<String> = state
+            .published
+            .iter()
+            .filter(|(k, p)| {
+                p.kind == "ticket"
+                    && ObjectId::parse(k).is_some_and(|id| !objects.contains_key(&id))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in gone {
+            if let Some(id) = ObjectId::parse(&key) {
+                let title = String::new();
+                let stone = project::ticket_tombstone(&mesimon_core::team::SharedTicket {
+                    title,
+                    column: String::new(),
+                    order: String::new(),
+                    created_at: String::new(),
+                    created_by: String::new(),
+                    archived: false,
+                    notes: Vec::new(),
+                    deleted: true,
+                });
+                if !state.outbox.iter().any(|o| o.object == key) {
+                    state.enqueue(id, stone, in_flight.as_deref());
+                    changed = true;
+                }
+                state.published.remove(&key);
+            }
+        }
+        // Notes: bodies are files, read only when a rev moved.
+        let mut seen = HashSet::new();
+        for t in &self.board.tickets {
+            for n in &t.notes {
+                seen.insert(n.id);
+                if self.team.note_revs.get(&n.id).map(|(rev, _)| *rev) == Some(n.rev) {
+                    continue;
+                }
+                let Ok(body) = store::read_note(&self.paths, &t.short_key, n.id) else { continue };
+                state.enqueue(
+                    ObjectId::from(n.id),
+                    project::note_body(t.id, body),
+                    in_flight.as_deref(),
+                );
+                self.team.note_revs.insert(n.id, (n.rev, t.id));
+                changed = true;
+            }
+        }
+        let removed: Vec<(ulid::Ulid, ulid::Ulid)> = self
+            .team
+            .note_revs
+            .iter()
+            .filter(|(id, _)| !seen.contains(*id))
+            .map(|(id, (_, ticket))| (*id, *ticket))
+            .collect();
+        for (note, ticket) in removed {
+            self.team.note_revs.remove(&note);
+            let key = ObjectId::from(note).to_hex();
+            if state.published.contains_key(&key) {
+                state.enqueue(
+                    ObjectId::from(note),
+                    project::note_tombstone(ticket),
+                    in_flight.as_deref(),
+                );
+                state.published.remove(&key);
+                changed = true;
+            }
+        }
+        if changed {
+            self.team.state_dirty = true;
+        }
+    }
+
+    // ---- incoming: a record becomes board state ---------------------------
+
+    fn team_retry_pending(&mut self) {
+        let pending = std::mem::take(&mut self.team.pending);
+        for record in pending {
+            self.team_apply(record);
+        }
+    }
+
+    fn team_apply(&mut self, record: StoredRecord) {
+        let Some(keys) = self.team.device.as_ref().and_then(|d| d.keys()) else { return };
+        let Some(state) = self.team.state.as_ref() else { return };
+        let Some(board) = state.board_id() else { return };
+        // Our own accepted writes come back on the next pull; the digest
+        // already matches and nothing needs applying.
+        if record.record.author == keys.id() {
+            return;
+        }
+        let Some(key) = state.key(record.record.epoch) else {
+            self.team.want_keys = true;
+            self.team.pending.push(record);
+            return;
+        };
+        let Some(author) = state.members.iter().find(|m| m.device == record.record.author).cloned()
+        else {
+            self.team.want_members = true;
+            self.team.pending.push(record);
+            return;
+        };
+        let scope = RecordScope { board, object: record.object, revision: record.revision };
+        let plaintext = match crypto::open(&key, scope, &record.record, &author.public) {
+            Ok(bytes) => bytes,
+            Err(e) => {
+                self.team.error =
+                    Some(format!("a record from {} did not verify: {e}", author.display_name));
+                return;
+            }
+        };
+        let Ok(body) = serde_json::from_slice::<RecordBody>(&plaintext) else {
+            self.team.error =
+                Some(format!("a record from {} is not readable", author.display_name));
+            return;
+        };
+        if body.schema > RECORD_SCHEMA {
+            self.notices.retain(|n| n.kind != "team_schema");
+            self.notices.push(Notice::new(
+                "team_schema",
+                "a teammate runs a newer mesimon; update to see their changes",
+            ));
+            return;
+        }
+        if !state.is_owner() && !author.role.may_write() && author.role != Role::Owner {
+            return;
+        }
+        let member =
+            Principal::Remote { member: mesimon_core::text::scrub_text(&author.display_name) };
+        // Published before applied, so the broadcast the apply triggers has
+        // nothing to send back.
+        if let Some(state) = self.team.state.as_mut() {
+            state.published.insert(
+                record.object.to_hex(),
+                Published {
+                    revision: record.revision,
+                    digest: project::digest(&body),
+                    kind: kind_of(&body),
+                },
+            );
+        }
+        self.team.state_dirty = true;
+        self.team.applying = true;
+        match body.object {
+            SharedObject::Ticket(shared) => {
+                self.team_apply_ticket(ulid::Ulid::from(record.object), shared, &member)
+            }
+            SharedObject::Note(note) => {
+                if self.board.ticket(note.ticket).is_none() && !note.deleted {
+                    self.team.applying = false;
+                    self.team.pending.push(record);
+                    return;
+                }
+                self.team_apply_note(ulid::Ulid::from(record.object), note, &member);
+            }
+            SharedObject::Columns { names } => self.team_apply_columns(names),
+            SharedObject::Board { title } => {
+                if let Some(state) = self.team.state.as_mut() {
+                    state.title = Some(sanitize_title(&title));
+                }
+            }
+        }
+        self.team.applying = false;
+    }
+
+    fn team_apply_ticket(
+        &mut self,
+        id: ulid::Ulid,
+        shared: mesimon_core::team::SharedTicket,
+        by: &Principal,
+    ) {
+        let now = now_iso();
+        let exists = self.board.ticket(id).is_some();
+        if shared.deleted {
+            if exists && !self.board.ticket(id).is_some_and(Ticket::is_archived) {
+                let by_word = by.note_author();
+                self.with_ticket(id, |t| {
+                    t.archived =
+                        Some(Archived { at: now, by: by_word, until: None, needs_you: false })
+                });
+                self.feed.board(by.actor(), "team_archive", Some(id));
+            }
+            return;
+        }
+        let column = if self.board.column(&shared.column).is_some() {
+            shared.column.clone()
+        } else {
+            self.board.landing_column().unwrap_or_default()
+        };
+        if !exists {
+            if self.columns_barred {
+                return;
+            }
+            self.board.next_key += 1;
+            let t = Ticket {
+                id,
+                short_key: format!("{}{}", mesimon_core::board::KEY_PREFIX, self.board.next_key),
+                title: sanitize_title(&shared.title),
+                column,
+                order: shared.order.clone(),
+                created_at: shared.created_at.clone(),
+                // Whoever sealed the record that minted it here is who made
+                // it, whatever word their own daemon used for themselves.
+                created_by: by.note_author(),
+                created_from: None,
+                entered_at: Some(now.clone()),
+                previous_column: None,
+                woke_at: None,
+                manual_merge: false,
+                // Never the local composer's automation: a teammate's ticket
+                // is data until the owner starts it.
+                execution_policy: ExecutionPolicy::OwnerOnly,
+                import_origin: None,
+                raised: None,
+                workspace: None,
+                tags: Vec::new(),
+                notes: Vec::new(),
+                archived: shared.archived.then(|| Archived {
+                    at: now.clone(),
+                    by: by.note_author(),
+                    until: None,
+                    needs_you: false,
+                }),
+            };
+            let _ = store::save_ticket(&self.paths, &t);
+            self.board.tickets.push(t);
+            self.persist_columns();
+            self.feed.board(by.actor(), "team_create", Some(id));
+            self.broadcast();
+            return;
+        }
+        let (from, was_archived) =
+            self.board.ticket(id).map(|t| (t.column.clone(), t.is_archived())).unwrap_or_default();
+        if from != column && !was_archived && !shared.archived {
+            if let Err(why) = self.place_ticket(id, &column, Position::Top, by, "team") {
+                // The board's own rules held (the DONE gate, say). The next
+                // diff sends the local truth back.
+                self.feed.board(by.actor(), &format!("team_move_refused:{why}"), Some(id));
+            }
+        }
+        let by_word = by.note_author();
+        let order = shared.order.clone();
+        let title = sanitize_title(&shared.title);
+        let notes = shared.notes.clone();
+        let archive = shared.archived;
+        self.with_ticket(id, move |t| {
+            t.title = title;
+            t.order = order;
+            if archive && t.archived.is_none() {
+                t.archived = Some(Archived { at: now, by: by_word, until: None, needs_you: false });
+            } else if !archive && t.archived.is_some() {
+                t.archived = None;
+            }
+            if !notes.is_empty() {
+                t.notes
+                    .sort_by_key(|n| notes.iter().position(|id| *id == n.id).unwrap_or(usize::MAX));
+            }
+        });
+        self.feed.board(by.actor(), "team_update", Some(id));
+    }
+
+    fn team_apply_note(
+        &mut self,
+        note: ulid::Ulid,
+        shared: mesimon_core::team::SharedNote,
+        by: &Principal,
+    ) {
+        let Some(t) = self.board.ticket(shared.ticket) else { return };
+        let key = t.short_key.clone();
+        let ticket = t.id;
+        if shared.deleted {
+            let _ = store::delete_note(&self.paths, &key, note);
+            self.team.note_revs.remove(&note);
+            self.with_ticket(ticket, |t| t.notes.retain(|n| n.id != note));
+            return;
+        }
+        let text = sanitize_note(&shared.body);
+        if store::save_note(&self.paths, &key, note, &text).is_err() {
+            return;
+        }
+        let name = note_name(&text);
+        let now = now_iso();
+        let author = by.note_author();
+        let mut rev = 0;
+        self.with_ticket(ticket, |t| match t.notes.iter_mut().find(|n| n.id == note) {
+            Some(n) => {
+                n.name = name;
+                n.rev += 1;
+                n.edited_at = now.clone();
+                n.edited_by = author.clone();
+                rev = n.rev;
+            }
+            None => {
+                t.notes.push(NoteMeta {
+                    id: note,
+                    name,
+                    rev: 1,
+                    created_at: now.clone(),
+                    created_by: author.clone(),
+                    edited_at: now.clone(),
+                    edited_by: author.clone(),
+                });
+                rev = 1;
+            }
+        });
+        self.team.note_revs.insert(note, (rev, ticket));
+        self.feed.board(by.actor(), "team_note", Some(ticket));
+    }
+
+    /// On a joined board the owner's columns are the columns: missing ones
+    /// are added and the order is theirs. Extra local columns stay.
+    fn team_apply_columns(&mut self, names: Vec<String>) {
+        if !self.team_content_only() {
+            return;
+        }
+        let mut changed = false;
+        let mut previous: Option<String> = None;
+        for name in names.iter().filter(|n| !n.trim().is_empty()) {
+            if self.board.column(name).is_none()
+                && self.board.add_column(name.clone(), previous.as_deref()).is_ok()
+            {
+                changed = true;
+            }
+            if let Some(prev) = &previous {
+                let order: Vec<String> =
+                    self.board.columns.iter().map(|c| c.name.clone()).collect();
+                let (Some(p), Some(n)) =
+                    (order.iter().position(|c| c == prev), order.iter().position(|c| c == name))
+                else {
+                    continue;
+                };
+                if n < p {
+                    let after_prev = order.get(p + 1).cloned();
+                    if self.board.reorder_column(name, after_prev.as_deref()).is_ok() {
+                        changed = true;
+                    }
+                }
+            }
+            previous = Some(name.clone());
+        }
+        if changed {
+            self.persist_columns();
+            self.broadcast();
+        }
+    }
+}
+
+fn kind_of(body: &RecordBody) -> String {
+    match &body.object {
+        SharedObject::Ticket(_) => "ticket",
+        SharedObject::Note(_) => "note",
+        SharedObject::Columns { .. } => "columns",
+        SharedObject::Board { .. } => "board",
+    }
+    .into()
+}
+
+fn other_word(r: &Wire) -> &'static str {
+    match r {
+        Wire::Registered { .. } => "registered",
+        Wire::Device { .. } => "device",
+        Wire::Boards { .. } => "boards",
+        Wire::BoardCreated { .. } => "board_created",
+        Wire::Ok => "ok",
+        Wire::InviteMinted { .. } => "invite_minted",
+        Wire::Joined { .. } => "joined",
+        Wire::Members { .. } => "members",
+        Wire::Keys { .. } => "keys",
+        Wire::Head { .. } => "head",
+        Wire::Accepted { .. } => "accepted",
+        Wire::Records { .. } => "records",
+        Wire::Error { .. } => "error",
+    }
+}

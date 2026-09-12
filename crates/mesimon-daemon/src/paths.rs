@@ -30,8 +30,7 @@ impl Paths {
 
         let uid = unsafe { libc::getuid() };
         let rt_dir = PathBuf::from(format!("/tmp/mesimon-{uid}/{proj16}"));
-        let home = std::env::var("HOME").context("HOME unset")?;
-        let state_dir = PathBuf::from(home).join(".local/state/mesimon").join(&proj16);
+        let state_dir = state_root()?.join(&proj16);
         let board_dir = canon.join(".mesimon");
 
         Ok(Self { repo_root: canon, proj16, rt_dir, state_dir, board_dir })
@@ -90,6 +89,27 @@ impl Paths {
     pub fn worktrees_root(&self) -> PathBuf {
         self.state_dir.join(WORKTREES_DIR)
     }
+    /// This board's sharing state (T-215): keys, cursor, outbox. 0600, JSON,
+    /// beside `sessions.json`.
+    pub fn team_file(&self) -> PathBuf {
+        self.state_dir.join("team.json")
+    }
+    /// Board sharing, per user rather than per repo: the device identity
+    /// (`device.toml`, 0600) and the synthetic roots of joined boards under
+    /// `boards/<board16>/`. Beside the per-project dirs, like
+    /// `notifications/`.
+    pub fn team_root() -> Result<PathBuf> {
+        Ok(state_root()?.join("team"))
+    }
+    pub fn team_device_file() -> Result<PathBuf> {
+        Ok(Self::team_root()?.join("device.toml"))
+    }
+    /// The root a joined board is opened at: a directory with no checkout,
+    /// whose `.mesimon/` is the board and whose state dir is derived from it
+    /// like any other root's.
+    pub fn board_root_for(board16: &str) -> Result<PathBuf> {
+        Ok(Self::team_root()?.join("boards").join(board16))
+    }
 
     /// The 0700 directories ARE the trust boundary: `orch.sock` answers any
     /// same-uid caller and `hook.sock` admits any same-uid frame, so what
@@ -132,6 +152,12 @@ impl Paths {
         }
         Ok(())
     }
+}
+
+/// `~/.local/state/mesimon`, the parent of every per-project state dir.
+pub fn state_root() -> Result<PathBuf> {
+    let home = std::env::var("HOME").context("HOME unset")?;
+    Ok(PathBuf::from(home).join(".local/state/mesimon"))
 }
 
 /// Create `dir` if missing, then insist it is a real directory that this uid

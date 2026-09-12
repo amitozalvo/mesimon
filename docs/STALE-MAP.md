@@ -10012,3 +10012,78 @@ Not yet: the daemon does not speak any of this (T-333), nothing is on the
 snapshot or the keymap (T-334 to T-336), and the display name is the one piece
 of plaintext the relay holds, by design — the owner has to see who redeemed an
 invite before wrapping them a key.
+
+## T-215 — the daemon is the Teams client (T-333)
+
+Second package of the v1 plan. Nothing here is on the keymap yet; the eight
+team commands are answered `Ok` at once and their outcome is read from
+`Snapshot.team`, which is what the T-334 to T-336 screens will draw. The
+proof is `team/relay/tests/board_e2e.rs`: two real `mesimon daemon` processes
+with separate HOMEs and a real TLS relay on real PostgreSQL. Amit signs in,
+shares a repo board with one ticket and a note, mints an invite; Dana signs in
+from a scratch directory, joins, opens the joined board, sees the ticket, the
+note and the owner's columns, creates a ticket, renames Amit's and writes a
+note; Amit sees all three, archives Dana's ticket and Dana sees it go; Amit
+removes Dana, writes again under the rotated key, and Dana's board reads
+`gone`. Every table is then dumped and no typed word is in any of them. Five
+seconds end to end.
+
+**Outgoing changes are found by diffing, not by instrumenting.**
+`Daemon::broadcast()` ends by calling `team_after_broadcast`, which projects
+the board (`team/project.rs`: one `SharedObject` per ticket, the column list
+and the board's name when this daemon owns it) and queues every object whose
+digest differs from what was last published. Notes are files, so only a note
+whose `NoteMeta.rev` moved is read. A ticket that vanished is a tombstone,
+once. That is one hook point for every mutation path there is or will be —
+local, agent, automation, and the remote applies themselves, which publish a
+record's digest *before* they touch the board so the broadcast they trigger
+has nothing to send back.
+
+**Every decision is on the writer.** `team/sync.rs` is a job executor with a
+`RelayClient`, a credential and no opinions; `server/teamglue.rs` is a child
+module of `server.rs` (so it reaches the daemon's private fields without
+widening them) and holds every rule: what to send on the tick, what each
+result means, how a record becomes a ticket. Results arrive as
+`Msg::Team(Done)` like every other off-thread outcome.
+
+**`Principal::Remote { member }` is the fourth principal**, and the first that
+is a person other than `Local`. `is_human()` is true, so the move gate and
+the flap fuse stand aside as they do for a keypress; `authorize()` denies it
+sessions and the board's shape and allows tickets and notes, like an agent;
+`authorize_execution` denies it always. It is minted only by `team_apply`
+from a record whose signature verified against the member list, and `handle`
+refuses it from the socket the way it refuses `Automation`. A ticket a
+teammate created lands `OwnerOnly` with no workspace: data until the owner
+starts it, whatever the column's `auto_run` says. Column changes go through
+`place_ticket`, so the DONE gate holds against a remote move too; when it
+refuses, the next diff sends the local truth back.
+
+**A joined board is an ordinary root with no checkout.** `JoinBoard` creates
+`~/.local/state/mesimon/team/boards/<board16>/`, writes that root's
+`team.json` with `content_only: true`, and `mesimon open <dir>` runs the TUI
+on it; `Paths::for_repo` and everything downstream work unchanged.
+`spawn_session` refuses on such a root, and `BoardCapability` in core is
+what the keymap will gate on. The owner's `Columns` object is applied there
+(missing columns added, order theirs); a joined board never publishes it.
+
+**Identity is per user, boards are per root.** `device.toml` (0600, one seed
+that derives both keys, the relay address, the credential) lives under
+`~/.local/state/mesimon/team/` beside `notifications/`; `team.json` (keys per
+epoch, cursor, published digests, outbox, invite secrets, member cache) is
+in each root's state dir. Signing in again to the same relay keeps the keys,
+so the boards this device belongs to stay reachable; a different relay is a
+new identity.
+
+**Two things the e2e taught.** A join is a conversation, not a heartbeat: the
+30 s member cadence stalled it on both sides, so a joiner without a key and
+an owner with an invite out both poll members at the pull cadence. And a
+rotation must name exactly the members the relay still counts, never a
+cache: the first rotation after a revoke wrapped a key for the member just
+removed and was refused, so `Revoke` now sets `rotate_after_members` and the
+owner also heals any pending rotation the relay reports on `Head`.
+
+Known v1 limits, on purpose: short keys are local (Dana's `T-3` is Amit's
+`T-12` for the same ticket — the ids are shared, the numbers are not); tags
+are not shared; a conflict is last writer wins by retry (a stale put pulls,
+applies theirs, and sends the local body again); one request per relay
+connection.

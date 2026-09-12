@@ -99,6 +99,37 @@ pub enum Command {
         content: crate::content::TicketContent,
         origin: crate::content::ImportOrigin,
     },
+    /// Board sharing (T-215). Every one of these is a person's gesture on
+    /// the board and is answered `Ok` at once; the work happens on the
+    /// daemon's relay thread and its outcome is read from `Snapshot.team`.
+    /// `relay` is `host[:port] [pin]`; `display_name` is what teammates see.
+    TeamSignIn {
+        relay: String,
+        display_name: String,
+    },
+    TeamSignOut,
+    /// Publish this board: mint a key, create the board on the relay, send
+    /// every ticket and note. The daemon becomes the board's owner.
+    ShareBoard,
+    /// Stop sharing: the board vanishes for every member.
+    UnshareBoard,
+    /// Mint a one-time invite code for `role` (`contributor` or `viewer`);
+    /// the code lands in `Snapshot.team.invite`.
+    MintInvite {
+        role: String,
+    },
+    /// Remove a member (by device id, hex) and rotate the board key.
+    RevokeMember {
+        device: String,
+    },
+    /// Redeem an invite code. The daemon creates a board root for the joined
+    /// board and lists it in `Snapshot.team.boards` with its path.
+    JoinBoard {
+        code: String,
+    },
+    LeaveBoard,
+    /// Ask the relay for the list of boards this device belongs to.
+    TeamRefresh,
     /// Copy a ticket's content into a fresh, sessionless card immediately below it.
     DuplicateTicket {
         id: ulid::Ulid,
@@ -732,6 +763,15 @@ impl Command {
             | AgentListBoard => m(Read, false, None),
             CreateTicket { .. } => m(Mutate, true, None),
             ImportTicket { .. } => m(Action::ImportContent, true, None),
+            TeamRefresh => m(Read, false, None),
+            TeamSignIn { .. }
+            | TeamSignOut
+            | ShareBoard
+            | UnshareBoard
+            | MintInvite { .. }
+            | RevokeMember { .. }
+            | JoinBoard { .. }
+            | LeaveBoard => m(Mutate, true, None),
             DuplicateTicket { id }
             | RenameTicket { id, .. }
             | DeleteTicket { id, .. }
@@ -947,6 +987,11 @@ pub enum Response {
         /// TUI reads `path` being empty as "no answer yet" and offers nothing.
         #[serde(default)]
         claude_md: ClaudeMdStatus,
+        /// Board sharing (T-215): who this device is, whether this board is
+        /// shared and how the sync stands. Absent from an older daemon parses
+        /// as "not signed in", which offers sign-in and nothing else.
+        #[serde(default)]
+        team: crate::team::TeamInfo,
         /// The user's own `permissions.defaultMode`, what a column's
         /// `claude_mode: inherit` resolves to (T-117) — so the dialog can
         /// say `inherit (auto)`. Absent: unknown or unset.

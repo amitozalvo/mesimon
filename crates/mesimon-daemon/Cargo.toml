@@ -9,6 +9,7 @@ rust-version.workspace = true
 
 [dependencies]
 mesimon-core.workspace = true
+mesimon-team.workspace = true
 mesimon-backend-tmux = { path = "../mesimon-backend-tmux" }
 anyhow.workspace = true
 serde.workspace = true
@@ -20,6 +21,9 @@ libc = "0.2"
 sha2 = "0.10"
 # Codex's private Unix endpoint uses WebSocket framing, without TLS/TCP.
 tungstenite = { version = "0.26", default-features = false, features = ["handshake"] }
+
+[dev-dependencies]
+tempfile = "3"
 
 [lints]
 workspace = true

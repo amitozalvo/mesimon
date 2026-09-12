@@ -890,9 +890,11 @@ dependencies = [
  "libc",
  "mesimon-backend-tmux",
  "mesimon-core",
+ "mesimon-team",
  "serde",
  "serde_json",
  "sha2 0.10.9",
+ "tempfile",
  "toml",
  "tungstenite",
  "ulid",
@@ -904,6 +906,7 @@ name = "mesimon-relay"
 version = "0.1.0-alpha.20"
 dependencies = [
  "libc",
+ "mesimon-core",
  "mesimon-team",
  "postgres",
  "rcgen",
@@ -914,6 +917,7 @@ dependencies = [
  "sha2 0.10.9",
  "tempfile",
  "thiserror",
+ "ulid",
 ]
 
 [[package]]

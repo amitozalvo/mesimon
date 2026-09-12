@@ -49,6 +49,15 @@ fn main() -> Result<()> {
             mesimon_daemon::install_sigterm_handler();
             mesimon_daemon::run_foreground(&repo)
         }
+        // A board at an explicit root: a joined team board lives under the
+        // state dir, not in a checkout (T-215).
+        Some("open") => {
+            let root = args
+                .get(1)
+                .map(PathBuf::from)
+                .ok_or_else(|| anyhow::anyhow!("open needs a directory"))?;
+            mesimon_tui::run(&root)
+        }
         Some("doctor") => doctor::run(&args[1..]),
         Some("state") => state::run(&args[1..]),
         Some("--version" | "-V") => {
@@ -96,6 +105,7 @@ fn help_text() -> &'static str {
          mesimon doctor [section]       diagnose the environment; prints fixes, applies none\n  \
          mesimon doctor --mcp           print everything mesimon adds to a session's model input\n  \
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
+         mesimon open <dir>             open the board at a directory (a joined team board)\n  \
          mesimon state explain [session]   explain observed state and movement\n  \
          mesimon state replay <files...>  replay offline state scenarios\n  \
          mesimon state compatibility [claude|codex] <version>   show measured Claude coverage\n  \

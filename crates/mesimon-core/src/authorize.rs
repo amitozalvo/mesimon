@@ -80,6 +80,19 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
             (Action::ImportContent, _) => deny("an agent cannot import external content"),
         },
+        // A teammate on a shared board (T-215): tickets and notes per the
+        // role the relay enforced, never a session, never the board's own
+        // shape. The role check happened before the record was accepted;
+        // this is the floor under it.
+        Principal::Remote { .. } => match (action, resource) {
+            (_, Resource::Session { .. }) => deny("a teammate cannot read or change a session"),
+            (Action::Mutate, Resource::Board) => {
+                deny("a teammate cannot change the board itself, only its tickets")
+            }
+            (Action::Read, _) => Decision::Allow,
+            (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
+            (Action::ImportContent, _) => deny("a teammate cannot import external content"),
+        },
     }
 }
 
@@ -93,7 +106,7 @@ pub fn authorize_execution(
     match principal {
         Principal::Local => Decision::Allow,
         Principal::Automation { .. } if policy.allows_automation() => Decision::Allow,
-        Principal::Automation { .. } | Principal::Agent { .. } => {
+        Principal::Automation { .. } | Principal::Agent { .. } | Principal::Remote { .. } => {
             Decision::Deny { reason: "execution requires the owner at the keyboard".into() }
         }
     }
@@ -108,6 +121,37 @@ mod tests {
     }
     fn automation() -> Principal {
         Principal::Automation { rule: "automove".into() }
+    }
+    fn remote() -> Principal {
+        Principal::Remote { member: "Dana".into() }
+    }
+
+    /// The teammate floor (T-215): like an agent on sessions and the board's
+    /// shape, like a person on tickets. Never an importer, never a starter.
+    #[test]
+    fn a_teammate_edits_tickets_and_nothing_else() {
+        let session = Resource::Session { id: uuid::Uuid::nil() };
+        assert!(authorize(&remote(), &Action::Read, &session).denied());
+        assert!(authorize(&remote(), &Action::Mutate, &session).denied());
+        assert!(authorize(&remote(), &Action::Mutate, &Resource::Board).denied());
+        assert_eq!(authorize(&remote(), &Action::Read, &Resource::Board), Decision::Allow);
+        assert_eq!(
+            authorize(&remote(), &Action::Mutate, &Resource::Ticket { id: ulid::Ulid::nil() }),
+            Decision::Allow
+        );
+        assert_eq!(
+            authorize(&remote(), &Action::Mutate, &Resource::Column { name: "TODO".into() }),
+            Decision::Allow
+        );
+        assert!(authorize(
+            &remote(),
+            &Action::ImportContent,
+            &Resource::Column { name: "TODO".into() }
+        )
+        .denied());
+        use crate::board::ExecutionPolicy::{LocalAutomation, OwnerOnly};
+        assert!(authorize_execution(&remote(), OwnerOnly).denied());
+        assert!(authorize_execution(&remote(), LocalAutomation).denied());
     }
 
     #[test]

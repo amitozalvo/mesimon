@@ -22,13 +22,20 @@ pub enum Principal {
     /// The daemon's own rules acting without anyone asking: `automove` today,
     /// column on-enter actions in M5. `rule` names the rule for the feed.
     Automation { rule: String },
+    /// A person on another machine, editing a shared board (T-215). Minted
+    /// only by the daemon's own sync when it applies a record the relay
+    /// delivered and the record's signature verified against the member
+    /// list; a client that sends it over the wire is refused. `member` is
+    /// the display name the relay holds for the signing device.
+    Remote { member: String },
 }
 
 impl Principal {
-    /// Did a human ask for this? Only `Local` is a person pressing a key.
-    /// The ping-pong guard and the flap fuse restrain everything else.
+    /// Did a human ask for this? `Local` is a person pressing a key here and
+    /// `Remote` is a person pressing one elsewhere. The ping-pong guard and
+    /// the flap fuse restrain everything else.
     pub fn is_human(&self) -> bool {
-        matches!(self, Principal::Local)
+        matches!(self, Principal::Local | Principal::Remote { .. })
     }
 
     /// The feed's actor word. Stable strings — the activity log is read by
@@ -38,6 +45,7 @@ impl Principal {
             Principal::Local => "local",
             Principal::Agent { .. } => "agent",
             Principal::Automation { .. } => "automation",
+            Principal::Remote { .. } => "remote",
         }
     }
 
@@ -51,6 +59,7 @@ impl Principal {
             Principal::Local => "local".into(),
             Principal::Agent { session } => format!("agent:{session}"),
             Principal::Automation { rule } => format!("automation:{rule}"),
+            Principal::Remote { member } => format!("member:{member}"),
         }
     }
 }
@@ -62,6 +71,7 @@ mod tests {
     #[test]
     fn only_local_is_human() {
         assert!(Principal::Local.is_human());
+        assert!(Principal::Remote { member: "Dana".into() }.is_human());
         assert!(!Principal::Agent { session: uuid::Uuid::nil() }.is_human());
         assert!(!Principal::Automation { rule: "automove".into() }.is_human());
     }
@@ -71,6 +81,8 @@ mod tests {
         assert_eq!(Principal::Local.actor(), "local");
         assert_eq!(Principal::Agent { session: uuid::Uuid::nil() }.actor(), "agent");
         assert_eq!(Principal::Automation { rule: "automove".into() }.actor(), "automation");
+        assert_eq!(Principal::Remote { member: "Dana".into() }.actor(), "remote");
+        assert_eq!(Principal::Remote { member: "Dana".into() }.note_author(), "member:Dana");
     }
 
     #[test]
@@ -88,6 +100,7 @@ mod tests {
             Principal::Local,
             Principal::Agent { session: uuid::Uuid::nil() },
             Principal::Automation { rule: "automove".into() },
+            Principal::Remote { member: "Dana".into() },
         ] {
             let s = serde_json::to_string(&p).unwrap();
             assert_eq!(serde_json::from_str::<Principal>(&s).unwrap(), p);

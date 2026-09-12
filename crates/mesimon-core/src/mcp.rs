@@ -572,6 +572,17 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::Subscribe
         | Command::CreateTicket { .. }
         | Command::ImportTicket { .. }
+        // Board sharing is the person's: who to sign in as, what to share
+        // with whom, who to let in and who to remove (T-215).
+        | Command::TeamSignIn { .. }
+        | Command::TeamSignOut
+        | Command::ShareBoard
+        | Command::UnshareBoard
+        | Command::MintInvite { .. }
+        | Command::RevokeMember { .. }
+        | Command::JoinBoard { .. }
+        | Command::LeaveBoard
+        | Command::TeamRefresh
         | Command::DuplicateTicket { .. }
         | Command::RenameTicket { .. }
         | Command::DeleteTicket { .. }
@@ -1062,6 +1073,15 @@ mod tests {
             },
             Command::RenameTicket { id: t, title: "t".into() },
             Command::DeleteTicket { id: t, discard_worktree: true },
+            Command::TeamSignIn { relay: "relay.example".into(), display_name: "Dana".into() },
+            Command::TeamSignOut,
+            Command::ShareBoard,
+            Command::UnshareBoard,
+            Command::MintInvite { role: "viewer".into() },
+            Command::RevokeMember { device: "00".repeat(16) },
+            Command::JoinBoard { code: "x".into() },
+            Command::LeaveBoard,
+            Command::TeamRefresh,
             Command::SetWorkspace { id: t, workspace: None },
             Command::SetTag { id: t, group: 1, name: Some("urgent".into()) },
             Command::ForgetTag { group: 1, name: "urgent".into() },

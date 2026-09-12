@@ -915,6 +915,9 @@ pub struct App {
     /// The user's own `permissions.defaultMode`, off the snapshot (T-117):
     /// what a column's `inherit` resolves to, so the row can say so.
     pub claude_default_mode: Option<String>,
+    /// Board sharing (T-215): who this device is, whether the board is
+    /// shared, how the sync stands. Read by the team screens.
+    pub team: mesimon_core::team::TeamInfo,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -1232,6 +1235,7 @@ impl App {
             status_top: snap.status_top,
             claude_md: snap.claude_md,
             claude_default_mode: snap.claude_default_mode,
+            team: snap.team,
             theme,
             resume_refused: None,
             merge_armed: None,
@@ -1498,6 +1502,7 @@ impl App {
             claude_md,
             claude_default_mode,
             status_top,
+            team,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
         self.board = board;
@@ -1513,6 +1518,7 @@ impl App {
         self.claude_md = claude_md;
         self.claude_default_mode = claude_default_mode;
         self.status_top = status_top;
+        self.team = team;
         self.clamp_cursor();
         self.leave_pinned_column(was.as_deref());
         self.clamp_screen();
@@ -7408,6 +7414,8 @@ struct Snapshot {
     claude_md: mesimon_core::command::ClaudeMdStatus,
     claude_default_mode: Option<String>,
     status_top: bool,
+    /// Board sharing (T-215): read by the team screens once they exist.
+    team: mesimon_core::team::TeamInfo,
 }
 
 impl Snapshot {
@@ -7427,6 +7435,7 @@ impl Snapshot {
                 claude_md,
                 claude_default_mode,
                 status_top,
+                team,
             } => Some(Self {
                 board,
                 grace,
@@ -7441,6 +7450,7 @@ impl Snapshot {
                 claude_md,
                 claude_default_mode,
                 status_top,
+                team,
             }),
             _ => None,
         }
@@ -7742,6 +7752,7 @@ pub(crate) mod test_support {
                     automation: self.automation.clone(),
                     claude_default_mode: Some("auto".into()),
                     status_top: self.status_top,
+                    team: Default::default(),
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
                 // refusals included, so the status a test reads is the
