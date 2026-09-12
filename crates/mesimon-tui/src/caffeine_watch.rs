@@ -309,6 +309,23 @@ mod tests {
         wait_for(&monitor, true);
         tx.send(snapshot(SessionKind::Bash, SessionState::Running, false)).unwrap();
         wait_for(&monitor, false);
+        // T-357: a Codex record whose runtime died before confirming cleanup
+        // keeps `codex_stopping` (the checkout is still owned), but with no
+        // pane there is nothing to keep the machine awake for.
+        tx.send(snapshot(SessionKind::Codex, SessionState::Running, false)).unwrap();
+        wait_for(&monitor, true);
+        let mut dismissed = snapshot(
+            SessionKind::Codex,
+            SessionState::Exited { reason: mesimon_core::board::ExitReason::Dismissed },
+            false,
+        );
+        if let Response::Board { board, .. } = &mut dismissed {
+            board.sessions[0].codex_stopping = true;
+            board.sessions[0].observation_hold = true;
+            assert!(mesimon_core::quiet::is_working(&board.sessions[0]));
+        }
+        tx.send(dismissed).unwrap();
+        wait_for(&monitor, false);
         drop(monitor);
         thread.join().unwrap();
     }

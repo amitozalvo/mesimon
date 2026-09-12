@@ -22,11 +22,12 @@
 //! authorize automatic checkout operations; only fresh observation or
 //! explicit parking/termination can release the hold.
 //!
-//! `is_mid_turn` is the one named narrowing: working minus `RequiresAction`,
-//! for the question "is the machine doing anything" as against "is this turn
-//! over" (T-288's keep-awake hold). It is written in terms of `is_working`,
-//! so a fifth working state — or another agent kind — joins both answers at
-//! once.
+//! `is_mid_turn` is the one named narrowing: working minus the two clauses
+//! that are about a checkout and not about the machine — `RequiresAction`
+//! and a record with no pane — for the question "is the machine doing
+//! anything" as against "is this turn over" (T-288's keep-awake hold). It is
+//! written in terms of `is_working`, so a fifth working state — or another
+//! agent kind — joins both answers at once.
 
 use std::collections::HashSet;
 
@@ -50,20 +51,26 @@ pub fn is_working(s: &SessionRecord) -> bool {
             ))
 }
 
-/// A turn actually IN PROGRESS: `is_working` minus the one state that is
-/// waiting on a PERSON. A permission prompt is stopped on the user, not on
-/// the machine, so nothing is lost by letting the machine idle underneath it
-/// — which is the difference that matters to T-288's keep-awake hold, and to
-/// nothing else so far. Written in terms of `is_working` on purpose: the two
-/// can then never disagree about what a turn is, only about whether this one
-/// is waiting for you. (`glyphs::is_working` is narrower again — `Running`
-/// alone — because a spinner may only turn for something moving.)
+/// A turn actually IN PROGRESS: `is_working` minus the two clauses that
+/// own a CHECKOUT without keeping the MACHINE busy. A permission prompt is
+/// stopped on the user, not on the machine, so nothing is lost by letting
+/// the machine idle underneath it — which is the difference that matters to
+/// T-288's keep-awake hold, and to nothing else so far. And a record with no
+/// pane has no turn: a Codex record that is `Sleeping` or `Exited` with
+/// `codex_stopping` still owns its checkout until its server confirms
+/// cleanup (that is `is_working`'s answer, and the seat's), but a runtime
+/// that crashed without ever confirming would hold a laptop awake forever
+/// (T-357: a dismissed record on a deleted ticket did exactly that). Written
+/// in terms of `is_working` on purpose: the two can then never disagree about
+/// what a turn is, only about whether this one is waiting for you or has no
+/// process left to wait for. (`glyphs::is_working` is narrower again —
+/// `Running` alone — because a spinner may only turn for something moving.)
 ///
-/// It inherits the Codex hold above, and should: a session that cannot be
-/// proved quiet errs AWAKE here, which is the direction a keep-awake hold
-/// exists to protect.
+/// It inherits the Codex observation hold above, and should: a session with
+/// a pane that cannot be proved quiet errs AWAKE here, which is the direction
+/// a keep-awake hold exists to protect.
 pub fn is_mid_turn(s: &SessionRecord) -> bool {
-    is_working(s) && !matches!(s.state, SessionState::RequiresAction { .. })
+    is_working(s) && !matches!(s.state, SessionState::RequiresAction { .. }) && s.state.has_pane()
 }
 
 /// Tickets with a working claude — deduped, in session order — plus every
@@ -298,6 +305,32 @@ mod tests {
             assert!(is_working(&rec), "cleanup still owns the checkout even after parking");
             rec.codex_stopping = false;
         }
+    }
+
+    #[test]
+    fn cleanup_with_no_pane_owns_the_checkout_but_is_not_mid_turn() {
+        // T-357: a Codex runtime that crashed before confirming cleanup keeps
+        // `codex_stopping` for good. The checkout stays owned — that is the
+        // doctrine — but no pane means no turn, so the keep-awake hold lets go.
+        let mut rec = session(
+            ulid::Ulid::new(),
+            SessionKind::Codex,
+            "/r",
+            SessionState::Exited { reason: crate::board::ExitReason::Dismissed },
+        );
+        rec.codex_stopping = true;
+        for state in [
+            SessionState::Exited { reason: crate::board::ExitReason::Dismissed },
+            SessionState::Exited { reason: crate::board::ExitReason::Crashed },
+            SessionState::Sleeping,
+        ] {
+            rec.state = state;
+            assert!(is_working(&rec), "{:?} still owns the checkout", rec.state);
+            assert!(!is_mid_turn(&rec), "{:?} has no process to keep awake for", rec.state);
+        }
+        // With a pane the same flag is a runtime winding down: still mid-turn.
+        rec.state = SessionState::Running;
+        assert!(is_mid_turn(&rec));
     }
 
     #[test]

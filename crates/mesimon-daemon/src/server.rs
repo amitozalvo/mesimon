@@ -89,6 +89,9 @@ const TAIL_POLL_TICKS: u64 = 8;
 const SUBMIT_RETRY_MS: u64 = 500;
 const SUBMIT_ATTEMPTS: u8 = 10;
 const REAP_GRACE: Duration = Duration::from_secs(5);
+/// How often an orphaned Codex cleanup record (T-357) is re-checked for
+/// known owners after a check refused. Each check forks one `ps`.
+const CODEX_ORPHAN_RETRY: Duration = Duration::from_secs(15);
 /// D23 floor: a session younger than this in its current state never sleeps.
 const SLEEP_MIN_AGE_MS: u64 = 60_000;
 /// RSS aggregate refresh (10 s) — one `ps` fork, only while panes exist.
@@ -170,6 +173,10 @@ enum Msg {
     Request(Envelope, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     Hook(HookFrame),
     CodexSnapshots(Vec<(uuid::Uuid, Option<crate::agents::codex::Snapshot>)>),
+    /// The known-owner checks for orphaned Codex cleanup records came back
+    /// (T-357): per record, its generation and whether every known native
+    /// owner is provably gone. Off-thread because it forks `ps`.
+    CodexOrphansChecked(Vec<(uuid::Uuid, Option<u64>, std::result::Result<(), String>)>),
     Tick,
     /// A provisioning thread finished (M4): the binding, or the failing stage.
     Provisioned(ulid::Ulid, std::result::Result<Binding, (String, String)>),
@@ -357,6 +364,12 @@ pub struct Daemon {
     /// generation. Idle sessions then need no repeated terminal subprocess.
     codex_native_ready: HashMap<uuid::Uuid, Option<u64>>,
     codex_input_due: HashMap<uuid::Uuid, u64>,
+    /// Orphaned Codex cleanup records (T-357): when each is next due a
+    /// known-owner check, and the reason the last check refused, so the
+    /// journal says it once rather than every retry.
+    codex_orphan_due: HashMap<uuid::Uuid, (Instant, Option<String>)>,
+    /// One known-owner check in flight at a time.
+    codex_orphan_checking: bool,
     /// What restrains every mover that is not a person (T-84). See
     /// `crate::movegate` for why authority alone cannot do this job.
     moves: MoveGate,
@@ -681,6 +694,8 @@ pub fn run(paths: Paths) -> Result<()> {
         codex_ready: std::collections::HashSet::new(),
         codex_native_ready: HashMap::new(),
         codex_input_due: HashMap::new(),
+        codex_orphan_due: HashMap::new(),
+        codex_orphan_checking: false,
         moves: MoveGate::new(),
         board_version: 0,
         agent_replay: HashMap::new(),
@@ -755,6 +770,7 @@ pub fn run(paths: Paths) -> Result<()> {
         let what: std::borrow::Cow<'static, str> = match &msg {
             Msg::Tick => "tick".into(),
             Msg::CodexSnapshots(_) => "Codex observations".into(),
+            Msg::CodexOrphansChecked(_) => "Codex orphans checked".into(),
             Msg::Hook(f) => format!("hook {}", f.event).into(),
             Msg::Request(env, ..) => format!("request {}", env.command.wire_name()).into(),
             Msg::Provisioned(..) => "provisioned".into(),
@@ -777,6 +793,7 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
             Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
+            Msg::CodexOrphansChecked(results) => d.on_codex_orphans_checked(results),
             Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
             Msg::ShellEnvCaptured(result) => d.on_shell_env(result),
             Msg::GitSampled(sample, fetched) => d.on_git_sampled(sample, fetched),
@@ -1609,6 +1626,7 @@ impl Daemon {
         if self.ticks % 4 == 0 {
             stage!("expire_grace", self.expire_grace());
             stage!("sweep_reaping", self.sweep_reaping());
+            stage!("sweep_codex_orphans", self.sweep_codex_orphans());
             stage!("process_teardowns", self.process_teardowns());
         }
         self.poll_codex();
@@ -7717,6 +7735,151 @@ impl Daemon {
             }
             self.reaping.remove(&sid);
             let _ = self.backend.kill_session(&sid);
+        }
+    }
+
+    /// T-357: a Codex record whose ticket a person deleted, whose pane is
+    /// gone and whose runtime never confirmed cleanup. `delete_ticket` keeps
+    /// such a record on purpose — its `codex_stopping` is the evidence that a
+    /// separate app-server may still own the checkout — and the snapshot loop
+    /// releases it when the runtime reports `stopped`. A runtime that crashed
+    /// before it could (the dogfood case: `No space left on device` at
+    /// startup) never reports anything, and with the ticket gone no gesture
+    /// on the board reaches the record: it held a laptop awake and a shared
+    /// checkout "working" for two days. This runs the whole rung of positive
+    /// evidence a human resume relies on — pane absent, tmux endpoint absent
+    /// when tmux answers nothing, no live conversation owner, no listener on
+    /// either runtime socket, no same-user process naming the runtime's
+    /// config or sockets, and a complete inventory that saw this daemon —
+    /// off the writer thread, and `on_codex_orphans_checked` drops the record
+    /// only on a clean verdict. Lost evidence still never means done: a check
+    /// that cannot prove absence refuses, and the record stays, re-checked
+    /// every `CODEX_ORPHAN_RETRY`. The person's deletion of the ticket, past
+    /// its undo window, is the acknowledgement a resume would have asked for.
+    fn sweep_codex_orphans(&mut self) {
+        if self.codex_orphan_checking {
+            return;
+        }
+        let now = Instant::now();
+        let candidates: Vec<SessionRecord> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|s| {
+                s.kind == SessionKind::Codex
+                    && !s.argv.is_empty()
+                    && s.codex_stopping
+                    && !s.state.has_pane()
+                    && self.board.ticket(s.ticket).is_none()
+                    && !self.grace.contains_key(&s.ticket)
+                    && self.codex_orphan_due.get(&s.id).is_none_or(|(due, _)| *due <= now)
+            })
+            .cloned()
+            .collect();
+        if candidates.is_empty() {
+            return;
+        }
+        for rec in &candidates {
+            let said = self.codex_orphan_due.remove(&rec.id).and_then(|(_, why)| why);
+            self.codex_orphan_due.insert(rec.id, (now + CODEX_ORPHAN_RETRY, said));
+        }
+        // Pane absence is read here: the backend belongs to the writer.
+        let Ok(panes) = self.backend.snapshot() else { return };
+        let live: std::collections::HashSet<String> =
+            panes.iter().filter(|p| !p.pane_dead).map(|p| p.session_name.clone()).collect();
+        let tmux_answered_nothing = panes.is_empty();
+        let tmux_sock = self.paths.tmux_sock();
+        let paths = self.paths.clone();
+        let tx = self.tx.clone();
+        self.codex_orphan_checking = true;
+        std::thread::spawn(move || {
+            let results = candidates
+                .into_iter()
+                .map(|rec| {
+                    let verdict = (|| {
+                        if live.contains(&rec.sid16()) {
+                            return Err("its native pane remains live".to_string());
+                        }
+                        if tmux_answered_nothing {
+                            crate::agents::codex::recovery_endpoint_absent(&tmux_sock)?;
+                        }
+                        if let Some(owner) = crate::agents::adapter(rec.kind)
+                            .and_then(|adapter| adapter.external_owner(&rec))
+                        {
+                            return Err(format!("known conversation owner remains ({owner})"));
+                        }
+                        crate::agents::codex::recovery_owner_absent(&paths, &rec)
+                    })();
+                    (rec.id, rec.codex_generation, verdict)
+                })
+                .collect();
+            let _ = tx.send(Msg::CodexOrphansChecked(results));
+        });
+    }
+
+    /// The verdicts of `sweep_codex_orphans`, re-judged on the writer: the
+    /// record must still be what the check looked at — same generation,
+    /// still stopping, still without a pane, its ticket still gone and not
+    /// in the undo window — or the verdict is stale and dropped.
+    fn on_codex_orphans_checked(
+        &mut self,
+        results: Vec<(uuid::Uuid, Option<u64>, std::result::Result<(), String>)>,
+    ) {
+        self.codex_orphan_checking = false;
+        let mut dirty = false;
+        for (id, generation, verdict) in results {
+            let by = Principal::Automation { rule: "codex_orphan_cleanup".into() };
+            if matches!(
+                authorize(&by, &Action::Mutate, &Resource::Session { id }),
+                Decision::Deny { .. }
+            ) {
+                continue;
+            }
+            let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { continue };
+            let still_orphan = rec.kind == SessionKind::Codex
+                && rec.codex_stopping
+                && !rec.state.has_pane()
+                && rec.codex_generation == generation
+                && self.board.ticket(rec.ticket).is_none()
+                && !self.grace.contains_key(&rec.ticket);
+            if !still_orphan {
+                continue;
+            }
+            match verdict {
+                Ok(()) => {
+                    self.journal.line(&format!(
+                        "codex orphan released: session {id} — ticket deleted, pane gone, no known runtime owner remains"
+                    ));
+                    self.feed.hook_event(
+                        &id.to_string(),
+                        "CodexOrphanReleased",
+                        Some("no_known_owner"),
+                    );
+                    self.board.sessions.retain(|s| s.id != id);
+                    self.machines.remove(&id);
+                    self.codex_ready.remove(&id);
+                    self.codex_native_ready.remove(&id);
+                    self.codex_input_due.remove(&id);
+                    self.pending_prompt.remove(&id);
+                    self.cleanup_resume_offers.remove(&id);
+                    self.codex_orphan_due.remove(&id);
+                    dirty = true;
+                }
+                Err(why) => {
+                    if let Some((_, said)) = self.codex_orphan_due.get_mut(&id) {
+                        if said.as_deref() != Some(why.as_str()) {
+                            self.journal.line(&format!(
+                                "codex orphan kept: session {id} — {why}; rechecked every {}s",
+                                CODEX_ORPHAN_RETRY.as_secs()
+                            ));
+                            *said = Some(why);
+                        }
+                    }
+                }
+            }
+        }
+        if dirty {
+            self.persist_and_notify();
         }
     }
 

@@ -646,6 +646,64 @@ fn killed_codex_keeps_agent_seat_until_its_server_cleanup_is_acknowledged() {
 }
 
 #[test]
+fn a_deleted_tickets_crashed_codex_record_is_released_once_no_known_owner_remains() {
+    // T-357: the runtime dies without ever reporting `stopped`, so its record
+    // keeps `codex_stopping`. Deleting the ticket keeps the record as cleanup
+    // evidence (on purpose), but with no ticket no gesture can reach it, and
+    // `is_working` held a laptop awake and a shared checkout busy for days.
+    // The daemon now releases such a record itself — only on the positive
+    // evidence a human resume would rely on, and never while a known owner
+    // is still present.
+    let Some(h) = Fixture::boot("providerorphan") else { return };
+    let mut c = h.client();
+    select(&mut c, AgentProvider::Codex);
+    let holder = ticket(&mut c, "crashed runtime on a deleted ticket", None);
+    let id = spawn(&mut c, holder);
+    h.codex_ready(&mut c, id);
+    h.control(id, json!({"stop_ack": false}));
+    std::thread::sleep(Duration::from_millis(250));
+    assert!(matches!(c.request(Command::KillSession { id }), Response::Ok));
+    wait_until(Duration::from_secs(10), "runtime pane died without a stop ack", || {
+        let s = session(&mut c, id);
+        s.codex_stopping && !s.state.has_pane()
+    });
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(session(&mut c, id).codex_stopping, "a crash never confirms cleanup");
+    // A listener on an old runtime endpoint is a known owner: the sweep must
+    // refuse while it stands, through the undo window and a retry.
+    let config: Value = serde_json::from_slice(
+        &std::fs::read(h.paths.hooks_dir().join(format!("{id}.codex.json"))).unwrap(),
+    )
+    .unwrap();
+    let endpoint = PathBuf::from(config["proxy_socket"].as_str().unwrap());
+    let _ = std::fs::remove_file(&endpoint);
+    let listener = std::os::unix::net::UnixListener::bind(&endpoint).unwrap();
+    assert!(matches!(
+        c.request(Command::DeleteTicket { id: holder, discard_worktree: false }),
+        Response::Ok
+    ));
+    std::thread::sleep(Duration::from_secs(13));
+    assert!(c.board().ticket(holder).is_none(), "the undo window has closed");
+    assert!(
+        c.board().sessions.iter().any(|s| s.id == id && s.codex_stopping),
+        "a live endpoint is a known owner; the record must stay"
+    );
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap();
+    assert!(journal.contains("codex orphan kept"), "{journal}");
+    drop(listener);
+    std::fs::remove_file(&endpoint).unwrap();
+    wait_until(Duration::from_secs(40), "orphaned cleanup record released", || {
+        c.board().sessions.iter().all(|s| s.id != id)
+    });
+    // The feed flushes on the wheel, one tick behind the snapshot.
+    wait_until(Duration::from_secs(5), "release reaches the feed", || {
+        std::fs::read_to_string(h.paths.activity_log()).unwrap().contains("CodexOrphanReleased")
+    });
+    let journal = std::fs::read_to_string(h.paths.daemon_log()).unwrap();
+    assert!(journal.contains("codex orphan released"), "{journal}");
+}
+
+#[test]
 fn archiving_sleeping_codex_preserves_worktree_until_server_cleanup_finishes() {
     let Some(h) = Fixture::boot("providerarchivestop") else { return };
     let mut c = h.client();

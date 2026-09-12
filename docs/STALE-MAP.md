@@ -10279,3 +10279,59 @@ Goldens: `sharing_signed_out`, `sharing_editing`, `sharing_publish`,
 `sharing_members`, `sharing_joined`, `sharing_joining` replace `team`,
 `team_editing`, `share`, `share_members`, `team_boards`,
 `team_boards_joining`; `menu`, its two variants and `settings` reminted.
+
+## T-357 — a crashed Codex record on a deleted ticket held the machine awake (2026-09-12)
+
+The simbly board showed `☕` for two days with nothing running. `pmset -g assertions`
+named the board's own pid, held since its `U` reload. The holder was an invisible
+record: a Codex session whose runtime had crashed at startup on 2026-09-10
+(`No space left on device`, pane exit 1), which was dismissed, and whose ticket the
+user then deleted. `delete_ticket` keeps an owned Codex record while `codex_stopping`
+is set — on purpose, as the evidence that a separate app-server may still own the
+checkout — and the observation loop clears the flag only when the runtime reports
+`stopped`. A runtime that died before it could never reports anything, so the flag
+was permanent; with the ticket gone, no gesture on the board reached the record.
+`quiet::is_working` counts a stopping Codex record as working whatever its state,
+`is_mid_turn` inherited that, and `caffeine_watch` held. The same record sat in
+`Daemon::working` for the shared checkout, so a queued ask there would never have
+delivered and the merge train never saw a quiet board.
+
+**Two fixes, two different clauses.** `is_mid_turn` now also requires
+`state.has_pane()`: the keep-awake question is about the MACHINE, and a record
+with no pane has no process to keep it awake for. `is_working` is unchanged — a
+stopping record still owns its checkout and its agent seat until cleanup is
+confirmed; that is the doctrine and `codex_observation_loss_holds_a_finished_checkout_until_reconciled`
+still pins it. So the two predicates now differ on two clauses, both named in the
+doc comment: a wait on a person, and a record without a pane.
+
+**The daemon releases the orphan itself, on positive evidence only.** A new tick
+stage, `sweep_codex_orphans`, looks for an owned Codex record that is stopping, has
+no pane, whose ticket is gone and out of the undo window. For each it runs the
+rung a human resume relies on (`unverified_cleanup_resume_eligible`, minus the
+launch-target part): pane absent, tmux endpoint absent when tmux answered nothing,
+no live conversation owner, `recovery_owner_absent` (no listener on either runtime
+socket, no same-user process naming the config or the sockets, a complete `ps`
+inventory that saw this daemon). The `ps` fork runs on a worker thread and comes
+back as `Msg::CodexOrphansChecked`; the writer re-judges the record (same
+generation, still an orphan) before `retain`ing it away, journals `codex orphan
+released`, and feeds `CodexOrphanReleased`. A refused check keeps the record,
+journals the reason once (`codex orphan kept: … rechecked every 15s`), and retries
+every `CODEX_ORPHAN_RETRY`. Lost evidence still never means done: a missing config
+file or an incomplete inventory refuses forever, as it did before. What changed is
+the acknowledgement: the person's deletion of the ticket, past its nine-second undo
+window, stands in for the second `confirm` a resume would have asked for — there is
+no other gesture left to ask with.
+
+Pinned by `cleanup_with_no_pane_owns_the_checkout_but_is_not_mid_turn`
+(`core/src/quiet.rs`), a Codex dismissed-with-stopping snapshot in
+`observes_work_permission_and_completion_without_any_app_ticks`
+(`tui/src/caffeine_watch.rs`), and
+`a_deleted_tickets_crashed_codex_record_is_released_once_no_known_owner_remains`
+(`provider_e2e.rs`): a runtime that exits without a stop ack, a listener bound on
+its proxy socket through the undo window and one retry (the record stays and the
+journal says why), then the listener dropped and the record gone, with the feed
+and journal lines. No wire change, no schema change; `CHANGELOG.md` gets its line
+at the next bump.
+
+The two-day dogfood record on simbly is released by the first daemon of this build
+on that board, after its first `ps`.
