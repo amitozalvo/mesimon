@@ -58,7 +58,8 @@ const PREVIEW_FLOOR: u16 = 94;
 /// edge cells, so the card inside is the size the card outside is.
 const PREVIEW_W: u16 = 36;
 
-/// The prompt row, then a blank, then the list.
+/// The prompt row, then a blank (the subtitle's row, when the list is the
+/// recently viewed pages), then the list.
 const LIST_TOP: u16 = 2;
 
 /// Where the hardware cursor belongs this frame, so the caller can put the
@@ -122,6 +123,18 @@ fn draw_list(f: &mut Frame, app: &App, s: &Search, area: Rect) -> Option<(u16, u
     let cursor = draw_prompt(f, app, s, inner);
     if inner.height <= LIST_TOP {
         return Some(cursor);
+    }
+    // The breathing row under the prompt names the list when it is not the
+    // board (T-355): the pages opened this run, newest first, and the one
+    // thing that turns it back into the board.
+    if s.recent {
+        f.render_widget(
+            Paragraph::new(Line::from(Span::styled(
+                truncate(" viewed recently ∙ type to search the whole board", inner.width as usize),
+                theme.dim2(),
+            ))),
+            Rect { x: inner.x, y: inner.y + 1, width: inner.width, height: 1 },
+        );
     }
     let body = Rect {
         x: inner.x,

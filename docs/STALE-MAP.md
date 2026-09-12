@@ -9785,3 +9785,33 @@ it and the row cannot disagree with the pass. E2e
 `merge_train_e2e::a_grinding_worktree_does_not_hold_another_tickets_merge` pins it: A in REVIEW
 merges while B grinds mid-turn in its own worktree, B's state untouched, and A's owed row claims
 no wait. It fails on the old gate.
+
+## The picker opens on the pages you were just in (T-355, 2026-09-12, user: "show previously entered tickets when searching (/) when there's no search query yet — subtitle 'viewed recently' or something similar")
+
+`/` with nothing typed now lists the tickets whose PAGE was opened this run,
+newest first, one copy of each, at most ten — under the subtitle `viewed
+recently ∙ type to search the whole board` in the breathing row between the
+prompt and the list. The first keystroke is the whole board again (T-349's
+list, unchanged) and deleting back to nothing is the recent list again. With
+no page opened yet, `/` opens on the board exactly as before, so the goldens
+that existed did not move.
+
+**Recorded after the keypress, not at the openers.** `App::handle_key` wraps
+the dispatch and reads `ticket_page()` afterwards: a ticket the reader is now
+looking at is a ticket they entered, whichever of the eight `Screen::Ticket`
+assignments got them there (Enter on a card, the archived dialog, the picker,
+a link, a focus refusal). Hooking each opener is the same list maintained by
+hand.
+
+**The rank pass still decides what is in.** The recent ids are a REORDERING
+of `Searcher::rank`'s empty-query result, never a source of rows: a ticket
+deleted since is gone, and one archived since disappears when `tab` hides the
+archive, the way every archived row does. `Search::recent` is true exactly
+when the narrowing applied, and it is the only thing the subtitle reads.
+
+**In memory, like `prompt_history`.** The TUI owns no per-repo file — the
+four state files are the daemon's and `prefs.json` is per machine — so the
+list lives for the run. A per-repo TUI file under the state dir would be
+within promise 1 and is the obvious next step if a restart losing the list
+turns out to matter; a wire command to have the daemon remember views was
+judged too much machinery for a convenience.

@@ -337,6 +337,10 @@ pub struct Search {
     /// the editor's `top`. The picker's height is a fact of the frame, so
     /// the draw is the only thing that can know it.
     pub top: Cell<usize>,
+    /// The list is the recently opened pages, not the board (T-355): true
+    /// exactly when nothing is typed and at least one of them is a row.
+    /// Written by `App::research`, read by the draw for its subtitle.
+    pub recent: bool,
 }
 
 impl Search {
@@ -347,6 +351,7 @@ impl Search {
             idx: 0,
             archived: true,
             top: Cell::new(0),
+            recent: false,
         }
     }
 
@@ -660,6 +665,10 @@ pub struct HistoryWalk {
 /// How many asks the prompt field remembers. In memory only, per TUI run:
 /// a recall aid, not a record — the transcript is the record.
 const PROMPT_HISTORY_MAX: usize = 50;
+
+/// How many recently opened tickets the picker offers on an empty query
+/// (T-355). Ten is a screen of rows; a longer list is a board again.
+const RECENT_TICKETS_MAX: usize = 10;
 
 /// How long a delivered rebase request or merged notice keeps the m flow
 /// from offering the same ask again (user 2026-09-03: "main moved ∙ m ask the
@@ -1102,6 +1111,12 @@ pub struct App {
     /// each (a repeat moves to the end), at most `PROMPT_HISTORY_MAX`. `↑`
     /// in a prompt field walks it — see `HistoryWalk`.
     prompt_history: Vec<String>,
+    /// Every ticket whose PAGE was opened this run, newest first, one copy
+    /// of each, at most `RECENT_TICKETS_MAX` (T-355). The picker opens on it
+    /// when nothing is typed — "the one I was just in" is what `/` is asked
+    /// for most, and a board-ordered list answers that with scrolling. In
+    /// memory like `prompt_history`: the TUI owns no per-repo file.
+    recent_tickets: Vec<ulid::Ulid>,
     /// New-binary watch (dev rebuild or prod upgrade — same signal).
     update_watch: crate::update::UpdateWatch,
     /// Is a newer RELEASE published? Inert in every build `ci/release.sh`
@@ -1272,6 +1287,7 @@ impl App {
             focused_session_hint: None,
             just_created: None,
             prompt_history: Vec::new(),
+            recent_tickets: Vec::new(),
             rich_keys: false,
             ticket_shells: false,
             flavor_watch: None,
@@ -3070,6 +3086,27 @@ impl App {
     /// verb it returns is matched exhaustively below — so a binding with no
     /// handler is a compile error, not a dead key.
     pub fn handle_key(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        let out = self.handle_key_inner(code, mods);
+        // Observed AFTER the press, not at each of the several places that
+        // open a page: a ticket the reader is now looking at is a ticket
+        // they entered, whichever key got them there.
+        self.note_viewed();
+        out
+    }
+
+    /// Record the open ticket page in `recent_tickets` (T-355): newest first,
+    /// one copy of each, the oldest dropped past the cap.
+    fn note_viewed(&mut self) {
+        let Some(id) = self.ticket_page() else { return };
+        if self.recent_tickets.first() == Some(&id) {
+            return;
+        }
+        self.recent_tickets.retain(|t| *t != id);
+        self.recent_tickets.insert(0, id);
+        self.recent_tickets.truncate(RECENT_TICKETS_MAX);
+    }
+
+    fn handle_key_inner(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
         // Even an atom the terminal adapter cannot represent cancels the chord.
         if self.duplicate_armed.is_some() && (code != KeyCode::Char('y') || !mods.is_empty()) {
             self.duplicate_armed = None;
@@ -5386,6 +5423,20 @@ impl App {
             let searcher = cell.get_or_insert_with(mesimon_core::search::Searcher::new);
             searcher.rank(&self.board, s.query.as_str(), s.archived)
         };
+        // Nothing typed: the pages opened this run, newest first, instead of
+        // the whole board (T-355). The rank pass still decides what is IN —
+        // a ticket deleted since, or archived while `tab` hides the archive,
+        // is not a row — and the first keystroke is the board again.
+        s.recent = s.query.as_str().trim().is_empty()
+            && self.recent_tickets.iter().any(|id| s.hits.iter().any(|h| h.id == *id));
+        if s.recent {
+            let mut hits = std::mem::take(&mut s.hits);
+            s.hits = self
+                .recent_tickets
+                .iter()
+                .filter_map(|id| hits.iter().position(|h| h.id == *id).map(|i| hits.swap_remove(i)))
+                .collect();
+        }
         s.idx = held
             .and_then(|id| s.hits.iter().position(|h| h.id == id))
             .unwrap_or(0)
@@ -7893,6 +7944,14 @@ pub(crate) mod test_support {
     }
 
     impl App {
+        /// The picker's rows, key only, top to bottom.
+        pub(crate) fn search_rows(&self) -> Vec<String> {
+            match &self.mode {
+                Mode::Search(s) => s.hits.iter().map(|h| h.key.text.clone()).collect(),
+                _ => Vec::new(),
+            }
+        }
+
         pub(crate) fn for_test(board: Board, theme: Theme) -> App {
             Self::for_test_logged(board, theme, false).0
         }

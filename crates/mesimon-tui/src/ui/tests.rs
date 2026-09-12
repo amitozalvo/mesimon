@@ -6466,6 +6466,52 @@ fn golden_search_empty_120() {
     golden("search_no_matches_120x30", &render(&app, 120, 30));
 }
 
+/// Open ticket `n`'s page and come back to the board. The visit is recorded
+/// after a keypress on the page — any key; `Null` is one the page ignores.
+fn visit(app: &mut App, n: u128) {
+    app.screen = Screen::Ticket { ticket: ulid_n(n), rail_idx: 0 };
+    app.handle_key(key::KeyCode::Null, key::KeyModifiers::NONE).expect("a no-op press");
+    app.screen = Screen::Board;
+}
+
+/// With pages opened this run, `/` opens on THEM, newest first, under a
+/// subtitle that says so (T-355) — not on the whole board.
+#[test]
+fn golden_search_recent_120() {
+    let mut app = app_graphite(fixture_archived());
+    visit(&mut app, 3);
+    visit(&mut app, 7);
+    visit(&mut app, 1);
+    visit(&mut app, 3);
+    let app = searching(app, "");
+    let rows: Vec<String> = app.search_rows();
+    assert_eq!(rows, ["T-3", "T-1", "T-7"], "newest first, one copy of each");
+    golden("search_recent_120x30", &render(&app, 120, 30));
+}
+
+/// The first keystroke is the board again; deleting it back to nothing is
+/// the recent list again. And `tab` hides an archived page like any other
+/// archived row.
+#[test]
+fn search_recent_yields_to_a_query_and_to_the_archive_toggle() {
+    let mut app = app_graphite(fixture_archived());
+    visit(&mut app, 7);
+    visit(&mut app, 2);
+    let mut app = searching(app, "a");
+    let lines = render(&app, 120, 30);
+    assert!(!lines.iter().any(|l| l.contains("viewed recently")), "a query is the board");
+    assert!(app.search_rows().len() > 2, "the whole board, ranked");
+    app.handle_key(key::KeyCode::Backspace, key::KeyModifiers::NONE).expect("clear");
+    assert_eq!(app.search_rows(), ["T-2", "T-7"]);
+    assert!(render(&app, 120, 30).iter().any(|l| l.contains("viewed recently")));
+    app.handle_key(key::KeyCode::Tab, key::KeyModifiers::NONE).expect("live only");
+    assert_eq!(app.search_rows(), ["T-2"], "the archived page is hidden with the archive");
+    // Nothing visited yet: the picker is the board, as before.
+    let fresh = searching(app_graphite(fixture_archived()), "");
+    assert_eq!(fresh.search_rows().len(), 7);
+    assert!(!render(&fresh, 120, 30).iter().any(|l| l.contains("viewed recently")));
+}
+
 /// The highlight is the value ramp and nothing else: the matched characters
 /// come up to `base` and go bold, their neighbours sit at `dim1`, and the
 /// saturated colour never appears — it is needs-you's and nothing else's.
