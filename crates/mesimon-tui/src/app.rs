@@ -5490,7 +5490,7 @@ impl App {
                 if let Some(root) =
                     self.team.boards.iter().find(|b| b.board == id).and_then(|b| b.root.clone())
                 {
-                    self.pending_switch = Some(root);
+                    self.switch_to(root);
                 }
             }
         }
@@ -5546,8 +5546,17 @@ impl App {
             .and_then(|b| b.root.clone());
         if let Some(root) = fresh {
             self.join_watch = None;
-            self.pending_switch = Some(root);
+            self.switch_to(root);
         }
+    }
+
+    /// Leave this board for the one at `root`: the main loop ends and
+    /// `lib.rs` execs `mesimon open <root>`. Parking the path alone did
+    /// nothing until the next quit, which is what "enter opens it" must
+    /// not mean.
+    fn switch_to(&mut self, root: std::path::PathBuf) {
+        self.pending_switch = Some(root);
+        self.quit = true;
     }
 
     /// Put the cursor back on `id` wherever the new board holds it, or
@@ -14344,6 +14353,12 @@ mod tests {
         assert_eq!(rows.len(), 4);
         let (label, _, word) = app.boards_words(&rows[1]);
         assert_eq!((label.as_str(), word), ("mesimon ∙ contributor", "open"));
+        // Enter on it leaves for that root.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.pending_switch.as_deref(), Some(Path::new("/state/team/boards/0b0b")));
+        assert!(app.quit);
+        app.quit = false;
+        app.pending_switch = None;
         let (label, detail, word) = app.boards_words(&rows[3]);
         assert_eq!(label, "your board ∙ owner");
         assert!(detail.contains("checkout"), "{detail}");
@@ -14378,6 +14393,7 @@ mod tests {
         });
         app.absorb(Snapshot { board: board_three_columns(), team, ..Default::default() });
         assert_eq!(app.pending_switch.as_deref(), Some(Path::new("/state/team/boards/0e0e")));
+        assert!(app.quit, "the main loop must leave for the exec to happen");
         assert!(app.join_watch.is_none());
     }
 
