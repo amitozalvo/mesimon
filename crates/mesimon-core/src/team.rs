@@ -86,6 +86,11 @@ pub struct TeamDevice {
     pub relay: String,
     /// The device id, hex.
     pub device: String,
+    /// The relay accepted the registration and handed back a credential.
+    /// False is an identity minted here that the relay has not admitted —
+    /// a sign-in that failed or never finished — which is not signed in.
+    #[serde(default)]
+    pub registered: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

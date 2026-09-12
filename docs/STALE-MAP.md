@@ -10107,7 +10107,11 @@ stands beside it only while the drafts differ from the identity — a new name
 on the same relay keeps the key; a new relay is a new identity (T-333's
 rule, now on the row). The drafts are seeded once from the snapshot's
 device and survive a sign-out, so the next sign-in starts from the last
-words. A relay address and its pin arrive by paste, and `App::on_paste`
+words. `TeamDevice.registered` is what "signed in" means: an identity minted
+here that the relay never admitted (the first sign-in against a stale relay
+container answered `invalid request`) stays a `Sign in` row with the failure
+under it, rather than a `Signed in as` that every later command refuses.
+A relay address and its pin arrive by paste, and `App::on_paste`
 had no arm for a list row that is a field: it does now, for the team list,
 the prompt list and the column name alike.
 

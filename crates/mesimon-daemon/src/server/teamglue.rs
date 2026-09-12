@@ -212,6 +212,7 @@ impl Daemon {
             display_name: d.display_name.clone(),
             relay: d.relay.display(),
             device: d.keys().map(|k| k.id().to_hex()).unwrap_or_default(),
+            registered: d.credential.is_some(),
         });
         let me = self.team.device.as_ref().and_then(|d| d.keys()).map(|k| k.id());
         let board = self.team.state.as_ref().map(|s| TeamBoard {

@@ -3093,7 +3093,9 @@ impl App {
             rich_keys: self.rich_keys,
             prompts: self.board.prompts.clone(),
             prompt_editing: matches!(self.mode, Mode::Prompts { editing: Some(_), .. }),
-            team_signed_in: self.team.device.is_some(),
+            // An identity the relay has not admitted is not signed in: the
+            // row stays `Sign in`, with the failure in its detail.
+            team_signed_in: self.team.device.as_ref().is_some_and(|d| d.registered),
             team_identity: self
                 .team
                 .device
@@ -3857,7 +3859,7 @@ impl App {
             // Signed out, the row leads to the identity; otherwise to the
             // dialog, which reads what it offers off the snapshot.
             Verb::ShareDialog => {
-                if self.team.device.is_none() {
+                if !self.team.device.as_ref().is_some_and(|d| d.registered) {
                     self.mode = Mode::Team { idx: 0, editing: None, from_menu: true };
                 } else {
                     self.mode = Mode::Share { idx: 0, armed: false };
@@ -8439,6 +8441,7 @@ pub(crate) fn shared_team_fixture() -> mesimon_core::team::TeamInfo {
             display_name: "Amit".into(),
             relay: "relay.example".into(),
             device: "aa".repeat(16),
+            registered: true,
         }),
         board: Some(TeamBoard {
             board: "0b".repeat(16),
@@ -10500,6 +10503,27 @@ mod tests {
         let Mode::Prompts { editing: Some(buf), .. } = &app.mode else { panic!("{:?}", app.mode) };
         // The prompt field opens with its cursor at the start.
         assert!(buf.as_str().starts_with("rebase please"));
+    }
+
+    /// An identity the relay never admitted reads as signed out: the row
+    /// is `Sign in` with the failure under it, and the menu's sharing row
+    /// leads back to the list rather than to a dialog that would be refused.
+    #[test]
+    fn an_unregistered_identity_is_not_signed_in() {
+        let mut app = app_three_columns();
+        let mut device = shared_team_fixture().device.expect("device");
+        device.registered = false;
+        app.team.device = Some(device);
+        app.team.error = Some("signing in: invalid request".into());
+        app.seed_team_drafts();
+        let ctx = app.ctx();
+        assert!(!ctx.team_signed_in);
+        assert_eq!(ctx.team_relay, "relay.example", "the drafts still seed from it");
+        let rows: Vec<Verb> = keymap::team_items(&ctx).iter().map(|m| m.verb).collect();
+        assert_eq!(rows, [Verb::TeamRelay, Verb::TeamName, Verb::TeamSignIn]);
+        app.mode = Mode::Menu { idx: 0 };
+        app.dispatch(Verb::ShareDialog, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(matches!(app.mode, Mode::Team { .. }), "{:?}", app.mode);
     }
 
     /// The sharing dialog (T-334): the notes switch rides the publish; a
