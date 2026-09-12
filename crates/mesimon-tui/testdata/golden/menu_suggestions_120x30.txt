@@ -2,9 +2,10 @@
 
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
-    Decay treatments      >╭─ MENU ─────────────────────────────────────────────────────────╮
-                           │ ◦ Restart on the new build                                   U │
-    Keymap validator      >│     a newer mesimon is on disk ∙ sessions keep running         │
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
+                           ╭─ MENU ─────────────────────────────────────────────────────────╮
+    Keymap validator      >│ ◦ Restart on the new build                                   U │
+                           │     a newer mesimon is on disk ∙ sessions keep running         │
                            │ ◦ Sleep 3 agents on finished tickets                         X │
                            │     frees ~3.0GiB ∙ they wake where they left off              │
                            │ ◦ Archive 2 finished tickets                                   │
@@ -13,10 +14,8 @@
                            │     agent sessions in this repo that mesimon did not start     │
                            │   Archived tickets                                             │
                            │     off the board, still here                                  │
-                           │   Share this board                                             │
-                           │     needs a relay identity ∙ enter opens Settings › Team       │
-                           │   Team boards                                                  │
-                           │     needs a relay identity ∙ enter opens Settings › Team       │
+                           │   Sharing: not signed in                                       │
+                           │     sign in to a relay to share this board or join one         │
                            │   Settings                                                     │
                            │     appearance & notifications, behaviour, agents              │
                            │   Release notes                                                │
@@ -24,6 +23,7 @@
                            │   Quit mesimon                                               q │
                            │     sessions keep running                                      │
                            ╰───────────────────────── jk select ∙ enter choose ∙ esc close ─╯
+
 
 
 

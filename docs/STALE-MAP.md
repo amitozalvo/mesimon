@@ -10247,3 +10247,35 @@ Not here: the breadcrumb on a joined board reads the owner's title for it
 a contributor on a checkout of the same origin is T-338; ask my agent is
 T-336. The CHANGELOG waits for the release that ships Teams, as it did for
 T-333 and T-334.
+
+## T-215 — one sharing dialog (T-335, user: "one sharing setting instead of Team")
+
+T-334 put the identity under `Settings › Team` and the board's sharing
+behind the menu's `Share this board`; T-335 added a third door, `Team
+boards`. Three rows for one thing, and the owner asked for one. The menu's
+single `Sharing` row now opens `Scope::Sharing`: one list in three
+sections under quiet headings the cursor skips — `YOU` (the relay and the
+name as fields in place, then `Sign in` or `Signed in as … ∙ enter signs
+out`), `THIS BOARD` (publish and the notes switch, or the invite rows,
+the members and `Stop sharing`, or the members and `Leave this board`),
+and `BOARDS` (`Join a board with a code` as a field, then the boards the
+relay lists). Signed out, only `YOU` is there and the dialog opens on the
+relay row; signed in it opens on this board's first row. The row's label
+names where the board stands (`Sharing: not signed in`, `Sharing`,
+`Shared with 3 members ∙ synced`, `Shared by Amit ∙ synced`).
+
+`Scope::Team`, `Scope::Share`, `Scope::TeamBoards`, their seven verbs, the
+`TEAM_ITEMS` list and `Ctx::{team_relay, team_name, team_drafts_differ,
+team_editing, share_enter_word, boards_enter_word}` are gone;
+`Ctx::sharing_enter_word` is the one word Enter reads. `App::sharing_rows`
+builds the rows, `sharing_words` their label, detail and Enter word, and
+`sharing_act` acts — a field opens in place, a member removal, a stop and
+a leave arm on one press, a board opens in place of this one. A heading's
+Enter word is empty, so the keymap's rule keeps Enter inert there without
+a case. `draw_rows` learned a heading row (one cell in, `dim3`). The
+Settings list is back to three groups.
+
+Goldens: `sharing_signed_out`, `sharing_editing`, `sharing_publish`,
+`sharing_members`, `sharing_joined`, `sharing_joining` replace `team`,
+`team_editing`, `share`, `share_members`, `team_boards`,
+`team_boards_joining`; `menu`, its two variants and `settings` reminted.

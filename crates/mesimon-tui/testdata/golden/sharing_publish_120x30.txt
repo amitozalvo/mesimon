@@ -6,19 +6,19 @@
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
-
-
-
-
                            ╭─ SHARING ──────────────────────────────────────────────────────╮
+                           │ YOU                                                            │
+                           │   Relay: relay.example                                         │
+                           │   Display name: Amit                                           │
+                           │   Signed in as Amit on relay.example                           │
+                           │ THIS BOARD                                                     │
                            │   Publish this board                                           │
                            │   Notes: included                                              │
+                           │ BOARDS                                                         │
+                           │   Join a board with a code                                     │
                            │                                                                │
                            │     7 tickets and 0 notes go out sealed ∙ you become the owner │
                            ╰──────────────────────── jk select ∙ enter publish ∙ esc close ─╯
-
-
-
 
 
 

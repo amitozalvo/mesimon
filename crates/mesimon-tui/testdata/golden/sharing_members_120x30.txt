@@ -3,11 +3,12 @@
     TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
 
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
-
-    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
-
-
                            ╭─ SHARING ∙ OFFLINE ∙ 2 DRAFTS ─────────────────────────────────╮
+    Keymap validator      >│ YOU                                                            │
+                           │   Relay: relay.example                                         │
+                           │   Display name: Amit                                           │
+                           │   Signed in as Amit on relay.example                           │
+                           │ THIS BOARD                                                     │
                            │   Invite a contributor                                         │
                            │   Invite a viewer                                              │
                            │   Invite code: 7A3K-M9Q2-XB4D-H8FN-P5RT-W2CJ-6YZE-K1S0         │
@@ -16,12 +17,11 @@
                            │   Lee ∙ viewer ∙ waiting for a key                             │
                            │   Sam ∙ contributor ∙ removed                                  │
                            │   Stop sharing                                                 │
+                           │ BOARDS                                                         │
+                           │   Join a board with a code                                     │
                            │                                                                │
                            │     enter removes them ∙ the key rotates for the others        │
                            ╰───────────────────────── jk select ∙ enter remove ∙ esc close ─╯
-
-
-
 
 
 

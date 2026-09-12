@@ -9,14 +9,14 @@
 
 
 
-                           ╭─ TEAM ─────────────────────────────────────────────────────────╮
+                           ╭─ SHARING ──────────────────────────────────────────────────────╮
+                           │ YOU                                                            │
                            │   Relay: relay.example                                         │
                            │   Display name: Dana                                           │
                            │   Sign in                                                      │
                            │                                                                │
                            │     host[:port] ∙ self-hosted: add a space and its pin         │
                            ╰────────────────────────────────────── enter save ∙ esc cancel ─╯
-
 
 
 

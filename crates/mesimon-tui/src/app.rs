@@ -192,10 +192,20 @@ impl DiffState {
     }
 }
 
-/// A row of the sharing dialog (T-334). The members are rows, so the list
-/// is built per frame from the snapshot rather than declared in the keymap.
+/// A row of the sharing dialog (T-334; one dialog since T-335). Three
+/// sections under their headings: who this machine is on the relay, this
+/// board's sharing, and the boards this device belongs to. The members and
+/// the boards are rows, so the list is built per frame from the snapshot.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ShareRow {
+pub enum SharingRow {
+    /// A section's name; never the cursor's, never Enter's.
+    Heading(&'static str),
+    /// The relay address — a text field in place when chosen.
+    Relay,
+    /// The display name — the same.
+    Name,
+    SignIn,
+    SignOut,
     Publish,
     /// The notes switch, before the board is published.
     Notes,
@@ -208,16 +218,17 @@ pub enum ShareRow {
     Unshare,
     /// A member's way off a joined board (T-335).
     Leave,
+    /// `Join a board with a code` — a text field while a code is typed.
+    Join,
+    /// A board the relay lists, by id.
+    Board(String),
 }
 
-/// A row of the team boards dialog (T-335): the way onto one more board,
-/// then the boards this device belongs to, as the relay lists them.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum BoardsRow {
-    /// `Join with a code` — a text field while a code is being typed.
-    Join,
-    /// A board, by id.
-    Board(String),
+impl SharingRow {
+    /// Rows the cursor rests on; a heading is skipped over.
+    fn selectable(&self) -> bool {
+        !matches!(self, SharingRow::Heading(_))
+    }
 }
 
 /// A relay address or a display name: the daemon caps the name at
@@ -309,30 +320,16 @@ pub enum Mode {
         idx: usize,
         editing: Option<EditBuffer>,
     },
-    /// The team list (T-334), one level under Settings: the relay and the
-    /// display name as fields in place, then sign in or out. `from_menu`
-    /// when the menu's `Share this board` row opened it (signed out, that
-    /// row leads here), so Esc returns to the row that did.
-    Team {
+    /// The sharing dialog (T-334; one dialog since T-335): rows built from
+    /// `App::sharing_rows`. `editing` is the selected row as a text field
+    /// in place — the relay, the name, an invite code — the prompt list's
+    /// rule. `armed` is the row under the cursor chosen once: removing a
+    /// member, stopping the share and leaving each take two presses, and
+    /// any motion disarms.
+    Sharing {
         idx: usize,
         editing: Option<EditBuffer>,
-        from_menu: bool,
-    },
-    /// The sharing dialog (T-334): rows built from `App::share_rows`, so the
-    /// members are rows. `armed` is the row under the cursor chosen once —
-    /// removing a member and stopping the share each take two presses, and
-    /// any motion disarms.
-    Share {
-        idx: usize,
         armed: bool,
-    },
-    /// The team boards dialog (T-335): rows built from `App::boards_rows`.
-    /// `joining` is the Join row as a text field, the team list's rule —
-    /// Enter sends the code and the row reads `Joining…` off the snapshot
-    /// until the daemon answers, then the board it joined is opened.
-    TeamBoards {
-        idx: usize,
-        joining: Option<EditBuffer>,
     },
     /// The CLAUDE.md offer's confirm dialog (T-217): the snippet that would
     /// be written, shown verbatim over the board, with four ways out. No
@@ -1643,7 +1640,7 @@ impl App {
         // dialog's rows are the members, and there are none now.
         if joined_before == Some(true)
             && self.team.board.is_none()
-            && matches!(self.mode, Mode::Share { .. })
+            && matches!(self.mode, Mode::Sharing { .. })
         {
             self.mode = Mode::Normal;
             self.status = "you left the board ∙ this copy stays here".into();
@@ -1888,26 +1885,13 @@ impl App {
                 self.mode = Mode::Prompts { idx: n - 1, editing: None };
             }
         }
-        // The team list swaps `Sign in` for `Sign out` when the daemon
-        // answers; the sharing dialog's rows are the members, who come and
-        // go. Both clamp like the lists above.
-        if let Mode::Team { idx, editing: None, from_menu } = &self.mode {
-            let n = keymap::team_items(&self.ctx()).len();
-            if *idx >= n {
-                let idx = n.saturating_sub(1);
-                self.mode = Mode::Team { idx, editing: None, from_menu: *from_menu };
-            }
-        }
-        if let Mode::Share { idx, armed } = &self.mode {
-            let n = self.share_rows().len();
-            if *idx >= n {
-                self.mode = Mode::Share { idx: n.saturating_sub(1), armed: *armed };
-            }
-        }
-        if let Mode::TeamBoards { idx, joining: None } = &self.mode {
-            let n = self.boards_rows().len();
-            if *idx >= n {
-                self.mode = Mode::TeamBoards { idx: n.saturating_sub(1), joining: None };
+        // The sharing dialog's rows are the members and the boards, who
+        // come and go; it clamps like the lists above, onto a selectable row.
+        if let Mode::Sharing { idx, editing: None, armed } = &self.mode {
+            let rows = self.sharing_rows();
+            if *idx >= rows.len() || !rows[*idx].selectable() {
+                let idx = rows.iter().rposition(SharingRow::selectable).unwrap_or(0);
+                self.mode = Mode::Sharing { idx, editing: None, armed: *armed };
             }
         }
         // A note editor on a ticket that vanished has nowhere to save to.
@@ -2127,11 +2111,9 @@ impl App {
             }
         // The three lists whose selected row is a field in place: a relay
         // address and its pin are exactly what gets pasted (T-334).
-        } else if let Mode::Team { editing: Some(buf), .. } = &mut self.mode {
-            ("a relay or a name", buf.paste(text), buf.limit())
-        // An invite code is handed over out of band, which is to say pasted.
-        } else if let Mode::TeamBoards { joining: Some(buf), .. } = &mut self.mode {
-            ("an invite code", buf.paste(text), buf.limit())
+        // A relay address, its pin and an invite code all arrive by paste.
+        } else if let Mode::Sharing { editing: Some(buf), .. } = &mut self.mode {
+            ("a relay, a name or a code", buf.paste(text), buf.limit())
         } else if let Mode::Prompts { editing: Some(buf), .. } = &mut self.mode {
             ("a prompt", buf.paste(text), buf.limit())
         } else if let Mode::ColumnSettings { naming: Some(buf), .. } = &mut self.mode {
@@ -2891,11 +2873,8 @@ impl App {
             // Editing a template IS a text field, the Name row's rule.
             Mode::Prompts { editing: Some(_), .. } => Scope::Input,
             Mode::Prompts { .. } => Scope::Prompts,
-            Mode::Team { editing: Some(_), .. } => Scope::Input,
-            Mode::Team { .. } => Scope::Team,
-            Mode::Share { .. } => Scope::Share,
-            Mode::TeamBoards { joining: Some(_), .. } => Scope::Input,
-            Mode::TeamBoards { .. } => Scope::TeamBoards,
+            Mode::Sharing { editing: Some(_), .. } => Scope::Input,
+            Mode::Sharing { .. } => Scope::Sharing,
             Mode::Brief { .. } => Scope::Brief,
             Mode::Links { .. } => Scope::Links,
             Mode::Search(_) => Scope::Search,
@@ -3189,12 +3168,6 @@ impl App {
                 .as_ref()
                 .map(|d| format!("{} on {}", d.display_name, d.relay))
                 .unwrap_or_default(),
-            team_relay: self.team_relay_draft.clone(),
-            team_name: self.team_name_draft.clone(),
-            team_drafts_differ: self.team.device.as_ref().is_some_and(|d| {
-                d.relay != self.team_relay_draft || d.display_name != self.team_name_draft
-            }),
-            team_editing: matches!(self.mode, Mode::Team { editing: Some(_), .. }),
             team_busy: self.team.busy.clone().unwrap_or_default(),
             team_error: self.team.error.clone().unwrap_or_default(),
             team_shared: self.team.board.is_some(),
@@ -3206,7 +3179,7 @@ impl App {
                 .map(|b| b.members.iter().filter(|m| m.status == "active").count())
                 .unwrap_or(0),
             team_sync: self.team.board.as_ref().map(|b| b.sync.state.clone()).unwrap_or_default(),
-            share_enter_word: "",
+            sharing_enter_word: "",
             content_only: self.content_only(),
             team_viewer: self.team.board.as_ref().is_some_and(|b| b.role == "viewer"),
             team_owner_name: self
@@ -3216,19 +3189,13 @@ impl App {
                 .map(|b| b.owner_name.clone())
                 .unwrap_or_default(),
             team_boards: self.team.boards.len(),
-            boards_enter_word: "",
             teams: self.teams,
         };
-        if let Mode::TeamBoards { idx, .. } = &self.mode {
-            if let Some(row) = self.boards_rows().get(*idx) {
-                ctx.boards_enter_word = self.boards_words(row).2;
-            }
-        }
         // The sharing dialog's Enter reads its word off the row under the
         // cursor, which only the mode knows.
-        if let Mode::Share { idx, armed } = &self.mode {
-            if let Some(row) = self.share_rows().get(*idx) {
-                ctx.share_enter_word = self.share_words(row, *armed).2;
+        if let Mode::Sharing { idx, armed, .. } = &self.mode {
+            if let Some(row) = self.sharing_rows().get(*idx) {
+                ctx.sharing_enter_word = self.sharing_words(row, *armed).2;
             }
         }
         // The one field that reads the row list, set once the list can be
@@ -3370,11 +3337,8 @@ impl App {
         if let Mode::Prompts { editing: Some(_), .. } = self.mode {
             return self.key_agent_prompt(code, mods);
         }
-        if let Mode::Team { editing: Some(_), .. } = self.mode {
-            return self.key_team_field(code, mods);
-        }
-        if let Mode::TeamBoards { joining: Some(_), .. } = self.mode {
-            return self.key_boards_field(code, mods);
+        if let Mode::Sharing { editing: Some(_), .. } = self.mode {
+            return self.key_sharing_field(code, mods);
         }
         let Some(key) = crate::keys::to_key(code, mods) else {
             return Ok(());
@@ -3930,57 +3894,23 @@ impl App {
             // takes.
             Verb::Notifications => self.mode = Mode::Notifications { idx: 0 },
             Verb::AgentPrompts => self.mode = Mode::Prompts { idx: 0, editing: None },
-            // ---- board sharing (T-334) --------------------------------------
-            Verb::SettingsTeam => {
-                self.mode = Mode::Team { idx: 0, editing: None, from_menu: self.menu_dispatch }
-            }
-            // The row IS the field, the prompt list's rule: Enter opens the
-            // draft that stands there, cursor at its end — an address and a
-            // name are words you append to.
-            Verb::TeamRelay | Verb::TeamName => {
-                let items = keymap::team_items(&self.ctx());
-                let row = items.iter().position(|m| m.verb == verb).unwrap_or(0);
-                let text = if verb == Verb::TeamRelay {
-                    self.team_relay_draft.clone()
+            // ---- board sharing (T-334, T-335) ------------------------------
+            // One dialog; it opens on the first row that matters: the relay
+            // while there is no identity, this board's first row otherwise.
+            Verb::Sharing => {
+                let rows = self.sharing_rows();
+                let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
+                let idx = if signed {
+                    rows.iter()
+                        .position(|r| matches!(r, SharingRow::Heading("THIS BOARD")))
+                        .map(|h| h + 1)
+                        .filter(|i| rows.get(*i).is_some_and(SharingRow::selectable))
                 } else {
-                    self.team_name_draft.clone()
+                    None
                 };
-                let buf = EditBuffer::from_text(text, TEAM_FIELD_MAX_BYTES);
-                let from_menu = matches!(self.mode, Mode::Team { from_menu: true, .. });
-                self.mode = Mode::Team { idx: row, editing: Some(buf), from_menu };
-            }
-            Verb::TeamSignIn => {
-                let (relay, display_name) =
-                    (self.team_relay_draft.clone(), self.team_name_draft.clone());
-                if relay.trim().is_empty() || display_name.trim().is_empty() {
-                    self.status = "the relay and a display name first".into();
-                    return Ok(());
-                }
-                // No status line: the row itself reads `Signing in…` and
-                // then the identity, off the snapshot, while a status would
-                // outlive the answer until the next key.
-                self.send(Command::TeamSignIn { relay, display_name })?;
-            }
-            Verb::TeamSignOut => self.send(Command::TeamSignOut)?,
-            // Signed out, the row leads to the identity; otherwise to the
-            // dialog, which reads what it offers off the snapshot.
-            Verb::ShareDialog => {
-                if !self.team.device.as_ref().is_some_and(|d| d.registered) {
-                    self.mode = Mode::Team { idx: 0, editing: None, from_menu: true };
-                } else {
-                    self.mode = Mode::Share { idx: 0, armed: false };
-                }
-            }
-            // The same door for the boards (T-335): signed out, the identity
-            // first; otherwise the list, with the cursor on the first board
-            // when there is one and on the join row when there is not.
-            Verb::TeamBoards => {
-                if !self.team.device.as_ref().is_some_and(|d| d.registered) {
-                    self.mode = Mode::Team { idx: 0, editing: None, from_menu: true };
-                } else {
-                    let idx = usize::from(!self.team.boards.is_empty());
-                    self.mode = Mode::TeamBoards { idx, joining: None };
-                }
+                let idx = idx
+                    .unwrap_or_else(|| rows.iter().position(SharingRow::selectable).unwrap_or(0));
+                self.mode = Mode::Sharing { idx, editing: None, armed: false };
             }
             // The row IS the field: Enter opens the template that stands
             // there now — theirs if they wrote one, mesimon's otherwise — so
@@ -4621,25 +4551,26 @@ impl App {
                     *idx = step(*idx, n, down);
                 }
             }
-            Scope::Team => {
-                let n = keymap::team_items(&self.ctx()).len();
-                if let Mode::Team { idx, .. } = &mut self.mode {
-                    *idx = step(*idx, n, down);
-                }
-            }
-            // Any motion disarms: a second press has to land on the row the
-            // first one did.
-            Scope::Share => {
-                let n = self.share_rows().len();
-                if let Mode::Share { idx, armed } = &mut self.mode {
-                    *idx = step(*idx, n, down);
+            // Over the headings, never onto one; any motion disarms.
+            Scope::Sharing => {
+                let rows = self.sharing_rows();
+                if let Mode::Sharing { idx, armed, .. } = &mut self.mode {
+                    // The list clamps at its ends, so a heading with nothing
+                    // past it leaves the cursor where it was.
+                    let mut at = *idx;
+                    loop {
+                        let next = step(at, rows.len(), down);
+                        if next == at {
+                            at = *idx;
+                            break;
+                        }
+                        at = next;
+                        if rows.get(at).is_some_and(SharingRow::selectable) {
+                            break;
+                        }
+                    }
+                    *idx = at;
                     *armed = false;
-                }
-            }
-            Scope::TeamBoards => {
-                let n = self.boards_rows().len();
-                if let Mode::TeamBoards { idx, .. } = &mut self.mode {
-                    *idx = step(*idx, n, down);
                 }
             }
             // Up/down select; left/right reach only the sort row (the
@@ -4764,22 +4695,7 @@ impl App {
                 let verb = item.verb;
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
-            // A team row is a field or the one gesture; the list stays and
-            // relabels off the snapshot when the daemon answers.
-            Scope::Team => {
-                let Mode::Team { idx, .. } = self.mode else {
-                    return Ok(());
-                };
-                let ctx = self.ctx();
-                let items = keymap::team_items(&ctx);
-                let Some(item) = items.get(idx.min(items.len().saturating_sub(1))) else {
-                    return Ok(());
-                };
-                let verb = item.verb;
-                self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
-            }
-            Scope::Share => self.share_act(),
-            Scope::TeamBoards => self.boards_act(),
+            Scope::Sharing => self.sharing_act(),
             // A column row is a toggle, a cycle, the sort or the delete; the
             // dialog STAYS and the row relabels off the snapshot.
             Scope::ColumnSettings => {
@@ -4871,19 +4787,9 @@ impl App {
             }
             Scope::Notifications => self.return_to_settings(Verb::Notifications),
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
-            // Back onto the row that opened it: the menu's sharing row when
-            // that was the door, the Settings row otherwise.
-            Scope::Team => {
-                if matches!(self.mode, Mode::Team { from_menu: true, .. }) {
-                    self.mode = Mode::Menu { idx: self.menu_row(Verb::ShareDialog) };
-                } else {
-                    self.return_to_settings(Verb::SettingsTeam);
-                }
-            }
-            Scope::Share => self.mode = Mode::Menu { idx: self.menu_row(Verb::ShareDialog) },
-            Scope::TeamBoards => {
+            Scope::Sharing => {
                 self.join_watch = None;
-                self.mode = Mode::Menu { idx: self.menu_row(Verb::TeamBoards) };
+                self.mode = Mode::Menu { idx: self.menu_row(Verb::Sharing) };
             }
             Scope::ColumnSettings => {
                 if self.column_agents {
@@ -5154,237 +5060,6 @@ impl App {
         }
     }
 
-    /// A team-list field: the raw key edits the buffer, then only Enter and
-    /// Esc still resolve, against `Scope::Input`. Enter keeps the draft —
-    /// nothing goes to the daemon until `Sign in` — so a typo costs a
-    /// second Enter and never a failed round-trip.
-    fn key_team_field(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
-        if let Mode::Team { editing: Some(buf), .. } = &mut self.mode {
-            edit_buffer_key(buf, code, mods);
-        }
-        let ctx = self.ctx();
-        let verb = crate::keys::to_key_text(code, mods)
-            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
-        match verb {
-            Some(Verb::Save | Verb::SaveStart) => {
-                let Mode::Team { idx, editing, from_menu } = &self.mode else {
-                    return Ok(());
-                };
-                let (idx, from_menu) = (*idx, *from_menu);
-                let Some(text) = editing.as_ref().map(|b| b.as_str()) else { return Ok(()) };
-                let text = mesimon_core::text::scrub_text(text.trim());
-                match keymap::team_items(&ctx).get(idx).map(|m| m.verb) {
-                    Some(Verb::TeamRelay) => self.team_relay_draft = text,
-                    Some(Verb::TeamName) => self.team_name_draft = text,
-                    _ => {}
-                }
-                self.mode = Mode::Team { idx, editing: None, from_menu };
-            }
-            Some(Verb::Cancel) => {
-                if let Mode::Team { editing, .. } = &mut self.mode {
-                    *editing = None;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
-    }
-
-    /// The sharing dialog's rows, off the snapshot: the two rows that
-    /// publish while the board is only here, and the invites, the members
-    /// and the way to stop once it is shared. A member's daemon (a joined
-    /// board) reads the members and nothing else.
-    pub fn share_rows(&self) -> Vec<ShareRow> {
-        let Some(board) = &self.team.board else {
-            return vec![ShareRow::Publish, ShareRow::Notes];
-        };
-        let owner = board.role == "owner";
-        let mut rows = Vec::new();
-        if owner {
-            rows.push(ShareRow::InviteContributor);
-            rows.push(ShareRow::InviteViewer);
-            if let Some(code) = &board.invite {
-                rows.push(ShareRow::Code(code.clone()));
-            }
-        }
-        rows.extend(board.members.iter().map(|m| ShareRow::Member(m.device.clone())));
-        if owner {
-            rows.push(ShareRow::Unshare);
-        } else {
-            rows.push(ShareRow::Leave);
-        }
-        rows
-    }
-
-    /// A sharing row's label, its detail, and the word Enter's hint wears
-    /// there — empty where the row is only read, which is also what makes
-    /// Enter inert on it (`Ctx::share_enter_word`).
-    pub fn share_words(&self, row: &ShareRow, armed: bool) -> (String, String, &'static str) {
-        use mesimon_core::text::plural;
-        let busy = self.team.busy.as_deref().unwrap_or("");
-        let error = self.team.error.as_deref().unwrap_or("");
-        match row {
-            ShareRow::Publish if busy == "sharing" => {
-                ("Publishing…".into(), "the relay is naming the board".into(), "")
-            }
-            ShareRow::Publish => {
-                let tickets = plural(self.board.tickets.len(), "ticket");
-                let notes = if self.share_notes {
-                    plural(self.board.tickets.iter().map(|t| t.notes.len()).sum(), "note")
-                } else {
-                    "no notes".to_string()
-                };
-                let detail = if error.is_empty() {
-                    format!("{tickets} and {notes} go out sealed ∙ you become the owner")
-                } else {
-                    format!("{error} ∙ enter tries again")
-                };
-                ("Publish this board".into(), detail, "publish")
-            }
-            ShareRow::Notes if self.share_notes => (
-                "Notes: included".into(),
-                "every member reads the notes ∙ enter keeps them on this machine".into(),
-                "switch",
-            ),
-            ShareRow::Notes => (
-                "Notes: kept here".into(),
-                "titles, columns and order only ∙ enter includes the notes".into(),
-                "switch",
-            ),
-            ShareRow::InviteContributor | ShareRow::InviteViewer if busy == "inviting" => {
-                ("Inviting…".into(), "the relay is registering the code".into(), "")
-            }
-            ShareRow::InviteContributor => (
-                "Invite a contributor".into(),
-                "a one-time code ∙ they read and edit tickets and notes".into(),
-                "invite",
-            ),
-            ShareRow::InviteViewer => (
-                "Invite a viewer".into(),
-                "a one-time code ∙ they read and cannot edit".into(),
-                "invite",
-            ),
-            ShareRow::Code(code) => (
-                format!("Invite code: {code}"),
-                "hand it over out of band ∙ one use ∙ enter copies it".into(),
-                "copy",
-            ),
-            ShareRow::Member(device) => self.member_words(device, armed),
-            ShareRow::Unshare if busy == "unsharing" => {
-                ("Stopping…".into(), "the board is leaving the relay".into(), "")
-            }
-            ShareRow::Unshare if armed => (
-                "Stop sharing?".into(),
-                "the board vanishes for every member ∙ enter again".into(),
-                "stop sharing",
-            ),
-            ShareRow::Unshare => (
-                "Stop sharing".into(),
-                "members lose the board ∙ your copy stays ∙ enter asks once more".into(),
-                "stop sharing",
-            ),
-            ShareRow::Leave if busy == "leaving" => {
-                ("Leaving…".into(), "the relay is taking you off the board".into(), "")
-            }
-            ShareRow::Leave if armed => (
-                "Leave this board?".into(),
-                "nothing new reaches this copy ∙ enter again".into(),
-                "leave",
-            ),
-            ShareRow::Leave => (
-                "Leave this board".into(),
-                "the owner can invite you again ∙ enter asks once more".into(),
-                "leave",
-            ),
-        }
-    }
-
-    fn member_words(&self, device: &str, armed: bool) -> (String, String, &'static str) {
-        let Some(board) = &self.team.board else { return (String::new(), String::new(), "") };
-        let Some(m) = board.members.iter().find(|m| m.device == device) else {
-            return (String::new(), String::new(), "");
-        };
-        let owner = board.role == "owner";
-        let removable = owner && !m.me && m.role != "owner" && m.status == "active";
-        let busy = self.team.busy.as_deref() == Some("removing");
-        let mut label = format!("{} ∙ {}", m.display_name, m.role);
-        let detail = if m.me {
-            label.push_str(" ∙ you");
-            "this machine".to_string()
-        } else if m.status == "revoked" {
-            label.push_str(" ∙ removed");
-            "no longer reads the board".to_string()
-        } else if m.status == "left" {
-            label.push_str(" ∙ left");
-            "left on their own".to_string()
-        } else if m.role == "owner" {
-            "the owner ∙ every board has one".to_string()
-        } else if m.unverified {
-            label.push_str(" ∙ unverified");
-            "joined with a proof this machine cannot check ∙ remove them if in doubt".to_string()
-        } else if m.pending {
-            label.push_str(" ∙ waiting for a key");
-            "joined ∙ your daemon hands them the board key on its next pass".to_string()
-        } else if armed {
-            label = format!("Remove {}?", m.display_name);
-            "they lose the board and the key rotates ∙ enter again".to_string()
-        } else {
-            "enter removes them ∙ the key rotates for the others".to_string()
-        };
-        if busy && removable {
-            return ("Removing…".into(), "the relay is rotating the key".into(), "");
-        }
-        (label, detail, if removable { "remove" } else { "" })
-    }
-
-    /// Enter on the sharing dialog: the row under the cursor, in words the
-    /// row itself gave. Publishing, inviting and copying are one press;
-    /// removing and stopping arm on the first and act on the second.
-    fn share_act(&mut self) -> Result<()> {
-        let Mode::Share { idx, armed } = self.mode else {
-            return Ok(());
-        };
-        let Some(row) = self.share_rows().get(idx).cloned() else {
-            return Ok(());
-        };
-        if self.share_words(&row, armed).2.is_empty() {
-            return Ok(());
-        }
-        match row {
-            ShareRow::Publish => self.send(Command::ShareBoard { notes: self.share_notes }),
-            ShareRow::Notes => {
-                self.share_notes = !self.share_notes;
-                Ok(())
-            }
-            ShareRow::InviteContributor => {
-                self.send(Command::MintInvite { role: "contributor".into() })
-            }
-            ShareRow::InviteViewer => self.send(Command::MintInvite { role: "viewer".into() }),
-            ShareRow::Code(code) => {
-                self.status = crate::clipboard::copy_status("invite code", &code);
-                Ok(())
-            }
-            ShareRow::Member(device) if armed => {
-                self.mode = Mode::Share { idx, armed: false };
-                self.send(Command::RevokeMember { device })
-            }
-            ShareRow::Unshare if armed => {
-                self.mode = Mode::Share { idx, armed: false };
-                self.send(Command::UnshareBoard)
-            }
-            ShareRow::Leave if armed => {
-                self.mode = Mode::Share { idx, armed: false };
-                self.send(Command::LeaveBoard)
-            }
-            ShareRow::Member(_) | ShareRow::Unshare | ShareRow::Leave => {
-                self.mode = Mode::Share { idx, armed: true };
-                Ok(())
-            }
-        }
-    }
-
-    // ---- the team boards dialog (T-335) ------------------------------------
-
     /// This board is a joined team board on a root with no checkout.
     pub fn content_only(&self) -> bool {
         self.team.board.as_ref().is_some_and(|b| !b.repository)
@@ -5411,127 +5086,6 @@ impl App {
             }
         }
         self.repo_root.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default()
-    }
-
-    /// The dialog's rows: the join row, then the boards the relay lists.
-    pub fn boards_rows(&self) -> Vec<BoardsRow> {
-        let mut rows = vec![BoardsRow::Join];
-        rows.extend(self.team.boards.iter().map(|b| BoardsRow::Board(b.board.clone())));
-        rows
-    }
-
-    /// A row's label, its detail, and the word Enter's hint wears there —
-    /// empty where the row is only read, which is what makes Enter inert
-    /// on it (`Ctx::boards_enter_word`).
-    pub fn boards_words(&self, row: &BoardsRow) -> (String, String, &'static str) {
-        use mesimon_core::text::plural;
-        let busy = self.team.busy.as_deref().unwrap_or("");
-        let error = self.team.error.as_deref().unwrap_or("");
-        match row {
-            BoardsRow::Join if busy == "joining" => {
-                ("Joining…".into(), "the relay is checking the code".into(), "")
-            }
-            BoardsRow::Join => {
-                let detail = if error.starts_with("joining") {
-                    format!("{error} ∙ enter tries another code")
-                } else {
-                    "a one-time code from the board's owner ∙ opens the board".into()
-                };
-                ("Join a board with a code".into(), detail, "join")
-            }
-            BoardsRow::Board(id) => {
-                let Some(b) = self.team.boards.iter().find(|b| &b.board == id) else {
-                    return (String::new(), String::new(), "");
-                };
-                let name = match &b.title {
-                    Some(t) if !t.is_empty() => t.clone(),
-                    _ if b.role == "owner" => "your board".to_string(),
-                    _ => format!("{}'s board", b.owner_name),
-                };
-                let current = self.team.board.as_ref().is_some_and(|c| c.board == b.board);
-                let mut label = format!("{name} ∙ {}", b.role);
-                if current {
-                    label.push_str(" ∙ open now");
-                }
-                let detail = if current {
-                    let members = self
-                        .team
-                        .board
-                        .as_ref()
-                        .map(|c| c.members.iter().filter(|m| m.status == "active").count())
-                        .unwrap_or(0);
-                    format!("owner {} ∙ {}", b.owner_name, plural(members, "member"))
-                } else if b.root.is_some() {
-                    format!("owner {} ∙ enter opens it in place of this board", b.owner_name)
-                } else if b.role == "owner" {
-                    "shared from a checkout on this machine ∙ open it from there".to_string()
-                } else {
-                    "joined from another machine ∙ no copy here".to_string()
-                };
-                let word = if !current && b.root.is_some() { "open" } else { "" };
-                (label, detail, word)
-            }
-        }
-    }
-
-    /// Enter on the dialog: the join row opens as a field; a board row with
-    /// a copy on this machine is opened in place of this one.
-    fn boards_act(&mut self) -> Result<()> {
-        let Mode::TeamBoards { idx, .. } = self.mode else {
-            return Ok(());
-        };
-        let Some(row) = self.boards_rows().get(idx).cloned() else {
-            return Ok(());
-        };
-        if self.boards_words(&row).2.is_empty() {
-            return Ok(());
-        }
-        match row {
-            BoardsRow::Join => {
-                self.mode =
-                    Mode::TeamBoards { idx, joining: Some(EditBuffer::new(JOIN_CODE_MAX_BYTES)) };
-            }
-            BoardsRow::Board(id) => {
-                if let Some(root) =
-                    self.team.boards.iter().find(|b| b.board == id).and_then(|b| b.root.clone())
-                {
-                    self.switch_to(root);
-                }
-            }
-        }
-        Ok(())
-    }
-
-    /// The join row's field: Enter sends the code — the daemon parses it,
-    /// so a typo comes back as `joining: …` under the row and the field
-    /// reopens on the next Enter — and Esc puts the row back.
-    fn key_boards_field(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
-        if let Mode::TeamBoards { joining: Some(buf), .. } = &mut self.mode {
-            edit_buffer_key(buf, code, mods);
-        }
-        let ctx = self.ctx();
-        let verb = crate::keys::to_key_text(code, mods)
-            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
-        match verb {
-            Some(Verb::Save | Verb::SaveStart) => {
-                let Mode::TeamBoards { idx, joining } = &self.mode else {
-                    return Ok(());
-                };
-                let idx = *idx;
-                let text = joining.as_ref().map(|b| b.as_str().trim().to_string());
-                self.mode = Mode::TeamBoards { idx, joining: None };
-                let Some(code) = text.filter(|t| !t.is_empty()) else { return Ok(()) };
-                self.join_watch = Some(self.team.boards.iter().map(|b| b.board.clone()).collect());
-                self.send(Command::JoinBoard { code })?;
-            }
-            Some(Verb::Cancel) => {
-                if let Mode::TeamBoards { joining, .. } = &mut self.mode {
-                    *joining = None;
-                }
-            }
-            _ => {}
-        }
-        Ok(())
     }
 
     /// The join's answer, off the snapshot: a board the relay did not list
@@ -5568,7 +5122,7 @@ impl App {
     /// leave it where it was when the ticket is gone or was never selected.
     fn follow_ticket(&mut self, id: Option<ulid::Ulid>) {
         let Some(id) = id else { return };
-        if !matches!(self.mode, Mode::Normal | Mode::Menu { .. } | Mode::Share { .. }) {
+        if !matches!(self.mode, Mode::Normal | Mode::Menu { .. } | Mode::Sharing { .. }) {
             return;
         }
         let cols = self.columns();
@@ -5621,6 +5175,413 @@ impl App {
             clause.push_str(" ∙ you read only");
         }
         Some(clause)
+    }
+
+    /// The drafts as a golden wants them: seeded from the fixture's device.
+    #[cfg(test)]
+    pub(crate) fn seed_team_drafts_for_test(&mut self) {
+        self.seed_team_drafts();
+    }
+
+    /// A sharing field — the relay, the name, an invite code: the raw key
+    /// edits the buffer, then only Enter and Esc still resolve, against
+    /// `Scope::Input`. Enter keeps a relay or a name as a draft (nothing
+    /// goes to the daemon until `Sign in`) and sends a code.
+    fn key_sharing_field(&mut self, code: KeyCode, mods: KeyModifiers) -> Result<()> {
+        if let Mode::Sharing { editing: Some(buf), .. } = &mut self.mode {
+            edit_buffer_key(buf, code, mods);
+        }
+        let ctx = self.ctx();
+        let verb = crate::keys::to_key_text(code, mods)
+            .and_then(|k| keymap::resolve(Scope::Input, k, &ctx));
+        match verb {
+            Some(Verb::Save | Verb::SaveStart) => {
+                let Mode::Sharing { idx, editing, .. } = &self.mode else {
+                    return Ok(());
+                };
+                let idx = *idx;
+                let Some(text) = editing.as_ref().map(|b| b.as_str()) else { return Ok(()) };
+                let text = mesimon_core::text::scrub_text(text.trim());
+                self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                match self.sharing_rows().get(idx) {
+                    Some(SharingRow::Relay) => self.team_relay_draft = text,
+                    Some(SharingRow::Name) => self.team_name_draft = text,
+                    Some(SharingRow::Join) if !text.is_empty() => {
+                        self.join_watch =
+                            Some(self.team.boards.iter().map(|b| b.board.clone()).collect());
+                        self.send(Command::JoinBoard { code: text })?;
+                    }
+                    _ => {}
+                }
+            }
+            Some(Verb::Cancel) => {
+                if let Mode::Sharing { editing, .. } = &mut self.mode {
+                    *editing = None;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// The sharing dialog's rows, off the snapshot: the identity first
+    /// (the two fields and the one gesture that applies), then — signed in
+    /// — this board (the two rows that publish while it is only here, or
+    /// the invites, the members and the way to stop or leave), then the
+    /// boards this device belongs to, behind the way onto one more.
+    pub fn sharing_rows(&self) -> Vec<SharingRow> {
+        let device = self.team.device.as_ref();
+        let signed = device.is_some_and(|d| d.registered);
+        let drafts_differ = device.is_some_and(|d| {
+            d.relay != self.team_relay_draft || d.display_name != self.team_name_draft
+        });
+        let mut rows = vec![SharingRow::Heading("YOU"), SharingRow::Relay, SharingRow::Name];
+        if !signed || drafts_differ {
+            rows.push(SharingRow::SignIn);
+        }
+        if signed {
+            rows.push(SharingRow::SignOut);
+        } else {
+            return rows;
+        }
+        rows.push(SharingRow::Heading("THIS BOARD"));
+        match &self.team.board {
+            None => {
+                rows.push(SharingRow::Publish);
+                rows.push(SharingRow::Notes);
+            }
+            Some(board) => {
+                let owner = board.role == "owner";
+                if owner {
+                    rows.push(SharingRow::InviteContributor);
+                    rows.push(SharingRow::InviteViewer);
+                    if let Some(code) = &board.invite {
+                        rows.push(SharingRow::Code(code.clone()));
+                    }
+                }
+                rows.extend(board.members.iter().map(|m| SharingRow::Member(m.device.clone())));
+                rows.push(if owner { SharingRow::Unshare } else { SharingRow::Leave });
+            }
+        }
+        rows.push(SharingRow::Heading("BOARDS"));
+        rows.push(SharingRow::Join);
+        rows.extend(self.team.boards.iter().map(|b| SharingRow::Board(b.board.clone())));
+        rows
+    }
+
+    /// A row's label, its detail, and the word Enter's hint wears there —
+    /// empty where the row is only read, which is also what makes Enter
+    /// inert on it (`Ctx::sharing_enter_word`).
+    pub fn sharing_words(&self, row: &SharingRow, armed: bool) -> (String, String, &'static str) {
+        use mesimon_core::text::plural;
+        let busy = self.team.busy.as_deref().unwrap_or("");
+        let error = self.team.error.as_deref().unwrap_or("");
+        let editing = matches!(self.mode, Mode::Sharing { editing: Some(_), .. });
+        let device = self.team.device.as_ref();
+        let signed = device.is_some_and(|d| d.registered);
+        let identity = device
+            .filter(|d| d.registered)
+            .map(|d| format!("{} on {}", d.display_name, d.relay))
+            .unwrap_or_default();
+        let drafts_missing = self.team_relay_draft.is_empty() || self.team_name_draft.is_empty();
+        match row {
+            SharingRow::Heading(word) => ((*word).to_string(), String::new(), ""),
+            SharingRow::Relay => (
+                if self.team_relay_draft.is_empty() {
+                    "Relay: not set".into()
+                } else {
+                    format!("Relay: {}", self.team_relay_draft)
+                },
+                if editing {
+                    "host[:port] ∙ self-hosted: add a space and its pin".into()
+                } else {
+                    "where shared boards meet ∙ enter edits".into()
+                },
+                "edit",
+            ),
+            SharingRow::Name => (
+                if self.team_name_draft.is_empty() {
+                    "Display name: not set".into()
+                } else {
+                    format!("Display name: {}", self.team_name_draft)
+                },
+                if editing {
+                    "what teammates see on your edits ∙ up to sixty-four characters".into()
+                } else {
+                    "what teammates see on your edits ∙ enter edits".into()
+                },
+                "edit",
+            ),
+            SharingRow::SignIn if busy == "signing in" => {
+                ("Signing in…".into(), "the relay is registering this machine".into(), "")
+            }
+            SharingRow::SignIn => {
+                let label = if signed { "Sign in again" } else { "Sign in" };
+                // The failure comes first: a row offering a retry has to say
+                // what it is retrying.
+                let detail = if error.starts_with("signing in") {
+                    format!("{error} ∙ enter tries again")
+                } else if drafts_missing {
+                    "needs the relay and a display name above".into()
+                } else if signed {
+                    "a new name on the same relay keeps your key ∙ a new relay is a new identity"
+                        .into()
+                } else {
+                    "mints a device key on this machine ∙ the relay learns your name and public key"
+                        .into()
+                };
+                (label.into(), detail, if drafts_missing { "" } else { "sign in" })
+            }
+            SharingRow::SignOut => (
+                if identity.is_empty() {
+                    "Signed in".into()
+                } else {
+                    format!("Signed in as {identity}")
+                },
+                "enter signs out ∙ this machine forgets its key and shared boards stop syncing"
+                    .into(),
+                "sign out",
+            ),
+            SharingRow::Publish if busy == "sharing" => {
+                ("Publishing…".into(), "the relay is naming the board".into(), "")
+            }
+            SharingRow::Publish => {
+                let tickets = plural(self.board.tickets.len(), "ticket");
+                let notes = if self.share_notes {
+                    plural(self.board.tickets.iter().map(|t| t.notes.len()).sum(), "note")
+                } else {
+                    "no notes".to_string()
+                };
+                let detail = if error.starts_with("sharing") {
+                    format!("{error} ∙ enter tries again")
+                } else {
+                    format!("{tickets} and {notes} go out sealed ∙ you become the owner")
+                };
+                ("Publish this board".into(), detail, "publish")
+            }
+            SharingRow::Notes if self.share_notes => (
+                "Notes: included".into(),
+                "every member reads the notes ∙ enter keeps them on this machine".into(),
+                "switch",
+            ),
+            SharingRow::Notes => (
+                "Notes: kept here".into(),
+                "titles, columns and order only ∙ enter includes the notes".into(),
+                "switch",
+            ),
+            SharingRow::InviteContributor | SharingRow::InviteViewer if busy == "inviting" => {
+                ("Inviting…".into(), "the relay is registering the code".into(), "")
+            }
+            SharingRow::InviteContributor => (
+                "Invite a contributor".into(),
+                "a one-time code ∙ they read and edit tickets and notes".into(),
+                "invite",
+            ),
+            SharingRow::InviteViewer => (
+                "Invite a viewer".into(),
+                "a one-time code ∙ they read and cannot edit".into(),
+                "invite",
+            ),
+            SharingRow::Code(code) => (
+                format!("Invite code: {code}"),
+                "hand it over out of band ∙ one use ∙ enter copies it".into(),
+                "copy",
+            ),
+            SharingRow::Member(device) => self.member_words(device, armed),
+            SharingRow::Unshare if busy == "unsharing" => {
+                ("Stopping…".into(), "the board is leaving the relay".into(), "")
+            }
+            SharingRow::Unshare if armed => (
+                "Stop sharing?".into(),
+                "the board vanishes for every member ∙ enter again".into(),
+                "stop sharing",
+            ),
+            SharingRow::Unshare => (
+                "Stop sharing".into(),
+                "members lose the board ∙ your copy stays ∙ enter asks once more".into(),
+                "stop sharing",
+            ),
+            SharingRow::Leave if busy == "leaving" => {
+                ("Leaving…".into(), "the relay is taking you off the board".into(), "")
+            }
+            SharingRow::Leave if armed => (
+                "Leave this board?".into(),
+                "nothing new reaches this copy ∙ enter again".into(),
+                "leave",
+            ),
+            SharingRow::Leave => (
+                "Leave this board".into(),
+                "the owner can invite you again ∙ enter asks once more".into(),
+                "leave",
+            ),
+            SharingRow::Join if busy == "joining" => {
+                ("Joining…".into(), "the relay is checking the code".into(), "")
+            }
+            SharingRow::Join => {
+                let detail = if error.starts_with("joining") {
+                    format!("{error} ∙ enter tries another code")
+                } else {
+                    "a one-time code from the board's owner ∙ opens the board".into()
+                };
+                ("Join a board with a code".into(), detail, "join")
+            }
+            SharingRow::Board(id) => {
+                let Some(b) = self.team.boards.iter().find(|b| &b.board == id) else {
+                    return (String::new(), String::new(), "");
+                };
+                let name = match &b.title {
+                    Some(t) if !t.is_empty() => t.clone(),
+                    _ if b.role == "owner" => "your board".to_string(),
+                    _ => format!("{}'s board", b.owner_name),
+                };
+                let current = self.team.board.as_ref().is_some_and(|c| c.board == b.board);
+                let mut label = format!("{name} ∙ {}", b.role);
+                if current {
+                    label.push_str(" ∙ open now");
+                }
+                let detail = if current {
+                    let members = self
+                        .team
+                        .board
+                        .as_ref()
+                        .map(|c| c.members.iter().filter(|m| m.status == "active").count())
+                        .unwrap_or(0);
+                    format!("owner {} ∙ {}", b.owner_name, plural(members, "member"))
+                } else if b.root.is_some() {
+                    format!("owner {} ∙ enter opens it in place of this board", b.owner_name)
+                } else if b.role == "owner" {
+                    "shared from a checkout on this machine ∙ open it from there".to_string()
+                } else {
+                    "joined from another machine ∙ no copy here".to_string()
+                };
+                let word = if !current && b.root.is_some() { "open" } else { "" };
+                (label, detail, word)
+            }
+        }
+    }
+
+    fn member_words(&self, device: &str, armed: bool) -> (String, String, &'static str) {
+        let Some(board) = &self.team.board else { return (String::new(), String::new(), "") };
+        let Some(m) = board.members.iter().find(|m| m.device == device) else {
+            return (String::new(), String::new(), "");
+        };
+        let owner = board.role == "owner";
+        let removable = owner && !m.me && m.role != "owner" && m.status == "active";
+        let busy = self.team.busy.as_deref() == Some("removing");
+        let mut label = format!("{} ∙ {}", m.display_name, m.role);
+        let detail = if m.me {
+            label.push_str(" ∙ you");
+            "this machine".to_string()
+        } else if m.status == "revoked" {
+            label.push_str(" ∙ removed");
+            "no longer reads the board".to_string()
+        } else if m.status == "left" {
+            label.push_str(" ∙ left");
+            "left on their own".to_string()
+        } else if m.role == "owner" {
+            "the owner ∙ every board has one".to_string()
+        } else if m.unverified {
+            label.push_str(" ∙ unverified");
+            "joined with a proof this machine cannot check ∙ remove them if in doubt".to_string()
+        } else if m.pending {
+            label.push_str(" ∙ waiting for a key");
+            "joined ∙ your daemon hands them the board key on its next pass".to_string()
+        } else if armed {
+            label = format!("Remove {}?", m.display_name);
+            "they lose the board and the key rotates ∙ enter again".to_string()
+        } else {
+            "enter removes them ∙ the key rotates for the others".to_string()
+        };
+        if busy && removable {
+            return ("Removing…".into(), "the relay is rotating the key".into(), "");
+        }
+        (label, detail, if removable { "remove" } else { "" })
+    }
+
+    /// Enter on the sharing dialog: the row under the cursor, in words the
+    /// row itself gave. A field opens in place; signing in, publishing,
+    /// inviting and copying are one press; removing, stopping and leaving
+    /// arm on the first and act on the second; a board is opened in place
+    /// of this one.
+    fn sharing_act(&mut self) -> Result<()> {
+        let Mode::Sharing { idx, armed, .. } = self.mode else {
+            return Ok(());
+        };
+        let Some(row) = self.sharing_rows().get(idx).cloned() else {
+            return Ok(());
+        };
+        if self.sharing_words(&row, armed).2.is_empty() {
+            return Ok(());
+        }
+        let open = |this: &mut Self, buf: EditBuffer| {
+            this.mode = Mode::Sharing { idx, editing: Some(buf), armed: false };
+        };
+        match row {
+            SharingRow::Heading(_) => Ok(()),
+            SharingRow::Relay => {
+                open(
+                    self,
+                    EditBuffer::from_text(self.team_relay_draft.clone(), TEAM_FIELD_MAX_BYTES),
+                );
+                Ok(())
+            }
+            SharingRow::Name => {
+                open(
+                    self,
+                    EditBuffer::from_text(self.team_name_draft.clone(), TEAM_FIELD_MAX_BYTES),
+                );
+                Ok(())
+            }
+            SharingRow::Join => {
+                open(self, EditBuffer::new(JOIN_CODE_MAX_BYTES));
+                Ok(())
+            }
+            SharingRow::SignIn => {
+                let (relay, display_name) =
+                    (self.team_relay_draft.clone(), self.team_name_draft.clone());
+                // No status line: the row itself reads `Signing in…` and
+                // then the identity, off the snapshot.
+                self.send(Command::TeamSignIn { relay, display_name })
+            }
+            SharingRow::SignOut => self.send(Command::TeamSignOut),
+            SharingRow::Publish => self.send(Command::ShareBoard { notes: self.share_notes }),
+            SharingRow::Notes => {
+                self.share_notes = !self.share_notes;
+                Ok(())
+            }
+            SharingRow::InviteContributor => {
+                self.send(Command::MintInvite { role: "contributor".into() })
+            }
+            SharingRow::InviteViewer => self.send(Command::MintInvite { role: "viewer".into() }),
+            SharingRow::Code(code) => {
+                self.status = crate::clipboard::copy_status("invite code", &code);
+                Ok(())
+            }
+            SharingRow::Member(device) if armed => {
+                self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                self.send(Command::RevokeMember { device })
+            }
+            SharingRow::Unshare if armed => {
+                self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                self.send(Command::UnshareBoard)
+            }
+            SharingRow::Leave if armed => {
+                self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                self.send(Command::LeaveBoard)
+            }
+            SharingRow::Member(_) | SharingRow::Unshare | SharingRow::Leave => {
+                self.mode = Mode::Sharing { idx, editing: None, armed: true };
+                Ok(())
+            }
+            SharingRow::Board(id) => {
+                if let Some(root) =
+                    self.team.boards.iter().find(|b| b.board == id).and_then(|b| b.root.clone())
+                {
+                    self.switch_to(root);
+                }
+                Ok(())
+            }
+        }
     }
 
     /// Board Enter is "get me working": a live agent focuses directly, a
@@ -10890,21 +10851,26 @@ mod tests {
         }
     }
 
-    /// The menu's sharing row (T-334): signed out it opens the team list
-    /// and Esc returns to the row; a field keeps a draft and sends nothing;
-    /// `Sign in` refuses without a name and sends both words with one.
+    /// The menu's one sharing row (T-334, one dialog since T-335): signed
+    /// out it opens on the relay row; a field keeps a draft and sends
+    /// nothing; `Sign in` has no word without a name and sends both words
+    /// with one; Esc returns to the menu row.
     #[test]
-    fn sharing_starts_at_the_team_list_when_signed_out() {
+    fn sharing_starts_at_the_identity_when_signed_out() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         let row = keymap::menu_items(&app.ctx())
             .iter()
-            .position(|m| m.verb == Verb::ShareDialog)
+            .position(|m| m.verb == Verb::Sharing)
             .expect("the sharing row");
         app.mode = Mode::Menu { idx: row };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Team { idx: 0, editing: None, from_menu: true });
-        assert_eq!(app.scope(), Scope::Team);
+        assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
+        assert_eq!(app.scope(), Scope::Sharing);
+        assert_eq!(
+            app.sharing_rows(),
+            [SharingRow::Heading("YOU"), SharingRow::Relay, SharingRow::Name, SharingRow::SignIn]
+        );
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.scope(), Scope::Input);
         for c in "relay.example".chars() {
@@ -10912,17 +10878,16 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.team_relay_draft, "relay.example");
-        assert_eq!(app.scope(), Scope::Team);
+        assert_eq!(app.scope(), Scope::Sharing);
         let signed_in = |sent: &std::cell::RefCell<Vec<String>>| {
             sent.borrow().iter().any(|s| s.contains("TeamSignIn"))
         };
-        assert!(!signed_in(&sent));
-        // Rows: relay, name, sign in. No name yet: the press says so.
+        // No name yet: the sign-in row has no word, so Enter is inert.
         press(&mut app, 'j');
         press(&mut app, 'j');
+        assert_eq!(app.ctx().sharing_enter_word, "");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!signed_in(&sent));
-        assert!(app.status.contains("display name"), "{}", app.status);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "Dana".chars() {
@@ -10930,6 +10895,7 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         press(&mut app, 'j');
+        assert_eq!(app.ctx().sharing_enter_word, "sign in");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(
             sent.borrow().iter().any(|s| s.contains("TeamSignIn")
@@ -10938,27 +10904,24 @@ mod tests {
             "{:?}",
             sent.borrow()
         );
-        // Esc: back onto the menu row that opened the list.
+        // `k` off the top row stays on it, never onto the heading above.
+        press(&mut app, 'k');
+        press(&mut app, 'k');
+        press(&mut app, 'k');
+        assert!(matches!(app.mode, Mode::Sharing { idx: 1, .. }), "{:?}", app.mode);
+        // Esc: back onto the menu row that opened the dialog.
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Menu { idx: row });
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
-        // From Settings the list returns to Settings, on its own row.
-        open_settings(&mut app);
-        let team = app.settings_row(Verb::SettingsTeam);
-        app.mode = Mode::Settings { idx: team };
-        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Team { idx: 0, editing: None, from_menu: false });
-        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Settings { idx: team });
     }
 
-    /// A relay address and its pin arrive by paste, so the team list's
-    /// field takes one (T-334) — and the two lists of the same shape too.
+    /// A relay address and its pin arrive by paste, so the sharing
+    /// dialog's field takes one (T-334) — and the prompt list's too.
     #[test]
     fn the_in_place_fields_take_a_paste() {
         let mut app = app_three_columns();
-        app.mode = Mode::Team { idx: 0, editing: None, from_menu: false };
+        app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
         assert!(!app.on_paste("nowhere").unwrap(), "a list row is not a field");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let line = format!("127.0.0.1 {}", "ab".repeat(32));
@@ -10973,9 +10936,9 @@ mod tests {
         assert!(buf.as_str().starts_with("rebase please"));
     }
 
-    /// An identity the relay never admitted reads as signed out: the row
-    /// is `Sign in` with the failure under it, and the menu's sharing row
-    /// leads back to the list rather than to a dialog that would be refused.
+    /// An identity the relay never admitted reads as signed out: the rows
+    /// are the identity's only, `Sign in` with the failure under it, and
+    /// nothing about this board or other boards is offered.
     #[test]
     fn an_unregistered_identity_is_not_signed_in() {
         let mut app = app_three_columns();
@@ -10984,14 +10947,17 @@ mod tests {
         app.team.device = Some(device);
         app.team.error = Some("signing in: invalid request".into());
         app.seed_team_drafts();
-        let ctx = app.ctx();
-        assert!(!ctx.team_signed_in);
-        assert_eq!(ctx.team_relay, "relay.example", "the drafts still seed from it");
-        let rows: Vec<Verb> = keymap::team_items(&ctx).iter().map(|m| m.verb).collect();
-        assert_eq!(rows, [Verb::TeamRelay, Verb::TeamName, Verb::TeamSignIn]);
+        assert!(!app.ctx().team_signed_in);
+        assert_eq!(app.team_relay_draft, "relay.example", "the drafts still seed from it");
+        let rows = app.sharing_rows();
+        assert_eq!(rows.last(), Some(&SharingRow::SignIn));
+        assert!(!rows.iter().any(|r| matches!(r, SharingRow::Heading("THIS BOARD"))));
+        let (label, detail, _) = app.sharing_words(&SharingRow::SignIn, false);
+        assert_eq!(label, "Sign in");
+        assert!(detail.starts_with("signing in: invalid request ∙"), "{detail}");
         app.mode = Mode::Menu { idx: 0 };
-        app.dispatch(Verb::ShareDialog, Key::Enter, Scope::Menu, &ctx).unwrap();
-        assert!(matches!(app.mode, Mode::Team { .. }), "{:?}", app.mode);
+        app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
+        assert_eq!(app.mode, Mode::Sharing { idx: 1, editing: None, armed: false });
     }
 
     /// The sharing dialog (T-334): the notes switch rides the publish; a
@@ -10999,11 +10965,14 @@ mod tests {
     /// there; removing a member arms on one press, disarms on any motion,
     /// and sends on the second.
     #[test]
-    fn the_share_dialog_arms_before_it_removes() {
+    fn the_sharing_dialog_arms_before_it_removes() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.team.device = shared_team_fixture().device;
-        app.mode = Mode::Share { idx: 0, armed: false };
-        assert_eq!(app.share_rows(), vec![ShareRow::Publish, ShareRow::Notes]);
+        app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
+        let rows = app.sharing_rows();
+        let publish = rows.iter().position(|r| *r == SharingRow::Publish).expect("publish");
+        assert_eq!(app.mode, Mode::Sharing { idx: publish, editing: None, armed: false });
+        assert_eq!(rows[publish + 1], SharingRow::Notes);
         press(&mut app, 'j');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(!app.share_notes);
@@ -11015,26 +10984,26 @@ mod tests {
             sent.borrow()
         );
         app.team = shared_team_fixture();
-        let rows = app.share_rows();
+        let rows = app.sharing_rows();
         let me = rows
             .iter()
-            .position(|r| matches!(r, ShareRow::Member(d) if d == &"aa".repeat(16)))
+            .position(|r| matches!(r, SharingRow::Member(d) if d == &"aa".repeat(16)))
             .expect("the owner's row");
-        app.mode = Mode::Share { idx: me, armed: false };
-        assert_eq!(app.ctx().share_enter_word, "");
-        assert_eq!(keymap::resolve(Scope::Share, Key::Enter, &app.ctx()), None);
+        app.mode = Mode::Sharing { idx: me, editing: None, armed: false };
+        assert_eq!(app.ctx().sharing_enter_word, "");
+        assert_eq!(keymap::resolve(Scope::Sharing, Key::Enter, &app.ctx()), None);
         let dana = rows
             .iter()
-            .position(|r| matches!(r, ShareRow::Member(d) if d == &"dd".repeat(16)))
+            .position(|r| matches!(r, SharingRow::Member(d) if d == &"dd".repeat(16)))
             .expect("dana's row");
-        app.mode = Mode::Share { idx: dana, armed: false };
-        assert_eq!(app.ctx().share_enter_word, "remove");
+        app.mode = Mode::Sharing { idx: dana, editing: None, armed: false };
+        assert_eq!(app.ctx().sharing_enter_word, "remove");
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.mode, Mode::Share { idx: dana, armed: true });
-        assert!(app.share_words(&rows[dana], true).0.starts_with("Remove Dana"));
+        assert_eq!(app.mode, Mode::Sharing { idx: dana, editing: None, armed: true });
+        assert!(app.sharing_words(&rows[dana], true).0.starts_with("Remove Dana"));
         assert!(!sent.borrow().iter().any(|s| s.contains("RevokeMember")));
         press(&mut app, 'j');
-        assert_eq!(app.mode, Mode::Share { idx: dana + 1, armed: false });
+        assert_eq!(app.mode, Mode::Sharing { idx: dana + 1, editing: None, armed: false });
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -14277,7 +14246,7 @@ mod tests {
         assert!(!app.rail_rows(ulid::Ulid(1)).iter().any(|r| matches!(r, RailRow::NewAgent)));
         let rows: Vec<Verb> = keymap::menu_items(&ctx).iter().map(|m| m.verb).collect();
         assert!(!rows.contains(&Verb::ExternalDrawer), "{rows:?}");
-        assert!(rows.contains(&Verb::TeamBoards) && rows.contains(&Verb::ShareDialog), "{rows:?}");
+        assert!(rows.contains(&Verb::Sharing), "{rows:?}");
         press(&mut app, 'c');
         assert!(matches!(app.mode, Mode::Normal), "{:?}", app.mode);
         press(&mut app, 'r');
@@ -14344,40 +14313,41 @@ mod tests {
         assert_eq!(app.cursor_col, 1);
     }
 
-    /// The team boards dialog (T-335): the join row, then the boards; Enter
-    /// on the join row opens the field, the code goes out on Enter, and
-    /// the board the relay lists next is the one to open.
+    /// The boards section (T-335): the join row, then the boards; Enter on
+    /// the join row opens the field, the code goes out on Enter, and the
+    /// board the relay lists next is the one to open.
     #[test]
     fn joining_from_the_dialog_opens_the_board_the_relay_lists_next() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.team = super::joined_team_fixture();
         app.team.board = None;
-        app.dispatch(Verb::TeamBoards, Key::Enter, Scope::Board, &app.ctx()).unwrap();
-        assert!(matches!(app.mode, Mode::TeamBoards { idx: 1, joining: None }), "{:?}", app.mode);
-        let rows = app.boards_rows();
-        assert_eq!(rows.len(), 4);
-        let (label, _, word) = app.boards_words(&rows[1]);
+        app.dispatch(Verb::Sharing, Key::Enter, Scope::Board, &app.ctx()).unwrap();
+        let rows = app.sharing_rows();
+        let join = rows.iter().position(|r| *r == SharingRow::Join).expect("join row");
+        assert_eq!(rows.len(), join + 4, "three boards after the join row");
+        let (label, _, word) = app.sharing_words(&rows[join + 1], false);
         assert_eq!((label.as_str(), word), ("mesimon ∙ contributor", "open"));
-        // Enter on it leaves for that root.
+        let (label, detail, word) = app.sharing_words(&rows[join + 3], false);
+        assert_eq!(label, "your board ∙ owner");
+        assert!(detail.contains("checkout"), "{detail}");
+        assert_eq!(word, "", "no copy here, nothing to open");
+        // Enter on a board with a copy here leaves for that root.
+        app.mode = Mode::Sharing { idx: join + 1, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.pending_switch.as_deref(), Some(Path::new("/state/team/boards/0b0b")));
         assert!(app.quit);
         app.quit = false;
         app.pending_switch = None;
-        let (label, detail, word) = app.boards_words(&rows[3]);
-        assert_eq!(label, "your board ∙ owner");
-        assert!(detail.contains("checkout"), "{detail}");
-        assert_eq!(word, "", "no copy here, nothing to open");
-        // Up to the join row, Enter, a code, Enter.
-        press(&mut app, 'k');
+        // The join row: Enter, a code, Enter.
+        app.mode = Mode::Sharing { idx: join, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::TeamBoards { idx: 0, joining: Some(_) }));
+        assert!(matches!(app.mode, Mode::Sharing { editing: Some(_), .. }));
         assert_eq!(app.scope(), Scope::Input);
         for c in "7A3K-M9Q2".chars() {
             app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::TeamBoards { idx: 0, joining: None }));
+        assert!(matches!(app.mode, Mode::Sharing { editing: None, .. }));
         assert!(sent.borrow().iter().any(|c| c.contains("JoinBoard") && c.contains("7A3K-M9Q2")));
         assert!(app.join_watch.is_some());
         // The daemon says joining; then the relay lists one more board.
@@ -14385,7 +14355,7 @@ mod tests {
         team.board = None;
         team.busy = Some("joining".into());
         app.absorb(Snapshot { board: board_three_columns(), team, ..Default::default() });
-        assert_eq!(app.boards_words(&BoardsRow::Join).0, "Joining…");
+        assert_eq!(app.sharing_words(&SharingRow::Join, false).0, "Joining…");
         assert!(app.pending_switch.is_none());
         let mut team = super::joined_team_fixture();
         team.board = None;
@@ -14408,7 +14378,8 @@ mod tests {
     fn a_failed_join_reads_on_the_row_and_opens_nothing() {
         let mut app = app_joined();
         app.team.board = None;
-        app.mode = Mode::TeamBoards { idx: 0, joining: None };
+        let join = app.sharing_rows().iter().position(|r| *r == SharingRow::Join).unwrap();
+        app.mode = Mode::Sharing { idx: join, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         for c in "nope".chars() {
             app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).unwrap();
@@ -14420,23 +14391,25 @@ mod tests {
         app.absorb(Snapshot { board: board_three_columns(), team, ..Default::default() });
         assert!(app.join_watch.is_none());
         assert!(app.pending_switch.is_none());
-        let (_, detail, word) = app.boards_words(&BoardsRow::Join);
+        let (_, detail, word) = app.sharing_words(&SharingRow::Join, false);
         assert_eq!(detail, "joining: not found ∙ enter tries another code");
         assert_eq!(word, "join");
     }
 
-    /// A member's sharing dialog ends in `Leave this board`, which arms on
-    /// one press and sends on the second (T-335).
+    /// A member's board section ends in `Leave this board`, which arms on
+    /// one press and sends on the second (T-335); the invite rows and
+    /// `Stop sharing` are the owner's alone.
     #[test]
     fn a_member_leaves_from_the_sharing_dialog() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.team = super::joined_team_fixture();
-        let rows = app.share_rows();
-        assert_eq!(rows.last(), Some(&ShareRow::Leave));
-        assert!(!rows.contains(&ShareRow::Unshare) && !rows.contains(&ShareRow::InviteViewer));
-        app.mode = Mode::Share { idx: rows.len() - 1, armed: false };
+        let rows = app.sharing_rows();
+        let leave = rows.iter().position(|r| *r == SharingRow::Leave).expect("leave row");
+        assert_eq!(rows[leave + 1], SharingRow::Heading("BOARDS"));
+        assert!(!rows.contains(&SharingRow::Unshare) && !rows.contains(&SharingRow::InviteViewer));
+        app.mode = Mode::Sharing { idx: leave, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert!(matches!(app.mode, Mode::Share { armed: true, .. }));
+        assert!(matches!(app.mode, Mode::Sharing { armed: true, .. }));
         assert!(!sent.borrow().iter().any(|c| c.contains("LeaveBoard")));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent.borrow().iter().any(|c| c.contains("LeaveBoard")));

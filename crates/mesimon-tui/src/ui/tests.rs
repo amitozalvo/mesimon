@@ -11,7 +11,7 @@ use ratatui::style::{Color, Modifier};
 use ratatui::Terminal;
 use unicode_width::UnicodeWidthStr;
 
-use crate::app::{App, InputPurpose, Mode, Screen};
+use crate::app::{App, InputPurpose, Mode, Screen, SharingRow};
 use crate::theme::{Flavor, Profile, Theme};
 
 fn ulid_n(n: u128) -> ulid::Ulid {
@@ -763,137 +763,101 @@ fn golden_agent_prompt_editing_120() {
     golden("agent_prompt_editing_120x30", &render(&app, 120, 30));
 }
 
-/// The team list (T-334), one level under Settings, signed out: the two
-/// fields unset and `Sign in` saying what it needs. `TEAM` in the frame's
-/// top edge, the list's keys in its bottom one.
+/// The sharing dialog signed out (T-334, one dialog since T-335): the YOU
+/// section alone — the two fields unset and `Sign in` saying what it
+/// needs — with `SHARING` in the frame's top edge.
 #[test]
-fn golden_team_120() {
+fn golden_sharing_signed_out_120() {
     let mut app = app_graphite(fixture_archived());
-    app.mode = Mode::Team { idx: 0, editing: None, from_menu: false };
-    golden("team_120x30", &render(&app, 120, 30));
+    app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
+    golden("sharing_signed_out_120x30", &render(&app, 120, 30));
 }
 
-/// The same list with the relay row open as a field, an address half typed:
+/// The same with the relay row open as a field, an address half typed:
 /// the row's name leads the field, the cursor sits at its end, and the
 /// detail teaches the address form.
 #[test]
-fn golden_team_editing_120() {
+fn golden_sharing_editing_120() {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture_archived());
     app.team_name_draft = "Dana".into();
-    app.mode = Mode::Team { idx: 0, editing: None, from_menu: false };
+    app.mode = Mode::Sharing { idx: 1, editing: None, armed: false };
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
     for c in "relay.example".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("type");
     }
-    assert!(matches!(app.mode, Mode::Team { editing: Some(_), .. }), "{:?}", app.mode);
-    golden("team_editing_120x30", &render(&app, 120, 30));
+    assert!(matches!(app.mode, Mode::Sharing { editing: Some(_), .. }), "{:?}", app.mode);
+    golden("sharing_editing_120x30", &render(&app, 120, 30));
 }
 
-/// The sharing dialog before the board is published (T-334): the publish
-/// row counting what goes out and the notes switch, `SHARING` in the top
-/// edge and `enter publish` in the bottom one.
+/// Signed in, the board not yet published: the identity, then THIS BOARD
+/// with the publish row counting what goes out and the notes switch, then
+/// BOARDS with the way onto one. The cursor is on the publish row, where
+/// the dialog opens.
 #[test]
-fn golden_share_120() {
+fn golden_sharing_publish_120() {
     let mut app = app_graphite(fixture_archived());
     app.team.device = crate::app::shared_team_fixture().device;
-    app.mode = Mode::Share { idx: 0, armed: false };
-    golden("share_120x30", &render(&app, 120, 30));
+    app.seed_team_drafts_for_test();
+    let publish = app.sharing_rows().iter().position(|r| *r == SharingRow::Publish).expect("row");
+    app.mode = Mode::Sharing { idx: publish, editing: None, armed: false };
+    golden("sharing_publish_120x30", &render(&app, 120, 30));
 }
 
-/// The same dialog once shared: the two invite rows, the code that is out,
-/// four members in four states — the owner, a contributor, one waiting for
-/// a key, one removed — and the way to stop; the sync word and the drafts
-/// waiting in the frame's title. The cursor is on the contributor, whose
-/// detail says what Enter does to them.
+/// Once shared, as the owner: the two invite rows, the code that is out,
+/// four members in four states — the owner, a contributor, one waiting
+/// for a key, one removed — and the way to stop; the sync word and the
+/// drafts waiting in the frame's title. The cursor is on the contributor,
+/// whose detail says what Enter does to them.
 #[test]
-fn golden_share_members_120() {
+fn golden_sharing_members_120() {
     let mut app = app_graphite(fixture_archived());
     app.team = crate::app::shared_team_fixture();
+    app.seed_team_drafts_for_test();
     let dana = app
-        .share_rows()
+        .sharing_rows()
         .iter()
-        .position(|r| matches!(r, crate::app::ShareRow::Member(d) if d.starts_with("dd")))
+        .position(|r| matches!(r, SharingRow::Member(d) if d.starts_with("dd")))
         .expect("dana");
-    app.mode = Mode::Share { idx: dana, armed: false };
+    app.mode = Mode::Sharing { idx: dana, editing: None, armed: false };
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("SHARING ∙ OFFLINE ∙ 2 DRAFTS")), "{rows:?}");
-    golden("share_members_120x30", &rows);
+    golden("sharing_members_120x30", &rows);
 }
 
-/// The team boards dialog (T-335): the join row, then the boards the relay
-/// lists — this one (open now), one Dana can open, one she owns from a
-/// checkout elsewhere — with the identity in the frame's title. The cursor
-/// is on the board Enter would open.
+/// A joined board as a contributor (T-335): the members and `Leave this
+/// board`, then the boards — this one (open now), one Dana can open, one
+/// she owns from a checkout elsewhere. The cursor is on the board Enter
+/// would open.
 #[test]
-fn golden_team_boards_120() {
+fn golden_sharing_joined_120() {
     let mut app = app_graphite(fixture_archived());
     app.team = crate::app::joined_team_fixture();
-    app.mode = Mode::TeamBoards { idx: 2, joining: None };
-    let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("TEAM BOARDS ∙ DANA")), "{rows:?}");
-    golden("team_boards_120x30", &rows);
+    app.seed_team_drafts_for_test();
+    let rows = app.sharing_rows();
+    let join = rows.iter().position(|r| *r == SharingRow::Join).expect("join");
+    app.mode = Mode::Sharing { idx: join + 2, editing: None, armed: false };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|r| r.contains("Sam's board ∙ viewer")), "{lines:?}");
+    golden("sharing_joined_120x30", &lines);
 }
 
-/// The same dialog with the join row open as a field, a code half pasted:
-/// `Code: ` leads the field and the edge reads the text field's keys.
+/// The join row open as a field, a code half pasted: `Code: ` leads the
+/// field and the edge reads the text field's keys.
 #[test]
-fn golden_team_boards_joining_120() {
+fn golden_sharing_joining_120() {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
     let mut app = app_graphite(fixture_archived());
     app.team = crate::app::joined_team_fixture();
-    app.mode = Mode::TeamBoards { idx: 0, joining: None };
+    app.seed_team_drafts_for_test();
+    let join = app.sharing_rows().iter().position(|r| *r == SharingRow::Join).expect("join");
+    app.mode = Mode::Sharing { idx: join, editing: None, armed: false };
     app.handle_key(KeyCode::Enter, KeyModifiers::NONE).expect("enter");
     for c in "7A3K-M9Q2-XB4D".chars() {
         app.handle_key(KeyCode::Char(c), KeyModifiers::NONE).expect("type");
     }
-    assert!(matches!(app.mode, Mode::TeamBoards { joining: Some(_), .. }), "{:?}", app.mode);
-    golden("team_boards_joining_120x30", &render(&app, 120, 30));
-}
-
-/// A joined board as a contributor (T-335): the ordinary board with no
-/// session glyphs, no worktree marks and no session hint in the footer;
-/// the sync clause at the footer's right edge; and the card Amit changed
-/// last wearing his initials.
-#[test]
-fn golden_board_remote_120() {
-    let mut b = fixture(false);
-    b.sessions.clear();
-    let mut app = app_graphite(b);
-    app.team = crate::app::joined_team_fixture();
-    app.cursor_col = 1;
-    app.cursor_row = Some(0);
-    let rows = render(&app, 120, 30);
-    let footer = rows.last().expect("footer");
-    assert!(footer.contains("Synced ∙ 3 members"), "{footer}");
-    assert!(!footer.contains("claude"), "{footer}");
-    assert!(rows.iter().any(|r| r.contains("Decay treatments") && r.contains(" AO ")), "{rows:?}");
-    golden("board_remote_120x30", &rows);
-}
-
-/// The same board as a viewer, offline with two drafts waiting: the footer
-/// carries no edit key and says why, and the drafts outrank the members.
-#[test]
-fn golden_board_viewer_offline_120() {
-    let mut b = fixture(false);
-    b.sessions.clear();
-    let mut app = app_graphite(b);
-    let mut team = crate::app::joined_team_fixture();
-    if let Some(board) = team.board.as_mut() {
-        board.role = "viewer".into();
-        board.sync.state = "offline".into();
-        board.sync.drafts = 2;
-    }
-    app.team = team;
-    app.cursor_col = 1;
-    app.cursor_row = Some(0);
-    let rows = render(&app, 120, 30);
-    let footer = rows.last().expect("footer");
-    assert!(footer.contains("Offline ∙ 2 drafts ∙ you read only"), "{footer}");
-    for absent in ["rename", "note", "archive", "grab"] {
-        assert!(!footer.contains(absent), "{absent}: {footer}");
-    }
-    golden("board_viewer_offline_120x30", &rows);
+    assert!(matches!(app.mode, Mode::Sharing { editing: Some(_), .. }), "{:?}", app.mode);
+    golden("sharing_joining_120x30", &render(&app, 120, 30));
 }
 
 /// Off, the list is a SINGLE row: four settings for a thing that is not

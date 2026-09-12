@@ -9,13 +9,14 @@
 
 
 
-                           ╭─ TEAM ─────────────────────────────────────────────────────────╮
+                           ╭─ SHARING ──────────────────────────────────────────────────────╮
+                           │ YOU                                                            │
                            │   Relay: not set                                               │
                            │   Display name: not set                                        │
                            │   Sign in                                                      │
                            │                                                                │
                            │     where shared boards meet ∙ enter edits                     │
-                           ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+                           ╰─────────────────────────── jk select ∙ enter edit ∙ esc close ─╯
 
 
 
@@ -26,5 +27,4 @@
 
 
 
-
- TEAM  jk select ∙ enter choose ∙ esc back                                                                       ? keys
+ SHARING  jk select ∙ enter edit ∙ esc close                                                                     ? keys

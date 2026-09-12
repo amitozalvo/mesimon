@@ -15,9 +15,9 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::UnicodeWidthStr;
 
-use mesimon_core::keymap::{self, MenuItem, Scope, Verb};
+use mesimon_core::keymap::{self, MenuItem, Scope};
 
-use crate::app::{App, ColumnSubject, Mode};
+use crate::app::{App, ColumnSubject, Mode, SharingRow};
 use crate::text::{marquee_offset, marquee_window, truncate};
 
 use super::dialog;
@@ -80,33 +80,23 @@ pub(super) fn draw_prompts(f: &mut Frame, app: &App) {
 /// The team list (T-334), one level under Settings: the relay and the
 /// display name are fields in place like the prompt list's rows, and the
 /// lead keeps the row's name in front of the field.
-pub(super) fn draw_team(f: &mut Frame, app: &App) {
-    let Mode::Team { idx, editing, .. } = &app.mode else { return };
-    let ctx = app.ctx();
-    let items = keymap::team_items(&ctx);
-    let lead = match items.get(*idx).map(|m| m.verb) {
-        Some(Verb::TeamRelay) => "Relay: ",
-        Some(Verb::TeamName) => "Display name: ",
-        _ => "",
-    };
-    let field = editing.as_ref().map(|b| (lead, b));
-    draw_dense(f, app, &ctx, *idx, "TEAM", &items, field);
-}
-
-/// The sharing dialog (T-334). Its rows are the board's members, so they
-/// come from `App::share_rows` rather than a static list, and the frame's
+/// The sharing dialog (T-334; one dialog since T-335): the identity, this
+/// board and the boards this device belongs to, each under a heading the
+/// cursor skips. The rows come from `App::sharing_rows`; a row that is a
+/// field (the relay, the name, a code) is edited in place; the frame's
 /// title carries the sync word and the drafts waiting to go.
-pub(super) fn draw_share(f: &mut Frame, app: &App) {
-    let Mode::Share { idx, armed } = &app.mode else { return };
-    let rows = app.share_rows();
+pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
+    let Mode::Sharing { idx, editing, armed } = &app.mode else { return };
+    let rows = app.sharing_rows();
     let words: Vec<(String, String)> = rows
         .iter()
         .enumerate()
         .map(|(i, r)| {
-            let (label, detail, _) = app.share_words(r, *armed && i == *idx);
+            let (label, detail, _) = app.sharing_words(r, *armed && i == *idx);
             (label, detail)
         })
         .collect();
+    let headings: Vec<bool> = rows.iter().map(|r| matches!(r, SharingRow::Heading(_))).collect();
     let title = match &app.team.board {
         Some(b) => {
             let mut t = format!("SHARING ∙ {}", b.sync.state.to_uppercase());
@@ -117,30 +107,14 @@ pub(super) fn draw_share(f: &mut Frame, app: &App) {
         }
         None => "SHARING".to_string(),
     };
-    draw_rows(f, app, *idx, &title, &words, None);
-}
-
-/// The team boards dialog (T-335): the join row — a field while a code is
-/// typed — then one row a board, off `App::boards_rows`. The frame's title
-/// carries the identity the boards belong to.
-pub(super) fn draw_boards(f: &mut Frame, app: &App) {
-    let Mode::TeamBoards { idx, joining } = &app.mode else { return };
-    let rows = app.boards_rows();
-    let words: Vec<(String, String)> = rows
-        .iter()
-        .map(|r| {
-            let (label, detail, _) = app.boards_words(r);
-            (label, detail)
-        })
-        .collect();
-    let title = match &app.team.device {
-        Some(d) if !d.display_name.is_empty() => {
-            format!("TEAM BOARDS ∙ {}", d.display_name.to_uppercase())
-        }
-        _ => "TEAM BOARDS".to_string(),
+    let lead = match rows.get(*idx) {
+        Some(SharingRow::Relay) => "Relay: ",
+        Some(SharingRow::Name) => "Display name: ",
+        Some(SharingRow::Join) => "Code: ",
+        _ => "",
     };
-    let field = joining.as_ref().map(|b| ("Code: ", b));
-    draw_rows(f, app, *idx, &title, &words, field);
+    let field = editing.as_ref().map(|b| (lead, b));
+    draw_rows(f, app, *idx, &title, &words, &headings, field);
 }
 
 fn draw_dense(
@@ -154,17 +128,19 @@ fn draw_dense(
 ) {
     let words: Vec<(String, String)> =
         items.iter().map(|m| ((m.label)(ctx), (m.detail)(ctx))).collect();
-    draw_rows(f, app, idx, name, &words, field);
+    draw_rows(f, app, idx, name, &words, &[], field);
 }
 
 /// One line a row, the selected row's detail on the last inner line, and
-/// an optional text field in place of the selected row's label.
+/// an optional text field in place of the selected row's label. A row
+/// `headings` marks is a section's name: drawn quiet, never selected.
 fn draw_rows(
     f: &mut Frame,
     app: &App,
     idx: usize,
     name: &str,
     items: &[(String, String)],
+    headings: &[bool],
     field: Option<(&str, &crate::text::EditBuffer)>,
 ) {
     let theme = &app.theme;
@@ -191,8 +167,11 @@ fn draw_rows(
     let mut cursor_at: Option<(u16, u16)> = None;
     for (i, item) in items.iter().enumerate() {
         let selected = i == idx;
+        let heading = headings.get(i).copied().unwrap_or(false);
         let style = if selected {
             theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else if heading {
+            theme.dim3()
         } else {
             theme.base()
         };
@@ -207,10 +186,13 @@ fn draw_rows(
             }
             _ => truncate(&item.0, inner_w.saturating_sub(4)),
         };
-        let pad = inner_w.saturating_sub(3 + text.width());
+        // A heading sits one cell in, its rows three: the indent is the
+        // section, the way the settings groups read.
+        let lead = if heading { " " } else { "   " };
+        let pad = inner_w.saturating_sub(lead.len() + text.width());
         lines.push(
             Line::from(vec![
-                Span::raw("   "),
+                Span::raw(lead),
                 Span::styled(text, style),
                 Span::raw(" ".repeat(pad)),
             ])
