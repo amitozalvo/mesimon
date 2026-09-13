@@ -18,6 +18,9 @@ pub const SETTLE_MS: u64 = 1500;
 /// Leaving `Throttled` settles longer (11 §11.7.4).
 pub const THROTTLE_LEAVE_MS: u64 = 5000;
 /// A `RequiresAction` with no clearing event demotes — never latches red.
+/// Measured from the last time the wait was AFFIRMED, not from entry: a
+/// dialog the transcript still shows open is a wait that has not lost its
+/// clearing event (T-363).
 pub const STALE_DEMOTE_MS: u64 = 15 * 60 * 1000;
 /// Flap guard: more than this many debounced changes inside the window pins.
 pub const FLAP_MAX: usize = 4;
@@ -428,6 +431,12 @@ pub struct Machine {
     state: SessionState,
     confidence: Confidence,
     entered_at: u64,
+    /// When the current state was last stated or restated — entry, or a
+    /// later signal re-affirming it. The stale clock runs from here, so an
+    /// attention state the evidence keeps confirming never demotes (T-363:
+    /// a plan left open over lunch went `?` at fifteen minutes while the
+    /// agent still waited on it).
+    affirmed_at: u64,
     pending: Option<Pending>,
     /// Timestamps of committed (debounced) changes, for the flap guard.
     committed: Vec<u64>,
@@ -474,6 +483,7 @@ impl Machine {
             state,
             confidence,
             entered_at: now,
+            affirmed_at: now,
             pending: None,
             committed: Vec::new(),
             pinned_until: None,
@@ -634,6 +644,14 @@ impl Machine {
             // confirming signal may raise confidence, never state; High is
             // discriminant 0, so "raise" is the lower value.
             self.pending = None;
+            // ...and re-arms the stale clock: that clock catches a wait whose
+            // clearing event was lost, and a wait restated is one that has
+            // not cleared. The transcript tail is the source that repeats —
+            // the recovery adapter re-reads a pending `ExitPlanMode` or
+            // `AskUserQuestion` off the tail once a minute for as long as the
+            // dialog is open (T-363). Any confidence: the clock is not a
+            // claim about the state, only about its age.
+            self.affirmed_at = now;
             if (conf as u8) < (self.confidence as u8) {
                 self.confidence = conf;
                 // The daemon must persist/publish the stronger evidence and
@@ -669,8 +687,9 @@ impl Machine {
         if self.pending.as_ref().is_some_and(|p| now >= p.deadline) {
             return self.flush(now);
         }
-        // Stale demotion: never latch red (11 §11.7.4).
-        if is_attention(&self.state) && now.saturating_sub(self.entered_at) >= STALE_DEMOTE_MS {
+        // Stale demotion: never latch red (11 §11.7.4) — but never drop a
+        // wait the evidence keeps affirming either (T-363).
+        if is_attention(&self.state) && now.saturating_sub(self.affirmed_at) >= STALE_DEMOTE_MS {
             let to = SessionState::Unknown { reason: UnknownReason::NoSignal };
             return Some(self.commit(to, Confidence::Stale, now));
         }
@@ -696,6 +715,7 @@ impl Machine {
             self.recent_left = Some((*reason, now));
         }
         self.entered_at = now;
+        self.affirmed_at = now;
 
         // Flap guard: >FLAP_MAX committed changes in the window pins the
         // machine at the state just committed. (Deviation from 11 §11.7.4's
@@ -1978,6 +1998,28 @@ mod tests {
         assert_eq!(c.to, SessionState::unknown());
         assert_eq!(c.confidence, Confidence::Stale);
         assert!(!c.attention_added);
+    }
+
+    /// T-363: a plan dialog left open for an hour is still a plan dialog.
+    /// The recovery adapter restates the wait off the transcript tail while
+    /// the dialog is open, and every restatement re-arms the clock; the
+    /// demote fires fifteen minutes after the LAST affirmation, so a wait
+    /// whose clearing event really was lost still never latches red.
+    #[test]
+    fn a_restated_wait_re_arms_the_stale_clock() {
+        let mut m = m(SessionState::Running);
+        m.apply(&Signal::PreToolUse { tool: AttentionTool::ExitPlanMode }, 1000).unwrap();
+        let affirmed = 1000 + 10 * 60 * 1000;
+        assert!(
+            m.apply(&Signal::TranscriptHint { kind: TailHint::ExitPlanMode }, affirmed).is_none(),
+            "a restatement is not a transition"
+        );
+        assert_eq!(m.confidence(), Confidence::High, "a Low restatement never lowers a High state");
+        assert!(m.tick(1000 + STALE_DEMOTE_MS).is_none(), "the clock runs from the affirmation");
+        assert!(m.tick(affirmed + STALE_DEMOTE_MS - 1).is_none());
+        let c = m.tick(affirmed + STALE_DEMOTE_MS).expect("unaffirmed for fifteen minutes");
+        assert_eq!(c.to, SessionState::unknown());
+        assert_eq!(c.confidence, Confidence::Stale);
     }
 
     #[test]

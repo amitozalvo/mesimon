@@ -9,12 +9,32 @@ use mesimon_core::board::{Provenance, Reason, SessionRecord, SessionState};
 use std::path::PathBuf;
 
 const TAIL_QUIET_MS: u64 = 45_000;
+/// How often a held plan or question is re-read off the transcript tail
+/// while its dialog is open. The machine's stale clock is fifteen minutes;
+/// one 64 KiB read a minute per waiting session keeps it re-armed with
+/// margin to spare (T-363).
+const WAIT_AFFIRM_MS: u64 = 60_000;
 
 #[derive(Default)]
 pub(super) struct ClaudeRecovery {
     startup_stage: u8,
     cursor: Option<TailCursor>,
     status: Option<StatusProbe>,
+    /// Last time a held plan/question was looked for on the tail; `None`
+    /// since the cursor was minted, so the first poll looks at once.
+    affirmed_at: Option<u64>,
+}
+
+/// The transcript's word for a held dialog: the tail event that says THIS
+/// reason's tool is still pending. Only the two interaction tools have one —
+/// a generic permission dialog leaves a tool call the transcript cannot tell
+/// from a running tool.
+fn pending_dialog(reason: Reason) -> Option<(TailTool, TailHint)> {
+    match reason {
+        Reason::Plan => Some((TailTool::ExitPlanMode, TailHint::ExitPlanMode)),
+        Reason::Question => Some((TailTool::AskUserQuestion, TailHint::AskUserQuestion)),
+        _ => None,
+    }
 }
 
 fn observe_only(record: &SessionRecord) -> bool {
@@ -174,13 +194,34 @@ impl ClaudeRecovery {
             None
         };
         if fresh {
-            self.cursor = Some(TailCursor::at_end(path, now));
+            self.cursor = Some(TailCursor::at_end(path.clone(), now));
+            self.affirmed_at = None;
         }
         let Some(cursor) = self.cursor.as_mut() else { return Vec::new() };
         let lines = cursor.poll(now);
         let quiet = now.saturating_sub(cursor.grew_at);
         let mut hints = Vec::new();
         hints.extend(backfill.map(|hint| (hint, None)));
+        // A held plan or question is restated off the tail while its dialog
+        // is open, so the machine's stale clock never fires on a wait that is
+        // real (T-363: three plan cards on the simbly board went `?` fifteen
+        // minutes in, with the agent still waiting). The clearing roads are
+        // untouched — the answer's `PostToolUse`, the Esc's aborted record
+        // below, the next prompt — and a tail that no longer shows the
+        // dialog (a lost answer frame) affirms nothing, so the clock still
+        // demotes that one.
+        if let SessionState::RequiresAction { reason } = &record.state {
+            if let Some((tool, hint)) = pending_dialog(*reason) {
+                if abort_only
+                    && self.affirmed_at.is_none_or(|at| now.saturating_sub(at) >= WAIT_AFFIRM_MS)
+                {
+                    self.affirmed_at = Some(now);
+                    if tail::last_event(&path) == Some(TailEvent::NeedsHuman { tool }) {
+                        hints.push((hint, None));
+                    }
+                }
+            }
+        }
         for line in &lines {
             let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else { continue };
             match classify_tail_record(&value) {
@@ -509,6 +550,55 @@ mod recovery_tests {
         record.state = SessionState::Sleeping;
         assert!(!recovery.needs_poll(&record, RecoveryChannel::Transcript, 100_003));
         assert!(recovery.cursor.is_none());
+    }
+
+    /// T-363: a plan card went `?` at fifteen minutes while the dialog was
+    /// still open. While the record holds a plan or question and the tail's
+    /// last event is that tool's pending call, the adapter restates the
+    /// wait once a minute; once the transcript moves on it says nothing.
+    #[test]
+    fn a_held_dialog_is_restated_off_the_tail_once_a_minute() {
+        let history = History::new();
+        history.append(serde_json::json!({"uuid":"ask", "type":"assistant", "message":{
+            "stop_reason":"tool_use", "content":[{"type":"tool_use","id":"call1","name":"ExitPlanMode","input":{}}]}}));
+        // The uuid-less latch records Claude Code writes after the call.
+        history.append(serde_json::json!({"type":"last-prompt", "lastPrompt":"plan it"}));
+        let mut record = record(SessionState::RequiresAction { reason: Reason::Plan });
+        record.transcript_path = Some(history.0.display().to_string());
+        let mut recovery = ClaudeRecovery::default();
+        assert!(recovery.needs_poll(&record, RecoveryChannel::Transcript, 1000));
+        let first = recovery.poll(&record, RecoverySample::Transcript, 1000);
+        assert!(matches!(
+            first[..],
+            [RecoveryObservation {
+                signal: Signal::TranscriptHint { kind: TailHint::ExitPlanMode },
+                ..
+            }]
+        ));
+        assert!(
+            recovery.poll(&record, RecoverySample::Transcript, 30_000).is_empty(),
+            "rate-limited"
+        );
+        let again = recovery.poll(&record, RecoverySample::Transcript, 61_000);
+        assert!(matches!(
+            again[..],
+            [RecoveryObservation {
+                signal: Signal::TranscriptHint { kind: TailHint::ExitPlanMode },
+                ..
+            }]
+        ));
+        // A question's record does not affirm a plan.
+        record.state = SessionState::RequiresAction { reason: Reason::Question };
+        assert!(recovery.poll(&record, RecoverySample::Transcript, 130_000).is_empty());
+        // Answered: the tool result is the last word, and the wait is over.
+        record.state = SessionState::RequiresAction { reason: Reason::Plan };
+        history.append(serde_json::json!({"uuid":"answer", "type":"user", "message":{
+            "content":[{"type":"tool_result","tool_use_id":"call1","content":"User has approved your plan."}]}}));
+        assert!(recovery.poll(&record, RecoverySample::Transcript, 200_000).is_empty());
+        // Nothing for a permission: the transcript cannot tell that dialog
+        // from a running tool.
+        record.state = SessionState::RequiresAction { reason: Reason::Permission };
+        assert!(recovery.poll(&record, RecoverySample::Transcript, 300_000).is_empty());
     }
 
     #[test]

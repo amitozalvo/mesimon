@@ -10351,3 +10351,45 @@ still claims row 0 when anything waits and pushes the pair down one row, unchang
 `the_folded_column_caps_its_count_at_nine_plus` pins thirteen as `9` over `⁺` with `DONE` under
 them on the rows a one-digit count uses. No golden moved — every fixture spine holds fewer than
 ten. Nothing else moved — no `Command`, no snapshot field, no schema, no key, no preference.
+
+## A held plan is not stale (T-363, 2026-09-13, user: "pending plan ticket stop showing 'needs you' mark after a while")
+
+Three plan cards on the simbly board lost their mark with the agent still waiting on the plan.
+The feed is exact: `requires_action ∙ plan` at seq 745, `unknown ∙ no_signal ∙ stale` at seq 817,
+900,125 ms later — the machine's 15-minute stale demote, which measured a `RequiresAction`'s age
+from entry and asked no evidence before dropping it. The user's approval landed at seq 830 on a
+card that already read `?`. 11 §11.7.4's rule ("never latch red") was written for a wait that
+lost its clearing event — an Esc on a dialog fires no hook — and it cannot tell that wait from a
+person at lunch.
+
+**The clock now runs from the last affirmation, not from entry.** `Machine` carries
+`affirmed_at` beside `entered_at`; a commit sets both, and a signal whose target is the current
+state — the re-affirmation branch that already cancelled a pending leave — resets `affirmed_at`.
+`tick`'s demote reads `affirmed_at`. Nothing else in the machine moved: `STALE_DEMOTE_MS` is
+still fifteen minutes, ranks are D28's, and `stale_demotes_after_15min_never_latches` still
+passes, because a wait nobody restates demotes exactly as before.
+
+**The transcript is what restates it.** While a Claude record holds `Plan` or `Question`, the
+recovery adapter's transcript channel (already polling that record for the Esc's aborted record)
+reads `tail::last_event` once a minute (`WAIT_AFFIRM_MS`) and, when the last uuid-bearing record
+is that reason's own pending tool call, emits the matching `TranscriptHint`. Verified against a
+live transcript: after the `ExitPlanMode` call Claude Code writes only uuid-less `last-prompt` and
+`cost-state` latch records, which `last_event` skips, until the answer's `tool_result`. The hint
+is Low and the machine's re-affirmation branch never lowers a High state, so the card stays as
+the hook stated it. The clearing roads are untouched: the answer is a `PostToolUse` frame, the
+Esc is the aborted record the same poll already catches, the next prompt is `UserPromptSubmit`.
+A lost answer frame affirms nothing — the tail then ends in the `tool_result` — so that wait
+still demotes at fifteen minutes, which is the case the clock was for.
+
+**Not `Permission`.** A generic permission dialog leaves an ordinary tool call in the transcript,
+indistinguishable from a tool that is running, so `pending_dialog` has no arm for it and a
+permission left open still demotes at fifteen minutes. Claude's session file says `waiting` for
+that dialog (`StatusProbe::permission_resumed` already reads it), and a later ticket can affirm a
+held permission off that word the same way; it is a different evidence channel and was not asked
+for here.
+
+Pinned three ways: `a_restated_wait_re_arms_the_stale_clock` (core), `a_held_dialog_is_restated_off_the_tail_once_a_minute`
+(the adapter: once a minute, only the matching tool, nothing once the answer is the last word,
+nothing for a permission), and `docs/state-scenarios/held-plan-outlives-the-stale-clock.json`
+(the field timeline through the production replay). No `Command`, no snapshot field, no schema,
+no key; a running daemon picks it up on restart (`U`).

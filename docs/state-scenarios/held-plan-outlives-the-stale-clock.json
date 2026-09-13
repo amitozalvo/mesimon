@@ -1,0 +1,95 @@
+{
+  "schema": 1,
+  "id": "held-plan-outlives-the-stale-clock",
+  "title": "A plan dialog the transcript still shows open is not demoted at fifteen minutes",
+  "provenance": {
+    "kind": "dogfood_regression",
+    "board": "simbly",
+    "date": "2026-09-13",
+    "ticket": "T-363",
+    "note": "Three plan cards went unknown/no_signal exactly 900 s after entering PLAN (feed seq 745 -> 817) with the agent still waiting; the user's approval landed at seq 830 on a card that already read '?'. Timings virtual."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 1000,
+      "input": {
+        "source": "hook",
+        "event": "PreToolUse",
+        "payload": {
+          "tool_name": "ExitPlanMode",
+          "tool_input": {}
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "plan"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "high"
+      }
+    },
+    {
+      "at_ms": 601000,
+      "input": {
+        "source": "transcript",
+        "record": {
+          "uuid": "ask",
+          "type": "assistant",
+          "message": {
+            "stop_reason": "tool_use",
+            "content": [
+              {
+                "type": "tool_use",
+                "id": "call1",
+                "name": "ExitPlanMode",
+                "input": {}
+              }
+            ]
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "plan"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "high"
+      }
+    },
+    {
+      "at_ms": 901000,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "requires_action",
+          "reason": "plan"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "high"
+      }
+    },
+    {
+      "at_ms": 1501000,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "unknown",
+          "reason": "no_signal"
+        },
+        "column": "IN PROGRESS",
+        "confidence": "stale"
+      }
+    }
+  ]
+}
