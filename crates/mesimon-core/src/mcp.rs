@@ -158,6 +158,7 @@ pub fn tools() -> Vec<Value> {
                             alone; the description and notes here are the rest of the \
                             brief, so this is the first call of a session.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "annotations": { "readOnlyHint": true },
         }),
         json!({
             "name": "list_board",
@@ -165,6 +166,7 @@ pub fn tools() -> Vec<Value> {
                             ticket's key, title and column. Session and process information \
                             is excluded.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
+            "annotations": { "readOnlyHint": true },
         }),
         json!({
             "name": "move_ticket",
@@ -201,6 +203,7 @@ pub fn tools() -> Vec<Value> {
                 "required": ["note"],
                 "additionalProperties": false,
             },
+            "annotations": { "readOnlyHint": true },
         }),
         json!({
             "name": "write_note",
@@ -727,12 +730,15 @@ pub fn tier_admits(tier: AgentTools, cmd: &Command) -> bool {
 
 /// The read-tier tools `tier` admits, spelled as Claude Code's
 /// `mcp__<server>__<tool>` permission names — the `--allowedTools` value a
-/// spawn carries (T-362). Claude Code prompts for every MCP tool that has no
-/// allow rule, in plan mode and default mode alike, and does not read an MCP
-/// `readOnlyHint`; so `get_ticket` asked on every turn. These three read the
-/// board and change nothing, which is exactly what plan mode lets run
-/// unasked. Writers are never here: `write_note` or `move_ticket` still
-/// prompt wherever the mode prompts. Empty at `Off`, so the flag is omitted.
+/// spawn carries (T-362). Measured on Claude Code 2.1.270: default and auto
+/// mode prompt for every MCP tool without an allow rule and ignore the MCP
+/// `readOnlyHint`; plan mode ignores allow rules and admits exactly the tools
+/// whose `annotations.readOnlyHint` is true, refusing the rest outright. So
+/// the read rung carries both — this flag for default mode, the annotation
+/// in `tools()` for plan mode — and `read_rung_is_hinted_read_only` keeps
+/// the two lists the same one. Writers are never here: `write_note` or
+/// `move_ticket` still prompt wherever the mode prompts. Empty at `Off`, so
+/// the flag is omitted.
 pub fn allowed_tool_names(tier: AgentTools) -> Vec<String> {
     tools_for(tier)
         .iter()
@@ -827,6 +833,25 @@ mod tests {
         assert!(allowed_tool_names(AgentTools::Off).is_empty());
         for tier in [AgentTools::Read, AgentTools::Annotate, AgentTools::Full] {
             assert_eq!(allowed_tool_names(tier), read, "{tier:?}");
+        }
+    }
+
+    /// Plan mode reads `annotations.readOnlyHint` and nothing else (T-362,
+    /// measured on 2.1.270), so the read rung carries it and no writer does —
+    /// the annotation and `allowed_tool_names` are one list, two spellings.
+    #[test]
+    fn read_rung_is_hinted_read_only() {
+        for t in tools() {
+            let name = t["name"].as_str().unwrap();
+            let hinted = t["annotations"]["readOnlyHint"] == json!(true);
+            let read = tier_needed_by_tool(name) == Some(AgentTools::Read);
+            assert_eq!(hinted, read, "{name}: readOnlyHint {hinted}, read rung {read}");
+            assert!(
+                t["annotations"]
+                    .as_object()
+                    .is_none_or(|a| a.len() == 1 && a.contains_key("readOnlyHint")),
+                "{name}: readOnlyHint is the only annotation; title is text the model reads"
+            );
         }
     }
 

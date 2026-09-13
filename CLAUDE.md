@@ -407,6 +407,9 @@ will not show up in our tests until they break something.
   signals only, and a stated High signal commits through it.
 - **`probe_activity` only scans `Running`**, which is what makes `Idle{Background}` immune to it.
 - **`log` is a zsh builtin** — use `/usr/bin/log`.
+- **Plan mode admits an MCP tool only on `annotations.readOnlyHint: true` and ignores allow
+  rules; default and auto mode admit only on an allow rule and ignore the hint** (2.1.270). A
+  read tool needs both, and `read_rung_is_hinted_read_only` keeps them one list.
 
 ## Test infrastructure
 

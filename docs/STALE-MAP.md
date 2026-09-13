@@ -10440,24 +10440,45 @@ ones show board scope (`settings_behaviour_board_120x30`, `settings_appearance_b
 `notifications_board_120x30`, `theme_picker_board_120x30`). The reverse direction — the machine
 overriding a board setting — stays out of scope, unargued.
 
-## The read tools are pre-approved on argv (T-362, 2026-09-13, user: "plan mode keep asking for permission for mesimon read ticket ∙ how to mitigate?")
+## The read tools are pre-approved on argv and hinted read-only (T-362, 2026-09-13, user: "plan mode keep asking for permission for mesimon read ticket ∙ how to mitigate?")
 
-Claude Code prompts for every MCP tool that has no allow rule — in plan mode and in default
-mode alike — and does not read an MCP `readOnlyHint` annotation (checked against the current
-docs: the only annotation it honours is `anthropic/requiresUserInteraction`, which forces a
-prompt). So `get_ticket`, the call every session is told to make first, asked on every turn of
-a plan-mode session. The repair is one more pair on the argv `flags()` already builds:
-`--allowedTools mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_note`.
-`mcp::allowed_tool_names(tier)` is the rule — the read rung of `tools_for(tier)`, never a
-writer, so `write_note` and `move_ticket` still prompt wherever the mode prompts; empty at
-`Off`, where the flag is omitted with the blob. Argv rather than a settings file, and rather
-than a `permissions.allow` block in the generated hook settings, because promise 2 forbids
-touching the user's config and the hook file should carry hooks. A live pane keeps its argv;
-`--allowedTools` joined the `owned` list in `resume`, so a wake refreshes it like the blob.
+`get_ticket`, the call every session is told to make first, asked for permission on every
+turn of a plan-mode session. The first cut of this ticket added one pair to the argv `flags()`
+already builds — `--allowedTools mcp__mesimon__get_ticket,mcp__mesimon__list_board,
+mcp__mesimon__read_note` — on the docs' word that allow rules apply in every mode and that
+Claude Code reads no MCP `readOnlyHint`. T-366 asked again with the flag on its argv, so the
+claim was measured instead, headless on Claude Code 2.1.270 with a stub stdio server carrying
+one hinted tool, one plain and one destructive-hinted:
 
-Pinned by `allowed_tools_are_the_read_rung_only` (core) and `agent_tools_e2e` (the flag and its
-value at `Full`, its absence at `Off`). `doctor --mcp` prints the pair. No wire change, no
-schema change; `CHANGELOG.md` gets its line at the next bump.
+- **Plan mode ignores allow rules for MCP tools** — `--allowedTools` on the plain tool still
+  reads `Cannot call … while in plan mode` — and admits exactly the tools whose
+  `annotations.readOnlyHint` is `true`, refusing the rest outright (no prompt headless; a
+  prompt in the TUI).
+- **Default and auto mode ignore `readOnlyHint`** — the hinted tool still prompts — and admit
+  exactly what an allow rule names.
+
+So the read rung carries both spellings, and they are one list: `mcp::allowed_tool_names(tier)`
+is the read rung of `tools_for(tier)` as `--allowedTools` (the flag for default and auto mode),
+and the three definitions in `tools()` carry `"annotations": { "readOnlyHint": true }` (the
+annotation for plan mode). `read_rung_is_hinted_read_only` pins the annotation to the rung
+both ways and admits no other annotation key — `annotations.title` is text the model reads
+and docs/15 lists it as an injection surface; the boolean is not. Writers are never in either
+list: `write_note` and `move_ticket` still prompt where the mode prompts and are refused in
+plan mode, which is what plan mode is for. Empty at `Off`, where the flag is omitted with the
+blob. Argv rather than a settings file, and rather than a `permissions.allow` block in the
+generated hook settings, because promise 2 forbids touching the user's config and the hook
+file should carry hooks. `--allowedTools` is variadic (it ate a positional prompt in the
+headless probe), so it must sit before another `--flag` on the argv, which `flags()` does; it
+joined the `owned` list in `resume`, so a wake refreshes it like the blob. A live pane keeps
+its argv and its `tools/list`, so a session spawned before this build must be woken.
+
+Verified against the real shim, headless, on 2.1.270: plan mode with the flag runs
+`get_ticket` and `list_board` and refuses `write_note`; default mode with the flag runs both
+reads unprompted. Pinned by `allowed_tools_are_the_read_rung_only` and
+`read_rung_is_hinted_read_only` (core) and `agent_tools_e2e` (the flag and its value at
+`Full`, its absence at `Off`); `every_tool_fits_the_budget` still holds with the annotation.
+`doctor --mcp` prints the pair. No wire change, no schema change; `CHANGELOG.md` gets its line
+at the next bump.
 
 ## The reply row is remembered (T-365, 2026-09-13, user: "remember peak setting between mesimon shutdowns")
 
