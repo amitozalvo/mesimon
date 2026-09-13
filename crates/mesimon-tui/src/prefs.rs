@@ -24,12 +24,14 @@ use std::path::{Path, PathBuf};
 use serde_json::{Map, Value};
 
 use mesimon_core::notify::Sound;
+use mesimon_core::prefs::PrefKey;
 use mesimon_core::snooze::Weekday;
 
 use crate::theme::{Flavor, Ground};
 
 pub(crate) const SCHEMA: u64 = 1;
 
+#[derive(Clone)]
 pub(crate) struct Prefs {
     pub dark: Flavor,
     pub light: Flavor,
@@ -122,19 +124,20 @@ impl Default for Prefs {
     }
 }
 
-const SNOOZE_KEY: &str = "snooze_needs_you";
-const WEEK_START_KEY: &str = "week_start";
-const MERGE_TRAIN_KEY: &str = "merge_train";
-const MERGE_TRAIN_NOTICE_KEY: &str = "merge_train_notice";
-const STATUS_TOP_KEY: &str = "status_line_top";
-const KEEP_AWAKE_KEY: &str = "keep_awake";
-const NOTIFY_KEY: &str = "notify";
-const NOTIFY_DONE_KEY: &str = "notify_done";
-const NOTIFY_FOCUSED_KEY: &str = "notify_focused";
-const NOTIFY_IN_PANE_KEY: &str = "notify_in_pane";
-const NOTIFY_WORDS_KEY: &str = "notify_words";
-const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = "notify_sound_needs_you";
-const NOTIFY_SOUND_DONE_KEY: &str = "notify_sound_done";
+// The JSON keys are `PrefKey::name()`, one list for both files (T-361).
+const SNOOZE_KEY: &str = PrefKey::SnoozeNeedsYou.name();
+const WEEK_START_KEY: &str = PrefKey::WeekStart.name();
+const MERGE_TRAIN_KEY: &str = PrefKey::MergeTrain.name();
+const MERGE_TRAIN_NOTICE_KEY: &str = PrefKey::MergeTrainNotice.name();
+const STATUS_TOP_KEY: &str = PrefKey::StatusTop.name();
+const KEEP_AWAKE_KEY: &str = PrefKey::KeepAwake.name();
+const NOTIFY_KEY: &str = PrefKey::Notify.name();
+const NOTIFY_DONE_KEY: &str = PrefKey::NotifyDone.name();
+const NOTIFY_FOCUSED_KEY: &str = PrefKey::NotifyFocused.name();
+const NOTIFY_IN_PANE_KEY: &str = PrefKey::NotifyInPane.name();
+const NOTIFY_WORDS_KEY: &str = PrefKey::NotifyWords.name();
+const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = PrefKey::NotifySoundNeedsYou.name();
+const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -173,6 +176,72 @@ impl Prefs {
         // A pick replaces whatever the slot held, a name from a newer build
         // included — this is the one write that outranks it.
         self.doc.insert(g.word().into(), Value::from(f.name()));
+    }
+
+    /// The machine's value overlaid with what one board sets (T-361). The
+    /// result is a VIEW: it is what every reader reads and it is never
+    /// saved — the machine file gets the machine copy, the board file the
+    /// board's — so the `doc` it carries is the machine's, unused.
+    pub(crate) fn overlay(&self, board: &BoardPrefs) -> Prefs {
+        let mut p = self.clone();
+        if let Some(f) = board.flavor(Ground::Dark) {
+            p.dark = f;
+        }
+        if let Some(f) = board.flavor(Ground::Light) {
+            p.light = f;
+        }
+        for (key, slot) in [
+            (PrefKey::SnoozeNeedsYou, &mut p.snooze_needs_you),
+            (PrefKey::MergeTrain, &mut p.merge_train),
+            (PrefKey::MergeTrainNotice, &mut p.merge_train_notice),
+            (PrefKey::KeepAwake, &mut p.keep_awake),
+            (PrefKey::Notify, &mut p.notify),
+            (PrefKey::NotifyDone, &mut p.notify_done),
+            (PrefKey::NotifyFocused, &mut p.notify_focused),
+            (PrefKey::NotifyInPane, &mut p.notify_in_pane),
+            (PrefKey::NotifyWords, &mut p.notify_words),
+        ] {
+            if let Some(v) = board.bool(key) {
+                *slot = v;
+            }
+        }
+        if let Some(v) = board.sound(PrefKey::NotifySoundNeedsYou) {
+            p.notify_sound_needs_you = v;
+        }
+        if let Some(v) = board.sound(PrefKey::NotifySoundDone) {
+            p.notify_sound_done = v;
+        }
+        p
+    }
+
+    /// What this copy holds for one key, as a word: `on`/`off`, a theme's
+    /// name, a sound's name, a day. The row's detail quotes it as "the
+    /// machine's".
+    pub(crate) fn word(&self, key: PrefKey) -> &'static str {
+        let onoff = |b: bool| if b { "on" } else { "off" };
+        match key {
+            PrefKey::Dark => self.dark.name(),
+            PrefKey::Light => self.light.name(),
+            PrefKey::SnoozeNeedsYou => onoff(self.snooze_needs_you),
+            PrefKey::WeekStart => self.week_start.name(),
+            PrefKey::MergeTrain => onoff(self.merge_train),
+            PrefKey::MergeTrainNotice => onoff(self.merge_train_notice),
+            PrefKey::StatusTop => {
+                if self.status_top {
+                    "top"
+                } else {
+                    "bottom"
+                }
+            }
+            PrefKey::KeepAwake => onoff(self.keep_awake),
+            PrefKey::Notify => onoff(self.notify),
+            PrefKey::NotifyDone => onoff(self.notify_done),
+            PrefKey::NotifyFocused => onoff(self.notify_focused),
+            PrefKey::NotifyInPane => onoff(self.notify_in_pane),
+            PrefKey::NotifyWords => onoff(self.notify_words),
+            PrefKey::NotifySoundNeedsYou => self.notify_sound_needs_you.name(),
+            PrefKey::NotifySoundDone => self.notify_sound_done.name(),
+        }
     }
 
     fn body(&self) -> String {
@@ -232,6 +301,161 @@ pub(crate) struct Loaded {
     pub write_barred: bool,
     /// One line for the status row at startup, or nothing.
     pub notice: Option<String>,
+}
+
+/// One board's overrides of the machine's preferences (T-361):
+/// `~/.local/state/mesimon/<proj16>/prefs.json`, the TUI's second file.
+/// SPARSE — it holds only the keys this board sets, and an absent key means
+/// "inherit the machine's". Kept as the loaded document, like `Prefs::doc`,
+/// so a key this build does not know survives a save; a value this build
+/// cannot parse (a newer build's theme name, say) reads as inherit and is
+/// not written over until a pick of that key replaces it. A machine-only key
+/// (`PrefKey::board_overridable` false) in the file is ignored by `overlay`
+/// and kept by `save`, in case a newer build made it overridable.
+#[derive(Default, Clone)]
+pub(crate) struct BoardPrefs {
+    doc: Map<String, Value>,
+}
+
+pub(crate) const BOARD_SCHEMA: u64 = 1;
+
+impl BoardPrefs {
+    pub(crate) fn bool(&self, key: PrefKey) -> Option<bool> {
+        if !key.board_overridable() {
+            return None;
+        }
+        self.doc.get(key.name()).and_then(Value::as_bool)
+    }
+
+    pub(crate) fn sound(&self, key: PrefKey) -> Option<Sound> {
+        if !key.board_overridable() {
+            return None;
+        }
+        self.doc.get(key.name()).and_then(Value::as_str).and_then(Sound::from_key)
+    }
+
+    pub(crate) fn flavor(&self, g: Ground) -> Option<Flavor> {
+        self.doc.get(g.word()).and_then(Value::as_str).and_then(Flavor::from_name)
+    }
+
+    /// Present AND readable by this build — what "set for this board" means.
+    pub(crate) fn is_set(&self, key: PrefKey) -> bool {
+        match key {
+            PrefKey::Dark => self.flavor(Ground::Dark).is_some(),
+            PrefKey::Light => self.flavor(Ground::Light).is_some(),
+            PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone => self.sound(key).is_some(),
+            PrefKey::WeekStart | PrefKey::StatusTop => false,
+            _ => self.bool(key).is_some(),
+        }
+    }
+
+    pub(crate) fn set_bool(&mut self, key: PrefKey, v: bool) {
+        debug_assert!(key.board_overridable() && key.is_bool());
+        self.doc.insert(key.name().into(), Value::from(v));
+    }
+
+    pub(crate) fn set_sound(&mut self, key: PrefKey, s: Sound) {
+        debug_assert!(matches!(key, PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone));
+        self.doc.insert(key.name().into(), Value::from(s.key()));
+    }
+
+    pub(crate) fn set_flavor(&mut self, g: Ground, f: Flavor) {
+        self.doc.insert(g.word().into(), Value::from(f.name()));
+    }
+
+    /// Back to inheriting: the key leaves the file.
+    pub(crate) fn clear(&mut self, key: PrefKey) {
+        self.doc.remove(key.name());
+    }
+
+    pub(crate) fn overridden(&self) -> Vec<PrefKey> {
+        PrefKey::ALL.iter().copied().filter(|k| self.is_set(*k)).collect()
+    }
+
+    fn body(&self) -> String {
+        let mut doc = self.doc.clone();
+        doc.insert("schema_version".into(), Value::from(BOARD_SCHEMA));
+        Value::Object(doc).to_string() + "\n"
+    }
+}
+
+#[derive(Default)]
+pub(crate) struct LoadedBoard {
+    pub prefs: BoardPrefs,
+    pub write_barred: bool,
+    pub notice: Option<String>,
+}
+
+/// Where this repo's overrides live, or `None` where the state dir cannot
+/// be derived (the repo path does not resolve).
+pub(crate) fn board_prefs_path(repo: &Path) -> Option<PathBuf> {
+    mesimon_daemon::Paths::for_repo(repo).ok().map(|p| p.prefs_file())
+}
+
+pub(crate) fn load_board(path: &Path) -> LoadedBoard {
+    let text = match std::fs::read_to_string(path) {
+        Ok(t) => t,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return LoadedBoard::default(),
+        Err(_) => return board_unreadable(),
+    };
+    let Ok(Value::Object(doc)) = serde_json::from_str::<Value>(&text) else {
+        return board_unreadable();
+    };
+    let schema = doc.get("schema_version").and_then(Value::as_u64).unwrap_or(0);
+    let prefs = BoardPrefs { doc };
+    if schema > BOARD_SCHEMA {
+        return LoadedBoard {
+            prefs,
+            write_barred: true,
+            notice: Some(
+                "this board's prefs.json was written by a newer mesimon ∙ board picks last this session only"
+                    .into(),
+            ),
+        };
+    }
+    LoadedBoard { prefs, write_barred: false, notice: None }
+}
+
+fn board_unreadable() -> LoadedBoard {
+    LoadedBoard {
+        prefs: BoardPrefs::default(),
+        write_barred: false,
+        notice: Some(
+            "this board's prefs.json is unreadable ∙ its overrides are off until the next pick rewrites it"
+                .into(),
+        ),
+    }
+}
+
+pub(crate) fn save_board(path: &Path, prefs: &BoardPrefs) -> anyhow::Result<()> {
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    mesimon_daemon::store::write_atomic(path, &prefs.body(), 0o644)
+}
+
+/// `mesimon doctor`'s `board prefs` line (T-361): which machine preferences
+/// this repo's board overrides, and what the machine holds for each.
+pub fn board_doctor_line(repo: &Path) -> String {
+    let Some(path) = board_prefs_path(repo) else {
+        return "none (the repo path does not resolve)".into();
+    };
+    let loaded = load_board(&path);
+    let set = loaded.prefs.overridden();
+    let mut line = if set.is_empty() {
+        "none ∙ Settings ∙ b sets one for this board".to_string()
+    } else {
+        let machine = load_home().prefs;
+        let resolved = machine.overlay(&loaded.prefs);
+        let ours: Vec<String> =
+            set.iter().map(|k| format!("{}: {}", k.name(), resolved.word(*k))).collect();
+        let theirs: Vec<&str> = set.iter().map(|k| machine.word(*k)).collect();
+        format!("{} ∙ (machine: {})", ours.join(" ∙ "), theirs.join(", "))
+    };
+    if let Some(n) = loaded.notice {
+        line = format!("{line} ∙ {n}");
+    }
+    line
 }
 
 /// `~/.local/state/mesimon/prefs.json` — keyed off `HOME` rather than
@@ -635,6 +859,117 @@ mod tests {
         let l = load(&p);
         assert_eq!(l.prefs.dark, Flavor::Graphite);
         assert!(!l.write_barred, "garbage is rewritten by the next pick");
+        assert!(l.notice.as_deref().unwrap_or("").contains("unreadable"));
+    }
+
+    /// One board's file overlays only what it sets (T-361): the machine's
+    /// train on, the board's off, everything else the machine's — and the
+    /// resolved view is what a reader reads, never what a save writes.
+    #[test]
+    fn a_board_file_overlays_only_what_it_sets() {
+        let mut machine = Prefs { merge_train: true, notify: true, ..Default::default() };
+        machine.set(Ground::Dark, Flavor::Blue);
+        let mut board = BoardPrefs::default();
+        board.set_bool(PrefKey::MergeTrain, false);
+        board.set_flavor(Ground::Light, Flavor::Amber);
+        board.set_sound(PrefKey::NotifySoundDone, Sound::Hero);
+        let r = machine.overlay(&board);
+        assert!(!r.merge_train, "the board's off wins");
+        assert!(r.notify, "untouched keys are the machine's");
+        assert_eq!(r.dark, Flavor::Blue);
+        assert_eq!(r.light, Flavor::Amber);
+        assert_eq!(r.notify_sound_done, Sound::Hero);
+        assert_eq!(
+            board.overridden(),
+            [PrefKey::Light, PrefKey::MergeTrain, PrefKey::NotifySoundDone]
+        );
+        assert_eq!(r.word(PrefKey::MergeTrain), "off");
+        assert_eq!(machine.word(PrefKey::MergeTrain), "on");
+    }
+
+    /// A board pick round-trips through its own file, and clearing it
+    /// drops the key — absent IS inherit, so the file never spells it.
+    #[test]
+    fn a_board_pick_round_trips_and_clear_drops_the_key() {
+        let p = scratch("board-roundtrip");
+        let mut b = BoardPrefs::default();
+        b.set_bool(PrefKey::KeepAwake, true);
+        save_board(&p, &b).unwrap();
+        let l = load_board(&p);
+        assert_eq!(l.prefs.bool(PrefKey::KeepAwake), Some(true));
+        assert!(l.notice.is_none() && !l.write_barred);
+        let text = std::fs::read_to_string(&p).unwrap();
+        assert!(text.contains("\"schema_version\":1"));
+        assert!(text.ends_with('\n'));
+        let mut b = l.prefs;
+        b.clear(PrefKey::KeepAwake);
+        save_board(&p, &b).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert!(v.get("keep_awake").is_none(), "{v}");
+        assert!(load_board(&p).prefs.overridden().is_empty());
+    }
+
+    /// A value this build cannot read is a newer build's pick: it reads as
+    /// INHERIT (the machine's value stands, one level up from the machine
+    /// file's "the default stands") and survives a save of something else.
+    #[test]
+    fn a_foreign_board_value_reads_as_inherit_and_survives_a_save() {
+        let p = scratch("board-foreign");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"sepia","notify_sound_done":"Klaxon"}"#)
+            .unwrap();
+        let mut l = load_board(&p);
+        assert!(!l.prefs.is_set(PrefKey::Dark));
+        assert!(!l.prefs.is_set(PrefKey::NotifySoundDone));
+        let machine = Prefs::default();
+        assert_eq!(machine.overlay(&l.prefs).dark, Flavor::Graphite);
+        l.prefs.set_bool(PrefKey::Notify, true);
+        save_board(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["dark"], "sepia", "not written over");
+        assert_eq!(v["notify_sound_done"], "Klaxon");
+        assert_eq!(v["notify"], true);
+    }
+
+    #[test]
+    fn a_newer_board_schema_is_read_and_never_written() {
+        let p = scratch("board-newer");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":9,"merge_train":true}"#).unwrap();
+        let l = load_board(&p);
+        assert!(l.write_barred);
+        assert!(l.notice.as_deref().unwrap_or("").contains("newer"));
+        assert_eq!(l.prefs.bool(PrefKey::MergeTrain), Some(true));
+    }
+
+    /// The two machine-only keys in a board file (a newer build may have
+    /// made them overridable) are ignored by the overlay and kept by a save.
+    #[test]
+    fn machine_only_keys_in_a_board_file_are_ignored_and_kept() {
+        let p = scratch("board-machine-only");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"status_line_top":true,"week_start":"sunday"}"#)
+            .unwrap();
+        let mut l = load_board(&p);
+        assert!(l.prefs.overridden().is_empty());
+        let r = Prefs::default().overlay(&l.prefs);
+        assert!(!r.status_top);
+        assert_eq!(r.week_start, Weekday::Monday);
+        l.prefs.set_bool(PrefKey::Notify, true);
+        save_board(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["status_line_top"], true);
+        assert_eq!(v["week_start"], "sunday");
+    }
+
+    #[test]
+    fn board_garbage_is_no_overrides_with_a_notice() {
+        let p = scratch("board-garbage");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, "not json").unwrap();
+        let l = load_board(&p);
+        assert!(l.prefs.overridden().is_empty());
+        assert!(!l.write_barred);
         assert!(l.notice.as_deref().unwrap_or("").contains("unreadable"));
     }
 }

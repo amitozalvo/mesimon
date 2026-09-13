@@ -16,6 +16,7 @@ use mesimon_core::command::{
     Command, DiffTarget, ExternalItem, GraceItem, MergeOutcome, Resources, Response, WorktreeItem,
 };
 use mesimon_core::keymap::{self, Ctx, Key, Scope, Verb};
+use mesimon_core::prefs::PrefKey;
 use mesimon_core::snooze::Preset;
 use ratatui::crossterm::event::{
     self, Event as TermEvent, KeyCode, KeyEvent, KeyEventKind, KeyModifiers,
@@ -1293,11 +1294,26 @@ pub struct App {
     /// every test app, and a machine with no HOME. This is the per-machine
     /// preference store the peek toggle (`p`) never had; carrying `p` here
     /// is a follow-up.
+    ///
+    /// `prefs` is the RESOLVED view (T-361): the machine's copy overlaid
+    /// with this board's overrides, what every reader reads and nothing
+    /// ever saves. `machine_prefs` is what `prefs.json` holds and gets;
+    /// `board_prefs` is the sparse per-repo file. A test seeds a preference
+    /// through `seed_pref`, never by assigning `prefs`: the next resolve
+    /// would put it back.
     pub prefs: crate::prefs::Prefs,
+    pub machine_prefs: crate::prefs::Prefs,
     pub prefs_path: Option<PathBuf>,
     /// A newer build wrote the file: picks last the session, nothing is
     /// written back.
     pub prefs_write_barred: bool,
+    pub board_prefs: crate::prefs::BoardPrefs,
+    pub board_prefs_path: Option<PathBuf>,
+    pub board_prefs_write_barred: bool,
+    /// The Settings dialog's scope (T-361): false is the machine's
+    /// preferences, true is this board's overrides. Reset when the dialog
+    /// opens; `b` flips it.
+    pub settings_board_scope: bool,
     /// The flavor query's reply, when it comes back after the query gave up
     /// on it, arrives as keystrokes; this recognises and discards it ahead
     /// of everything else (`osc.rs`).
@@ -1405,8 +1421,13 @@ impl App {
             ground: Ground::Dark,
             forced: None,
             prefs: Default::default(),
+            machine_prefs: Default::default(),
             prefs_path: None,
             prefs_write_barred: false,
+            board_prefs: Default::default(),
+            board_prefs_path: None,
+            board_prefs_write_barred: false,
+            settings_board_scope: false,
             reply_swallow: crate::osc::ReplySwallow::default(),
             update_watch: crate::update::UpdateWatch::new(),
             release,
@@ -2407,25 +2428,130 @@ impl App {
         self.forced.unwrap_or(self.prefs.for_ground(self.ground))
     }
 
+    /// The picker's rows: `Flavor::ALL`, with an inherit row first in board
+    /// scope (T-361).
+    pub(crate) fn theme_rows(&self) -> usize {
+        Flavor::ALL.len() + usize::from(self.settings_board_scope)
+    }
+
+    /// The flavor a picker row names; `None` is the inherit row.
+    pub(crate) fn theme_at(&self, idx: usize) -> Option<Flavor> {
+        let idx = idx.min(self.theme_rows() - 1);
+        if self.settings_board_scope {
+            idx.checked_sub(1).map(|i| Flavor::ALL[i])
+        } else {
+            Some(Flavor::ALL[idx])
+        }
+    }
+
     /// Enter in the picker: the slot the terminal is on takes the flavor,
-    /// and the file follows where it may. A pick outranks `MESIMON_THEME`
-    /// for the rest of the session — it is the more recent explicit choice —
-    /// but the env var still pins the next launch, and the status says so.
-    fn commit_theme(&mut self, flavor: Flavor) {
-        let slot = self.ground.word();
-        self.prefs.set(self.ground, flavor);
+    /// and the file follows where it may — the machine's, or this board's
+    /// in board scope, where the inherit row (`None`) drops the board's
+    /// pick. A pick outranks `MESIMON_THEME` for the rest of the session —
+    /// it is the more recent explicit choice — but the env var still pins
+    /// the next launch, and the status says so.
+    fn commit_theme(&mut self, pick: Option<Flavor>) {
+        let ground = self.ground;
+        let slot = ground.word();
         let pinned = self.forced.take().is_some();
         // Back to the settings list, where the theme row now reads the pick.
         self.return_to_settings(Verb::ThemePick);
-        self.preview(flavor);
-        let name = flavor.name();
-        self.status = match self.save_prefs(name) {
-            Ok(()) => format!("{name} saved for {slot} terminals"),
-            Err(why) => why,
-        };
+        if self.settings_board_scope {
+            match pick {
+                Some(f) => self
+                    .set_board_pref(&format!("{} for {slot} terminals", f.name()), |b| {
+                        b.set_flavor(ground, f)
+                    }),
+                None => {
+                    let key = if ground == Ground::Dark { PrefKey::Dark } else { PrefKey::Light };
+                    self.set_board_pref(&format!("{slot} theme inherits the machine's"), |b| {
+                        b.clear(key)
+                    })
+                }
+            }
+        } else {
+            let flavor = pick.unwrap_or(self.machine_prefs.for_ground(ground));
+            self.machine_prefs.set(ground, flavor);
+            self.resolve_prefs();
+            self.after_pref_change();
+            let name = flavor.name();
+            self.status = match self.save_prefs(name) {
+                Ok(()) => format!("{name} saved for {slot} terminals"),
+                Err(why) => why,
+            };
+        }
+        self.preview(self.resting_flavor());
         if pinned {
             let var = std::env::var("MESIMON_THEME").unwrap_or_default();
             self.status.push_str(&format!(" ∙ MESIMON_THEME={var} pins the next launch"));
+        }
+    }
+
+    /// In board scope, Enter on a preference row cycles this board's
+    /// override instead of the machine's value (T-361): true when it did,
+    /// so the caller does not also dispatch. The theme row is the one row
+    /// that still opens its picker, which knows the scope itself.
+    fn board_scope_takes(&mut self, verb: Verb, ctx: &Ctx) -> bool {
+        if !self.settings_board_scope || verb == Verb::ThemePick {
+            return false;
+        }
+        let Some(key) = keymap::pref_key(verb, ctx) else {
+            return false;
+        };
+        self.cycle_board_pref(key);
+        true
+    }
+
+    /// One step of the board's override: `inherit → on → off → inherit`
+    /// for a switch, `inherit → each sound → inherit` for a sound. A key the
+    /// machine keeps says so and does nothing.
+    fn cycle_board_pref(&mut self, key: PrefKey) {
+        use mesimon_core::notify::Sound;
+        if !key.board_overridable() {
+            self.status = format!("{} is the machine's ∙ b returns to its settings", key.label());
+            return;
+        }
+        let label = key.label();
+        match key {
+            PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone => {
+                let next = match self.board_prefs.sound(key) {
+                    None => Some(Sound::ALL[0]),
+                    Some(s) => {
+                        let i = Sound::ALL.iter().position(|x| *x == s).unwrap_or(0);
+                        Sound::ALL.get(i + 1).copied()
+                    }
+                };
+                match next {
+                    Some(s) => {
+                        self.set_board_pref(&format!("{label}: {}", s.name()), |b| {
+                            b.set_sound(key, s)
+                        });
+                        self.preview_sound(s);
+                    }
+                    None => self.set_board_pref(&format!("{label} inherits the machine's"), |b| {
+                        b.clear(key)
+                    }),
+                }
+            }
+            _ => {
+                let next = match self.board_prefs.bool(key) {
+                    None => Some(true),
+                    Some(true) => Some(false),
+                    Some(false) => None,
+                };
+                match next {
+                    Some(v) => {
+                        let word = if v { "on" } else { "off" };
+                        self.set_board_pref(&format!("{label} {word}"), |b| b.set_bool(key, v));
+                    }
+                    None => self.set_board_pref(&format!("{label} inherits the machine's"), |b| {
+                        b.clear(key)
+                    }),
+                }
+            }
+        }
+        if matches!(key, PrefKey::MergeTrain | PrefKey::MergeTrainNotice) {
+            self.push_automation();
         }
     }
 
@@ -2437,7 +2563,7 @@ impl App {
     }
 
     /// The same, in the settings list.
-    fn settings_row(&self, verb: Verb) -> usize {
+    pub(crate) fn settings_row(&self, verb: Verb) -> usize {
         let ctx = Ctx { settings_section: keymap::SettingsSection::for_verb(verb), ..self.ctx() };
         keymap::settings_items(&ctx).iter().position(|m| m.verb == verb).unwrap_or(0)
     }
@@ -2486,16 +2612,48 @@ impl App {
     /// One preference changed: apply it, save the file, and say so — the
     /// Settings rows' shared tail.
     fn set_pref(&mut self, word: &str, set: impl FnOnce(&mut crate::prefs::Prefs)) {
-        set(&mut self.prefs);
+        set(&mut self.machine_prefs);
+        self.resolve_prefs();
+        self.after_pref_change();
+        self.status = match self.save_prefs(word) {
+            Ok(()) => format!("{word} ∙ saved"),
+            Err(why) => why,
+        };
+    }
+
+    /// The board-scope twin (T-361): one override changed, the board file
+    /// is saved, the resolved view follows.
+    fn set_board_pref(&mut self, word: &str, set: impl FnOnce(&mut crate::prefs::BoardPrefs)) {
+        set(&mut self.board_prefs);
+        self.resolve_prefs();
+        self.after_pref_change();
+        self.status = match self.save_board_prefs(word) {
+            Ok(()) => format!("{word} ∙ saved for this board"),
+            Err(why) => why,
+        };
+    }
+
+    /// `prefs` = the machine's copy under this board's overrides.
+    pub(crate) fn resolve_prefs(&mut self) {
+        self.prefs = self.machine_prefs.overlay(&self.board_prefs);
+    }
+
+    /// A test's way to hold a preference: the machine copy, then the
+    /// resolve — assigning `prefs` directly is undone by the next resolve.
+    #[cfg(test)]
+    pub(crate) fn seed_pref(&mut self, set: impl FnOnce(&mut crate::prefs::Prefs)) {
+        set(&mut self.machine_prefs);
+        self.resolve_prefs();
+    }
+
+    /// What follows any change of the resolved view, whichever file took
+    /// the write.
+    fn after_pref_change(&mut self) {
         if !self.prefs.keep_awake && self.header_awake {
             self.header_awake = false;
             self.header_focus = self.header_focus && self.git.sampled;
         }
         self.push_observer_prefs();
-        self.status = match self.save_prefs(word) {
-            Ok(()) => format!("{word} ∙ saved"),
-            Err(why) => why,
-        };
     }
 
     fn save_prefs(&self, what: &str) -> Result<(), String> {
@@ -2504,7 +2662,19 @@ impl App {
                 "{what} for this session ∙ prefs.json was written by a newer mesimon, not touched"
             )),
             None => Err(format!("{what} for this session")),
-            Some(path) => crate::prefs::save(path, &self.prefs).map_err(|e| {
+            Some(path) => crate::prefs::save(path, &self.machine_prefs).map_err(|e| {
+                format!("{what} for this session ∙ could not write {}: {e}", path.display())
+            }),
+        }
+    }
+
+    fn save_board_prefs(&self, what: &str) -> Result<(), String> {
+        match self.board_prefs_path.as_ref() {
+            _ if self.board_prefs_write_barred => Err(format!(
+                "{what} for this session ∙ this board's prefs.json was written by a newer mesimon, not touched"
+            )),
+            None => Err(format!("{what} for this session")),
+            Some(path) => crate::prefs::save_board(path, &self.board_prefs).map_err(|e| {
                 format!("{what} for this session ∙ could not write {}: {e}", path.display())
             }),
         }
@@ -2543,7 +2713,7 @@ impl App {
     /// not hold what the preference says — the first snapshot, a daemon
     /// restart, another board's train having gone. An older daemon refuses
     /// the command; the status says which binary to reload.
-    fn push_automation(&mut self) {
+    pub(crate) fn push_automation(&mut self) {
         self.train_pushed_at = Some(Instant::now());
         let resp = self.req(Command::SetAutomation {
             merge_train: self.prefs.merge_train,
@@ -3137,6 +3307,19 @@ impl App {
                 && self.board.mcp_tools
                 && !self.board.system_prompt
                 && !self.board.claude_md_ignored,
+            pref_scope_offered: matches!(self.mode, Mode::Notifications { .. })
+                || (matches!(self.mode, Mode::Settings { .. })
+                    && matches!(
+                        self.settings_section,
+                        keymap::SettingsSection::Appearance | keymap::SettingsSection::Behaviour
+                    )),
+            pref_scope_board: self.settings_board_scope,
+            board_overrides: self
+                .board_prefs
+                .overridden()
+                .into_iter()
+                .map(|k| (k, self.machine_prefs.word(k)))
+                .collect(),
             merge_train: self.prefs.merge_train,
             merge_train_notice: self.prefs.merge_train_notice,
             merge_train_armed: self.automation.merge_train,
@@ -3449,7 +3632,17 @@ impl App {
             Verb::Menu => self.mode = Mode::Menu { idx: 0 },
             Verb::Settings => {
                 self.settings_section = keymap::SettingsSection::Root;
+                self.settings_board_scope = false;
                 self.mode = Mode::Settings { idx: 0 };
+            }
+            Verb::PrefScope => {
+                self.settings_board_scope = !self.settings_board_scope;
+                self.status = if self.settings_board_scope {
+                    "settings for this board ∙ enter sets a row here ∙ b returns to the machine's"
+                        .into()
+                } else {
+                    "the machine's settings ∙ b sets one for this board".into()
+                };
             }
             Verb::SettingsAppearance | Verb::SettingsBehaviour | Verb::SettingsAgents => {
                 self.settings_section = match verb {
@@ -4286,7 +4479,16 @@ impl App {
                 }
             }
             Verb::ThemePick => {
-                let idx = Flavor::ALL.iter().position(|f| *f == self.theme.flavor).unwrap_or(0);
+                // Board scope opens on the inherit row unless this board
+                // has its own pick, whose row is one past it (T-361).
+                let idx = if self.settings_board_scope {
+                    match self.board_prefs.flavor(self.ground) {
+                        Some(f) => Flavor::ALL.iter().position(|x| *x == f).unwrap_or(0) + 1,
+                        None => 0,
+                    }
+                } else {
+                    Flavor::ALL.iter().position(|f| *f == self.theme.flavor).unwrap_or(0)
+                };
                 self.mode = Mode::Theme { idx };
             }
             // ---- columns (T-117) -----------------------------------------
@@ -4598,10 +4800,13 @@ impl App {
                 let Mode::Theme { idx } = self.mode else {
                     return;
                 };
-                let idx = step(idx, Flavor::ALL.len(), down);
+                let idx = step(idx, self.theme_rows(), down);
                 self.mode = Mode::Theme { idx };
-                // The cursor is the preview.
-                self.preview(Flavor::ALL[idx]);
+                // The cursor is the preview; the inherit row previews the
+                // machine's pick.
+                let flavor =
+                    self.theme_at(idx).unwrap_or(self.machine_prefs.for_ground(self.ground));
+                self.preview(flavor);
             }
             _ => {}
         }
@@ -4665,6 +4870,9 @@ impl App {
                     return Ok(());
                 };
                 let verb = item.verb;
+                if self.board_scope_takes(verb, &ctx) {
+                    return Ok(());
+                }
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
             // The same, one level down: the row relabels itself and the
@@ -4679,6 +4887,9 @@ impl App {
                     return Ok(());
                 };
                 let verb = item.verb;
+                if self.board_scope_takes(verb, &ctx) {
+                    return Ok(());
+                }
                 self.dispatch(verb, Key::Enter, Scope::Board, &ctx)
             }
             // A prompt row opens its template as a field in place; the list
@@ -4743,7 +4954,7 @@ impl App {
             }
             Scope::Theme => {
                 if let Mode::Theme { idx } = self.mode {
-                    self.commit_theme(Flavor::ALL[idx.min(Flavor::ALL.len() - 1)]);
+                    self.commit_theme(self.theme_at(idx));
                 }
                 Ok(())
             }
@@ -4778,6 +4989,7 @@ impl App {
             // One level up, on the row that opened it.
             Scope::Settings => {
                 if self.settings_section == keymap::SettingsSection::Root {
+                    self.settings_board_scope = false;
                     self.mode = Mode::Menu { idx: self.menu_row(Verb::Settings) };
                 } else {
                     let opener = self.settings_section.opener();
@@ -12926,7 +13138,7 @@ mod tests {
                 branch: if sampled { "main".into() } else { String::new() },
                 ..Default::default()
             };
-            app.prefs.keep_awake = true;
+            app.seed_pref(|p| p.keep_awake = true);
             press(&mut app, 'k');
             press(&mut app, 'k');
             assert_eq!(app.scope(), Scope::Header);
@@ -12971,7 +13183,7 @@ mod tests {
             branch: "main".into(),
             ..Default::default()
         };
-        app.prefs.keep_awake = true;
+        app.seed_pref(|p| p.keep_awake = true);
         press(&mut app, 'k');
         press(&mut app, 'k');
         press(&mut app, 'l');
@@ -14143,7 +14355,7 @@ mod tests {
     #[test]
     fn the_in_pane_row_flips_the_preference() {
         let mut app = app_three_columns();
-        app.prefs.notify = true;
+        app.seed_pref(|p| p.notify = true);
         assert!(!app.prefs.notify_in_pane, "quiet inside the pane by default");
         app.mode = Mode::Notifications { idx: 0 };
         let ctx = app.ctx();
@@ -14159,7 +14371,7 @@ mod tests {
     #[test]
     fn a_sound_row_walks_the_ring() {
         let mut app = app_three_columns();
-        app.prefs.notify = true;
+        app.seed_pref(|p| p.notify = true);
         app.mode = Mode::Notifications { idx: 0 };
         let ctx = app.ctx();
         app.dispatch(Verb::NotifySoundNeedsYou, Key::Enter, Scope::Notifications, &ctx)
@@ -14477,5 +14689,156 @@ mod tests {
         assert!(body.contains("the first draft") && body.contains(" and more"), "{body}");
         assert_eq!(app.note_changed_elsewhere(ed).as_deref(), Some("Amit Ozalvo"));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // ---- per-board overrides (T-361) ------------------------------------
+
+    fn pref_scratch(name: &str) -> (PathBuf, PathBuf) {
+        let dir =
+            std::env::temp_dir().join(format!("msmn-boardprefs-{name}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        (dir.join("prefs.json"), dir.join("proj").join("prefs.json"))
+    }
+
+    fn json(path: &std::path::Path) -> serde_json::Value {
+        serde_json::from_str(&std::fs::read_to_string(path).unwrap_or_else(|_| "{}".into()))
+            .unwrap()
+    }
+
+    /// `b` flips the scope, and Enter on the auto-merge row then cycles
+    /// this board's override — on, off, inherit — in the BOARD file, while
+    /// the machine file never learns of it. The daemon hears every step.
+    #[test]
+    fn b_flips_scope_and_enter_cycles_inherit_on_off_inherit() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        let (machine, board) = pref_scratch("cycle");
+        app.prefs_path = Some(machine.clone());
+        app.board_prefs_path = Some(board.clone());
+        app.settings_section = keymap::SettingsSection::Behaviour;
+        app.mode = Mode::Settings { idx: 0 };
+        assert!(!app.settings_board_scope);
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE).unwrap();
+        assert!(app.settings_board_scope);
+        assert!(app.ctx().pref_scope_offered);
+        let row = app.settings_row(Verb::MergeTrain);
+        app.mode = Mode::Settings { idx: row };
+        let pushes = || sent.borrow().iter().filter(|c| c.contains("SetAutomation")).count();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(app.prefs.merge_train, "resolved: on");
+        assert!(!app.machine_prefs.merge_train, "the machine's copy is untouched");
+        assert_eq!(json(&board)["merge_train"], true);
+        assert!(json(&machine).get("merge_train").is_none(), "never written");
+        assert!(app.status.contains("saved for this board"), "{}", app.status);
+        assert_eq!(pushes(), 1);
+        assert!(sent_contains(&sent, "SetAutomation { merge_train: true"));
+        assert!(matches!(app.mode, Mode::Settings { .. }), "the list stays open");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.prefs.merge_train);
+        assert_eq!(json(&board)["merge_train"], false);
+        assert_eq!(pushes(), 2);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(json(&board).get("merge_train").is_none(), "inherit: the key leaves the file");
+        assert!(app.status.contains("inherits"), "{}", app.status);
+        assert_eq!(pushes(), 3);
+        // The detail says which it is, and `b` returns to the machine's.
+        let ctx = app.ctx();
+        assert!(ctx.pref_scope_board && ctx.board_overrides.is_empty());
+        app.handle_key(KeyCode::Char('b'), KeyModifiers::NONE).unwrap();
+        assert!(!app.settings_board_scope);
+    }
+
+    /// A machine row set AFTER a board override still writes the machine's
+    /// own value: the resolved view is never what a save serialises.
+    #[test]
+    fn a_board_override_never_reaches_the_machine_file() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let (machine, board) = pref_scratch("leak");
+        app.prefs_path = Some(machine.clone());
+        app.board_prefs_path = Some(board);
+        app.settings_board_scope = true;
+        app.cycle_board_pref(PrefKey::KeepAwake);
+        assert!(app.prefs.keep_awake);
+        app.settings_board_scope = false;
+        let ctx = app.ctx();
+        app.dispatch(Verb::SnoozeQuiet, Key::Enter, Scope::Settings, &ctx).unwrap();
+        let v = json(&machine);
+        assert_eq!(v["keep_awake"], false, "{v}");
+        assert_eq!(v["snooze_needs_you"], false);
+        assert!(app.prefs.keep_awake, "and the override still holds");
+    }
+
+    /// A key the machine keeps is inert in board scope: the status says so
+    /// and neither file moves.
+    #[test]
+    fn a_machine_only_row_is_inert_in_board_scope() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        let (machine, board) = pref_scratch("inert");
+        app.prefs_path = Some(machine.clone());
+        app.board_prefs_path = Some(board.clone());
+        app.settings_section = keymap::SettingsSection::Appearance;
+        app.settings_board_scope = true;
+        app.mode = Mode::Settings { idx: app.settings_row(Verb::StatusLine) };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!app.prefs.status_top);
+        assert!(!machine.exists() && !board.exists());
+        assert!(!sent_contains(&sent, "SetStatusLine"));
+        assert!(app.status.contains("machine"), "{}", app.status);
+    }
+
+    /// The picker grows an inherit row first in board scope; Enter on a
+    /// flavor sets the board's slot, Enter on inherit clears it, and the
+    /// board rests on the machine's pick again.
+    #[test]
+    fn the_picker_has_an_inherit_row_in_board_scope() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        let (machine, board) = pref_scratch("picker");
+        app.prefs_path = Some(machine.clone());
+        app.board_prefs_path = Some(board.clone());
+        app.seed_pref(|p| p.set(Ground::Dark, Flavor::Graphite));
+        app.settings_section = keymap::SettingsSection::Appearance;
+        app.settings_board_scope = true;
+        assert_eq!(app.theme_rows(), Flavor::ALL.len() + 1);
+        let ctx = app.ctx();
+        app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert_eq!(app.mode, Mode::Theme { idx: 0 }, "opens on inherit while nothing is set");
+        assert_eq!(app.theme_at(0), None);
+        let blue = Flavor::ALL.iter().position(|f| *f == Flavor::Blue).unwrap() + 1;
+        app.mode = Mode::Theme { idx: blue };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.prefs.dark, Flavor::Blue);
+        assert_eq!(app.machine_prefs.dark, Flavor::Graphite);
+        assert_eq!(json(&board)["dark"], "blue");
+        assert!(json(&machine).get("dark").is_none());
+        assert_eq!(app.theme.flavor, Flavor::Blue);
+        // Reopen: the cursor sits on the board's pick, one past inherit.
+        let ctx = app.ctx();
+        app.dispatch(Verb::ThemePick, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert_eq!(app.mode, Mode::Theme { idx: blue });
+        app.mode = Mode::Theme { idx: 0 };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(json(&board).get("dark").is_none(), "inherit drops the slot");
+        assert_eq!(app.prefs.dark, Flavor::Graphite);
+        assert_eq!(app.theme.flavor, Flavor::Graphite, "the board rests on the machine's");
+        // Machine scope: the picker is the six rows it always was.
+        app.settings_board_scope = false;
+        assert_eq!(app.theme_rows(), Flavor::ALL.len());
+        assert_eq!(app.theme_at(0), Some(Flavor::ALL[0]));
+    }
+
+    /// Opening Settings from the menu always lands in machine scope.
+    #[test]
+    fn opening_settings_resets_the_scope() {
+        let (mut app, _, _) = app_with_claude(SessionState::Running, false);
+        app.settings_board_scope = true;
+        let ctx = app.ctx();
+        app.dispatch(Verb::Settings, Key::Enter, Scope::Menu, &ctx).unwrap();
+        assert!(!app.settings_board_scope);
+        assert!(!app.ctx().pref_scope_offered, "not at the root");
+        let ctx = app.ctx();
+        app.dispatch(Verb::SettingsBehaviour, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(app.ctx().pref_scope_offered);
+        let ctx = app.ctx();
+        app.dispatch(Verb::SettingsAgents, Key::Enter, Scope::Settings, &ctx).unwrap();
+        assert!(!app.ctx().pref_scope_offered, "nothing under Agents is a preference");
     }
 }

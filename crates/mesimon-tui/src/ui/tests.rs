@@ -731,9 +731,47 @@ fn golden_settings_groups_fit_short_and_wide_terminals() {
 #[test]
 fn golden_notifications_120() {
     let mut app = app_graphite(fixture_archived());
-    app.prefs.notify = true;
+    app.seed_pref(|p| p.notify = true);
     app.mode = Mode::Notifications { idx: 0 };
     golden("notifications_120x30", &render(&app, 120, 30));
+}
+
+/// The Settings dialog in board scope (T-361): `THIS BOARD` in the title,
+/// the auto-merge row set for this board with the machine's value quoted
+/// in its detail, the keep-awake row inherited, and `b machine` in the
+/// tail.
+#[test]
+fn golden_settings_behaviour_board_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.settings_section = mesimon_core::keymap::SettingsSection::Behaviour;
+    app.settings_board_scope = true;
+    app.board_prefs.set_bool(mesimon_core::prefs::PrefKey::MergeTrain, true);
+    app.resolve_prefs();
+    app.mode = Mode::Settings { idx: app.settings_row(mesimon_core::keymap::Verb::MergeTrain) };
+    golden("settings_behaviour_board_120x30", &render(&app, 120, 30));
+}
+
+/// Board scope under Appearance, on the status line row: a machine-only
+/// key reads `(machine)` first.
+#[test]
+fn golden_settings_appearance_board_60() {
+    let mut app = app_graphite(fixture_archived());
+    app.settings_section = mesimon_core::keymap::SettingsSection::Appearance;
+    app.settings_board_scope = true;
+    app.mode = Mode::Settings { idx: app.settings_row(mesimon_core::keymap::Verb::StatusLine) };
+    golden("settings_appearance_board_60x20", &render(&app, 60, 20));
+}
+
+/// The notifications list in board scope: the master switch set for this
+/// board over a machine that has them off.
+#[test]
+fn golden_notifications_board_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.settings_board_scope = true;
+    app.board_prefs.set_bool(mesimon_core::prefs::PrefKey::Notify, true);
+    app.resolve_prefs();
+    app.mode = Mode::Notifications { idx: 0 };
+    golden("notifications_board_120x30", &render(&app, 120, 30));
 }
 
 /// The agent-prompt list (T-353), one level under Settings > Agents: the
@@ -925,6 +963,16 @@ fn golden_theme_picker_120() {
     let mut app = app_graphite(fixture_archived());
     app.mode = Mode::Theme { idx: 0 };
     golden("theme_picker_120x30", &render(&app, 120, 30));
+}
+
+/// The picker in board scope (T-361): the inherit row first, naming the
+/// machine's pick, then the six flavors.
+#[test]
+fn golden_theme_picker_board_120() {
+    let mut app = app_graphite(fixture_archived());
+    app.settings_board_scope = true;
+    app.mode = Mode::Theme { idx: 0 };
+    golden("theme_picker_board_120x30", &render(&app, 120, 30));
 }
 
 /// The agent-brief dialog: the reach named, the text verbatim on the elevated
@@ -3560,7 +3608,7 @@ fn golden_train_manual_120() {
     // The train switched off altogether: the mark stays (it is the
     // ticket's), and so does the key that clears it.
     app.automation.merge_train = false;
-    app.prefs.merge_train = false;
+    app.seed_pref(|p| p.merge_train = false);
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("∙ auto-merge ∙ off")), "{}", lines.join("\n"));
     assert!(lines.last().is_some_and(|l| l.contains("t auto-merge")), "{:?}", lines.last());
@@ -5946,7 +5994,7 @@ fn test_git_clause_has_an_ascii_spelling() {
 fn golden_awake_120() {
     let mut app = app_graphite(fixture(false));
     app.git = git_state("main", 2, 1, 3);
-    app.prefs.keep_awake = true;
+    app.seed_pref(|p| p.keep_awake = true);
     app.caffeinated = true;
     golden("board_awake_120x30", &render(&app, 120, 30));
     app.caffeinated = false;
@@ -5965,10 +6013,10 @@ fn wake_indicator_visibility_follows_preference_on_every_screen() {
         app.screen = screen;
         for held in [true, false] {
             app.caffeinated = held;
-            app.prefs.keep_awake = false;
+            app.seed_pref(|p| p.keep_awake = false);
             let off = render(&app, 120, 30)[0].clone();
             assert!(!off.contains('☕') && !off.contains('☾'), "disabled: {off}");
-            app.prefs.keep_awake = true;
+            app.seed_pref(|p| p.keep_awake = true);
             let mark = if held { "☕️" } else { "☾" };
             let on = render(&app, 120, 30)[0].clone();
             let label =
@@ -5982,7 +6030,7 @@ fn wake_indicator_visibility_follows_preference_on_every_screen() {
 fn wake_activity_and_focus_never_move_the_header() {
     for profile in [Profile::TrueColor, Profile::Mono] {
         let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, profile));
-        app.prefs.keep_awake = true;
+        app.seed_pref(|p| p.keep_awake = true);
         app.git = git_state("main", 2, 1, 3);
         app.force_update_ready();
         app.resources.rss_measured = 1;
@@ -6013,7 +6061,7 @@ fn wake_activity_and_focus_never_move_the_header() {
 #[test]
 fn wake_indicator_has_ascii_states() {
     let mut app = App::for_test(fixture(false), Theme::new(Flavor::Graphite, Profile::Mono));
-    app.prefs.keep_awake = true;
+    app.seed_pref(|p| p.keep_awake = true);
     for (held, label) in [(true, "@"), (false, "z")] {
         app.caffeinated = held;
         let head = render(&app, 120, 30)[0].clone();
@@ -6027,7 +6075,7 @@ fn wake_indicator_is_quiet_and_focus_is_visible() {
         for held in [false, true] {
             let theme = Theme::new(flavor, Profile::TrueColor);
             let mut app = App::for_test(fixture(false), theme);
-            app.prefs.keep_awake = true;
+            app.seed_pref(|p| p.keep_awake = true);
             app.caffeinated = held;
             app.git = git_state("main", 2, 1, 3);
             let plain = cells(&app, 120, 30);

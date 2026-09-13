@@ -16,7 +16,7 @@
                            │     the board says nothing outside its own window ∙ enter ope~ │
                            │   Status line at the bottom                                    │
                            │     tmux's bar over an agent's pane ∙ enter moves it up        │
-                           ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
+                           ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
 
 
 

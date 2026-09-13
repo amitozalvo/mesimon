@@ -205,7 +205,7 @@ fn which(bin: &str) -> Option<String> {
         .map(|path| path.to_string_lossy().into_owned())
 }
 
-fn environment(verbose: bool) -> Section {
+fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     let mut records = Vec::new();
     let os = tool_version("uname", &["-sr"]).unwrap_or_else(|| "unknown".into());
     let arch = tool_version("uname", &["-m"]).unwrap_or_else(|| "unknown".into());
@@ -255,6 +255,9 @@ fn environment(verbose: bool) -> Section {
     // (T-288), and what would do it. A note, like the opener: where nothing
     // answers, the machine sleeps exactly as it always did.
     records.push(rec(Level::Note, "keep awake", mesimon_tui::keep_awake_status()));
+    // Which of the machine's preferences this repo's board overrides
+    // (T-361), and what the machine holds for each.
+    records.push(rec(Level::Note, "board prefs", mesimon_tui::board_prefs_status(repo)));
 
     records.push(match std::env::var("HOME") {
         Ok(h) if !h.is_empty() => rec(Level::Ok, "HOME", redact(&h, verbose)),
@@ -891,7 +894,7 @@ pub fn run(args: &[String]) -> Result<()> {
     let repo = std::env::current_dir()?;
 
     let all = vec![
-        environment(verbose),
+        environment(&repo, verbose),
         install(verbose),
         multiplexer(verbose),
         agents(&repo, verbose),
@@ -1054,7 +1057,11 @@ mod tests {
     #[test]
     fn output_is_ascii_only() {
         let s = render(
-            &[environment(false), install(false), git_section(std::path::Path::new("."), false)],
+            &[
+                environment(std::path::Path::new("."), false),
+                install(false),
+                git_section(std::path::Path::new("."), false),
+            ],
             false,
         );
         assert!(s.is_ascii(), "non-ascii in doctor output:\n{s}");

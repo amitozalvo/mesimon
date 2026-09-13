@@ -23,6 +23,7 @@ pub mod keymap;
 pub mod links;
 pub mod mcp;
 pub mod notify;
+pub mod prefs;
 pub mod principal;
 pub mod prompts;
 pub mod quiet;

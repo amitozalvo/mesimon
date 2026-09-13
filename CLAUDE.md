@@ -152,6 +152,20 @@ runs the laws over `Flavor::ALL`; a tag ring must skip the accent's hue band and
 The picker, the prefs file and the goldens need nothing — rows come from `Flavor::ALL` and
 goldens are colourless.
 
+**A machine pref** (a `prefs.json` key; T-361 lets a board override most of them):
+1. `core/src/prefs.rs::PrefKey`: the variant, its `name()` (the JSON key), `label()`, and
+   whether `board_overridable` — machine-only is for a key about the terminal or the person.
+2. `tui/src/prefs.rs`: the `Prefs` field, `load`, `body` (a named value gets the foreign-value
+   clause), `word`, and `overlay` if a board may set it; a round-trip test.
+3. The `Ctx` field and `App::ctx()`; the `MenuItem` in `SETTINGS_ITEMS`/`NOTIFY_ITEMS` and its
+   place in `settings_items`; the `Verb` and its arm through `set_pref`. `keymap::pref_key`
+   names the row's key, and board scope then cycles it with no further code.
+4. The push, if anything outside the TUI consumes it: a `push_*`/`reconcile_*` pair for the
+   daemon, `From<&Prefs>` in `notifier.rs` for the notifier, `drive_caffeine` for power.
+5. A `doctor` line via `load_home()`.
+**`App::prefs` is the resolved view** (machine under this board's overrides): a test seeds it
+with `seed_pref`, never by assignment, and `save_prefs` writes `machine_prefs`.
+
 **A card or ticket-page visual:** `tui/src/ui/card.rs` / `ticket.rs` / `tags.rs`, plus a golden
 in `tui/src/ui/tests.rs`. The L1 law tests (`test_no_banned_sgr`, `test_no_drawn_structure`) and
 the colour laws in `theme.rs` run in `cargo ut` and say what is wrong.

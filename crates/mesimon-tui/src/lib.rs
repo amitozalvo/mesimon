@@ -90,6 +90,7 @@ pub use external::doctor_line as editor_status;
 pub use notify::doctor_line as notify_status;
 /// What `mesimon doctor` says about the link opener (`^k`, T-256).
 pub use opener::doctor_line as opener_status;
+pub use prefs::board_doctor_line as board_prefs_status;
 /// What `mesimon doctor` says about the theme picks (`prefs.rs`).
 pub use prefs::doctor_line as theme_status;
 /// What `mesimon doctor` says about how a snoozed ticket comes back (T-74).
@@ -116,8 +117,13 @@ pub fn run(repo_root: &Path) -> Result<()> {
         write_barred: false,
         notice: None,
     });
+    // This board's overrides (T-361), the sparse file under the repo's
+    // state dir. Same rule: loaded here, never in `App::new`.
+    let board_prefs_path = prefs::board_prefs_path(repo_root);
+    let board = board_prefs_path.as_deref().map(prefs::load_board).unwrap_or_default();
+    let resolved = loaded.prefs.overlay(&board.prefs);
     // The pin outranks the slot; the slot is the ground's.
-    let flavor = detected.forced.unwrap_or(loaded.prefs.for_ground(detected.ground));
+    let flavor = detected.forced.unwrap_or(resolved.for_ground(detected.ground));
     let theme = theme::Theme::new(flavor, detected.profile);
 
     // Hard floor (07 §2.4): refuse to start below 60x20.
@@ -147,17 +153,29 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.flavor_watch = detected.watch;
     app.ground = detected.ground;
     app.forced = detected.forced;
-    app.prefs = loaded.prefs;
+    app.machine_prefs = loaded.prefs;
     app.prefs_path = prefs_path;
     app.prefs_write_barred = loaded.write_barred;
+    app.board_prefs = board.prefs;
+    app.board_prefs_path = board_prefs_path;
+    app.board_prefs_write_barred = board.write_barred;
+    app.resolve_prefs();
     // The merge train preference reaches the daemon now, not on the first
     // event: an armed board that sits quiet would otherwise never say so.
     app.reconcile_train();
+    // `reconcile_train` pushes only an ON, so one board never disarms
+    // another's — but a board that SETS the train, off included, is a choice
+    // about this repo's own daemon, and a daemon this board armed last
+    // session must hear the off (T-361).
+    if app.board_prefs.is_set(mesimon_core::prefs::PrefKey::MergeTrain) {
+        app.push_automation();
+    }
     // Same for the status line's side (T-264): a daemon that outlived the
     // last board holds bottom until a board says top.
     app.reconcile_status_line();
-    if let Some(notice) = loaded.notice {
-        app.status = notice;
+    let notices: Vec<String> = [loaded.notice, board.notice].into_iter().flatten().collect();
+    if !notices.is_empty() {
+        app.status = notices.join(" ∙ ");
     }
 
     let mut terminal = init_terminal()?;

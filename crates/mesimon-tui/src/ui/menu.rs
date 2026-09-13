@@ -31,14 +31,25 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
 /// here is ever a suggestion, so the lead never carries the mark.
 pub(super) fn draw_settings(f: &mut Frame, app: &App, idx: usize) {
     let items = keymap::settings_items(&app.ctx());
-    draw_list(f, app, idx, app.settings_section.title(), Scope::Settings, &items);
+    draw_list(f, app, idx, &scoped(app, app.settings_section.title()), Scope::Settings, &items);
 }
 
 /// The notifications list, one level under it (T-282): the same surface
 /// again, its own name and its own rows.
 pub(super) fn draw_notify(f: &mut Frame, app: &App, idx: usize) {
     let items = keymap::notify_items(&app.ctx());
-    draw_list(f, app, idx, "NOTIFICATIONS", Scope::Notifications, &items);
+    draw_list(f, app, idx, &scoped(app, "NOTIFICATIONS"), Scope::Notifications, &items);
+}
+
+/// The dialog's name with the scope after it when it is this board's
+/// (T-361): the title and the `b` hint are the two places that say which
+/// scope is live, so a stale scope is never silent.
+fn scoped(app: &App, name: &str) -> String {
+    if app.settings_board_scope {
+        format!("{name} ∙ THIS BOARD")
+    } else {
+        name.to_string()
+    }
 }
 
 /// The column settings dialog (T-117): thirteen rows at one line each, the
@@ -298,7 +309,7 @@ fn draw_list(
         // one pass. A menu row's detail is where a preference says what it
         // will do, so `~` was cutting the half that matters.
         let budget = inner_w.saturating_sub(6);
-        let detail = (item.detail)(&ctx);
+        let detail = keymap::item_detail(item, &ctx);
         let overflow = detail.width().saturating_sub(budget);
         let scroll = if selected && overflow > 0 {
             let key = words_key(&detail);

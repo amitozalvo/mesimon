@@ -24,6 +24,7 @@
 use std::fmt;
 
 use crate::board::AgentProvider;
+use crate::prefs::PrefKey;
 
 /// Compact provider names used in session actions and status lines.
 pub fn agent_word(provider: AgentProvider) -> &'static str {
@@ -525,6 +526,11 @@ pub enum Verb {
     /// The Settings row that opens the notifications list (T-282) — a door,
     /// like Settings itself is a door in the menu.
     Notifications,
+    /// `b` in the Settings dialog (T-361): flips it between the machine's
+    /// preferences and this board's overrides of them. Offered only where a
+    /// row can be overridden — Appearance, Behaviour, the notifications
+    /// list — and inert elsewhere.
+    PrefScope,
     /// The Agents row that opens the agent-prompt list (T-353) — another
     /// door, for the three sentences mesimon types into an agent's box.
     AgentPrompts,
@@ -1086,6 +1092,13 @@ pub struct Ctx {
     /// `App::ctx` always sets them.
     pub notify_sound_needs_you: &'static str,
     pub notify_sound_done: &'static str,
+    /// The Settings dialog's scope switch (T-361): offered where a row can
+    /// be set for this board, and which side it is on. `board_overrides` is
+    /// every key this board sets, each with the MACHINE's word for it, so a
+    /// row's detail can say what inheriting would give back.
+    pub pref_scope_offered: bool,
+    pub pref_scope_board: bool,
+    pub board_overrides: Vec<(PrefKey, &'static str)>,
     /// The merge train preference (the row's word), and whether the daemon
     /// says it is ARMED — the row's detail says `arming…` between the two.
     pub merge_train: bool,
@@ -3035,8 +3048,21 @@ static MENU: &[Binding] = &[
 ];
 
 /// The settings submenu's three shapes are the menu's; only the last word
-/// differs — Esc here goes BACK to the menu, not out of it.
+/// differs — Esc here goes BACK to the menu, not out of it. `b` is the
+/// fourth (T-361): the scope switch, hinted and live only where a row of
+/// the list can be set for this board.
 static SETTINGS: &[Binding] = &[
+    Binding {
+        keys: &[Key::Char('b')],
+        verb: Verb::PrefScope,
+        show: "b",
+        hint: |c| if c.pref_scope_board { "machine" } else { "this board" },
+        avail: |c| c.pref_scope_offered,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 30,
+    },
     Binding {
         keys: &[Key::Char('j'), Key::Down, Key::Char('k'), Key::Up],
         verb: Verb::CursorDown,
@@ -3988,6 +4014,60 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
 }
 
 /// The notifications list's rows that apply right now (T-282).
+/// The preference a Settings or notifications row edits (T-361), or `None`
+/// for a door and for board state (`columns.toml` rows are the board's in
+/// every scope). The theme row's key is the slot the terminal is on.
+pub fn pref_key(verb: Verb, c: &Ctx) -> Option<PrefKey> {
+    Some(match verb {
+        Verb::ThemePick => {
+            if c.theme_slot_word == "light" {
+                PrefKey::Light
+            } else {
+                PrefKey::Dark
+            }
+        }
+        Verb::SnoozeQuiet => PrefKey::SnoozeNeedsYou,
+        Verb::WeekStart => PrefKey::WeekStart,
+        Verb::MergeTrain => PrefKey::MergeTrain,
+        Verb::MergeTrainNotice => PrefKey::MergeTrainNotice,
+        Verb::StatusLine => PrefKey::StatusTop,
+        Verb::KeepAwake => PrefKey::KeepAwake,
+        Verb::NotifyToggle => PrefKey::Notify,
+        Verb::NotifyDone => PrefKey::NotifyDone,
+        Verb::NotifyFocused => PrefKey::NotifyFocused,
+        Verb::NotifyInPane => PrefKey::NotifyInPane,
+        Verb::NotifyWords => PrefKey::NotifyWords,
+        Verb::NotifySoundNeedsYou => PrefKey::NotifySoundNeedsYou,
+        Verb::NotifySoundDone => PrefKey::NotifySoundDone,
+        _ => return None,
+    })
+}
+
+/// A row's detail with the scope's words before it (T-361) — the ONE place
+/// they are added, so no row's own `detail` knows about scopes. In machine
+/// scope it is the row's own line. In board scope: a machine-only key says
+/// `(machine)`; a key this board sets says `set here` and quotes the
+/// machine's value; an inherited one says `inherited`.
+pub fn item_detail(item: &MenuItem, c: &Ctx) -> String {
+    let base = (item.detail)(c);
+    if !c.pref_scope_board {
+        return base;
+    }
+    let Some(key) = pref_key(item.verb, c) else {
+        return base;
+    };
+    if !key.board_overridable() {
+        return format!("(machine) ∙ {base}");
+    }
+    // The scope word comes FIRST: a detail longer than the row reveals its
+    // tail marquee-style, and which scope holds the value is the one fact
+    // this dialog exists to show.
+    match c.board_overrides.iter().find(|(k, _)| *k == key) {
+        Some((_, machine)) => format!("set here ∙ machine: {machine} ∙ {base} ∙ inherit last"),
+        None => format!("inherited ∙ {base} ∙ enter sets it here"),
+    }
+}
+
 pub fn notify_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
     NOTIFY_ITEMS.iter().filter(|m| m.live(ctx)).collect()
 }
@@ -7684,5 +7764,76 @@ mod tests {
                 .flat_map(|(_, rows)| rows)
                 .any(|(k, _)| k == "shift+tab"));
         }
+    }
+
+    /// `b` flips the Settings scope (T-361) exactly where a row can be set
+    /// for this board: live and hinted under Appearance, Behaviour and the
+    /// notifications list; inert everywhere else, the prompt list included.
+    #[test]
+    fn b_flips_the_settings_scope_only_where_a_row_can_be_overridden() {
+        let offered = Ctx { pref_scope_offered: true, ..Default::default() };
+        let not = Ctx::default();
+        assert_eq!(resolve(Scope::Settings, Key::Char('b'), &offered), Some(Verb::PrefScope));
+        assert_eq!(resolve(Scope::Notifications, Key::Char('b'), &offered), Some(Verb::PrefScope));
+        assert_eq!(resolve(Scope::Settings, Key::Char('b'), &not), None);
+        assert_eq!(resolve(Scope::Prompts, Key::Char('b'), &not), None);
+        assert_eq!(resolve(Scope::Board, Key::Char('b'), &offered), None);
+        assert_eq!(hint_for(Scope::Settings, Verb::PrefScope, &offered), Some(("b", "this board")));
+        let on = Ctx { pref_scope_board: true, ..offered };
+        assert_eq!(hint_for(Scope::Settings, Verb::PrefScope, &on), Some(("b", "machine")));
+        assert!(hint_for(Scope::Settings, Verb::PrefScope, &not).is_none());
+    }
+
+    /// Every preference row names its key, and every door and board-state
+    /// row names none — so board scope cycles exactly the preferences.
+    #[test]
+    fn every_preference_row_has_a_pref_key() {
+        let c = Ctx { theme_slot_word: "light", ..Default::default() };
+        let prefs = [
+            Verb::ThemePick,
+            Verb::StatusLine,
+            Verb::KeepAwake,
+            Verb::SnoozeQuiet,
+            Verb::WeekStart,
+            Verb::MergeTrain,
+            Verb::MergeTrainNotice,
+        ];
+        for item in SETTINGS_ITEMS {
+            let expect = prefs.contains(&item.verb);
+            assert_eq!(pref_key(item.verb, &c).is_some(), expect, "{:?}", item.verb);
+        }
+        for item in NOTIFY_ITEMS {
+            assert!(pref_key(item.verb, &c).is_some(), "{:?}", item.verb);
+        }
+        assert_eq!(pref_key(Verb::ThemePick, &c), Some(PrefKey::Light));
+        assert_eq!(pref_key(Verb::ThemePick, &Ctx::default()), Some(PrefKey::Dark));
+        assert_eq!(pref_key(Verb::Notifications, &c), None, "a door");
+        assert_eq!(pref_key(Verb::McpTools, &c), None, "board state");
+    }
+
+    /// The detail's scope words: nothing in machine scope; `(machine)`
+    /// first on a key the board cannot take; the machine's value quoted on
+    /// one it has; where the value comes from on one it inherits.
+    #[test]
+    fn item_detail_says_inherited_set_or_machine() {
+        let row = |v: Verb| SETTINGS_ITEMS.iter().find(|i| i.verb == v).expect("row");
+        let machine = Ctx::default();
+        assert_eq!(
+            item_detail(row(Verb::KeepAwake), &machine),
+            (row(Verb::KeepAwake).detail)(&machine)
+        );
+        let board = Ctx {
+            pref_scope_board: true,
+            board_overrides: vec![(PrefKey::KeepAwake, "off")],
+            ..Default::default()
+        };
+        let set = item_detail(row(Verb::KeepAwake), &board);
+        assert!(set.starts_with("set here ∙ machine: off ∙ "), "{set}");
+        let inherited = item_detail(row(Verb::MergeTrain), &board);
+        assert!(inherited.starts_with("inherited ∙ "), "{inherited}");
+        let fixed = item_detail(row(Verb::StatusLine), &board);
+        assert!(fixed.starts_with("(machine) ∙ "), "{fixed}");
+        let door = item_detail(row(Verb::McpTools), &board);
+        assert_eq!(door, (row(Verb::McpTools).detail)(&board), "board state has no scope words");
     }
 }

@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   0
+
+    Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y
+
+    Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
+                           ╭─ THEME ∙ for a dark terminal ──────────────────────────────────╮
+                           │   inherit                                                      │
+                           │     the machine's pick: graphite                               │
+                           │   graphite                                                dark │
+                           │     dark, the default                                          │
+                           │   chalk                                                  light │
+                           │     light, paper                                               │
+                           │   blue                                                    dark │
+                           │     navy and gold, the Borland look                            │
+                           │   amber                                                   dark │
+                           │     amber on black                                             │
+                           │   green                                                   dark │
+                           │     green-black, white ink, a green glow                       │
+                           │   solarized                                              light │
+                           │     solarized light, cream and blue-grey                       │
+                           ╰──────────────────── jk preview ∙ enter keep ∙ esc put it back ─╯
+
+
+
+
+
+
+ THEME                                                                                                           ? keys

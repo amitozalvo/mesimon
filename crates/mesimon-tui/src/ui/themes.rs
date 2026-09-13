@@ -23,9 +23,10 @@ use super::dialog;
 pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let theme = &app.theme;
     let ctx = app.ctx();
-    let idx = idx.min(Flavor::ALL.len() - 1);
+    let rows = app.theme_rows();
+    let idx = idx.min(rows - 1);
 
-    let area = dialog::centred(f.area(), Flavor::ALL.len() as u16 * 2, dialog::MAX_W);
+    let area = dialog::centred(f.area(), rows as u16 * 2, dialog::MAX_W);
     let inner_w = area.width.saturating_sub(2) as usize;
     let inner = dialog::frame(
         f,
@@ -43,8 +44,41 @@ pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     );
 
     let mut lines: Vec<Line<'static>> = Vec::new();
+    // Board scope puts an inherit row first (T-361): its "flavor" is the
+    // machine's pick for this ground, and choosing it drops the board's.
+    let inherit = usize::from(app.settings_board_scope);
+    if inherit == 1 {
+        let selected = idx == 0;
+        let style = if selected {
+            theme.selected_row().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else {
+            theme.base()
+        };
+        let row_style = if selected { theme.selected_row() } else { Style::default() };
+        let text = truncate("inherit", inner_w.saturating_sub(4));
+        let pad = inner_w.saturating_sub(3 + text.width() + 1);
+        lines.push(
+            Line::from(vec![
+                Span::styled("   ", style),
+                Span::styled(text, style),
+                Span::raw(" ".repeat(pad)),
+                Span::raw(" "),
+            ])
+            .style(row_style),
+        );
+        let machine = app.machine_prefs.for_ground(app.ground).name();
+        let text = format!(
+            "     {}",
+            truncate(&format!("the machine's pick: {machine}"), inner_w.saturating_sub(6))
+        );
+        let pad = inner_w.saturating_sub(text.width());
+        lines.push(
+            Line::from(vec![Span::styled(text, theme.dim3()), Span::raw(" ".repeat(pad))])
+                .style(row_style),
+        );
+    }
     for (i, flavor) in Flavor::ALL.into_iter().enumerate() {
-        let selected = i == idx;
+        let selected = i + inherit == idx;
         // The flavor's own ground sits where the menu puts a key: it is the
         // one fact a preview cannot show while the popup covers the board.
         let tag = flavor.ground().word();

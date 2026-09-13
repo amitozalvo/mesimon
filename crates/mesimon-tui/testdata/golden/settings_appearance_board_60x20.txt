@@ -4,14 +4,14 @@
 
     Decay treatments                 >1y   I   R   D
                                            N   E   O
-  ╭─ APPEARANCE & NOTIFICATIONS ─────────────────────────╮
+  ╭─ APPEARANCE & NOTIFICATIONS ∙ THIS BOARD ────────────╮
   │   Theme: graphite                                    │
-  │     dark, the default ∙ for a dark terminal          │
+  │     inherited ∙ dark, the default ∙ for a dark term~ │
   │   Notifications: off                                 │
   │     the board says nothing outside its own window ∙~ │
   │   Status line at the bottom                          │
-  │     tmux's bar over an agent's pane ∙ enter moves i~ │
-  ╰─ jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
+  │     (machine) ∙ tmux's bar over an agent's pane ∙ e~ │
+  ╰──── jk select ∙ enter choose ∙ b machine ∙ esc back ─╯
 
 
 

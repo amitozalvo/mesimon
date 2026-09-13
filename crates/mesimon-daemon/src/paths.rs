@@ -74,6 +74,12 @@ impl Paths {
     pub fn sessions_file(&self) -> PathBuf {
         self.state_dir.join("sessions.json")
     }
+    /// This board's overrides of the machine's `prefs.json` (T-361): the
+    /// TUI's file, not the daemon's, under the state dir so it is private to
+    /// the machine and never rides a team board.
+    pub fn prefs_file(&self) -> PathBuf {
+        self.state_dir.join("prefs.json")
+    }
     pub fn gate_file(&self) -> PathBuf {
         self.state_dir.join("gate-passed")
     }

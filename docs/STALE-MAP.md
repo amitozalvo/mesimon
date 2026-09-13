@@ -10393,3 +10393,49 @@ Pinned three ways: `a_restated_wait_re_arms_the_stale_clock` (core), `a_held_dia
 nothing for a permission), and `docs/state-scenarios/held-plan-outlives-the-stale-clock.json`
 (the field timeline through the production replay). No `Command`, no snapshot field, no schema,
 no key; a running daemon picks it up on restart (`U`).
+
+## One board overrides selected machine prefs (T-361, 2026-09-13)
+
+Spun out of T-360. `columns.toml` is the board's and `prefs.json` the machine's, and nothing
+could be set on one level and overridden on the other — the train's own block above lists "a
+per-repo preference" under *Not done* and the T-343 block names "a per-repo TUI file under the
+state dir" as the obvious next step. This is that file: `~/.local/state/mesimon/<proj16>/prefs.json`
+(`Paths::prefs_file`), the TUI's second preference file, SPARSE — it holds only the keys this
+board sets, an absent key is "inherit the machine's", and clearing an override removes the key.
+The decisions, each argued with the user:
+
+- **Under the state dir, not in `columns.toml`, not a map inside `prefs.json`.** Private to the
+  machine: a joined team board (T-335) projects nothing from either file, so a teammate's board
+  can never switch this machine's notifications on. No daemon change, no `Command`, no
+  `COLUMNS_SCHEMA` argument, no wire — the daemon still reads no preference file.
+- **Which keys.** The train and its notice, keep awake, all seven notification keys, the snooze
+  return, and both theme slots. `PrefKey::board_overridable` (`core/src/prefs.rs`) is the list;
+  the two it refuses are the tmux status line's side (about the terminal) and the week's first
+  day (about the person). A machine-only key found in a board file is ignored by the overlay and
+  kept by every save, in case a newer build made it overridable.
+- **The resolved view.** `App::prefs` is now `machine_prefs.overlay(&board_prefs)`, so the ~40
+  readers did not move. `save_prefs` writes `machine_prefs` — the one trap, pinned by
+  `a_board_override_never_reaches_the_machine_file` — and a test seeds a preference through
+  `seed_pref`, because assigning `prefs` is undone by the next resolve.
+- **`b` is the scope switch**, hinted and live only where a row of the list can be set for this
+  board (Appearance, Behaviour, the notifications list; `Ctx::pref_scope_offered`), the title
+  gains `∙ THIS BOARD`, and the scope resets every time Settings opens. `Tab` was rejected: it
+  is `Describe` on the board and `TagColor` in the tag chord. In board scope Enter cycles
+  `inherit → on → off → inherit` (a sound: inherit, then each rung); `keymap::pref_key` names a
+  row's key and `keymap::item_detail` is the ONE place the scope words are added, in front —
+  `set here ∙ machine: off`, `inherited`, `(machine)` — because a long detail reveals its tail
+  marquee-style and which scope holds the value is what the dialog exists to show. The theme
+  row still opens its picker, which grows an `inherit` row first in board scope.
+- **The train push.** `reconcile_train` pushes only an ON, so one board never disarms another's
+  — but a board that SETS the train is a choice about this repo's own daemon, so `run` pushes
+  `SetAutomation` at startup whenever the board file holds the key, off included; a daemon
+  this board armed last session then hears the off.
+- **Foreign values** in the board file follow the machine file's rule one level up: a name this
+  build cannot parse reads as inherit (the machine's value stands where the machine file's
+  "the default stands") and survives every save until a pick of that key replaces it.
+
+`doctor -v` gained a `board prefs` line for the cwd's repo. Goldens: the `b` hint joined the
+tail of `settings_appearance_*`, `settings_behaviour_*` and `notifications_120x30`; four new
+ones show board scope (`settings_behaviour_board_120x30`, `settings_appearance_board_60x20`,
+`notifications_board_120x30`, `theme_picker_board_120x30`). The reverse direction — the machine
+overriding a board setting — stays out of scope, unargued.
