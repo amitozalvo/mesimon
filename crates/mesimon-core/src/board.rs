@@ -257,6 +257,15 @@ pub struct SessionRecord {
     /// a parked/paneless session keeps the last name it had.
     #[serde(default)]
     pub title: Option<String>,
+    /// The command running in a shell's pane (T-366): `#{pane_current_command}`
+    /// when it is not the shell itself — `Some("cargo")` mid-build, `None` at
+    /// the prompt. A shell has no hook stream, so this is the one fact that
+    /// says whether its `Running` is work; `glyphs::is_working` reads it. The
+    /// daemon fills it into the SNAPSHOT from a map it keeps in memory and
+    /// never writes it to `sessions.json`: a foreground is a fact about a
+    /// live pane, and a restart re-learns it on the first poll.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub foreground: Option<String>,
     #[serde(default)]
     pub confidence: Confidence,
     #[serde(default)]
@@ -399,6 +408,7 @@ impl SessionRecord {
             transcript_path: None,
             detail: None,
             title: None,
+            foreground: None,
             confidence: Confidence::default(),
             provenance: Provenance::default(),
             claude_session_id: None,
@@ -428,7 +438,56 @@ impl SessionRecord {
     pub fn holds_agent_seat(&self) -> bool {
         self.kind.is_agent() && (self.state.is_live() || self.codex_stopping)
     }
+}
 
+/// The shells a pane is idle at. `#{pane_current_command}` is the process's
+/// NAME, not `$SHELL`'s path, and the two disagree in the wild: macOS's
+/// `/bin/sh` execs `bash` (or `zsh`, or `dash`) and reports THAT name, and a
+/// user whose `$SHELL` is one shell may sit at another. So a known shell at
+/// the prompt is idle whatever the pane was launched as; a nested shell at
+/// its prompt is idle too, which is the truth.
+const SHELL_NAMES: &[&str] =
+    &["sh", "bash", "zsh", "fish", "dash", "ksh", "mksh", "tcsh", "csh", "nu", "xonsh", "elvish"];
+
+/// What a shell pane is running, from tmux's `#{pane_current_command}` and
+/// the shell the pane was born with (T-366). tmux reports the foreground
+/// process's NAME — the shell's own at a prompt (`zsh`, `bash`, `fish`), the
+/// command's while one runs (`cargo`, `claude`) — so the shell's name, or any
+/// name in `SHELL_NAMES`, means idle and anything else is a foreground
+/// command. `shell` is a path or a name (`/bin/zsh`, `zsh`); a login shell's
+/// leading `-` is stripped on both sides in case a tmux ever reports argv[0].
+pub fn foreground_of(current_command: &str, shell: &str) -> Option<String> {
+    fn bare(s: &str) -> &str {
+        let s = s.trim();
+        let s = s.rsplit('/').next().unwrap_or(s);
+        s.strip_prefix('-').unwrap_or(s)
+    }
+    let cmd = bare(current_command);
+    if cmd.is_empty() || cmd == bare(shell) || SHELL_NAMES.contains(&cmd) {
+        return None;
+    }
+    Some(cmd.to_string())
+}
+
+#[cfg(test)]
+mod foreground_tests {
+    use super::foreground_of;
+
+    #[test]
+    fn a_shell_at_its_prompt_is_idle_and_anything_else_is_a_command() {
+        assert_eq!(foreground_of("zsh", "/bin/zsh"), None);
+        assert_eq!(foreground_of("-zsh", "zsh"), None);
+        assert_eq!(foreground_of("", "/bin/zsh"), None);
+        // macOS: `/bin/sh` execs bash and the pane names bash.
+        assert_eq!(foreground_of("bash", "/bin/sh"), None);
+        assert_eq!(foreground_of("fish", "/bin/zsh"), None);
+        assert_eq!(foreground_of("cargo", "/bin/zsh"), Some("cargo".into()));
+        assert_eq!(foreground_of("/usr/bin/claude", "/bin/zsh"), Some("claude".into()));
+        assert_eq!(foreground_of("sleep", "/bin/sh"), Some("sleep".into()));
+    }
+}
+
+impl SessionRecord {
     /// The tmux session name for this record: first 16 hex chars of the UUID.
     pub fn sid16(&self) -> String {
         self.id.simple().to_string()[..16].to_string()
@@ -2162,6 +2221,16 @@ impl Board {
     /// Compatibility name for callers migrating to the common agent seat.
     pub fn live_claude(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
         self.live_agent(ticket)
+    }
+
+    /// The ticket's shell, live or parked (T-366): the session `!` finds
+    /// once the terminal has been adopted — the same key opens the same
+    /// shell before and after, which is T-273's promise kept across the
+    /// adoption. First in spawn order, like `live_agent`.
+    pub fn live_shell(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
+        self.sessions
+            .iter()
+            .find(|s| s.ticket == ticket && s.kind == SessionKind::Bash && s.state.is_live())
     }
 
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {

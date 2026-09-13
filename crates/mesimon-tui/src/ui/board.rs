@@ -173,6 +173,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             &ctx,
             t,
             &sessions,
+            app.terminal_busy(t.id),
             wt,
             selected,
             held,

@@ -134,6 +134,7 @@ mod tests {
             transcript_path: None,
             detail: None,
             title: None,
+            foreground: None,
             confidence: Confidence::High,
             provenance: Provenance::Spawned,
             claude_session_id: None,

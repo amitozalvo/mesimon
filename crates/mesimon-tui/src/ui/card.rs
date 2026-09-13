@@ -234,6 +234,7 @@ pub(super) fn render(
     ctx: &CardCtx,
     ticket: &Ticket,
     sessions: &[&SessionRecord],
+    terminal_busy: bool,
     wt: Option<&mesimon_core::command::WorktreeItem>,
     selected: bool,
     held: bool,
@@ -276,7 +277,7 @@ pub(super) fn render(
     let glyph = if ticket.is_woke() || ticket.hand_raised() {
         Some(('!', Register::Attn))
     } else {
-        glyphs::card_glyph(sessions, tier, ctx.spin).or_else(|| {
+        glyphs::card_glyph(sessions, terminal_busy, tier, ctx.spin).or_else(|| {
             let launching =
                 wt.is_some_and(|w| matches!(w.status.as_str(), "queued" | "provisioning"));
             launching.then(|| (glyphs::launching(tier, ctx.spin), Register::Grey))

@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui  !1
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+    ● working                                                                             ⠋ ✻ claude               >1y
+    a shell keeps no transcript ∙ the pane is the whole record                            ⠋ $ cargo                >1y
+                                                                                           x sleep
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ jk select session ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                              ? keys

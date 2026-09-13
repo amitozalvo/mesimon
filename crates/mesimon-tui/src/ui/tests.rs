@@ -1564,6 +1564,58 @@ fn golden_ticket_screen_120() {
     golden("ticket_120x30", &render(&app, 120, 30));
 }
 
+/// The ticket's `!` terminal on the rail (T-366): a ghost row under the
+/// sessions, its pane in the preview zone, and the adoption's two presses.
+#[test]
+fn golden_ticket_terminal_120() {
+    let mut app = app_graphite(fixture(true));
+    let t3 = ulid_n(3);
+    app.terminals.push(mesimon_core::command::TerminalItem { ticket: Some(t3), foreground: None });
+    // Sessions first: the ghost is the third row, after the claude and the shell.
+    app.screen = Screen::Ticket { ticket: t3, rail_idx: 2 };
+    assert!(matches!(app.rail_row(), Some(crate::app::RailRow::Terminal(_))));
+    let tail: Vec<String> = vec!["$ git status".into(), "On branch main".into(), "$ ".into()];
+    app.shell_tail = Some(crate::app::ShellTail::new(crate::app::TailKey::Terminal(t3), tail));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("$ terminal")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("enter adopts")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("On branch main")), "the pane is previewed");
+    golden("ticket_terminal_120x30", &lines);
+
+    // Armed: the row says what the next Enter does, and a busy terminal
+    // names its command in place of the word.
+    app.handle_key(
+        ratatui::crossterm::event::KeyCode::Enter,
+        ratatui::crossterm::event::KeyModifiers::NONE,
+    )
+    .unwrap();
+    app.terminals[0].foreground = Some("cargo".into());
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("$ cargo")), "{lines:#?}");
+    assert!(lines.iter().any(|l| l.contains("enter again adopts")), "{lines:#?}");
+    golden("ticket_terminal_armed_120x30", &lines);
+
+    // Before the first capture lands the zone says so rather than standing empty.
+    app.shell_tail = None;
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("reading its pane")), "{lines:#?}");
+}
+
+/// A shell running a command (T-366): the rail row wears the spinner and the
+/// command's name, and the card on the board spins — a shell at its prompt
+/// still does neither (`a_shell_never_spins`).
+#[test]
+fn golden_ticket_shell_busy_120() {
+    let mut app = app_graphite(fixture(true));
+    let t3 = ulid_n(3);
+    app.board.sessions.iter_mut().find(|s| s.id == uuid_n(32)).unwrap().foreground =
+        Some("cargo".into());
+    app.screen = Screen::Ticket { ticket: t3, rail_idx: 1 };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("$ cargo")), "{lines:#?}");
+    golden("ticket_shell_busy_120x30", &lines);
+}
+
 #[test]
 fn golden_ticket_previous_column() {
     let mut app = app_graphite(fixture(true));
@@ -1871,7 +1923,8 @@ fn test_preview_pages_a_shell_tail() {
     let mut app = app_graphite(fixture(false));
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
     let tail: Vec<String> = (1..=60).map(|i| format!("line {i:02}")).collect();
-    app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), tail.clone()));
+    app.shell_tail =
+        Some(crate::app::ShellTail::new(crate::app::TailKey::Session(uuid_n(32)), tail.clone()));
     let shows = |app: &App, row: &str| render(app, 120, 30).iter().any(|l| l.contains(row));
 
     assert!(shows(&app, "line 60") && !shows(&app, "line 01"), "a tail opens at its bottom");
@@ -1886,7 +1939,8 @@ fn test_preview_pages_a_shell_tail() {
     let before = app.preview_view.get().offset;
     let mut more = tail.clone();
     more.push("line 61".into());
-    app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), more));
+    app.shell_tail =
+        Some(crate::app::ShellTail::new(crate::app::TailKey::Session(uuid_n(32)), more));
     let _ = render(&app, 120, 30);
     assert_eq!(app.preview_view.get().offset, before);
     assert!(!shows(&app, "line 61"));
@@ -3998,7 +4052,7 @@ fn test_shell_zone_previews_the_pane() {
     // Rail row 1 of T-3 is the shell; row 0 is the agent.
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
     app.shell_tail = Some(crate::app::ShellTail::new(
-        uuid_n(32),
+        crate::app::TailKey::Session(uuid_n(32)),
         vec!["$ cargo test -p mesimon-tui".into(), "test result: ok. 212 passed; 0 failed".into()],
     ));
     let lines = render(&app, 120, 30);
@@ -5322,7 +5376,10 @@ fn test_no_banned_sgr() {
             {
                 // The shell's preview zone: raw pane bytes on the same page.
                 app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
-                app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), dirty_tail()));
+                app.shell_tail = Some(crate::app::ShellTail::new(
+                    crate::app::TailKey::Session(uuid_n(32)),
+                    dirty_tail(),
+                ));
                 assert!(
                     render(&app, 120, 30).iter().any(|l| l.contains("in 2.4s")),
                     "the whole shell tail must be ON SCREEN, or this law does not bite"
@@ -5552,7 +5609,10 @@ fn test_no_drawn_structure() {
             // A `tree` in a shell pane is a boxful of the banned range, and
             // the preview zone draws pane bytes: it has to be swept too.
             app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 1 };
-            app.shell_tail = Some(crate::app::ShellTail::new(uuid_n(32), dirty_tail()));
+            app.shell_tail = Some(crate::app::ShellTail::new(
+                crate::app::TailKey::Session(uuid_n(32)),
+                dirty_tail(),
+            ));
             let lines = sweep(&app);
             assert!(
                 lines.iter().any(|l| l.contains("in 2.4s")),

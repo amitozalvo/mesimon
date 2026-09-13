@@ -55,9 +55,19 @@ pub enum Screen {
     Releases,
 }
 
-/// One shell pane's last lines, as last fetched (`Command::PaneTail`).
+/// Which pane a `ShellTail` is of: a shell session's, or the ticket's `!`
+/// terminal before it is adopted (T-366) — the same capture over two
+/// commands (`PaneTail` by session id, `TerminalTail` by ticket).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TailKey {
+    Session(uuid::Uuid),
+    Terminal(ulid::Ulid),
+}
+
+/// One shell pane's last lines, as last fetched (`Command::PaneTail` /
+/// `Command::TerminalTail`).
 pub struct ShellTail {
-    pub session: uuid::Uuid,
+    pub key: TailKey,
     /// Oldest line first — draw order.
     pub lines: Vec<String>,
     /// Last ATTEMPT, not last success: a daemon that cannot answer must be
@@ -66,8 +76,8 @@ pub struct ShellTail {
 }
 
 impl ShellTail {
-    pub(crate) fn new(session: uuid::Uuid, lines: Vec<String>) -> Self {
-        Self { session, lines, fetched: Instant::now() }
+    pub(crate) fn new(key: TailKey, lines: Vec<String>) -> Self {
+        Self { key, lines, fetched: Instant::now() }
     }
 }
 
@@ -688,6 +698,11 @@ pub enum RailRow<'a> {
     /// — ahead of the notes, deliberately (the user's ask): what a ticket
     /// with nothing on it needs first is the agent, not the reading.
     NewAgent,
+    /// The ticket's `!` terminal, alive and not yet adopted (T-366): a ghost
+    /// row under the sessions. The preview zone reads its pane; Enter arms,
+    /// Enter again adopts it as a shell session of the ticket, and then it
+    /// is a `Session` row like any other.
+    Terminal(&'a mesimon_core::command::TerminalItem),
     Note(&'a NoteMeta),
 }
 
@@ -973,6 +988,9 @@ pub struct App {
     pub resources: Resources,
     /// Per-ticket worktree bindings (M4): branch, status word, merged/conflict.
     pub worktrees: Vec<WorktreeItem>,
+    /// The `!` terminals alive on the daemon's tmux, by ticket (T-366): the
+    /// ticket page's ghost row and the card's busy spinner read them.
+    pub terminals: Vec<mesimon_core::command::TerminalItem>,
     /// Standing advisories from the daemon — a quarantined state file, a file
     /// a newer mesimon wrote. Refreshed with every snapshot. NOT `status`:
     /// that is cleared by the next keypress, and these stay true until fixed.
@@ -1008,6 +1026,11 @@ pub struct App {
     /// The m flow's armed stage: a first `m` names what the next `m` does;
     /// the second performs it. Any other key disarms.
     merge_armed: Option<(ulid::Ulid, MergeStage)>,
+    /// Enter on the terminal's ghost row armed adoption of this ticket's
+    /// terminal (T-366): the next Enter adopts, any other key stands down.
+    /// Two presses because adoption grows a session record that the archive
+    /// gate and the workspace lock will then count.
+    adopt_armed: Option<ulid::Ulid>,
     /// The m flow's last delivery to the agent (rebase request or merged
     /// notice) — what keeps the identity line from offering the same ask
     /// again the moment `merge_note` clears. See `merge_outstanding`.
@@ -1358,6 +1381,7 @@ impl App {
             theme,
             resume_refused: None,
             merge_armed: None,
+            adopt_armed: None,
             merge_sent: None,
             pending_merge: None,
             train_pushed_at: None,
@@ -1392,6 +1416,7 @@ impl App {
             searcher: std::cell::RefCell::new(None),
             tag_flash: None,
             shell_tail: None,
+            terminals: Vec::new(),
             spoke: std::collections::HashMap::new(),
             spoke_polled: None,
             spoke_subject: None,
@@ -1635,6 +1660,7 @@ impl App {
             claude_default_mode,
             status_top,
             team,
+            terminals,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
         // The cursor holds its TICKET across the pass (T-335): a card that
@@ -1656,6 +1682,7 @@ impl App {
         self.claude_default_mode = claude_default_mode;
         self.status_top = status_top;
         self.team = team;
+        self.terminals = terminals;
         self.seed_team_drafts();
         self.follow_ticket(followed);
         self.clamp_cursor();
@@ -2160,33 +2187,38 @@ impl App {
     /// page has a live shell selected. The board never asks, a parked shell
     /// never asks, and moving off the row drops the state.
     fn poll_shell_tail(&mut self) -> bool {
-        let Some(session) = self.selected_shell() else {
+        let Some(key) = self.selected_shell() else {
             return self.shell_tail.take().is_some();
         };
         if self
             .shell_tail
             .as_ref()
-            .is_some_and(|t| t.session == session && t.fetched.elapsed() < SHELL_TAIL_EVERY)
+            .is_some_and(|t| t.key == key && t.fetched.elapsed() < SHELL_TAIL_EVERY)
         {
             return false;
         }
-        let lines = match self.req(Command::PaneTail { session, lines: SHELL_TAIL_LINES }) {
+        let ask = match key {
+            TailKey::Session(session) => Command::PaneTail { session, lines: SHELL_TAIL_LINES },
+            TailKey::Terminal(ticket) => {
+                Command::TerminalTail { ticket: Some(ticket), lines: SHELL_TAIL_LINES }
+            }
+        };
+        let lines = match self.req(ask) {
             Response::PaneTail { lines } => lines,
             // A pane that just died, or a daemon mid-reconnect: keep the last
             // good capture rather than blinking the zone empty — the rail row
             // beside it is what says the session is gone — but still stamp
             // the attempt, or a refusal becomes a fork every 100 ms.
             _ => match self.shell_tail.as_mut() {
-                Some(t) if t.session == session => {
+                Some(t) if t.key == key => {
                     t.fetched = Instant::now();
                     return false;
                 }
                 _ => Vec::new(),
             },
         };
-        let same =
-            self.shell_tail.as_ref().is_some_and(|t| t.session == session && t.lines == lines);
-        self.shell_tail = Some(ShellTail::new(session, lines));
+        let same = self.shell_tail.as_ref().is_some_and(|t| t.key == key && t.lines == lines);
+        self.shell_tail = Some(ShellTail::new(key, lines));
         !same
     }
 
@@ -2354,14 +2386,27 @@ impl App {
 
     /// The ticket page's selected rail session, when it is a shell with a
     /// live pane — the only session kind whose story is on a pane and not in
-    /// a transcript.
-    fn selected_shell(&self) -> Option<uuid::Uuid> {
+    /// a transcript — or the ticket's terminal (T-366), which is that story
+    /// before adoption.
+    fn selected_shell(&self) -> Option<TailKey> {
         match self.rail_row()? {
-            RailRow::Session(s) => {
-                (s.kind == SessionKind::Bash && s.state.has_pane()).then_some(s.id)
-            }
+            RailRow::Session(s) => (s.kind == SessionKind::Bash && s.state.has_pane())
+                .then_some(TailKey::Session(s.id)),
+            RailRow::Terminal(t) => t.ticket.map(TailKey::Terminal),
             RailRow::NewAgent | RailRow::Note(_) => None,
         }
+    }
+
+    /// The ticket's `!` terminal, alive and unadopted (T-366). The checkout's
+    /// own terminal belongs to no ticket and is never a row.
+    pub fn terminal_of(&self, ticket: ulid::Ulid) -> Option<&mesimon_core::command::TerminalItem> {
+        self.terminals.iter().find(|t| t.ticket == Some(ticket))
+    }
+
+    /// Is the ticket's unadopted terminal running a command? What lets a
+    /// `cargo build` in it spin the card the way an adopted shell's would.
+    pub fn terminal_busy(&self, ticket: ulid::Ulid) -> bool {
+        self.terminal_of(ticket).is_some_and(|t| t.foreground.is_some())
     }
 
     /// The rail row under the ticket page's cursor.
@@ -2377,7 +2422,7 @@ impl App {
     fn selected_note(&self) -> Option<ulid::Ulid> {
         match self.rail_row()? {
             RailRow::Note(n) => Some(n.id),
-            RailRow::NewAgent | RailRow::Session(_) => None,
+            RailRow::NewAgent | RailRow::Terminal(_) | RailRow::Session(_) => None,
         }
     }
 
@@ -3220,6 +3265,9 @@ impl App {
             sel_session: selected.is_some(),
             sel_note: matches!(row, Some(RailRow::Note(_))),
             sel_new_agent: matches!(row, Some(RailRow::NewAgent)),
+            sel_terminal: matches!(row, Some(RailRow::Terminal(_))),
+            adopt_armed: matches!((row, self.adopt_armed, subject), (Some(RailRow::Terminal(_)), Some(armed), Some(t)) if armed == t),
+            ticket_has_shell: subject.is_some_and(|t| self.board.live_shell(t).is_some()),
             ticket_shells: self.ticket_shells,
             ticket_rail_rows: match self.screen {
                 Screen::Ticket { ticket, .. } => self.rail_rows(ticket).len(),
@@ -3561,9 +3609,11 @@ impl App {
         if !matches!(key, Key::Char('m')) {
             self.merge_armed = None;
         }
-        // The fresh-ticket window lives exactly one Enter long.
+        // The fresh-ticket window lives exactly one Enter long — and so
+        // does the terminal's adoption (T-366).
         if !matches!(key, Key::Enter) {
             self.just_created = None;
+            self.adopt_armed = None;
         }
         let Some(verb) = keymap::resolve(scope, key, &ctx) else {
             // Unbound here, or bound but unavailable. Inside a chord tail that
@@ -4653,7 +4703,7 @@ impl App {
     fn selected_session(&self) -> Option<uuid::Uuid> {
         match self.rail_row()? {
             RailRow::Session(s) => Some(s.id),
-            RailRow::NewAgent | RailRow::Note(_) => None,
+            RailRow::NewAgent | RailRow::Terminal(_) | RailRow::Note(_) => None,
         }
     }
 
@@ -4843,6 +4893,12 @@ impl App {
                     if matches!(self.rail_row(), Some(RailRow::NewAgent)) {
                         return self
                             .spawn_and_focus(ticket, self.board.agent_provider.session_kind());
+                    }
+                    // The terminal's ghost row (T-366): Enter arms, Enter
+                    // again adopts. `handle_key` stands the arm down on any
+                    // other key, so the second press is exactly the next one.
+                    if matches!(self.rail_row(), Some(RailRow::Terminal(_))) {
+                        return self.adopt_terminal(ticket);
                     }
                 }
                 if let Some(sid) = self.selected_session() {
@@ -6037,8 +6093,44 @@ impl App {
     /// (`Command::OpenTerminal`), so the same `!` finds the same shell from
     /// every screen and after a reload.
     fn open_terminal(&mut self) {
+        // Once the ticket's terminal has been adopted it is a shell session
+        // of the ticket (T-366), and the same `!` finds the same shell —
+        // T-273's promise, kept across the adoption. `focus_session` wakes a
+        // parked one first.
+        if let Screen::Ticket { ticket, .. } = self.screen {
+            if let Some(shell) = self.board.live_shell(ticket) {
+                let id = shell.id;
+                if let Err(e) = self.focus_session(id) {
+                    self.status = e.to_string();
+                }
+                return;
+            }
+        }
         let grant = self.grant_for(FocusTarget::Terminal);
         self.focus_target(FocusTarget::Terminal, grant);
+    }
+
+    /// Enter on the terminal's ghost row (T-366): the first press arms,
+    /// the second adopts. The cursor lands on the new session row, which
+    /// is the same shell one row up.
+    fn adopt_terminal(&mut self, ticket: ulid::Ulid) -> Result<()> {
+        if self.adopt_armed != Some(ticket) {
+            self.adopt_armed = Some(ticket);
+            self.status = "enter again adopts the terminal as this ticket's shell".into();
+            return Ok(());
+        }
+        self.adopt_armed = None;
+        match self.req(Command::AdoptTerminal { ticket }) {
+            Response::Spawned { id, .. } => {
+                self.status = "terminal adopted as this ticket's shell".into();
+                self.refresh()?;
+                let idx = self.rail_sessions(ticket).iter().position(|s| s.id == id).unwrap_or(0);
+                self.screen = Screen::Ticket { ticket, rail_idx: idx };
+            }
+            Response::Err { message } => self.status = message,
+            _ => {}
+        }
+        Ok(())
     }
 
     /// The menu's `Release notes` row: the changelog this binary was built
@@ -7942,6 +8034,12 @@ impl App {
     pub fn rail_rows(&self, ticket: ulid::Ulid) -> Vec<RailRow<'_>> {
         let mut rows: Vec<RailRow<'_>> =
             self.rail_sessions(ticket).into_iter().map(RailRow::Session).collect();
+        // The ticket's terminal, under the sessions and before the offer
+        // (T-366): it is a shell the ticket already has, not one it could
+        // start.
+        if let Some(t) = self.terminal_of(ticket) {
+            rows.push(RailRow::Terminal(t));
+        }
         if self.new_agent_row(ticket) {
             rows.push(RailRow::NewAgent);
         }
@@ -8083,9 +8181,12 @@ impl App {
     /// screen, or None for the checkout.
     fn terminal_ticket(&self) -> Option<ulid::Ulid> {
         match self.screen {
-            Screen::Ticket { ticket, .. } => {
-                self.wt_item(ticket).filter(|w| w.path.is_some()).map(|_| ticket)
-            }
+            // Every ticket page names its ticket (T-366): the terminal is
+            // the TICKET's — in its worktree when one is attached, in the
+            // checkout otherwise — so the ghost row, the preview and the
+            // adoption are always about this ticket's own shell, never the
+            // checkout's shared one.
+            Screen::Ticket { ticket, .. } => Some(ticket),
             Screen::Diff => {
                 let branch =
                     self.diff.as_ref().is_some_and(|d| d.is_branch() && d.worktree_present);
@@ -8413,6 +8514,7 @@ struct Snapshot {
     status_top: bool,
     /// Board sharing (T-215): read by the team screens once they exist.
     team: mesimon_core::team::TeamInfo,
+    terminals: Vec<mesimon_core::command::TerminalItem>,
 }
 
 impl Snapshot {
@@ -8433,6 +8535,7 @@ impl Snapshot {
                 claude_default_mode,
                 status_top,
                 team,
+                terminals,
             } => Some(Self {
                 board,
                 grace,
@@ -8448,6 +8551,7 @@ impl Snapshot {
                 claude_default_mode,
                 status_top,
                 team,
+                terminals,
             }),
             _ => None,
         }
@@ -8505,6 +8609,8 @@ pub(crate) mod test_support {
         pub refuse_focus: bool,
         /// Note bodies by id, the daemon's files stood in for.
         pub notes: std::collections::HashMap<ulid::Ulid, String>,
+        /// The `!` terminals the fake daemon reports alive (T-366).
+        pub terminals: Vec<mesimon_core::command::TerminalItem>,
     }
 
     impl Transport for FakeTransport {
@@ -8750,6 +8856,7 @@ pub(crate) mod test_support {
                     claude_default_mode: Some("auto".into()),
                     status_top: self.status_top,
                     team: Default::default(),
+                    terminals: self.terminals.clone(),
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
                 // refusals included, so the status a test reads is the
@@ -8987,6 +9094,7 @@ pub(crate) mod test_support {
                 sent: sent.clone(),
                 refuse_focus,
                 notes: std::collections::HashMap::new(),
+                terminals: Vec::new(),
             };
             let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme)
                 .expect("fake transport snapshot");
@@ -9192,6 +9300,7 @@ mod tests {
             sent,
             refuse_focus: false,
             notes: std::collections::HashMap::new(),
+            terminals: Vec::new(),
         };
         App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot")
@@ -9468,6 +9577,7 @@ mod tests {
             sent: sent.clone(),
             refuse_focus: false,
             notes,
+            terminals: Vec::new(),
         };
         let app = App::new(Box::new(fake), PathBuf::from("/repo/kanban-tui"), theme())
             .expect("fake transport snapshot");
@@ -9527,6 +9637,7 @@ mod tests {
             sent: sent.clone(),
             refuse_focus: false,
             notes,
+            terminals: Vec::new(),
         };
         let app = App::new(Box::new(fake), dir.clone(), theme()).expect("fake transport snapshot");
         (app, sent, dir)
@@ -12693,11 +12804,82 @@ mod tests {
         app.after_handover().unwrap();
         assert_eq!(app.screen, Screen::Ticket { ticket: t, rail_idx: 0 });
 
-        // No worktree on the ticket: the checkout again.
+        // No worktree on the ticket: still the TICKET's terminal (T-366) —
+        // the daemon puts it in the checkout, but it is this ticket's own,
+        // so the ghost row, the preview and the adoption are about it and
+        // never about the checkout's shared shell.
         app.worktrees.clear();
         sent.borrow_mut().clear();
         press(&mut app, '!');
-        assert!(sent_contains(&sent, "OpenTerminal { ticket: None }"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "OpenTerminal { ticket: Some("), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "OpenTerminal { ticket: None }"), "{:?}", sent.borrow());
+    }
+
+    /// The terminal's ghost row (T-366): Enter arms, Enter again adopts,
+    /// and any other key in between stands the arm down.
+    #[test]
+    fn enter_twice_adopts_the_terminal() {
+        let (mut app, sent, _sid) = app_with_claude(SessionState::Running, false);
+        let t = ulid::Ulid(1);
+        app.terminals
+            .push(mesimon_core::command::TerminalItem { ticket: Some(t), foreground: None });
+        app.screen = Screen::Ticket { ticket: t, rail_idx: 1 };
+        assert!(
+            matches!(app.rail_row(), Some(RailRow::Terminal(_))),
+            "the ghost row follows the session"
+        );
+        assert!(!app.terminal_busy(t));
+        let before = sent.borrow().len();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(sent.borrow().len(), before, "the first press only arms: {:?}", sent.borrow());
+        assert_eq!(app.adopt_armed, Some(t));
+        assert!(app.status.contains("enter again"), "{}", app.status);
+        assert_eq!(
+            keymap::hint_for(Scope::Ticket, Verb::Act, &app.ctx()).map(|(_, h)| h),
+            Some("enter again adopts")
+        );
+        // A stray key stands it down.
+        press(&mut app, 'k');
+        assert!(app.adopt_armed.is_none());
+        app.screen = Screen::Ticket { ticket: t, rail_idx: 1 };
+        assert_eq!(
+            keymap::hint_for(Scope::Ticket, Verb::Act, &app.ctx()).map(|(_, h)| h),
+            Some("adopt shell")
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "AdoptTerminal"), "{:?}", sent.borrow());
+        assert!(app.adopt_armed.is_none());
+        // The card spins on a busy terminal, and the key that opens it goes
+        // to the adopted shell once one is there.
+        app.terminals[0].foreground = Some("cargo".into());
+        assert!(app.terminal_busy(t));
+    }
+
+    /// `!` on a ticket that has a shell session goes to that shell (T-366):
+    /// the same key finds the same shell after adoption, and wakes a parked
+    /// one — never a second terminal beside it.
+    #[test]
+    fn bang_focuses_the_adopted_shell() {
+        let (mut app, sent, sid) =
+            app_with_session(SessionKind::Bash, SessionState::Running, false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        assert_eq!(
+            keymap::hint_for(Scope::Ticket, Verb::Terminal, &app.ctx()).map(|(_, h)| h),
+            Some("shell")
+        );
+        press(&mut app, '!');
+        let log = sent.borrow().join("\n");
+        assert!(log.contains(&format!("FocusStart {{ session: {sid} }}")), "{log}");
+        assert!(!log.contains("OpenTerminal"), "{log}");
+
+        let (mut app, sent, sid) =
+            app_with_session(SessionKind::Bash, SessionState::Sleeping, false);
+        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+        press(&mut app, '!');
+        let log = sent.borrow().join("\n");
+        assert!(log.contains(&format!("WakeSession {{ id: {sid} }}")), "{log}");
+        assert!(!log.contains("OpenTerminal"), "{log}");
     }
 
     #[test]
@@ -14707,6 +14889,7 @@ mod tests {
             sent: sent.clone(),
             refuse_focus: false,
             notes,
+            terminals: Vec::new(),
         };
         let mut app = App::new(Box::new(fake), dir.clone(), theme()).unwrap();
         let mut team = super::joined_team_fixture();

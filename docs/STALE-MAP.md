@@ -10499,3 +10499,104 @@ session` where the file is absent or barred). A golden still sets the flags dire
 frame. `doctor` gained a `replies` line. Pinned by `the_reply_row_is_remembered_between_boards`
 (app) and `the_reply_row_defaults_off_and_round_trips` (prefs); `CHANGELOG.md` gets its line at
 the next bump.
+
+## The terminal is per ticket and adoptable (T-366, 2026-09-13)
+
+Asked for as "per ticket shell (`!`) and shell adopt in ticket page": if the shell was used,
+show it as a ghost row under the agent session and adopt it with Enter twice; show its command
+and output in the preview before and after adopting; treat a shell running a command as the
+ticket running, below a recognised agent; recognise agents started in shells (deferred, own
+ticket — T-369).
+
+**`!` is the ticket's.** `App::terminal_ticket` names the ticket on EVERY ticket page now, not
+only one with an attached worktree — T-273's collapse of a shared-checkout ticket's `!` to the
+checkout's `msmn-term` would have made the ghost row, the preview and the adoption about a shell
+that belongs to no ticket. The daemon already handled `Some(ticket)` with no binding (the
+checkout, named `msmn-term-<ulid>`); only the TUI changed. The board's `!` is still the root's.
+
+**The daemon reads its panes, and keeps what it reads in memory.** `refresh_titles` became
+`refresh_panes` on the same 2 s bucket and the same one fork (`TmuxBackend::pane_facts`, which
+is `titles()` grown two fields — `pane_dead` and `pane_current_command`, with the title still
+last because it is the one field that may hold the separator). From it: the titles as before;
+`Daemon::foregrounds` (record → the command its pane runs) and `Daemon::terminals` (directory
+→ alive terminal → its command). `foreground_of` (`core/src/board.rs`) is the rule: tmux names
+the foreground PROCESS, so the shell's own name is idle and anything else is a command — and
+"the shell's own name" is the launched shell's basename OR any of `SHELL_NAMES`, because macOS's
+`/bin/sh` execs `bash` and the pane says `bash` (the e2e found this: `sh` never came back). Both
+maps ride the snapshot only — `Response::Board.terminals` and `SessionRecord.foreground` (serde
+default, skipped when None) — and a change in them is broadcast directly WITHOUT reporting
+`changed`, so `persist_sessions` never runs for a foreground and `sessions.json` never carries
+one; a restart re-seeds `terminals` from the reconcile snapshot (`terminals_in`) and re-reads
+the commands on the first poll. `open_terminal` enters its terminal into the map at once, so
+the ghost row is on the rail when the handover returns rather than two seconds later.
+
+**Adoption is a rename.** `Command::AdoptTerminal { ticket }` → `Daemon::adopt_terminal` mints
+the Bash record a `SpawnSession { Bash }` would have (`[$SHELL]`, the terminal's directory,
+`Running`, provenance `Spawned` — `Adopted` is the external drawer's word and badges
+`external`), then `tmux rename-session` the pane from `msmn-term-<ulid>` to the record's
+`sid16`. Nothing else moves: `pane_tail`, `sleep_eligible`'s live-children guard, `wake`,
+`kill`, `refresh_rss`, the pane-died hook (tmux expands `#{session_name}` at fire time, so a
+death reports the NEW name) and reconcile all key on the name. The rest mirrors
+`spawn_session`'s tail — `machines.insert`, `lock_worktree`, `persist_and_notify`. Refused
+while the focus token is held on that terminal (the user is inside it), on an archived or
+content-only ticket, and when no alive pane of that exact name is in a fresh snapshot — the
+snapshot check is the guard against `-t`'s prefix matching (`msmn-term` is a prefix of every
+ticket's name; `rename_session`'s doc says so). `Command::TerminalTail { ticket, lines }` is
+`PaneTail` for the unadopted pane, over the same `tail_of`. Both denied to agents.
+
+**What changes for an adopted shell, on purpose:** it has a pane, so `archive_ticket` refuses
+until it is slept and `set_workspace` locks — the unadopted ghost never did either. That is the
+difference between a place to stand and a session of the ticket, and it is the reason adoption
+takes two presses. `x` sleeps it (the live-children guard refuses while a command runs) and
+wake respawns `$SHELL` under the same name, as any shell.
+
+**The rail and the preview.** `RailRow::Terminal` sits between the sessions and the `+ claude
+session` offer — a ghost in the dim register, the shell's `$` mark, the word `terminal` or the
+command running (`$ cargo`), the spinner while one runs, and a second line that says what Enter
+does (`enter adopts` / `enter again adopts`). `notes_start` and the offer's index
+count it (`offer_at`), the bug the comment there records. `App::adopt_armed` is the two-press
+state, disarmed beside `just_created` on any key but Enter; the `enter` binding's hint reads
+`adopt shell` / `enter again adopts`. `ShellTail` is keyed by `TailKey { Session(uuid),
+Terminal(ulid) }` and `poll_shell_tail` picks `PaneTail` or `TerminalTail` by it, on the same
+1 s clock; the zone draws the terminal's pane under the same `PREVIEW` heading, keyed by
+`terminal_key` for the scroll, and says `reading its pane` for the one poll before the first
+capture. After adoption the row is a session row and everything is the shell's existing road.
+
+**`!` finds the adopted shell.** `App::open_terminal` sends the key to `focus_session` when
+`Board::live_shell(ticket)` has one (live or parked — `focus_session` wakes it), so the same
+key opens the same shell before and after adoption, T-273's promise kept; the hint reads
+`shell` then (`Ctx::ticket_has_shell`). Over the wire `OpenTerminal` on that ticket still
+spawns a fresh terminal beside the shell — the routing is the TUI's, because `TerminalEnd`
+only releases `Focus::Terminal` and a daemon-side redirect would leave the token's type
+mismatched with the client's `FocusTarget`.
+
+**"Running" is the spinner and nothing more.** `glyphs::is_working` counts a Bash record
+`Running` WITH a foreground; `card_glyph` gained `terminal_busy` for the unadopted ghost, OR-ed
+into the working arm — so a busy shell sits under needs-you, failed and done, and over
+launching, sleeping and unknown, which is "lower priority than recognised agents" by the
+existing table. `session_glyph` and `age_slot` follow from `is_working`. NOT touched:
+`quiet::is_working` (the checkout-quiet gate and the merge train — a `cargo build` in a
+worktree is no reason to hold the checkout), `automove` (a shell's foreground never enters the
+attention machine, so no `Running` edge fires and a shell command cannot move a BACKLOG ticket),
+`is_hot` (board Enter still goes to the agent). A shell at its prompt still never spins
+(`a_shell_never_spins` stands; `a_busy_shell_spins` is its complement).
+
+**Not done: binding the agent inside the shell.** A `claude` typed into a ticket shell has no
+`--session-id`, no hooks and no MCP; the row now SAYS `$ claude` (or `$ node`, for an
+npm-installed one — the process name), and T-369 holds the binding: the census over the shell's
+cwd, observe-only attach, `--resume` takeover on exit.
+
+Not gated on `MESIMON_TICKET_SHELLS`: the seam gates STARTING a shell from `s`/`S`; adopting the
+terminal the user already opened is the door this ticket asked for. `CHANGELOG.md` gets its
+lines at the next bump: Added — adopt the ticket's terminal from its page, preview it before
+adopting, a shell running a command spins the card; Changed — `!` on any ticket page is that
+ticket's own terminal.
+
+Tests: `terminal_adopt_e2e` (open, list, foreground, `TerminalTail`, adopt → rename, `PaneTail`,
+sleep refused then parked and woken, foreground absent from `sessions.json`),
+`enter_twice_adopts_the_terminal` and `bang_focuses_the_adopted_shell` (app),
+`the_terminal_opens_the_screens_directory_and_returns_to_it` (the per-ticket rule),
+`a_busy_shell_spins` (glyphs), `a_shell_at_its_prompt_is_idle_and_anything_else_is_a_command`
+(core), the `parse_facts` case in the backend, goldens `ticket_terminal_120x30`,
+`ticket_terminal_armed_120x30`, `ticket_shell_busy_120x30`; `help_ticket_120x30` moved one word
+(`! shell`, because the fixture's ticket has a shell).

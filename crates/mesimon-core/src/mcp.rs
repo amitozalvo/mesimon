@@ -686,6 +686,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // denies an agent `Resource::Session` at every action, and this is
         // the same rule stated where a new command has to walk past it.
         | Command::PaneTail { .. }
+        | Command::TerminalTail { .. }
+        // The terminal is the person's own shell; adopting it grows a
+        // session, and no agent spawns anything.
+        | Command::AdoptTerminal { .. }
         // Who is sitting at the user's terminal, and how recently they
         // touched it (T-299). A session read by the same rule as the line
         // above, and a fact about the PERSON besides — the notification
@@ -1186,6 +1190,8 @@ mod tests {
                 context: 3,
             },
             Command::PaneTail { session: s, lines: 20 },
+            Command::TerminalTail { ticket: Some(t), lines: 20 },
+            Command::AdoptTerminal { ticket: t },
             // One agent steering another agent's turn is the sharpest thing
             // the never-tier exists to stop.
             Command::PromptSession { ticket: t, text: "do the thing".into(), queued: false },

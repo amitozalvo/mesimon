@@ -108,6 +108,39 @@ fn pairs(out: &str) -> impl Iterator<Item = (&str, &str)> {
     out.lines().filter_map(|l| l.split_once(SEP))
 }
 
+/// What one pane is doing, from the poll-bucket fork (`pane_facts`): its
+/// name, whether it is a `remain-on-exit` corpse, the foreground process's
+/// name (`#{pane_current_command}` — the shell's own at a prompt, the
+/// command's while one runs) and its OSC-0 title.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PaneFacts {
+    pub session_name: String,
+    pub pane_dead: bool,
+    pub current_command: String,
+    pub title: String,
+}
+
+/// `session|dead|command|title` rows. Three splits, so the title — the one
+/// free-text field, last — keeps any separator of its own.
+fn parse_facts(out: &str) -> Vec<PaneFacts> {
+    out.lines()
+        .filter_map(|l| {
+            let mut f = l.splitn(4, SEP);
+            let (Some(name), Some(dead), Some(cmd), Some(title)) =
+                (f.next(), f.next(), f.next(), f.next())
+            else {
+                return None;
+            };
+            Some(PaneFacts {
+                session_name: name.to_string(),
+                pane_dead: dead == "1",
+                current_command: cmd.trim().to_string(),
+                title: title.trim().to_string(),
+            })
+        })
+        .collect()
+}
+
 pub struct TmuxBackend {
     sock: PathBuf,
     conf: PathBuf,
@@ -395,16 +428,34 @@ impl TmuxBackend {
         Ok(pairs(&out).filter_map(|(name, t)| Some((name.to_string(), t.parse().ok()?))).collect())
     }
 
-    /// Every pane's OSC-0 title in one fork (`#{pane_title}`; tmux reports
-    /// the hostname when the app never set one — callers filter, same rule
-    /// as `pane_title`).
-    pub fn titles(&self) -> Result<Vec<(String, String)>> {
+    /// Every pane's liveness, foreground command and OSC-0 title in one fork
+    /// (the title: tmux reports the hostname when the app never set one —
+    /// callers filter, same rule as `pane_title`). The title is the last
+    /// field because it is the one that may contain the separator.
+    pub fn pane_facts(&self) -> Result<Vec<PaneFacts>> {
         if !self.server_alive() {
             return Ok(Vec::new());
         }
-        let out =
-            self.run(&["list-panes", "-a", "-F", &fields(&["session_name", "pane_title"])])?;
-        Ok(pairs(&out).map(|(name, t)| (name.to_string(), t.trim().to_string())).collect())
+        let out = self.run(&[
+            "list-panes",
+            "-a",
+            "-F",
+            &fields(&["session_name", "pane_dead", "pane_current_command", "pane_title"]),
+        ])?;
+        Ok(parse_facts(&out))
+    }
+
+    /// Give a session a new name (T-366: adopting the `!` terminal renames
+    /// its pane to the record's `sid16`, so every sid16-keyed road — capture,
+    /// kill, the pane-died hook, reconcile — finds it with no other change).
+    ///
+    /// `-t` PREFIX-matches when no session has the exact name, and
+    /// `msmn-term` is a prefix of every `msmn-term-<ulid>`: a caller must
+    /// have seen `old` exactly in a snapshot before asking, or a miss here
+    /// would rename a neighbour.
+    pub fn rename_session(&self, old: &str, new: &str) -> Result<()> {
+        self.run(&["rename-session", "-t", old, new])?;
+        Ok(())
     }
 
     /// Kill ladder rung 1: SIGTERM the pane's process group; caller escalates to
@@ -590,6 +641,26 @@ mod tests {
             titled,
             [("abc123", "claude | T-12 fix")],
             "split once: the title keeps its own bar"
+        );
+
+        let facts = parse_facts("abc123|0|cargo|claude | T-12 fix\nmsmn-term-x|1|zsh|host\nbare\n");
+        assert_eq!(
+            facts,
+            [
+                PaneFacts {
+                    session_name: "abc123".into(),
+                    pane_dead: false,
+                    current_command: "cargo".into(),
+                    title: "claude | T-12 fix".into(),
+                },
+                PaneFacts {
+                    session_name: "msmn-term-x".into(),
+                    pane_dead: true,
+                    current_command: "zsh".into(),
+                    title: "host".into(),
+                },
+            ],
+            "three splits: the title, last, keeps its own bar"
         );
     }
 

@@ -1,0 +1,30 @@
+ TICKET (T-3)   mesimon › kanban-tui  !1
+
+ Fix OSC-11 detection
+ IN PROGRESS for >1y ∙ created >1y ago
+
+
+  PREVIEW                                                                                  SESSIONS                  2
+
+    $ git status                                                                          ⠋ ✻ claude               >1y
+    On branch main                                                                        ◦ $ bash                 >1y
+    $                                                                                     ⠋ $ cargo
+                                                                                              enter again adopts
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ enter again adopts the terminal as this ticket's shell

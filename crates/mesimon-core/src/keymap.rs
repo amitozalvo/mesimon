@@ -974,6 +974,15 @@ pub struct Ctx {
     /// asked the reader to know which of `c` and `s` they wanted before
     /// they knew what either was.
     pub sel_new_agent: bool,
+    /// The rail cursor is on the ticket's terminal (T-366): the `!` shell,
+    /// alive and not yet adopted, shown as a ghost row under the sessions.
+    /// Enter arms adoption; `adopt_armed` says the next Enter does it.
+    pub sel_terminal: bool,
+    pub adopt_armed: bool,
+    /// The ticket has a shell SESSION, live or parked (an adopted terminal,
+    /// or one `s` started): `!` focuses that instead of opening a second
+    /// terminal beside it, and its hint says so.
+    pub ticket_has_shell: bool,
     /// A ticket may grow its own SHELL session (T-300). Off — the default —
     /// `s` and `S` on the ticket page and `s` on the board are inert and
     /// unhinted; the sessions a board already has are untouched, and
@@ -2213,6 +2222,10 @@ static TICKET: &[Binding] = &[
                 "read note"
             } else if c.sel_note {
                 "edit note"
+            } else if c.sel_terminal && c.adopt_armed {
+                "enter again adopts"
+            } else if c.sel_terminal {
+                "adopt shell"
             } else if c.sel_dead {
                 "resume"
             } else if c.sel_sleeping {
@@ -2221,7 +2234,7 @@ static TICKET: &[Binding] = &[
                 "focus"
             }
         },
-        avail: |c| c.sel_session || c.sel_note || c.sel_new_agent,
+        avail: |c| c.sel_session || c.sel_note || c.sel_new_agent || c.sel_terminal,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -2297,7 +2310,17 @@ static TICKET: &[Binding] = &[
         keys: &[Key::Char('!')],
         verb: Verb::Terminal,
         show: "!",
-        hint: |c| if c.has_worktree { "terminal in worktree" } else { "terminal" },
+        // Once adopted (T-366) the terminal is the ticket's shell session,
+        // and the key goes to it — the same shell, by the same key.
+        hint: |c| {
+            if c.ticket_has_shell {
+                "shell"
+            } else if c.has_worktree {
+                "terminal in worktree"
+            } else {
+                "terminal"
+            }
+        },
         avail: always,
         class: Class::Plain,
         group: Group::Sessions,

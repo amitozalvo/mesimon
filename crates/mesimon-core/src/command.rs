@@ -547,6 +547,24 @@ pub enum Command {
         lines: u16,
     },
 
+    /// `PaneTail` for the `!` terminal (T-366): the ticket page previews the
+    /// ticket's terminal before it is adopted, and the terminal has no
+    /// session id to ask by — the ticket names it, exactly as `OpenTerminal`
+    /// finds it. Denied to agents by the same rule as `PaneTail`.
+    TerminalTail {
+        ticket: Option<ulid::Ulid>,
+        lines: u16,
+    },
+
+    /// Adopt the ticket's `!` terminal as a shell session of the ticket
+    /// (T-366): the daemon mints a Bash record and RENAMES the pane to the
+    /// record's `sid16`, so the shell keeps its history and every session
+    /// road (preview, sleep, wake, the reaper) reaches it from then on.
+    /// Answers `Response::Spawned`.
+    AdoptTerminal {
+        ticket: ulid::Ulid,
+    },
+
     /// How long the person inside the FOCUSED pane has been quiet (T-299).
     ///
     /// The one question the board cannot answer about itself. While it is
@@ -765,6 +783,7 @@ impl Command {
             | DiffList { .. }
             | DiffFile { .. }
             | PaneTail { .. }
+            | TerminalTail { .. }
             | FocusQuiet
             | ReadNote { .. }
             | AgentGetTicket
@@ -804,6 +823,7 @@ impl Command {
             PromptSession { ticket, .. }
             | DropQueuedAsk { ticket }
             | SpawnSession { ticket, .. }
+            | AdoptTerminal { ticket }
             | WriteNote { ticket, .. }
             | NoteToAgent { ticket, .. } => m(Mutate, true, Some(*ticket)),
             AttachExternal { ticket, .. } | ResumeExternal { ticket, .. } => {
@@ -1011,6 +1031,12 @@ pub enum Response {
         /// this disagrees. Absent from an older daemon parses as bottom.
         #[serde(default)]
         status_top: bool,
+        /// The `!` terminals alive on the private server (T-366): one per
+        /// directory, named by ticket. What the ticket page's ghost row and
+        /// the card's spinner read; none of it is persisted, the panes are
+        /// the record. Absent from an older daemon parses as none.
+        #[serde(default)]
+        terminals: Vec<TerminalItem>,
     },
     /// SpawnSession on a worktree ticket that is not provisioned yet: the
     /// worktree is being created off-thread; a BoardChanged follows when the
@@ -1275,6 +1301,17 @@ pub struct TrainAsk {
     pub at_ms: u64,
     /// `train` or `local` — a word, `Principal::actor`'s vocabulary.
     pub by: String,
+}
+
+/// One alive `!` terminal (T-366). `ticket: None` is the checkout's.
+/// `foreground` is the name of the command running in it — `None` at a
+/// prompt, `Some("cargo")` mid-build — read off `#{pane_current_command}`
+/// on the daemon's poll bucket; it is what makes a busy shell spin the card.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct TerminalItem {
+    pub ticket: Option<ulid::Ulid>,
+    #[serde(default)]
+    pub foreground: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

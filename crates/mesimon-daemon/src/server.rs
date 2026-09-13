@@ -14,14 +14,14 @@ use anyhow::{Context, Result};
 use mesimon_backend_tmux::TmuxBackend;
 use mesimon_core::attention::{self, Change, Machine, Signal, StartSource};
 use mesimon_core::board::{
-    sanitize_tag, AgentProvider, AgentTools, Archived, Board, Confidence, ExitReason, Provenance,
-    SessionKind, SessionRecord, SessionState, StopReason, Tag, TagRef, Ticket, UnknownReason,
-    WorkspaceStrategy,
+    foreground_of, sanitize_tag, AgentProvider, AgentTools, Archived, Board, Confidence,
+    ExitReason, Provenance, SessionKind, SessionRecord, SessionState, StopReason, Tag, TagRef,
+    Ticket, UnknownReason, WorkspaceStrategy,
 };
 use mesimon_core::command::{
     AgentBoardView, AgentTagView, AgentTicketRow, AgentTicketView, Command, DiffTarget, Envelope,
-    Event, ExternalItem, GraceItem, MergeOutcome, Notice, Resources, Response, WorktreeItem,
-    PROTOCOL_VERSION,
+    Event, ExternalItem, GraceItem, MergeOutcome, Notice, Resources, Response, TerminalItem,
+    WorktreeItem, PROTOCOL_VERSION,
 };
 use mesimon_core::mcp;
 use mesimon_core::reconcile::{reconcile, state_for};
@@ -72,6 +72,31 @@ fn terminal_name(ticket: Option<ulid::Ulid>) -> String {
         None => "msmn-term".to_string(),
         Some(id) => format!("msmn-term-{id}"),
     }
+}
+
+/// `terminal_name` read back off a tmux session name: `Some(None)` for the
+/// checkout's terminal, `Some(Some(ticket))` for a ticket's, `None` for any
+/// other session on the server. What lets the poll bucket list the
+/// terminals alive without the daemon remembering which it opened (T-366:
+/// a restart forgets, the panes do not).
+fn terminal_ticket_of(name: &str) -> Option<Option<ulid::Ulid>> {
+    if name == "msmn-term" {
+        return Some(None);
+    }
+    let rest = name.strip_prefix("msmn-term-")?;
+    ulid::Ulid::from_string(rest).ok().map(Some)
+}
+
+/// The `!` terminals alive in a pane snapshot, foreground unknown — the
+/// seed at startup, before the first poll has read a command.
+fn terminals_in(
+    snap: &[mesimon_core::reconcile::PaneSnapshot],
+) -> std::collections::BTreeMap<Option<ulid::Ulid>, Option<String>> {
+    snap.iter()
+        .filter(|p| !p.pane_dead)
+        .filter_map(|p| terminal_ticket_of(&p.session_name))
+        .map(|t| (t, None))
+        .collect()
 }
 /// The deadline wheel (11 §11.7.4 settle timers need finer than 1 s).
 const TICK_MS: u64 = 250;
@@ -296,6 +321,16 @@ pub struct Daemon {
     /// Per-session slice of that aggregate, same bucket — feeds the sleep
     /// suggestion's "free ~X" figure.
     rss_by: HashMap<uuid::Uuid, u64>,
+    /// The command each live shell record's pane is running (T-366), from
+    /// the same fork as the titles. In memory ONLY: it is written into the
+    /// snapshot's records (`SessionRecord::foreground`) and never into
+    /// `sessions.json` — a persisted foreground would outlive the command.
+    foregrounds: HashMap<uuid::Uuid, String>,
+    /// The `!` terminals alive on the private server, by directory (`None`
+    /// the checkout's), with the command each is running. Seeded from the
+    /// startup snapshot, kept by the poll bucket, entered by `open_terminal`
+    /// so the ghost row is on the rail the moment the user is back.
+    terminals: std::collections::BTreeMap<Option<ulid::Ulid>, Option<String>>,
     /// (bytes, sessions) currently sleepable on sleep-safe tickets — the
     /// header suggestion, recomputed on the RSS bucket.
     reclaim_cache: (u64, usize),
@@ -662,6 +697,8 @@ pub fn run(paths: Paths) -> Result<()> {
         reaping: HashMap::new(),
         rss_cache: (0, 0),
         rss_by: HashMap::new(),
+        foregrounds: HashMap::new(),
+        terminals: terminals_in(&snap),
         reclaim_cache: (0, 0),
         archive_cache: 0,
         pty_cache: crate::resources::pty_figures(),
@@ -1319,7 +1356,9 @@ impl Daemon {
             Command::DuplicateTicket { id: ticket }
             | Command::ReadNote { ticket, .. }
             | Command::WriteNote { ticket, .. }
-            | Command::NoteToAgent { ticket, .. } => Resource::Ticket { id: *ticket },
+            | Command::NoteToAgent { ticket, .. }
+            // Growing a ticket a shell is changing the ticket (T-366).
+            | Command::AdoptTerminal { ticket } => Resource::Ticket { id: *ticket },
             _ => Resource::Board,
         };
         if let Decision::Deny { reason } = authorize(&env.principal, &meta.action, &resource) {
@@ -1519,6 +1558,8 @@ impl Daemon {
                 message: "diff commands are served on the connection thread".into(),
             },
             Command::PaneTail { session, lines } => self.pane_tail(session, lines),
+            Command::TerminalTail { ticket, lines } => self.terminal_tail(ticket, lines),
+            Command::AdoptTerminal { ticket } => self.adopt_terminal(ticket),
             Command::FocusQuiet => self.focus_quiet(),
             Command::AttachExternal { claude_session_id, ticket } => {
                 match self.attach_external(&env.principal, claude_session_id, ticket) {
@@ -1657,7 +1698,7 @@ impl Daemon {
         if self.ticks % TAIL_POLL_TICKS == 0 {
             changed |= stage!("poll_tails", self.poll_tails());
             changed |= stage!("probe_status_files", self.probe_status_files());
-            changed |= stage!("refresh_titles", self.refresh_titles());
+            changed |= stage!("refresh_panes", self.refresh_panes());
         }
         if self.ticks % RSS_TICKS == 0 {
             changed |= stage!("refresh_rss", self.refresh_rss());
@@ -1833,8 +1874,22 @@ impl Daemon {
         if !rec.state.has_pane() {
             return Response::Err { message: "session has no pane".into() };
         }
+        self.tail_of(&rec.sid16(), lines)
+    }
+
+    /// `pane_tail` for the `!` terminal (T-366): the ticket page previews
+    /// the terminal before it is adopted. Only a terminal the poll (or
+    /// `open_terminal`) has listed — a name nobody opened is not captured.
+    fn terminal_tail(&self, ticket: Option<ulid::Ulid>, lines: u16) -> Response {
+        if !self.terminals.contains_key(&ticket) {
+            return Response::Err { message: "no terminal".into() };
+        }
+        self.tail_of(&terminal_name(ticket), lines)
+    }
+
+    fn tail_of(&self, name: &str, lines: u16) -> Response {
         let n = lines.clamp(1, MAX_PANE_TAIL_LINES) as usize;
-        match self.backend.capture_tail(&rec.sid16(), n) {
+        match self.backend.capture_tail(name, n) {
             // A pane holds whatever a command decided to print, so bound what
             // rides the wire here; what is *drawable* stays the client's own
             // question, the same way transcript text is.
@@ -1876,11 +1931,15 @@ impl Daemon {
     /// status line's breadcrumb leaf uses. The hostname means never-set (see
     /// `pane_title`) and a missing pane keeps the last name: latch, never
     /// clear, so sleeping/parked sessions stay recognizable.
-    fn refresh_titles(&mut self) -> bool {
-        if !self.board.sessions.iter().any(|r| r.state.has_pane()) {
+    fn refresh_panes(&mut self) -> bool {
+        let paned = self.board.sessions.iter().any(|r| r.state.has_pane());
+        // A quiet board — no pane of ours, no terminal we know of — forks
+        // nothing. A terminal enters the map through `open_terminal` or the
+        // startup snapshot, so one that exists is always polled.
+        if !paned && self.terminals.is_empty() {
             return false;
         }
-        let Ok(titles) = self.backend.titles() else { return false };
+        let Ok(facts) = self.backend.pane_facts() else { return false };
         let mut changed = false;
         for rec in self.board.sessions.iter_mut().filter(|r| r.state.has_pane()) {
             if crate::agents::adapter(rec.kind).is_some_and(|adapter| {
@@ -1889,7 +1948,8 @@ impl Daemon {
                 continue;
             }
             let sid = rec.sid16();
-            let Some((_, t)) = titles.iter().find(|(name, _)| *name == sid) else { continue };
+            let Some(f) = facts.iter().find(|f| f.session_name == sid) else { continue };
+            let t = &f.title;
             if t.is_empty() || *t == self.hostname {
                 continue;
             }
@@ -1904,6 +1964,42 @@ impl Daemon {
             if rec.title.as_deref() != Some(clean.as_str()) {
                 rec.title = Some(clean);
                 changed = true;
+            }
+        }
+        // The foregrounds (T-366): a shell record's pane is running a
+        // command when tmux names something other than the shell it was
+        // born with; the terminals likewise, against the daemon's `$SHELL`,
+        // which is what `open_terminal` launched. Both live in maps, never on
+        // the record on disk — so a change here is broadcast and NOT
+        // reported as `changed`, which would persist the sessions for a
+        // fact that belongs to a live pane.
+        let mut foregrounds = HashMap::new();
+        for rec in
+            self.board.sessions.iter().filter(|r| r.kind == SessionKind::Bash && r.state.has_pane())
+        {
+            let sid = rec.sid16();
+            let Some(f) = facts.iter().find(|f| f.session_name == sid && !f.pane_dead) else {
+                continue;
+            };
+            let shell = rec.argv.first().map(String::as_str).unwrap_or_default();
+            if let Some(cmd) = foreground_of(&f.current_command, shell) {
+                foregrounds.insert(rec.id, cmd);
+            }
+        }
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let terminals: std::collections::BTreeMap<_, _> = facts
+            .iter()
+            .filter(|f| !f.pane_dead)
+            .filter_map(|f| {
+                let t = terminal_ticket_of(&f.session_name)?;
+                Some((t, foreground_of(&f.current_command, &shell)))
+            })
+            .collect();
+        if foregrounds != self.foregrounds || terminals != self.terminals {
+            self.foregrounds = foregrounds;
+            self.terminals = terminals;
+            if !changed {
+                self.broadcast();
             }
         }
         changed
@@ -3719,9 +3815,24 @@ impl Daemon {
                 ),
             ));
         }
+        // The foregrounds ride the snapshot's records and nothing else: the
+        // board on disk never carries one (T-366).
+        let mut board = self.board.clone();
+        for rec in &mut board.sessions {
+            rec.foreground = self.foregrounds.get(&rec.id).cloned();
+        }
+        let terminals = self
+            .terminals
+            .iter()
+            .map(|(ticket, foreground)| TerminalItem {
+                ticket: *ticket,
+                foreground: foreground.clone(),
+            })
+            .collect();
         Response::Board {
             team: self.team_info(),
-            board: self.board.clone(),
+            board,
+            terminals,
             grace,
             external: self.external.clone(),
             resources: self.resources(),
@@ -8041,10 +8152,86 @@ impl Daemon {
                 return Response::Err { message: format!("terminal spawn failed: {e}") };
             }
         }
+        // Listed now, not on the next poll: the ghost row (T-366) is on the
+        // rail the moment the handover returns.
+        if let std::collections::btree_map::Entry::Vacant(e) = self.terminals.entry(ticket) {
+            e.insert(None);
+            self.broadcast();
+        }
         self.focus = Some(FocusHold { what: want, by: Arc::downgrade(by) });
         self.focus_label = "terminal".to_string();
         self.refresh_status_line();
         Response::Attach { argv: self.backend.attach_argv(&name) }
+    }
+
+    /// `Command::AdoptTerminal` (T-366): the ticket's `!` terminal becomes a
+    /// shell session of the ticket. The pane is RENAMED to the new record's
+    /// `sid16` — the shell keeps its history and its processes, and from
+    /// here every session road (`pane_tail`, sleep, wake, the reaper, the
+    /// pane-died hook, reconcile) finds it by that name with no other
+    /// change. The record is what a `SpawnSession { Bash }` would have made:
+    /// `[$SHELL]` in the same directory, `Running`, provenance `Spawned`
+    /// (the pane WAS spawned by this daemon through `launch`; `Adopted` is
+    /// the external drawer's word and badges `external`).
+    fn adopt_terminal(&mut self, ticket: ulid::Ulid) -> Response {
+        let Some(t) = self.board.ticket(ticket) else { return no_such_ticket() };
+        if t.is_archived() {
+            return Response::Err { message: "ticket archived — restore it first".into() };
+        }
+        if self.team_content_only() {
+            return Response::Err {
+                message: "this board has no repository on this machine — open it where the code is"
+                    .into(),
+            };
+        }
+        // The user is inside it: adopting under their feet would change the
+        // token's target while a client holds it.
+        if self.focus_held() == Some(Focus::Terminal { ticket: Some(ticket) }) {
+            return Response::Err {
+                message: "terminal is attached — return to the board first".into(),
+            };
+        }
+        // Exact name, alive, in a fresh snapshot — `rename-session -t`
+        // prefix-matches on a miss, so the check is the guard.
+        let name = terminal_name(Some(ticket));
+        let alive = self
+            .backend
+            .snapshot()
+            .map(|s| s.iter().any(|p| p.session_name == name && !p.pane_dead))
+            .unwrap_or(false);
+        if !alive {
+            self.terminals.remove(&Some(ticket));
+            return Response::Err {
+                message: "no terminal to adopt — open one with ! first".into(),
+            };
+        }
+        let cwd = match self.worktrees.get(&ticket) {
+            Some(b) if b.status == BindingStatus::Attached => b.path.clone(),
+            _ => self.paths.repo_root.clone(),
+        };
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".into());
+        let id = uuid::Uuid::new_v4();
+        let now = now_ms();
+        let mut rec = SessionRecord::new(
+            id,
+            SessionKind::Bash,
+            ticket,
+            vec![shell],
+            cwd.display().to_string(),
+            SessionState::Running,
+        );
+        rec.state_changed_at = Some(now);
+        if let Err(e) = self.backend.rename_session(&name, &rec.sid16()) {
+            return Response::Err { message: format!("terminal adopt failed: {e}") };
+        }
+        if let Some(fg) = self.terminals.remove(&Some(ticket)).flatten() {
+            self.foregrounds.insert(id, fg);
+        }
+        self.machines.insert(id, Machine::new(SessionState::Running, now));
+        self.board.sessions.push(rec);
+        self.lock_worktree(ticket, id);
+        self.persist_and_notify();
+        Response::Spawned { id, fresh: false }
     }
 
     fn gate_status(&mut self) -> Response {

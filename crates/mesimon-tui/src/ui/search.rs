@@ -305,6 +305,7 @@ fn draw_preview(f: &mut Frame, app: &App, s: &Search, area: Rect) {
         &ctx,
         ticket,
         &sessions,
+        app.terminal_busy(ticket.id),
         app.wt_item(ticket.id),
         // Not the cursor card: the LIST carries the cursor, and two painted
         // cursors on one surface are two answers to "where am I".

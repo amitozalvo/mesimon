@@ -4,7 +4,7 @@
 //! banner (M6), not a per-card flag (D14/D19).
 
 use mesimon_core::board::{
-    Confidence, ExitReason, Reason, SessionRecord, SessionState, StopReason,
+    Confidence, ExitReason, Reason, SessionKind, SessionRecord, SessionState, StopReason,
 };
 
 /// Working-spinner frames. Braille dots on the unicode tier (one cell, Neutral
@@ -343,15 +343,19 @@ pub(crate) enum Tier {
     Ascii,
 }
 
-/// Does this session's `Running` mean work is in flight? Only an agent's
-/// does. A shell has no hook stream, so the daemon pins it at `Running` for
-/// the whole life of its pane (D15: "a live pane is all running means") —
-/// that is liveness, not activity, and the working spinner on it told the
-/// board a shell sitting at its prompt was busy (dogfood 2026-09-01). The
-/// spinner is the one place D19's motion ban bends; it may only bend for
-/// something actually moving.
+/// Does this session's `Running` mean work is in flight? An agent's does. A
+/// shell has no hook stream, so the daemon pins it at `Running` for the
+/// whole life of its pane (D15: "a live pane is all running means") — that
+/// is liveness, not activity, and the working spinner on it told the board
+/// a shell sitting at its prompt was busy (dogfood 2026-09-01). What a shell
+/// HAS is a foreground (T-366): the daemon reads `#{pane_current_command}`
+/// off its pane, and a `cargo build` in it is something actually moving —
+/// the one thing D19's motion ban bends for.
 pub(crate) fn is_working(rec: &SessionRecord) -> bool {
-    rec.kind.is_agent() && rec.state == SessionState::Running
+    match rec.kind {
+        SessionKind::Bash => rec.state == SessionState::Running && rec.foreground.is_some(),
+        _ => rec.kind.is_agent() && rec.state == SessionState::Running,
+    }
 }
 
 /// Is this session still in its launch window — the pane opening, or the
@@ -400,11 +404,15 @@ pub(crate) fn is_launching(rec: &SessionRecord) -> bool {
 /// glyphs.
 pub(crate) fn card_glyph(
     sessions: &[&SessionRecord],
+    terminal_busy: bool,
     tier: Tier,
     spin: usize,
 ) -> Option<(char, Register)> {
     if sessions.is_empty() {
-        return None;
+        // The ticket's unadopted `!` terminal (T-366) is no session, but a
+        // command running in it is work on the ticket, at the spinner's
+        // own rank: below anything an agent has to say, above a parked one.
+        return terminal_busy.then(|| (spinner(tier, spin), Register::Grey));
     }
     let usable =
         |s: &&&SessionRecord| matches!(s.confidence, Confidence::High | Confidence::Medium);
@@ -435,7 +443,7 @@ pub(crate) fn card_glyph(
     {
         return Some((if tier == Tier::Ascii { '+' } else { '✓' }, Register::Calm));
     }
-    if sessions.iter().any(|s| is_working(s)) {
+    if terminal_busy || sessions.iter().any(|s| is_working(s)) {
         return Some((spinner(tier, spin), Register::Grey));
     }
     // Spawning is the launch window, and until Shift+Enter nobody watched it:
@@ -621,17 +629,20 @@ mod tests {
     fn running_card_shows_spinner() {
         let a = rec(SessionState::Running);
         let b = rec(SessionState::Spawning);
-        assert_eq!(card_glyph(&[&a, &b], Tier::Unicode, 0), Some(('⠋', Register::Grey)));
-        assert_eq!(card_glyph(&[&a], Tier::Ascii, 0), Some(('|', Register::Grey)));
+        assert_eq!(card_glyph(&[&a, &b], false, Tier::Unicode, 0), Some(('⠋', Register::Grey)));
+        assert_eq!(card_glyph(&[&a], false, Tier::Ascii, 0), Some(('|', Register::Grey)));
         // The frame advances the glyph — that IS the animation.
-        assert_ne!(card_glyph(&[&a], Tier::Unicode, 1), card_glyph(&[&a], Tier::Unicode, 0));
+        assert_ne!(
+            card_glyph(&[&a], false, Tier::Unicode, 1),
+            card_glyph(&[&a], false, Tier::Unicode, 0)
+        );
         // A working session outranks a launching one on the same card: the
         // fast arc is the truthful one while anything is actually in flight.
         assert_eq!(
-            card_glyph(&[&b, &a], Tier::Unicode, 0),
+            card_glyph(&[&b, &a], false, Tier::Unicode, 0),
             Some((spinner(Tier::Unicode, 0), Register::Grey))
         );
-        assert_eq!(card_glyph(&[], Tier::Unicode, 0), None);
+        assert_eq!(card_glyph(&[], false, Tier::Unicode, 0), None);
     }
 
     /// Shift+Enter mints a ticket, spawns claude and STAYS on the board — the
@@ -645,7 +656,7 @@ mod tests {
         let spawning = rec(SessionState::Spawning);
         for tier in [Tier::Unicode, Tier::Ascii] {
             assert_eq!(
-                card_glyph(&[&spawning], tier, 0),
+                card_glyph(&[&spawning], false, tier, 0),
                 Some((launching(tier, 0), Register::Grey)),
                 "a spawning card says nothing"
             );
@@ -697,19 +708,22 @@ mod tests {
             assert!(is_launching(&composed));
             assert!(!is_launching(&plain));
             assert_eq!(
-                card_glyph(&[&composed], tier, 0),
+                card_glyph(&[&composed], false, tier, 0),
                 Some((launching(tier, 0), Register::Grey)),
                 "the card went dark mid-launch"
             );
-            assert_eq!(card_glyph(&[&plain], tier, 0), None);
+            assert_eq!(card_glyph(&[&plain], false, tier, 0), None);
             assert_eq!(session_glyph(&composed, tier, 0), (launching(tier, 0), Register::Grey));
             // And the whole press-to-turn path is one unbroken mark: spawn,
             // session start, ack. Only the last frame changes what it says.
             let spawning = rec(SessionState::Spawning);
             let running = rec(SessionState::Running);
-            assert_eq!(card_glyph(&[&spawning], tier, 0), card_glyph(&[&composed], tier, 0));
             assert_eq!(
-                card_glyph(&[&running], tier, 0),
+                card_glyph(&[&spawning], false, tier, 0),
+                card_glyph(&[&composed], false, tier, 0)
+            );
+            assert_eq!(
+                card_glyph(&[&running], false, tier, 0),
                 Some((spinner(tier, 0), Register::Grey)),
                 "the ack hands over to the working arc"
             );
@@ -737,8 +751,8 @@ mod tests {
                 "{state:?} was relabelled by a stale owed Enter"
             );
             assert_eq!(
-                card_glyph(&[&owed], Tier::Unicode, 0),
-                card_glyph(&[&clean], Tier::Unicode, 0),
+                card_glyph(&[&owed], false, Tier::Unicode, 0),
+                card_glyph(&[&clean], false, Tier::Unicode, 0),
                 "{state:?} was relabelled by a stale owed Enter"
             );
         }
@@ -752,13 +766,22 @@ mod tests {
         let attn = rec(SessionState::RequiresAction { reason: Reason::Question });
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
         let fail = rec(SessionState::Failed { reason: FailReason::Server });
-        assert_eq!(card_glyph(&[&spawning, &attn], Tier::Unicode, 0).unwrap().1, Register::Attn);
-        assert_eq!(card_glyph(&[&spawning, &fail], Tier::Unicode, 0), Some(('x', Register::Err)));
-        assert_eq!(card_glyph(&[&spawning, &done], Tier::Unicode, 0), Some(('✓', Register::Calm)));
+        assert_eq!(
+            card_glyph(&[&spawning, &attn], false, Tier::Unicode, 0).unwrap().1,
+            Register::Attn
+        );
+        assert_eq!(
+            card_glyph(&[&spawning, &fail], false, Tier::Unicode, 0),
+            Some(('x', Register::Err))
+        );
+        assert_eq!(
+            card_glyph(&[&spawning, &done], false, Tier::Unicode, 0),
+            Some(('✓', Register::Calm))
+        );
         // But it outranks a parked session: `z` means nothing is happening.
         let sleep = rec(SessionState::Sleeping);
         assert_eq!(
-            card_glyph(&[&sleep, &spawning], Tier::Unicode, 0),
+            card_glyph(&[&sleep, &spawning], false, Tier::Unicode, 0),
             Some((launching(Tier::Unicode, 0), Register::Grey))
         );
     }
@@ -787,13 +810,50 @@ mod tests {
             }
             // And it carries no aggregate glyph of its own: nothing about an
             // open shell is abnormal, so the title starts at T[0].
-            assert_eq!(card_glyph(&[&sh], tier, 0), None);
+            assert_eq!(card_glyph(&[&sh], false, tier, 0), None);
             // An agent on the same card still spins.
             assert_eq!(
-                card_glyph(&[&sh, &agent], tier, 0),
+                card_glyph(&[&sh, &agent], false, tier, 0),
                 Some((spinner(tier, 0), Register::Grey))
             );
         }
+    }
+
+    /// A shell WITH a foreground command is working (T-366): the rail row
+    /// spins, the card spins, and the unadopted terminal's busy spins the
+    /// card too — below anything an agent has to say, above a parked one.
+    #[test]
+    fn a_busy_shell_spins() {
+        let mut sh = rec(SessionState::Running);
+        sh.kind = SessionKind::Bash;
+        sh.foreground = Some("cargo".into());
+        assert!(is_working(&sh));
+        let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
+        let sleep = rec(SessionState::Sleeping);
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            assert_eq!(session_glyph(&sh, tier, 3), (spinner(tier, 3), Register::Grey));
+            assert_eq!(
+                card_glyph(&[&sh], false, tier, 0),
+                Some((spinner(tier, 0), Register::Grey))
+            );
+            assert_eq!(card_glyph(&[], true, tier, 0), Some((spinner(tier, 0), Register::Grey)));
+            assert_eq!(
+                card_glyph(&[&sleep], true, tier, 0),
+                Some((spinner(tier, 0), Register::Grey))
+            );
+            // A finished agent still outranks the shell's work.
+            assert_eq!(
+                card_glyph(&[&done, &sh], false, tier, 0).map(|g| g.0),
+                Some(if tier == Tier::Ascii { '+' } else { '✓' })
+            );
+            assert_eq!(
+                card_glyph(&[&done], true, tier, 0).map(|g| g.0),
+                Some(if tier == Tier::Ascii { '+' } else { '✓' })
+            );
+        }
+        // A parked shell keeps no foreground: its pane is gone.
+        sh.state = SessionState::Sleeping;
+        assert!(!is_working(&sh));
     }
 
     #[test]
@@ -819,7 +879,7 @@ mod tests {
             let (g, reg) = session_glyph(&unk, tier, 0);
             assert_ne!(g, '?', "the question mark is retired");
             assert_eq!(reg, Register::Grey, "waiting never leaves the grey ramp");
-            assert_eq!(card_glyph(&[&unk], tier, 0), Some((g, Register::Grey)));
+            assert_eq!(card_glyph(&[&unk], false, tier, 0), Some((g, Register::Grey)));
             // A frame of waiting is never a frame of working: the two glyph
             // sets are disjoint, so no still frame is ambiguous.
             for f in 0..40 {
@@ -855,7 +915,7 @@ mod tests {
         for tier in [Tier::Unicode, Tier::Ascii] {
             let (g, reg) = session_glyph(&cut, tier, 0);
             assert_eq!(reg, Register::Grey, "an interrupt asks nothing of the user");
-            assert_eq!(card_glyph(&[&cut], tier, 0), Some((g, Register::Grey)));
+            assert_eq!(card_glyph(&[&cut], false, tier, 0), Some((g, Register::Grey)));
             assert_eq!(g.width(), Some(1));
             assert_ne!(g, if tier == Tier::Ascii { '+' } else { '✓' }, "not done");
             assert_ne!(g, if tier == Tier::Ascii { '.' } else { '◦' }, "not plain idle");
@@ -873,12 +933,15 @@ mod tests {
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
         let lost = rec(SessionState::Unknown { reason: UnknownReason::DaemonRestarted });
         assert_eq!(
-            card_glyph(&[&cut, &busy], Tier::Unicode, 0),
+            card_glyph(&[&cut, &busy], false, Tier::Unicode, 0),
             Some((spinner(Tier::Unicode, 0), Register::Grey))
         );
-        assert_eq!(card_glyph(&[&cut, &done], Tier::Unicode, 0), Some(('✓', Register::Calm)));
         assert_eq!(
-            card_glyph(&[&lost, &cut], Tier::Unicode, 0),
+            card_glyph(&[&cut, &done], false, Tier::Unicode, 0),
+            Some(('✓', Register::Calm))
+        );
+        assert_eq!(
+            card_glyph(&[&lost, &cut], false, Tier::Unicode, 0),
             Some((interrupted(Tier::Unicode), Register::Grey))
         );
     }
@@ -890,7 +953,7 @@ mod tests {
         for tier in [Tier::Unicode, Tier::Ascii] {
             let (g, reg) = session_glyph(&parked, tier, 0);
             assert_eq!(reg, Register::Grey, "a parked turn asks nothing of the user");
-            assert_eq!(card_glyph(&[&parked], tier, 0), Some((g, Register::Grey)));
+            assert_eq!(card_glyph(&[&parked], false, tier, 0), Some((g, Register::Grey)));
             assert_ne!(g, if tier == Tier::Ascii { '+' } else { '✓' }, "not done");
             assert_ne!(g, if tier == Tier::Ascii { '.' } else { '◦' }, "not plain idle");
             for f in 0..40 {
@@ -950,7 +1013,7 @@ mod tests {
             let asleep = rec(SessionState::Sleeping);
             let cut = rec(SessionState::Idle { stop_reason: StopReason::Interrupted });
             for still in [&done, &idle, &asleep, &cut] {
-                let g = card_glyph(&[still], tier, 7);
+                let g = card_glyph(&[still], false, tier, 7);
                 assert_eq!(queued_over(g, tier, 7), owed, "{:?} is still", still.state);
             }
             assert_eq!(
@@ -966,7 +1029,7 @@ mod tests {
             let attn = rec(SessionState::RequiresAction { reason: Reason::Permission });
             let crashed = rec(SessionState::Exited { reason: ExitReason::Crashed });
             for loud in [&busy, &parked, &lost, &launching, &attn, &crashed] {
-                let g = card_glyph(&[loud], tier, 7);
+                let g = card_glyph(&[loud], false, tier, 7);
                 assert!(g.is_some());
                 assert_eq!(queued_over(g, tier, 7), g, "{:?} keeps its mark", loud.state);
             }
@@ -980,7 +1043,7 @@ mod tests {
         let parked = rec(SessionState::Idle { stop_reason: StopReason::Background });
         let busy = rec(SessionState::Running);
         assert_eq!(
-            card_glyph(&[&parked, &busy], Tier::Unicode, 0),
+            card_glyph(&[&parked, &busy], false, Tier::Unicode, 0),
             Some((spinner(Tier::Unicode, 0), Register::Grey))
         );
     }
@@ -1005,7 +1068,10 @@ mod tests {
     fn attention_wins_over_everything() {
         let attn = rec(SessionState::RequiresAction { reason: Reason::Permission });
         let fail = rec(SessionState::Failed { reason: FailReason::Server });
-        assert_eq!(card_glyph(&[&fail, &attn], Tier::Unicode, 0), Some(('!', Register::Attn)));
+        assert_eq!(
+            card_glyph(&[&fail, &attn], false, Tier::Unicode, 0),
+            Some(('!', Register::Attn))
+        );
     }
 
     #[test]
@@ -1013,10 +1079,13 @@ mod tests {
         use unicode_width::UnicodeWidthChar;
         let plan = rec(SessionState::RequiresAction { reason: Reason::Plan });
         let perm = rec(SessionState::RequiresAction { reason: Reason::Permission });
-        assert_eq!(card_glyph(&[&plan], Tier::Unicode, 0), Some(('≡', Register::Attn)));
-        assert_eq!(card_glyph(&[&plan], Tier::Ascii, 0), Some(('=', Register::Attn)));
+        assert_eq!(card_glyph(&[&plan], false, Tier::Unicode, 0), Some(('≡', Register::Attn)));
+        assert_eq!(card_glyph(&[&plan], false, Tier::Ascii, 0), Some(('=', Register::Attn)));
         // A co-pending non-plan reason keeps the generic bang on the card.
-        assert_eq!(card_glyph(&[&plan, &perm], Tier::Unicode, 0), Some(('!', Register::Attn)));
+        assert_eq!(
+            card_glyph(&[&plan, &perm], false, Tier::Unicode, 0),
+            Some(('!', Register::Attn))
+        );
         assert_eq!(session_glyph(&plan, Tier::Unicode, 0), ('≡', Register::Attn));
         assert_eq!(session_glyph(&perm, Tier::Unicode, 0).0, '!');
         assert_eq!('≡'.width(), Some(1));
@@ -1027,7 +1096,7 @@ mod tests {
         // 11 §11.5.4: Low/Stale never gets the saturated colour.
         let mut attn = rec(SessionState::RequiresAction { reason: Reason::Question });
         attn.confidence = Confidence::Low;
-        assert_eq!(card_glyph(&[&attn], Tier::Unicode, 0), None);
+        assert_eq!(card_glyph(&[&attn], false, Tier::Unicode, 0), None);
     }
 
     #[test]
@@ -1035,30 +1104,39 @@ mod tests {
         let fail = rec(SessionState::Failed { reason: FailReason::Server });
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
         let sleep = rec(SessionState::Sleeping);
-        assert_eq!(card_glyph(&[&done, &fail], Tier::Unicode, 0), Some(('x', Register::Err)));
-        assert_eq!(card_glyph(&[&sleep, &done], Tier::Unicode, 0), Some(('✓', Register::Calm)));
+        assert_eq!(
+            card_glyph(&[&done, &fail], false, Tier::Unicode, 0),
+            Some(('x', Register::Err))
+        );
+        assert_eq!(
+            card_glyph(&[&sleep, &done], false, Tier::Unicode, 0),
+            Some(('✓', Register::Calm))
+        );
     }
 
     #[test]
     fn z_requires_all_sessions_sleeping() {
         let sleep = rec(SessionState::Sleeping);
         let run = rec(SessionState::Running);
-        assert_eq!(card_glyph(&[&sleep], Tier::Unicode, 0), Some(('z', Register::Dormant)));
-        assert_eq!(card_glyph(&[&sleep, &run], Tier::Unicode, 0), Some(('⠋', Register::Grey)));
+        assert_eq!(card_glyph(&[&sleep], false, Tier::Unicode, 0), Some(('z', Register::Dormant)));
+        assert_eq!(
+            card_glyph(&[&sleep, &run], false, Tier::Unicode, 0),
+            Some(('⠋', Register::Grey))
+        );
     }
 
     #[test]
     fn crashed_exit_is_err_clean_exit_is_not() {
         let crashed = rec(SessionState::Exited { reason: ExitReason::Crashed });
         let clean = rec(SessionState::Exited { reason: ExitReason::UserQuit });
-        assert_eq!(card_glyph(&[&crashed], Tier::Unicode, 0), Some(('x', Register::Err)));
-        assert_eq!(card_glyph(&[&clean], Tier::Unicode, 0), None);
+        assert_eq!(card_glyph(&[&crashed], false, Tier::Unicode, 0), Some(('x', Register::Err)));
+        assert_eq!(card_glyph(&[&clean], false, Tier::Unicode, 0), None);
     }
 
     #[test]
     fn ascii_tier_substitutes() {
         let done = rec(SessionState::Idle { stop_reason: StopReason::EndTurn });
-        assert_eq!(card_glyph(&[&done], Tier::Ascii, 0), Some(('+', Register::Calm)));
+        assert_eq!(card_glyph(&[&done], false, Tier::Ascii, 0), Some(('+', Register::Calm)));
         let run = rec(SessionState::Running);
         assert_eq!(session_glyph(&run, Tier::Ascii, 0).0, '|');
         assert_eq!(session_glyph(&run, Tier::Unicode, 0).0, '⠋');
@@ -1125,7 +1203,7 @@ mod tests {
             "/repo".into(),
             SessionState::Idle { stop_reason: StopReason::EndTurn },
         );
-        let (read, reg) = card_glyph(&[&done], Tier::Unicode, 0).expect("a done glyph");
+        let (read, reg) = card_glyph(&[&done], false, Tier::Unicode, 0).expect("a done glyph");
         assert_eq!(reg, Register::Calm);
         assert_ne!(read, done_unread(Tier::Unicode), "read and unread differ in shape");
     }

@@ -556,6 +556,7 @@ mod tests {
                 claude_default_mode: None,
                 status_top: false,
                 team: Default::default(),
+                terminals: Vec::new(),
             })
         }
 

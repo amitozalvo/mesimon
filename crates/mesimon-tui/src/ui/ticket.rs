@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap;
 
-use crate::app::{App, InputPurpose, Mode, PreviewView, RailRow};
+use crate::app::{App, InputPurpose, Mode, PreviewView, RailRow, TailKey};
 use crate::glyphs;
 use crate::text::{
     age_created, age_in_column, age_slot, created_at_epoch_ms, edit_window, marquee_offset,
@@ -502,11 +502,21 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // shows the pane itself, under its own heading. Only ever what the
         // poll already fetched for THIS session: a stale capture under a
         // freshly selected row would be another session's screen.
-        let shell = app
-            .shell_tail
-            .as_ref()
-            .filter(|t| sel.is_some_and(|s| s.id == t.session))
-            .map(|t| t.lines.as_slice());
+        let tail_for = |key: TailKey| {
+            app.shell_tail.as_ref().filter(|t| t.key == key).map(|t| t.lines.as_slice())
+        };
+        let shell = match row {
+            Some(RailRow::Session(s)) => tail_for(TailKey::Session(s.id))
+                .map(|lines| ShellView { key: doc_key(s.id, None), lines: Some(lines) }),
+            // The ticket's terminal (T-366): the same pane story, before
+            // adoption. A zone with no capture yet says so rather than
+            // standing empty for the one poll it takes.
+            Some(RailRow::Terminal(t)) => t.ticket.map(|ticket| ShellView {
+                key: terminal_key(ticket),
+                lines: tail_for(TailKey::Terminal(ticket)),
+            }),
+            _ => None,
+        };
         // The empty seat (T-308): the cursor is on the `+ claude session`
         // row and there is no document to show, so the zone previews the
         // SESSION the press would start instead of standing empty.
@@ -568,7 +578,7 @@ fn draw_preview(
     record: Option<&mesimon_core::board::SessionRecord>,
     peek: Option<&crate::peek::Peek>,
     working: bool,
-    shell: Option<&[String]>,
+    shell: Option<ShellView<'_>>,
     note: Option<NoteView<'_>>,
     seat: Option<ulid::Ulid>,
 ) {
@@ -613,9 +623,14 @@ fn draw_preview(
     // heading covers both, and PREVIEW is the honest word for either: neither
     // side is the record, both are the last of it, and the rail row beside it
     // already says which session the cursor is on (author 2026-09-01).
-    if let Some(tail) = shell {
+    if let Some(ShellView { key, lines: tail }) = shell {
         lines.push(heading("PREVIEW"));
         lines.push(Line::default());
+        let Some(tail) = tail else {
+            lines.push(Line::from(Span::styled("   reading its pane", theme.dim3())));
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        };
         if tail.is_empty() {
             lines.push(Line::from(Span::styled("   nothing on screen yet", theme.dim3())));
         }
@@ -637,8 +652,7 @@ fn draw_preview(
         // command and what it printed are what the rows are for, so a tail
         // too long for the zone loses its top, never its end — until `{`
         // asks for the top, and then the window is the reader's.
-        let key = session.map(|s| doc_key(s, None));
-        let shown = window(app, key, &rows, budget, width, true);
+        let shown = window(app, Some(key), &rows, budget, width, true);
         for row in shown {
             let mut spans = vec![Span::raw("   ")];
             spans.extend(row.spans);
@@ -1011,6 +1025,21 @@ fn doc_key(session: uuid::Uuid, reply: Option<&str>) -> u64 {
     crate::text::hash64((session, reply))
 }
 
+/// The unadopted terminal's document key (T-366): the ticket, with a
+/// discriminant of its own so it collides with neither a session's nor a
+/// note's.
+fn terminal_key(ticket: ulid::Ulid) -> u64 {
+    crate::text::hash64((2u8, ticket))
+}
+
+/// A pane's tail for the preview zone: which document it is (for the
+/// scroll to belong to) and the lines, `None` while the first capture is
+/// still on its way.
+struct ShellView<'a> {
+    key: u64,
+    lines: Option<&'a [String]>,
+}
+
 /// A note's document key: the note and its revision, with a discriminant
 /// so it can never collide with a session's.
 fn note_key(meta: &NoteMeta) -> u64 {
@@ -1111,7 +1140,10 @@ fn draw_rail(
     // painted the first note and the offer together, and then nothing at all
     // one press down (dogfood, minutes after T-300 shipped).
     let offer = app.new_agent_row(ticket_id);
-    let notes_start = rail.len() + usize::from(offer);
+    // The ticket's terminal (T-366) sits between the sessions and the offer.
+    let ghost = app.terminal_of(ticket_id);
+    let offer_at = rail.len() + usize::from(ghost.is_some());
+    let notes_start = offer_at + usize::from(offer);
 
     let mut head = vec![Span::styled(" SESSIONS", theme.dim1().add_modifier(Modifier::BOLD))];
     let right = rail.len().to_string();
@@ -1169,8 +1201,11 @@ fn draw_rail(
             glyphs::Register::Dormant => theme.dim3(),
         };
         // The session's own name (OSC-0 title, same as the tmux status bar's
-        // breadcrumb leaf) when it set one, else the kind word.
-        let kind = s.title.as_deref().unwrap_or(match s.kind {
+        // breadcrumb leaf) when it set one, else the kind word. A shell
+        // running a command is named by the command (T-366): `$ cargo` is
+        // what the row is about while it runs, and a shell's title is its
+        // prompt's, which says less.
+        let kind = s.foreground.as_deref().or(s.title.as_deref()).unwrap_or(match s.kind {
             SessionKind::Claude => "claude",
             SessionKind::Codex => "codex",
             SessionKind::Bash => "bash",
@@ -1250,6 +1285,49 @@ fn draw_rail(
         }
     }
 
+    // The ticket's `!` terminal, alive and not yet adopted (T-366): a ghost
+    // row under the sessions — the shell the ticket already has, dimmed
+    // because the board does not manage it yet. It wears the shell's mark
+    // and the command running in it (the spinner while one runs, which is
+    // the same busy the card shows), and its second line says what Enter
+    // does: adopt it, on the second press.
+    if let Some(t) = ghost {
+        let selected = rail.len() == rail_idx;
+        let busy = t.foreground.is_some();
+        let g = if busy {
+            glyphs::spinner(tier, app.spin_frame())
+        } else if tier == glyphs::Tier::Ascii {
+            '.'
+        } else {
+            '◦'
+        };
+        let mark = glyphs::kind_mark(SessionKind::Bash, tier);
+        let name = t.foreground.as_deref().unwrap_or("terminal");
+        let name = format!(" {mark} {}", truncate(name, w.saturating_sub(4)));
+        let name_style = if selected {
+            Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
+        } else {
+            theme.dim2()
+        };
+        let row_style = if selected { theme.selected_row() } else { Style::default() };
+        let pad = w.saturating_sub(1 + name.width());
+        lines.push(
+            Line::from(vec![
+                Span::styled(g.to_string(), if busy { theme.dim2() } else { theme.dim3() }),
+                Span::styled(name, name_style),
+                Span::raw(" ".repeat(pad)),
+            ])
+            .style(row_style),
+        );
+        let badge = if ctx.adopt_armed && selected { "enter again adopts" } else { "enter adopts" };
+        let text = format!("    {}", truncate(badge, w.saturating_sub(4)));
+        let pad = w.saturating_sub(text.width());
+        lines.push(
+            Line::from(vec![Span::styled(text, theme.dim2()), Span::raw(" ".repeat(pad))])
+                .style(row_style),
+        );
+    }
+
     // The offer to start the ticket's claude (T-300), under the sessions and
     // before the notes — a row, not a hint, so the gesture is the one every
     // other row already teaches: put the cursor on it and press Enter. It
@@ -1257,7 +1335,7 @@ fn draw_rail(
     // claude ∙ s shell`), which asked a first-time reader to choose between
     // two words before either meant anything.
     if offer {
-        let selected = rail.len() == rail_idx;
+        let selected = offer_at == rail_idx;
         let name = truncate(
             &format!("+ {} session", keymap::agent_word(app.board.agent_provider)),
             w.saturating_sub(2),

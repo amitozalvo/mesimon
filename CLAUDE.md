@@ -342,6 +342,13 @@ when `Board::live_claude(ticket)` finds one (a parked one holds the seat); resum
 re-enter an existing record and are not gated. Everything that picks "the" agent of a ticket —
 `pane_target`, `board_enter`, `auto_move`, `card_glyph`, the worktree lock — assumes one.
 
+**The `!` terminal is per ticket and adoptable (T-366).** A ticket page's `!` opens
+`msmn-term-<ticket ulid>` (worktree or checkout), no record; the daemon lists live terminals in
+`Response::Board.terminals` and `AdoptTerminal` **renames** that pane to a new Bash record's
+`sid16`, so every sid16-keyed road works unchanged. A shell's `foreground` (tmux's
+`pane_current_command`) lives in a daemon-side map and rides the snapshot only — never
+`sessions.json` — and `glyphs::is_working` is what makes a busy shell spin.
+
 **Leaving a Claude session is the same as sleeping it.** Ctrl+C, `/exit` and Ctrl+D end the
 process, never the conversation, so a clean exit parks the record as `Sleeping` and the ticket
 keeps its worktree lock. The gate is the same predicate `resume_session` judges it by afterwards
