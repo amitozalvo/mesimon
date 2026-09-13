@@ -1,5 +1,32 @@
+base64 v0.22.1
+base64 v0.23.1
+block-buffer v0.10.4
+block-buffer v0.12.1
+chacha20 v0.10.2
+chacha20 v0.9.1
+cpufeatures v0.2.17
+cpufeatures v0.3.1
+crypto-common v0.1.7
+crypto-common v0.2.2
+digest v0.10.7 (*)
+digest v0.11.3 (*)
+getrandom v0.2.17
 getrandom v0.3.4
 getrandom v0.4.3
+hmac v0.12.1 (*)
+hmac v0.13.0 (*)
+rand v0.10.2 (*)
+rand v0.8.8 (*)
+rand v0.9.5 (*)
+rand_chacha v0.3.1 (*)
+rand_chacha v0.9.0 (*)
+rand_core v0.10.1
+rand_core v0.6.4 (*)
+rand_core v0.9.5 (*)
+rustix v0.38.44
+rustix v1.1.4
+sha2 v0.10.9 (*)
+sha2 v0.11.0 (*)
 syn v2.0.119
 syn v3.0.4
 unicode-width v0.1.14
