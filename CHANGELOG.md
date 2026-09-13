@@ -6,6 +6,53 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.21 — 2026-09-13
+
+### Added
+
+- **A ticket's terminal (`!`) is adoptable and supports several shells.**
+  Pressing `!` opens the ticket's own terminal (worktree or checkout); the
+  ticket page shows it as a row under the sessions, and Enter arms it, then
+  Enter again adopts it into a real shell session. After adoption, `!` opens
+  a fresh terminal beside it, so a ticket can hold as many shells as it
+  needs. A shell running a command spins its row and the card. `x` on a
+  shell row closes that shell's pane outright; bulk sleep gestures still
+  only park agents and leave shells alone.
+- **One board can override selected machine preferences.** Press `b` in
+  Settings to switch to THIS BOARD scope, where Enter cycles
+  inherit/on/off per preference and the picker gains an inherit row.
+  Status line side and week start remain machine-only. `doctor -v` prints
+  a board-prefs line.
+- **The reply row's peek setting (`p`/`P`) is remembered across launches**,
+  stored as a machine preference (`peek`: off / cursor / all). The next
+  board you open keeps the rung this one was left on; `doctor -v` gained a
+  `replies` line.
+- **The search picker (`/`) opens on recently viewed tickets** when nothing
+  is typed yet, newest first under a "viewed recently" subtitle. Typing
+  still searches the whole board as before.
+
+### Changed
+
+- **A collapsed column's count caps at 9**, with a superscript `+` on the
+  row beneath it for ten or more. Previously a two-digit count pushed the
+  column name down a row.
+- **Claude Code's three read-only MCP tools (`get_ticket`, `list_board`,
+  `read_note`) no longer prompt for approval in plan mode**, and are
+  pre-approved by default so plan-mode sessions stop asking on every turn.
+  Write tools still prompt as before.
+
+### Fixed
+
+- **A plan or question an agent is still waiting on no longer loses its
+  needs-you mark after 15 minutes** if the transcript still shows it open.
+  The wait now restates itself once a minute from the transcript tail; a
+  wait nobody restates (a lost answer frame) still demotes at 15 minutes as
+  before.
+- **A Codex session that crashed before confirming cleanup no longer holds
+  a deleted ticket's machine-awake lock forever.** The daemon now releases
+  such orphaned records once ownership checks pass, retrying every 15
+  seconds.
+
 ## v0.1.0-alpha.20 — 2026-09-11
 
 ### Added
