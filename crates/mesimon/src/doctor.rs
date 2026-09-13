@@ -243,6 +243,10 @@ fn environment(repo: &std::path::Path, verbose: bool) -> Section {
     records.push(rec(Level::Note, "ticket shells", mesimon_tui::ticket_shells_status()));
     // How a snoozed ticket returns (T-74) — the third preference in the file.
     records.push(rec(Level::Note, "snooze", mesimon_tui::snooze_status()));
+    // The rung the board's reply row was left on (T-365): `p`/`P` set it and
+    // the next board opens on it, so a board that opens with every card
+    // open is answered here.
+    records.push(rec(Level::Note, "replies", mesimon_tui::peek_status()));
     // The merge train (2026-09-04): the one standing consent for mesimon to
     // prompt an agent with no per-press gesture, so doctor says when it is on.
     records.push(rec(Level::Note, "merge train", mesimon_tui::train_status()));

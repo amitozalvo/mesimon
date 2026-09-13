@@ -10458,3 +10458,23 @@ touching the user's config and the hook file should carry hooks. A live pane kee
 Pinned by `allowed_tools_are_the_read_rung_only` (core) and `agent_tools_e2e` (the flag and its
 value at `Full`, its absence at `Off`). `doctor --mcp` prints the pair. No wire change, no
 schema change; `CHANGELOG.md` gets its line at the next bump.
+
+## The reply row is remembered (T-365, 2026-09-13, user: "remember peak setting between mesimon shutdowns")
+
+`p` and `P` (T-237) set a view the board forgot on every launch; the `App::prefs` doc had
+called carrying `p` into `prefs.json` "a follow-up" since the file was born. It is a key now:
+`peek`, one of `off` / `cursor` / `all` (`PeekLevel`, `tui/src/prefs.rs`) — one value rather
+than two flags, because the ladder has an invariant (all implies cursor) that two flags could
+spell wrong. Absent is `off`, how every board opened before, so no schema move; a rung this
+build does not know reads as `off` and survives every save until a press replaces it, the
+week-start rule. **Machine-only**, the third key after the status line's side and the week's
+first day: how one reads a board is about the person, and there is no Settings row to set it
+per board — T-237's "no need to hint this" stands, the two keys stay overlay-only and
+`settings_items` still omits them. `App::peek` and `App::peek_all` are now DERIVED in
+`resolve_prefs` from the resolved view, so the two flags every reader asks come from the one
+place the preference lands and a remembered rung opens the board before any key; the two arms
+set the rung through `set_pref`, which is why a press now says `∙ saved` (or `for this
+session` where the file is absent or barred). A golden still sets the flags directly for one
+frame. `doctor` gained a `replies` line. Pinned by `the_reply_row_is_remembered_between_boards`
+(app) and `the_reply_row_defaults_off_and_round_trips` (prefs); `CHANGELOG.md` gets its line at
+the next bump.

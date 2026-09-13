@@ -31,6 +31,41 @@ use crate::theme::{Flavor, Ground};
 
 pub(crate) const SCHEMA: u64 = 1;
 
+/// Where the board's reply row shows — the `p`/`P` ladder (T-237), one
+/// value rather than two flags because the ladder has an invariant (`All`
+/// implies the cursor card's) that two flags could spell wrong. Remembered
+/// in the machine file since T-365; `Off` is absent, which is how every
+/// board opened before the key existed.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PeekLevel {
+    #[default]
+    Off,
+    /// The cursor card's latest reply (`p`).
+    Cursor,
+    /// Every card's (`P`).
+    All,
+}
+
+impl PeekLevel {
+    /// The word in the file, and the word `doctor` says.
+    pub const fn key(self) -> &'static str {
+        match self {
+            PeekLevel::Off => "off",
+            PeekLevel::Cursor => "cursor",
+            PeekLevel::All => "all",
+        }
+    }
+
+    pub fn from_key(s: &str) -> Option<Self> {
+        match s {
+            "off" => Some(PeekLevel::Off),
+            "cursor" => Some(PeekLevel::Cursor),
+            "all" => Some(PeekLevel::All),
+            _ => None,
+        }
+    }
+}
+
 #[derive(Clone)]
 pub(crate) struct Prefs {
     pub dark: Flavor,
@@ -97,6 +132,12 @@ pub(crate) struct Prefs {
     /// of each ring, so either can be silenced on its own.
     pub notify_sound_needs_you: Sound,
     pub notify_sound_done: Sound,
+    /// The rung `p`/`P` left the board's reply row on (T-365), so the next
+    /// board opens the way this one was left. Off by default — absent is
+    /// how every board opened before the key existed — and the setter's
+    /// write is conditional like the week's: a rung this build does not
+    /// know survives until a press replaces it.
+    pub peek: PeekLevel,
     /// The document as loaded, so a save keeps what it does not understand.
     doc: Map<String, Value>,
 }
@@ -119,6 +160,7 @@ impl Default for Prefs {
             notify_words: true,
             notify_sound_needs_you: Sound::Glass,
             notify_sound_done: Sound::Tink,
+            peek: PeekLevel::Off,
             doc: Map::new(),
         }
     }
@@ -138,6 +180,7 @@ const NOTIFY_IN_PANE_KEY: &str = PrefKey::NotifyInPane.name();
 const NOTIFY_WORDS_KEY: &str = PrefKey::NotifyWords.name();
 const NOTIFY_SOUND_NEEDS_YOU_KEY: &str = PrefKey::NotifySoundNeedsYou.name();
 const NOTIFY_SOUND_DONE_KEY: &str = PrefKey::NotifySoundDone.name();
+const PEEK_KEY: &str = PrefKey::Peek.name();
 
 impl Prefs {
     // The three bools are plain fields: `body()` writes every one on each
@@ -159,6 +202,13 @@ impl Prefs {
     pub(crate) fn set_sound_done(&mut self, s: Sound) {
         self.notify_sound_done = s;
         self.doc.insert(NOTIFY_SOUND_DONE_KEY.into(), Value::from(s.key()));
+    }
+
+    /// The reply row's rung (T-365) — a press replaces whatever the file
+    /// held, a rung from a newer build included.
+    pub(crate) fn set_peek(&mut self, level: PeekLevel) {
+        self.peek = level;
+        self.doc.insert(PEEK_KEY.into(), Value::from(level.key()));
     }
 
     pub(crate) fn for_ground(&self, g: Ground) -> Flavor {
@@ -241,6 +291,7 @@ impl Prefs {
             PrefKey::NotifyWords => onoff(self.notify_words),
             PrefKey::NotifySoundNeedsYou => self.notify_sound_needs_you.name(),
             PrefKey::NotifySoundDone => self.notify_sound_done.name(),
+            PrefKey::Peek => self.peek.key(),
         }
     }
 
@@ -289,6 +340,14 @@ impl Prefs {
             .is_some_and(|s| Weekday::from_key(s).is_none());
         if !foreign {
             doc.insert(WEEK_START_KEY.into(), Value::from(self.week_start.key()));
+        }
+        // The reply row's rung, the week's rule again.
+        let foreign = doc
+            .get(PEEK_KEY)
+            .and_then(Value::as_str)
+            .is_some_and(|s| PeekLevel::from_key(s).is_none());
+        if !foreign {
+            doc.insert(PEEK_KEY.into(), Value::from(self.peek.key()));
         }
         Value::Object(doc).to_string() + "\n"
     }
@@ -344,7 +403,7 @@ impl BoardPrefs {
             PrefKey::Dark => self.flavor(Ground::Dark).is_some(),
             PrefKey::Light => self.flavor(Ground::Light).is_some(),
             PrefKey::NotifySoundNeedsYou | PrefKey::NotifySoundDone => self.sound(key).is_some(),
-            PrefKey::WeekStart | PrefKey::StatusTop => false,
+            PrefKey::WeekStart | PrefKey::StatusTop | PrefKey::Peek => false,
             _ => self.bool(key).is_some(),
         }
     }
@@ -506,6 +565,8 @@ pub(crate) fn load(path: &Path) -> Loaded {
         .and_then(Value::as_str)
         .and_then(Weekday::from_key)
         .unwrap_or_default();
+    let peek =
+        doc.get(PEEK_KEY).and_then(Value::as_str).and_then(PeekLevel::from_key).unwrap_or_default();
     let prefs = Prefs {
         dark: slot("dark", Flavor::Graphite),
         light: slot("light", Flavor::Chalk),
@@ -522,6 +583,7 @@ pub(crate) fn load(path: &Path) -> Loaded {
         notify_words,
         notify_sound_needs_you,
         notify_sound_done,
+        peek,
         doc,
     };
     if schema > SCHEMA {
@@ -595,6 +657,16 @@ pub fn status_line_doctor_line() -> String {
         "top of the pane (Settings moves it back to the bottom)".into()
     } else {
         "bottom of the pane, tmux's default (Settings moves it to the top)".into()
+    }
+}
+
+/// `mesimon doctor`'s `replies` line (T-365): the rung the board's reply
+/// row was left on — `p` and `P` set it, and the next board opens on it.
+pub fn peek_doctor_line() -> String {
+    match load_home().prefs.peek {
+        PeekLevel::Off => "hidden ∙ p shows the cursor card's latest reply, P every card's".into(),
+        PeekLevel::Cursor => "under the cursor card ∙ P widens it to every card, p hides it".into(),
+        PeekLevel::All => "under every card ∙ P narrows it to the cursor card, p hides it".into(),
     }
 }
 
@@ -851,6 +923,44 @@ mod tests {
         assert_eq!(v["week_start"], "saturday");
     }
 
+    /// The reply row's rung (T-365): absent is off — every board opened
+    /// hidden before the key existed — a press round-trips as its word, a
+    /// rung this build does not know reads as off and survives a save of
+    /// something else until a press replaces it.
+    #[test]
+    fn the_reply_row_defaults_off_and_round_trips() {
+        let p = scratch("peek");
+        std::fs::create_dir_all(p.parent().unwrap()).unwrap();
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk"}"#).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.peek, PeekLevel::Off, "absent is the default");
+        l.prefs.set_peek(PeekLevel::All);
+        save(&p, &l.prefs).unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.peek, PeekLevel::All);
+        assert_eq!(l.prefs.dark, Flavor::Blue, "the theme slots are untouched");
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["peek"], "all", "a theme pick keeps the rung it loaded");
+        assert_eq!(v["dark"], "amber");
+        // A foreign rung reads as off and a theme pick keeps it.
+        std::fs::write(&p, r#"{"schema_version":1,"dark":"blue","light":"chalk","peek":"column"}"#)
+            .unwrap();
+        let mut l = load(&p);
+        assert_eq!(l.prefs.peek, PeekLevel::Off);
+        l.prefs.set(Ground::Dark, Flavor::Amber);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["peek"], "column", "not written over");
+        // A press IS what replaces it.
+        l.prefs.set_peek(PeekLevel::Cursor);
+        save(&p, &l.prefs).unwrap();
+        let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
+        assert_eq!(v["peek"], "cursor");
+        assert_eq!(load(&p).prefs.word(PrefKey::Peek), "cursor");
+    }
+
     #[test]
     fn garbage_is_the_defaults_with_a_notice() {
         let p = scratch("garbage");
@@ -942,24 +1052,29 @@ mod tests {
         assert_eq!(l.prefs.bool(PrefKey::MergeTrain), Some(true));
     }
 
-    /// The two machine-only keys in a board file (a newer build may have
+    /// The three machine-only keys in a board file (a newer build may have
     /// made them overridable) are ignored by the overlay and kept by a save.
     #[test]
     fn machine_only_keys_in_a_board_file_are_ignored_and_kept() {
         let p = scratch("board-machine-only");
         std::fs::create_dir_all(p.parent().unwrap()).unwrap();
-        std::fs::write(&p, r#"{"schema_version":1,"status_line_top":true,"week_start":"sunday"}"#)
-            .unwrap();
+        std::fs::write(
+            &p,
+            r#"{"schema_version":1,"status_line_top":true,"week_start":"sunday","peek":"all"}"#,
+        )
+        .unwrap();
         let mut l = load_board(&p);
         assert!(l.prefs.overridden().is_empty());
         let r = Prefs::default().overlay(&l.prefs);
         assert!(!r.status_top);
         assert_eq!(r.week_start, Weekday::Monday);
+        assert_eq!(r.peek, PeekLevel::Off);
         l.prefs.set_bool(PrefKey::Notify, true);
         save_board(&p, &l.prefs).unwrap();
         let v: Value = serde_json::from_str(&std::fs::read_to_string(&p).unwrap()).unwrap();
         assert_eq!(v["status_line_top"], true);
         assert_eq!(v["week_start"], "sunday");
+        assert_eq!(v["peek"], "all");
     }
 
     #[test]

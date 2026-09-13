@@ -23,6 +23,7 @@ use ratatui::crossterm::event::{
 };
 
 use crate::client::Transport;
+use crate::prefs::PeekLevel;
 use crate::text::{EditBuffer, TextArea};
 use crate::theme::{Flavor, Ground, Theme};
 
@@ -1086,7 +1087,11 @@ pub struct App {
     /// First visible card row of the cursor column (draw-side scroll state).
     pub scroll_row: Cell<usize>,
     /// Transcript peek (`p`): the cursor card also shows its latest assistant
-    /// reply, read from the transcript at draw time (peek.rs).
+    /// reply, read from the transcript at draw time (peek.rs). DERIVED from
+    /// `prefs.peek` by `resolve_prefs` (T-365): the two arms set the rung
+    /// through `set_pref`, the resolve sets these two flags from it, and
+    /// the file remembers it, so the next board opens the way this one was
+    /// left. A golden may set the flags directly for one frame.
     pub peek: bool,
     /// `P` (T-237): every card shows its latest reply, not only the cursor
     /// card. Implies `peek` — it is `p` widened, so `p` turning off takes
@@ -1291,9 +1296,7 @@ pub struct App {
     /// recent explicit choice.
     pub forced: Option<Flavor>,
     /// The two slots (`prefs.rs`). `prefs_path` None means never write —
-    /// every test app, and a machine with no HOME. This is the per-machine
-    /// preference store the peek toggle (`p`) never had; carrying `p` here
-    /// is a follow-up.
+    /// every test app, and a machine with no HOME.
     ///
     /// `prefs` is the RESOLVED view (T-361): the machine's copy overlaid
     /// with this board's overrides, what every reader reads and nothing
@@ -2636,6 +2639,12 @@ impl App {
     /// `prefs` = the machine's copy under this board's overrides.
     pub(crate) fn resolve_prefs(&mut self) {
         self.prefs = self.machine_prefs.overlay(&self.board_prefs);
+        // The reply row follows the preference (T-365): `p`/`P` set the
+        // rung, and this is the one place the two flags every reader asks
+        // are derived from it — so a remembered rung opens the board the
+        // way it was left, before any key.
+        self.peek = self.prefs.peek != PeekLevel::Off;
+        self.peek_all = self.prefs.peek == PeekLevel::All;
     }
 
     /// A test's way to hold a preference: the machine copy, then the
@@ -4430,24 +4439,26 @@ impl App {
             // ---- move ------------------------------------------------------
             Verb::Cancel => self.mode = Mode::Normal,
             // ---- view / lists ----------------------------------------------
+            // The two rungs of one ladder (off / cursor / all), a preference
+            // since T-365: the press sets the rung, `resolve_prefs` sets the
+            // two flags from it, and the file remembers it.
             Verb::Peek => {
-                self.peek = !self.peek;
                 // `P` is `p` widened, so `p` going off takes it along.
-                self.peek_all &= self.peek;
-                self.status = if self.peek {
-                    "showing the latest reply under the selected card".into()
+                let (level, word) = if self.peek {
+                    (PeekLevel::Off, "replies hidden")
                 } else {
-                    "replies hidden".into()
+                    (PeekLevel::Cursor, "showing the latest reply under the selected card")
                 };
+                self.set_pref(word, |p| p.set_peek(level));
             }
             Verb::PeekAll => {
-                self.peek_all = !self.peek_all;
-                self.status = if self.peek_all {
-                    self.peek = true;
-                    "showing the latest reply under every card".into()
+                // Off narrows back to the cursor card, never to nothing.
+                let (level, word) = if self.peek_all {
+                    (PeekLevel::Cursor, "showing the latest reply under the selected card")
                 } else {
-                    "showing the latest reply under the selected card".into()
+                    (PeekLevel::All, "showing the latest reply under every card")
                 };
+                self.set_pref(word, |p| p.set_peek(level));
             }
             Verb::ExternalDrawer => self.open_drawer()?,
             Verb::ArchivedList => {
@@ -12299,13 +12310,17 @@ mod tests {
         assert!(!app.peek && !app.peek_all);
         press(&mut app, 'P');
         assert!(app.peek && app.peek_all, "every card, the cursor card included");
-        assert_eq!(app.status, "showing the latest reply under every card");
+        assert!(
+            app.status.starts_with("showing the latest reply under every card"),
+            "{}",
+            app.status
+        );
         press(&mut app, 'P');
         assert!(app.peek && !app.peek_all, "narrowed to the cursor card, not hidden");
         press(&mut app, 'P');
         press(&mut app, 'p');
         assert!(!app.peek && !app.peek_all, "`p` off hides the lot");
-        assert_eq!(app.status, "replies hidden");
+        assert!(app.status.starts_with("replies hidden"), "{}", app.status);
         // Overlay-only, on the board alone: `?` names it, the footer never
         // does (user: "no need to hint this").
         assert!(!app.ctx().peek_on);
@@ -12316,6 +12331,39 @@ mod tests {
         assert!(!keymap::footer_items(Scope::Board, &app.ctx())
             .iter()
             .any(|b| b.verb == Verb::PeekAll));
+    }
+
+    /// The rung `p`/`P` leave is a preference (T-365): a press writes it to
+    /// the machine's copy — the file, where there is one — and a board that
+    /// opens on a remembered rung shows it before any key, because the
+    /// resolve is where the two flags come from.
+    #[test]
+    fn the_reply_row_is_remembered_between_boards() {
+        let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        assert_eq!(app.machine_prefs.peek, PeekLevel::Off);
+        press(&mut app, 'P');
+        assert_eq!(app.machine_prefs.peek, PeekLevel::All);
+        assert_eq!(app.machine_prefs.word(PrefKey::Peek), "all");
+        press(&mut app, 'P');
+        assert_eq!(app.machine_prefs.peek, PeekLevel::Cursor);
+        press(&mut app, 'p');
+        assert_eq!(app.machine_prefs.peek, PeekLevel::Off);
+        // No file under a test app, and the status says so — the road every
+        // preference takes, with its words.
+        assert_eq!(app.status, "replies hidden for this session");
+
+        // The next board: `run` loads the file and resolves, which is what
+        // the seed does here.
+        let (mut app, _sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.seed_pref(|p| p.set_peek(PeekLevel::All));
+        assert!(app.peek && app.peek_all, "opened the way it was left");
+        assert!(app.ctx().peek_on && app.ctx().peek_all);
+        app.seed_pref(|p| p.set_peek(PeekLevel::Cursor));
+        assert!(app.peek && !app.peek_all);
+        // A board's file cannot set it: the rung is the machine's.
+        app.board_prefs.clear(PrefKey::Peek);
+        assert!(!app.board_prefs.is_set(PrefKey::Peek));
+        assert!(!PrefKey::Peek.board_overridable());
     }
 
     /// A quick-tag digit opens the card it tagged, and then lets go. The

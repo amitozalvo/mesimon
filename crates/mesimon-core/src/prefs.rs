@@ -24,10 +24,12 @@ pub enum PrefKey {
     NotifyWords,
     NotifySoundNeedsYou,
     NotifySoundDone,
+    /// The board's reply row (T-365): which rung `p`/`P` left it on.
+    Peek,
 }
 
 impl PrefKey {
-    pub const ALL: [PrefKey; 15] = [
+    pub const ALL: [PrefKey; 16] = [
         PrefKey::Dark,
         PrefKey::Light,
         PrefKey::SnoozeNeedsYou,
@@ -43,6 +45,7 @@ impl PrefKey {
         PrefKey::NotifyWords,
         PrefKey::NotifySoundNeedsYou,
         PrefKey::NotifySoundDone,
+        PrefKey::Peek,
     ];
 
     /// The JSON key in both files.
@@ -63,14 +66,17 @@ impl PrefKey {
             PrefKey::NotifyWords => "notify_words",
             PrefKey::NotifySoundNeedsYou => "notify_sound_needs_you",
             PrefKey::NotifySoundDone => "notify_sound_done",
+            PrefKey::Peek => "peek",
         }
     }
 
-    /// May one board set this on its own? Two stay the machine's: where the
-    /// tmux status line sits is about the terminal, and which day a week
-    /// starts on is about the person, and neither changes with the repo.
+    /// May one board set this on its own? Three stay the machine's: where
+    /// the tmux status line sits is about the terminal, which day a week
+    /// starts on is about the person, and neither changes with the repo;
+    /// the reply row's rung (T-365) is about how the person reads a board,
+    /// and no Settings row exists to set it per board — `p` and `P` set it.
     pub fn board_overridable(self) -> bool {
-        !matches!(self, PrefKey::StatusTop | PrefKey::WeekStart)
+        !matches!(self, PrefKey::StatusTop | PrefKey::WeekStart | PrefKey::Peek)
     }
 
     /// The words a status line calls it.
@@ -91,6 +97,7 @@ impl PrefKey {
             PrefKey::NotifyWords => "notify with the agent's words",
             PrefKey::NotifySoundNeedsYou => "needs-you sound",
             PrefKey::NotifySoundDone => "done sound",
+            PrefKey::Peek => "replies",
         }
     }
 
@@ -103,6 +110,7 @@ impl PrefKey {
                 | PrefKey::WeekStart
                 | PrefKey::NotifySoundNeedsYou
                 | PrefKey::NotifySoundDone
+                | PrefKey::Peek
         )
     }
 }
@@ -112,13 +120,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn key_names_are_unique_and_two_are_machine_only() {
+    fn key_names_are_unique_and_three_are_machine_only() {
         let mut names: Vec<_> = PrefKey::ALL.iter().map(|k| k.name()).collect();
         names.sort_unstable();
         names.dedup();
         assert_eq!(names.len(), PrefKey::ALL.len());
         let machine_only: Vec<_> =
             PrefKey::ALL.iter().filter(|k| !k.board_overridable()).copied().collect();
-        assert_eq!(machine_only, [PrefKey::WeekStart, PrefKey::StatusTop]);
+        assert_eq!(machine_only, [PrefKey::WeekStart, PrefKey::StatusTop, PrefKey::Peek]);
     }
 }

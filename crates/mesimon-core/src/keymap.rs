@@ -2063,9 +2063,10 @@ static BOARD: &[Binding] = &[
     },
     Binding {
         // Overlay-only. The peek is a view preference, not a verb: it is set
-        // once and lived with, and the board it changes is the evidence it
-        // worked. A permanent cell teaching a toggle nobody presses twice is
-        // the cell the footer could least afford.
+        // once and lived with (and remembered in `prefs.json` since T-365),
+        // and the board it changes is the evidence it worked. A permanent
+        // cell teaching a toggle nobody presses twice is the cell the footer
+        // could least afford.
         keys: &[Key::Char('p')],
         verb: Verb::Peek,
         show: "p",
