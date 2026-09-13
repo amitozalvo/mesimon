@@ -2223,16 +2223,6 @@ impl Board {
         self.live_agent(ticket)
     }
 
-    /// The ticket's shell, live or parked (T-366): the session `!` finds
-    /// once the terminal has been adopted — the same key opens the same
-    /// shell before and after, which is T-273's promise kept across the
-    /// adoption. First in spawn order, like `live_agent`.
-    pub fn live_shell(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
-        self.sessions
-            .iter()
-            .find(|s| s.ticket == ticket && s.kind == SessionKind::Bash && s.state.is_live())
-    }
-
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
         self.sessions.iter().filter(|s| s.ticket == id && s.state.has_pane()).count()
     }

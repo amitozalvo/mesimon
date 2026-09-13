@@ -10562,13 +10562,15 @@ Terminal(ulid) }` and `poll_shell_tail` picks `PaneTail` or `TerminalTail` by it
 `terminal_key` for the scroll, and says `reading its pane` for the one poll before the first
 capture. After adoption the row is a session row and everything is the shell's existing road.
 
-**`!` finds the adopted shell.** `App::open_terminal` sends the key to `focus_session` when
-`Board::live_shell(ticket)` has one (live or parked — `focus_session` wakes it), so the same
-key opens the same shell before and after adoption, T-273's promise kept; the hint reads
-`shell` then (`Ctx::ticket_has_shell`). Over the wire `OpenTerminal` on that ticket still
-spawns a fresh terminal beside the shell — the routing is the TUI's, because `TerminalEnd`
-only releases `Focus::Terminal` and a daemon-side redirect would leave the token's type
-mismatched with the client's `FocusTarget`.
+**`!` after an adoption opens a fresh terminal, adoptable in turn** (the user, on the first
+build: "pressing `!` after adopting shell should open a new shell, to adopt as well"). The
+first build routed the key to the adopted shell (`Board::live_shell`, a `shell` hint), on the
+reasoning that the same key should find the same shell; that made the key a focus for a row
+Enter already reaches and left no way to grow a second shell without the gated `S`. So the
+adopted shell is a session row and Enter is its road, `!` is always the terminal (the name
+`msmn-term-<ulid>` is free again the moment the old pane is renamed), and a ticket may hold as
+many adopted shells as the user cares to make. `live_shell` and `ticket_has_shell` were removed
+with the routing.
 
 **"Running" is the spinner and nothing more.** `glyphs::is_working` counts a Bash record
 `Running` WITH a foreground; `card_glyph` gained `terminal_busy` for the unadopted ghost, OR-ed
@@ -10594,9 +10596,8 @@ ticket's own terminal.
 
 Tests: `terminal_adopt_e2e` (open, list, foreground, `TerminalTail`, adopt → rename, `PaneTail`,
 sleep refused then parked and woken, foreground absent from `sessions.json`),
-`enter_twice_adopts_the_terminal` and `bang_focuses_the_adopted_shell` (app),
+`enter_twice_adopts_the_terminal` and `bang_opens_another_terminal_beside_the_shell` (app),
 `the_terminal_opens_the_screens_directory_and_returns_to_it` (the per-ticket rule),
 `a_busy_shell_spins` (glyphs), `a_shell_at_its_prompt_is_idle_and_anything_else_is_a_command`
 (core), the `parse_facts` case in the backend, goldens `ticket_terminal_120x30`,
-`ticket_terminal_armed_120x30`, `ticket_shell_busy_120x30`; `help_ticket_120x30` moved one word
-(`! shell`, because the fixture's ticket has a shell).
+`ticket_terminal_armed_120x30`, `ticket_shell_busy_120x30`; `help_ticket_120x30` is unchanged.

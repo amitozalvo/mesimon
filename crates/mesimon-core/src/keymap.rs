@@ -979,10 +979,6 @@ pub struct Ctx {
     /// Enter arms adoption; `adopt_armed` says the next Enter does it.
     pub sel_terminal: bool,
     pub adopt_armed: bool,
-    /// The ticket has a shell SESSION, live or parked (an adopted terminal,
-    /// or one `s` started): `!` focuses that instead of opening a second
-    /// terminal beside it, and its hint says so.
-    pub ticket_has_shell: bool,
     /// A ticket may grow its own SHELL session (T-300). Off — the default —
     /// `s` and `S` on the ticket page and `s` on the board are inert and
     /// unhinted; the sessions a board already has are untouched, and
@@ -2310,17 +2306,9 @@ static TICKET: &[Binding] = &[
         keys: &[Key::Char('!')],
         verb: Verb::Terminal,
         show: "!",
-        // Once adopted (T-366) the terminal is the ticket's shell session,
-        // and the key goes to it — the same shell, by the same key.
-        hint: |c| {
-            if c.ticket_has_shell {
-                "shell"
-            } else if c.has_worktree {
-                "terminal in worktree"
-            } else {
-                "terminal"
-            }
-        },
+        // After an adoption (T-366) the key opens a fresh terminal beside
+        // the shell it became, adoptable in turn — so the word never changes.
+        hint: |c| if c.has_worktree { "terminal in worktree" } else { "terminal" },
         avail: always,
         class: Class::Plain,
         group: Group::Sessions,

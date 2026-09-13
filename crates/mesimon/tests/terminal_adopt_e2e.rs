@@ -159,9 +159,9 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     });
     assert_eq!(board_of(c.request(Command::Snapshot)).sessions[0].state, SessionState::Running);
 
-    // `!` again on the ticket page opens a fresh terminal beside the shell
-    // over the wire (the TUI routes the key to the shell itself); it is
-    // listed as a terminal again, and the shell is untouched.
+    // `!` again on the ticket page opens a fresh terminal beside the shell,
+    // adoptable in turn; it is listed as a terminal again, and the shell is
+    // untouched.
     assert!(matches!(
         c.request(Command::OpenTerminal { ticket: Some(t) }),
         Response::Attach { .. }

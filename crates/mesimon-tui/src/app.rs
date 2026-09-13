@@ -3267,7 +3267,6 @@ impl App {
             sel_new_agent: matches!(row, Some(RailRow::NewAgent)),
             sel_terminal: matches!(row, Some(RailRow::Terminal(_))),
             adopt_armed: matches!((row, self.adopt_armed, subject), (Some(RailRow::Terminal(_)), Some(armed), Some(t)) if armed == t),
-            ticket_has_shell: subject.is_some_and(|t| self.board.live_shell(t).is_some()),
             ticket_shells: self.ticket_shells,
             ticket_rail_rows: match self.screen {
                 Screen::Ticket { ticket, .. } => self.rail_rows(ticket).len(),
@@ -6093,19 +6092,11 @@ impl App {
     /// (`Command::OpenTerminal`), so the same `!` finds the same shell from
     /// every screen and after a reload.
     fn open_terminal(&mut self) {
-        // Once the ticket's terminal has been adopted it is a shell session
-        // of the ticket (T-366), and the same `!` finds the same shell —
-        // T-273's promise, kept across the adoption. `focus_session` wakes a
-        // parked one first.
-        if let Screen::Ticket { ticket, .. } = self.screen {
-            if let Some(shell) = self.board.live_shell(ticket) {
-                let id = shell.id;
-                if let Err(e) = self.focus_session(id) {
-                    self.status = e.to_string();
-                }
-                return;
-            }
-        }
+        // After an adoption (T-366) the key opens a FRESH terminal on the
+        // ticket, beside the shell it just became — one that can be adopted
+        // in turn (the user: "pressing ! after adopting shell should open a
+        // new shell, to adopt as well"). The adopted shell is a rail row;
+        // Enter on it is how it is reached.
         let grant = self.grant_for(FocusTarget::Terminal);
         self.focus_target(FocusTarget::Terminal, grant);
     }
@@ -12856,30 +12847,24 @@ mod tests {
         assert!(app.terminal_busy(t));
     }
 
-    /// `!` on a ticket that has a shell session goes to that shell (T-366):
-    /// the same key finds the same shell after adoption, and wakes a parked
-    /// one — never a second terminal beside it.
+    /// `!` on a ticket that already has a shell session opens a FRESH
+    /// terminal on the ticket (T-366, the user's rule): one more shell to
+    /// adopt in turn, never a redirect to the one that is there. The hint
+    /// keeps its word.
     #[test]
-    fn bang_focuses_the_adopted_shell() {
-        let (mut app, sent, sid) =
-            app_with_session(SessionKind::Bash, SessionState::Running, false);
-        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-        assert_eq!(
-            keymap::hint_for(Scope::Ticket, Verb::Terminal, &app.ctx()).map(|(_, h)| h),
-            Some("shell")
-        );
-        press(&mut app, '!');
-        let log = sent.borrow().join("\n");
-        assert!(log.contains(&format!("FocusStart {{ session: {sid} }}")), "{log}");
-        assert!(!log.contains("OpenTerminal"), "{log}");
-
-        let (mut app, sent, sid) =
-            app_with_session(SessionKind::Bash, SessionState::Sleeping, false);
-        app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
-        press(&mut app, '!');
-        let log = sent.borrow().join("\n");
-        assert!(log.contains(&format!("WakeSession {{ id: {sid} }}")), "{log}");
-        assert!(!log.contains("OpenTerminal"), "{log}");
+    fn bang_opens_another_terminal_beside_the_shell() {
+        for state in [SessionState::Running, SessionState::Sleeping] {
+            let (mut app, sent, _sid) = app_with_session(SessionKind::Bash, state, false);
+            app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
+            assert_eq!(
+                keymap::hint_for(Scope::Ticket, Verb::Terminal, &app.ctx()).map(|(_, h)| h),
+                Some("terminal")
+            );
+            press(&mut app, '!');
+            let log = sent.borrow().join("\n");
+            assert!(log.contains("OpenTerminal { ticket: Some("), "{log}");
+            assert!(!log.contains("FocusStart") && !log.contains("WakeSession"), "{log}");
+        }
     }
 
     #[test]

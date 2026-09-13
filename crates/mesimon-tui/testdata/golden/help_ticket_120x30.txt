@@ -17,7 +17,7 @@
                                  │                                                    │
                                  │ SESSIONS                                           │
                                  │   enter     focus                                  │
-                                 │   !         shell                                  │
+                                 │   !         terminal                               │
                                  │   x         sleep                                  │
                                  │                                                    │
                                  │ APP                                                │
