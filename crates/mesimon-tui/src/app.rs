@@ -3275,6 +3275,7 @@ impl App {
             ticket_linkable: subject.is_some_and(|t| self.ticket_linkable(t)),
             sel_sleeping: selected.is_some_and(|s| matches!(s.state, SessionState::Sleeping)),
             sel_dead: selected.is_some_and(|s| !s.state.is_live()),
+            sel_shell: selected.is_some_and(|s| s.kind == SessionKind::Bash && s.state.has_pane()),
             has_worktree: wt.is_some_and(|w| !w.branch.is_empty()),
             // The daemon's `set_workspace` lock, mirrored: a session or a
             // worktree binding on the ticket closes the choice. The
@@ -5930,10 +5931,14 @@ impl App {
             return Ok(());
         };
         let wake = !ctx.ticket_awake;
+        // Sleeping the ticket parks its AGENTS; a shell's sleep is its close
+        // (T-366), and a bulk gesture must not end shells on the way — the
+        // rail's own `x` on the shell's row is the explicit close.
         let ids: Vec<uuid::Uuid> = self
             .rail_sessions(id)
             .iter()
             .filter(|s| matches!(s.state, SessionState::Sleeping) == wake)
+            .filter(|s| wake || s.kind.is_agent())
             .map(|s| s.id)
             .collect();
         if ids.is_empty() {

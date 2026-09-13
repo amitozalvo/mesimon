@@ -10547,8 +10547,8 @@ ticket's name; `rename_session`'s doc says so). `Command::TerminalTail { ticket,
 **What changes for an adopted shell, on purpose:** it has a pane, so `archive_ticket` refuses
 until it is slept and `set_workspace` locks — the unadopted ghost never did either. That is the
 difference between a place to stand and a session of the ticket, and it is the reason adoption
-takes two presses. `x` sleeps it (the live-children guard refuses while a command runs) and
-wake respawns `$SHELL` under the same name, as any shell.
+takes two presses. `x` CLOSES it (see the amendment below; the live-children guard still
+refuses while a command runs).
 
 **The rail and the preview.** `RailRow::Terminal` sits between the sessions and the `+ claude
 session` offer — a ghost in the dim register, the shell's `$` mark, the word `terminal` or the
@@ -10601,3 +10601,35 @@ sleep refused then parked and woken, foreground absent from `sessions.json`),
 `a_busy_shell_spins` (glyphs), `a_shell_at_its_prompt_is_idle_and_anything_else_is_a_command`
 (core), the `parse_facts` case in the backend, goldens `ticket_terminal_120x30`,
 `ticket_terminal_armed_120x30`, `ticket_shell_busy_120x30`; `help_ticket_120x30` is unchanged.
+
+## A shell's sleep is its close (T-366 amendment, 2026-09-13)
+
+The user, on the first build: "sleep of an adopted shell kills it, remove it from the records."
+Sleeping a shell parked the record as `Sleeping` and killed its pane, and a wake respawned a
+fresh `$SHELL` under the same row — a different shell wearing the same name, as the 2026-09-01
+block already said. That row was a promise the board could not keep: nothing of the shell
+survives its pane, so there is nothing to park.
+
+**Built.** `sleep_one` on a `SessionKind::Bash` record, once `sleep_eligible` passes (the
+live-children guard stands: a shell running a command is refused, as before), REMOVES the
+record — `board.sessions`, `machines`, `recovery`, `foregrounds` — and sends the pane down the
+same kill ladder as a parked agent's (`signal_session` + `reaping`); the journal says `shell
+closed`. The worktree lock releases on the reaper's next pass, where a ticket with no live
+session already released it. `persist_and_notify` in the `SleepSession` arm writes the board
+without the record, so `sessions.json` never keeps a closed shell. `WakeSession` on the id says
+`no such session`; the Bash wake arm stays for boards written before this that hold a
+`Sleeping` shell (the UI fixture's session 71 is one).
+
+**Bulk gestures park agents and leave shells alone.** `reclaim_all` and `reclaim_figures` take
+agents only, so the header's sleep offer never prices or ends a shell; the board's `x` (sleep
+the ticket's sessions) skips shells on the sleep side and still wakes a parked one from an old
+board. The explicit close is the ticket rail's `x` on the shell's own row, hinted `close shell`
+(`Ctx::sel_shell`).
+
+**Not done, on purpose:** a shell whose pane died on its own (`exit` typed) still leaves an
+`Exited{UserQuit}` record the rail hides, as `exit_parks_e2e` pins — the ask was about sleep,
+and dropping records on pane death is a different road (the reaper's) worth its own line if
+wanted.
+
+Tests: `terminal_adopt_e2e` (sleep → no record, no pane, no line in `sessions.json`, wake
+refused), golden `ticket_shell_busy_120x30` (`x close shell`).

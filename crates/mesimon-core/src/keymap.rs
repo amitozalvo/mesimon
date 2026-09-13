@@ -967,6 +967,9 @@ pub struct Ctx {
     pub ticket_rail_rows: usize,
     pub sel_sleeping: bool,
     pub sel_dead: bool,
+    /// The selected rail session is a live shell (T-366): `x` closes it
+    /// rather than parking it, and says so.
+    pub sel_shell: bool,
     /// The rail cursor is on the `+ claude session` row (T-300) — the
     /// phantom row the rail carries while the ticket's claude seat is empty
     /// and it can still be filled. Enter there starts the session, which is
@@ -2331,6 +2334,10 @@ static TICKET: &[Binding] = &[
                 "dismiss"
             } else if c.sel_sleeping {
                 ""
+            } else if c.sel_shell {
+                // A shell's sleep is its close (T-366): the pane is the
+                // record, and nothing is parked.
+                "close shell"
             } else {
                 "sleep"
             }

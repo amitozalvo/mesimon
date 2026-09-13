@@ -4172,7 +4172,11 @@ impl Daemon {
         let now = now_ms();
         let mut bytes = 0u64;
         let mut n = 0usize;
-        for rec in self.board.sessions.iter().filter(|r| safe.contains(&r.ticket)) {
+        // The set `reclaim_all` takes — agents only, a shell's sleep is its
+        // close (T-366) — priced exactly, so the offer never sells a shell.
+        for rec in
+            self.board.sessions.iter().filter(|r| safe.contains(&r.ticket) && r.kind.is_agent())
+        {
             if self.sleep_eligible(rec, now, true).is_ok() {
                 bytes += self.rss_by.get(&rec.id).copied().unwrap_or(0);
                 n += 1;
@@ -7609,6 +7613,26 @@ impl Daemon {
         self.sleep_eligible(rec, now, enforce_floor)?;
         let (sid, transcript) = (rec.sid16(), rec.transcript_path.clone());
 
+        // A shell's pane IS its record (T-366, the user: "sleep of an adopted
+        // shell kills it, remove it from the records"). There is no
+        // conversation to park and a woken one would be a different shell
+        // wearing the same row, so `x` on a shell CLOSES it: the pane goes
+        // through the same kill ladder as a parked agent's, and the record
+        // goes with it — the rail, the archive gate and the worktree lock
+        // (released by the reaper's pass once no live session remains) all
+        // stop counting a shell that is gone.
+        if rec.kind == SessionKind::Bash {
+            let ticket = rec.ticket;
+            self.board.sessions.retain(|s| s.id != id);
+            self.machines.remove(&id);
+            self.recovery.remove(&id);
+            self.foregrounds.remove(&id);
+            let _ = self.backend.signal_session(&sid);
+            self.reaping.insert(sid, Instant::now() + REAP_GRACE);
+            self.journal.line(&format!("shell closed: session {id} on ticket {ticket}"));
+            return Ok(());
+        }
+
         // B-A22: the conversation belongs to Claude's own store and this is
         // our snapshot of it — the same copy `park_on_exit` makes, now in the
         // same silence. It used to also assert the copy held a user+assistant
@@ -7811,11 +7835,12 @@ impl Daemon {
             .sessions
             .iter()
             .filter(|r| safe.contains(&r.ticket))
+            // Agents only: a shell's sleep is its close (T-366), and a bulk
+            // gesture priced in freed memory must not silently end shells.
             .filter(|r| {
                 matches!(
                     (r.kind, &r.state),
                     (SessionKind::Claude | SessionKind::Codex, SessionState::Idle { .. })
-                        | (SessionKind::Bash, SessionState::Running)
                 )
             })
             .map(|r| r.id)

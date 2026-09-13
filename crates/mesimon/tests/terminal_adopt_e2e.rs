@@ -137,9 +137,9 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
     let persisted = std::fs::read_to_string(h.paths.sessions_file()).unwrap();
     assert!(!persisted.contains("foreground"), "{persisted}");
 
-    // The command ends; the foreground clears; the shell can be parked
-    // (`MESIMON_SLEEP_MIN_AGE_MS` is the harness's 0) and woken under the
-    // same name.
+    // The command ends and the foreground clears. A shell's sleep is its
+    // CLOSE: the pane goes and so does the record — nothing is parked,
+    // because a woken shell would be a different shell wearing the row.
     send_keys(&sock, &sid16, &["C-c"]);
     wait_until(Duration::from_secs(10), "the foreground to clear", || {
         board_of(c.request(Command::Snapshot)).sessions[0].foreground.is_none()
@@ -148,25 +148,22 @@ fn the_tickets_terminal_is_listed_previewed_and_adopted() {
         Response::Ok => {}
         other => panic!("sleep: {other:?}"),
     }
-    let b = board_of(c.request(Command::Snapshot));
-    assert_eq!(b.sessions[0].state, SessionState::Sleeping);
-    match c.request(Command::WakeSession { id: sid }) {
-        Response::Spawned { .. } => {}
-        other => panic!("wake: {other:?}"),
-    }
-    wait_until(Duration::from_secs(10), "the woken pane", || {
-        list_panes(&sock).iter().any(|(n, _, dead)| *n == sid16 && !dead)
+    assert!(board_of(c.request(Command::Snapshot)).sessions.is_empty(), "the record is gone");
+    wait_until(Duration::from_secs(10), "the closed pane to go", || {
+        !list_panes(&sock).iter().any(|(n, _, dead)| *n == sid16 && !dead)
     });
-    assert_eq!(board_of(c.request(Command::Snapshot)).sessions[0].state, SessionState::Running);
+    err_containing(c.request(Command::WakeSession { id: sid }), "no such session");
+    let persisted = std::fs::read_to_string(h.paths.sessions_file()).unwrap();
+    assert!(!persisted.contains(&sid.to_string()), "{persisted}");
 
-    // `!` again on the ticket page opens a fresh terminal beside the shell,
-    // adoptable in turn; it is listed as a terminal again, and the shell is
-    // untouched.
+    // `!` again on the ticket page opens a fresh terminal on the ticket,
+    // adoptable in turn; it is listed as a terminal again, and the closed
+    // shell stays gone.
     assert!(matches!(
         c.request(Command::OpenTerminal { ticket: Some(t) }),
         Response::Attach { .. }
     ));
     assert!(matches!(c.request(Command::TerminalEnd), Response::Ok));
     assert_eq!(terminals_of(c.request(Command::Snapshot)).len(), 1);
-    assert_eq!(board_of(c.request(Command::Snapshot)).sessions.len(), 1);
+    assert!(board_of(c.request(Command::Snapshot)).sessions.is_empty());
 }

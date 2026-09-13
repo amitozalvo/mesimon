@@ -8,7 +8,7 @@
 
     ● working                                                                             ⠋ ✻ claude               >1y
     a shell keeps no transcript ∙ the pane is the whole record                            ⠋ $ cargo                >1y
-                                                                                           x sleep
+                                                                                           x close shell
 
 
 
