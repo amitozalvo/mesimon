@@ -4255,6 +4255,26 @@ fn the_folded_column_reads_its_count_at_the_top() {
     assert_eq!(letters, "INPR", "the name under both: {letters}");
 }
 
+/// T-359: a folded column of ten or more reads `9` over `⁺`, one cell each,
+/// where twelve used to stack `1` over `2` and push the name a row down.
+#[test]
+fn the_folded_column_caps_its_count_at_nine_plus() {
+    let mut board = fixture(false);
+    for n in 20..32u128 {
+        board.tickets.push(ticket(n, &format!("T-{n}"), "Filler", "done", &format!("z{n}")));
+    }
+    let mut app = app_graphite(board);
+    app.cursor_col = 0;
+    let lines = render(&app, 100, 24);
+    let row: Vec<char> = lines[2].chars().collect();
+    let x = row.iter().rposition(|c| *c != ' ').expect("a count");
+    assert_eq!(row[x], '9', "thirteen reads as 9: {}", lines[2]);
+    assert_eq!(lines[3].chars().nth(x), Some('⁺'), "with the plus beneath: {}", lines[3]);
+    // The name starts on the same row it does for a one-digit count.
+    let letters: String = lines[4..8].iter().filter_map(|l| l.chars().nth(x)).collect();
+    assert_eq!(letters, "DONE", "the name under the count: {letters}");
+}
+
 fn attn_stays_on_the_waiting_card(flavor: Flavor, board: Board) {
     attn_stays_on_the_card(flavor, board, "Adopt drawer import");
 }

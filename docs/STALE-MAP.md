@@ -10335,3 +10335,19 @@ at the next bump.
 
 The two-day dogfood record on simbly is released by the first daemon of this build
 on that board, after its first `ps`.
+
+## A folded column's count is one cell (T-359, 2026-09-13, user: "collapsed column with 9+ items overflows ∙ should show 9 and immediately below it, instead of the space, some '+' tiny glyph")
+
+T-302 wrote the count "a digit a row", so a folded column of twelve stacked `1` over `2`: two
+rows that read as two counts, and the name a row lower than its neighbours'. The user's own
+repair is the one taken: the digit is `9` at most, and the row under it — the row a smaller count
+leaves blank to align with the blank under the headers — carries `⁺` when the column holds more.
+`spine_count(n)` is the whole rule, `(digit, ' ')` through nine and `('9', '⁺')` past it, so the
+name starts on the same row whatever the column holds and T-302's "count of ten or more starts
+one lower again" stagger is gone. The superscript plus is the "tiny glyph" asked for; it is
+outside the box-drawing range the L1 law bans and is drawn in the count's own `dim2`. The `!`
+still claims row 0 when anything waits and pushes the pair down one row, unchanged.
+
+`the_folded_column_caps_its_count_at_nine_plus` pins thirteen as `9` over `⁺` with `DONE` under
+them on the rows a one-digit count uses. No golden moved — every fixture spine holds fewer than
+ten. Nothing else moved — no `Command`, no snapshot field, no schema, no key, no preference.

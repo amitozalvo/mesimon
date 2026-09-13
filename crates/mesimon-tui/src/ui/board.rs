@@ -528,10 +528,15 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
 }
 
 /// A collapsed column (07 §3.1): 1 cell, reads vertically, codepoints
-/// ⊆ [!A-Z0-9 space]. The TOP carries what an expanded column's header
+/// ⊆ [!A-Z0-9⁺ space]. The TOP carries what an expanded column's header
 /// row carries — the `!` iff the column holds a waiting session, then the
-/// count, a digit a row — and the name runs down from under them, one
-/// letter per row, truncating when the column is short.
+/// count, ONE digit — and the name runs down from under them, one letter
+/// per row, truncating when the column is short.
+///
+/// The count is one cell, never two (T-359): ten or more reads `9` with a
+/// `⁺` in the row under it, the row a smaller count leaves blank, so the
+/// name starts on the same row whatever the column holds. Stacking the
+/// digits (`1` over `0`) read as two counts and pushed the name down.
 ///
 /// The count sat at the FOOT until T-302 (2026-09-07, user: "bottom too
 /// far"), which put a 1-cell column's only number twenty rows away from
@@ -560,10 +565,10 @@ fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
     if waiting {
         lines.push(Line::from(Span::styled("!", theme.attn_row().add_modifier(Modifier::BOLD))));
     }
-    for d in tickets.len().to_string().chars() {
-        lines.push(Line::from(Span::styled(d.to_string(), theme.dim2())));
-    }
-    lines.push(Line::default()); // aligns with the blank under headers
+    let (digit, more) = spine_count(tickets.len());
+    lines.push(Line::from(Span::styled(digit.to_string(), theme.dim2())));
+    // The row under the count is blank under headers; `⁺` when it overflows.
+    lines.push(Line::from(Span::styled(more.to_string(), theme.dim2())));
 
     let name_rows = h.saturating_sub(lines.len());
     let upper = name.to_uppercase();
@@ -573,4 +578,13 @@ fn draw_spine(f: &mut Frame, area: Rect, app: &App, name: &str) {
     }
 
     f.render_widget(Paragraph::new(lines), area);
+}
+
+/// The spine's count block: the digit, and the cell under it — a space, or
+/// `⁺` when the column holds more than the one digit can say.
+fn spine_count(n: usize) -> (char, char) {
+    match n {
+        0..=9 => (char::from(b'0' + n as u8), ' '),
+        _ => ('9', '⁺'),
+    }
 }
