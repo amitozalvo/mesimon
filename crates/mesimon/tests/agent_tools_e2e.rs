@@ -71,6 +71,13 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     let t_full = create(&mut c, "TODO", "full");
     let s_full = spawn(&mut c, t_full);
     assert_eq!(blob_tools(&mut c, s_full), "full");
+    // T-362: the read tools are pre-approved on argv, the writers are not.
+    let rec = c.board().sessions.into_iter().find(|s| s.id == s_full).unwrap();
+    let at = rec.argv.iter().position(|a| a == "--allowedTools").expect("--allowedTools");
+    assert_eq!(
+        rec.argv[at + 1],
+        "mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_note"
+    );
     let mut shim = Shim::start(&sock, s_full);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
@@ -170,6 +177,7 @@ fn a_columns_tier_is_listed_at_spawn_and_enforced_at_every_call() {
     let s_off = spawn(&mut c, t_off);
     let rec = c.board().sessions.into_iter().find(|s| s.id == s_off).unwrap();
     assert!(!rec.argv.iter().any(|a| a == "--mcp-config"), "{:?}", rec.argv);
+    assert!(!rec.argv.iter().any(|a| a == "--allowedTools"), "{:?}", rec.argv);
     match c.send(Principal::Agent { session: s_off }, Command::AgentGetTicket) {
         Response::Err { message } => assert!(message.contains("off"), "{message}"),
         other => panic!("off admits nothing: {other:?}"),

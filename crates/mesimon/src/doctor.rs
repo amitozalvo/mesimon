@@ -807,6 +807,10 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     println!("Mesimon MCP launch configuration (when agent tools are enabled)");
     println!("Claude Code:");
     println!("  --mcp-config '{blob}'");
+    println!(
+        "  --allowedTools {}",
+        mcp::allowed_tool_names(mesimon_core::board::AgentTools::Full).join(",")
+    );
     let value: serde_json::Value = serde_json::from_str(&blob)?;
     let server = &value["mcpServers"][mcp::SERVER_NAME];
     println!("Codex app-server and native TUI:");
@@ -816,6 +820,7 @@ fn print_mcp(repo: &std::path::Path) -> Result<()> {
     );
     println!();
     println!("  --strict-mcp-config is NOT passed: your own MCP servers still load.");
+    println!("  --allowedTools pre-approves the read tools only; writers still prompt.");
     println!("  <session> above is the per-session uuid; nothing else varies.");
     println!();
 

@@ -43,6 +43,13 @@ fn flags(context: &LaunchContext<'_>) -> Vec<String> {
         if context.brief {
             argv.extend([mesimon_core::brief::FLAG.into(), mesimon_core::brief::TEXT.into()]);
         }
+        // The read tools run unasked (T-362): without an allow rule Claude
+        // Code prompts for every MCP tool, so plan mode asked for
+        // `get_ticket` on every turn. Argv, never a settings file — promise 2.
+        let allowed = mesimon_core::mcp::allowed_tool_names(context.tools);
+        if !allowed.is_empty() {
+            argv.extend(["--allowedTools".into(), allowed.join(",")]);
+        }
     }
     if let Some(mode) =
         context.column.claude_mode.flag_word().map(str::to_string).or_else(user_default_mode)
@@ -164,6 +171,7 @@ impl AgentAdapter for Claude {
             "--session-id",
             "--resume",
             "--mcp-config",
+            "--allowedTools",
             mesimon_core::brief::FLAG,
             "--permission-mode",
         ];

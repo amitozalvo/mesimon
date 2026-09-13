@@ -725,6 +725,23 @@ pub fn tier_admits(tier: AgentTools, cmd: &Command) -> bool {
     tier_needed_by(cmd).is_some_and(|need| tier >= need)
 }
 
+/// The read-tier tools `tier` admits, spelled as Claude Code's
+/// `mcp__<server>__<tool>` permission names — the `--allowedTools` value a
+/// spawn carries (T-362). Claude Code prompts for every MCP tool that has no
+/// allow rule, in plan mode and default mode alike, and does not read an MCP
+/// `readOnlyHint`; so `get_ticket` asked on every turn. These three read the
+/// board and change nothing, which is exactly what plan mode lets run
+/// unasked. Writers are never here: `write_note` or `move_ticket` still
+/// prompt wherever the mode prompts. Empty at `Off`, so the flag is omitted.
+pub fn allowed_tool_names(tier: AgentTools) -> Vec<String> {
+    tools_for(tier)
+        .iter()
+        .filter_map(|t| t["name"].as_str())
+        .filter(|name| tier_needed_by_tool(name) == Some(AgentTools::Read))
+        .map(|name| format!("mcp__{SERVER_NAME}__{name}"))
+        .collect()
+}
+
 /// `tools()` narrowed to what `tier` admits — what the shim lists, so a
 /// session in a `read` column is never shown a `move_ticket` it would be
 /// refused. `Full` is `tools()` whole.
@@ -799,6 +816,18 @@ mod tests {
             }
         }
         assert!(!tier_admits(AgentTools::Full, &Command::Snapshot), "never-tier stays never");
+    }
+
+    /// The pre-approved set is the read rung and only the read rung, at every
+    /// tier that lists it (T-362).
+    #[test]
+    fn allowed_tools_are_the_read_rung_only() {
+        let read =
+            ["mcp__mesimon__get_ticket", "mcp__mesimon__list_board", "mcp__mesimon__read_note"];
+        assert!(allowed_tool_names(AgentTools::Off).is_empty());
+        for tier in [AgentTools::Read, AgentTools::Annotate, AgentTools::Full] {
+            assert_eq!(allowed_tool_names(tier), read, "{tier:?}");
+        }
     }
 
     #[test]

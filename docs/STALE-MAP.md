@@ -10439,3 +10439,22 @@ tail of `settings_appearance_*`, `settings_behaviour_*` and `notifications_120x3
 ones show board scope (`settings_behaviour_board_120x30`, `settings_appearance_board_60x20`,
 `notifications_board_120x30`, `theme_picker_board_120x30`). The reverse direction — the machine
 overriding a board setting — stays out of scope, unargued.
+
+## The read tools are pre-approved on argv (T-362, 2026-09-13, user: "plan mode keep asking for permission for mesimon read ticket ∙ how to mitigate?")
+
+Claude Code prompts for every MCP tool that has no allow rule — in plan mode and in default
+mode alike — and does not read an MCP `readOnlyHint` annotation (checked against the current
+docs: the only annotation it honours is `anthropic/requiresUserInteraction`, which forces a
+prompt). So `get_ticket`, the call every session is told to make first, asked on every turn of
+a plan-mode session. The repair is one more pair on the argv `flags()` already builds:
+`--allowedTools mcp__mesimon__get_ticket,mcp__mesimon__list_board,mcp__mesimon__read_note`.
+`mcp::allowed_tool_names(tier)` is the rule — the read rung of `tools_for(tier)`, never a
+writer, so `write_note` and `move_ticket` still prompt wherever the mode prompts; empty at
+`Off`, where the flag is omitted with the blob. Argv rather than a settings file, and rather
+than a `permissions.allow` block in the generated hook settings, because promise 2 forbids
+touching the user's config and the hook file should carry hooks. A live pane keeps its argv;
+`--allowedTools` joined the `owned` list in `resume`, so a wake refreshes it like the blob.
+
+Pinned by `allowed_tools_are_the_read_rung_only` (core) and `agent_tools_e2e` (the flag and its
+value at `Full`, its absence at `Off`). `doctor --mcp` prints the pair. No wire change, no
+schema change; `CHANGELOG.md` gets its line at the next bump.
