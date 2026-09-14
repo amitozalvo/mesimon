@@ -4407,13 +4407,23 @@ impl App {
                             purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
-                    } else if ctx.checkout_busy {
+                    } else {
+                        // An empty seat opens the field too (T-379): the
+                        // words are the first prompt, and a blank Enter is
+                        // the title — what the press did with no field
+                        // until now. The field decides the timing: it opens
+                        // at `queued` while another claude works in the
+                        // same checkout (T-294) and at `now` otherwise, and
+                        // Shift+Tab flips it either way on a shared
+                        // checkout. Nothing spawns until Enter.
                         self.mode = Mode::Input {
-                            purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued: true },
+                            purpose: InputPurpose::Prompt {
+                                target: AskTarget::Ticket(id),
+                                walk: None,
+                                queued: ctx.checkout_busy,
+                            },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
-                    } else {
-                        self.start_composed(id);
                     }
                 }
             }
@@ -12223,30 +12233,81 @@ mod tests {
         assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
     }
 
-    /// A ticket saved with plain Enter is one press behind a Shift+Enter one:
-    /// on the board, Shift+Enter over an empty claude seat starts claude on
-    /// the title, submitted, and stays — no field opens, and nothing is
-    /// attached. A shell on the ticket is not a claude, so the seat is still
-    /// empty and the press still starts one.
+    /// T-379. Shift+Enter over an EMPTY claude seat opens the ask field
+    /// instead of starting on the title at once: the words are the first
+    /// prompt, a blank Enter is the title, and on a shared checkout the
+    /// delivery row offers `now` / `queued`. A quiet checkout opens at
+    /// `now`. Nothing spawns until Enter, and the board never leaves. A
+    /// shell on the ticket is not a claude, so the seat is still empty.
     #[test]
-    fn shift_enter_on_a_ticket_without_claude_starts_it_on_the_title() {
+    fn shift_enter_on_a_ticket_without_claude_opens_the_field_and_starts_on_enter() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.rich_keys = true;
         assert!(app.ctx().has_ticket);
         assert!(!app.ctx().ticket_has_agent);
+        assert!(!app.ctx().checkout_busy);
+        assert_eq!(
+            keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "start + ask claude"))
+        );
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert_eq!(app.mode, Mode::Normal, "no field: the title is the prompt");
-        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
+        assert!(
+            matches!(
+                app.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { queued: false, .. }, .. }
+            ),
+            "the field opens at now: {:?}",
+            app.mode
+        );
+        assert!(app.ctx().ask_queueable, "a shared checkout offers the toggle");
+        assert!(!sent_contains(&sent, "SpawnSession"), "nothing spawned yet: {:?}", sent.borrow());
         assert!(!sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        // Typed words are the first prompt, and the daemon starts claude on
+        // them through the ask road — never a bare spawn from here.
+        for c in "ship it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "ship it"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "CreateTicket"), "nothing minted: {:?}", sent.borrow());
+        assert_eq!(app.status, "claude started ∙ asked");
+        assert!(app.board.live_agent(ulid::Ulid(1)).is_some());
         assert_eq!(app.screen, Screen::Board, "the board never leaves");
         assert!(app.pending_attach.is_none(), "no handover");
 
+        // A blank Enter is the title: the composed start, one press late.
         let (mut app, sent, _) = app_with_shell(SessionState::Running);
         app.rich_keys = true;
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(matches!(app.mode, Mode::Input { .. }), "a shell is not a claude: {:?}", app.mode);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
-        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "claude started ∙ asked");
+
+        // Shift+Tab parks the start behind the checkout's current holder,
+        // even on a quiet one: the user chose to wait.
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued);
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "claude starts ∙ after T-9");
+        assert!(app.ctx().ticket_queued, "the card carries it now");
+
+        // Esc opens nothing and starts nothing.
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent.borrow().iter().all(|r| !r.contains("Session")), "{:?}", sent.borrow());
     }
 
     /// T-294. The same press, with another claude working in the same
@@ -12262,7 +12323,7 @@ mod tests {
         assert!(app.ctx().checkout_busy, "a claude is mid-turn in the same checkout");
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
-            Some(("shift+enter", "start claude"))
+            Some(("shift+enter", "start + ask claude"))
         );
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(
@@ -12344,8 +12405,9 @@ mod tests {
         assert!(!app.ctx().ask_queued, "send now, every time the field opens");
     }
 
-    /// T-294. A worktree ticket's checkout is its own: nothing to wait for,
-    /// so the press keeps its one-key start.
+    /// T-294 / T-379. A worktree ticket's checkout is its own: nothing to
+    /// wait for, so the field opens at `now` with no toggle row, and
+    /// Shift+Tab does nothing there.
     #[test]
     fn a_worktree_ticket_never_stops_to_ask() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
@@ -12354,8 +12416,21 @@ mod tests {
         press(&mut app, 'j');
         assert!(!app.ctx().checkout_busy, "another checkout entirely");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert_eq!(app.mode, Mode::Normal, "no field: the title is the prompt");
-        assert!(sent_contains(&sent, "submit_prompt: true"), "{:?}", sent.borrow());
+        assert!(
+            matches!(
+                app.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { queued: false, .. }, .. }
+            ),
+            "the field opens at now: {:?}",
+            app.mode
+        );
+        assert!(!app.ctx().ask_queueable, "a worktree ticket has no toggle");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued, "the key did nothing");
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "claude started ∙ asked");
     }
 
     /// A parked agent has no box to type into, and `Sleeping` is LIVE — so

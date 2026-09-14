@@ -735,11 +735,10 @@ startup modal is never answered on the user's behalf. See docs/spikes/T-5's 2026
 and submits the title (`Verb::SaveStart`); on a ticket with a live claude PANE it opens a one-line
 field on the card (`Verb::Prompt` → `InputPurpose::Prompt`); inside that field Enter sends and so
 does a second Shift+Enter (the finger is still holding shift). **On a ticket whose claude seat is
-EMPTY the board's press is the composer's second half a press late** (2026-09-03): the same
-`Verb::Prompt` binding, and `dispatch` routes on `Ctx::ticket_has_claude` to `start_composed` —
-claude spawns with the title submitted, no field, no attach, hint `ask claude the title` — **unless
-another claude is working in the same checkout, where the field opens at `queued` instead** (T-294,
-below). A
+EMPTY the board's press opens the same field** (T-379; from 2026-09-03 to then it spawned on the
+title at once, hint `ask claude the title`): the words are the first prompt, a blank Enter is the
+title, hint `start + ask claude`, and the delivery row opens at `now` on a quiet shared checkout and
+at `queued` while another claude works in it (T-294, below). A
 `Sleeping` claude is not an empty seat and the key WAKES it and asks (2026-09-04, user: "ask claude
 on sleeping agent auto wakes it for the user"): the field opens as on a paned claude (hint `wake +
 ask claude`), and `Daemon::prompt_sleeping` — the road `prompt_session` takes when `prompt_target`

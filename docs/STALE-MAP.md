@@ -7029,7 +7029,7 @@ the TUI's own read of `quiet::is_working` over shared-checkout sessions, plus th
 says so: it decides whether the press stops to ask, never how the words are delivered, and where it
 disagrees with `checkout_holders` the cost is a field that opened where a spawn would have gone. A
 quiet checkout keeps the one-key start (`ask claude the title`); a busy one opens the field at
-`queued` (`start claude`). **A live pane keeps `now` either way**, deliberately: it has shipped that
+`queued` (`start claude`). *(T-379 later opened the field on a quiet checkout too, at `now`.)* **A live pane keeps `now` either way**, deliberately: it has shipped that
 way, and a person reaching for a working agent may well mean interrupt — only the two roads that
 would start or wake a session take the new default. `ask_queueable` lost its pane clause, so the
 `shift+tab now / queued` row is offered on all three seats.
@@ -10713,3 +10713,32 @@ Tests: keymap validators above; `shift_enter_on_a_header_asks_every_agent_in_the
 three siblings in `app.rs`; goldens `board_column_prompt_120x30` / `_now_`; `column_ask_e2e`
 (now: 1 sent, 1 woke, 1 skipped, nothing started, the woken pane reads on `SessionStart`;
 queued: 2 parked in order, drained on the holder's settle; unknown column and blank text refused).
+
+## Shift+Enter on an empty seat opens the ask field (T-379, 2026-09-14)
+
+**The ask.** "shift+enter on pending ticket to show ask agent — instead of immediately starting,
+it will allow the user to choose their prompt (empty for title), and for shared checkout timing
+(queued, shift + tab)."
+
+**What changed.** The board's Shift+Enter over a ticket with no claude opened no field: since
+2026-09-03 it was the composer's second half a press late — `start_composed`, claude spawned with
+the title submitted — and only a busy shared checkout (T-294) stopped to open the field at `queued`.
+Now the empty seat opens the same one-line ask field every time, and the busy checkout changes
+only the default it opens at: `now` on a quiet one, `queued` while another claude works in the
+same checkout, Shift+Tab flipping either on a shared-checkout ticket. Nothing spawns until Enter.
+Typed words are the first prompt (`PromptSession` → `deliver` → `QueuedSeat::Start` →
+`spawn_session` with the words); a blank Enter is the title, which `prompt_session` already admitted
+on an empty seat as the one blank it delivers (T-294), and the placeholder says so (`start on the
+title`). A worktree ticket opens at `now` with no toggle row, as its checkout is its own. The hint is
+`start + ask claude` / `codex` on both the quiet and the busy seat — the parked seat's `wake + ask`
+shape, naming the extra thing the press does — where it read `ask claude the title` / `start claude`.
+
+**Not changed.** The one-key start on the title is still the composer's Shift+Enter, the editor's
+`^S`, the note-then-start road and the Enter-Enter fast path; `start_composed` remains theirs. The
+`Verb::Prompt` dispatch arm lost its `checkout_busy` branch — the two empty-seat branches were the
+same field with a different `queued`. No daemon change: the road the busy case already took.
+
+Tests: `shift_enter_on_a_ticket_without_claude_opens_the_field_and_starts_on_enter` (quiet: field
+at `now`, typed words start through the ask road, blank Enter starts on the title, Shift+Tab parks
+the start, Esc starts nothing), `a_worktree_ticket_never_stops_to_ask` (no toggle, opens at `now`),
+`shift_enter_on_an_empty_seat_starts_claude_on_the_title` in the keymap. No golden changes.

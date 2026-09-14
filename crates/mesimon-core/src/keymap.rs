@@ -1558,13 +1558,13 @@ static BOARD: &[Binding] = &[
         keys: &[Key::ShiftEnter],
         verb: Verb::Prompt,
         show: "shift+enter",
-        // An empty seat gets the composer's sentence: the press starts
-        // claude on the title, submitted, and stays. A ticket saved with
-        // plain Enter is one press behind a Shift+Enter one, and this is
-        // that press — unless another claude is working in the same
-        // checkout (T-294), where the field opens at `queued` instead, so
-        // the start waits its turn rather than becoming a second writer in
-        // one index.
+        // An empty seat opens the same field (T-379): the words become the
+        // first prompt, a blank Enter is the title, and the toggle row
+        // says when — `now` on a quiet checkout, `queued` while another
+        // claude works in the same one (T-294), so the start waits its
+        // turn rather than becoming a second writer in one index. The
+        // one-key start on the title is the composer's Shift+Enter, not
+        // this one.
         hint: |c| {
             // On a column header (T-378) the words reach every agent seated
             // in the column: the same sentence, plural. The board's default
@@ -1587,14 +1587,15 @@ static BOARD: &[Binding] = &[
                 agent_hint(c, "wake + ask claude", "wake + ask codex")
             } else if c.ticket_has_agent {
                 agent_hint(c, "ask claude", "ask codex")
-            } else if c.checkout_busy {
-                // An empty seat on a checkout somebody else is working in
-                // (T-294): the press opens the field instead of spawning,
-                // so the start can wait its turn. The word names what the
-                // key is for, and the field says now or queued.
-                agent_hint(c, "start claude", "start codex")
             } else {
-                agent_hint(c, "ask claude the title", "ask codex the title")
+                // An empty seat (T-379): the press opens the field, and
+                // the daemon starts claude on the way — the words are its
+                // first prompt, a blank field is the title. The same
+                // shape as `wake + ask`: the extra thing the press does,
+                // then the ask. Until T-379 a quiet checkout spawned on
+                // the title with no field (`ask claude the title`), and
+                // only a busy one (T-294) stopped to open it.
+                agent_hint(c, "start + ask claude", "start + ask codex")
             }
         },
         // Every ticket, at every stage of its seat: empty (the title is the
@@ -5583,7 +5584,7 @@ mod tests {
         assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "start codex")));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &ctx),
-            Some(("shift+enter", "ask codex the title"))
+            Some(("shift+enter", "start + ask codex"))
         );
         ctx.ticket_has_agent = true;
         ctx.ticket_agent_provider = AgentProvider::ClaudeCode;
@@ -6070,19 +6071,19 @@ mod tests {
         assert_eq!(resolve(Scope::Board, Key::Enter, &rich(true)), Some(Verb::Act));
     }
 
-    /// An EMPTY seat is the composer's moment come round again: the ticket
-    /// exists but no claude does, so Shift+Enter starts one on the title —
-    /// same verb, and the hint says which sentence it is about to say. A
-    /// parked claude is not an empty seat — the key wakes it and asks rather
-    /// than starting a second — an empty column has no title to ask, and the
-    /// legacy floor still gets nothing.
+    /// An EMPTY seat opens the ask field and starts claude on Enter (T-379):
+    /// the ticket exists but no claude does, so the press is `start + ask` —
+    /// same verb, and the hint says the extra thing it does, the way the
+    /// parked seat's `wake + ask` does. A parked claude is not an empty seat
+    /// — the key wakes it and asks rather than starting a second — an empty
+    /// column has no title to ask, and the legacy floor still gets nothing.
     #[test]
     fn shift_enter_on_an_empty_seat_starts_claude_on_the_title() {
         let empty = Ctx { has_ticket: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &empty), Some(Verb::Prompt));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &empty),
-            Some(("shift+enter", "ask claude the title"))
+            Some(("shift+enter", "start + ask claude"))
         );
         let parked = Ctx { ticket_has_agent: true, ..empty.clone() };
         assert_eq!(
@@ -6090,15 +6091,15 @@ mod tests {
             Some(("shift+enter", "wake + ask claude"))
         );
         // T-294: with another claude working in the same checkout the same
-        // press opens the field instead, so the start can wait its turn.
+        // field opens at `queued` — the busy checkout changes which DEFAULT
+        // the field opens at, never the word.
         let busy = Ctx { checkout_busy: true, ..empty.clone() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &busy), Some(Verb::Prompt));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &busy),
-            Some(("shift+enter", "start claude"))
+            Some(("shift+enter", "start + ask claude"))
         );
-        // A seat that is taken says what it always said: the busy checkout
-        // changes which DEFAULT the field opens at, never the word.
+        // A seat that is taken says what it always said.
         let busy_parked = Ctx { checkout_busy: true, ..parked.clone() };
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &busy_parked),
