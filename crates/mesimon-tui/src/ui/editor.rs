@@ -24,7 +24,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 
-use crate::app::{App, Editor, EditorPurpose, Field};
+use crate::app::{App, AskTarget, Editor, EditorPurpose, Field};
 use crate::layout::{self, Slot};
 use crate::tags;
 use crate::text::{age_slot, area_window, created_at_epoch_ms, edit_window, truncate};
@@ -76,7 +76,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
     // room the composer no longer opens, kept for the shape) the title is
     // typed on row 2 and the context sits under it.
     let leaf = match &ed.purpose {
-        EditorPurpose::Note { .. } => Some(ed.title.as_str().to_string()),
+        EditorPurpose::Note { .. } | EditorPurpose::Ask { .. } => {
+            Some(ed.title.as_str().to_string())
+        }
         EditorPurpose::Compose { .. } => None,
     };
     chrome::draw_header(
@@ -89,7 +91,9 @@ pub(super) fn draw(f: &mut Frame, app: &App, ed: &Editor) {
     ctx.spans.insert(0, Span::raw(" ".repeat(PAGE_PAD as usize)));
     let mut cursor = None;
     let top = match &ed.purpose {
-        EditorPurpose::Note { .. } => vec![Line::default(), Line::default(), ctx, Line::default()],
+        EditorPurpose::Note { .. } | EditorPurpose::Ask { .. } => {
+            vec![Line::default(), Line::default(), ctx, Line::default()]
+        }
         EditorPurpose::Compose { .. } => {
             let (mut spans, cx) = title_spans(
                 ed,
@@ -179,11 +183,14 @@ pub(super) fn draw_dialog(f: &mut Frame, app: &App, ed: &Editor, cards: Rect) {
     // dialog's stripe is the card's stripe at frame zero and after.
     let worn = match &ed.purpose {
         EditorPurpose::Compose { tags, .. } => tags::painted(&app.board, tags),
-        EditorPurpose::Note { ticket, .. } => app
+        EditorPurpose::Note { ticket, .. }
+        | EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => app
             .board
             .ticket(*ticket)
             .map(|t| tags::painted(&app.board, &t.tags))
             .unwrap_or_default(),
+        // A column's field hangs under its header, which wears no tags.
+        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => Vec::new(),
     };
     let (plain_ch, plain_style) = theme.bar(BarWeight::Cursor);
     let bar = tags::bar_spans(theme, plain_ch, plain_style, &worn, TagLevel::Selected, surface);
@@ -419,6 +426,35 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 ctx_spans.push(part);
             }
         }
+        // The ask room (T-380): the field's delivery row, where the
+        // composer shows its workspace pick — `now` or `queued`, and the key
+        // that flips it while the checkout is shared, spelled here because
+        // the dialog's bottom edge does not repeat it. A ticket's ask names
+        // the ticket by its key; a column's names the seats the words reach.
+        EditorPurpose::Ask { target, queued } => {
+            if !framed {
+                ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
+            }
+            match target {
+                AskTarget::Ticket(ticket) => {
+                    if let Some(t) = app.board.ticket(*ticket) {
+                        ctx_spans.push(Span::styled(t.short_key.clone(), dim1));
+                        ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
+                    }
+                }
+                AskTarget::Column(name) => {
+                    let seats = app.column_seats(name);
+                    let word = mesimon_core::keymap::agent_word(app.board.agent_provider);
+                    let plural = if seats == 1 { "" } else { "s" };
+                    ctx_spans.push(Span::styled(format!("{seats} {word}{plural}"), dim1));
+                    ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
+                }
+            }
+            ctx_spans.push(Span::styled(if *queued { "queued" } else { "now" }, dim1));
+            if app.ctx().ask_queueable {
+                ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));
+            }
+        }
     }
     if ed.dirty() {
         ctx_spans.push(Span::styled(" ∙ unsaved".to_string(), dim2));
@@ -440,8 +476,20 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
 /// the description (`notes[0]`, or the fresh note that becomes it), or
 /// another note.
 fn heading(app: &App, ed: &Editor) -> &'static str {
+    use mesimon_core::board::AgentProvider;
     match &ed.purpose {
         EditorPurpose::Compose { .. } => "NEW TICKET",
+        // Who the words reach — the one-line field's own hint, in capitals.
+        EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => {
+            match app.ticket_agent_provider(*ticket) {
+                AgentProvider::ClaudeCode => "ASK CLAUDE",
+                AgentProvider::Codex => "ASK CODEX",
+            }
+        }
+        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => match app.board.agent_provider {
+            AgentProvider::ClaudeCode => "ASK EVERY CLAUDE",
+            AgentProvider::Codex => "ASK EVERY CODEX",
+        },
         EditorPurpose::Note { ticket, note } => {
             let t = app.board.ticket(*ticket);
             let exists = note.is_some_and(|id| t.is_some_and(|t| t.note(id).is_some()));
@@ -460,10 +508,24 @@ fn heading(app: &App, ed: &Editor) -> &'static str {
 /// the text will be the ticket's description — composing, or a note that
 /// is (or would become) `notes[0]` — and `write the note` otherwise.
 fn body_hint(app: &App, ed: &Editor) -> &'static str {
+    use mesimon_core::board::AgentProvider;
     let describes = match &ed.purpose {
         EditorPurpose::Compose { .. } => true,
         EditorPurpose::Note { ticket, note } => {
             app.board.ticket(*ticket).is_some_and(|t| t.description().map(|d| d.id) == *note)
+        }
+        // The empty room says what it is for in the field's own words.
+        EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => {
+            return match app.ticket_agent_provider(*ticket) {
+                AgentProvider::ClaudeCode => "ask claude",
+                AgentProvider::Codex => "ask codex",
+            }
+        }
+        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => {
+            return match app.board.agent_provider {
+                AgentProvider::ClaudeCode => "ask every claude",
+                AgentProvider::Codex => "ask every codex",
+            }
         }
     };
     if describes {

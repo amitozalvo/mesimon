@@ -759,11 +759,14 @@ pub const PROMPT_MAX_BYTES: usize = 4096;
 /// live tty: a bare CR would submit the text early (splitting one prompt into
 /// two turns), and an ESC would be read as a key, not as content. `\t` is not
 /// spared — inside Claude's input box Tab is a completion, not whitespace.
-/// The text is bounded, never split mid-character, and blank input is `None`
-/// so an empty paste can never press Enter on a turn the user did not write.
+/// A line break STAYS (T-380, the ask editor): inside a bracketed paste a
+/// `\n` is a line of the same prompt, in claude's box and codex's alike, and
+/// the Enter that submits is sent separately. The text is bounded, never
+/// split mid-character, and blank input is `None` so an empty paste can never
+/// press Enter on a turn the user did not write.
 pub fn sanitize_prompt(raw: &str) -> Option<String> {
-    use crate::text::{cap_bytes, nonblank, scrub_text};
-    nonblank(cap_bytes(&scrub_text(raw), PROMPT_MAX_BYTES))
+    use crate::text::{cap_bytes, nonblank, scrub_lines};
+    nonblank(cap_bytes(&scrub_lines(raw), PROMPT_MAX_BYTES))
 }
 
 /// What the daemon must know about a command before running it: the D32c
@@ -1746,11 +1749,14 @@ mod tests {
     }
 
     /// The three characters that would turn one prompt into a different
-    /// event: CR submits early, ESC is read as a key, Tab completes.
+    /// event: CR submits early, ESC is read as a key, Tab completes. A line
+    /// break is content (T-380): it rides the bracketed paste as a line of
+    /// the same prompt, and `"\r\n"` is one of them.
     #[test]
     fn sanitize_prompt_drops_what_a_tty_would_act_on() {
         assert_eq!(sanitize_prompt("a\rb"), Some("ab".into()));
-        assert_eq!(sanitize_prompt("a\nb"), Some("ab".into()));
+        assert_eq!(sanitize_prompt("a\nb"), Some("a\nb".into()));
+        assert_eq!(sanitize_prompt("a\r\nb\n\nc"), Some("a\nb\n\nc".into()));
         assert_eq!(sanitize_prompt("a\u{1b}b"), Some("ab".into()));
         assert_eq!(sanitize_prompt("a\tb"), Some("ab".into()));
         // Nothing blank ever presses Enter.

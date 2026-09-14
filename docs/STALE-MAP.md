@@ -10742,3 +10742,54 @@ Tests: `shift_enter_on_a_ticket_without_claude_opens_the_field_and_starts_on_ent
 at `now`, typed words start through the ask road, blank Enter starts on the title, Shift+Tab parks
 the start, Esc starts nothing), `a_worktree_ticket_never_stops_to_ask` (no toggle, opens at `now`),
 `shift_enter_on_an_empty_seat_starts_claude_on_the_title` in the keymap. No golden changes.
+
+## Tab grows the ask field into the composer's room (T-380, 2026-09-14)
+
+**The ask.** "tab on ask agent to show big composer to edit prompt like ticket creation." The
+one-line ask field (Shift+Enter on a card or a column header) had no bigger room: a prompt longer
+than a sentence was edited in a card-width window, and a line break was impossible — `sanitize_prompt`
+dropped every control, `\n` included.
+
+**What it is.** `Tab` in the ask field is the composer's `Tab` (`Verb::Describe`, the same binding
+widened to `composing || prompting`, hinted `expand`): the same dialog grows out of the card, on a
+new `EditorPurpose::Ask { target, queued }`. The field's text is the body with the cursor at its end
+(pasted into a fresh `TextArea` rather than opened on, so the sentence continues), the title row is
+the destination read-only — the ticket's title, or the column's name in capitals — and the frame's
+edge says who the words reach (`ASK CLAUDE`, `ASK EVERY CODEX`, by seat or by board default). The
+context row is the field's delivery row: `T-3 ∙ now  shift+tab`, or `2 claudes ∙ queued  shift+tab`
+for a column. In the room Enter is a line break, `^s` is the field's Enter (`send` / `queue`,
+through `commit_prompt` — history, seat word and receipt unchanged), Shift+Tab is the now/queued
+toggle exactly where the one-line field offers it (gated on `ask_queueable`, never on the ticket's
+workspace being open, which is the note editor's reason for the same key), and the two keys that
+save something to the board are off: `^S` (a second send) and `^t` (a prompt wears no tags).
+`^g` still hands the body to `$EDITOR` as `ask-T-3.md`. A clean Esc folds back into the one-line
+field on the same text; a dirty one asks twice and drops the ask, the composer's own rule. A blank
+room refuses to send and stays open. The header chip stays `BOARD` (a dialog over the board, like
+the composer's) and the mode word is `ASK`.
+
+**Line breaks travel.** Measured live 2026-09-14 (`/opt/homebrew/bin/tmux`, `load-buffer -` →
+`paste-buffer -p`, then a separate Enter): claude's box shows `[Pasted text #1 +3 lines]` and the
+Enter submits ONE turn whose reply reads all the lines; codex's box shows the lines and submits
+them as one. So `sanitize_prompt` now crosses `text::scrub_lines` — `\r\n` becomes `\n`, `\n`
+survives, every other control and a lone `\r` go; still only ever removes, so promise 3 holds
+literally. The agent-prompt templates (T-353) leaned on the old stripping for their one-line law,
+so they got their own twin, `prompts::sanitize_template` (the old behaviour, every newline gone),
+at the daemon's `set_agent_prompt`, the Settings row and the TUI's fake — `brief_offer_e2e` caught
+it. The history keeps the lines it went out with; recalled into the one-line field (`↑`)
+they are spaces (`history_field`, `one_line`), and `Tab` reopens the room on that line. A WAITING
+ask with lines reopens in the room, not the field, so nothing is flattened on the way back.
+
+**Not done.** The room is board-only, as the field is. The stub agent in `prompt_e2e` reads a line
+at a time, so the e2e asserts both lines arrive in order with no CR and cannot tell one paste from
+two — the one-box claim rests on the live measurement above. No `↑` history inside the room. A mixed
+claude/codex column is named by the board's default word, as T-378 left it.
+
+Tests: `the_ask_room_sends_on_ctrl_s_and_keeps_the_saving_keys_off`,
+`tab_opens_the_editor_from_the_composer_and_the_card` (keymap);
+`lines_for_a_process_keep_their_breaks_and_nothing_else`, `sanitize_prompt_drops_what_a_tty_would_act_on`,
+`a_template_is_one_line` (core); `tab_grows_the_ask_field_into_the_room_and_ctrl_s_sends_it`,
+`the_ask_room_folds_back_clean_and_discards_dirty`,
+`the_column_ask_room_keeps_the_delivery_toggle_and_sends_the_column`,
+`a_queued_ask_with_lines_reopens_in_the_room` (app); goldens `editor_ask_120x30`,
+`editor_ask_column_120x30`, and the five ask-field board goldens reminted for `tab expand`;
+`prompt_e2e` grew the two-line clause.

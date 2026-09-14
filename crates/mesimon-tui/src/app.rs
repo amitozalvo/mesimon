@@ -326,7 +326,7 @@ pub enum Mode {
     /// `editing` is the selected row's template as a text field — the column
     /// dialog's `naming` shape, down to the scope flip that puts
     /// `enter save ∙ esc cancel` in the frame's edge. A template is one line
-    /// by law (`sanitize_prompt` removes every newline on the way to a tty),
+    /// by law (`sanitize_template` removes every newline on the way in),
     /// so a one-line buffer is the honest field for it.
     Prompts {
         idx: usize,
@@ -550,6 +550,13 @@ fn edit_buffer_key(buf: &mut EditBuffer, code: KeyCode, mods: KeyModifiers) {
     }
 }
 
+/// A remembered ask back in the one-line field. An ask written in the room
+/// (T-380) keeps its line breaks in the history it went out with; the field
+/// is one line, so they are spaces here — `Tab` reopens the room on it.
+fn history_field(text: &str) -> EditBuffer {
+    EditBuffer::from_text(crate::text::one_line(text), mesimon_core::command::PROMPT_MAX_BYTES)
+}
+
 /// One step through a list of `n` rows, clamped at both ends.
 fn step(idx: usize, n: usize, down: bool) -> usize {
     if down {
@@ -626,6 +633,12 @@ pub enum EditorPurpose {
     /// A note on a ticket that exists. `note: None` until the first save
     /// mints it.
     Note { ticket: ulid::Ulid, note: Option<ulid::Ulid> },
+    /// The ask field's prompt in the bigger room (T-380): the one-line
+    /// field's target and delivery ride along, the body IS the prompt, and
+    /// nothing is saved — `^s` sends it through the field's own road. The
+    /// title row is the destination, read-only: the ticket's title, or the
+    /// column's name.
+    Ask { target: AskTarget, queued: bool },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -678,6 +691,10 @@ impl Editor {
 
     pub fn composing(&self) -> bool {
         matches!(self.purpose, EditorPurpose::Compose { .. })
+    }
+
+    pub fn asking(&self) -> bool {
+        matches!(self.purpose, EditorPurpose::Ask { .. })
     }
 
     fn saved(&mut self) {
@@ -1956,13 +1973,23 @@ impl App {
                 self.mode = Mode::Sharing { idx, editing: None, armed: *armed };
             }
         }
-        // A note editor on a ticket that vanished has nowhere to save to.
-        if let Mode::Editor(Editor { purpose: EditorPurpose::Note { ticket, .. }, .. }) = &self.mode
-        {
-            if self.board.ticket(*ticket).is_none() {
+        // A note editor on a ticket that vanished has nowhere to save to,
+        // and an ask room on one has nobody to send to.
+        match &self.mode {
+            Mode::Editor(Editor { purpose: EditorPurpose::Note { ticket, .. }, .. })
+                if self.board.ticket(*ticket).is_none() =>
+            {
                 self.mode = Mode::Normal;
                 self.status = "ticket gone ∙ note discarded".into();
             }
+            Mode::Editor(Editor {
+                purpose: EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. },
+                ..
+            }) if self.board.ticket(*ticket).is_none() => {
+                self.mode = Mode::Normal;
+                self.status = "ticket gone ∙ ask discarded".into();
+            }
+            _ => {}
         }
         match &self.screen {
             Screen::Ticket { ticket, rail_idx } => {
@@ -3340,16 +3367,20 @@ impl App {
             ),
             prompt_history: !self.prompt_history.is_empty(),
             ask_queueable: match &self.mode {
-                Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. } => match target {
-                    AskTarget::Ticket(t) => self.ask_queueable(*t),
-                    AskTarget::Column(name) => self.column_ask_queueable(name),
-                },
+                Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. }
+                | Mode::Editor(Editor { purpose: EditorPurpose::Ask { target, .. }, .. }) => {
+                    match target {
+                        AskTarget::Ticket(t) => self.ask_queueable(*t),
+                        AskTarget::Column(name) => self.column_ask_queueable(name),
+                    }
+                }
                 _ => false,
             },
             checkout_busy: subject.is_some_and(|t| self.checkout_busy(t)),
             ask_queued: matches!(
                 self.mode,
                 Mode::Input { purpose: InputPurpose::Prompt { queued: true, .. }, .. }
+                    | Mode::Editor(Editor { purpose: EditorPurpose::Ask { queued: true, .. }, .. })
             ),
             ticket_queued: subject.is_some_and(|t| self.ticket_queued(t)),
             tag_naming: self.tag_armed.as_ref().is_some_and(|a| a.naming.is_some()),
@@ -3419,6 +3450,7 @@ impl App {
             tags_exist: !self.board.tags.is_empty(),
             editing: editor.is_some(),
             editor_composing: editor.is_some_and(|e| e.composing()),
+            editor_asking: editor.is_some_and(|e| e.asking()),
             editor_body: editor.is_some_and(|e| e.focus == Field::Body),
             editor_dirty: editor.is_some_and(|e| e.dirty()),
             editor_word: self.editor_word,
@@ -4392,15 +4424,25 @@ impl App {
                     if ctx.ticket_queued {
                         // An ask is waiting: the field reopens on its words,
                         // at `queued`. Enter re-queues, a blank Enter drops.
+                        // Words written in the room (T-380) have lines, and
+                        // a one-line field would flatten them on the way
+                        // back — so they reopen in the room, as they were.
                         let text =
                             self.pending_of(id).and_then(|p| p.text.clone()).unwrap_or_default();
-                        self.mode = Mode::Input {
-                            purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued: true },
-                            buffer: EditBuffer::from_text(
-                                text,
-                                mesimon_core::command::PROMPT_MAX_BYTES,
-                            ),
-                        };
+                        let target = AskTarget::Ticket(id);
+                        if text.contains('\n') {
+                            let mut ed = self.ask_room(target, true, &text);
+                            ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
+                            self.mode = Mode::Editor(ed);
+                        } else {
+                            self.mode = Mode::Input {
+                                purpose: InputPurpose::Prompt { target, walk: None, queued: true },
+                                buffer: EditBuffer::from_text(
+                                    text,
+                                    mesimon_core::command::PROMPT_MAX_BYTES,
+                                ),
+                            };
+                        }
                     } else if ctx.ticket_has_agent {
                         let queued = !ctx.ticket_promptable && ctx.checkout_busy;
                         self.mode = Mode::Input {
@@ -5353,7 +5395,7 @@ impl App {
                 };
                 // Blank, or mesimon's own sentence typed back verbatim, is
                 // the same answer: this board has no template of its own.
-                let text = mesimon_core::command::sanitize_prompt(&text)
+                let text = mesimon_core::prompts::sanitize_template(&text)
                     .filter(|t| t != which.default_text());
                 if text.as_deref() != self.board.prompts.custom(which) {
                     match self.req(Command::SetAgentPrompt { which, text }) {
@@ -6346,10 +6388,13 @@ impl App {
                 return Ok(());
             }
             // The composer grows into the editor: title carried over, cursor
-            // in the description, the picks riding along.
+            // in the description, the picks riding along. The ask field
+            // grows the same way (T-380): the prompt becomes the body with
+            // the cursor at its end, the destination is the title row, and
+            // the delivery toggle rides along.
             Some(Verb::Describe) => {
-                if let InputPurpose::Create { workspace, tags, description } = purpose {
-                    let mut ed = Editor::new(
+                let mut ed = match purpose {
+                    InputPurpose::Create { workspace, tags, description } => Editor::new(
                         EditorPurpose::Compose { workspace, tags },
                         buffer,
                         TextArea::from_text(
@@ -6357,13 +6402,18 @@ impl App {
                             mesimon_core::board::NOTE_MAX_BYTES,
                         ),
                         Field::Body,
-                    );
-                    // The dialog grows out of the card the last frame drew.
-                    ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
-                    self.mode = Mode::Editor(ed);
-                } else {
-                    self.mode = Mode::Input { purpose, buffer };
-                }
+                    ),
+                    InputPurpose::Prompt { target, queued, .. } => {
+                        self.ask_room(target, queued, buffer.as_str())
+                    }
+                    other => {
+                        self.mode = Mode::Input { purpose: other, buffer };
+                        return Ok(());
+                    }
+                };
+                // The dialog grows out of the card the last frame drew.
+                ed.grow = self.cursor_card.get().map(|r| (r, Instant::now()));
+                self.mode = Mode::Editor(ed);
                 return Ok(());
             }
             Some(Verb::TagPrefix) => {
@@ -6397,10 +6447,7 @@ impl App {
                         _ => None,
                     };
                     if let Some((idx, draft)) = next {
-                        buffer = EditBuffer::from_text(
-                            self.prompt_history[idx].clone(),
-                            mesimon_core::command::PROMPT_MAX_BYTES,
-                        );
+                        buffer = history_field(&self.prompt_history[idx]);
                         *walk = Some(HistoryWalk { idx, draft });
                     }
                 }
@@ -6410,10 +6457,7 @@ impl App {
                     if let Some(w) = walk.take() {
                         match self.prompt_history.get(w.idx + 1) {
                             Some(newer) => {
-                                buffer = EditBuffer::from_text(
-                                    newer.clone(),
-                                    mesimon_core::command::PROMPT_MAX_BYTES,
-                                );
+                                buffer = history_field(newer);
                                 *walk = Some(HistoryWalk { idx: w.idx + 1, draft: w.draft });
                             }
                             None => {
@@ -6645,6 +6689,8 @@ impl App {
                     self.mode = Mode::Editor(ed);
                     return self.set_ticket_workspace(ticket);
                 }
+                // The ask field's delivery toggle, in the bigger room.
+                EditorPurpose::Ask { queued, .. } => *queued = !*queued,
             },
             Some(Verb::EditorNewline) => match ed.focus {
                 Field::Title => ed.focus = Field::Body,
@@ -6697,6 +6743,14 @@ impl App {
     fn edit_file_name(&self, ed: &Editor) -> String {
         match &ed.purpose {
             EditorPurpose::Compose { .. } => "new-ticket.md".into(),
+            EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => {
+                let key =
+                    self.board.ticket(*ticket).map(|t| t.short_key.as_str()).unwrap_or("ticket");
+                format!("ask-{key}.md")
+            }
+            EditorPurpose::Ask { target: AskTarget::Column(name), .. } => {
+                format!("ask-{}.md", mesimon_core::workspace::slug(name))
+            }
             EditorPurpose::Note { ticket, note } => {
                 let t = self.board.ticket(*ticket);
                 let key = t.map(|t| t.short_key.as_str()).unwrap_or("ticket");
@@ -6751,6 +6805,9 @@ impl App {
                     EditorPurpose::Compose { .. } => {
                         self.status = format!("edited in {} ∙ ^s saves", self.editor_word)
                     }
+                    EditorPurpose::Ask { .. } => {
+                        self.status = format!("edited in {} ∙ ^s sends", self.editor_word)
+                    }
                 }
             }
         }
@@ -6769,13 +6826,76 @@ impl App {
             return Ok(());
         }
         if !ed.dirty() {
-            if let EditorPurpose::Compose { .. } = ed.purpose {
-                self.fold_composer(ed);
-                return Ok(());
+            match ed.purpose {
+                EditorPurpose::Compose { .. } => {
+                    self.fold_composer(ed);
+                    return Ok(());
+                }
+                EditorPurpose::Ask { .. } => {
+                    self.fold_ask(ed);
+                    return Ok(());
+                }
+                EditorPurpose::Note { .. } => {}
             }
         }
         self.mode = Mode::Normal;
         Ok(())
+    }
+
+    /// The ask room (T-380): the editor on a prompt for `target`, delivered
+    /// `queued` or now, the destination on the title row (the ticket's
+    /// title, or the column's name) and `text` as the body with the cursor
+    /// at its end — pasted rather than opened on, so the sentence continues
+    /// where the field left it.
+    fn ask_room(&self, target: AskTarget, queued: bool, text: &str) -> Editor {
+        let title = match &target {
+            AskTarget::Ticket(t) => {
+                self.board.ticket(*t).map(|t| t.title.clone()).unwrap_or_default()
+            }
+            AskTarget::Column(name) => name.to_uppercase(),
+        };
+        let mut body = TextArea::new(mesimon_core::command::PROMPT_MAX_BYTES);
+        body.paste(text);
+        Editor::new(
+            EditorPurpose::Ask { target, queued },
+            EditBuffer::from_text(title, mesimon_core::board::TITLE_MAX_BYTES),
+            body,
+            Field::Body,
+        )
+    }
+
+    /// The ask room folds back into the one-line field it grew out of
+    /// (T-380): a clean Esc's road. Clean means the body is the line the
+    /// field held, so nothing is lost on the way back — a body that grew
+    /// lines is dirty, and dirty takes the two-press discard.
+    fn fold_ask(&mut self, ed: Editor) {
+        let EditorPurpose::Ask { target, queued } = ed.purpose else {
+            self.mode = Mode::Normal;
+            return;
+        };
+        self.mode = Mode::Input {
+            purpose: InputPurpose::Prompt { target, walk: None, queued },
+            buffer: history_field(ed.body.as_str()),
+        };
+    }
+
+    /// `^s` in the ask room (T-380): the field's Enter. The body goes out
+    /// through the same road the one-line field sends by — history, the
+    /// seat's word, the receipt in the status — line breaks and all. A blank
+    /// room sends nothing and stays open; the daemon would refuse it too.
+    fn editor_send(&mut self, ed: Editor) -> Result<()> {
+        let EditorPurpose::Ask { target, queued } = ed.purpose.clone() else {
+            self.mode = Mode::Normal;
+            return Ok(());
+        };
+        let text = ed.body.as_str().trim().to_string();
+        if text.is_empty() {
+            self.status = "nothing to ask".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
+        self.mode = Mode::Normal;
+        self.commit_prompt(InputPurpose::Prompt { target, walk: None, queued }, text)
     }
 
     /// The grown composer folds back into the one-line field it grew out of,
@@ -6805,6 +6925,8 @@ impl App {
     /// pane to type at, so the keymap leaves the key inert there.
     fn editor_save_start(&mut self, mut ed: Editor) -> Result<()> {
         match ed.purpose.clone() {
+            // Unbound in the ask room; the one thing the press could mean.
+            EditorPurpose::Ask { .. } => self.editor_send(ed),
             EditorPurpose::Compose { workspace, tags } => {
                 let title = ed.title.as_str().trim().to_string();
                 if title.is_empty() {
@@ -6907,6 +7029,7 @@ impl App {
     /// clean one just closes. Telling the ticket's claude is `^S`'s.
     fn editor_save(&mut self, mut ed: Editor) -> Result<()> {
         match ed.purpose.clone() {
+            EditorPurpose::Ask { .. } => self.editor_send(ed),
             EditorPurpose::Compose { .. } => {
                 let described = !ed.body.as_str().trim().is_empty();
                 self.fold_composer(ed);
@@ -7681,12 +7804,29 @@ impl App {
     }
 
     fn ticket_agent_word(&self, ticket: ulid::Ulid) -> &'static str {
-        keymap::agent_word(
-            self.board
-                .live_agent(ticket)
-                .and_then(|s| s.kind.provider())
-                .unwrap_or(self.board.agent_provider),
-        )
+        keymap::agent_word(self.ticket_agent_provider(ticket))
+    }
+
+    /// The provider seated on the ticket, or the board's default while the
+    /// seat is empty — the one the words of an ask would reach.
+    pub(crate) fn ticket_agent_provider(
+        &self,
+        ticket: ulid::Ulid,
+    ) -> mesimon_core::board::AgentProvider {
+        self.board
+            .live_agent(ticket)
+            .and_then(|s| s.kind.provider())
+            .unwrap_or(self.board.agent_provider)
+    }
+
+    /// Agents seated in a column, paned or parked — what a column ask
+    /// reaches (T-378); the same count `Ctx::col_seats` carries.
+    pub(crate) fn column_seats(&self, column: &str) -> usize {
+        self.board
+            .column_tickets(column)
+            .iter()
+            .filter(|t| self.board.live_agent(t.id).is_some())
+            .count()
     }
 
     /// `e`: rescan (lazy census — this is the only trigger) and open the drawer.
@@ -9004,7 +9144,7 @@ pub(crate) mod test_support {
                 // The daemon's own rule, as small as the fake can hold it:
                 // sanitized in, and blank means mesimon's words back (T-353).
                 Command::SetAgentPrompt { which, text } => {
-                    let text = text.as_deref().and_then(mesimon_core::command::sanitize_prompt);
+                    let text = text.as_deref().and_then(mesimon_core::prompts::sanitize_template);
                     self.board.prompts.set(which, text);
                     Ok(Response::Ok)
                 }
@@ -11890,6 +12030,156 @@ mod tests {
         assert!(!app.ctx().ask_queued);
     }
 
+    /// T-380: `Tab` in the ask field grows it into the composer's room on
+    /// the prompt, cursor at its end. Enter is a line break there, and `^s`
+    /// sends the body through the field's own road — line breaks kept, the
+    /// history keeping them too — while the one-line field recalls the ask
+    /// as one line.
+    #[test]
+    fn tab_grows_the_ask_field_into_the_room_and_ctrl_s_sends_it() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        for c in "fix".chars() {
+            press(&mut app, c);
+        }
+        assert_eq!(
+            keymap::hint_for(Scope::Input, Verb::Describe, &app.ctx()),
+            Some(("tab", "expand"))
+        );
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        let ed = editor(&app);
+        assert!(ed.asking());
+        assert_eq!(ed.body.as_str(), "fix");
+        assert_eq!(ed.body.cursor(), 3, "the cursor is at the end, where the field left it");
+        assert_eq!(ed.title.as_str(), app.board.tickets[0].title, "the destination, read-only");
+        assert_eq!(ed.focus, Field::Body);
+        assert!(!ed.dirty(), "opening changes nothing");
+        let ctx = app.ctx();
+        assert!(ctx.editor_asking && !ctx.editor_composing && !ctx.prompting);
+        assert!(ctx.ask_queueable, "ticket 1 shares the checkout");
+        assert_eq!(keymap::hint_for(Scope::Editor, Verb::EditorSave, &ctx), Some(("^s", "send")));
+        assert!(!sent_contains(&sent, "Prompt"), "growing the field sends nothing");
+        // `^S` is off in the room: nothing leaves, the room stays.
+        app.handle_key(KeyCode::Char('S'), KeyModifiers::CONTROL | KeyModifiers::SHIFT).unwrap();
+        assert!(editor(&app).asking());
+        assert!(!sent_contains(&sent, "Prompt"));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        for c in "the tests".chars() {
+            press(&mut app, c);
+        }
+        assert!(editor(&app).dirty());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.mode, Mode::Normal, "the room closed on send");
+        assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
+        assert!(
+            sent_contains(&sent, "fix\\nthe tests"),
+            "line breaks survive: {:?}",
+            sent.borrow()
+        );
+        assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "asked");
+        assert_eq!(app.prompt_history, vec!["fix\nthe tests".to_string()]);
+        // Recalled into the one-line field as one line; `Tab` reopens the
+        // room on that line.
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "fix the tests"),
+            other => panic!("not in the field: {other:?}"),
+        }
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert_eq!(editor(&app).body.as_str(), "fix the tests");
+    }
+
+    /// The room's Esc is the composer's: clean, it folds back into the
+    /// one-line field with the text; dirty, it asks twice and then drops
+    /// the ask. A blank room refuses to send and stays open.
+    #[test]
+    fn the_ask_room_folds_back_clean_and_discards_dirty() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).asking());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        assert!(editor(&app).asking(), "a blank room stays open");
+        assert_eq!(app.status, "nothing to ask");
+        assert!(!sent_contains(&sent, "Prompt"));
+        for c in "fix".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(editor(&app).esc_armed, "dirty: the first Esc arms");
+        assert_eq!(app.status, "unsaved ∙ esc again discards");
+        press(&mut app, '!');
+        assert!(!editor(&app).esc_armed, "any other key disarms");
+        // Fold back clean: send nothing, reopen on the same text.
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        for c in "fix".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued);
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        assert!(app.ctx().ask_queued, "the toggle rides into the room");
+        assert_eq!(
+            keymap::hint_for(Scope::Editor, Verb::EditorSave, &app.ctx()),
+            Some(("^s", "queue"))
+        );
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { purpose: InputPurpose::Prompt { queued, walk, .. }, buffer } => {
+                assert_eq!(buffer.as_str(), "fix");
+                assert!(*queued, "and back out of it");
+                assert!(walk.is_none());
+            }
+            other => panic!("not folded back: {other:?}"),
+        }
+        // Dirty, twice: the ask is dropped and nothing was sent.
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        press(&mut app, 'x');
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!sent_contains(&sent, "Prompt"), "{:?}", sent.borrow());
+    }
+
+    /// A column's field grows the same way (T-378 + T-380): the header's
+    /// name is the title, Shift+Tab in the room is the delivery toggle, and
+    /// `^s` sends the one column command.
+    #[test]
+    fn the_column_ask_room_keeps_the_delivery_toggle_and_sends_the_column() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queued, "opens queued on a shared checkout");
+        app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
+        let ed = editor(&app);
+        assert!(matches!(
+            &ed.purpose,
+            EditorPurpose::Ask { target: AskTarget::Column(n), queued: true } if n == "todo"
+        ));
+        assert_eq!(ed.title.as_str(), "TODO");
+        assert!(app.ctx().ask_queueable);
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued, "shift+tab flips it in the room");
+        for c in "commit it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "PromptColumn"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "PromptSession"));
+        assert_eq!(app.status, "asked 1 ∙ 1 without claude");
+        assert!(app.on_column_header(), "the cursor stayed on the header");
+    }
+
     /// T-378: the same key one row up. On a column header Shift+Enter opens
     /// the field under the header, and Enter puts the words in front of
     /// every agent seated in the column with one command — the cursor never
@@ -12013,6 +12303,32 @@ mod tests {
             app.mode,
             Mode::Input { purpose: InputPurpose::Prompt { queued: false, .. }, .. }
         ));
+    }
+
+    /// A waiting ask written in the room (T-380) has lines, and reopens in
+    /// the room as it was — a one-line field would flatten it. `^s`
+    /// re-queues it, lines and all.
+    #[test]
+    fn a_queued_ask_with_lines_reopens_in_the_room() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.pending = vec![mesimon_core::command::Pending {
+            ticket: ulid::Ulid(1),
+            action: "ask".into(),
+            waits_on: vec!["T-3".into()],
+            text: Some("commit it\nthen push".into()),
+            in_flight: false,
+        }];
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        let ed = editor(&app);
+        assert!(ed.asking());
+        assert_eq!(ed.body.as_str(), "commit it\nthen push");
+        assert!(app.ctx().ask_queued, "still at queued");
+        assert!(!ed.dirty());
+        app.handle_key(KeyCode::Char('s'), KeyModifiers::CONTROL).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "commit it\\nthen push"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
     }
 
     /// A ticket with an ask waiting reopens the field on those words, at

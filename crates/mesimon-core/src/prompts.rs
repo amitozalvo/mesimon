@@ -12,8 +12,9 @@
 //!
 //! The shape is deliberately the smallest one that works:
 //!
-//! - a template is ONE LINE, because [`crate::command::sanitize_prompt`] is
-//!   what the text crosses on the way to a tty and it removes every newline.
+//! - a template is ONE LINE: [`sanitize_template`] is the boundary it crosses
+//!   on the way in and it removes every newline (a typed ask keeps its lines
+//!   since T-380; a template is a sentence mesimon types, and stays one).
 //!   A field, not a document;
 //! - a placeholder is `{name}` from a FIXED per-prompt list ([`AgentPrompt::fields`]),
 //!   substituted by literal replacement. An unknown `{word}` is left exactly
@@ -175,6 +176,19 @@ impl PromptSet {
     }
 }
 
+/// The boundary a template crosses on the way in, and the twin of
+/// [`crate::command::sanitize_prompt`] with one difference: every newline
+/// goes, because a template is one line by law — the row that edits it is a
+/// one-line field, and the sentence is typed into a box as one turn. Only
+/// ever removes, bounded like a prompt, and blank is `None` (mesimon's own
+/// words back). Stored sanitized, so the bytes on disk are the bytes the tty
+/// receives.
+pub fn sanitize_template(raw: &str) -> Option<String> {
+    use crate::command::PROMPT_MAX_BYTES;
+    use crate::text::{cap_bytes, nonblank, scrub_text};
+    nonblank(cap_bytes(&scrub_text(raw), PROMPT_MAX_BYTES))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,19 +233,30 @@ mod tests {
     }
 
     /// A template is one line with no control characters: whatever a person
-    /// types, `sanitize_prompt` is the boundary it crosses, and a default
-    /// that did not already survive it would be delivered as something else.
+    /// types, `sanitize_template` is the boundary it crosses, and a default
+    /// that did not already survive it — or the ask sanitizer the words
+    /// cross on delivery — would be delivered as something else.
     #[test]
     fn every_default_survives_the_prompt_sanitizer_unchanged() {
         for which in AgentPrompt::ALL {
             let text = which.default_text();
             assert_eq!(
-                sanitize_prompt(text).as_deref(),
+                sanitize_template(text).as_deref(),
                 Some(text),
                 "{}'s default is not what the tty would receive",
                 which.key()
             );
+            assert_eq!(sanitize_prompt(text).as_deref(), Some(text), "{}", which.key());
         }
+    }
+
+    /// A template stays one line where an ask keeps its lines (T-380): the
+    /// newline goes, the CR goes, and the rest is what was typed.
+    #[test]
+    fn a_template_is_one_line() {
+        assert_eq!(sanitize_template("  a\r\nb\nc  "), Some("abc".into()));
+        assert_eq!(sanitize_prompt("a\nb"), Some("a\nb".into()), "the ask keeps its line");
+        assert_eq!(sanitize_template(" \n "), None);
     }
 
     /// The user's words win, and only the fields the prompt declares are

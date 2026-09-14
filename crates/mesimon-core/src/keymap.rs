@@ -705,7 +705,8 @@ pub enum Verb {
     HistoryNext,
     /// `Tab` in the composer: grow it into the editor, title carried over,
     /// cursor in the description. On a board card: the same dialog, on the
-    /// ticket's description.
+    /// ticket's description. In the ask field (T-380): the same room on the
+    /// prompt, cursor at its end, where Enter is a line break and `^s` sends.
     Describe,
     // ---- editor ----
     /// `^s`: save. Composing, the description is kept and the dialog folds
@@ -1128,6 +1129,10 @@ pub struct Ctx {
     /// The editor is composing a NEW ticket (title + description), so the
     /// composer's keys — workspace, tags — are live in it.
     pub editor_composing: bool,
+    /// The editor holds an ASK (T-380): the one-line field's prompt in the
+    /// bigger room. Nothing in it is saved — `^s` sends, `^S` and `^t` are
+    /// off, and Shift+Tab is the field's own now/queued toggle.
+    pub editor_asking: bool,
     /// The cursor is in the body, not the title line.
     pub editor_body: bool,
     /// The editor holds changes not yet saved.
@@ -4742,16 +4747,19 @@ static INPUT: &[Binding] = &[
     },
     Binding {
         // The composer grows: `Tab` opens the full editor with the title
-        // carried over and the cursor in the description. Composer-only —
-        // a rename has no description and a prompt is not a ticket. Behind
-        // `^t` (25) on purpose: that key was moved ahead of `shift+tab` to
-        // survive the 120-column cut, and a longer item ahead of it would
-        // push it off again.
+        // carried over and the cursor in the description. The ask field
+        // grows the same way (T-380, "tab on ask agent to show big composer
+        // to edit prompt like ticket creation"): the prompt becomes the
+        // body, cursor at its end, Enter breaks a line there and `^s`
+        // sends. Not a rename — it has no second field. Behind `^t` (25) on
+        // purpose: that key was moved ahead of `shift+tab` to survive the
+        // 120-column cut, and a longer item ahead of it would push it off
+        // again.
         keys: &[Key::Tab],
         verb: Verb::Describe,
         show: "tab",
-        hint: |_| "describe",
-        avail: |c| c.composing,
+        hint: |c| if c.prompting { "expand" } else { "describe" },
+        avail: |c| c.composing || c.prompting,
         class: Class::Plain,
         group: Group::Ticket,
         mutates: false,
@@ -5089,7 +5097,18 @@ static EDITOR: &[Binding] = &[
         keys: &[Key::Ctrl('s')],
         verb: Verb::EditorSave,
         show: "^s",
-        hint: |_| "save",
+        // Asking (T-380), the same key SENDS: the room holds a prompt, and
+        // the field's Enter word — `send`, or `queue` at the toggle's other
+        // setting — is the one thing the press does.
+        hint: |c| {
+            if !c.editor_asking {
+                "save"
+            } else if c.ask_queued {
+                "queue"
+            } else {
+                "send"
+            }
+        },
         avail: |c| c.editing,
         class: Class::Plain,
         group: Group::Ticket,
@@ -5128,9 +5147,12 @@ static EDITOR: &[Binding] = &[
                 agent_hint(c, "save + ask claude", "save + ask codex")
             }
         },
+        // Off in the ask room (T-380): `^s` already sends there, and a
+        // second key that sends teaches nothing twice.
         avail: |c| {
             c.editing
                 && c.rich_keys
+                && !c.editor_asking
                 && (c.editor_composing || c.ticket_promptable || !c.ticket_has_agent)
         },
         class: Class::Plain,
@@ -5201,11 +5223,22 @@ static EDITOR: &[Binding] = &[
         // pick it cycles (`editor::context_line`), the way the one-line
         // composer's card spells it, so the bottom edge said it a second
         // time. Bound, not hinted — the `c` precedent on the ticket page.
+        // In the ask room (T-380) it is the field's own toggle, now /
+        // queued, spelled on the same context row, and offered exactly
+        // where the one-line field offers it — never by the ticket's
+        // workspace being open, which is another verb's reason.
         keys: &[Key::BackTab],
         verb: Verb::CycleWorkspace,
         show: "shift+tab",
         hint: |_| "",
-        avail: |c| c.editing && !c.multi_repo && (c.editor_composing || c.workspace_open),
+        avail: |c| {
+            c.editing
+                && if c.editor_asking {
+                    c.ask_queueable
+                } else {
+                    !c.multi_repo && (c.editor_composing || c.workspace_open)
+                }
+        },
         class: Class::Plain,
         group: Group::Worktree,
         mutates: true,
@@ -6487,19 +6520,50 @@ mod tests {
             .any(|(k, h)| k == "shift+tab" && h == "own worktree"));
     }
 
-    /// `Tab` grows the one-line composer into the editor, and only there: a
-    /// rename has no description and a prompt is not a ticket. On the board
-    /// the same key on a card opens the same dialog on the ticket's own
-    /// description (T-163), and nowhere else is `tab` a verb: the ticket
-    /// page and the diff keep it inert, and `needs you` no longer has it.
+    /// The ask room (T-380): the editor on a prompt. `^s` is the field's
+    /// Enter — `send`, or `queue` at the toggle's other setting — and the
+    /// two keys that save something to the board are off: `^S` (it would
+    /// be a second send) and `^t` (a prompt wears no tags). Shift+Tab is
+    /// the now/queued toggle exactly where the one-line field offers it,
+    /// and the ticket's workspace being open does not bring it back.
+    #[test]
+    fn the_ask_room_sends_on_ctrl_s_and_keeps_the_saving_keys_off() {
+        let asking =
+            Ctx { editing: true, editor_asking: true, rich_keys: true, ..Default::default() };
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('s'), &asking), Some(Verb::EditorSave));
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &asking), Some(("^s", "send")));
+        let queued = Ctx { ask_queued: true, ..asking.clone() };
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &queued), Some(("^s", "queue")));
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &asking), None);
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('t'), &asking), None);
+        // Enter is still a line break: that is what the room is for.
+        assert_eq!(resolve(Scope::Editor, Key::Enter, &asking), Some(Verb::EditorNewline));
+        // The toggle follows the field's own gate, not the workspace's.
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &asking), None);
+        let open = Ctx { workspace_open: true, ..asking.clone() };
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &open), None);
+        let queueable = Ctx { ask_queueable: true, ..asking.clone() };
+        assert_eq!(resolve(Scope::Editor, Key::BackTab, &queueable), Some(Verb::CycleWorkspace));
+        // A note editor is untouched by the flag.
+        let noting = Ctx { editing: true, rich_keys: true, ..Default::default() };
+        assert_eq!(hint_for(Scope::Editor, Verb::EditorSave, &noting), Some(("^s", "save")));
+        assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &noting), Some(Verb::EditorSaveStart));
+    }
+
+    /// `Tab` grows the one-line composer into the editor, and the ask field
+    /// too (T-380) — a rename has no second field. On the board the same key
+    /// on a card opens the same dialog on the ticket's own description
+    /// (T-163), and nowhere else is `tab` a verb: the ticket page and the
+    /// diff keep it inert, and `needs you` no longer has it.
     #[test]
     fn tab_opens_the_editor_from_the_composer_and_the_card() {
         let composing = Ctx { composing: true, ..Default::default() };
         assert_eq!(resolve(Scope::Input, Key::Tab, &composing), Some(Verb::Describe));
         assert_eq!(hint_for(Scope::Input, Verb::Describe, &composing), Some(("tab", "describe")));
         let prompting = Ctx { prompting: true, ..Default::default() };
-        assert_eq!(resolve(Scope::Input, Key::Tab, &prompting), None);
-        assert_eq!(resolve(Scope::Input, Key::Tab, &Ctx::default()), None);
+        assert_eq!(resolve(Scope::Input, Key::Tab, &prompting), Some(Verb::Describe));
+        assert_eq!(hint_for(Scope::Input, Verb::Describe, &prompting), Some(("tab", "expand")));
+        assert_eq!(resolve(Scope::Input, Key::Tab, &Ctx::default()), None, "a rename");
         let card = Ctx { has_ticket: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::Tab, &card), Some(Verb::Describe));
         assert_eq!(hint_for(Scope::Board, Verb::Describe, &card), Some(("tab", "describe")));

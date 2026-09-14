@@ -27,4 +27,4 @@
 
 
 
- ASK  enter send ∙ esc cancel ∙ shift+tab now / queued
+ ASK  enter send ∙ esc cancel ∙ tab expand ∙ shift+tab now / queued

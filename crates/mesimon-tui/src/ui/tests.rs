@@ -4841,6 +4841,65 @@ fn golden_editor_describe_120() {
     golden("editor_describe_120x30", &lines);
 }
 
+/// The ask room (T-380): the one-line field's prompt in the composer's
+/// dialog. The frame names who the words reach, the title row is the
+/// ticket (read-only), the context row is the field's delivery row, and the
+/// footer is the field's — `ASK`, `^s send`.
+#[test]
+fn golden_editor_ask_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = Some(0);
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Ask {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            queued: false,
+        },
+        "Fix OSC-11 detection",
+        "rebase onto main\n\nthen run the suite and report the first failure, nothing else",
+    );
+    ed.body.page(4);
+    ed.body.end();
+    app.mode = Mode::Editor(ed);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("ASK CLAUDE")), "the frame names it: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("Fix OSC-11 detection")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("T-3 ∙ now")), "the delivery row: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("rebase onto main")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("report the first failure")), "{lines:?}");
+    assert!(lines.last().is_some_and(|l| l.contains("ASK")), "{:?}", lines.last());
+    assert!(lines.last().is_some_and(|l| l.contains("^s send")), "{:?}", lines.last());
+    assert!(!lines.last().is_some_and(|l| l.contains("^S")), "no second send: {:?}", lines.last());
+    golden("editor_ask_120x30", &lines);
+}
+
+/// A column's ask in the room: the header's name is the title, the context
+/// row counts the seats the words reach, and `queued` is the toggle's
+/// setting — `^s queue`.
+#[test]
+fn golden_editor_ask_column_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    let mut ed = editor_on(
+        crate::app::EditorPurpose::Ask {
+            target: crate::app::AskTarget::Column("in progress".into()),
+            queued: true,
+        },
+        "IN PROGRESS",
+        "commit what you have",
+    );
+    ed.body.end();
+    app.mode = Mode::Editor(ed);
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("ASK EVERY CLAUDE")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("2 claudes ∙ queued  shift+tab")), "{lines:?}");
+    assert!(lines.last().is_some_and(|l| l.contains("^s queue")), "{:?}", lines.last());
+    golden("editor_ask_column_120x30", &lines);
+}
+
 /// `Tab` on a card grows the ticket's description out of that card, the
 /// composer's own motion on a ticket that exists; a card with no
 /// description gets the fresh note that becomes it.

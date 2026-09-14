@@ -57,9 +57,10 @@ pub(super) fn breadcrumb(app: &App, ink: &Ramp) -> Vec<Span<'static>> {
 /// commit, and the page's own title row spells only the title.
 fn screen_word(app: &App) -> String {
     match (&app.screen, &app.mode) {
-        // The note editor covers its screen whole; the composer's editor is
-        // a dialog over the board and the board is still the room.
-        (_, Mode::Editor(ed)) if !ed.composing() => "NOTE".into(),
+        // The note editor covers its screen whole; the composer's editor
+        // and the ask room (T-380) are dialogs over the board and the board
+        // is still the room.
+        (_, Mode::Editor(ed)) if !ed.composing() && !ed.asking() => "NOTE".into(),
         (Screen::Board, _) => "BOARD".into(),
         (Screen::Ticket { ticket, .. }, _) => match app.board.ticket(*ticket) {
             Some(t) => format!("TICKET ({})", t.short_key),
@@ -443,6 +444,8 @@ fn mode_word(app: &App) -> Option<&'static str> {
         // The editor is the composer in a bigger room, or a note — and the
         // note's editor is a screen of its own, named by the header.
         Mode::Editor(e) if e.composing() => "NEW",
+        // The ask field in its bigger room is still the ask field (T-380).
+        Mode::Editor(e) if e.asking() => "ASK",
         Mode::Editor(_) => return None,
         // The column dialog's name field (T-117).
         Mode::ColumnSettings { naming: Some(_), .. } => "NAME",

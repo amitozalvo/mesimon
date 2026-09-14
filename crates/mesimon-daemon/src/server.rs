@@ -6205,11 +6205,13 @@ impl Daemon {
     /// and `columns.toml`'s, so it returns early under the bar like the
     /// switches above it.
     ///
-    /// The text is sanitized HERE and stored sanitized, through the same
-    /// `sanitize_prompt` a typed ask crosses: the bytes on disk are the bytes
-    /// the tty will receive, and a template cannot carry a CR that would
-    /// split one prompt into two turns. Blank in — which is what an emptied
-    /// field sends — is mesimon's own words back, and writes nothing.
+    /// The text is sanitized HERE and stored sanitized, through
+    /// `sanitize_template` — the ask sanitizer's one-line twin: the bytes on
+    /// disk are the bytes the tty will receive, and a template cannot carry
+    /// a CR that would split one prompt into two turns, nor a newline (a
+    /// typed ask may since T-380; a template is one line by law). Blank in
+    /// — which is what an emptied field sends — is mesimon's own words back,
+    /// and writes nothing.
     fn set_agent_prompt(
         &mut self,
         which: mesimon_core::prompts::AgentPrompt,
@@ -6218,7 +6220,7 @@ impl Daemon {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
         }
-        let text = text.as_deref().and_then(mesimon_core::command::sanitize_prompt);
+        let text = text.as_deref().and_then(mesimon_core::prompts::sanitize_template);
         if self.board.prompts.custom(which) == text.as_deref() {
             return Response::Ok;
         }

@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+                              ╭─ ASK CLAUDE ──────────────────────────────────────────────╮
+    Decay treatments      >1y │   Fix OSC-11 detection                                    │   z Painted accent bar >1y
+                              │   T-3 ∙ now  shift+tab                                    │
+    Keymap validator      >1y │                                                           │
+                              │   rebase onto main                                        │
+                              │                                                           │
+                              │   then run the suite and report the first failure,        │
+                              │   nothing else                                            │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              ╰───────────────────────────────────── ^s send ∙ esc close ─╯
+
+
+ ASK  ^s send ∙ esc close

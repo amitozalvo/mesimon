@@ -1,0 +1,30 @@
+ BOARD   mesimon › kanban-tui   7 tickets
+
+    TODO                    2     IN PROGRESS             2     REVIEW                  2     DONE                   1
+                              ╭─ ASK EVERY CLAUDE ────────────────────────────────────────╮
+    Decay treatments      >1y │   IN PROGRESS                                             │   z Painted accent bar >1y
+                              │   2 claudes ∙ queued  shift+tab                           │
+    Keymap validator      >1y │                                                           │
+                              │   commit what you have                                    │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              │                                                           │
+                              ╰──────────────────────────────────── ^s queue ∙ esc close ─╯
+
+
+ ASK  ^s queue ∙ esc close

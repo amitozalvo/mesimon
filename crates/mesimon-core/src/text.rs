@@ -58,6 +58,20 @@ pub fn scrub_text(raw: &str) -> String {
     raw.chars().filter(|&c| !c.is_control() && !is_format_hazard(c)).collect()
 }
 
+/// `scrub_text` for text that may span lines (T-380: the ask editor's
+/// prompt). `"\r\n"` is one line break and keeps its `'\n'`; every other
+/// control goes, a lone `'\r'` included — it is the byte that submits early.
+/// A bracketed paste carries a `'\n'` as a line break into an agent's box,
+/// measured live against claude and codex (2026-09-14): the box shows the
+/// lines, and the separate Enter submits them as one turn. Still only ever
+/// REMOVES — `'\n'` is `"\r\n"`'s own second byte.
+pub fn scrub_lines(raw: &str) -> String {
+    raw.replace("\r\n", "\n")
+        .chars()
+        .filter(|&c| c == '\n' || (!c.is_control() && !is_format_hazard(c)))
+        .collect()
+}
+
 /// The longest prefix of `s` within `max` bytes, never split mid-character.
 pub fn cap_bytes(s: &str, max: usize) -> &str {
     if s.len() <= max {
@@ -93,6 +107,15 @@ mod tests {
         let dirty = "see \u{2502} this\u{202e}\r\n";
         let out = scrub_text(dirty);
         assert_eq!(out, "see \u{2502} this");
+        let mut it = dirty.chars();
+        assert!(out.chars().all(|c| it.any(|d| d == c)), "not a subsequence");
+    }
+
+    #[test]
+    fn lines_for_a_process_keep_their_breaks_and_nothing_else() {
+        let dirty = "one\r\ntwo\rthree\n\nfour\u{1b}[31m\t\u{202e}";
+        let out = scrub_lines(dirty);
+        assert_eq!(out, "one\ntwothree\n\nfour[31m");
         let mut it = dirty.chars();
         assert!(out.chars().all(|c| it.any(|d| d == c)), "not a subsequence");
     }

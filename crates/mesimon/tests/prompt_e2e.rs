@@ -120,6 +120,35 @@ fn a_prompt_typed_on_the_board_reaches_the_agent_and_is_submitted() {
         "one press, one turn: {received:?}"
     );
 
+    // A prompt with lines (T-380, the ask room) keeps them through the
+    // daemon and the paste: both lines arrive, in order, the `\r` of a
+    // CRLF gone. (A stub reads a line at a time, so it cannot tell one
+    // bracketed paste from two; claude and codex were measured to keep the
+    // lines in one box — `docs/STALE-MAP.md`, T-380.)
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket,
+            text: "mesimon-probe-44 first line\r\nmesimon-probe-44 second line".into(),
+            queued: false
+        }),
+        Response::Ok
+    ));
+    let deadline = Instant::now() + Duration::from_secs(15);
+    let received = loop {
+        let text = std::fs::read_to_string(&got).unwrap_or_default();
+        if text.contains("mesimon-probe-44 second line") {
+            break text;
+        }
+        assert!(Instant::now() < deadline, "the second line never arrived: {text:?}");
+        std::thread::sleep(Duration::from_millis(200));
+    };
+    let lines: Vec<&str> = received.lines().filter(|l| l.contains("mesimon-probe-44")).collect();
+    assert_eq!(
+        lines,
+        vec!["mesimon-probe-44 first line", "mesimon-probe-44 second line"],
+        "both lines, in order, no CR: {received:?}"
+    );
+
     // A PARKED claude is woken by the ask (2026-09-04). Drive the stub to
     // Idle through the hooks — the stub emits none of its own — and sleep it
     // the way `x` does; then the same command that refused a paneless
