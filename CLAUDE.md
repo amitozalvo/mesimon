@@ -87,6 +87,12 @@ calls it after every run). It is what keeps the first-exec Gatekeeper hold down:
 scan is slow in proportion to the *directory*, and one edit to a core crate mints ~6,500 `.o`
 files that cargo never collects. Past 50k entries it advises `cargo clean`.
 
+**The Linux cross-build needs a musl C toolchain** — `x86_64-linux-musl-gcc` and
+`aarch64-linux-musl-gcc` on PATH (`brew trust messense/macos-cross-toolchains`, then `brew
+install messense/macos-cross-toolchains/<target>`), because `ring` came in with Teams (T-332)
+and the daemon links it unconditionally. `ci/build-linux.sh` dies with the brew line when one is
+missing. Apple clang cannot stand in (no musl sysroot).
+
 **mesimon ships its own tmux on macOS** — `ci/build-tmux.sh` builds a static tmux 3.6a into
 `vendor/tmux/` and the release packages it as `mesimon-tmux`, never `tmux` (which would shadow
 the user's own on PATH). `mesimon_backend_tmux::tmux_bin()` is the resolution ladder

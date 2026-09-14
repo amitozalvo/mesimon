@@ -1,9 +1,12 @@
 #!/usr/bin/env bash
 # Build the Linux release binaries — from this Mac, with no Linux in the room.
 #
-# The workspace has no C in its dependency graph, so a Linux target needs no
-# cross C toolchain: the Rust toolchain's own `rust-lld` links it, and the
-# musl `rust-std` ships its own crt objects and libc. The result is a STATIC
+# The workspace's one C dependency is `ring` (rustls' crypto provider, via
+# mesimon-team since T-332), so a Linux target needs a musl cross C toolchain
+# for that crate's C and assembly — `<arch>-linux-musl-gcc`, the name the `cc`
+# crate looks for on its own (the check below names the brew formula). Nothing
+# else needs it: the Rust toolchain's own `rust-lld` links, and the musl
+# `rust-std` ships its own crt objects and libc. The result is a STATIC
 # binary, which is the point of picking musl over glibc — a glibc build is
 # only portable to distros with a glibc at least as new as the builder's,
 # and a WSL box is as likely to be Ubuntu 22.04 (glibc 2.35) as anything.
@@ -44,6 +47,18 @@ lld="$sysroot/lib/rustlib/$host/bin/rust-lld"
 for t in $targets; do
   rustup target list --installed | grep -qx "$t" || \
     die "the $t target is not installed" "rustup target add $t"
+done
+
+# `ring` is built by the `cc` crate with the target's own gcc, found by name.
+# Apple's clang cannot stand in: its headers `#include_next` a libc this Mac
+# does not have (measured on both targets, hosted and -ffreestanding). The
+# prebuilt toolchains are Homebrew formulae named after the target, in a
+# third-party tap that brew must be told to trust first.
+for t in $targets; do
+  cc="${t%%-*}-linux-musl-gcc"
+  command -v "$cc" >/dev/null 2>&1 || \
+    die "$cc is not on PATH; ring needs a C compiler for $t" \
+      "brew tap messense/macos-cross-toolchains; brew trust messense/macos-cross-toolchains; brew install messense/macos-cross-toolchains/$t"
 done
 
 for t in $targets; do

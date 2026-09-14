@@ -10633,3 +10633,32 @@ wanted.
 
 Tests: `terminal_adopt_e2e` (sleep → no record, no pane, no line in `sessions.json`, wake
 refused), golden `ticket_shell_busy_120x30` (`x close shell`).
+
+## The Linux release needs a musl C toolchain (T-373, 2026-09-14)
+
+**What broke.** The alpha.21 dry-run failed at `ci/build-linux.sh`: `ring` 0.17 could not find
+`x86_64-linux-musl-gcc`. `ring` is rustls' crypto provider (`mesimon-team` picks
+`features = ["std", "ring", "tls12"]`, T-332) and the daemon links `mesimon-team` unconditionally
+— the Teams doors are release-gated, the client is not — so the shipped binary now carries C and
+assembly. `build-linux.sh`'s header said the graph had no C and cross-linked with `rust-lld`
+alone; that was true at alpha.20 (no `ring` in that lock) and false since T-332, and nobody ran a
+release between. `cargo tree -i cc` confirms `ring` is the only C in the Linux graph.
+
+**Refuted.** Apple clang as the C compiler: its `stddef.h` does `#include_next` into a libc this
+Mac does not have, so it fails on both targets, hosted and `-ffreestanding`. A pure-Rust provider:
+`rustls-rustcrypto` is `0.0.2-alpha` — not on a release day; worth its own ticket if the "no C"
+property is wanted back. A macOS-only release: `install.sh`, `release.rs` and a unit test pin both
+Linux artifact names, so skipping them is script surgery, not less work. Feature-gating Teams out
+of release builds: `Principal::Remote` and `teamglue` run through the daemon; too large.
+
+**Built.** The release machine carries the prebuilt musl toolchains from
+`messense/macos-cross-toolchains` (`brew trust` the tap first — Homebrew refuses untrusted
+third-party taps now — then `brew install messense/macos-cross-toolchains/<target>`); they put
+`<arch>-linux-musl-gcc` and `-ar` on PATH, the exact names the `cc` crate looks for, so the build
+needs no `CC_*` env. `build-linux.sh` checks for each target's gcc with a `die` that prints the
+brew line, and its header tells the truth. Both targets build static; x86_64 as static-pie, as
+before. `ci/dup-deps.allow` was regenerated the same day for the crypto/TLS duplicates
+(`base64`, `chacha20`, `rand`, `rustix`, `sha2` and kin); `unicode-width` is unchanged, so D22/05
+is not touched.
+
+**Tests:** none — the gate is the release script, exercised by the dry-run.
