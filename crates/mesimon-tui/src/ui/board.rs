@@ -12,7 +12,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap;
 
-use crate::app::{App, InputPurpose, Mode};
+use crate::app::{App, AskTarget, InputPurpose, Mode};
 use crate::layout::{self, Slot};
 use crate::text::{edit_window, EditBuffer};
 
@@ -103,7 +103,9 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     // and stay on screen while the sentence is typed.
     let prompt_of = |t: &Ticket| -> Option<(&EditBuffer, bool)> {
         match editing {
-            Some((InputPurpose::Prompt { ticket, queued, .. }, buf)) if *ticket == t.id => {
+            Some((InputPurpose::Prompt { target: AskTarget::Ticket(ticket), queued, .. }, buf))
+                if *ticket == t.id =>
+            {
                 Some((buf, *queued))
             }
             _ => None,
@@ -291,9 +293,23 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     }
     lines.pop(); // no trailing blank after the last card
 
+    // The column's ask field (T-378) hangs UNDER THE HEADER the way a
+    // ticket's hangs under its card: the header is what names where the
+    // words go, so it stays whole and the field takes rows from the body.
+    let column_ask: Option<(&EditBuffer, bool)> = match editing {
+        Some((InputPurpose::Prompt { target: AskTarget::Column(n), queued, .. }, buf))
+            if n == name =>
+        {
+            Some((buf, *queued))
+        }
+        _ => None,
+    };
+    let column_ask_toggle = column_ask.is_some() && app.column_ask_queueable(name);
+    // Header, blank — plus the field and its delivery row while it is open.
+    let head_rows = 2 + usize::from(column_ask.is_some()) + usize::from(column_ask_toggle);
     // Keep two blank rows inside the column above the board's footer gap.
     // Overflow cues also reserve a row plus a blank next to visible cards.
-    let body_h = area.height.saturating_sub(4) as usize;
+    let body_h = area.height.saturating_sub(2 + head_rows as u16) as usize;
     let total = lines.len();
     let mut scroll =
         if is_cursor_col { app.scroll_row.get().min(total.saturating_sub(1)) } else { 0 };
@@ -464,7 +480,24 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let head_line =
         if is_cursor_col { Line::from(head).style(theme.selected_row()) } else { Line::from(head) };
 
-    let mut out: Vec<Line<'static>> = vec![head_line, Line::default()];
+    let mut out: Vec<Line<'static>> = vec![head_line];
+    let mut header_cursor_y: u16 = 0;
+    if let Some((buf, queued)) = column_ask {
+        // The empty field says what it is for in the key's own words.
+        let placeholder = match app.board.agent_provider {
+            mesimon_core::board::AgentProvider::ClaudeCode => "ask every claude",
+            mesimon_core::board::AgentProvider::Codex => "ask every codex",
+        };
+        let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
+        out.push(line);
+        header_cursor_x = Some(x_off);
+        header_cursor_y = 1;
+        if column_ask_toggle {
+            out.push(card::render_ask_mode(&ctx, queued));
+        }
+    }
+    out.push(Line::default());
+    debug_assert_eq!(out.len(), head_rows);
 
     // ---- body -------------------------------------------------------------
     if lines.is_empty() {
@@ -486,7 +519,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if bottom.is_some() {
             // Keep the cue at the viewport edge even when a tall hidden card
             // leaves unused rows after the final complete visible card.
-            out.resize(2 + body_h.saturating_sub(1), Line::default());
+            out.resize(head_rows + body_h.saturating_sub(1), Line::default());
             out.push(overflow_line(below, false));
         }
     }
@@ -500,7 +533,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         if line >= content_start && line < content_end {
             f.set_cursor_position((
                 area.x + x.min(area.width.saturating_sub(1)),
-                area.y + 2 + (top_cue_rows + line - content_start) as u16,
+                area.y + head_rows as u16 + (top_cue_rows + line - content_start) as u16,
             ));
         }
     }
@@ -513,7 +546,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     if let Some((cs, ce)) = cursor_range {
         let rect = (cs >= content_start && ce <= content_end).then(|| Rect {
             x: area.x,
-            y: area.y + 2 + (top_cue_rows + cs - content_start) as u16,
+            y: area.y + head_rows as u16 + (top_cue_rows + cs - content_start) as u16,
             width: area.width,
             height: (ce - cs) as u16,
         });
@@ -524,7 +557,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         app.cursor_card.set(None);
     }
     if let Some(x) = header_cursor_x {
-        f.set_cursor_position((area.x + x.min(area.width.saturating_sub(1)), area.y));
+        f.set_cursor_position((
+            area.x + x.min(area.width.saturating_sub(1)),
+            area.y + header_cursor_y,
+        ));
     }
 }
 

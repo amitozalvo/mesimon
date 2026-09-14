@@ -863,7 +863,9 @@ pub enum InputPurpose {
     /// `Ctx::composing` stays false and the input scope's `save` word
     /// becomes `send`.
     Prompt {
-        ticket: ulid::Ulid,
+        /// Who the words go to: one ticket's agent, or every agent seated
+        /// in a column (T-378, the field opened on a column header).
+        target: AskTarget,
         /// `Some` while `↑`/`↓` are walking [`App::prompt_history`]: where
         /// the walk is and the draft it stepped off, so `↓` past the newest
         /// ask puts the user's own words back. `None` is the ordinary field.
@@ -873,6 +875,15 @@ pub enum InputPurpose {
         /// cycles it; `now` every time the field opens fresh.
         queued: bool,
     },
+}
+
+/// The ask field's destination. A ticket's field hangs under its card and
+/// a column's under its header (T-378): in both the thing that names the
+/// destination stays whole on screen while the sentence is typed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AskTarget {
+    Ticket(ulid::Ulid),
+    Column(String),
 }
 
 /// The `^t` tail's state. Unlike the delete and archive chords this is a
@@ -2832,6 +2843,16 @@ impl App {
         self.shared_checkout(ticket)
     }
 
+    /// Can a column's ask wait (T-378)? When any seated agent in it shares
+    /// the checkout — those are the ones the queue serializes; a worktree
+    /// ticket is sent now either way, so a column of them has no toggle.
+    pub(crate) fn column_ask_queueable(&self, column: &str) -> bool {
+        self.board
+            .column_tickets(column)
+            .iter()
+            .any(|t| self.board.live_agent(t.id).is_some() && self.shared_checkout(t.id))
+    }
+
     /// Is a claude mid-turn in this ticket's checkout? The TUI's own read of
     /// `quiet::is_working`, and a HINT only (T-294): it decides whether a
     /// press that would START or WAKE a session stops to ask `now / queued`
@@ -3144,6 +3165,7 @@ impl App {
         // The column the dialog is on, else the cursor's (T-117).
         let col = self.dialog_column().or_else(|| self.cursor_column());
         let cs = col.map(|c| c.settings.clone()).unwrap_or_default();
+        let col_tickets = col.map(|c| self.board.column_tickets(&c.name)).unwrap_or_default();
         // The picker, when it is up: how many rows it has and which half of
         // the board it is over. Every `Scope::Search` binding gates on
         // `searching`, so a bare `Ctx` hints none of them.
@@ -3221,7 +3243,8 @@ impl App {
             col_reclaim: cs.reclaim,
             col_train_word: cs.train.word(),
             col_delete_armed,
-            col_live: col.map(|c| self.board.column_tickets(&c.name).len()).unwrap_or(0),
+            col_live: col_tickets.len(),
+            col_seats: col_tickets.iter().filter(|t| self.board.live_agent(t.id).is_some()).count(),
             can_repeat: self.repeat_target().is_some(),
             repeat_word: match self.last_action {
                 Some(LastAction::Move { .. }) => "move again",
@@ -3316,10 +3339,13 @@ impl App {
                 Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }
             ),
             prompt_history: !self.prompt_history.is_empty(),
-            ask_queueable: matches!(
-                self.mode,
-                Mode::Input { purpose: InputPurpose::Prompt { .. }, .. }
-            ) && subject.is_some_and(|t| self.ask_queueable(t)),
+            ask_queueable: match &self.mode {
+                Mode::Input { purpose: InputPurpose::Prompt { target, .. }, .. } => match target {
+                    AskTarget::Ticket(t) => self.ask_queueable(*t),
+                    AskTarget::Column(name) => self.column_ask_queueable(name),
+                },
+                _ => false,
+            },
             checkout_busy: subject.is_some_and(|t| self.checkout_busy(t)),
             ask_queued: matches!(
                 self.mode,
@@ -4344,14 +4370,32 @@ impl App {
             // already there, and a person reaching for a working agent may
             // well mean interrupt.
             Verb::Prompt => {
-                if let Some(id) = self.subject() {
+                // On a column header (T-378) the field opens under the
+                // header and the words go to every seated agent in the
+                // column. It opens at `queued` where any of them shares the
+                // checkout: a column asked at once is the incident the queue
+                // exists for, so waiting is the default and `now` the press
+                // away. A worktree-only column has nothing to wait for.
+                if ctx.col_header {
+                    if let Some(name) = self.cursor_column().map(|c| c.name.clone()) {
+                        let queued = self.column_ask_queueable(&name);
+                        self.mode = Mode::Input {
+                            purpose: InputPurpose::Prompt {
+                                target: AskTarget::Column(name),
+                                walk: None,
+                                queued,
+                            },
+                            buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
+                        };
+                    }
+                } else if let Some(id) = self.subject() {
                     if ctx.ticket_queued {
                         // An ask is waiting: the field reopens on its words,
                         // at `queued`. Enter re-queues, a blank Enter drops.
                         let text =
                             self.pending_of(id).and_then(|p| p.text.clone()).unwrap_or_default();
                         self.mode = Mode::Input {
-                            purpose: InputPurpose::Prompt { ticket: id, walk: None, queued: true },
+                            purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued: true },
                             buffer: EditBuffer::from_text(
                                 text,
                                 mesimon_core::command::PROMPT_MAX_BYTES,
@@ -4360,12 +4404,12 @@ impl App {
                     } else if ctx.ticket_has_agent {
                         let queued = !ctx.ticket_promptable && ctx.checkout_busy;
                         self.mode = Mode::Input {
-                            purpose: InputPurpose::Prompt { ticket: id, walk: None, queued },
+                            purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
                     } else if ctx.checkout_busy {
                         self.mode = Mode::Input {
-                            purpose: InputPurpose::Prompt { ticket: id, walk: None, queued: true },
+                            purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued: true },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
                         };
                     } else {
@@ -7785,7 +7829,10 @@ impl App {
         // that opened the field, finished (T-294): start claude on the
         // title, which is what a quiet checkout does with no field at all.
         if title.is_empty() {
-            if let InputPurpose::Prompt { ticket, queued, .. } = purpose {
+            // A blank Enter on a column's field does nothing (T-378): there
+            // is no waiting entry to drop and no seat to start.
+            if let InputPurpose::Prompt { target: AskTarget::Ticket(ticket), queued, .. } = purpose
+            {
                 // An EMPTY seat can commit a blank field: there the prompt is
                 // the ticket's own title and brief, which is what the press
                 // does with no field at all on a quiet checkout (T-294).
@@ -7904,12 +7951,16 @@ impl App {
     /// ticket's own title and brief, which is what the press does with no
     /// field at all on a quiet checkout.
     fn commit_prompt(&mut self, purpose: InputPurpose, text: String) -> Result<()> {
-        let InputPurpose::Prompt { ticket, queued, .. } = purpose else {
+        let InputPurpose::Prompt { target, queued, .. } = purpose else {
             return Ok(());
         };
         if !text.is_empty() {
             self.remember_prompt(&text);
         }
+        let ticket = match target {
+            AskTarget::Ticket(ticket) => ticket,
+            AskTarget::Column(name) => return self.commit_column_prompt(name, text, queued),
+        };
         let had = self.ticket_queued(ticket);
         // Which seat the words are bound for, asked BEFORE they travel: the
         // daemon's answer comes back as a `Response` that cannot tell a
@@ -7951,6 +8002,38 @@ impl App {
             // the words ride the parked wake.
             Response::Provisioning => {
                 format!("provisioning worktree ∙ {word} wakes when ready ∙ asked")
+            }
+            Response::Err { message } => message,
+            _ => String::new(),
+        };
+        self.refresh()
+    }
+
+    /// The column field's second half (T-378): one command, one receipt,
+    /// and a status that reads the receipt out by seat — `asked 3 ∙ queued
+    /// 2 ∙ 1 without claude`. The same caution as the single ask: "asked"
+    /// means the words went into a box and Enter was pressed; whether each
+    /// agent took them is each card's to say.
+    fn commit_column_prompt(&mut self, column: String, text: String, queued: bool) -> Result<()> {
+        let word = keymap::agent_word(self.board.agent_provider);
+        self.status = match self.req(Command::PromptColumn { column, text, queued }) {
+            Response::Asked { sent, woke, queued, skipped, failed } => {
+                let parts: Vec<String> = [
+                    (sent, format!("asked {sent}")),
+                    (woke, format!("woke {woke}")),
+                    (queued, format!("queued {queued}")),
+                    (skipped, format!("{skipped} without {word}")),
+                    (failed, format!("{failed} failed")),
+                ]
+                .into_iter()
+                .filter(|(n, _)| *n > 0)
+                .map(|(_, s)| s)
+                .collect();
+                if parts.is_empty() {
+                    "nothing to ask".into()
+                } else {
+                    parts.join(" ∙ ")
+                }
             }
             Response::Err { message } => message,
             _ => String::new(),
@@ -8775,6 +8858,29 @@ pub(crate) mod test_support {
                 // (2026-09-04), or none at all, where it starts one (T-294).
                 // Queued, each parks and the daemon names who holds the
                 // checkout; sent now, each answers the way the daemon does.
+                // The column's receipt (T-378), by seat: a pane is asked, a
+                // parked one woken; queued, they all park.
+                Command::PromptColumn { column, queued, .. } => {
+                    let (mut sent, mut woke, mut parked, mut skipped) = (0, 0, 0, 0);
+                    for t in self.board.column_tickets(&column) {
+                        if self.board.pane_target(t.id).is_some() {
+                            if queued {
+                                parked += 1;
+                            } else {
+                                sent += 1;
+                            }
+                        } else if self.board.live_agent(t.id).is_some() {
+                            if queued {
+                                parked += 1;
+                            } else {
+                                woke += 1;
+                            }
+                        } else {
+                            skipped += 1;
+                        }
+                    }
+                    return Ok(Response::Asked { sent, woke, queued: parked, skipped, failed: 0 });
+                }
                 Command::PromptSession { ticket, queued, .. } => {
                     let seat = if self.board.pane_target(ticket).is_some() {
                         "ask"
@@ -11036,7 +11142,11 @@ mod tests {
         use mesimon_core::command::PROMPT_MAX_BYTES;
         let mut app = app_three_columns();
         app.mode = Mode::Input {
-            purpose: InputPurpose::Prompt { ticket: ulid::Ulid(1), walk: None, queued: false },
+            purpose: InputPurpose::Prompt {
+                target: AskTarget::Ticket(ulid::Ulid(1)),
+                walk: None,
+                queued: false,
+            },
             buffer: EditBuffer::new(PROMPT_MAX_BYTES),
         };
         app.on_paste(&"x".repeat(PROMPT_MAX_BYTES + 100)).unwrap();
@@ -11596,7 +11706,7 @@ mod tests {
         // …and it is the ticket under the cursor that gets asked.
         assert!(matches!(
             app.mode,
-            Mode::Input { purpose: InputPurpose::Prompt { ticket, .. }, .. } if ticket == ulid::Ulid(1)
+            Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Ticket(ticket), .. }, .. } if ticket == ulid::Ulid(1)
         ));
         for c in "run the tests".chars() {
             press(&mut app, c);
@@ -11768,6 +11878,114 @@ mod tests {
         assert!(app.ctx().ask_queued);
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(!app.ctx().ask_queued);
+    }
+
+    /// T-378: the same key one row up. On a column header Shift+Enter opens
+    /// the field under the header, and Enter puts the words in front of
+    /// every agent seated in the column with one command — the cursor never
+    /// leaves the header, and the status reads the receipt out by seat.
+    #[test]
+    fn shift_enter_on_a_header_asks_every_agent_in_the_column() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        press(&mut app, 'k');
+        assert!(app.on_column_header());
+        assert_eq!(app.ctx().col_seats, 1, "ticket 1 has the claude; ticket 2 has nobody");
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(
+            matches!(
+                &app.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Column(n), .. }, .. }
+                    if n == "todo"
+            ),
+            "the press opens the column's field: {:?}",
+            app.mode
+        );
+        assert!(!sent_contains(&sent, "Prompt"), "opening the field sends nothing");
+        for c in "run the tests".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "PromptColumn"), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "column: \"todo\""), "{:?}", sent.borrow());
+        assert!(sent_contains(&sent, "run the tests"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "PromptSession"), "one command, not one per ticket");
+        assert_eq!(app.mode, Mode::Normal, "the field closed");
+        assert!(app.on_column_header(), "the cursor stayed on the header");
+        assert_eq!(app.screen, Screen::Board);
+        // Ticket 1 shares the checkout, so the field opened at `queued` and
+        // the fake parked it; ticket 2 has no seat and is counted as such.
+        assert_eq!(app.status, "queued 1 ∙ 1 without claude");
+        // The words joined the history the single ask keeps.
+        assert_eq!(app.prompt_history, vec!["run the tests".to_string()]);
+    }
+
+    /// The column key reaches agents that exist and starts none: a header
+    /// over empty seats offers nothing, and the press is inert.
+    #[test]
+    fn a_header_with_no_seats_does_not_open_the_column_ask() {
+        let mut app = app_three_columns();
+        app.rich_keys = true;
+        press(&mut app, 'k');
+        assert!(app.on_column_header());
+        assert_eq!(app.ctx().col_seats, 0);
+        assert_eq!(keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()), None);
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert_eq!(app.mode, Mode::Normal, "nothing to ask, nothing opened");
+    }
+
+    /// A column with a shared-checkout seat opens at `queued` — the batch is
+    /// the five-claudes incident by construction — and Shift+Tab flips it to
+    /// now; a worktree-only column has nothing to wait for and opens at now
+    /// with the toggle inert.
+    #[test]
+    fn the_column_ask_opens_queued_on_a_shared_checkout_and_shift_tab_flips_it() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(app.ctx().ask_queueable);
+        assert!(app.ctx().ask_queued, "queued by default where the checkout is shared");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued);
+        for c in "commit it".chars() {
+            press(&mut app, c);
+        }
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "asked 1 ∙ 1 without claude");
+
+        let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.board.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queueable, "a worktree column has no toggle");
+        assert!(!app.ctx().ask_queued, "and opens at now");
+        app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued, "the key did nothing");
+    }
+
+    /// A blank Enter on the column's field sends nothing: there is no
+    /// waiting entry to drop and no seat to start. Esc leaves the same way.
+    #[test]
+    fn a_blank_enter_on_the_column_ask_sends_nothing() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!sent_contains(&sent, "Prompt"), "{:?}", sent.borrow());
+        assert!(app.status.is_empty(), "{}", app.status);
+        // And the history walk is the same field's: `↑` recalls the last ask.
+        app.prompt_history = vec!["rebase onto main".into()];
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "rebase onto main"),
+            other => panic!("{other:?}"),
+        }
     }
 
     /// A worktree ticket's checkout is its own: nothing to wait for, so the

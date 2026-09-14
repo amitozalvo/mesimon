@@ -249,6 +249,26 @@ pub enum Command {
     DropQueuedAsk {
         ticket: ulid::Ulid,
     },
+    /// The board's Shift+Enter on a COLUMN HEADER (T-378): the user's words,
+    /// once, in front of every agent seated in that column — a pane is
+    /// pasted into, a parked agent is woken with the words held for its
+    /// first tick, and a ticket with no agent is skipped and counted. This
+    /// command never starts a session: a column is not a place to spawn N
+    /// claudes from one key. `PromptSession` per ticket, with one receipt.
+    ///
+    /// Promise 3 holds as it does there: `sanitize_prompt` runs once, only
+    /// ever removes, and nothing is appended per ticket.
+    PromptColumn {
+        column: String,
+        text: String,
+        /// Park each shared-checkout ticket's words in the ask queue instead
+        /// of pasting them all at once — the default the field opens at,
+        /// because five claudes asked to commit in one checkout at the same
+        /// moment is the incident the queue exists for. Worktree tickets are
+        /// sent now either way; their checkout is their own.
+        #[serde(default)]
+        queued: bool,
+    },
     /// One note's body, read whole. Bodies never ride the snapshot (a note
     /// can be 32 KiB and the board is cloned on every event), so the ticket
     /// page asks for the one it is showing.
@@ -826,6 +846,10 @@ impl Command {
             | AdoptTerminal { ticket }
             | WriteNote { ticket, .. }
             | NoteToAgent { ticket, .. } => m(Mutate, true, Some(*ticket)),
+            // A column's worth of tickets: `subject` names one, so the
+            // handler writes the feed itself — a line per ticket delivered,
+            // the way the ask queue does.
+            PromptColumn { .. } => m(Mutate, false, None),
             AttachExternal { ticket, .. } | ResumeExternal { ticket, .. } => {
                 m(Mutate, true, *ticket)
             }
@@ -899,6 +923,22 @@ mod meta_tests {
         let id = ulid::Ulid::new();
         let m = Command::PromptSession { ticket: id, text: "x".into(), queued: false }.meta();
         assert_eq!(m, Meta { action: Action::Mutate, logged: true, subject: Some(id) });
+        // A column's ask names no single ticket, so the handler logs per
+        // ticket itself (T-378) and the chokepoint logs nothing.
+        let m =
+            Command::PromptColumn { column: "TODO".into(), text: "x".into(), queued: true }.meta();
+        assert_eq!(m, Meta { action: Action::Mutate, logged: false, subject: None });
+    }
+
+    /// The column ask's receipt from a daemon that knows fewer of its
+    /// fields still parses: every count defaults to zero (T-378).
+    #[test]
+    fn a_bare_asked_receipt_reads_as_all_zero() {
+        let r: Response = serde_json::from_str(r#"{"resp":"asked"}"#).unwrap();
+        let Response::Asked { sent, woke, queued, skipped, failed } = r else {
+            panic!("not asked: {r:?}");
+        };
+        assert_eq!((sent, woke, queued, skipped, failed), (0, 0, 0, 0, 0));
     }
 }
 
@@ -974,6 +1014,23 @@ pub enum Response {
     Archived {
         archived: usize,
         skipped: usize,
+    },
+    /// PromptColumn's receipt (T-378), per seat: pasted into a pane now,
+    /// a parked agent woken with the words held, parked in the ask queue,
+    /// skipped for want of an agent, or refused on the way (a paste that
+    /// failed, a wake the PTY budget turned down). Every field defaulted so
+    /// a client one build behind still reads the line.
+    Asked {
+        #[serde(default)]
+        sent: usize,
+        #[serde(default)]
+        woke: usize,
+        #[serde(default)]
+        queued: usize,
+        #[serde(default)]
+        skipped: usize,
+        #[serde(default)]
+        failed: usize,
     },
     Board {
         board: Board,

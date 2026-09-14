@@ -598,6 +598,8 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // ticket id, so an agent could not even address its own without
         // guessing one — and it must not address its own either.
         | Command::PromptSession { .. }
+        // N input boxes at once (T-378): the same thing, a column wide.
+        | Command::PromptColumn { .. }
         | Command::DropQueuedAsk { .. }
         | Command::SetAutomation { .. }
         // The same delivery with mesimon's words: still one session's turn
@@ -1195,6 +1197,11 @@ mod tests {
             // One agent steering another agent's turn is the sharpest thing
             // the never-tier exists to stop.
             Command::PromptSession { ticket: t, text: "do the thing".into(), queued: false },
+            Command::PromptColumn {
+                column: "TODO".into(),
+                text: "do the thing".into(),
+                queued: true,
+            },
             Command::DropQueuedAsk { ticket: t },
             Command::SetAutomation { merge_train: true, merge_notice: true },
             Command::NoteToAgent { ticket: t, note: t },

@@ -10662,3 +10662,54 @@ before. `ci/dup-deps.allow` was regenerated the same day for the crypto/TLS dupl
 is not touched.
 
 **Tests:** none — the gate is the release script, exercised by the dry-run.
+
+## Shift+Enter on a column header asks every agent in it (T-378, 2026-09-14)
+
+**The ask.** "stand on column — shift+enter to queue a message to all." The 2026-09-01 block
+("Shift+Enter asks the agent from the board") closed with the field being deliberately per-card
+and named a wider home "a second decision, not a free extension". This is that decision, taken.
+
+**What it is.** With the cursor on a column header (T-117's position, `Ctx::col_header`) and at
+least one agent seated in the column (`Ctx::col_seats`, paned or parked), Shift+Enter opens the
+same one-line field, hanging UNDER THE HEADER — the header is what names where the words go, so it
+stays whole, the way a card does under its own field — and Enter sends one wire command,
+`PromptColumn { column, text, queued }`. The daemon walks `column_tickets` in board order and
+puts the words in front of every seated agent through the one road (`deliver`): a pane is pasted
+into, a parked agent is woken with the words held for its first tick. A ticket with no agent is
+**skipped and counted, never started** — a column is not a place to spawn N claudes from one key,
+and that refusal is what keeps the plural the same idea as the singular
+(`shift_enter_asks_claude_at_every_stage` argues it; `a_header_offers_exactly_the_column_verbs`
+pins that the header's verb list is unchanged because the binding was widened, not doubled —
+`no_key_bound_twice_in_a_chain` forbids a second `ShiftEnter` in `BOARD`). The hint is `ask every
+claude` / `ask every codex` on the board's default provider; the receipt `Response::Asked { sent,
+woke, queued, skipped, failed }` becomes the status `asked 3 ∙ queued 2 ∙ 1 without claude`.
+
+**Queued by default where the checkout is shared.** A column asked at once is the five-claudes
+incident (2026-09-04) by construction, so the field opens at `queued` when any seated agent in
+the column shares the checkout, and Shift+Tab flips it to `now` — the single ask's toggle, the
+opposite default. Queued, each shared-checkout seat is parked through `park_ask` (the checks and
+the push-or-replace split out of `enqueue_ask`, which is now `park_ask` + one drain + the receipt)
+and the queue is drained ONCE with one broadcast, so the column goes one agent at a time as the
+checkout quiets, in board order (T-263). A worktree ticket's checkout is its own and is sent now
+either way, as `enqueue_ask` always refused it; a column of them opens at `now` with no toggle
+row. A column ask replaces a ticket's waiting ask in place and a send-now drops it — the single
+ask's own rules, per ticket.
+
+**Wiring.** `Command::meta` says `Mutate, logged: false, subject: None`: the subject is single and
+so is a feed line, so the handler logs `prompt_column` once and then `prompt_column_sent` /
+`_woke` / `_failed` per ticket (parked seats keep `queued_ask` / `queued_wake`). The chokepoint
+hears `Resource::Column`. `agent_allows` denies it beside `PromptSession` (N input boxes at
+once). `viewer_edit` names it explicitly, since `subject: None` would otherwise let a viewer by.
+The TUI's `InputPurpose::Prompt` gained `target: AskTarget::{Ticket, Column}` in place of the
+ticket id, so the field's history walk, paste, mode word and Shift+Tab are the same code;
+`draw_column` computes `head_rows` (header, field, delivery row, blank) where four places hard-
+coded the two.
+
+**Not done.** The worktree-sends-now case has no e2e of its own (it would need a provisioned
+worktree); it is covered by `enqueue_ask`'s refusal and the TUI's inert toggle. A mixed
+claude/codex column is hinted with the board's default word; the receipt counts seats.
+
+Tests: keymap validators above; `shift_enter_on_a_header_asks_every_agent_in_the_column` and
+three siblings in `app.rs`; goldens `board_column_prompt_120x30` / `_now_`; `column_ask_e2e`
+(now: 1 sent, 1 woke, 1 skipped, nothing started, the woken pane reads on `SessionStart`;
+queued: 2 parked in order, drained on the holder's settle; unknown column and blank text refused).

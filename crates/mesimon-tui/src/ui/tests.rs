@@ -3279,7 +3279,11 @@ fn golden_prompt_field_120() {
         buffer.insert(c);
     }
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+        },
         buffer,
     };
     let lines = render(&app, 120, 30);
@@ -3312,13 +3316,82 @@ fn golden_prompt_field_queued_120() {
         buffer.insert(c);
     }
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: true },
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: true,
+        },
         buffer,
     };
     let lines = render(&app, 120, 30);
     assert!(lines.iter().any(|l| l.contains("queued  shift+tab")), "{}", lines.join("\n"));
     assert!(lines.last().is_some_and(|l| l.contains("enter queue")), "{:?}", lines.last());
     golden("board_prompt_queued_120x30", &render(&app, 120, 30));
+}
+
+/// T-378: the same field on a COLUMN HEADER. The header stays whole and the
+/// field hangs under it — the header is what names where the words go —
+/// with the delivery row at `queued` under that, and every card below,
+/// untouched: they are who is being asked.
+#[test]
+fn golden_column_prompt_field_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    // "in progress": T-3 and T-4 both carry a running claude.
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    assert_eq!(app.ctx().col_seats, 2);
+    let mut buffer = crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES);
+    for c in "commit what you have".chars() {
+        buffer.insert(c);
+    }
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Column("in progress".into()),
+            walk: None,
+            queued: true,
+        },
+        buffer,
+    };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("commit what you have")), "{}", lines.join("\n"));
+    assert!(lines.iter().any(|l| l.contains("queued  shift+tab")), "{}", lines.join("\n"));
+    for card in ["Fix OSC-11", "Adopt drawer"] {
+        assert!(
+            lines.iter().any(|l| l.contains(card)),
+            "every card survives the field — they are who is asked:\n{}",
+            lines.join("\n")
+        );
+    }
+    let field = lines.iter().position(|l| l.contains("commit what you have")).unwrap();
+    let first_card = lines.iter().position(|l| l.contains("Fix OSC-11")).unwrap();
+    assert!(field < first_card, "the field hangs under the header, above the cards");
+    assert!(lines.last().is_some_and(|l| l.contains("ASK")), "{:?}", lines.last());
+    assert!(lines.last().is_some_and(|l| l.contains("enter queue")), "{:?}", lines.last());
+    golden("board_column_prompt_120x30", &render(&app, 120, 30));
+}
+
+/// The same field empty and at `now`: the placeholder says what the key is
+/// for in the key's own words, and the hardware cursor sits on it.
+#[test]
+fn golden_column_prompt_field_now_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    app.cursor_col = 1;
+    app.cursor_row = None;
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Column("in progress".into()),
+            walk: None,
+            queued: false,
+        },
+        buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
+    };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("ask every claude")), "{}", lines.join("\n"));
+    assert!(lines.iter().any(|l| l.contains("now  shift+tab")), "{}", lines.join("\n"));
+    assert!(lines.last().is_some_and(|l| l.contains("enter send")), "{:?}", lines.last());
+    golden("board_column_prompt_now_120x30", &render(&app, 120, 30));
 }
 
 /// T-294: the same field on a ticket with NO claude, which is where the press
@@ -3332,7 +3405,11 @@ fn golden_prompt_field_start_120() {
     app.cursor_col = 0;
     app.cursor_row = Some(0);
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(1), walk: None, queued: true },
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(1)),
+            walk: None,
+            queued: true,
+        },
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
     let lines = render(&app, 120, 30);
@@ -3677,7 +3754,11 @@ fn test_an_empty_prompt_field_names_itself() {
     app.cursor_col = 1;
     app.cursor_row = Some(0);
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+        },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     let lines = render(&app, 120, 30);
@@ -3712,7 +3793,11 @@ fn test_an_emptied_queued_ask_says_enter_drops() {
         in_flight: false,
     }];
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: true },
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: true,
+        },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     // The narrowest board there is: every column at MIN_COL.
@@ -3741,7 +3826,11 @@ fn test_the_prompt_field_moves_no_text() {
     app.cursor_row = Some(0);
     let before = render(&app, 120, 30);
     app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt { ticket: ulid_n(3), walk: None, queued: false },
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(3)),
+            walk: None,
+            queued: false,
+        },
         buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
     };
     let after = render(&app, 120, 30);
@@ -5449,7 +5538,7 @@ fn test_no_banned_sgr() {
                 p.cursor_col = 1;
                 p.mode = Mode::Input {
                     purpose: crate::app::InputPurpose::Prompt {
-                        ticket: ulid_n(3),
+                        target: crate::app::AskTarget::Ticket(ulid_n(3)),
                         walk: None,
                         queued: false,
                     },
@@ -5725,7 +5814,7 @@ fn test_no_drawn_structure() {
             }
             p.mode = Mode::Input {
                 purpose: crate::app::InputPurpose::Prompt {
-                    ticket: ulid_n(3),
+                    target: crate::app::AskTarget::Ticket(ulid_n(3)),
                     walk: None,
                     queued: false,
                 },
@@ -6582,7 +6671,11 @@ fn test_overflow_keeps_a_tall_cards_prompt_visible() {
     app.cursor_row = Some(6);
     app.peek = true;
     app.mode = Mode::Input {
-        purpose: InputPurpose::Prompt { ticket: ulid_n(7), walk: None, queued: false },
+        purpose: InputPurpose::Prompt {
+            target: crate::app::AskTarget::Ticket(ulid_n(7)),
+            walk: None,
+            queued: false,
+        },
         buffer: crate::text::EditBuffer::from_text("continue here".into(), 100),
     };
     for width in [60, 120] {

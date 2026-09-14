@@ -1369,6 +1369,8 @@ fn viewer_edit(command: &Command) -> bool {
             | Command::ImportTicket { .. }
             | Command::MoveTicket { .. }
             | Command::ArchiveAll
+            // Names no single ticket (T-378), so `meta` alone would let it by.
+            | Command::PromptColumn { .. }
     ) {
         return true;
     }

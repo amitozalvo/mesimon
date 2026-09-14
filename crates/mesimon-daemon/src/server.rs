@@ -1351,6 +1351,9 @@ impl Daemon {
                 Some(id) => Resource::Session { id },
                 None => Resource::Board,
             },
+            // A column's worth of panes (T-378): the column is the resource
+            // the chokepoint hears, the way an import into one is.
+            Command::PromptColumn { column, .. } => Resource::Column { name: column.clone() },
             // A note is the ticket's: the first local commands to name the
             // precise resource, which is what `authorize` was built to hear.
             Command::DuplicateTicket { id: ticket }
@@ -1440,6 +1443,9 @@ impl Daemon {
             }
             Command::PromptSession { ticket, text, queued } => {
                 self.prompt_session(ticket, text, queued)
+            }
+            Command::PromptColumn { column, text, queued } => {
+                self.prompt_column(&column, text, queued)
             }
             Command::DropQueuedAsk { ticket } => self.drop_queued_ask(ticket),
             Command::SetAutomation { merge_train, merge_notice } => {
@@ -5411,6 +5417,89 @@ impl Daemon {
         self.deliver(ticket, seat, text)
     }
 
+    /// The board's Shift+Enter on a column header (T-378): the user's words
+    /// in front of every agent SEATED in the column — `prompt_session` per
+    /// ticket, on the one road (`deliver`), with one receipt. A ticket with
+    /// no agent is skipped and counted, never started: a column is not a
+    /// place to spawn N claudes from one key. With `queued`, each
+    /// shared-checkout ticket's words are parked in the ask queue and the
+    /// queue drained ONCE, so they go one at a time as the checkout goes
+    /// quiet — a column asked to commit is the five-claudes incident by
+    /// construction; a worktree ticket's checkout is its own and it is sent
+    /// now either way. Sending now over a waiting ask drops it, as the
+    /// single ask does. The words are sanitized once; per ticket nothing is
+    /// added (promise 3). One feed line for the gesture, then one per seat.
+    fn prompt_column(&mut self, column: &str, text: String, queued: bool) -> Response {
+        if self.board.column(column).is_none() {
+            return Response::Err { message: format!("no such column: {column}") };
+        }
+        let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
+            return Response::Err { message: "nothing to send".into() };
+        };
+        let ids: Vec<ulid::Ulid> = self.board.column_tickets(column).iter().map(|t| t.id).collect();
+        self.feed.board("local", "prompt_column", None);
+        let (mut sent, mut woke, mut skipped, mut failed) = (0, 0, 0, 0);
+        let mut parked: Vec<(ulid::Ulid, bool)> = Vec::new();
+        for ticket in ids {
+            let external = self
+                .board
+                .live_agent(ticket)
+                .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty());
+            let seat = self.seat_of(ticket);
+            if external || matches!(seat, QueuedSeat::Start(_)) {
+                skipped += 1;
+                continue;
+            }
+            let wakes = matches!(seat, QueuedSeat::Wake(_));
+            if queued && self.shared_checkout(ticket) {
+                match self.park_ask(ticket, seat, text.clone()) {
+                    Ok(()) => parked.push((ticket, wakes)),
+                    Err(message) => {
+                        eprintln!("mesimon: column ask could not park: {message}");
+                        failed += 1;
+                    }
+                }
+                continue;
+            }
+            self.forget_queued(ticket, "queued_ask_dropped", "local");
+            match self.deliver(ticket, seat, text.clone()) {
+                Response::Err { message } => {
+                    eprintln!("mesimon: column ask failed: {message}");
+                    self.feed.board("local", "prompt_column_failed", Some(ticket));
+                    failed += 1;
+                }
+                _ if wakes => {
+                    self.feed.board("local", "prompt_column_woke", Some(ticket));
+                    woke += 1;
+                }
+                _ => {
+                    self.feed.board("local", "prompt_column_sent", Some(ticket));
+                    sent += 1;
+                }
+            }
+        }
+        let mut still_queued = 0;
+        if !parked.is_empty() {
+            self.drain_queue(now_ms());
+            self.broadcast();
+            // The drain sent at most one per quiet checkout; the receipt
+            // reads what it did the way `enqueue_ask` does — the in-flight
+            // marker for a paste, the record for a wake.
+            for (ticket, wakes) in parked {
+                if self.queued.iter().any(|q| q.ticket == ticket) {
+                    still_queued += 1;
+                } else if self.inflight.contains_key(&ticket) {
+                    sent += 1;
+                } else if wakes && self.board.pane_target(ticket).is_some() {
+                    woke += 1;
+                } else {
+                    failed += 1;
+                }
+            }
+        }
+        Response::Asked { sent, woke, queued: still_queued, skipped, failed }
+    }
+
     /// Where the ticket's claude is, for a prompt: in a pane, parked, or not
     /// there at all. The same three answers `prompt_session` routes on and
     /// `drain_queue` re-checks at delivery — one function, so a queued ask
@@ -5532,18 +5621,49 @@ impl Daemon {
     /// the words in place, keeping the turn), then a drain: a checkout
     /// already quiet sends at once.
     fn enqueue_ask(&mut self, ticket: ulid::Ulid, seat: QueuedSeat, text: String) -> Response {
+        let word = seat.word();
+        if let Err(message) = self.park_ask(ticket, seat, text) {
+            return Response::Err { message };
+        }
+        self.drain_queue(now_ms());
+        self.broadcast();
+        if self.queued.iter().any(|q| q.ticket == ticket) {
+            let behind = self.ask_waits_on(ticket);
+            Response::Queued { behind }
+        } else if self.inflight.contains_key(&ticket) {
+            Response::Ok
+        } else if word != "ask" {
+            // A start or a wake delivered on the spot: it holds the checkout
+            // through its own record (`Spawning` + an owed Enter), so there
+            // is no in-flight marker to look for — the session is the receipt.
+            match self.board.live_agent(ticket) {
+                Some(rec) => Response::Spawned { id: rec.id, fresh: false },
+                None => Response::Err { message: "could not deliver".into() },
+            }
+        } else {
+            Response::Err { message: "could not deliver".into() }
+        }
+    }
+
+    /// Put one ask in the queue without draining it: the checks, the
+    /// push-or-replace and its feed line, and nothing else — so a column's
+    /// worth of asks (T-378) can be parked in one pass and drained once,
+    /// with one broadcast, instead of N of each. `enqueue_ask` is this plus
+    /// the drain and the receipt.
+    fn park_ask(
+        &mut self,
+        ticket: ulid::Ulid,
+        seat: QueuedSeat,
+        text: String,
+    ) -> Result<(), String> {
         let Some(t) = self.board.ticket(ticket) else {
-            return no_such_ticket();
+            return Err("no such ticket".into());
         };
         if t.is_archived() {
-            return Response::Err { message: "ticket archived — restore it first".into() };
+            return Err("ticket archived — restore it first".into());
         }
-        let shared = t.workspace_strategy() == WorkspaceStrategy::SharedCheckout
-            && !self.worktrees.contains_key(&ticket);
-        if !shared {
-            return Response::Err {
-                message: "a worktree ticket's checkout is its own — send it now".into(),
-            };
+        if !self.shared_checkout(ticket) {
+            return Err("a worktree ticket's checkout is its own — send it now".into());
         }
         // The checkout the delivery will land in: the target's own cwd where
         // there is a session, else the shared root a spawn would resolve to
@@ -5552,7 +5672,7 @@ impl Daemon {
             QueuedSeat::Pane(id) | QueuedSeat::Wake(id) => {
                 match self.board.sessions.iter().find(|s| s.id == *id) {
                     Some(rec) => rec.cwd.clone(),
-                    None => return Response::Err { message: "no such session".into() },
+                    None => return Err("no such session".into()),
                 }
             }
             QueuedSeat::Start(_) => self.paths.repo_root.display().to_string(),
@@ -5575,24 +5695,17 @@ impl Daemon {
             self.queued.push(QueuedAsk { ticket, seat, cwd, text, queued_at: now });
             self.feed.board("local", &format!("queued_{word}"), Some(ticket));
         }
-        self.drain_queue(now);
-        self.broadcast();
-        if self.queued.iter().any(|q| q.ticket == ticket) {
-            let behind = self.ask_waits_on(ticket);
-            Response::Queued { behind }
-        } else if self.inflight.contains_key(&ticket) {
-            Response::Ok
-        } else if word != "ask" {
-            // A start or a wake delivered on the spot: it holds the checkout
-            // through its own record (`Spawning` + an owed Enter), so there
-            // is no in-flight marker to look for — the session is the receipt.
-            match self.board.live_agent(ticket) {
-                Some(rec) => Response::Spawned { id: rec.id, fresh: false },
-                None => Response::Err { message: "could not deliver".into() },
-            }
-        } else {
-            Response::Err { message: "could not deliver".into() }
-        }
+        Ok(())
+    }
+
+    /// Is the ticket's checkout the shared one — `SharedCheckout` by
+    /// strategy and no worktree bound to it? The gate the ask queue stands
+    /// on: a worktree's checkout is its own, and nothing there waits.
+    fn shared_checkout(&self, ticket: ulid::Ulid) -> bool {
+        self.board.ticket(ticket).is_some_and(|t| {
+            t.workspace_strategy() == WorkspaceStrategy::SharedCheckout
+                && !self.worktrees.contains_key(&ticket)
+        })
     }
 
     /// The queued asks in BOARD order — column order, then row order, the
