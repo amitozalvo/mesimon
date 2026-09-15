@@ -218,6 +218,12 @@ pub enum SharingRow {
     Name,
     SignIn,
     SignOut,
+    ControlEnable,
+    ControlDisable,
+    ControlPair,
+    ControlStatus,
+    ControlOrigin,
+    ControlDevice(String),
     Publish,
     /// The notes switch, before the board is published.
     Notes,
@@ -1047,6 +1053,9 @@ pub struct App {
     /// Board sharing (T-215): who this device is, whether the board is
     /// shared, how the sync stands. Read by the team screens.
     pub team: mesimon_core::team::TeamInfo,
+    pub control: mesimon_core::mesophon::Info,
+    pub mesophon_dialog: bool,
+    pub mesophon_available: bool,
     pub theme: Theme,
     /// The drawer row whose resume was refused as running-elsewhere — a
     /// second R on the same row sends the confirm override.
@@ -1406,6 +1415,9 @@ impl App {
             claude_md: snap.claude_md,
             claude_default_mode: snap.claude_default_mode,
             team: snap.team,
+            control: snap.mesophon,
+            mesophon_dialog: false,
+            mesophon_available: false,
             theme,
             resume_refused: None,
             merge_armed: None,
@@ -1688,6 +1700,7 @@ impl App {
             claude_default_mode,
             status_top,
             team,
+            mesophon,
             terminals,
         } = snap;
         let was = self.cursor_column().map(|c| c.name.clone());
@@ -1710,6 +1723,7 @@ impl App {
         self.claude_default_mode = claude_default_mode;
         self.status_top = status_top;
         self.team = team;
+        self.control = mesophon;
         self.terminals = terminals;
         self.seed_team_drafts();
         self.follow_ticket(followed);
@@ -3496,6 +3510,7 @@ impl App {
                 .unwrap_or_default(),
             team_boards: self.team.boards.len(),
             teams: self.teams,
+            mesophon: self.mesophon_available,
         };
         // The sharing dialog's Enter reads its word off the row under the
         // cursor, which only the mode knows.
@@ -4215,7 +4230,8 @@ impl App {
             // ---- board sharing (T-334, T-335) ------------------------------
             // One dialog; it opens on the first row that matters: the relay
             // while there is no identity, this board's first row otherwise.
-            Verb::Sharing => {
+            Verb::Sharing | Verb::Mesophon => {
+                self.mesophon_dialog = verb == Verb::Mesophon;
                 let rows = self.sharing_rows();
                 let signed = self.team.device.as_ref().is_some_and(|d| d.registered);
                 let idx = if signed {
@@ -5172,7 +5188,13 @@ impl App {
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::Sharing => {
                 self.join_watch = None;
-                self.mode = Mode::Menu { idx: self.menu_row(Verb::Sharing) };
+                self.mode = Mode::Menu {
+                    idx: self.menu_row(if self.mesophon_dialog {
+                        Verb::Mesophon
+                    } else {
+                        Verb::Sharing
+                    }),
+                };
             }
             Scope::ColumnSettings => {
                 if self.column_agents {
@@ -5628,6 +5650,25 @@ impl App {
             return rows;
         }
         rows.push(SharingRow::Heading("THIS BOARD"));
+        if self.mesophon_dialog {
+            rows.push(SharingRow::ControlStatus);
+            if !self.control.origin.is_empty() {
+                rows.push(SharingRow::ControlOrigin);
+            }
+            if self.control.enabled {
+                rows.push(SharingRow::ControlPair);
+                if let Some(code) = &self.control.code {
+                    rows.push(SharingRow::Code(code.clone()));
+                }
+                rows.extend(
+                    self.control.devices.iter().map(|d| SharingRow::ControlDevice(d.grant.clone())),
+                );
+                rows.push(SharingRow::ControlDisable);
+            } else {
+                rows.push(SharingRow::ControlEnable);
+            }
+            return rows;
+        }
         match &self.team.board {
             None => {
                 rows.push(SharingRow::Publish);
@@ -5668,6 +5709,51 @@ impl App {
             .unwrap_or_default();
         let drafts_missing = self.team_relay_draft.is_empty() || self.team_name_draft.is_empty();
         match row {
+            SharingRow::ControlOrigin => (
+                format!("Browser: {}", self.control.origin),
+                "open this address on your phone or computer ∙ enter copies it".into(),
+                "copy",
+            ),
+            SharingRow::ControlStatus => (
+                if !self.control.enabled {
+                    "Browser access: off".into()
+                } else if self.control.connected {
+                    "Browser access: connected".into()
+                } else {
+                    "Browser access: disconnected".into()
+                },
+                self.control.error.clone().unwrap_or_else(|| self.control.origin.clone()),
+                "",
+            ),
+            SharingRow::ControlEnable => (
+                "Enable Mesophon on this board".into(),
+                "your paired browsers can preview and prompt its agents".into(),
+                "enable",
+            ),
+            SharingRow::ControlPair => (
+                "Pair a browser".into(),
+                "one-use code ∙ expires in ten minutes".into(),
+                if self.control.connected { "pair" } else { "" },
+            ),
+            SharingRow::ControlDisable => (
+                if armed { "Disable Mesophon?" } else { "Disable Mesophon" }.into(),
+                "all devices lose access to this board ∙ enter again confirms".into(),
+                "disable",
+            ),
+            SharingRow::ControlDevice(grant) => (
+                format!(
+                    "{}{}",
+                    if armed { "Revoke " } else { "" },
+                    self.control
+                        .devices
+                        .iter()
+                        .find(|d| &d.grant == grant)
+                        .map(|d| d.name.as_str())
+                        .unwrap_or("device")
+                ),
+                "paired to this board ∙ enter twice revokes access".into(),
+                "revoke",
+            ),
             SharingRow::Heading(word) => ((*word).to_string(), String::new(), ""),
             SharingRow::Relay => (
                 if self.team_relay_draft.is_empty() {
@@ -5766,8 +5852,16 @@ impl App {
                 "invite",
             ),
             SharingRow::Code(code) => (
-                format!("Invite code: {code}"),
-                "hand it over out of band ∙ one use ∙ enter copies it".into(),
+                format!(
+                    "{}: {code}",
+                    if self.mesophon_dialog { "Pairing code" } else { "Invite code" }
+                ),
+                if self.mesophon_dialog {
+                    "one use ∙ expires in ten minutes ∙ enter copies it"
+                } else {
+                    "hand it over out of band ∙ one use ∙ enter copies it"
+                }
+                .into(),
                 "copy",
             ),
             SharingRow::Member(device) => self.member_words(device, armed),
@@ -5886,6 +5980,18 @@ impl App {
     /// inviting and copying are one press; removing, stopping and leaving
     /// arm on the first and act on the second; a board is opened in place
     /// of this one.
+    fn control_action(&mut self, action: mesimon_core::mesophon::LocalAction) -> Result<()> {
+        match self.req(Command::Mesophon { action }) {
+            Response::Mesophon { info } => self.control = info,
+            Response::Err { message } => self.status = message,
+            _ => self.status = "Mesophon is unavailable on this daemon".into(),
+        }
+        if let Mode::Sharing { armed, .. } = &mut self.mode {
+            *armed = false;
+        }
+        Ok(())
+    }
+
     fn sharing_act(&mut self) -> Result<()> {
         let Mode::Sharing { idx, armed, .. } = self.mode else {
             return Ok(());
@@ -5900,6 +6006,27 @@ impl App {
             this.mode = Mode::Sharing { idx, editing: Some(buf), armed: false };
         };
         match row {
+            SharingRow::ControlStatus => Ok(()),
+            SharingRow::ControlOrigin => {
+                self.status = crate::clipboard::copy_status("browser URL", &self.control.origin);
+                Ok(())
+            }
+            SharingRow::ControlEnable => {
+                self.control_action(mesimon_core::mesophon::LocalAction::Enable)
+            }
+            SharingRow::ControlPair => {
+                self.control_action(mesimon_core::mesophon::LocalAction::Pair)
+            }
+            SharingRow::ControlDisable if armed => {
+                self.control_action(mesimon_core::mesophon::LocalAction::Disable)
+            }
+            SharingRow::ControlDevice(grant) if armed => {
+                self.control_action(mesimon_core::mesophon::LocalAction::Revoke { grant })
+            }
+            SharingRow::ControlDisable | SharingRow::ControlDevice(_) => {
+                self.mode = Mode::Sharing { idx, editing: None, armed: true };
+                Ok(())
+            }
             SharingRow::Heading(_) => Ok(()),
             SharingRow::Relay => {
                 open(
@@ -8751,6 +8878,7 @@ struct Snapshot {
     status_top: bool,
     /// Board sharing (T-215): read by the team screens once they exist.
     team: mesimon_core::team::TeamInfo,
+    mesophon: mesimon_core::mesophon::Info,
     terminals: Vec<mesimon_core::command::TerminalItem>,
 }
 
@@ -8772,6 +8900,7 @@ impl Snapshot {
                 claude_default_mode,
                 status_top,
                 team,
+                mesophon,
                 terminals,
             } => Some(Self {
                 board,
@@ -8788,6 +8917,7 @@ impl Snapshot {
                 claude_default_mode,
                 status_top,
                 team,
+                mesophon,
                 terminals,
             }),
             _ => None,
@@ -9116,6 +9246,7 @@ pub(crate) mod test_support {
                     claude_default_mode: Some("auto".into()),
                     status_top: self.status_top,
                     team: Default::default(),
+                    mesophon: Default::default(),
                     terminals: self.terminals.clone(),
                 }),
                 // The column lifecycle (T-117), as the daemon does it — the
@@ -11612,6 +11743,32 @@ mod tests {
             "{:?}",
             sent.borrow()
         );
+    }
+
+    #[test]
+    fn mesophon_enable_and_revoke_use_the_local_control_surface() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
+        app.team.device = shared_team_fixture().device;
+        app.mesophon_available = true;
+        app.dispatch(Verb::Mesophon, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
+        assert!(app.mesophon_dialog);
+        let idx = app.sharing_rows().iter().position(|r| *r == SharingRow::ControlEnable).unwrap();
+        app.mode = Mode::Sharing { idx, editing: None, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent.borrow().iter().any(|s| s.contains("Mesophon { action: Enable }")));
+        app.control.enabled = true;
+        app.control.devices =
+            vec![mesimon_core::mesophon::Device { grant: "phone".into(), name: "My phone".into() }];
+        let idx = app
+            .sharing_rows()
+            .iter()
+            .position(|r| matches!(r, SharingRow::ControlDevice(_)))
+            .unwrap();
+        app.mode = Mode::Sharing { idx, editing: None, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(!sent.borrow().iter().any(|s| s.contains("Revoke")));
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert!(sent.borrow().iter().any(|s| s.contains("Revoke") && s.contains("phone")));
     }
 
     #[test]

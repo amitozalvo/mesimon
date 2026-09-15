@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta name="referrer" content="no-referrer" />
+    <title>Mesophon</title>
+    <link rel="stylesheet" href="./style.css" />
+    <script type="module" src="./app.js"></script>
+  </head>
+  <body>
+    <header>
+      <div>
+        <h1>Mesophon</h1>
+        <p>Your board, wherever you are.</p>
+      </div>
+      <button id="forget" type="button">Forget this device</button>
+    </header>
+    <main>
+      <section aria-labelledby="connection-heading">
+        <h2 id="connection-heading">Connect to a board</h2>
+        <form id="pair-form">
+          <label
+            >Device name<input
+              id="device-name"
+              maxlength="64"
+              value="My browser"
+              autocomplete="off"
+              required
+          /></label>
+          <label
+            >Pairing code<input
+              id="code"
+              maxlength="80"
+              autocomplete="off"
+              autocapitalize="characters"
+              spellcheck="false"
+              placeholder="Code from the Mesophon dialog"
+          /></label>
+          <button type="submit">Pair browser</button>
+        </form>
+        <div class="remembered">
+          <label
+            >Paired boards<select id="boards">
+              <option value="">Choose a board</option>
+            </select></label
+          ><button id="connect" type="button">Connect</button>
+        </div>
+        <p id="connection" role="status">Starting…</p>
+      </section>
+      <section id="workspace" hidden aria-labelledby="board-title">
+        <h2 id="board-title">Board</h2>
+        <div class="workspace">
+          <nav id="tickets" aria-label="Tickets"></nav>
+          <article>
+            <h3 id="selection">Select a ticket</h3>
+            <p id="agent-state"></p>
+            <pre id="preview" aria-label="Agent output" tabindex="0"></pre>
+            <form id="prompt-form">
+              <label
+                >Prompt<textarea
+                  id="prompt"
+                  rows="4"
+                  placeholder="Your words to this agent"
+                  required
+                ></textarea>
+              </label>
+              <button id="send" type="submit" disabled>Send prompt</button>
+            </form>
+            <p id="delivery" role="status"></p>
+          </article>
+        </div>
+      </section>
+    </main>
+  </body>
+</html>

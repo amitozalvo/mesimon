@@ -577,6 +577,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::ImportTicket { .. }
         // Board sharing is the person's: who to sign in as, what to share
         // with whom, who to let in and who to remove (T-215).
+        | Command::Mesophon { .. }
         | Command::TeamSignIn { .. }
         | Command::TeamSignOut
         | Command::ShareBoard { .. }
@@ -1135,6 +1136,8 @@ mod tests {
             Command::DeleteTicket { id: t, discard_worktree: true },
             Command::TeamSignIn { relay: "relay.example".into(), display_name: "Dana".into() },
             Command::TeamSignOut,
+            Command::Mesophon { action: crate::mesophon::LocalAction::Status },
+            Command::Mesophon { action: crate::mesophon::LocalAction::Enable },
             Command::ShareBoard { notes: true },
             Command::UnshareBoard,
             Command::MintInvite { role: "viewer".into() },

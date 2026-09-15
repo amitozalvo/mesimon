@@ -1,0 +1,24 @@
+ BOARD   mesimon › kanban-tui   6 tickets
+
+    TODO                          2     IN PROGRESS                  2   2   0
+
+    Dec╭─ MESOPHON ─────────────────────────────────────────────────────╮R   D
+       │ YOU                                                            │E   O
+    Key│   Relay: relay.example                                         │V   N
+       │   Display name: Amit                                           │I   E
+       │   Signed in as Amit on relay.example                           │E
+       │ THIS BOARD                                                     │W
+       │   Browser access: connected                                    │
+       │   Browser: https://relay.example:8444                          │
+       │   Pair a browser                                               │
+       │   Pairing code: msmn1-example-pairing-code                     │
+       │   Revoke My phone                                              │
+       │   Disable Mesophon                                             │
+       │                                                                │
+       │     paired to this board ∙ enter twice revokes access          │
+       ╰───────────────────────── jk select ∙ enter revoke ∙ esc close ─╯
+
+
+
+
+ MESOPHON  jk select ∙ enter revoke ∙ esc close                          ? keys

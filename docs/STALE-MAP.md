@@ -10880,3 +10880,53 @@ answer CPR would cost crossterm's 2 s timeout once per handover, and none is kno
 (refused for the same reason as the focus report in T-292's amendment: tmux would read them).
 Not unit-tested — the fence is a tty conversation; the tmux half is the repro above and the
 trap is recorded in CLAUDE.md.
+
+## T-317 — Mesophon M1: pair, preview, prompt, revoke
+
+The approved browser-first milestone rides on the shipped Teams device identity,
+TLS discovery, invite format, and encryption primitives. Control routing is a
+separate optional HTTPS/WebSocket listener in `team/relay`; browser/crypto/daemon
+clients remain Apache code. It does not publish private boards to Teams or reuse
+Teams membership as host authority. `MESIMON_MESOPHON=1` exposes the TUI entry and
+enables control in the running daemon; each board requires explicit opt-in.
+
+The board writer persists private versioned grants, authenticates the endpoint,
+and mints a distinct paired principal. Only the dedicated snapshot, preview,
+prompt-existing, and receipt protocol crosses this transport. Raw local envelopes
+cannot mint paired authority. Existing Teams/agent authorization floors remain.
+Per-connection keys bind board, grant, daemon incarnation, browser challenge,
+direction and sequence. A pinned owner signature authenticates the greeting;
+replayed greetings fail the new browser challenge. One-use pairing expires after
+ten minutes and is lost on restart. The relay receives only a hash and a
+device-bound proof, not the secret.
+
+Connections receive disjoint command-number ranges within the daemon incarnation.
+A high-water mark prevents replay after the bounded receipt cache evicts details;
+reconnect can query a prior receipt but cannot execute an old command. The browser
+never retries a prompt automatically. Restart loses receipts and therefore reports
+unknown outcomes. Codex's deferred path retains device/grant attribution and
+rechecks both grant and exact ticket/session before paste or Enter. Revocation
+cancels undelivered text; partial delivery is reported as unknown and is not
+retracted from the agent. Full control, agent lifecycle, interactive terminals,
+board editing, and stopped-host discovery remain later milestones.
+
+The dedicated browser projection excludes notes, paths, argv, and the local board
+snapshot. Selected output polls at two seconds; text uses DOM text rendering.
+There is no offline content cache, service worker, or command queue. IndexedDB
+holds only device identity/credentials and grant pins. Since the relay serves the
+browser code, its web deployment remains trusted client distribution. Native TLS
+pinning does not replace browser certificate trust.
+
+The real relay acceptance test exposed a routing bug where the Gone notification
+for an old browser also closed the host connection. Gone now closes only the
+addressed browser; the host remains connected and receives the departure event.
+
+Validation: the workspace suite passes 1,555 tests. The six opt-in relay tests
+also pass against disposable PostgreSQL, including Chromium/WebKit at desktop and
+phone widths, Claude delivery, deferred Codex revoke/submit, daemon restart,
+stale command/receipt eviction, and unchanged Teams sharing/TLS behavior. Clippy
+passes; the two new Mesophon TUI goldens and browser screenshots were inspected.
+The unrelated search timing benchmark and live release download remain opt-in;
+the ignored restart-skew helper is exercised by its parent tests. Container
+configuration and shell syntax were checked; Linux/container image builds and
+release rehearsal were not run for this milestone.

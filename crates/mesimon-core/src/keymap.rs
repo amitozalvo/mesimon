@@ -361,6 +361,7 @@ pub enum Verb {
     /// The menu row that opens the sharing dialog: identity, this board,
     /// the boards this device belongs to.
     Sharing,
+    Mesophon,
     ColumnAgentBehaviour,
     // ---- global ----
     Help,
@@ -1236,6 +1237,7 @@ pub struct Ctx {
     /// A board already shared or joined keeps working: the daemon syncs
     /// whatever its state file says, and the gate is only on the doors.
     pub teams: bool,
+    pub mesophon: bool,
 }
 
 /// The four `_word` fields are the hint's text when the verb is live, and
@@ -3394,6 +3396,13 @@ static MENU_ITEMS: &[MenuItem] = &[
         label: |_| "Archived tickets".into(),
         detail: |_| "off the board, still here".into(),
         avail: |c| c.has_archived,
+        key: "",
+    },
+    MenuItem {
+        verb: Verb::Mesophon,
+        label: |_| "Mesophon".into(),
+        detail: |_| "browser access to this board ∙ pair and revoke".into(),
+        avail: |c| c.mesophon,
         key: "",
     },
     // Board sharing (T-334; one row since T-335). The row names where the

@@ -244,3 +244,39 @@ before/after boards and occasional Haiku/Sonnet compatibility captures.
 ## License
 
 Apache-2.0. See `LICENSE`, `NOTICE`, and `TRADEMARK.md`.
+
+## Mesophon browser preview
+
+Mesophon’s first milestone lets your own browser **view tickets, preview an agent’s
+output, and send a prompt to that existing agent**. It works on desktop and phone.
+Set `MESIMON_MESOPHON=1` when starting Mesimon, open **Esc → Mesophon**, sign in to
+your relay, and enable this board. Choose **Pair a browser**, open the displayed
+browser address, and enter its single-use code within ten minutes.
+
+Each board requires explicit enablement and pairing, including private boards.
+Enabling Mesophon does not share a board with teammates. The host must stay awake
+and its board daemon must be running. This preview does not yet provide board
+editing, agent start/stop, interactive terminals, or starting stopped daemons.
+A compatible relay with its optional HTTPS browser listener and a certificate
+trusted by the browser is required; see [relay deployment](team/relay/README.md#mesophon-browser-listener).
+
+A prompt targets the session shown when you send it. **Submitted** means delivery
+to the agent’s input, not completion of its work. Waiting Codex prompts retain the
+paired device’s authority and are cancelled if access is revoked or the target
+changes. Reconnects never resubmit prompts automatically. If a delivery result
+cannot be recovered, the browser shows **outcome unknown**; check the agent before
+sending again. Prompt text is limited to 4096 UTF-8 bytes; previews show the last
+50 lines, and oversized responses are rejected.
+
+Select a paired device in the Mesophon dialog and press Enter twice to revoke it.
+Disabling Mesophon removes every grant for this board; re-enabling requires new
+pairing. **Forget this device** removes the browser’s local identity and remembered
+boards; revoke on the host to remove the corresponding grants too.
+
+The daemon stores `mesophon.json` (mode 0600) in its existing per-board state
+directory, containing only the opaque board identity and device grants. Pairing
+secrets and delivery receipts live in memory. The browser stores device keys,
+credentials, and remembered grants in IndexedDB; ticket content, output, and unsent
+text remain in memory. The relay routes encrypted content and stores only routing
+metadata for Mesophon. Browser assets are served by the relay, so the relay’s web
+deployment is part of the browser client’s trust boundary.

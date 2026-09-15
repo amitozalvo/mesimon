@@ -193,6 +193,7 @@ pub enum Request {
         display_name: String,
         public: DevicePublic,
     },
+    ControlInfo,
     Whoami,
     Boards,
     CreateBoard,
@@ -263,6 +264,7 @@ impl Request {
     pub fn board(&self) -> Option<BoardId> {
         match self {
             Request::Register { .. }
+            | Request::ControlInfo
             | Request::Whoami
             | Request::Boards
             | Request::CreateBoard
@@ -282,6 +284,7 @@ impl Request {
     pub fn word(&self) -> &'static str {
         match self {
             Request::Register { .. } => "register",
+            Request::ControlInfo => "control_info",
             Request::Whoami => "whoami",
             Request::Boards => "boards",
             Request::CreateBoard => "create_board",
@@ -312,6 +315,7 @@ impl fmt::Debug for Request {
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Response {
+    ControlInfo { version: u32, origin: Option<String> },
     Registered { device: DeviceId, credential: Credential },
     Device { device: DeviceId, display_name: String },
     Boards { boards: Vec<BoardSummary> },

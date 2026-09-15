@@ -108,15 +108,19 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
         })
         .collect();
     let headings: Vec<bool> = rows.iter().map(|r| matches!(r, SharingRow::Heading(_))).collect();
-    let title = match &app.team.board {
-        Some(b) => {
-            let mut t = format!("SHARING ∙ {}", b.sync.state.to_uppercase());
-            if b.sync.drafts > 0 {
-                t.push_str(&format!(" ∙ {} DRAFTS", b.sync.drafts));
+    let title = if app.mesophon_dialog {
+        "MESOPHON".to_string()
+    } else {
+        match &app.team.board {
+            Some(b) => {
+                let mut t = format!("SHARING ∙ {}", b.sync.state.to_uppercase());
+                if b.sync.drafts > 0 {
+                    t.push_str(&format!(" ∙ {} DRAFTS", b.sync.drafts));
+                }
+                t
             }
-            t
+            None => "SHARING".to_string(),
         }
-        None => "SHARING".to_string(),
     };
     let lead = match rows.get(*idx) {
         Some(SharingRow::Relay) => "Relay: ",

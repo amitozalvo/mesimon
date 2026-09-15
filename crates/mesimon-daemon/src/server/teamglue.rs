@@ -43,7 +43,7 @@ const OFFLINE_BACKOFF: u64 = 20;
 
 pub(super) struct TeamCtx {
     jobs: Sender<Job>,
-    device: Option<DeviceFile>,
+    pub(super) device: Option<DeviceFile>,
     state: Option<TeamState>,
     inflight: HashSet<Tag>,
     busy: Option<&'static str>,
@@ -1409,6 +1409,7 @@ fn other_word(r: &Wire) -> &'static str {
         Wire::Accepted { .. } => "accepted",
         Wire::Records { .. } => "records",
         Wire::Error { .. } => "error",
+        Wire::ControlInfo { .. } => "control_info",
     }
 }
 

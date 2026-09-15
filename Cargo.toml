@@ -8,6 +8,7 @@ members = [
     "crates/mesimon-backend-tmux",
     "crates/mesimon-team",
     "team/relay",
+    "crates/mesimon-web",
 ]
 # `team/relay` is the paid relay (T-332): `--workspace` commands cover it, a
 # plain `cargo build`/`cargo run` does not, and neither does the release build.

@@ -74,6 +74,16 @@ impl InviteCode {
         mac.finalize().into_bytes().into()
     }
 
+    /// Check the endpoint proof without a timing-dependent byte comparison.
+    pub fn verifies_proof(&self, joiner: &DevicePublic, proof: &[u8]) -> bool {
+        let Ok(mut mac) = Hmac::<Sha256>::new_from_slice(&self.secret) else { return false };
+        let mut transcript = Transcript::new(b"mesimon-team join v1");
+        transcript.bytes(&joiner.sign);
+        transcript.bytes(&joiner.kex);
+        mac.update(&transcript.finish());
+        mac.verify_slice(proof).is_ok()
+    }
+
     pub fn encode(&self) -> String {
         let mut bytes = [0u8; 20];
         bytes[..12].copy_from_slice(&self.secret);
@@ -171,6 +181,9 @@ mod tests {
         let proof = code.proof(&joiner);
         assert_eq!(InviteCode::parse(&code.encode()).unwrap().proof(&joiner), proof);
         assert_ne!(code.proof(&impostor), proof);
+        assert!(code.verifies_proof(&joiner, &proof));
+        assert!(!code.verifies_proof(&impostor, &proof));
+        assert!(!code.verifies_proof(&joiner, &[0; 32]));
         assert_ne!(InviteCode::mint(&owner).proof(&joiner), proof);
         assert_ne!(code.secret_hash(), InviteCode::mint(&owner).secret_hash());
         assert_eq!(format!("{code:?}"), "InviteCode([REDACTED])");

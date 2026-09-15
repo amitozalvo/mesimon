@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 pub enum Principal {
     /// The local user, on the machine the daemon runs on.
     Local,
+    /// Authenticated owner device; only minted by Mesophon on the writer.
+    Paired { device: String, grant: String },
     /// An agent session asking over MCP, identified by the mesimon-minted
     /// session UUID. Never used for work the daemon does on a session's
     /// behalf — that is `Automation`.
@@ -35,7 +37,7 @@ impl Principal {
     /// `Remote` is a person pressing one elsewhere. The ping-pong guard and
     /// the flap fuse restrain everything else.
     pub fn is_human(&self) -> bool {
-        matches!(self, Principal::Local | Principal::Remote { .. })
+        matches!(self, Principal::Local | Principal::Remote { .. } | Principal::Paired { .. })
     }
 
     /// The feed's actor word. Stable strings — the activity log is read by
@@ -43,6 +45,7 @@ impl Principal {
     pub fn actor(&self) -> &str {
         match self {
             Principal::Local => "local",
+            Principal::Paired { .. } => "paired",
             Principal::Agent { .. } => "agent",
             Principal::Automation { .. } => "automation",
             Principal::Remote { .. } => "remote",
@@ -57,6 +60,7 @@ impl Principal {
     pub fn note_author(&self) -> String {
         match self {
             Principal::Local => "local".into(),
+            Principal::Paired { device, .. } => format!("device:{device}"),
             Principal::Agent { session } => format!("agent:{session}"),
             Principal::Automation { rule } => format!("automation:{rule}"),
             Principal::Remote { member } => format!("member:{member}"),

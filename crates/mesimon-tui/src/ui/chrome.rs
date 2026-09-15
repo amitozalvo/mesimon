@@ -449,6 +449,7 @@ fn mode_word(app: &App) -> Option<&'static str> {
         Mode::Editor(_) => return None,
         // The column dialog's name field (T-117).
         Mode::ColumnSettings { naming: Some(_), .. } => "NAME",
+        Mode::Sharing { .. } if app.mesophon_dialog => "MESOPHON",
         _ => scope.word(),
     };
     let resting = matches!(

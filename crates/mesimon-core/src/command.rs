@@ -80,6 +80,9 @@ pub enum Command {
         version: u32,
         client: String,
     },
+    Mesophon {
+        action: crate::mesophon::LocalAction,
+    },
     Snapshot,
     Subscribe,
     CreateTicket {
@@ -814,6 +817,8 @@ impl Command {
             | AgentListBoard => m(Read, false, None),
             CreateTicket { .. } => m(Mutate, true, None),
             ImportTicket { .. } => m(Action::ImportContent, true, None),
+            Mesophon { action: crate::mesophon::LocalAction::Status } => m(Read, false, None),
+            Mesophon { .. } => m(Mutate, true, None),
             TeamRefresh => m(Read, false, None),
             TeamSignIn { .. }
             | TeamSignOut
@@ -953,6 +958,9 @@ mod meta_tests {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "resp", rename_all = "snake_case")]
 pub enum Response {
+    Mesophon {
+        info: crate::mesophon::Info,
+    },
     /// Every field added here after `daemon_pid` MUST be `#[serde(default)]`.
     /// The TUI's reader thread drops a line it cannot deserialize, so a
     /// required field would turn "an older daemon answered" into a silent
@@ -1081,6 +1089,8 @@ pub enum Response {
         /// as "not signed in", which offers sign-in and nothing else.
         #[serde(default)]
         team: crate::team::TeamInfo,
+        #[serde(default)]
+        mesophon: crate::mesophon::Info,
         /// The user's own `permissions.defaultMode`, what a column's
         /// `claude_mode: inherit` resolves to (T-117) — so the dialog can
         /// say `inherit (auto)`. Absent: unknown or unset.

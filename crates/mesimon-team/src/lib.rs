@@ -13,5 +13,8 @@
 pub mod crypto;
 pub mod hex;
 pub mod invite;
+#[cfg(feature = "native")]
 pub mod relay;
 pub mod wire;
+
+pub mod control;

@@ -164,7 +164,39 @@ pub struct RelayClient {
     timeout: Duration,
 }
 
+pub type ControlSocket =
+    tungstenite::WebSocket<rustls::StreamOwned<rustls::ClientConnection, std::net::TcpStream>>;
+
 impl RelayClient {
+    pub fn control_socket(&self, origin: &str) -> Result<ControlSocket, ErrorCode> {
+        let uri: tungstenite::http::Uri = origin.parse().map_err(|_| ErrorCode::InvalidRequest)?;
+        if uri.scheme_str() != Some("https") || uri.path() != "/" || uri.query().is_some() {
+            return Err(ErrorCode::InvalidRequest);
+        }
+        let host = uri.host().ok_or(ErrorCode::InvalidRequest)?;
+        let port = uri.port_u16().unwrap_or(443);
+        let stream =
+            std::net::TcpStream::connect((host, port)).map_err(|_| ErrorCode::Unavailable)?;
+        stream
+            .set_read_timeout(Some(Duration::from_secs(10)))
+            .map_err(|_| ErrorCode::Unavailable)?;
+        stream
+            .set_write_timeout(Some(Duration::from_secs(5)))
+            .map_err(|_| ErrorCode::Unavailable)?;
+        let name = rustls::pki_types::ServerName::try_from(host.to_owned())
+            .map_err(|_| ErrorCode::InvalidRequest)?;
+        let session = rustls::ClientConnection::new(self.config.clone(), name)
+            .map_err(|_| ErrorCode::Unavailable)?;
+        let tls = rustls::StreamOwned::new(session, stream);
+        let url = format!("wss://{}/control", uri.authority().ok_or(ErrorCode::InvalidRequest)?);
+        let config = tungstenite::protocol::WebSocketConfig::default()
+            .max_message_size(Some(crate::control::MAX_BYTES))
+            .max_frame_size(Some(crate::control::MAX_BYTES));
+        let (ws, _) = tungstenite::client::client_with_config(url, tls, Some(config))
+            .map_err(|_| ErrorCode::Unavailable)?;
+        Ok(ws)
+    }
+
     pub fn new(endpoint: RelayEndpoint) -> Result<Self, ErrorCode> {
         let config = Arc::new(client_config(endpoint.pin)?);
         Ok(Self { endpoint, config, timeout: Duration::from_secs(30) })

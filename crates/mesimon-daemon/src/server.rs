@@ -36,6 +36,7 @@ use crate::paths::Paths;
 use crate::store;
 use crate::worktree::{self, Binding, BindingStatus};
 
+mod mesophon;
 mod teamglue;
 
 const GRACE_SECS: u64 = 9;
@@ -229,6 +230,7 @@ enum Msg {
     /// The relay executor finished a job (T-215). What it means is decided
     /// here, on the writer, in `teamglue`.
     Team(crate::team::sync::Done),
+    Control(u64, crate::team::control_io::Event, Sender<()>),
 }
 
 pub struct Daemon {
@@ -404,6 +406,7 @@ pub struct Daemon {
     /// Board sharing (T-215): identity, this board's sharing state, and the
     /// relay executor's handle.
     team: teamglue::TeamCtx,
+    control: mesophon::Control,
     codex_polling: bool,
     codex_ready: std::collections::HashSet<uuid::Uuid>,
     /// Native startup UI is checked until its composer is seen once per
@@ -739,6 +742,7 @@ pub fn run(paths: Paths) -> Result<()> {
         pending_teardown: Vec::new(),
         tx: tx.clone(),
         team: teamglue::TeamCtx::new(tx.clone()),
+        control: mesophon::Control::new(tx.clone()),
         codex_polling: false,
         codex_ready: std::collections::HashSet::new(),
         codex_native_ready: HashMap::new(),
@@ -767,6 +771,7 @@ pub fn run(paths: Paths) -> Result<()> {
     // relay executor. Before any client can observe the board, so the first
     // snapshot already says whether it is shared.
     d.team_start();
+    d.control_start();
     let mut parked = false;
     for id in just_exited {
         parked |= d.park_on_exit(id);
@@ -828,9 +833,14 @@ pub fn run(paths: Paths) -> Result<()> {
             Msg::ClientGone(_) => "client gone".into(),
             Msg::WorktreeFlags(..) => "worktree flags".into(),
             Msg::Team(_) => "team".into(),
+            Msg::Control(..) => "mesophon".into(),
         };
         d.tick_slowest = ("", Duration::ZERO);
         match msg {
+            Msg::Control(generation, event, ack) => {
+                d.on_control(generation, event);
+                let _ = ack.send(());
+            }
             // SIGTERM (`pkill -f "mesimon daemon"` after a rebuild) takes the
             // same road as `Shutdown`: the handler only raises a flag, and the
             // wheel — ≤250 ms away — is where it is honoured, on the writer
@@ -1148,6 +1158,12 @@ impl Drop for PermitGuard<'_> {
 /// DiffList/DiffFile, served on the connection thread (M4b): read-only, no
 /// board access, no BoardChanged — the writer thread never sees them.
 fn serve_diff(ctx: &DiffCtx, env: &Envelope) -> Response {
+    if matches!(
+        env.principal,
+        Principal::Paired { .. } | Principal::Remote { .. } | Principal::Automation { .. }
+    ) {
+        return Response::Err { message: "principal cannot be claimed by a client".into() };
+    }
     let target = match &env.command {
         Command::DiffList { target } | Command::DiffFile { target, .. } => *target,
         _ => return Response::Err { message: "not a diff command".into() },
@@ -1331,10 +1347,11 @@ impl Daemon {
         }
         // `Remote` is minted by the daemon's own sync from a record whose
         // signature verified (T-215). Over the socket it is a same-uid
-        // client dressing up as a teammate.
-        if let Principal::Remote { .. } = env.principal {
+        // client dressing up as a teammate. Paired identities are minted only
+        // by the authenticated Mesophon control connection.
+        if matches!(env.principal, Principal::Remote { .. } | Principal::Paired { .. }) {
             return Response::Err {
-                message: "a teammate is not a principal a client may claim".into(),
+                message: "remote identities cannot be claimed by a local client".into(),
             };
         }
         // D32c invariant 2: the chokepoint is on every path, even though v0.1
@@ -1387,6 +1404,7 @@ impl Daemon {
         let feed_cmd = meta.logged.then(|| (env.command.wire_name(), meta.subject));
 
         let resp = match env.command {
+            Command::Mesophon { action } => self.control_local(action),
             Command::Hello { version, client } => {
                 self.clients.insert(conn_key(stream), client);
                 if version != PROTOCOL_VERSION {
@@ -1669,6 +1687,7 @@ impl Daemon {
     fn on_tick(&mut self) {
         self.ticks += 1;
         self.team_tick();
+        self.control_tick();
         // Every stage is timed and the slowest remembered, so a slow tick's
         // journal line can name the probe that took the second.
         macro_rules! stage {
@@ -2411,9 +2430,15 @@ impl Daemon {
             .collect();
         let mut dirty = false;
         for id in ids {
-            let principal = Principal::Automation { rule: "agent_prompt_delivery".into() };
+            if !self.control_delivery_allowed(id) {
+                continue;
+            }
+            let paired = self.control_delivery_principal(id);
+            let action = if paired.is_some() { Action::PromptExisting } else { Action::Mutate };
+            let principal =
+                paired.unwrap_or(Principal::Automation { rule: "agent_prompt_delivery".into() });
             if matches!(
-                authorize(&principal, &Action::Mutate, &Resource::Session { id }),
+                authorize(&principal, &action, &Resource::Session { id }),
                 Decision::Deny { .. }
             ) {
                 continue;
@@ -2438,6 +2463,7 @@ impl Daemon {
                     continue;
                 }
                 if submit && self.backend.send_enter(&sid).is_ok() {
+                    self.control_submitted(id);
                     if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                         rec.codex_submit_sent = true;
                         rec.observation_hold = true;
@@ -2473,6 +2499,7 @@ impl Daemon {
             if !text.is_empty() && self.backend.paste_input(&sid, &text).is_err() {
                 continue;
             }
+            self.control_pasted(id);
             self.pending_prompt.remove(&id);
             if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
                 rec.pending_prefill = false;
@@ -3885,6 +3912,7 @@ impl Daemon {
             .collect();
         Response::Board {
             team: self.team_info(),
+            mesophon: self.control_info(),
             board,
             terminals,
             grace,
@@ -4374,6 +4402,7 @@ impl Daemon {
             writeln!(w, "{line}").is_ok()
         });
         self.team_after_broadcast();
+        self.control_changed();
     }
 
     fn persist_and_notify(&mut self) {

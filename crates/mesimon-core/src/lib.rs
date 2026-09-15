@@ -22,6 +22,7 @@ pub mod fracindex;
 pub mod keymap;
 pub mod links;
 pub mod mcp;
+pub mod mesophon;
 pub mod notify;
 pub mod prefs;
 pub mod principal;

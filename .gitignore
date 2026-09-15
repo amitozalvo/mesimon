@@ -14,3 +14,8 @@
 
 # vendored tmux build (ci/build-tmux.sh)
 /vendor/
+
+# Mesophon browser build and browser-test dependencies
+/web/mesophon/pkg/
+/web/mesophon/node_modules/
+/web/mesophon/test-results/

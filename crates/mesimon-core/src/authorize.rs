@@ -10,6 +10,8 @@ pub enum Action {
     /// no wire command for this seam. Existing agents and daemon automation
     /// do not acquire import authority from ordinary content-write access.
     ImportContent,
+    /// Submit user input to an existing session; does not confer lifecycle authority.
+    PromptExisting,
 }
 
 /// What it is being attempted on.
@@ -61,6 +63,14 @@ impl Decision {
 /// column; ordinary write access does not grant authority to materialize imports.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
+    if *action == Action::PromptExisting {
+        return match (principal, resource) {
+            (Principal::Local | Principal::Paired { .. }, Resource::Session { .. }) => {
+                Decision::Allow
+            }
+            _ => deny("prompting requires an authenticated owner and an existing session"),
+        };
+    }
     if *action == Action::ImportContent {
         return match (principal, resource) {
             (Principal::Local, Resource::Column { .. }) => Decision::Allow,
@@ -69,6 +79,10 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
     }
     match principal {
         Principal::Local | Principal::Automation { .. } => Decision::Allow,
+        Principal::Paired { .. } => match action {
+            Action::Read => Decision::Allow,
+            _ => deny("paired devices only read and prompt in Mesophon M1"),
+        },
         Principal::Agent { .. } => match (action, resource) {
             (_, Resource::Session { .. }) => {
                 deny("an agent cannot read or change a session, at any tier")
@@ -78,7 +92,9 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (Action::ImportContent, _) => deny("an agent cannot import external content"),
+            (Action::ImportContent | Action::PromptExisting, _) => {
+                deny("an agent cannot import external content")
+            }
         },
         // A teammate on a shared board (T-215): tickets and notes per the
         // role the relay enforced, never a session, never the board's own
@@ -91,7 +107,9 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (Action::ImportContent, _) => deny("a teammate cannot import external content"),
+            (Action::ImportContent | Action::PromptExisting, _) => {
+                deny("a teammate cannot import external content")
+            }
         },
     }
 }
@@ -106,7 +124,10 @@ pub fn authorize_execution(
     match principal {
         Principal::Local => Decision::Allow,
         Principal::Automation { .. } if policy.allows_automation() => Decision::Allow,
-        Principal::Automation { .. } | Principal::Agent { .. } | Principal::Remote { .. } => {
+        Principal::Automation { .. }
+        | Principal::Agent { .. }
+        | Principal::Remote { .. }
+        | Principal::Paired { .. } => {
             Decision::Deny { reason: "execution requires the owner at the keyboard".into() }
         }
     }
@@ -124,6 +145,30 @@ mod tests {
     }
     fn remote() -> Principal {
         Principal::Remote { member: "Dana".into() }
+    }
+
+    #[test]
+    fn paired_authority_is_limited_to_reads_and_existing_prompts() {
+        let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
+        let session = Resource::Session { id: uuid::Uuid::nil() };
+        assert_eq!(authorize(&paired, &Action::PromptExisting, &session), Decision::Allow);
+        assert_eq!(authorize(&paired, &Action::Read, &session), Decision::Allow);
+        for by in [agent(), remote(), automation()] {
+            assert!(authorize(&by, &Action::PromptExisting, &session).denied());
+        }
+        for resource in [
+            session,
+            Resource::Board,
+            Resource::Ticket { id: ulid::Ulid::nil() },
+            Resource::Column { name: "TODO".into() },
+        ] {
+            assert!(authorize(&paired, &Action::Mutate, &resource).denied());
+            assert!(authorize(&paired, &Action::ImportContent, &resource).denied());
+        }
+        assert!(authorize(&paired, &Action::PromptExisting, &Resource::Board).denied());
+        assert!(
+            authorize_execution(&paired, crate::board::ExecutionPolicy::LocalAutomation).denied()
+        );
     }
 
     /// The teammate floor (T-215): like an agent on sessions and the board's

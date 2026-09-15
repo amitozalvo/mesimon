@@ -27,6 +27,12 @@ use serde_json::{json, Value};
 #[path = "../../../../ci/test_support.rs"]
 pub mod support;
 
+// Also used by the paid relay's product tests; those build mesimon first.
+fn mesimon_binary() -> &'static str {
+    option_env!("CARGO_BIN_EXE_mesimon")
+        .unwrap_or(concat!(env!("CARGO_MANIFEST_DIR"), "/../../target/debug/mesimon"))
+}
+
 /// The seams the daemon reads and an e2e sets. The child's environment is
 /// built by `set_env` / `Harness::boot_with_env`, and every `MESIMON_*` in the
 /// TEST PROCESS is dropped on the way — so `TestFixture::new` refuses to start
@@ -87,7 +93,7 @@ impl TestFixture {
         std::fs::create_dir(&shell_home).unwrap();
         fixture.set_env("HOME", &shell_home);
         fixture.set_env("SHELL", "/bin/sh");
-        fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+        fixture.set_env("MESIMON_HOOK_BIN", mesimon_binary());
         fixture.set_env("MESIMON_CLAUDE_BIN", &stub);
         fixture.set_env("MESIMON_CLAUDE_HOME", fixture.dir.join("claude-home"));
         fixture.set_env("CODEX_HOME", fixture.dir.join("codex-home"));
@@ -111,7 +117,7 @@ impl TestFixture {
 
     pub fn daemon(&self, repo: &Path) -> support::TestProcess {
         self.spawn(vec![
-            env!("CARGO_BIN_EXE_mesimon").into(),
+            mesimon_binary().into(),
             "daemon".into(),
             "--repo".into(),
             repo.to_str().unwrap().into(),
@@ -315,7 +321,7 @@ pub fn hook_send(sock: &Path, session: &str, event: &str, body: &str) {
 /// every call: exit 0, and nothing on stdout (stdout lands in the agent's
 /// context).
 pub fn hook_send_with(sock: &Path, session: &str, event: &str, reason: Option<&str>, body: &str) {
-    let mut cmd = Proc::new(env!("CARGO_BIN_EXE_mesimon"));
+    let mut cmd = Proc::new(mesimon_binary());
     cmd.args(["hook", "--sock"]).arg(sock).args(["--session", session, "--event", event]);
     if let Some(r) = reason {
         cmd.args(["--reason", r]);
@@ -486,7 +492,7 @@ impl Shim {
     /// The shim with extra argv — `--tools <tier>`, the way the daemon's
     /// blob starts it (T-117).
     pub fn start_with(sock: &Path, session: uuid::Uuid, extra: &[&str]) -> Self {
-        let mut child = Proc::new(env!("CARGO_BIN_EXE_mesimon"))
+        let mut child = Proc::new(mesimon_binary())
             .args(["mcp", "--sock"])
             .arg(sock)
             .args(["--session", &session.to_string()])

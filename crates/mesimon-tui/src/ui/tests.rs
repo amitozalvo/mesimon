@@ -6978,3 +6978,31 @@ fn the_search_list_scrolls_by_one_to_keep_the_cursor_on_screen() {
     down(&mut app);
     assert!(rows(&app)[0].contains("Zebra 20"), "{:?}", rows(&app));
 }
+
+#[test]
+fn golden_mesophon_pair_and_revoke() {
+    let mut app = app_graphite(fixture_archived());
+    app.mesophon_dialog = true;
+    app.team.device = crate::app::shared_team_fixture().device;
+    app.seed_team_drafts_for_test();
+    app.control = mesimon_core::mesophon::Info {
+        enabled: true,
+        connected: true,
+        origin: "https://relay.example:8444".into(),
+        code: Some("msmn1-example-pairing-code".into()),
+        error: None,
+        devices: vec![mesimon_core::mesophon::Device {
+            grant: "phone".into(),
+            name: "My phone".into(),
+        }],
+    };
+    let rows = app.sharing_rows();
+    assert!(!rows.contains(&SharingRow::Publish));
+    assert!(!rows.contains(&SharingRow::Join));
+    let idx = rows.iter().position(|r| matches!(r, SharingRow::Code(_))).unwrap();
+    app.mode = Mode::Sharing { idx, editing: None, armed: false };
+    golden("mesophon_pair_120x30", &render(&app, 120, 30));
+    let idx = rows.iter().position(|r| matches!(r, SharingRow::ControlDevice(_))).unwrap();
+    app.mode = Mode::Sharing { idx, editing: None, armed: true };
+    golden("mesophon_revoke_80x24", &render(&app, 80, 24));
+}

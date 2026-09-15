@@ -2,3 +2,7 @@
 # The inner loop: unit tests only (core, daemon, tui goldens, the binary's
 # own). Sub-second bodies; run `cargo nextest run --workspace` before a commit.
 ut = "test --workspace --lib --bins"
+
+# Browser randomness is supplied by Web Crypto for Mesophon's Wasm facade.
+[target.wasm32-unknown-unknown]
+rustflags = ["--cfg", 'getrandom_backend="wasm_js"']
