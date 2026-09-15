@@ -2107,13 +2107,21 @@ impl App {
 
     /// Rich terminals distinguish a fresh press from a held key. Legacy
     /// terminals use the short inter-event gap in board navigation instead.
+    ///
+    /// A text key is legacy on every terminal (T-382): the kitty protocol
+    /// reports a key that produces text as plain UTF-8, with no repeat and
+    /// no release, unless every key is requested as an escape code — which
+    /// we do not ask for. So a held `k` arrives as a stream of presses even
+    /// where a held `↑` arrives as repeats, and only the gap can tell a
+    /// fresh `k` from a held one.
     fn on_terminal_key(&mut self, key: KeyEvent) -> Result<bool> {
+        let text_key = matches!(key.code, KeyCode::Char(_));
         match key.kind {
             KeyEventKind::Release => {
                 self.last_ticket_up = None;
                 return Ok(false);
             }
-            KeyEventKind::Press if self.rich_keys => self.last_ticket_up = None,
+            KeyEventKind::Press if self.rich_keys && !text_key => self.last_ticket_up = None,
             KeyEventKind::Repeat
                 if key.modifiers.is_empty()
                     && matches!(key.code, KeyCode::Up | KeyCode::Char('k'))
@@ -15001,6 +15009,40 @@ mod tests {
             app.on_terminal_key(key(KeyEventKind::Press)).unwrap();
             assert!(app.on_column_header());
         }
+    }
+
+    /// The kitty protocol reports a text key as plain text — presses only,
+    /// no repeat, no release — unless every key is requested as an escape
+    /// code, so a held `k` on a rich terminal is a stream of presses (T-382).
+    /// The gap rule must carry it there exactly as on a legacy terminal.
+    #[test]
+    fn held_k_on_a_rich_terminal_is_presses_and_still_stops_at_the_top() {
+        let mut app = app_three_columns();
+        app.rich_keys = true;
+        app.git.sampled = true;
+        app.cursor_row = Some(1);
+        let key = |kind| KeyEvent::new_with_kind(KeyCode::Char('k'), KeyModifiers::NONE, kind);
+        app.on_terminal_key(key(KeyEventKind::Press)).unwrap();
+        assert_eq!(app.cursor_row, Some(0));
+        assert!(app.last_ticket_up.is_some());
+        for _ in 0..20 {
+            app.last_ticket_up = Some(Instant::now() - Duration::from_millis(40));
+            app.on_terminal_key(key(KeyEventKind::Press)).unwrap();
+            assert_eq!(app.cursor_row, Some(0));
+            assert!(!app.on_column_header(), "a held k must not climb onto the header");
+        }
+        app.last_ticket_up = Some(Instant::now() - Duration::from_millis(160));
+        app.on_terminal_key(key(KeyEventKind::Press)).unwrap();
+        assert!(app.on_column_header(), "a fresh k after a pause steps onto the header");
+        // `↑` is an escape code with real event types, so a fresh press is
+        // still immediate there — the text-key clause reaches only text.
+        let mut app = app_three_columns();
+        app.rich_keys = true;
+        app.cursor_row = Some(1);
+        let up = |kind| KeyEvent::new_with_kind(KeyCode::Up, KeyModifiers::NONE, kind);
+        app.on_terminal_key(up(KeyEventKind::Press)).unwrap();
+        app.on_terminal_key(up(KeyEventKind::Press)).unwrap();
+        assert!(app.on_column_header());
     }
 
     /// And in every other list, for the same reason.

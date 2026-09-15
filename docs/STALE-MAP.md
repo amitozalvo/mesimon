@@ -10830,3 +10830,20 @@ asks, the resume still replaces the pane); the rule prevents the state, it does 
 interrupt probe's `status_file_for` can read the dying process's file for the beat both are alive.
 
 Tests: `wake_straggler_e2e` (fails on the unpatched daemon at the wake refusal).
+## A held `k` stops on the first ticket like a held `↑` (T-382, 2026-09-15, user: "holding up arrow key to prevent going above top ticket copy to k ∙ currently it only works for up arrow but not for k")
+
+**Refuted**: that the rich-terminal path covered both keys. On a terminal speaking the kitty
+keyboard protocol (iTerm2 here), `↑` is an escape code and a held one arrives as `Repeat`
+events, which `on_terminal_key` swallows at row 0. But the protocol reports a key that
+produces text as plain UTF-8 — presses only, no repeat and no release — unless every key is
+requested as an escape code, and mesimon does not ask for that (it would change how every
+text field hears its keys). So a held `k` arrived as a stream of `Press` events, and the
+`Press if rich_keys` arm cleared `last_ticket_up` on each one: the 120 ms gap rule never
+engaged, and the cursor climbed onto the column header and the board's top row.
+
+**Shipped**: on a rich terminal a `Press` of a text key no longer clears the guard, so `k`
+runs on the legacy gap rule everywhere — a fresh `k` after a release-sized pause still steps
+onto the header, and `↑` keeps its immediate fresh press. The rule is one line in
+`App::on_terminal_key` and is the only place the two keys diverge.
+
+Tests: `held_k_on_a_rich_terminal_is_presses_and_still_stops_at_the_top` (app).
