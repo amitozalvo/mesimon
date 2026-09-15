@@ -249,7 +249,8 @@ Apache-2.0. See `LICENSE`, `NOTICE`, and `TRADEMARK.md`.
 
 Mesophon’s first milestone lets your own browser **view tickets, preview an agent’s
 output, and send a prompt to that existing agent**. It works on desktop and phone.
-Set `MESIMON_MESOPHON=1` when starting Mesimon, open **Esc → Mesophon**, sign in to
+Debug builds include Mesophon automatically. In release builds, set
+`MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Mesophon**, sign in to
 your relay, and enable this board. Choose **Pair a browser**, open the displayed
 browser address, and enter its single-use code within ten minutes.
 

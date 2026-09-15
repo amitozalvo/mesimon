@@ -10930,3 +10930,12 @@ The unrelated search timing benchmark and live release download remain opt-in;
 the ignored restart-skew helper is exercised by its parent tests. Container
 configuration and shell syntax were checked; Linux/container image builds and
 release rehearsal were not run for this milestone.
+
+### T-317 follow-up — Mesophon defaults on in debug builds
+
+Debug builds now expose the Mesophon dialog and activate the daemon's control
+capability without `MESIMON_MESOPHON`. Release builds retain the `=1` opt-in.
+This is a feature-availability default: individual boards still require explicit
+local enablement and browser pairing. The normal daemon acceptance test verifies
+the no-environment default leaves a fresh board disabled; relay acceptance now
+also exercises pairing and restored grants without the flag in debug builds.

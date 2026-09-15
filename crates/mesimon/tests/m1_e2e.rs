@@ -84,6 +84,18 @@ fn m1_acceptance_headless() {
     let hello = c.request(Command::Hello { version: PROTOCOL_VERSION, client: "e2e".into() });
     assert!(matches!(hello, Response::Hello { .. }), "{hello:?}");
 
+    // Debug builds expose Mesophon without an environment opt-in, while a
+    // fresh board still requires explicit local enablement and pairing.
+    let control =
+        c.request(Command::Mesophon { action: mesimon_core::mesophon::LocalAction::Status });
+    if cfg!(debug_assertions) {
+        assert!(
+            matches!(control, Response::Mesophon { info } if !info.enabled && !info.connected && info.devices.is_empty())
+        );
+    } else {
+        assert!(matches!(control, Response::Err { .. }));
+    }
+
     // Fresh board: 4 default columns (D33i).
     let (board, _) = board_of(c.request(Command::Snapshot));
     let names: Vec<String> = board.sorted_columns().iter().map(|c| c.name.clone()).collect();

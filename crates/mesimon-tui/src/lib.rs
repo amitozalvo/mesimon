@@ -194,7 +194,9 @@ pub fn run(repo_root: &Path) -> Result<()> {
     app.ticket_shells = ticket_shells();
     // Board sharing (T-335): a development build offers it; a release build
     // only with `MESIMON_TEAMS=1`, until it ships.
-    app.mesophon_available = std::env::var("MESIMON_MESOPHON").as_deref() == Ok("1");
+    // Mesophon follows the same development-build default as Teams.
+    app.mesophon_available =
+        cfg!(debug_assertions) || std::env::var("MESIMON_MESOPHON").as_deref() == Ok("1");
     app.teams = app.teams
         || app.mesophon_available
         || std::env::var_os("MESIMON_TEAMS").is_some_and(|v| v == "1");
