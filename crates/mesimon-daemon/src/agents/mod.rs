@@ -148,6 +148,22 @@ pub trait AgentRecovery: Send {
 struct NoPassiveRecovery;
 impl AgentRecovery for NoPassiveRecovery {}
 
+/// Another process holding a record's conversation (`resume_guard`).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ExternalOwner {
+    /// The owning process when discovery found one; `None` when ownership
+    /// could not be verified at all (a Codex record with no runtime of ours).
+    pub pid: Option<i32>,
+    /// The words the refusal carries, such as `pid 123`.
+    pub label: String,
+}
+
+impl std::fmt::Display for ExternalOwner {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.label)
+    }
+}
+
 pub trait AgentAdapter {
     fn capabilities(&self) -> AgentCapabilities;
     /// Structured transports need no heuristic inference from quiet panes or
@@ -174,8 +190,11 @@ pub trait AgentAdapter {
     fn preview(&self, path: &Path) -> Option<AgentPreview>;
     fn conversation_key(&self, record: &SessionRecord) -> Option<String>;
     fn history_missing(&self, record: &SessionRecord) -> bool;
-    /// Human-readable owner identity, such as `pid 123`; no state mutation.
-    fn external_owner(&self, record: &SessionRecord) -> Option<String>;
+    /// Who else holds this record's conversation right now; no state
+    /// mutation. The pid is what lets `resume_guard` tell the daemon's OWN
+    /// previous pane, still going down after a sleep's SIGTERM, from a
+    /// process somewhere else (T-381).
+    fn external_owner(&self, record: &SessionRecord) -> Option<ExternalOwner>;
     fn normalize_title(&self, title: &str) -> String;
     fn start(&self, context: &LaunchContext<'_>, identity: &str) -> Result<LaunchSpec, String>;
     fn resume(

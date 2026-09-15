@@ -8,8 +8,8 @@ pub mod tail;
 use mesimon_core::board::{AgentTools, SessionRecord};
 
 use super::{
-    AgentAdapter, AgentCapabilities, AgentPreview, LaunchContext, LaunchSpec, ObservationMode,
-    ResumePolicy,
+    AgentAdapter, AgentCapabilities, AgentPreview, ExternalOwner, LaunchContext, LaunchSpec,
+    ObservationMode, ResumePolicy,
 };
 use crate::hook_settings::{self, mesimon_bin};
 
@@ -136,10 +136,10 @@ impl AgentAdapter for Claude {
         history::missing(record, &crate::census::claude_home().join("projects"))
     }
 
-    fn external_owner(&self, record: &SessionRecord) -> Option<String> {
+    fn external_owner(&self, record: &SessionRecord) -> Option<ExternalOwner> {
         let identity = record.claude_session_id.unwrap_or(record.id);
         crate::census::running_pid_for(&crate::census::claude_home(), identity)
-            .map(|pid| format!("pid {pid}"))
+            .map(|pid| ExternalOwner { pid: Some(pid), label: format!("pid {pid}") })
     }
 
     fn normalize_title(&self, title: &str) -> String {

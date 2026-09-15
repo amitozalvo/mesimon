@@ -14,7 +14,7 @@ use mesimon_core::board::SessionState;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
-use super::{AgentAdapter, LaunchContext, LaunchSpec};
+use super::{AgentAdapter, ExternalOwner, LaunchContext, LaunchSpec};
 use crate::hook_settings::mesimon_bin;
 
 pub struct Codex;
@@ -211,14 +211,16 @@ impl AgentAdapter for Codex {
         false
     }
 
-    fn external_owner(&self, record: &mesimon_core::board::SessionRecord) -> Option<String> {
+    fn external_owner(&self, record: &mesimon_core::board::SessionRecord) -> Option<ExternalOwner> {
         let identity = record.codex_thread_id.as_deref()?;
         let path =
             record.transcript_path.as_deref().map(Path::new).unwrap_or_else(|| Path::new(""));
         match discovery::external_owner(identity, Path::new(&record.cwd), path) {
-            discovery::Ownership::Live(pid) => Some(format!("Codex process {pid}")),
+            discovery::Ownership::Live(pid) => {
+                Some(ExternalOwner { pid: Some(pid), label: format!("Codex process {pid}") })
+            }
             discovery::Ownership::Unknown if record.argv.is_empty() => {
-                Some("Codex ownership unverified".into())
+                Some(ExternalOwner { pid: None, label: "Codex ownership unverified".into() })
             }
             // An owned session has durable cleanup evidence from its former
             // runtime. Unknown unrelated servers do not erase that evidence;

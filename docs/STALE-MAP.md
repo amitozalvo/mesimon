@@ -10793,3 +10793,40 @@ Tests: `the_ask_room_sends_on_ctrl_s_and_keeps_the_saving_keys_off`,
 `a_queued_ask_with_lines_reopens_in_the_room` (app); goldens `editor_ask_120x30`,
 `editor_ask_column_120x30`, and the five ask-field board goldens reminted for `tab expand`;
 `prompt_e2e` grew the two-line clause.
+
+## A wake over the daemon's own dying pane is one gesture (T-381, 2026-09-15)
+
+**Reported.** On the work computer, `x x` on a ticket page (sleep, then wake) came back "running
+elsewhere (pid N) — resume again to override"; the user read it as "this session does not belong
+here". Enter twice got in. Every return to the page showed the corpse mark, and Enter twice again
+restarted the conversation from its last message. The ticket never showed the live session.
+
+**Why.** Two faults, one feeding the other. (1) Claude Code keeps its `~/.claude/sessions/<pid>.json`
+live for as long as its exit hooks run after the sleep's SIGTERM, and `resume_guard` read that pid
+as an external owner: the daemon's OWN previous pane, still going down, was "elsewhere", and the
+wake needed a confirm. (2) The confirmed resume's kill-session took that process down under the
+fresh pane, and the killed process's `SessionEnd{other}` — same session uuid, the record's — landed
+on the new pane's record after its `SessionStart` had minted `Idle`, where the machine reads it as a
+death: `Exited{Crashed}`, the `x` mark. The `pane_reborn` guard (2026-09-04) refuted only a
+`PaneDied`, and only in `Spawning`. From there the loop closes on itself: Enter on the corpse is a
+resume, the resume finds the LIVE claude's pid file and refuses as elsewhere, the confirm kills that
+live claude and spawns another `--resume`, whose record the kill's straggler marks dead again.
+
+**Shipped.** `AgentAdapter::external_owner` returns an `ExternalOwner { pid, label }` instead of a
+string, and `resume_guard` exempts an owner whose pid is the record's own pane's (`own_pane_pid`:
+tmux lists the sid16 alive and not dead — the pane's process IS the agent's, `mesimon exec` execs).
+The wake's kill-session finishes what the sleep began. `pane_reborn` became `straggler_death`: a
+death frame — `PaneDied`, or an AGENT record's `SessionEnd{other | prompt_input_exit}` — for a pane
+born inside `STRAGGLER_WINDOW` (10 s, `Daemon::pane_born`, in memory only, stamped at the three
+record spawn sites) or still `Spawning`, which tmux lists alive, is the previous tenant's and is
+dropped. `logout`, `clear`, `resume` and a shell record's `SessionEnd` stay out of it (the shell's
+frames are the agent-inside-a-shell compatibility road, and `exit_parks_e2e` drives one by hand). A
+real death inside the window still lands: tmux lists that pane dead, and where the `SessionEnd`
+beat the exit the pane-died behind it carries the status — same `ExitReason` either way.
+
+**Not done.** A record already stranded as `Exited{Crashed}` over a live pane by an older daemon
+takes one more restart-from-last-message on its first Enter after the upgrade (the guard no longer
+asks, the resume still replaces the pane); the rule prevents the state, it does not repair it. The
+interrupt probe's `status_file_for` can read the dying process's file for the beat both are alive.
+
+Tests: `wake_straggler_e2e` (fails on the unpatched daemon at the wake refusal).
