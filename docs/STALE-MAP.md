@@ -10939,3 +10939,12 @@ This is a feature-availability default: individual boards still require explicit
 local enablement and browser pairing. The normal daemon acceptance test verifies
 the no-environment default leaves a fresh board disabled; relay acceptance now
 also exercises pairing and restored grants without the flag in debug builds.
+
+### T-317 deployment follow-up — exclude nested build output from Docker
+
+The first local relay upgrade hit Docker's disk limit because the build context
+included 4.448 GB of untracked files, chiefly the old `team/target` directory.
+The root `target/` exclusion did not cover it. Docker now excludes all nested
+`target/` directories and the `mt/` research scratch directory. Building the
+committed source archive also avoids this legacy local state. This changes the
+build context only; no running volumes or stored board data are removed.
