@@ -10847,3 +10847,36 @@ onto the header, and `↑` keeps its immediate fresh press. The rule is one line
 `App::on_terminal_key` and is the only place the two keys diverge.
 
 Tests: `held_k_on_a_rich_terminal_is_presses_and_still_stops_at_the_top` (app).
+
+## `!` typed a string of letters into its shell (T-383, 2026-09-15)
+
+**Symptom:** on the author's work MacBook (iTerm2), pressing `!` opened the ticket's shell with
+a string of letters and digits already on the prompt line. The home machine never showed it.
+
+**Cause: the release of the key that starts a handover, reported under the kitty flags and
+typed by tmux.** The board runs with `DISAMBIGUATE_ESCAPE_CODES | REPORT_EVENT_TYPES` pushed on
+a terminal that supports the protocol (iTerm2 ≥ 3.5). The press of `!` arrives as plain text;
+its *release*, 50–150 ms later, arrives as `CSI 49;2:3u`. Between the press and the attach the
+TUI reads nothing more from stdin: it asks the daemon `GateStatus` and `OpenTerminal`, and the
+latter kills and spawns a tmux session — several subprocesses, which on a machine with endpoint
+security take longer than a keypress. So the release report was already in stdin when
+`restore_terminal` popped the flags and the tmux client inherited the fd. tmux 3.6a's
+`tty_keys_extended_key` scans digits and `;` only and returns "not a key" at the `:`, so the
+sequence fell through to `first_key`: an Escape, then `49;2:3u` as literal keys into a zsh
+that was still starting — typeahead, inserted on the first prompt. Reproduced against a
+scratch tmux 3.6a with a pty client: the pane received `^[[49;2:3u` verbatim. Enter into an
+agent pane is the same road but spawns nothing, which is why the ticket named `!`.
+
+**Fix:** `restore_terminal` now fences after the pop. `settle_key_reports` writes a
+cursor-position query (`CSI 6 n`, crossterm's `cursor::position`) and waits for the answer,
+which the terminal can only give once it has processed the pop, then empties crossterm's event
+queue. A release reported before the fence is dropped there; one after it is never sent. This
+covers every road through `restore_terminal` — the focus handover, the `!` shell, the `^g`
+editor, `^Z` and exit. Non-kitty terminals never reach it (no flags, no reports, and plain
+typeahead is the shell's). The cost is one round-trip; a kitty-capable terminal that does not
+answer CPR would cost crossterm's 2 s timeout once per handover, and none is known.
+
+**Not done:** teaching the daemon to spawn faster, and keeping the flags through the handover
+(refused for the same reason as the focus report in T-292's amendment: tmux would read them).
+Not unit-tested — the fence is a tty conversation; the tmux half is the repro above and the
+trap is recorded in CLAUDE.md.

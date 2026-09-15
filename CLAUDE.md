@@ -420,6 +420,11 @@ will not show up in our tests until they break something.
   signals only, and a stated High signal commits through it.
 - **`probe_activity` only scans `Running`**, which is what makes `Idle{Background}` immune to it.
 - **`log` is a zsh builtin** — use `/usr/bin/log`.
+- **A kitty key-release report outlives the keypress, and tmux types it.** Under the pushed
+  flags a release is `CSI code;mods:3 u`; tmux 3.6a's CSI-u parser stops at the `:` and passes
+  it to the pane as text. `restore_terminal` pops the flags and then fences on a
+  cursor-position reply before the attach (`settle_key_reports`), so nothing reported under the
+  flags reaches the tmux client.
 - **Plan mode admits an MCP tool only on `annotations.readOnlyHint: true` and ignores allow
   rules; default and auto mode admit only on an allow rule and ignore the hint** (2.1.270). A
   read tool needs both, and `read_rung_is_hinted_read_only` keeps them one list.

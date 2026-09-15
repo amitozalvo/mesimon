@@ -460,6 +460,7 @@ fn restore_terminal() -> Result<()> {
     // sequence, and a pop with nothing pushed is defined as a no-op.
     if kitty_keyboard_supported() {
         execute!(std::io::stdout(), PopKeyboardEnhancementFlags)?;
+        settle_key_reports();
     }
     disable_raw_mode()?;
     execute!(
@@ -471,6 +472,31 @@ fn restore_terminal() -> Result<()> {
         SetCursorStyle::DefaultUserShape
     )?;
     Ok(())
+}
+
+/// The pop is written, not yet obeyed, and the key that started this handover
+/// is often still held: under the flags its RELEASE is reported as
+/// `CSI code;mods:3 u`, and it lands on stdin after the loop has stopped
+/// reading — where the tmux client inherits it. tmux 3.6a's CSI-u parser
+/// (`tty_keys_extended_key`) stops at the `:`, so the report is not a key but
+/// text, and `49;2:3u` was typed into the `!` shell on a machine where the
+/// daemon's spawn took longer than a keypress (T-383). A cursor-position
+/// query is the fence: the terminal answers it only after it has processed
+/// the pop, so a report queued before the answer was sent under the flags and
+/// is dropped here, and one after it is never sent. Nothing pending is
+/// typeahead worth keeping — `handover::drain_stdin` discards the same on the
+/// way back. Kitty-capable terminals answer CPR; crossterm gives up after 2 s
+/// on one that does not, and the handover goes on.
+fn settle_key_reports() {
+    use ratatui::crossterm::event::{poll, read};
+    // CSI 6 n. Every event crossterm reads past on the way to the answer is
+    // kept in its queue, which the loop below empties.
+    let _ = ratatui::crossterm::cursor::position();
+    while matches!(poll(std::time::Duration::ZERO), Ok(true)) {
+        if read().is_err() {
+            break;
+        }
+    }
 }
 
 /// Handover-only: the primary screen holds pre-TUI output (build logs, shell
