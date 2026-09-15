@@ -847,7 +847,7 @@ checksum = "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98"
 
 [[package]]
 name = "mesimon"
-version = "0.1.0-alpha.21"
+version = "0.1.0-alpha.22"
 dependencies = [
  "anyhow",
  "mesimon-backend-tmux",
@@ -862,7 +862,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-backend-tmux"
-version = "0.1.0-alpha.21"
+version = "0.1.0-alpha.22"
 dependencies = [
  "anyhow",
  "libc",
@@ -872,7 +872,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-core"
-version = "0.1.0-alpha.21"
+version = "0.1.0-alpha.22"
 dependencies = [
  "nucleo-matcher",
  "serde",
@@ -884,7 +884,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-daemon"
-version = "0.1.0-alpha.21"
+version = "0.1.0-alpha.22"
 dependencies = [
  "anyhow",
  "libc",
@@ -903,7 +903,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-relay"
-version = "0.1.0-alpha.21"
+version = "0.1.0-alpha.22"
 dependencies = [
  "libc",
  "mesimon-core",
@@ -922,7 +922,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-team"
-version = "0.1.0-alpha.21"
+version = "0.1.0-alpha.22"
 dependencies = [
  "chacha20poly1305",
  "ed25519-dalek",
@@ -942,7 +942,7 @@ dependencies = [
 
 [[package]]
 name = "mesimon-tui"
-version = "0.1.0-alpha.21"
+version = "0.1.0-alpha.22"
 dependencies = [
  "anyhow",
  "libc",

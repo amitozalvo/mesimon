@@ -6,6 +6,55 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.22 — 2026-09-15
+
+### Added
+
+- **Shift+Enter on a column header asks every seated agent in that column
+  the same prompt.** The ask field opens under the header; Enter pastes the
+  words into every agent's pane, wakes parked agents with the words held,
+  and skips tickets with no agent. The receipt reads
+  `asked 3 ∙ queued 2 ∙ 1 without claude`. The batch never starts a session.
+  The field opens at `queued` when any of those agents shares the checkout;
+  Shift+Tab flips it to `now`, and tickets on their own worktree are always
+  sent now.
+- **`Tab` in the ask field grows it into the full composer.** Enter breaks a
+  line, `Ctrl+S` sends (or queues, when the delivery row says `queued`),
+  Shift+Tab flips now/queued where the field offers it, and Esc folds the
+  text back into the one-line field. The frame names the destination
+  (`ASK CLAUDE`, `ASK EVERY CODEX`).
+- **A prompt can now contain line breaks.** A multi-line prompt keeps its
+  lines in Claude's and Codex's input box and still submits as one turn.
+  Prompt history keeps the lines. Prompt templates remain one line.
+
+### Changed
+
+- **Shift+Enter over a ticket with no agent opens the ask field instead of
+  starting the agent on the ticket title.** Typed words become the agent's
+  first prompt; a blank Enter still sends the title. Nothing spawns until
+  Enter. The delivery row opens at `now` on a quiet shared checkout and at
+  `queued` while another agent works in that checkout, with Shift+Tab
+  flipping either; a worktree ticket opens at `now` with no toggle. The hint
+  reads `start + ask claude`.
+
+### Fixed
+
+- **Sleeping a session and waking it immediately no longer asks for a
+  confirm or leaves the woken session marked crashed.** Pressing `x` and
+  then `x` on a ticket page while the agent was still running its exit hooks
+  answered `running elsewhere (pid N)`; confirming killed that process under
+  the freshly spawned pane, and its late exit marked the new session's record
+  crashed. A session genuinely running elsewhere, and a genuine crash, are
+  still reported.
+- **Holding `k` on the first ticket of a column stops there** on terminals
+  that speak the kitty keyboard protocol. The held key previously carried the
+  cursor onto the column header and the board's top row; holding `↑` already
+  stopped. A fresh `k` after a pause still steps onto the header.
+- **Handing over to a session's pane no longer types stray characters such as
+  `49;2:3u` at its first prompt** on terminals that speak the kitty keyboard
+  protocol. Mesimon now waits for the terminal to confirm the protocol is off
+  before attaching.
+
 ## v0.1.0-alpha.21 — 2026-09-13
 
 ### Added
