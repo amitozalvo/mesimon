@@ -1082,6 +1082,7 @@ dependencies = [
  "mesimon-backend-tmux",
  "mesimon-core",
  "mesimon-daemon",
+ "mesimon-team",
  "mesimon-tui",
  "serde",
  "serde_json",

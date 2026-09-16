@@ -15,6 +15,7 @@ path = "src/main.rs"
 mesimon-core.workspace = true
 mesimon-daemon.workspace = true
 mesimon-tui.workspace = true
+mesimon-team.workspace = true
 mesimon-backend-tmux.workspace = true
 anyhow.workspace = true
 serde = { workspace = true }

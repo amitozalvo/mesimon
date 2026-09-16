@@ -44,7 +44,7 @@ fn run(device: DeviceFile, rx: Receiver<Wire>, report: &impl Fn(Event) -> bool) 
     if !matches!(serde_json::from_str::<Wire>(&text), Ok(Wire::Authenticated { .. })) {
         return Err(());
     }
-    ws.get_mut().sock.set_read_timeout(Some(Duration::from_millis(100))).map_err(|_| ())?;
+    ws.get_mut().set_read_timeout(Some(Duration::from_millis(100))).map_err(|_| ())?;
     if !report(Event::Online(origin)) {
         return Err(());
     }

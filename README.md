@@ -258,8 +258,13 @@ Each board requires explicit enablement and pairing, including private boards.
 Enabling Mesophon does not share a board with teammates. The host must stay awake
 and its board daemon must be running. This preview does not yet provide board
 editing, agent start/stop, interactive terminals, or starting stopped daemons.
-A compatible relay with its optional HTTPS browser listener and a certificate
-trusted by the browser is required; see [relay deployment](team/relay/README.md#mesophon-browser-listener).
+For a browser on this Mac, set the relay’s `WEB_ORIGIN=http://localhost:8444`
+and publish port 8444 on loopback only. Run `mesimon mesophon setup` to check the
+connection and open the browser; there is no certificate or Keychain setup.
+`mesimon mesophon setup --check` checks without opening a browser. A phone or
+another computer needs a reachable HTTPS relay with a browser-trusted certificate;
+`localhost` always means the device running the browser. See
+[relay deployment](team/relay/README.md#mesophon-browser-listener).
 
 A prompt targets the session shown when you send it. **Submitted** means delivery
 to the agent’s input, not completion of its work. Waiting Codex prompts retain the

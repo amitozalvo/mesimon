@@ -10948,3 +10948,25 @@ The root `target/` exclusion did not cover it. Docker now excludes all nested
 `target/` directories and the `mt/` research scratch directory. Building the
 committed source archive also avoids this legacy local state. This changes the
 build context only; no running volumes or stored board data are removed.
+
+### T-317 usability follow-up — certificate-free localhost browser
+
+Manual Keychain trust is not the local Mesophon onboarding flow. The default
+relay certificate was designed for native pinning; macOS browser validation also
+rejected its long lifetime and missing server-authentication EKU. For a browser
+on the same Mac, the user chose `http://localhost:8444`. The browser listener and
+native control client now support HTTP/WS only for exact loopback origins. Remote
+origins remain HTTPS/WSS; the native Teams listener and saved pin are unchanged.
+Compose publishes the browser port on loopback independently of its Teams bind
+address, and refuses HTTP with a non-loopback publication setting. Custom
+container deployments must preserve that publication boundary. Asset requests
+require the configured Host, and browser WebSockets still require the exact
+Origin. HTTP native connections use literal loopback and require a local relay.
+
+`mesimon mesophon setup` discovers the existing signed-in relay, checks its browser
+endpoint and opens it, without touching trust stores or enabling/pairing boards.
+`--check` omits browser launch. Chromium/WebKit acceptance exercises both HTTPS
+and local HTTP, with certificate exceptions disabled for HTTP, and checks Host
+and Origin rejection in addition to pairing, preview, prompt, reconnect and revoke.
+Phone access still requires a reachable HTTPS relay with a browser-trusted
+certificate; localhost setup applies only to the browser on the host itself.

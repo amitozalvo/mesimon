@@ -6,6 +6,7 @@ mod gate;
 mod hook;
 mod join;
 mod mcp;
+mod mesophon;
 mod state;
 
 use std::path::PathBuf;
@@ -60,6 +61,7 @@ fn main() -> Result<()> {
             mesimon_tui::run(&root)
         }
         Some("doctor") => doctor::run(&args[1..]),
+        Some("mesophon") => mesophon::run(&args[1..]),
         // Redeem an invite code from the shell (T-335): the current
         // directory's daemon joins, and the joined board's root is printed.
         Some("join") if cfg!(debug_assertions) || std::env::var_os("MESIMON_TEAMS").is_some() => {
@@ -113,6 +115,7 @@ fn help_text() -> &'static str {
          mesimon daemon --repo <path>   run the daemon in the foreground\n  \
          mesimon open <dir>             open the board at a directory (a joined team board)\n  \
          mesimon join <code>            redeem a team invite code; prints the board's directory\n  \
+         mesimon mesophon setup         check the relay and open its browser app\n  \
          mesimon state explain [session]   explain observed state and movement\n  \
          mesimon state replay <files...>  replay offline state scenarios\n  \
          mesimon state compatibility [claude|codex] <version>   show measured Claude coverage\n  \

@@ -234,7 +234,7 @@ async function connect(entry, code, pairingAttempt = 0) {
   crypto?.free();
   crypto = new Browser(identity.seed);
   const ws = new WebSocket(
-    `${location.origin.replace(/^https:/, "wss:")}/control`,
+    `${location.origin.replace(/^http/, "ws")}/control`,
   );
   socket = ws;
   setConnection(code ? "Pairing…" : "Connecting…");

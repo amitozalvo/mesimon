@@ -1,4 +1,4 @@
-// Runs inside the Rust test's supervised fixture, against its real TLS relay.
+// Runs inside the Rust test's supervised fixture, against its real relay.
 import { chromium, webkit } from "playwright";
 import assert from "node:assert/strict";
 import net from "node:net";
@@ -9,6 +9,7 @@ assert(
   origin && process.env.MESOPHON_TEST_SOCKET,
   "run through the mesophon Rust acceptance test",
 );
+const localHTTP = origin.startsWith("http:");
 function command(command) {
   return new Promise((resolve, reject) => {
     const sock = net.createConnection(process.env.MESOPHON_TEST_SOCKET);
@@ -42,7 +43,7 @@ for (const [name, engine] of [
     ]) {
       const context = await browser.newContext({
         viewport,
-        ignoreHTTPSErrors: true,
+        ignoreHTTPSErrors: !localHTTP,
       }); // fixture-only self-signed TLS
       const page = await context.newPage();
       const errors = [];
@@ -52,6 +53,23 @@ for (const [name, engine] of [
       });
       try {
         await page.goto(origin);
+        assert(await page.evaluate(() => isSecureContext));
+        if (localHTTP) {
+          const rejected = await context.request.get(origin, {
+            headers: { Host: "attacker.example" },
+          });
+          assert.equal(rejected.status(), 403);
+          const crossOrigin = await context.request.get(`${origin}/control`, {
+            headers: {
+              Origin: "http://attacker.example",
+              Connection: "Upgrade",
+              Upgrade: "websocket",
+              "Sec-WebSocket-Version": "13",
+              "Sec-WebSocket-Key": "dGhlIHNhbXBsZSBub25jZQ==",
+            },
+          });
+          assert.equal(crossOrigin.status(), 403);
+        }
         await page.waitForFunction(() =>
           document
             .querySelector("#connection")
@@ -90,6 +108,13 @@ for (const [name, engine] of [
           .click();
         await page.waitForFunction(() =>
           document.querySelector("#delivery").textContent.includes("Submitted"),
+        );
+        // Submitted acknowledges input delivery, not provider execution. The
+        // stub writes its receipt before echoing; observing the echo makes
+        // the subsequent exactly-once receipt check independent of timing.
+        await page.waitForFunction(
+          (text) => document.querySelector("#preview").textContent.includes(text),
+          prompt,
         );
         const got = await fs.readFile(
           path.join(process.env.MESOPHON_TEST_DIR, "received"),
