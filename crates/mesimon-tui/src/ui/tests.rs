@@ -6982,6 +6982,9 @@ fn the_search_list_scrolls_by_one_to_keep_the_cursor_on_screen() {
 #[test]
 fn golden_mesophon_pair_and_revoke() {
     let mut app = app_graphite(fixture_archived());
+    app.mesophon_available = true;
+    app.mode = Mode::Sharing { idx: 0, editing: None, armed: false };
+    golden("sharing_remote_control_120x30", &render(&app, 120, 30));
     app.mesophon_dialog = true;
     app.team.device = crate::app::shared_team_fixture().device;
     app.seed_team_drafts_for_test();

@@ -10,7 +10,7 @@ use mesimon_team::{
 const USAGE: &str = "usage: mesimon mesophon setup [--check]\n\
 Checks your signed-in relay and opens the browser app. --check only checks.\n\
 For this Mac, configure the relay with WEB_ORIGIN=http://localhost:8444.\n\
-In the TUI, open Esc → Mesophon, enable the board, and choose Pair a browser.";
+In the TUI, open Esc → Sharing → Remote Control, enable the board, and choose Pair a browser.";
 
 pub fn run(args: &[String]) -> Result<()> {
     if matches!(args, [arg] if arg == "--help" || arg == "-h") {
@@ -31,18 +31,18 @@ pub fn run(args: &[String]) -> Result<()> {
         Ok(Response::ControlInfo { origin: None, .. }) => {
             bail!("Enable the relay's browser listener. For this Mac, set WEB_ORIGIN=http://localhost:8444 and restart the relay.");
         }
-        Ok(_) => bail!("This relay does not support this Mesophon version; upgrade the relay."),
-        Err(error) => bail!("Could not discover Mesophon: {error}. Check that your relay is running and supports Mesophon."),
+        Ok(_) => bail!("This relay does not support this Remote Control version; upgrade the relay."),
+        Err(error) => bail!("Could not discover Remote Control: {error}. Check that your relay is running and supports Remote Control."),
     };
     let mut socket = relay
         .control_socket(&origin)
         .context("The relay advertised a browser endpoint that could not be reached safely")?;
     let _ = socket.close(None);
-    println!("Mesophon is ready at {origin}");
+    println!("Remote Control is ready at {origin}");
     if origin.starts_with("http:") {
         println!("This Mac only. No certificate setup is needed.");
     }
-    println!("In Mesimon: Esc → Mesophon → Enable this board → Pair a browser.");
+    println!("In Mesimon: Esc → Sharing → Remote Control → Enable this board → Pair a browser.");
     if !check {
         let opener = if cfg!(target_os = "macos") { "/usr/bin/open" } else { "xdg-open" };
         let status = std::process::Command::new(opener)

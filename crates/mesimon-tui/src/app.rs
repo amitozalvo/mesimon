@@ -218,6 +218,7 @@ pub enum SharingRow {
     Name,
     SignIn,
     SignOut,
+    RemoteControl,
     ControlEnable,
     ControlDisable,
     ControlPair,
@@ -5188,13 +5189,17 @@ impl App {
             Scope::Prompts => self.return_to_settings(Verb::AgentPrompts),
             Scope::Sharing => {
                 self.join_watch = None;
-                self.mode = Mode::Menu {
-                    idx: self.menu_row(if self.mesophon_dialog {
-                        Verb::Mesophon
-                    } else {
-                        Verb::Sharing
-                    }),
-                };
+                if self.mesophon_dialog {
+                    self.mesophon_dialog = false;
+                    let idx = self
+                        .sharing_rows()
+                        .iter()
+                        .position(|row| *row == SharingRow::RemoteControl)
+                        .unwrap_or(0);
+                    self.mode = Mode::Sharing { idx, editing: None, armed: false };
+                } else {
+                    self.mode = Mode::Menu { idx: self.menu_row(Verb::Sharing) };
+                }
             }
             Scope::ColumnSettings => {
                 if self.column_agents {
@@ -5640,13 +5645,22 @@ impl App {
         let drafts_differ = device.is_some_and(|d| {
             d.relay != self.team_relay_draft || d.display_name != self.team_name_draft
         });
-        let mut rows = vec![SharingRow::Heading("YOU"), SharingRow::Relay, SharingRow::Name];
+        let mut rows = Vec::new();
+        if self.mesophon_available && !self.mesophon_dialog {
+            rows.push(SharingRow::RemoteControl);
+        }
+        rows.extend([SharingRow::Heading("YOU"), SharingRow::Relay, SharingRow::Name]);
         if !signed || drafts_differ {
             rows.push(SharingRow::SignIn);
         }
         if signed {
             rows.push(SharingRow::SignOut);
         } else {
+            return rows;
+        }
+        // Remote Control can expose this parent even when Teams is off.
+        // Keep its sign-in rows, without offering board-sharing actions.
+        if !self.mesophon_dialog && self.mesophon_available && !self.teams {
             return rows;
         }
         rows.push(SharingRow::Heading("THIS BOARD"));
@@ -5709,6 +5723,11 @@ impl App {
             .unwrap_or_default();
         let drafts_missing = self.team_relay_draft.is_empty() || self.team_name_draft.is_empty();
         match row {
+            SharingRow::RemoteControl => (
+                "Remote Control".into(),
+                "browser access to this board ∙ pair and revoke".into(),
+                "open",
+            ),
             SharingRow::ControlOrigin => (
                 format!("Browser: {}", self.control.origin),
                 "open this address on your phone or computer ∙ enter copies it".into(),
@@ -5726,7 +5745,7 @@ impl App {
                 "",
             ),
             SharingRow::ControlEnable => (
-                "Enable Mesophon on this board".into(),
+                "Enable Remote Control on this board".into(),
                 "your paired browsers can preview and prompt its agents".into(),
                 "enable",
             ),
@@ -5736,7 +5755,7 @@ impl App {
                 if self.control.connected { "pair" } else { "" },
             ),
             SharingRow::ControlDisable => (
-                if armed { "Disable Mesophon?" } else { "Disable Mesophon" }.into(),
+                if armed { "Disable Remote Control?" } else { "Disable Remote Control" }.into(),
                 "all devices lose access to this board ∙ enter again confirms".into(),
                 "disable",
             ),
@@ -5984,7 +6003,7 @@ impl App {
         match self.req(Command::Mesophon { action }) {
             Response::Mesophon { info } => self.control = info,
             Response::Err { message } => self.status = message,
-            _ => self.status = "Mesophon is unavailable on this daemon".into(),
+            _ => self.status = "Remote Control is unavailable on this daemon".into(),
         }
         if let Mode::Sharing { armed, .. } = &mut self.mode {
             *armed = false;
@@ -6006,6 +6025,9 @@ impl App {
             this.mode = Mode::Sharing { idx, editing: Some(buf), armed: false };
         };
         match row {
+            SharingRow::RemoteControl => {
+                self.dispatch(Verb::Mesophon, Key::Enter, Scope::Sharing, &self.ctx())
+            }
             SharingRow::ControlStatus => Ok(()),
             SharingRow::ControlOrigin => {
                 self.status = crate::clipboard::copy_status("browser URL", &self.control.origin);
@@ -11750,8 +11772,20 @@ mod tests {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.team.device = shared_team_fixture().device;
         app.mesophon_available = true;
-        app.dispatch(Verb::Mesophon, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
+        app.teams = false;
+        assert!(!keymap::menu_items(&app.ctx()).iter().any(|row| row.verb == Verb::Mesophon));
+        app.dispatch(Verb::Sharing, Key::Enter, Scope::Menu, &app.ctx()).unwrap();
+        assert!(!app.mesophon_dialog);
+        assert!(!app.sharing_rows().contains(&SharingRow::Publish));
+        app.teams = true;
+        assert!(app.sharing_rows().contains(&SharingRow::Publish));
+        let opener =
+            app.sharing_rows().iter().position(|r| *r == SharingRow::RemoteControl).unwrap();
+        assert_eq!(app.sharing_words(&SharingRow::RemoteControl, false).0, "Remote Control");
+        app.mode = Mode::Sharing { idx: opener, editing: None, armed: false };
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(app.mesophon_dialog);
+        assert!(!app.sharing_rows().contains(&SharingRow::RemoteControl));
         let idx = app.sharing_rows().iter().position(|r| *r == SharingRow::ControlEnable).unwrap();
         app.mode = Mode::Sharing { idx, editing: None, armed: false };
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
@@ -11769,6 +11803,15 @@ mod tests {
         assert!(!sent.borrow().iter().any(|s| s.contains("Revoke")));
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent.borrow().iter().any(|s| s.contains("Revoke") && s.contains("phone")));
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert!(!app.mesophon_dialog);
+        assert_eq!(app.mode, Mode::Sharing { idx: opener, editing: None, armed: false });
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Menu { idx: app.menu_row(Verb::Sharing) });
+        app.team.device = None;
+        assert!(app.sharing_rows().contains(&SharingRow::RemoteControl));
+        app.mesophon_available = false;
+        assert!(!app.sharing_rows().contains(&SharingRow::RemoteControl));
     }
 
     #[test]

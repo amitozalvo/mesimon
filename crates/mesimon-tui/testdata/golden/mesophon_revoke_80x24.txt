@@ -2,7 +2,7 @@
 
     TODO                          2     IN PROGRESS                  2   2   0
 
-    Dec╭─ MESOPHON ─────────────────────────────────────────────────────╮R   D
+    Dec╭─ REMOTE CONTROL ───────────────────────────────────────────────╮R   D
        │ YOU                                                            │E   O
     Key│   Relay: relay.example                                         │V   N
        │   Display name: Amit                                           │I   E
@@ -13,7 +13,7 @@
        │   Pair a browser                                               │
        │   Pairing code: msmn1-example-pairing-code                     │
        │   Revoke My phone                                              │
-       │   Disable Mesophon                                             │
+       │   Disable Remote Control                                       │
        │                                                                │
        │     paired to this board ∙ enter twice revokes access          │
        ╰───────────────────────── jk select ∙ enter revoke ∙ esc close ─╯

@@ -53,6 +53,8 @@ for (const [name, engine] of [
       });
       try {
         await page.goto(origin);
+        assert.equal(await page.title(), "Remote Control");
+        assert(await page.getByRole("heading", { name: "Remote Control", exact: true }).isVisible());
         assert(await page.evaluate(() => isSecureContext));
         if (localHTTP) {
           const rejected = await context.request.get(origin, {
@@ -73,7 +75,7 @@ for (const [name, engine] of [
         await page.waitForFunction(() =>
           document
             .querySelector("#connection")
-            .textContent.includes("Enable Mesophon"),
+            .textContent.includes("Enable Remote Control"),
         );
         const paired = await command({
           cmd: "mesophon",

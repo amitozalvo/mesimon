@@ -10994,3 +10994,15 @@ Mesophon-started sessions deferred. Also worth taking: the awareness projection
 shape for push, the two-word liveness, queue-vs-steer follow-ups, a time-based
 park setting, and usage-from-history. Rejected: hidden-ref checkpoints (promise
 1) and system-prompt runtime instructions (zero injection). Nothing shipped.
+
+### T-317 navigation follow-up — Sharing → Remote Control
+
+The browser-control entry now lives inside Sharing and is labelled Remote
+Control. It is no longer a top-level Esc-menu entry. Leaving the control dialog
+returns to its row in Sharing; leaving Sharing returns to the Esc menu. The
+Sharing entry remains available when only the remote-control feature is enabled,
+and its Remote Control row is available before sign-in so relay setup remains
+reachable. With Teams disabled, that parent offers identity and Remote Control
+without exposing board-sharing actions. Dialog labels, browser copy and setup instructions use the same name
+and path. Protocol names, environment variables and the CLI spelling remain
+compatible.

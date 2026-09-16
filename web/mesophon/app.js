@@ -332,7 +332,7 @@ $("pair-form").onsubmit = async (event) => {
   event.preventDefault();
   const code = $("code").value.trim();
   if (!code) {
-    setConnection("Enter the code from the host’s Mesophon dialog.");
+    setConnection("Enter the code from the host’s Sharing → Remote Control dialog.");
     return;
   }
   await connect(undefined, code);
@@ -412,7 +412,7 @@ try {
     await save();
   }
   boards();
-  setConnection("Enable Mesophon on the host, then pair with its code.");
+  setConnection("Enable Remote Control on the host, then pair with its code.");
 } catch {
   setConnection(
     "Could not load the browser module or device storage. Check the deployment and browser storage permissions.",

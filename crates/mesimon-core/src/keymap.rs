@@ -3398,13 +3398,6 @@ static MENU_ITEMS: &[MenuItem] = &[
         avail: |c| c.has_archived,
         key: "",
     },
-    MenuItem {
-        verb: Verb::Mesophon,
-        label: |_| "Mesophon".into(),
-        detail: |_| "browser access to this board ∙ pair and revoke".into(),
-        avail: |c| c.mesophon,
-        key: "",
-    },
     // Board sharing (T-334; one row since T-335). The row names where the
     // board stands and opens the one dialog: signed out it says so and the
     // dialog starts on the identity; shared it names the members and the
@@ -3436,7 +3429,7 @@ static MENU_ITEMS: &[MenuItem] = &[
                 "share this board, or join one with a code".into()
             }
         },
-        avail: |c| c.teams,
+        avail: |c| c.teams || c.mesophon,
         key: "",
     },
     // The door to the preferences. Never a suggestion — a setting is not
@@ -7681,6 +7674,9 @@ mod tests {
             assert!(!row(&off), "{v:?} is offered without teams");
             assert!(row(&on), "{v:?} is missing with teams");
         }
+        let control_only = Ctx { mesophon: true, ..Default::default() };
+        assert!(menu_items(&control_only).iter().any(|row| row.verb == Verb::Sharing));
+        assert!(!menu_items(&control_only).iter().any(|row| row.verb == Verb::Mesophon));
     }
 
     /// `q` pops one level and `?` is reachable from every screen — the two

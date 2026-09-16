@@ -245,17 +245,17 @@ before/after boards and occasional Haiku/Sonnet compatibility captures.
 
 Apache-2.0. See `LICENSE`, `NOTICE`, and `TRADEMARK.md`.
 
-## Mesophon browser preview
+## Remote Control browser preview
 
-Mesophon’s first milestone lets your own browser **view tickets, preview an agent’s
+Remote Control (Mesophon) lets your own browser **view tickets, preview an agent’s
 output, and send a prompt to that existing agent**. It works on desktop and phone.
-Debug builds include Mesophon automatically. In release builds, set
-`MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Mesophon**, sign in to
+Debug builds include Remote Control automatically. In release builds, set
+`MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
 your relay, and enable this board. Choose **Pair a browser**, open the displayed
 browser address, and enter its single-use code within ten minutes.
 
 Each board requires explicit enablement and pairing, including private boards.
-Enabling Mesophon does not share a board with teammates. The host must stay awake
+Enabling Remote Control does not share a board with teammates. The host must stay awake
 and its board daemon must be running. This preview does not yet provide board
 editing, agent start/stop, interactive terminals, or starting stopped daemons.
 For a browser on this Mac, set the relay’s `WEB_ORIGIN=http://localhost:8444`
@@ -274,8 +274,8 @@ cannot be recovered, the browser shows **outcome unknown**; check the agent befo
 sending again. Prompt text is limited to 4096 UTF-8 bytes; previews show the last
 50 lines, and oversized responses are rejected.
 
-Select a paired device in the Mesophon dialog and press Enter twice to revoke it.
-Disabling Mesophon removes every grant for this board; re-enabling requires new
+Select a paired device in the Remote Control dialog and press Enter twice to revoke it.
+Disabling Remote Control removes every grant for this board; re-enabling requires new
 pairing. **Forget this device** removes the browser’s local identity and remembered
 boards; revoke on the host to remove the corresponding grants too.
 

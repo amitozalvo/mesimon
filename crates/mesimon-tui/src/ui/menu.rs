@@ -109,7 +109,7 @@ pub(super) fn draw_sharing(f: &mut Frame, app: &App) {
         .collect();
     let headings: Vec<bool> = rows.iter().map(|r| matches!(r, SharingRow::Heading(_))).collect();
     let title = if app.mesophon_dialog {
-        "MESOPHON".to_string()
+        "REMOTE CONTROL".to_string()
     } else {
         match &app.team.board {
             Some(b) => {
