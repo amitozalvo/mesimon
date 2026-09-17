@@ -62,9 +62,9 @@
       "expect": {
         "state": {
           "state": "idle",
-          "stop_reason": "end_turn"
+          "stop_reason": "monitoring"
         },
-        "column": "REVIEW"
+        "column": "IN PROGRESS"
       }
     },
     {
@@ -110,9 +110,9 @@
       "expect": {
         "state": {
           "state": "idle",
-          "stop_reason": "end_turn"
+          "stop_reason": "monitoring"
         },
-        "column": "REVIEW"
+        "column": "IN PROGRESS"
       }
     }
   ]

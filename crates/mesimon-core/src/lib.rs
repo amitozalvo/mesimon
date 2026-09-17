@@ -9,6 +9,7 @@ pub mod adopt;
 pub mod attention;
 pub mod authorize;
 pub mod automove;
+pub mod background;
 pub mod board;
 pub mod board_source;
 pub mod brief;

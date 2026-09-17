@@ -118,6 +118,7 @@ impl SessionState {
                     stop_reason: StopReason::EndTurn
                         | StopReason::Interrupted
                         | StopReason::Background
+                        | StopReason::Monitoring
                 }
         )
     }
@@ -147,20 +148,11 @@ pub enum Reason {
 pub enum StopReason {
     EndTurn,
     Interrupted,
-    /// The turn ended but the agent is PARKED, not done: the Stop payload
-    /// carried a `background_tasks[]` entry that means work is still in
-    /// flight (`attention::task_blocks_end_turn`). Nothing is painting the
-    /// pane and nobody is waiting on the user — the task's completion
-    /// notification arrives as a `UserPromptSubmit` and the turn resumes.
-    ///
-    /// It exists because the two states either side of it are both lies.
-    /// Re-asserting `Running` (what shipped first) is contradicted within
-    /// seconds by the quiet probe, which then demotes to `Interrupted` — and
-    /// nothing interrupted it (dogfood 2026-09-01: a backgrounded build-poll
-    /// left T-128 with no card glyph at all for two minutes). Only `EndTurn`
-    /// promotes a ticket, so parking here also keeps the card in IN PROGRESS,
-    /// which is the truthful place for it.
+    /// The lead is parked while live agent tasks work. Quiet-pane probes must
+    /// not interrupt it; it counts as working for cards and automation.
     Background,
+    /// Only watches/background shells remain. No active agent work is held.
+    Monitoring,
     Unknown,
 }
 
@@ -344,11 +336,9 @@ pub struct SessionRecord {
     /// next finished turn for good. Sorted, deduplicated.
     #[serde(default)]
     pub idle_teammates: Vec<String>,
-    /// IDs returned by this conversation's top-level Monitor tool. Claude can
-    /// label these dormant watches as `shell` in Stop; identity preserves their
-    /// meaning across daemon restarts. No commands or prompt text are stored.
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub monitor_task_ids: Vec<String>,
+    /// Ephemeral liveness evidence: restart deliberately starts empty.
+    #[serde(skip)]
+    pub background_tasks: crate::background::Registry,
     /// The note this session's approved plan lives in (2026-09-03). Every
     /// `ExitPlanMode` the user approves writes its plan here, replacing the
     /// last, so a session has ONE plan note the way it has one plan file
@@ -427,7 +417,7 @@ impl SessionRecord {
             codex_plan_dialog_seen: false,
             codex_plan_dismissed_turn: None,
             idle_teammates: Vec::new(),
-            monitor_task_ids: Vec::new(),
+            background_tasks: Default::default(),
             plan_note: None,
             ticket_read: false,
         }

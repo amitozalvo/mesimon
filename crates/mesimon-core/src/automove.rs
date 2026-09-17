@@ -9,7 +9,8 @@
 //! Deliberately NOT rules: an interrupt (`Idle{Interrupted}`) is not "done";
 //! `RequiresAction` is not "working" (a trust/startup modal fires before any
 //! work happens — a mid-turn permission ask was preceded by `Running` anyway);
-//! a parked turn (`Idle{Background}`) is neither. Low/Stale confidence never
+//! watch-only parking (`Idle{Monitoring}`) is neither. Agent-backed parking
+//! (`Idle{Background}`) triggers `on_working`. Low/Stale confidence never
 //! moves a ticket — the observe tier may misread a transcript, and a wrong
 //! card position is a lie the user has to undo by hand.
 
@@ -41,7 +42,9 @@ pub fn explain<'a>(
         return MoveDecision { outcome: "insufficient_confidence", destination: None };
     }
     let destination = match to {
-        SessionState::Running => column.on_working.as_deref(),
+        SessionState::Running | SessionState::Idle { stop_reason: StopReason::Background } => {
+            column.on_working.as_deref()
+        }
         SessionState::Idle { stop_reason: StopReason::EndTurn } => column.on_done.as_deref(),
         _ => return MoveDecision { outcome: "state_does_not_trigger_move", destination: None },
     };
@@ -109,16 +112,21 @@ mod tests {
         assert_eq!(automove(&col("IN PROGRESS"), &unknown_stop, Confidence::High), None);
     }
 
-    /// A turn parked on background work is neither done nor working: the
-    /// ticket stays in IN PROGRESS until the task lands and the agent really
-    /// finishes. Promoting here would put a card in REVIEW that is still
-    /// going to change (dogfood 2026-09-01, T-128).
+    /// Watch-only work neither claims active work nor fabricates completion.
     #[test]
     fn a_parked_turn_is_not_done() {
-        let parked = SessionState::Idle { stop_reason: StopReason::Background };
+        let parked = SessionState::Idle { stop_reason: StopReason::Monitoring };
         for c in ["TODO", "IN PROGRESS", "REVIEW"] {
             assert_eq!(automove(&col(c), &parked, Confidence::High), None);
         }
+    }
+
+    #[test]
+    fn background_agents_trigger_working_but_monitors_never_do() {
+        let work = SessionState::Idle { stop_reason: StopReason::Background };
+        assert_eq!(automove(&col("REVIEW"), &work, Confidence::High), Some("IN PROGRESS"));
+        assert_eq!(automove(&col("REVIEW"), &work, Confidence::Low), None);
+        assert_eq!(automove(&col("IN PROGRESS"), &work, Confidence::High), None);
     }
 
     #[test]

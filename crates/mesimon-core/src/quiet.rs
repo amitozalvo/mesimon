@@ -153,7 +153,7 @@ mod tests {
             codex_plan_dialog_seen: false,
             codex_plan_dismissed_turn: None,
             idle_teammates: vec![],
-            monitor_task_ids: vec![],
+            background_tasks: Default::default(),
             plan_note: None,
             ticket_read: false,
         }
@@ -161,6 +161,21 @@ mod tests {
 
     fn board_with(sessions: Vec<SessionRecord>) -> Board {
         Board { sessions, ..Board::default() }
+    }
+
+    #[test]
+    fn monitoring_releases_working_and_keep_awake_holds() {
+        let mut s = session(
+            ulid::Ulid::new(),
+            SessionKind::Claude,
+            "/tmp",
+            SessionState::Idle { stop_reason: StopReason::Monitoring },
+        );
+        assert!(!is_working(&s));
+        assert!(!is_mid_turn(&s));
+        s.state = SessionState::Idle { stop_reason: StopReason::Background };
+        assert!(is_working(&s));
+        assert!(is_mid_turn(&s));
     }
 
     #[test]

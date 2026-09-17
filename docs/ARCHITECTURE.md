@@ -1053,18 +1053,15 @@ disjoint from the spinner, where `waiting` must be: `Unknown` means we lost trac
 we are seconds early. One fast cadence and one slow one on the board, no third. (STALE-MAP "The
 launch window is visible".)
 
-**A turn parked on a backgrounded task is `Idle{Background}`, not `Running` and not done.** When
-`Stop` arrives carrying a live entry in `background_tasks[]` (`attention::task_blocks_end_turn` —
-a dormant `monitor` does NOT count), the turn is PAUSED: the agent said its piece and is waiting
-on work it started. Re-asserting `Running` there was two lies in a row — the pane stops painting
-the moment the agent parks, so `probe_activity` refuted it 8 s later by demoting to
-`Idle{Interrupted}`, which nothing had interrupted, which `automove` rightly refuses to promote,
-and which `card_glyph` had no arm for at all: the card went BLANK for the life of the task
-(dogfood 2026-09-01, T-128, a backgrounded build-poll, two minutes). `Idle` is invisible to
-`probe_activity` (it only scans `Running`), so the misread stops being possible instead of
-needing a corrective — which is the difference from `SubagentStop`, the one misread that has one.
-Rank is untouched (`Idle{..}` is 13, so D28's table does not move) and only `EndTurn` promotes, so
-the ticket correctly stays in IN PROGRESS. The wake arrives as a `UserPromptSubmit` only when a
+**Parked turns distinguish working agents from monitoring watches (T-389).**
+`Idle{Background}` means live agent tasks and reads `working`; `Idle{Monitoring}`
+means only shells or Monitor watches remain and reads `monitoring`. Both avoid
+`Running`, whose quiet-pane probe would misread an intentionally parked lead as
+interrupted. Background agent work triggers `on_working` and holds quiet gates;
+monitoring does neither. Only `EndTurn` triggers `on_done`. Both retain Idle's
+rank 13. Task liveness is transient, reclassified at each transition, and empty
+after restart; fresh Stop evidence can reclassify the persisted state.
+The wake arrives as a `UserPromptSubmit` only when a
 TASK NOTIFICATION delivers it (a background shell, an unnamed subagent); a named agent in an
 interactive session is an in-process TEAMMATE whose report wakes the lead as a teammate message
 and fires no prompt hook at all, so the lead's own `PostToolUse` frames (`ToolCompleted { nested:

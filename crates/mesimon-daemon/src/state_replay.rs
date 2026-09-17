@@ -8,7 +8,7 @@ use mesimon_core::board::{template_settings, Confidence, Reason, SessionState};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
-use crate::ingest::{signal_with_monitors, HookFrame};
+use crate::ingest::{signal_with_background, HookFrame};
 
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -124,7 +124,7 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
     let mut machine = Machine::restore(scenario.initial.clone(), scenario.confidence, 0);
     let mut column = scenario.column.clone();
     let mut tools = ToolLedger::default();
-    let mut monitors = Vec::new();
+    let mut tasks = mesimon_core::background::Registry::default();
     let mut codex: Option<crate::agents::codex::observation::Ledger> = None;
     let mut observation_hold = None;
     let mut report =
@@ -175,14 +175,14 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
                 Input::AgentTurnEnded { outcome } => Some(Signal::TurnEnded { outcome: *outcome }),
                 Input::AgentAttention { reason } => Some(Signal::Attention { reason: *reason }),
                 Input::AgentObservationLost => Some(Signal::ObservationLost),
-                Input::Hook { event, reason, payload } => signal_with_monitors(
+                Input::Hook { event, reason, payload } => signal_with_background(
                     &HookFrame {
                         session: "lab-session".into(),
                         event: event.clone(),
                         reason: reason.clone(),
                         payload: payload.clone(),
                     },
-                    &mut monitors,
+                    &mut tasks,
                 ),
                 Input::Transcript { record } => {
                     tools.observe(record);
@@ -245,7 +245,7 @@ pub fn replay(scenario: &Scenario) -> anyhow::Result<Report> {
         }
         report.timeline.push(json!({"step": index, "at_ms": step.at_ms, "machine": view,
             "column": column, "decision": decision, "movement": movement, "outstanding_tool": tools.is_busy(),
-            "monitor_task_ids": monitors, "observation_hold": observation_hold}));
+            "background_liveness": tasks.liveness(), "observation_hold": observation_hold}));
     }
     report.passed = report.failures.is_empty();
     Ok(report)

@@ -194,7 +194,7 @@ fn waiting_then_busy_clears_permission_before_the_tool_finishes() {
 }
 
 #[test]
-fn monitor_identity_survives_daemon_restart_and_does_not_excuse_a_build() {
+fn background_liveness_reclassifies_and_restart_drops_the_registry() {
     if !require_tmux() {
         return;
     }
@@ -220,20 +220,27 @@ fn monitor_identity_survives_daemon_restart_and_does_not_excuse_a_build() {
     send("PostToolUse", r#"{"tool_name":"Monitor","tool_response":{"taskId":"watch"}}"#);
     send(
         "Stop",
-        r#"{"background_tasks":[{"id":"watch","type":"shell"},{"id":"build","type":"shell"}]}"#,
+        r#"{"background_tasks":[{"id":"watch","type":"shell"},{"id":"build","type":"subagent"}]}"#,
     );
     wait_until(Duration::from_secs(5), "ordinary build still blocks completion", || {
         let board = client.board();
         let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
-        rec.monitor_task_ids == vec!["watch"]
-            && rec.state == SessionState::Idle { stop_reason: StopReason::Background }
+        rec.state == SessionState::Idle { stop_reason: StopReason::Background }
     });
     send("Stop", r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#);
-    wait_until(Duration::from_secs(5), "dormant watch allows REVIEW", || {
+    wait_until(Duration::from_secs(5), "watch-only work releases the working gate", || {
         let board = client.board();
         let rec = board.sessions.iter().find(|s| s.id == sid).unwrap();
-        rec.state == SessionState::Idle { stop_reason: StopReason::EndTurn }
-            && board.ticket(rec.ticket).unwrap().column == "REVIEW"
+        rec.state == SessionState::Idle { stop_reason: StopReason::Monitoring }
+            && !mesimon_core::quiet::is_working(rec)
+    });
+    send(
+        "PostToolUse",
+        r#"{"agent_id":"parent","tool_name":"Agent","tool_response":{"agentId":"orphan","status":"async_launched"}}"#,
+    );
+    wait_until(Duration::from_secs(5), "nested agent makes parked work active", || {
+        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
+            == SessionState::Idle { stop_reason: StopReason::Background }
     });
     assert!(matches!(client.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
@@ -245,15 +252,11 @@ fn monitor_identity_survives_daemon_restart_and_does_not_excuse_a_build() {
         version: mesimon_core::command::PROTOCOL_VERSION,
         client: "monitor-restarted".into(),
     });
-    assert_eq!(
-        client.board().sessions.iter().find(|s| s.id == sid).unwrap().monitor_task_ids,
-        vec!["watch"]
-    );
     send("UserPromptSubmit", "{}");
     send("Stop", r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#);
-    wait_until(Duration::from_secs(5), "identity survives restart", || {
+    wait_until(Duration::from_secs(5), "fresh Stop reclassifies shell after restart", || {
         client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
-            == SessionState::Idle { stop_reason: StopReason::EndTurn }
+            == SessionState::Idle { stop_reason: StopReason::Monitoring }
     });
     assert!(matches!(client.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();

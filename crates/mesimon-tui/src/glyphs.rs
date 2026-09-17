@@ -354,7 +354,14 @@ pub(crate) enum Tier {
 pub(crate) fn is_working(rec: &SessionRecord) -> bool {
     match rec.kind {
         SessionKind::Bash => rec.state == SessionState::Running && rec.foreground.is_some(),
-        _ => rec.kind.is_agent() && rec.state == SessionState::Running,
+        _ => {
+            rec.kind.is_agent()
+                && matches!(
+                    rec.state,
+                    SessionState::Running
+                        | SessionState::Idle { stop_reason: StopReason::Background }
+                )
+        }
     }
 }
 
@@ -465,7 +472,7 @@ pub(crate) fn card_glyph(
     // working, that is the louder and truer thing to say.
     if sessions
         .iter()
-        .any(|s| matches!(s.state, SessionState::Idle { stop_reason: StopReason::Background }))
+        .any(|s| matches!(s.state, SessionState::Idle { stop_reason: StopReason::Monitoring }))
     {
         return Some((background(tier, spin), Register::Grey));
     }
@@ -511,6 +518,9 @@ pub(crate) fn session_glyph(rec: &SessionRecord, tier: Tier, spin: usize) -> (ch
             (if ascii { '+' } else { '✓' }, Register::Calm)
         }
         SessionState::Idle { stop_reason: StopReason::Background } => {
+            (spinner(tier, spin), Register::Grey)
+        }
+        SessionState::Idle { stop_reason: StopReason::Monitoring } => {
             (background(tier, spin), Register::Grey)
         }
         SessionState::Idle { stop_reason: StopReason::Interrupted } => {
@@ -575,7 +585,8 @@ pub(crate) fn state_word(state: &SessionState) -> &'static str {
         SessionState::Idle { stop_reason: StopReason::EndTurn } => "done",
         // Lowercase: nothing is required of the user. The turn is paused on
         // work the agent started, and it will resume itself.
-        SessionState::Idle { stop_reason: StopReason::Background } => "background",
+        SessionState::Idle { stop_reason: StopReason::Background } => "working",
+        SessionState::Idle { stop_reason: StopReason::Monitoring } => "monitoring",
         // Lowercase too: the user stopped it and knows; the next prompt is
         // theirs to write when they choose.
         SessionState::Idle { stop_reason: StopReason::Interrupted } => "interrupted",
@@ -947,9 +958,26 @@ mod tests {
     }
 
     #[test]
+    fn background_words_and_glyphs_match_liveness() {
+        let agent = rec(SessionState::Idle { stop_reason: StopReason::Background });
+        let watch = rec(SessionState::Idle { stop_reason: StopReason::Monitoring });
+        assert_eq!(state_word(&agent.state), "working");
+        assert_eq!(state_word(&watch.state), "monitoring");
+        assert!(is_working(&agent));
+        assert!(!is_working(&watch));
+        for tier in [Tier::Unicode, Tier::Ascii] {
+            assert_eq!(session_glyph(&agent, tier, 0), (spinner(tier, 0), Register::Grey));
+            assert_eq!(
+                card_glyph(&[&watch, &agent], false, tier, 0),
+                Some((spinner(tier, 0), Register::Grey))
+            );
+        }
+    }
+
+    #[test]
     fn a_parked_turn_has_its_own_slow_mark() {
         use unicode_width::UnicodeWidthChar;
-        let parked = rec(SessionState::Idle { stop_reason: StopReason::Background });
+        let parked = rec(SessionState::Idle { stop_reason: StopReason::Monitoring });
         for tier in [Tier::Unicode, Tier::Ascii] {
             let (g, reg) = session_glyph(&parked, tier, 0);
             assert_eq!(reg, Register::Grey, "a parked turn asks nothing of the user");
@@ -1022,7 +1050,7 @@ mod tests {
                 "the heavy check is still too"
             );
             let busy = rec(SessionState::Running);
-            let parked = rec(SessionState::Idle { stop_reason: StopReason::Background });
+            let parked = rec(SessionState::Idle { stop_reason: StopReason::Monitoring });
             let lost = rec(SessionState::unknown());
             let mut launching = rec(SessionState::Spawning);
             launching.pending_submit = true;
@@ -1040,7 +1068,7 @@ mod tests {
     /// spinner is the louder and truer thing to say about that card.
     #[test]
     fn working_outranks_a_parked_turn_on_one_card() {
-        let parked = rec(SessionState::Idle { stop_reason: StopReason::Background });
+        let parked = rec(SessionState::Idle { stop_reason: StopReason::Monitoring });
         let busy = rec(SessionState::Running);
         assert_eq!(
             card_glyph(&[&parked, &busy], false, Tier::Unicode, 0),

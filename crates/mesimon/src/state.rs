@@ -217,7 +217,6 @@ fn explain(args: &[String]) -> Result<()> {
                 codex_runtime(&mesimon_daemon::agents::codex::snapshot_path(&paths, session.id), session, now_ms)
             } else { Value::Null },
             "state": session.state, "confidence": session.confidence,
-            "monitor_task_ids": session.monitor_task_ids,
             "state_changed_at": session.state_changed_at, "movement_eligibility_now": move_now,
             "history_newest_first": history,
             "history_note": "Bounded diagnostic history; event times are historical, not necessarily still pending. Missing history is not proof that no event happened.",

@@ -80,5 +80,5 @@ pub const HOOK_FRAME_MAX_BYTES: u64 = 1 << 20;
 // Compatibility exports for the existing Claude replay API. Provider-specific
 // interpretation lives with the Claude adapter.
 pub use crate::agents::claude::hooks::{
-    detail_of, plan_of, signal_of, signal_with_monitors, transcript_of,
+    detail_of, plan_of, signal_of, signal_with_background, transcript_of,
 };

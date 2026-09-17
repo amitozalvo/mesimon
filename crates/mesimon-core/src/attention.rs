@@ -218,21 +218,20 @@ pub enum Signal {
         kind: EndKind,
     },
     UserPromptSubmit,
-    /// `blocking_tasks`: the Stop payload's `background_tasks[]` held an entry
-    /// whose `.type` means the turn is PAUSED, not DONE (`task_blocks_end_turn`
-    /// — emptiness alone is NOT the test). `teammates` is the number of
-    /// `teammate` entries, which are neither: an in-process teammate reads
-    /// `running` for as long as it exists, idle or not, so whether one holds
-    /// the turn open is decided against the `TeammateIdle` frames the machine
-    /// has seen (dogfood 2026-09-01, T-135: four idle reviewers parked a
-    /// finished session for good).
+    /// A stopped lead with live agent tasks is working; watch-only work is
+    /// monitoring. Teammates are weighed against their explicit idle notices.
     Stop {
         stop_hook_active: bool,
         has_agent_id: bool,
         blocking_tasks: bool,
+        monitoring_tasks: bool,
         teammates: usize,
     },
     SubagentStop,
+    /// Task evidence can reclassify a parked turn, but never clear attention.
+    BackgroundChanged {
+        liveness: crate::background::Liveness,
+    },
     /// A named in-process teammate is about to go idle. It stays alive (and
     /// listed as `running` in every later Stop payload), so this frame is the
     /// only thing that says its work is done.
@@ -327,49 +326,9 @@ pub enum Signal {
     },
 }
 
-/// Does one `background_tasks[]` entry mean the turn is PAUSED rather than
-/// DONE? 11 §11.7.4 gates `Idle{EndTurn}` on the array being *empty*; dogfood
-/// 2026-08-31 showed that is too coarse, and that it fails closed forever.
-///
-/// A `monitor` — the artifact-comment subscription an `Artifact` publish arms —
-/// is not work the agent is doing. It is a dormant watch on an EXTERNAL human,
-/// and it stays armed for the rest of the session. Under the emptiness test the
-/// first publish therefore suppressed every later `Stop` in that session: the
-/// arm targets `Running`, the state it is already in, so `apply` returns `None`
-/// and nothing is recorded; the pane-quiet probe then demoted the finished turn
-/// to `Idle{Interrupted}` 8 s later; and `automove` refuses to promote an
-/// interrupt. The ticket never reached REVIEW (T-72 "shortcuts UX": activity
-/// seq 114 `Stop`, no transition, seq 115 interrupted at Medium).
-///
-/// So classify, and let only genuinely in-flight work hold the turn open.
-///
-/// **The `.type` spellings are corpus claims, not spike-verified** — 11 §11.2.3
-/// lists `shell|subagent|monitor|workflow|teammate|cloud session|MCP task`, but
-/// S-A never captured a live `Stop` payload, and doc rule 4 says re-verify every
-/// API claim at implementation time. Two guards against that: matching is on a
-/// normalised token, so `"MCP task"`, `"mcp_task"` and `"mcpTask"` agree; and an
-/// UNRECOGNISED type blocks, which keeps today's conservative behaviour for
-/// anything new rather than ending a turn that is still running.
-///
-/// **A `teammate` is neither, and is answered elsewhere** (dogfood 2026-09-01,
-/// T-135): an in-process teammate stays alive after it reports and is listed
-/// as `running` in every later Stop payload for the rest of the session —
-/// captured on the wire, idle teammate still `{type: "teammate", status:
-/// "running"}` after the lead's final turn. Classing it blocking parked a
-/// finished session for good; classing it dormant would end a turn whose
-/// reviewers are still working. So it is `false` here and COUNTED by the
-/// caller (`Signal::Stop::teammates`), and the machine weighs the count
-/// against the `TeammateIdle` frames it has seen (`is_teammate_task`).
-pub fn task_blocks_end_turn(kind: &str) -> bool {
-    let norm = norm_task_kind(kind);
-    // Anything bearing "monitor" is a watch by construction, whatever it ends
-    // up being called (`monitor`, `artifact-comment-monitor`, …).
-    !norm.contains("monitor") && !is_teammate_task(kind)
-}
-
 /// A `background_tasks[]` entry that is an in-process teammate (Claude Code
 /// labels the `in_process_teammate` task `"teammate"`; the raw discriminant
-/// is accepted too, the same way `task_blocks_end_turn` normalises).
+/// is accepted too).
 pub fn is_teammate_task(kind: &str) -> bool {
     norm_task_kind(kind).contains("teammate")
 }
@@ -809,16 +768,7 @@ impl Machine {
             // stop_hook_active describes a PREVIOUS continuation. It does not
             // say this stop is blocked (real 2.1.266 stop-continuation capture).
             Signal::Stop { has_agent_id: true, .. } => None, // nested, never top-level
-            // In-flight work (shell, subagent, …) holds the turn open; a
-            // dormant watch does not — see `task_blocks_end_turn`. The turn is
-            // PAUSED, so this is `Idle{Background}` and NOT a re-assertion of
-            // `Running`: the pane stops painting the moment the agent parks, so
-            // `Running` here is a claim the quiet probe refutes ~8 s later by
-            // demoting to `Idle{Interrupted}` — a second, worse lie, and one
-            // no signal corrects (compare `SubagentStop`, which at least has a
-            // corrective). `Idle` is invisible to `probe_activity`, which only
-            // scans `Running`, so the misread stops being possible rather than
-            // being cleaned up afterwards.
+            // Keep a parked lead out of Running: its quiet pane is expected.
             Signal::Stop { blocking_tasks: true, .. } => {
                 t(S::Idle { stop_reason: StopReason::Background })
             }
@@ -832,7 +782,39 @@ impl Machine {
             Signal::Stop { teammates, .. } if *teammates > self.idle_teammates.len() => {
                 t(S::Idle { stop_reason: StopReason::Background })
             }
+            Signal::Stop { monitoring_tasks: true, .. } => {
+                t(S::Idle { stop_reason: StopReason::Monitoring })
+            }
             Signal::Stop { .. } => t(S::Idle { stop_reason: StopReason::EndTurn }),
+            Signal::BackgroundChanged { liveness } => {
+                let parked = |s: &S| {
+                    matches!(
+                        s,
+                        S::Idle { stop_reason: StopReason::Background | StopReason::Monitoring }
+                    )
+                };
+                if parked(&self.state)
+                    || self.pending.as_ref().is_some_and(|p| parked(&p.to))
+                    || (*liveness != crate::background::Liveness::None
+                        && (matches!(self.state, S::Idle { .. })
+                            || self
+                                .pending
+                                .as_ref()
+                                .is_some_and(|p| matches!(p.to, S::Idle { .. }))))
+                {
+                    t(S::Idle {
+                        stop_reason: match liveness {
+                            crate::background::Liveness::Working => StopReason::Background,
+                            crate::background::Liveness::Monitoring => StopReason::Monitoring,
+                            // Task completion is not proof the lead has delivered its final response.
+                            crate::background::Liveness::None => StopReason::Unknown,
+                        },
+                    })
+                } else {
+                    None
+                }
+            }
+
             // A subagent finishing proves the parent is still orchestrating.
             // The restart-window tail re-derive reads "waiting on background
             // subagents" as done — the parent's turn genuinely ends in the
@@ -1170,6 +1152,7 @@ mod tests {
             stop_hook_active: false,
             has_agent_id: false,
             blocking_tasks: false,
+            monitoring_tasks: false,
             teammates: 0,
         };
         assert!(m.apply(&stop, 1000).is_none(), "leaving Running settles");
@@ -1187,6 +1170,7 @@ mod tests {
             stop_hook_active: false,
             has_agent_id: false,
             blocking_tasks: false,
+            monitoring_tasks: false,
             teammates: 0,
         };
         assert!(m.apply(&stop, 1000).is_none());
@@ -1207,6 +1191,7 @@ mod tests {
             stop_hook_active: true,
             has_agent_id: false,
             blocking_tasks: false,
+            monitoring_tasks: false,
             teammates: 0,
         };
         assert!(m.apply(&stop, 1000).is_none());
@@ -1219,6 +1204,7 @@ mod tests {
                 stop_hook_active: true,
                 has_agent_id: true,
                 blocking_tasks: false,
+                monitoring_tasks: false,
                 teammates: 0,
             },
             1000,
@@ -1240,6 +1226,7 @@ mod tests {
                     stop_hook_active: false,
                     has_agent_id: false,
                     blocking_tasks: true,
+                    monitoring_tasks: false,
                     teammates: 0,
                 },
                 1000,
@@ -1263,6 +1250,7 @@ mod tests {
                 stop_hook_active: false,
                 has_agent_id: false,
                 blocking_tasks: true,
+                monitoring_tasks: false,
                 teammates: 0,
             },
             1000,
@@ -1287,6 +1275,7 @@ mod tests {
             stop_hook_active: false,
             has_agent_id: false,
             blocking_tasks: false,
+            monitoring_tasks: false,
             teammates,
         }
     }
@@ -1378,6 +1367,7 @@ mod tests {
             stop_hook_active: false,
             has_agent_id: false,
             blocking_tasks: false,
+            monitoring_tasks: false,
             teammates: 0,
         };
         assert!(m.apply(&stop, 1_000).is_none()); // leave settles
@@ -1413,27 +1403,47 @@ mod tests {
         assert!(m.apply(&stop_with_teammates(2), 1000).is_some(), "all accounted for");
     }
 
-    /// In-flight work holds the turn open; a dormant watch must not. The
-    /// spellings are unverified, so an unknown type keeps the safe behaviour.
     #[test]
-    fn only_in_flight_task_types_block_end_turn() {
-        for k in ["shell", "subagent", "workflow", "MCP task", "cloud session"] {
-            assert!(task_blocks_end_turn(k), "{k} is work in flight");
-        }
-        for k in ["monitor", "artifact-comment-monitor", "Monitor", "artifact_monitor"] {
-            assert!(!task_blocks_end_turn(k), "{k} is a dormant watch");
-        }
-        // A teammate is neither: counted by the caller, weighed by the machine
-        // against the idle notices it has seen (T-135).
-        for k in ["teammate", "in_process_teammate", "Teammate"] {
-            assert!(!task_blocks_end_turn(k), "{k} is counted, not classed");
-            assert!(is_teammate_task(k));
-        }
-        assert!(!is_teammate_task("shell"));
-        // Forward-safe: an unseen type holds the turn open rather than ending
-        // one that may still be running.
-        assert!(task_blocks_end_turn("some_future_task"));
-        assert!(task_blocks_end_turn(""));
+    fn a_late_background_start_cancels_pending_completion() {
+        let mut m = m(SessionState::Running);
+        m.apply(
+            &Signal::Stop {
+                stop_hook_active: false,
+                has_agent_id: false,
+                blocking_tasks: false,
+                monitoring_tasks: false,
+                teammates: 0,
+            },
+            100,
+        );
+        m.apply(&Signal::BackgroundChanged { liveness: crate::background::Liveness::Working }, 200);
+        m.tick(200 + SETTLE_MS);
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
+    }
+
+    #[test]
+    fn background_changes_reclassify_pending_parks_without_clearing_attention() {
+        use crate::background::Liveness;
+        let mut m = m(SessionState::Running);
+        m.apply(
+            &Signal::Stop {
+                stop_hook_active: false,
+                has_agent_id: false,
+                blocking_tasks: true,
+                monitoring_tasks: true,
+                teammates: 0,
+            },
+            100,
+        );
+        m.apply(&Signal::BackgroundChanged { liveness: Liveness::Monitoring }, 200);
+        m.tick(200 + SETTLE_MS);
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Monitoring });
+        assert!(m.apply(&Signal::PaneQuiet, 100_000).is_none());
+        m.apply(&Signal::BackgroundChanged { liveness: Liveness::Working }, 101_000);
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
+        m.apply(&Signal::PermissionRequest, 102_000);
+        m.apply(&Signal::BackgroundChanged { liveness: Liveness::Monitoring }, 103_000);
+        assert_eq!(m.state(), &SessionState::RequiresAction { reason: Reason::Permission });
     }
 
     /// The T-72 regression. An `Artifact` publish arms a comment monitor that
@@ -1442,11 +1452,12 @@ mod tests {
     /// pane-quiet probe mislabelled the finished turn `Interrupted` — which
     /// `automove` refuses to promote, stranding the ticket in IN PROGRESS.
     #[test]
-    fn armed_monitor_does_not_suppress_end_turn() {
+    fn armed_monitor_settles_to_monitoring_on_each_turn() {
         let stop = Signal::Stop {
             stop_hook_active: false,
             has_agent_id: false,
             blocking_tasks: false,
+            monitoring_tasks: true,
             teammates: 0,
         };
         let mut m = m(SessionState::Running);
@@ -1456,7 +1467,7 @@ mod tests {
             let base = turn * 100_000;
             assert!(m.apply(&stop, base + 1000).is_none(), "leave settles");
             let c = m.tick(base + 1000 + SETTLE_MS).expect("settles to end_turn");
-            assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+            assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Monitoring });
             assert_eq!(c.confidence, Confidence::High);
             assert!(m.apply(&Signal::UserPromptSubmit, base + 50_000).is_some());
         }
@@ -1683,6 +1694,7 @@ mod tests {
             stop_hook_active: false,
             has_agent_id: false,
             blocking_tasks: false,
+            monitoring_tasks: false,
             teammates: 0,
         };
         // Stop first, probe inside its settle: the stated EndTurn commits.
@@ -1979,6 +1991,7 @@ mod tests {
                     stop_hook_active: false,
                     has_agent_id: false,
                     blocking_tasks: false,
+                    monitoring_tasks: false,
                     teammates: 0
                 },
                 1000

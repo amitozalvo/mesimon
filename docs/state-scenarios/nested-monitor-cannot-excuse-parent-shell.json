@@ -63,7 +63,7 @@
       "expect": {
         "state": {
           "state": "idle",
-          "stop_reason": "background"
+          "stop_reason": "monitoring"
         },
         "column": "IN PROGRESS"
       }

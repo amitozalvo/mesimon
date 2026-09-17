@@ -1,9 +1,10 @@
 //! Claude Code hook payload normalization.
 
 use mesimon_core::attention::{
-    is_teammate_task, task_blocks_end_turn, AttentionTool, EndKind, NotificationKind, Signal,
-    StartSource, StopFailureClass,
+    is_teammate_task, AttentionTool, EndKind, NotificationKind, Signal, StartSource,
+    StopFailureClass,
 };
+use mesimon_core::background::{classify, is_live_status, Liveness, Registry, Transition};
 use serde_json::Value;
 
 /// Cards get an excerpt, never a transcript (D11). Hard cap.
@@ -13,58 +14,104 @@ const DETAIL_MAX: usize = 200;
 use crate::ingest::parse_frame;
 use crate::ingest::HookFrame;
 
-/// Stateful adapter knowledge, shared by the daemon and offline replay. A
-/// successful Monitor result is the evidence; a shell name/command is not.
-pub fn signal_with_monitors(frame: &HookFrame, monitors: &mut Vec<String>) -> Option<Signal> {
-    if !has_agent_id(frame) {
-        if frame.event == "SessionStart"
-            && frame
-                .reason
-                .as_deref()
-                .or_else(|| frame.payload.get("source").and_then(Value::as_str))
-                != Some("compact")
-        {
-            monitors.clear();
+/// Stateful task evidence is shared by live ingestion and offline replay.
+/// This registry is deliberately absent from persisted session records.
+pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option<Signal> {
+    let before = tasks.liveness();
+    let owner = frame.payload.get("agent_id").and_then(Value::as_str);
+    if frame.event == "SessionStart"
+        && owner.is_none()
+        && frame.reason.as_deref().or_else(|| frame.payload.get("source").and_then(Value::as_str))
+            != Some("compact")
+        || frame.event == "SessionEnd"
+    {
+        tasks.clear();
+    }
+    if matches!(frame.event.as_str(), "Stop" | "SubagentStop")
+        && frame.payload.get("background_tasks").is_some_and(Value::is_array)
+    {
+        let rows: Vec<_> = background_tasks(frame).collect();
+        let ids: Vec<_> = rows.iter().filter_map(|t| t.get("id").and_then(Value::as_str)).collect();
+        if owner.is_none() {
+            tasks.retain_snapshot(None, &ids);
         }
-        if frame.event == "PostToolUse" {
-            let name = frame.payload.get("tool_name").and_then(Value::as_str);
-            if name == Some("Monitor") {
-                if let Some(id) = frame
-                    .payload
-                    .pointer("/tool_response/taskId")
-                    .and_then(Value::as_str)
-                    .filter(|id| !id.is_empty() && id.len() <= 128)
-                {
-                    if monitors.len() < 256 && !monitors.iter().any(|known| known == id) {
-                        monitors.push(id.to_string());
-                        monitors.sort();
-                    }
-                }
-            } else if name == Some("TaskStop") {
-                if let Some(id) =
-                    frame.payload.pointer("/tool_input/task_id").and_then(Value::as_str)
-                {
-                    monitors.retain(|known| known != id);
+        for task in rows {
+            if let Some(id) = task.get("id").and_then(Value::as_str) {
+                let kind = task.get("type").and_then(Value::as_str);
+                if kind.is_some_and(is_teammate_task) {
+                    // Teammates belong exclusively to the idle-notice ledger,
+                    // even if an earlier start looked like an ordinary agent.
+                    tasks.record(id, kind, None, Transition::Completed, owner);
+                } else {
+                    tasks.record(
+                        id,
+                        kind,
+                        task.get("status").and_then(Value::as_str),
+                        Transition::Started,
+                        owner,
+                    );
                 }
             }
         }
     }
-    let mut signal = signal_of(frame);
-    if let Some(Signal::Stop { has_agent_id: false, blocking_tasks, .. }) = &mut signal {
-        if frame.payload.get("background_tasks").is_some_and(Value::is_array) {
-            monitors.retain(|known| {
-                background_tasks(frame)
-                    .any(|task| task.get("id").and_then(Value::as_str) == Some(known.as_str()))
-            });
+    if matches!(frame.event.as_str(), "SubagentStart" | "SubagentStop") {
+        if let Some(id) = owner {
+            // agent_id identifies the agent itself on these two hooks.
+            if frame.event == "SubagentStop" {
+                tasks.record(id, Some("subagent"), None, Transition::Completed, None);
+            } else {
+                // Ownership is not in this hook. Keep the agent independent
+                // until its own Stop or Agent result supplies better evidence.
+                tasks.record(id, Some("subagent"), None, Transition::Started, Some(id));
+            }
         }
-        *blocking_tasks = background_tasks(frame).any(|task| {
-            let known_monitor = task
-                .get("id")
-                .and_then(Value::as_str)
-                .is_some_and(|id| monitors.iter().any(|known| known == id));
-            !known_monitor
-                && task.get("type").and_then(Value::as_str).is_none_or(task_blocks_end_turn)
-        });
+    }
+    if frame.event == "PostToolUse" {
+        let response = &frame.payload["tool_response"];
+        match frame.payload.get("tool_name").and_then(Value::as_str) {
+            Some("Agent" | "Task") => {
+                if let Some(id) = response.get("agentId").and_then(Value::as_str) {
+                    let status = response.get("status").and_then(Value::as_str);
+                    tasks.record(id, Some("subagent"), status, Transition::Updated, owner);
+                }
+            }
+            Some("Monitor") => {
+                if let Some(id) = response.get("taskId").and_then(Value::as_str) {
+                    tasks.record(id, Some("monitor"), None, Transition::Started, owner);
+                }
+            }
+            Some("TaskStop") => {
+                if let Some(id) =
+                    frame.payload.pointer("/tool_input/task_id").and_then(Value::as_str)
+                {
+                    tasks.record(id, None, None, Transition::Completed, owner);
+                }
+            }
+            Some("TaskOutput") => {
+                if let Some(id) = response.pointer("/task/task_id").and_then(Value::as_str) {
+                    tasks.record(
+                        id,
+                        response.pointer("/task/task_type").and_then(Value::as_str),
+                        response.pointer("/task/status").and_then(Value::as_str),
+                        Transition::Updated,
+                        owner,
+                    );
+                }
+            }
+            _ => {}
+        }
+    }
+    let mut signal = signal_of(frame);
+    if let Some(Signal::Stop { has_agent_id: false, blocking_tasks, monitoring_tasks, .. }) =
+        &mut signal
+    {
+        *blocking_tasks |= tasks.liveness() == Liveness::Working;
+        *monitoring_tasks |= tasks.liveness() == Liveness::Monitoring;
+    } else if tasks.liveness() != before
+        && (matches!(frame.event.as_str(), "SubagentStart" | "SubagentStop")
+            || (owner.is_some() && matches!(frame.event.as_str(), "Stop" | "PostToolUse")))
+    {
+        signal = Some(Signal::BackgroundChanged { liveness: tasks.liveness() });
     }
     signal
 }
@@ -107,16 +154,23 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
                 .and_then(Value::as_bool)
                 .unwrap_or(false),
             has_agent_id: has_agent_id(frame),
-            // Classified, not counted: a dormant `monitor` would otherwise
-            // suppress every Stop for the rest of the session (T-72). An entry
-            // with no readable `.type` counts as blocking — the safe read.
-            blocking_tasks: background_tasks(frame)
-                .any(|t| t.get("type").and_then(Value::as_str).is_none_or(task_blocks_end_turn)),
+            blocking_tasks: background_tasks(frame).any(|t| {
+                live_task(t)
+                    && !t.get("type").and_then(Value::as_str).is_some_and(is_teammate_task)
+                    && classify(t.get("type").and_then(Value::as_str)) == Liveness::Working
+            }),
+            monitoring_tasks: background_tasks(frame).any(|t| {
+                live_task(t)
+                    && classify(t.get("type").and_then(Value::as_str)) == Liveness::Monitoring
+            }),
             // ...except a teammate, which is counted (T-135): it reads
             // `running` idle or busy, so the machine weighs the count against
             // the `TeammateIdle` frames instead.
             teammates: background_tasks(frame)
-                .filter(|t| t.get("type").and_then(Value::as_str).is_some_and(is_teammate_task))
+                .filter(|t| {
+                    live_task(t)
+                        && t.get("type").and_then(Value::as_str).is_some_and(is_teammate_task)
+                })
                 .count(),
         }),
         "SubagentStop" => Some(Signal::SubagentStop),
@@ -199,6 +253,10 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
         "PaneDied" => Some(Signal::PaneDied { status: reason.and_then(|r| r.parse().ok()) }),
         _ => None,
     }
+}
+
+fn live_task(task: &Value) -> bool {
+    task.get("status").and_then(Value::as_str).is_none_or(is_live_status)
 }
 
 fn background_tasks(frame: &HookFrame) -> impl Iterator<Item = &Value> {
@@ -340,14 +398,13 @@ mod tests {
                 stop_hook_active: false,
                 has_agent_id: false,
                 blocking_tasks: false,
+                monitoring_tasks: false,
                 teammates: 0
             })
         );
     }
 
-    /// `background_tasks` is classified, not counted: a live artifact-comment
-    /// monitor is dormant and must not hold the turn open (T-72); a background
-    /// shell must. A typeless entry reads as blocking.
+    /// Watches and shells are monitoring; unknown tasks conservatively work.
     #[test]
     fn background_tasks_block_end_turn_by_type_not_emptiness() {
         let blocking = |body: &str| match signal_of(&frame("Stop", None, body)) {
@@ -355,49 +412,84 @@ mod tests {
             other => panic!("expected Stop, got {other:?}"),
         };
         assert!(!blocking(r#"{"background_tasks":[{"type":"monitor"}]}"#));
-        assert!(blocking(r#"{"background_tasks":[{"type":"shell"}]}"#));
-        // Mixed: the shell still holds it open.
-        assert!(blocking(r#"{"background_tasks":[{"type":"monitor"},{"type":"shell"}]}"#));
+        assert!(!blocking(r#"{"background_tasks":[{"type":"shell"}]}"#));
+        // Mixed watches remain monitoring.
+        assert!(!blocking(r#"{"background_tasks":[{"type":"monitor"},{"type":"shell"}]}"#));
         assert!(blocking(r#"{"background_tasks":[{"description":"?"}]}"#));
         assert!(!blocking(r#"{"background_tasks":[]}"#));
         assert!(!blocking("{}"));
     }
 
     #[test]
-    fn monitor_identity_does_not_excuse_other_shells_or_nested_tools() {
-        let mut ids = Vec::new();
-        let started = frame(
-            "PostToolUse",
-            None,
-            r#"{"tool_name":"Monitor","tool_response":{"taskId":"watch"}}"#,
-        );
-        let nested = frame(
-            "PostToolUse",
-            None,
-            r#"{"agent_id":"child","tool_name":"Monitor","tool_response":{"taskId":"child-watch"}}"#,
-        );
-        signal_with_monitors(&started, &mut ids);
-        signal_with_monitors(&nested, &mut ids);
-        assert_eq!(ids, vec!["watch"]);
-        let stop = |body: &str, ids: &mut Vec<String>| match signal_with_monitors(
-            &frame("Stop", None, body),
-            ids,
-        ) {
-            Some(Signal::Stop { blocking_tasks, .. }) => blocking_tasks,
-            _ => panic!("expected Stop"),
-        };
-        assert!(stop(
-            r#"{"background_tasks":[{"id":"watch","type":"shell"},{"id":"build","type":"shell"}]}"#,
-            &mut ids
+    fn teammate_snapshot_replaces_an_earlier_agent_classification() {
+        let mut tasks = Registry::default();
+        signal_with_background(&frame("SubagentStart", None, r#"{"agent_id":"mate"}"#), &mut tasks);
+        assert!(matches!(
+            signal_with_background(
+                &frame(
+                    "Stop",
+                    None,
+                    r#"{"background_tasks":[{"id":"mate","type":"teammate","status":"running"}]}"#
+                ),
+                &mut tasks
+            ),
+            Some(Signal::Stop { blocking_tasks: false, teammates: 1, .. })
         ));
-        assert!(!stop(r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#, &mut ids));
-        signal_with_monitors(&frame("SessionStart", None, r#"{"source":"compact"}"#), &mut ids);
-        assert_eq!(ids, vec!["watch"]);
-        signal_with_monitors(&frame("SessionStart", None, r#"{"source":"clear"}"#), &mut ids);
-        assert!(stop(r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#, &mut ids));
-        signal_with_monitors(&started, &mut ids);
-        stop(r#"{"background_tasks":[]}"#, &mut ids);
-        assert!(ids.is_empty(), "absent tasks cannot retain a stale exemption");
+        assert_eq!(tasks.liveness(), Liveness::None);
+    }
+
+    #[test]
+    fn stop_ignores_idle_and_terminal_tasks() {
+        for status in ["idle", "completed", "failed", "stopped", "cancelled", "interrupted"] {
+            let body = serde_json::json!({"background_tasks": [
+                {"id":"agent", "type":"subagent", "status":status},
+                {"id":"watch", "type":"monitor", "status":status},
+                {"id":"mate", "type":"teammate", "status":status}
+            ]})
+            .to_string();
+            assert!(matches!(
+                signal_with_background(&frame("Stop", None, &body), &mut Registry::default()),
+                Some(Signal::Stop {
+                    blocking_tasks: false,
+                    monitoring_tasks: false,
+                    teammates: 0,
+                    ..
+                })
+            ));
+        }
+    }
+
+    #[test]
+    fn nested_agent_survives_its_parent_and_shells_are_monitoring() {
+        let mut tasks = Registry::default();
+        signal_with_background(
+            &frame(
+                "PostToolUse",
+                None,
+                r#"{"agent_id":"parent","tool_name":"Agent","tool_response":{"agentId":"child","status":"async_launched"}}"#,
+            ),
+            &mut tasks,
+        );
+        signal_with_background(
+            &frame("SubagentStop", None, r#"{"agent_id":"parent","background_tasks":[]}"#),
+            &mut tasks,
+        );
+        // A parent's Stop is not a statement that its child finished.
+        assert_eq!(tasks.liveness(), Liveness::Working);
+        assert!(matches!(
+            signal_with_background(
+                &frame("Stop", None, r#"{"background_tasks":[{"id":"watch","type":"shell"}]}"#),
+                &mut tasks
+            ),
+            Some(Signal::Stop { blocking_tasks: true, .. })
+        ));
+        assert_eq!(
+            signal_with_background(
+                &frame("SubagentStop", None, r#"{"agent_id":"child"}"#),
+                &mut tasks
+            ),
+            Some(Signal::BackgroundChanged { liveness: Liveness::Monitoring })
+        );
     }
 
     /// A teammate is counted, not classed (T-135): the payload lists one as
@@ -416,11 +508,11 @@ mod tests {
             }
             other => panic!("expected Stop, got {other:?}"),
         }
-        // A shell beside them still holds the turn open on its own.
+        // A shell beside them does not count as active agent work.
         let body = r#"{"background_tasks":[{"type":"teammate"},{"type":"shell"}]}"#;
         match signal_of(&frame("Stop", None, body)) {
             Some(Signal::Stop { blocking_tasks, teammates, .. }) => {
-                assert!(blocking_tasks);
+                assert!(!blocking_tasks);
                 assert_eq!(teammates, 1);
             }
             other => panic!("expected Stop, got {other:?}"),
@@ -505,6 +597,7 @@ mod tests {
                 stop_hook_active: false,
                 has_agent_id: true,
                 blocking_tasks: false,
+                monitoring_tasks: false,
                 teammates: 0
             })
         );

@@ -109,9 +109,7 @@ impl AgentAdapter for Claude {
                 }
             }
         }
-        let previous = record.monitor_task_ids.clone();
-        result.signal = hooks::signal_with_monitors(frame, &mut record.monitor_task_ids);
-        result.metadata_changed |= previous != record.monitor_task_ids;
+        result.signal = hooks::signal_with_background(frame, &mut record.background_tasks);
         result.detail = hooks::detail_of(frame);
         result.plan = hooks::plan_of(frame);
         result

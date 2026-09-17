@@ -11043,3 +11043,34 @@ automatically taking wake's fresh-conversation fallback. Codex and shells are ou
 this feature. No schema bump is needed: an older reader dropping this setting turns
 the automation off. Tests cover persistence, the settings command, agent denial,
 settle timing, protected states and sleep/wake identity through real tmux.
+
+## T-389 — working versus monitoring background liveness (2026-09-17)
+
+A parked lead now has two readings. Live agent tasks (including nested agents,
+workflows and conservative unknown types) use the existing `Idle{Background}`
+state, read **working**, and trigger `on_working`. Shells and Monitor watches
+alone use `Idle{Monitoring}`, read **monitoring**, and release the quiet/working
+and keep-awake holds. Neither fabricates `EndTurn` or triggers `on_done`: an
+actual final Stop with no live tasks remains the completion edge. Both parked
+states stay outside the Running-only quiet-pane interruption probe. Monitoring
+keeps the slow background glyph; working agent tasks use the working spinner.
+
+This supersedes the 2026-09-01 single background word and the 2026-09-09 persisted
+Monitor-ID exemption. All background shells now have the watch classification,
+so Monitor identity no longer needs a special exemption. A transient registry
+uses Stop snapshots, SubagentStart/Stop and successful Agent/Monitor/TaskStop/
+TaskOutput results; the existing teammate idle accounting remains authoritative.
+Subagent task completion does not claim the lead has delivered its final answer.
+Nested agents survive their parent's stop; internal nested shells do not create
+independent work. Each task transition replaces its classification, idle and
+terminal statuses remove it, and status-free updates cannot revive it. The
+registry is omitted from persistence and wire snapshots and starts empty after
+restart; new Stop evidence can immediately reclassify the persisted card state.
+
+The rules were checked against T3's
+[ThreadBackgroundLiveness](https://github.com/pingdotgg/t3code/blob/main/apps/server/src/orchestration/ThreadBackgroundLiveness.ts)
+and Claude's [hook reference](https://code.claude.com/docs/en/hooks). TaskCreated/
+TaskCompleted are todo-list hooks, not background lifecycle evidence, and are
+not subscribed here. Regression coverage spans the pure registry, attention
+settling and waits, card words/glyph precedence, automove/quiet gates, replay
+scenarios, and daemon restart with a nested agent in flight.

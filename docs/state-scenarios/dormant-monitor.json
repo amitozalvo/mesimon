@@ -1,7 +1,7 @@
 {
   "schema": 1,
   "id": "dormant-monitor",
-  "title": "A dormant monitor does not prevent REVIEW",
+  "title": "A live monitor parks without active work",
   "provenance": {
     "kind": "synthetic_regression",
     "source": "docs/claude-state-lab.md"
@@ -41,9 +41,9 @@
       "expect": {
         "state": {
           "state": "idle",
-          "stop_reason": "end_turn"
+          "stop_reason": "monitoring"
         },
-        "column": "REVIEW"
+        "column": "IN PROGRESS"
       }
     }
   ]
