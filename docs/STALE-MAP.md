@@ -10970,3 +10970,27 @@ and local HTTP, with certificate exceptions disabled for HTTP, and checks Host
 and Origin rejection in addition to pairing, preview, prompt, reconnect and revoke.
 Phone access still requires a reachable HTTPS relay with a browser-trusted
 certificate; localhost setup applies only to the browser on the host itself.
+
+## T-385 — T3 Code state inference scouted (2026-09-17, research only)
+
+T3 Code (`pingdotgg/t3code`) does not infer agent state: it owns the loop. Claude
+runs headless under the Claude Agent SDK (`query()` with `canUseTool`,
+`includePartialMessages`, `resume`), Codex under `codex app-server`, Cursor and
+Grok under ACP, and every adapter normalises into ~50 typed runtime events. A
+pending approval or question is an unresolved promise inside `canUseTool`;
+leaving session status `running` is the turn-end signal; background liveness is
+two words (`working` / `monitoring`); a quiescent thread shows no status at all;
+push is a per-thread `{phase, headline, deepLink}` projection published only on
+state-changing events, never on prompt-sent. Their cost: no terminal seat for the
+agent, being the permission UI for six providers, sessions dying with the server.
+
+Conclusion recorded on the ticket note: mesimon's inference gaps (2026-09-09
+entries) are structural to observing another process's loop, not bugs. For
+Mesophon approvals, the recommended route is a deciding `PermissionRequest` hook
+for remotely answered permissions only (which reopens the no-`Allow` doctrine —
+D33m and `verdict.rs` currently disagree and must be reconciled first),
+keystrokes for question/plan answers (payloads already parsed), and headless
+Mesophon-started sessions deferred. Also worth taking: the awareness projection
+shape for push, the two-word liveness, queue-vs-steer follow-ups, a time-based
+park setting, and usage-from-history. Rejected: hidden-ref checkpoints (promise
+1) and system-prompt runtime instructions (zero injection). Nothing shipped.
