@@ -11201,3 +11201,8 @@ draft separately; text returned after session replacement requires review. Queue
 and retained-text panes are cleared with the rest of protected content on revoke.
 The browser regressions retain main's real-relay queue/take-back/send-now cycle
 and exercise reconnect and ticket switching while those actions are pending.
+
+The rebase regressions also exposed a cancellation edge: acknowledging Queue
+clears the editor, so a later host rejection must restore the queued words for
+review. Rejected or uncertain receipts now retain those words without overwriting
+a newer draft, and never resubmit them automatically.

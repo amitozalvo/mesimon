@@ -97,7 +97,8 @@ export class Sessions {
       entry.draft === receipt.text
     )
       entry.draft = "";
-    if (status === "unknown") this.retain(entry, receipt.text);
+    if (["unknown", "rejected"].includes(status))
+      this.retain(entry, receipt.text);
   }
   purge(board) {
     for (const [key, entry] of this.entries)

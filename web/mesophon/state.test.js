@@ -136,3 +136,14 @@ test("late take-back after session replacement retains the text for review", () 
   assert.equal(current.draft, "old session's words");
   assert.equal(current.review, true);
 });
+test("a queue cancelled by the host returns the unsent words to the draft", () => {
+  const sessions = new Sessions();
+  const entry = sessions.get("board", ticket("one", "session"));
+  entry.draft = "not delivered";
+  sessions.sent(entry, 45, "incarnation");
+  sessions.reply(entry, { result: "delivery", status: "queued" });
+  assert.equal(entry.draft, "");
+  sessions.reply(entry, { result: "delivery", status: "rejected" });
+  assert.equal(entry.draft, "not delivered");
+  assert.equal(entry.receipt.waiting, false);
+});
