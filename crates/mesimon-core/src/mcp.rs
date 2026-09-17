@@ -642,6 +642,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // stop. It cannot see the flag either: no tool reports it.
         | Command::SetMcpTools { .. }
         | Command::SetAgentProvider { .. }
+        | Command::SetParkAfterMinutes { .. }
         // Where the status line sits over the user's own panes: chrome, and
         // theirs. An agent moving it would be redecorating a screen it is
         // not looking at.
@@ -1160,6 +1161,7 @@ mod tests {
         let s = uuid::Uuid::nil();
         let denied = vec![
             Command::SetAgentProvider { provider: crate::board::AgentProvider::Codex },
+            Command::SetParkAfterMinutes { minutes: 30 },
             Command::Hello { version: 1, client: "x".into() },
             Command::Snapshot,
             Command::Subscribe,

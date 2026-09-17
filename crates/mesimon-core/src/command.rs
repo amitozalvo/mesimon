@@ -391,6 +391,10 @@ pub enum Command {
     SetMcpTools {
         on: bool,
     },
+    /// Board inactivity timeout for Claude sessions, in minutes. Zero disables it.
+    SetParkAfterMinutes {
+        minutes: u32,
+    },
     /// Project default for newly accepted agent starts. Existing sessions
     /// retain their provider. Local only: agents cannot choose who runs
     /// subsequent sessions on the board.
@@ -875,6 +879,7 @@ impl Command {
             // the brief on" get answered later.
             | SetMcpTools { .. }
             | SetAgentProvider { .. }
+            | SetParkAfterMinutes { .. }
             | SetSystemPrompt { .. }
             | SetDefaultColumn { .. }
             | SetAgentPrompt { .. }

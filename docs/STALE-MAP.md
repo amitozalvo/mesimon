@@ -11023,3 +11023,23 @@ the 820-byte cap on each complete tool definition without weakening the text
 lint. A focused regression test covers the guidance, lint and serialized cap.
 This is descriptive model context, not daemon enforcement; the opt-in agent
 brief is unchanged and remains a separate decision.
+
+## T-391 — inactivity parking (2026-09-17)
+
+`park_after_minutes` is persisted board state in `columns.toml`, defaulting to
+zero/off on existing and new boards. Settings → Agents offers off/15/30/60/120;
+the local command accepts a whole-minute timeout. Agents cannot change it.
+The daemon sweeps every five minutes even without a TUI, through the authorization
+chokepoint and the existing sleep/reaper path. Wake keeps the exact Claude
+conversation identity, including a conversation learned through `/resume`.
+
+Eligibility requires Claude at High-confidence `Idle{EndTurn}` and ages from
+`state_changed_at`, written when the transition settles. Running, attention,
+background, interrupted and unknown states do not qualify. Pending prompt/start/
+resume/queue work, pending machine transitions, compaction and raised ticket hands
+also hold the session awake. The sweep shares wake's board and conversation-owner
+guards and provider history predicate; missing history is skipped rather than
+automatically taking wake's fresh-conversation fallback. Codex and shells are outside
+this feature. No schema bump is needed: an older reader dropping this setting turns
+the automation off. Tests cover persistence, the settings command, agent denial,
+settle timing, protected states and sleep/wake identity through real tmux.

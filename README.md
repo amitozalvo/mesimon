@@ -146,6 +146,13 @@ exists, and it means *this session is waiting on you*.
 finished tickets and lists the archive. **Closing the board
 does not stop your agents** — that is the point of the daemon.
 
+**Settings › Agents › Sleep idle Claude** optionally sleeps finished Claude sessions after
+15, 30, 60 or 120 idle minutes. It is off by default and applies to this board, even with the
+TUI closed. The daemon checks every five minutes, measuring from when the turn finishes.
+Running turns, background work and sessions needing attention stay awake. Wake resumes the
+same conversation. The board's `park_after_minutes` setting accepts any whole number of
+minutes; `0` disables it.
+
 **Settings › Behaviour › Keep this machine awake** prevents sleep while an agent works,
 including while you are attached to its pane. It is off by default. While enabled, a fixed-width
 indicator beside the board's ticket count shows emoji-style `☕️` when preventing sleep and a dimmed crescent `☾`

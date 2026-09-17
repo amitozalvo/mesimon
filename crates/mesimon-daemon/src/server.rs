@@ -1497,6 +1497,7 @@ impl Daemon {
             Command::SetManualMerge { id, on } => self.set_manual_merge(id, on),
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
             Command::SetAgentProvider { provider } => self.set_agent_provider(provider),
+            Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
@@ -1736,6 +1737,9 @@ impl Daemon {
             changed |= stage!("poll_tails", self.poll_tails());
             changed |= stage!("probe_status_files", self.probe_status_files());
             changed |= stage!("refresh_panes", self.refresh_panes());
+        }
+        if self.ticks % inactivity_park_ticks() == 0 {
+            changed |= stage!("park_inactive", self.park_inactive(now));
         }
         if self.ticks % RSS_TICKS == 0 {
             changed |= stage!("refresh_rss", self.refresh_rss());
@@ -6241,6 +6245,17 @@ impl Daemon {
         Response::Ok
     }
 
+    fn set_park_after_minutes(&mut self, minutes: u32) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.park_after_minutes != minutes {
+            self.board.park_after_minutes = minutes;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
     fn set_mcp_tools(&mut self, on: bool) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -7412,6 +7427,35 @@ impl Daemon {
             .resume(&context, rec)
     }
 
+    /// Board constraints shared by wake and automatic inactivity parking.
+    fn resume_board_guard(&self, rec: &SessionRecord) -> Option<String> {
+        if self
+            .pending_spawns
+            .iter()
+            .any(|pending| pending.ticket == rec.ticket && pending.kind.is_agent())
+            || self
+                .pending_resumes
+                .iter()
+                .any(|pending| pending.ticket == rec.ticket && pending.session != rec.id)
+        {
+            return Some(
+                "another agent start or resume is already provisioning on this ticket".into(),
+            );
+        }
+        if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
+            return Some("ticket archived — restore it first".into());
+        }
+        if self.board.sessions.iter().any(|other| {
+            other.id != rec.id
+                && other.ticket == rec.ticket
+                && other.kind.is_agent()
+                && (other.state.is_live() || other.codex_stopping)
+        }) {
+            return Some("ticket already has a live agent session — focus it instead".into());
+        }
+        None
+    }
+
     /// A provider supplies conversation identity and external ownership;
     /// the board enforces its one-writer policy across records.
     fn resume_guard(&self, rec: &SessionRecord, confirm: bool) -> Option<String> {
@@ -7545,32 +7589,8 @@ impl Daemon {
         if self.pending_resumes.iter().any(|pending| pending.session == id) {
             return Response::Provisioning;
         }
-        if self
-            .pending_spawns
-            .iter()
-            .any(|pending| pending.ticket == rec.ticket && pending.kind.is_agent())
-            || self
-                .pending_resumes
-                .iter()
-                .any(|pending| pending.ticket == rec.ticket && pending.session != id)
-        {
-            return Response::Err {
-                message: "another agent start or resume is already provisioning on this ticket"
-                    .into(),
-            };
-        }
-        if self.board.ticket(rec.ticket).is_some_and(|t| t.is_archived()) {
-            return Response::Err { message: "ticket archived — restore it first".into() };
-        }
-        if self.board.sessions.iter().any(|other| {
-            other.id != id
-                && other.ticket == rec.ticket
-                && other.kind.is_agent()
-                && (other.state.is_live() || other.codex_stopping)
-        }) {
-            return Response::Err {
-                message: "ticket already has a live agent session — focus it instead".into(),
-            };
+        if let Some(message) = self.resume_board_guard(&rec) {
+            return Response::Err { message };
         }
         if rec.state.has_pane() && !matches!(rec.state, SessionState::Unknown { .. }) {
             // Live states keep their pane; resuming over it would double-run.
@@ -7756,6 +7776,61 @@ impl Daemon {
         self.recovery.remove(&id); // reset provider cursors for the new launch
         self.machines.insert(id, Machine::new(SessionState::Spawning, now));
         Response::Spawned { id, fresh: fresh.is_some() || startup_retry }
+    }
+
+    /// Automatic sleep is deliberately narrower than a user's sleep gesture:
+    /// only a confirmed finished turn, timed from its settled state transition.
+    fn park_inactive(&mut self, now: u64) -> bool {
+        let minutes = self.board.park_after_minutes;
+        if minutes == 0 {
+            return false;
+        }
+        let timeout = u64::from(minutes).saturating_mul(inactivity_minute_ms());
+        let candidates: Vec<_> = self
+            .board
+            .sessions
+            .iter()
+            .filter(|rec| {
+                rec.inactivity_park_due(now, timeout)
+                    && self.board.ticket(rec.ticket).is_some_and(|t| t.raised.is_none())
+                    && !self.pending_resumes.iter().any(|pending| pending.session == rec.id)
+                    && !self.inflight.contains_key(&rec.ticket)
+                    && !self.queued.iter().any(|q| q.ticket == rec.ticket)
+                    && self.machines.get(&rec.id).is_some_and(|m| {
+                        let view = m.view();
+                        view.state == rec.state
+                            && view.pending.is_none()
+                            && view.manual_compaction_prior.is_none()
+                    })
+            })
+            .map(|rec| rec.id)
+            .collect();
+        let by = Principal::Automation { rule: "inactivity_park".into() };
+        let mut changed = false;
+        for id in candidates {
+            let rec =
+                self.board.sessions.iter().find(|rec| rec.id == id).expect("candidate exists");
+            if !matches!(
+                authorize(&by, &Action::Mutate, &Resource::Session { id }),
+                Decision::Allow
+            ) || self.resume_board_guard(rec).is_some()
+                || self.resume_guard(rec, false).is_some()
+            {
+                continue;
+            }
+            let adapter = crate::agents::adapter(rec.kind).expect("Claude adapter");
+            // Preserve the exact conversation, using the same history and identity
+            // predicates as resume. A fresh-start fallback is not an automatic park.
+            if adapter.history_missing(rec) || adapter.conversation_key(rec).is_none() {
+                continue;
+            }
+            let ticket = rec.ticket;
+            if self.sleep_one(id, false).is_ok() {
+                self.feed.board("automation", "inactivity_park", Some(ticket));
+                changed = true;
+            }
+        }
+        changed
     }
 
     /// D23 floors, tmux-recast. `Err` carries the user-facing refusal.
@@ -8525,6 +8600,24 @@ fn server_guard_ticks() -> u64 {
         .and_then(|v| v.parse().ok())
         .filter(|&t| t > 0)
         .unwrap_or(SERVER_GUARD_TICKS)
+}
+
+/// Five-minute sweep; shortened only by the subprocess test harness.
+fn inactivity_park_ticks() -> u64 {
+    std::env::var("MESIMON_INACTIVITY_PARK_TICKS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(1200)
+}
+
+/// Tests can compress a minute without changing the persisted setting's units.
+fn inactivity_minute_ms() -> u64 {
+    std::env::var("MESIMON_INACTIVITY_MINUTE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .filter(|&n| n > 0)
+        .unwrap_or(60_000)
 }
 
 /// Test seam only — e2e cannot wait out the real 60 s floor.

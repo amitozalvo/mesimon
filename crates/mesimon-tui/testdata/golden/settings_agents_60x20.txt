@@ -2,7 +2,6 @@
 
     TODO                               2   2   2   0
 
-    Decay treatments                 >1y   I   R   D
   ╭─ AGENTS ─────────────────────────────────────────────╮
   │   Provider: Claude Code                              │
   │     new sessions only ∙ enter selects Codex          │
@@ -12,8 +11,9 @@
   │     the seven board tools every spawn carries ∙ ent~ │
   │   Agent prompts: mesimon's words                     │
   │     what mesimon types at an agent about a rebase, ~ │
+  │   Sleep idle Claude: off                             │
+  │     this board ∙ after a finished turn ∙ enter cycl~ │
   ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

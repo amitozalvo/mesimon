@@ -84,6 +84,8 @@ struct ColumnsFile {
     next_key: u64,
     #[serde(default)]
     agent_provider: AgentProvider,
+    #[serde(default)]
+    park_after_minutes: u32,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -399,6 +401,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 columns: cf.columns,
                                 next_key: cf.next_key,
                                 agent_provider: cf.agent_provider,
+                                park_after_minutes: cf.park_after_minutes,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -645,6 +648,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         schema_version: COLUMNS_SCHEMA,
         next_key: board.next_key,
         agent_provider: board.agent_provider,
+        park_after_minutes: board.park_after_minutes,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -1782,6 +1786,28 @@ order = "a0"
         cleanup(&dir, &paths);
     }
 
+    #[test]
+    fn inactivity_timeout_defaults_off_and_survives_reload() {
+        let (dir, paths) = scratch("inactivity");
+        let mut board = load_with(&paths, false).unwrap().board;
+        assert_eq!(board.park_after_minutes, 0);
+        for minutes in [17, u32::MAX, 0] {
+            board.park_after_minutes = minutes;
+            save_columns(&paths, &board).unwrap();
+            assert_eq!(load_with(&paths, false).unwrap().board.park_after_minutes, minutes);
+        }
+        let path = paths.board_dir.join("board/columns.toml");
+        let text = std::fs::read_to_string(&path).unwrap();
+        let legacy = text
+            .lines()
+            .filter(|l| !l.starts_with("park_after_minutes"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        std::fs::write(path, legacy).unwrap();
+        assert_eq!(load_with(&paths, false).unwrap().board.park_after_minutes, 0);
+        cleanup(&dir, &paths);
+    }
+
     /// The registry round-trips through the serializer that writes the file.
     /// `[[columns]]` and `[[tags]]` are both arrays of tables, so they may
     /// follow each other — but a scalar after either is a TOML error, which
@@ -1792,6 +1818,7 @@ order = "a0"
             schema_version: COLUMNS_SCHEMA,
             next_key: 3,
             agent_provider: AgentProvider::Codex,
+            park_after_minutes: 30,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
@@ -1847,6 +1874,7 @@ order = "a0"
         assert!(back.system_prompt);
         assert_eq!(back.default_column.as_deref(), Some("TODO"));
         assert_eq!(back.agent_provider, AgentProvider::Codex);
+        assert_eq!(back.park_after_minutes, 30);
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
         assert!(

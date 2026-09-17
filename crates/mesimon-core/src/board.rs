@@ -433,6 +433,19 @@ impl SessionRecord {
         }
     }
 
+    /// A confirmed finished Claude turn has exceeded an enabled inactivity timeout.
+    /// The daemon additionally checks pending work, ownership and resume history.
+    pub fn inactivity_park_due(&self, now: u64, timeout_ms: u64) -> bool {
+        timeout_ms > 0
+            && self.kind == SessionKind::Claude
+            && self.state == (SessionState::Idle { stop_reason: StopReason::EndTurn })
+            && self.confidence == Confidence::High
+            && self.state_changed_at.is_some_and(|at| now.saturating_sub(at) >= timeout_ms)
+            && !self.argv.is_empty()
+            && !self.pending_submit
+            && !self.pending_prefill
+    }
+
     /// A retiring runtime still owns its ticket and conversation until cleanup
     /// acknowledges that its processes stopped, even if the badge is Exited.
     pub fn holds_agent_seat(&self) -> bool {
@@ -1432,6 +1445,9 @@ pub struct Board {
     /// sessions, including sleeping ones, retain their persisted kind.
     #[serde(default)]
     pub agent_provider: AgentProvider,
+    /// Automatically sleep quiet Claude sessions after this many minutes; zero disables it.
+    #[serde(default)]
+    pub park_after_minutes: u32,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -1527,6 +1543,7 @@ impl Default for Board {
             tickets: Vec::new(),
             sessions: Vec::new(),
             agent_provider: AgentProvider::default(),
+            park_after_minutes: 0,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -2264,6 +2281,59 @@ mod tests {
             serde_json::from_value::<Board>(legacy).unwrap().agent_provider,
             AgentProvider::ClaudeCode
         );
+    }
+
+    #[test]
+    fn inactivity_requires_a_confirmed_finished_turn_and_ages_from_settlement() {
+        let mut rec = SessionRecord::new(
+            uuid::Uuid::new_v4(),
+            SessionKind::Claude,
+            ulid::Ulid::new(),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Idle { stop_reason: StopReason::EndTurn },
+        );
+        rec.confidence = Confidence::High;
+        assert!(!rec.inactivity_park_due(99_000, 60_000), "unknown idle age");
+        rec.state_changed_at = Some(30_000);
+        assert!(!rec.inactivity_park_due(89_999, 60_000));
+        assert!(rec.inactivity_park_due(90_000, 60_000));
+        assert!(!rec.inactivity_park_due(90_000, 0), "off");
+        assert!(!rec.inactivity_park_due(29_999, 60_000), "clock moved backwards");
+        for state in [
+            SessionState::Running,
+            SessionState::Spawning,
+            SessionState::Sleeping,
+            SessionState::RequiresAction { reason: Reason::Permission },
+            SessionState::Failed { reason: FailReason::Unknown },
+            SessionState::Throttled,
+            SessionState::unknown(),
+            SessionState::Idle { stop_reason: StopReason::Background },
+            SessionState::Idle { stop_reason: StopReason::Interrupted },
+            SessionState::Idle { stop_reason: StopReason::Unknown },
+        ] {
+            let mut held = rec.clone();
+            held.state = state;
+            assert!(!held.inactivity_park_due(90_000, 60_000), "{:?}", held.state);
+        }
+        for kind in [SessionKind::Codex, SessionKind::Bash] {
+            let mut held = rec.clone();
+            held.kind = kind;
+            assert!(!held.inactivity_park_due(90_000, 60_000));
+        }
+        for confidence in [Confidence::Medium, Confidence::Low, Confidence::Stale] {
+            let mut held = rec.clone();
+            held.confidence = confidence;
+            assert!(!held.inactivity_park_due(90_000, 60_000));
+        }
+        let mut held = rec.clone();
+        held.pending_submit = true;
+        assert!(!held.inactivity_park_due(90_000, 60_000));
+        held = rec.clone();
+        held.pending_prefill = true;
+        assert!(!held.inactivity_park_due(90_000, 60_000));
+        rec.argv.clear();
+        assert!(!rec.inactivity_park_due(90_000, 60_000), "observe-only adoption");
     }
 
     #[test]

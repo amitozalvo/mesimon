@@ -3232,6 +3232,7 @@ impl App {
         let mut ctx = Ctx {
             settings_section: self.settings_section,
             agent_provider: self.board.agent_provider,
+            park_after_minutes: self.board.park_after_minutes,
             ticket_agent_provider: subject
                 .and_then(|t| self.board.live_agent(t))
                 .and_then(|s| s.kind.provider())
@@ -4148,6 +4149,19 @@ impl App {
                             self.board.agent_provider.label()
                         );
                     }
+                }
+            }
+            Verb::ParkAfterMinutes => {
+                let minutes = match self.board.park_after_minutes {
+                    0 => 15,
+                    1..=15 => 30,
+                    16..=30 => 60,
+                    31..=60 => 120,
+                    _ => 0,
+                };
+                match self.client.request(Command::SetParkAfterMinutes { minutes })? {
+                    Response::Err { message } => self.status = message,
+                    _ => self.refresh()?,
                 }
             }
             Verb::McpTools => {
@@ -9429,6 +9443,10 @@ pub(crate) mod test_support {
                 // The daemon's two answers to the agent-brief offer, in the
                 // one respect the client can see: both are board state, so
                 // the very next snapshot carries them.
+                Command::SetParkAfterMinutes { minutes } => {
+                    self.board.park_after_minutes = minutes;
+                    Ok(Response::Ok)
+                }
                 Command::SetAgentProvider { provider } => {
                     self.board.agent_provider = provider;
                     Ok(Response::Ok)
@@ -11812,6 +11830,21 @@ mod tests {
         assert!(app.sharing_rows().contains(&SharingRow::RemoteControl));
         app.mesophon_available = false;
         assert!(!app.sharing_rows().contains(&SharingRow::RemoteControl));
+    }
+
+    #[test]
+    fn inactivity_setting_cycles_through_board_command() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        let idx = app.settings_row(Verb::ParkAfterMinutes);
+        app.mode = Mode::Settings { idx };
+        for minutes in [15, 30, 60, 120, 0] {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.board.park_after_minutes, minutes);
+            assert_eq!(app.ctx().park_after_minutes, minutes);
+            assert_eq!(app.mode, Mode::Settings { idx });
+        }
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetParkAfterMinutes")).count(), 5);
     }
 
     #[test]

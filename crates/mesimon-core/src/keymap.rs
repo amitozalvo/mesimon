@@ -584,6 +584,7 @@ pub enum Verb {
     McpTools,
     /// Project default for newly accepted sessions; existing seats retain theirs.
     AgentProvider,
+    ParkAfterMinutes,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -806,9 +807,11 @@ impl SettingsSection {
             | Verb::WeekStart
             | Verb::DefaultColumn
             | Verb::KeepAwake => Self::Behaviour,
-            Verb::SystemPrompt | Verb::McpTools | Verb::AgentProvider | Verb::AgentPrompts => {
-                Self::Agents
-            }
+            Verb::SystemPrompt
+            | Verb::McpTools
+            | Verb::AgentProvider
+            | Verb::ParkAfterMinutes
+            | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
         }
     }
@@ -829,6 +832,7 @@ pub struct Ctx {
     /// detail teaches the placeholders instead of showing the sentence.
     pub prompt_editing: bool,
     pub agent_provider: AgentProvider,
+    pub park_after_minutes: u32,
     /// The ticket's existing provider, falling back to the project default.
     pub ticket_agent_provider: AgentProvider,
     pub column_agents: bool,
@@ -3667,6 +3671,21 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         key: "",
     },
     MenuItem {
+        verb: Verb::ParkAfterMinutes,
+        label: |c| {
+            if c.park_after_minutes == 0 {
+                "Sleep idle Claude: off".into()
+            } else {
+                format!("Sleep idle Claude after {} min", c.park_after_minutes)
+            }
+        },
+        detail: |_| {
+            "this board ∙ after a finished turn ∙ enter cycles off / 15 / 30 / 60 / 120 min".into()
+        },
+        avail: always,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::McpTools,
         label: |c| {
             if c.mcp_tools {
@@ -4050,9 +4069,13 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::WeekStart,
             Verb::DefaultColumn,
         ],
-        SettingsSection::Agents => {
-            &[Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools, Verb::AgentPrompts]
-        }
+        SettingsSection::Agents => &[
+            Verb::AgentProvider,
+            Verb::SystemPrompt,
+            Verb::McpTools,
+            Verb::AgentPrompts,
+            Verb::ParkAfterMinutes,
+        ],
     };
     verbs
         .iter()
@@ -7352,7 +7375,13 @@ mod tests {
             ),
             (
                 SettingsSection::Agents,
-                vec![Verb::AgentProvider, Verb::SystemPrompt, Verb::McpTools, Verb::AgentPrompts],
+                vec![
+                    Verb::AgentProvider,
+                    Verb::SystemPrompt,
+                    Verb::McpTools,
+                    Verb::AgentPrompts,
+                    Verb::ParkAfterMinutes,
+                ],
             ),
         ] {
             let c = Ctx { settings_section: section, ..ctx.clone() };
