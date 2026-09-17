@@ -3754,30 +3754,50 @@ fn golden_train_manual_120() {
 /// with — otherwise the state is a blank row under a card.
 #[test]
 fn test_an_empty_prompt_field_names_itself() {
-    let mut app = app_graphite(fixture(false));
-    app.rich_keys = true;
-    app.cursor_col = 1;
-    app.cursor_row = Some(0);
-    app.mode = Mode::Input {
-        purpose: crate::app::InputPurpose::Prompt {
-            target: crate::app::AskTarget::Ticket(ulid_n(3)),
-            walk: None,
-            queued: false,
-        },
-        buffer: crate::text::EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
-    };
-    let lines = render(&app, 120, 30);
-    assert!(
-        lines.iter().any(|l| l.contains("› ask claude")),
-        "an empty prompt field must show its caret and its purpose:\n{}",
-        lines.join("\n")
-    );
-    // …and the footer says how to send it, in the word that is true here.
-    assert!(
-        lines.last().is_some_and(|l| l.contains("enter send")),
-        "the field must not offer `save`: {:?}",
-        lines.last()
-    );
+    use mesimon_core::board::AgentProvider;
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+    for (kind, placeholder) in
+        [(SessionKind::Claude, "› ask claude"), (SessionKind::Codex, "› ask codex")]
+    {
+        for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
+            for state in [SessionState::Running, SessionState::Sleeping] {
+                let mut board = fixture(false);
+                board.agent_provider = provider;
+                let agent = board.sessions.iter_mut().find(|s| s.id == uuid_n(31)).unwrap();
+                agent.kind = kind;
+                agent.state = state.clone();
+                let mut app = app_graphite(board);
+                app.rich_keys = true;
+                app.cursor_col = 1;
+                app.cursor_row = Some(0);
+                app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).expect("open ask field");
+                for width in [120, crate::layout::MIN_W] {
+                    let lines = render(&app, width, 30);
+                    assert!(
+                        lines.iter().any(|l| l.contains(placeholder)),
+                        "the prompt must name {kind:?} ({state:?}), with board default \
+                         {provider:?} at {width}:\n{}",
+                        lines.join("\n")
+                    );
+                    assert!(
+                        lines.last().is_some_and(|l| {
+                            l.contains("enter send") || l.contains("enter queue")
+                        }),
+                        "the field must not offer `save`: {:?}",
+                        lines.last()
+                    );
+                    if kind == SessionKind::Codex
+                        && provider == AgentProvider::ClaudeCode
+                        && state == SessionState::Running
+                        && width == 120
+                    {
+                        golden("prompt_field_codex_empty_120x30", &lines);
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// A field reopened on a WAITING ask and emptied says what a blank Enter

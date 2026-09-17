@@ -11206,3 +11206,12 @@ The rebase regressions also exposed a cancellation edge: acknowledging Queue
 clears the editor, so a later host rejection must restore the queued words for
 review. Rejected or uncertain receipts now retain those words without overwriting
 a newer draft, and never resubmit them automatically.
+
+## T-399 — ask placeholder follows the ticket's agent (2026-09-17)
+
+The empty Shift+Enter field now says `ask codex` for a seated Codex session
+and `ask claude` for Claude, using the ticket's provider even when the board's
+default has changed. Sleeping sessions retain their provider. Empty seats
+still say `start on the title`, and waiting asks still say `enter drops`.
+Rendering regression coverage opens the field through Shift+Enter for both
+providers, awake and sleeping, under either board default and at narrow width.

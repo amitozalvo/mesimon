@@ -83,9 +83,9 @@ pub(super) fn render_edit(
 /// `placeholder` is what an EMPTY field says a blank Enter will do, and the
 /// caller picks it because only the caller knows the seat: `enter drops` on a
 /// field reopened over a WAITING ask (T-241), `start on the title` on an empty
-/// claude seat (T-294) — both gestures the footer does not teach and the
+/// agent seat (T-294) — both gestures the footer does not teach and the
 /// delivery row under the field has no room for on a narrow column — and
-/// `ask claude` otherwise, the words the key itself was hinted with.
+/// `ask claude` or `ask codex` otherwise, matching the ticket's seated agent.
 pub(super) fn render_prompt(
     ctx: &CardCtx,
     buffer: &EditBuffer,

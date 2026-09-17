@@ -197,7 +197,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         let edit_cursor = prompt_of(t).map(|(buf, queued)| {
             // What a blank Enter would do, in the seat's own words, and by
             // the same rule `commit_input` judges it: drop the entry that is
-            // waiting, start claude on the title where the seat is empty and
+            // waiting, start the agent on the title where the seat is empty and
             // the toggle says now (T-294), or nothing at all.
             let starts = app.board.live_agent(t.id).is_none();
             let placeholder = if app.ticket_queued(t.id) && !(starts && !queued) {
@@ -205,7 +205,10 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             } else if starts {
                 "start on the title"
             } else {
-                "ask claude"
+                match app.ticket_agent_provider(t.id) {
+                    mesimon_core::board::AgentProvider::ClaudeCode => "ask claude",
+                    mesimon_core::board::AgentProvider::Codex => "ask codex",
+                }
             };
             let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
             lines.push(line);
