@@ -115,6 +115,8 @@ struct ColumnsFile {
     /// that drops it narrows nothing an agent gets.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     default_column: Option<String>,
+    #[serde(default)]
+    follow_up_mode: mesimon_core::board::FollowUpMode,
     /// The three agent-prompt templates (`Board::prompts`, T-353), one
     /// scalar each rather than one `[prompts]` table: a table here could be
     /// followed by no scalar, and `columns` and `tags` already own that
@@ -408,6 +410,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 claude_md_ignored: cf.claude_md_ignored,
                                 system_prompt: cf.system_prompt,
                                 default_column: cf.default_column,
+                                follow_up_mode: cf.follow_up_mode,
                                 prompts: PromptSet {
                                     rebase: cf.prompt_rebase,
                                     merged: cf.prompt_merged,
@@ -654,6 +657,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         claude_md_ignored: board.claude_md_ignored,
         system_prompt: board.system_prompt,
         default_column: board.default_column.clone(),
+        follow_up_mode: board.follow_up_mode,
         prompt_rebase: board.prompts.rebase.clone(),
         prompt_merged: board.prompts.merged.clone(),
         prompt_note_updated: board.prompts.note_updated.clone(),
@@ -1824,6 +1828,7 @@ order = "a0"
             claude_md_ignored: true,
             system_prompt: true,
             default_column: Some("TODO".into()),
+            follow_up_mode: mesimon_core::board::FollowUpMode::Steer,
             prompt_rebase: Some("catch {branch} up to {base}".into()),
             prompt_merged: None,
             prompt_note_updated: None,
@@ -1873,6 +1878,7 @@ order = "a0"
         assert!(back.claude_md_ignored);
         assert!(back.system_prompt);
         assert_eq!(back.default_column.as_deref(), Some("TODO"));
+        assert_eq!(back.follow_up_mode, mesimon_core::board::FollowUpMode::Steer);
         assert_eq!(back.agent_provider, AgentProvider::Codex);
         assert_eq!(back.park_after_minutes, 30);
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());

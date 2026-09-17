@@ -239,16 +239,21 @@ pub enum Command {
     PromptSession {
         ticket: ulid::Ulid,
         text: String,
-        /// Park the words until the ticket's CHECKOUT is quiet — no claude with
-        /// the same cwd mid-turn — and paste them then (2026-09-04, after five
-        /// claudes in one checkout committed at once). Shared-checkout tickets
-        /// with a pane only; the daemon's in-memory queue, one entry per
-        /// ticket, FIFO per checkout. Absent from an older client = send now.
+        /// Wait for idle and a quiet checkout, including approvals and questions.
+        /// One in-memory entry per ticket, drained in board order.
+        /// Absent from an older client = send now.
         #[serde(default)]
         queued: bool,
     },
-    /// Drop the ticket's queued ask before it is delivered. A person's
-    /// gesture (a blank Enter in the reopened field); nothing reaches claude.
+    /// Atomically remove a waiting prompt and return its words for editing.
+    TakeQueuedAsk {
+        ticket: ulid::Ulid,
+    },
+    /// Deliver the waiting words now, bypassing idle and checkout waits.
+    SendQueuedAsk {
+        ticket: ulid::Ulid,
+    },
+    /// Discard a waiting prompt without delivering it.
     DropQueuedAsk {
         ticket: ulid::Ulid,
     },
@@ -264,11 +269,8 @@ pub enum Command {
     PromptColumn {
         column: String,
         text: String,
-        /// Park each shared-checkout ticket's words in the ask queue instead
-        /// of pasting them all at once — the default the field opens at,
-        /// because five claudes asked to commit in one checkout at the same
-        /// moment is the incident the queue exists for. Worktree tickets are
-        /// sent now either way; their checkout is their own.
+        /// Wait for each session to become idle and its checkout to be quiet.
+        /// Shared-checkout prompts are serialized in board order.
         #[serde(default)]
         queued: bool,
     },
@@ -419,6 +421,10 @@ pub enum Command {
     SetDefaultColumn {
         #[serde(default)]
         column: Option<String>,
+    },
+    /// Per-board default for the person's follow-up composer.
+    SetFollowUpMode {
+        mode: crate::board::FollowUpMode,
     },
     /// Rewrite one of the three sentences mesimon types into an agent's box
     /// (T-353): the rebase ask, the merged notice, the note nudge. `None`
@@ -853,6 +859,8 @@ impl Command {
             // The ticket, never the text: the feed records that the user
             // asked, not what they asked.
             PromptSession { ticket, .. }
+            | TakeQueuedAsk { ticket }
+            | SendQueuedAsk { ticket }
             | DropQueuedAsk { ticket }
             | SpawnSession { ticket, .. }
             | AdoptTerminal { ticket }
@@ -881,6 +889,7 @@ impl Command {
             | SetAgentProvider { .. }
             | SetParkAfterMinutes { .. }
             | SetSystemPrompt { .. }
+            | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }
             | SetAgentPrompt { .. }
             | IgnoreBriefOffer
@@ -1014,8 +1023,11 @@ pub enum Response {
         #[serde(default)]
         fresh: bool,
     },
-    /// PromptSession's receipt when the words were PARKED rather than
-    /// pasted: the short keys of the tickets whose claudes hold the checkout.
+    /// The words removed by TakeQueuedAsk.
+    PromptTakenBack {
+        text: String,
+    },
+    /// PromptSession's receipt when the words wait for idle or the checkout.
     /// Only a client that sent `queued: true` can receive it.
     Queued {
         #[serde(default)]

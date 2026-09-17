@@ -604,6 +604,8 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::PromptSession { .. }
         // N input boxes at once (T-378): the same thing, a column wide.
         | Command::PromptColumn { .. }
+        | Command::TakeQueuedAsk { .. }
+        | Command::SendQueuedAsk { .. }
         | Command::DropQueuedAsk { .. }
         | Command::SetAutomation { .. }
         // The same delivery with mesimon's words: still one session's turn
@@ -655,6 +657,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // Where an agent's own `create_ticket` lands by default (T-279): an
         // agent choosing where its cards go would be choosing what the user
         // sees first. It names a column per call instead, in the open.
+        | Command::SetFollowUpMode { .. }
         | Command::SetDefaultColumn { .. }
         // The sentences mesimon types into an agent's box (T-353). An agent
         // that could rewrite the rebase ask would be writing the prompt that
@@ -1245,6 +1248,9 @@ mod tests {
                 queued: true,
             },
             Command::DropQueuedAsk { ticket: t },
+            Command::TakeQueuedAsk { ticket: t },
+            Command::SendQueuedAsk { ticket: t },
+            Command::SetFollowUpMode { mode: crate::board::FollowUpMode::Steer },
             Command::SetAutomation { merge_train: true, merge_notice: true },
             Command::NoteToAgent { ticket: t, note: t },
             // The ticket-addressed forms; the agent forms are the tier.

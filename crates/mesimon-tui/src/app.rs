@@ -2885,22 +2885,15 @@ impl App {
             && self.wt_item(ticket).is_none()
     }
 
-    /// Can an ask on this ticket WAIT? A shared-checkout ticket — mirrors the
-    /// daemon's `enqueue_ask` gates, so the toggle is never offered where the
-    /// daemon would refuse. A pane was required until T-294; now the seat may
-    /// also be a parked claude the delivery wakes, or an empty one it starts.
+    /// Existing sessions can wait for idle; empty shared-checkout seats
+    /// can wait to start. Empty worktrees still provision directly.
     pub(crate) fn ask_queueable(&self, ticket: ulid::Ulid) -> bool {
-        self.shared_checkout(ticket)
+        self.shared_checkout(ticket) || self.board.live_agent(ticket).is_some()
     }
 
-    /// Can a column's ask wait (T-378)? When any seated agent in it shares
-    /// the checkout — those are the ones the queue serializes; a worktree
-    /// ticket is sent now either way, so a column of them has no toggle.
+    /// Any seated agent can wait for idle, including worktree agents.
     pub(crate) fn column_ask_queueable(&self, column: &str) -> bool {
-        self.board
-            .column_tickets(column)
-            .iter()
-            .any(|t| self.board.live_agent(t.id).is_some() && self.shared_checkout(t.id))
+        self.board.column_tickets(column).iter().any(|t| self.board.live_agent(t.id).is_some())
     }
 
     /// Is a claude mid-turn in this ticket's checkout? The TUI's own read of
@@ -3440,6 +3433,7 @@ impl App {
             system_prompt: self.board.system_prompt,
             // Spelled as the header spells every column: uppercased.
             default_column: self.board.landing_column().unwrap_or_default().to_uppercase(),
+            follow_up_mode: self.board.follow_up_mode,
             brief_offer: !self.claude_md.path.is_empty()
                 && !self.claude_md.present
                 && self.board.mcp_tools
@@ -4197,6 +4191,36 @@ impl App {
             // goes to the daemon and comes back on the snapshot. Enter walks
             // the columns in board order from the one the daemon would use
             // now, wrapping — a fixed ring, like the week's first day.
+            Verb::FollowUpMode => {
+                use mesimon_core::board::FollowUpMode;
+                let mode = if self.board.follow_up_mode == FollowUpMode::Queue { FollowUpMode::Steer } else { FollowUpMode::Queue };
+                match self.client.request(Command::SetFollowUpMode { mode })? {
+                    Response::Err { message } => self.status = message,
+                    _ => self.refresh()?,
+                }
+            }
+            Verb::SendQueuedAsk => {
+                if let Some(ticket) = self.subject() {
+                    self.status = match self.req(Command::SendQueuedAsk { ticket }) {
+                        Response::Err { message } => message,
+                        _ => "queued prompt sent now".into(),
+                    };
+                    self.refresh()?;
+                }
+            }
+            Verb::TakeBackAsk => {
+                if let Some(ticket) = self.subject() {
+                    match self.req(Command::TakeQueuedAsk { ticket }) {
+                        Response::Err { message } => self.status = message,
+                        Response::PromptTakenBack { text } => {
+                            self.mode = Mode::Editor(self.ask_room(AskTarget::Ticket(ticket), true, &text));
+                            self.status = "taken back ∙ edit or close to discard".into();
+                        }
+                        _ => {}
+                    }
+                    self.refresh()?;
+                }
+            }
             Verb::DefaultColumn => {
                 let cols: Vec<String> =
                     self.board.sorted_columns().iter().map(|c| c.name.clone()).collect();
@@ -4427,29 +4451,14 @@ impl App {
                     self.spawn_and_focus(id, SessionKind::Bash)?;
                 }
             }
-            // Open the field on the card and get out of the way. Nothing is
-            // sent here — the press that opens a prompt must not also be the
-            // press that delivers one. The exception is an EMPTY seat on a
-            // QUIET checkout, where the title IS the prompt: that is the
-            // composer's Shift+Enter a press late, and it starts claude on
-            // the title without a field.
-            //
-            // The field opens at `queued` exactly where the press would
-            // otherwise add a writer to a checkout somebody else is working
-            // in (T-294) — an empty seat, or a parked claude to wake. A live
-            // pane keeps `now`: it is one turn in a conversation that is
-            // already there, and a person reaching for a working agent may
-            // well mean interrupt.
+            // Opening a composer sends nothing. Existing panes use the
+            // board's Queue/Steer default; starts and wakes retain the
+            // shared-checkout timing choice.
             Verb::Prompt => {
-                // On a column header (T-378) the field opens under the
-                // header and the words go to every seated agent in the
-                // column. It opens at `queued` where any of them shares the
-                // checkout: a column asked at once is the incident the queue
-                // exists for, so waiting is the default and `now` the press
-                // away. A worktree-only column has nothing to wait for.
+                // A column asks every seated agent, using the board default.
                 if ctx.col_header {
                     if let Some(name) = self.cursor_column().map(|c| c.name.clone()) {
-                        let queued = self.column_ask_queueable(&name);
+                        let queued = self.column_ask_queueable(&name) && self.board.follow_up_mode == mesimon_core::board::FollowUpMode::Queue;
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt {
                                 target: AskTarget::Column(name),
@@ -4483,7 +4492,9 @@ impl App {
                             };
                         }
                     } else if ctx.ticket_has_agent {
-                        let queued = !ctx.ticket_promptable && ctx.checkout_busy;
+                        let queued = if ctx.ticket_promptable {
+                            self.board.follow_up_mode == mesimon_core::board::FollowUpMode::Queue
+                        } else { ctx.checkout_busy };
                         self.mode = Mode::Input {
                             purpose: InputPurpose::Prompt { target: AskTarget::Ticket(id), walk: None, queued },
                             buffer: EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
@@ -9436,7 +9447,17 @@ pub(crate) mod test_support {
                         None => Ok(Response::Err { message: "no such ticket".into() }),
                     }
                 }
-                Command::DropQueuedAsk { ticket } => {
+                Command::TakeQueuedAsk { ticket } => {
+                    let text = self
+                        .pending
+                        .iter()
+                        .find(|p| p.ticket == ticket)
+                        .and_then(|p| p.text.clone())
+                        .unwrap_or_default();
+                    self.pending.retain(|p| p.ticket != ticket);
+                    Ok(Response::PromptTakenBack { text })
+                }
+                Command::SendQueuedAsk { ticket } | Command::DropQueuedAsk { ticket } => {
                     self.pending.retain(|p| p.ticket != ticket);
                     Ok(Response::Ok)
                 }
@@ -9445,6 +9466,10 @@ pub(crate) mod test_support {
                 // the very next snapshot carries them.
                 Command::SetParkAfterMinutes { minutes } => {
                     self.board.park_after_minutes = minutes;
+                    Ok(Response::Ok)
+                }
+                Command::SetFollowUpMode { mode } => {
+                    self.board.follow_up_mode = mode;
                     Ok(Response::Ok)
                 }
                 Command::SetAgentProvider { provider } => {
@@ -12246,6 +12271,10 @@ mod tests {
     fn shift_tab_queues_the_ask_and_the_status_names_the_holder() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queueable, "a shared-checkout ticket with a pane");
         assert!(!app.ctx().ask_queued, "send now, every time the field opens");
@@ -12280,6 +12309,10 @@ mod tests {
     fn tab_grows_the_ask_field_into_the_room_and_ctrl_s_sends_it() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         for c in "fix".chars() {
             press(&mut app, c);
@@ -12340,6 +12373,10 @@ mod tests {
     fn the_ask_room_folds_back_clean_and_discards_dirty() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(editor(&app).asking());
@@ -12358,6 +12395,10 @@ mod tests {
         // Fold back clean: send nothing, reopen on the same text.
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         for c in "fix".chars() {
             press(&mut app, c);
@@ -12477,8 +12518,7 @@ mod tests {
 
     /// A column with a shared-checkout seat opens at `queued` — the batch is
     /// the five-claudes incident by construction — and Shift+Tab flips it to
-    /// now; a worktree-only column has nothing to wait for and opens at now
-    /// with the toggle inert.
+    /// now. Worktree-only columns offer the same choice.
     #[test]
     fn the_column_ask_opens_queued_on_a_shared_checkout_and_shift_tab_flips_it() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
@@ -12501,10 +12541,10 @@ mod tests {
         app.board.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
         press(&mut app, 'k');
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queueable, "a worktree column has no toggle");
-        assert!(!app.ctx().ask_queued, "and opens at now");
+        assert!(app.ctx().ask_queueable, "a worktree column can wait for idle");
+        assert!(app.ctx().ask_queued, "and opens at Queue");
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queued, "the key did nothing");
+        assert!(!app.ctx().ask_queued, "the key selects steer");
     }
 
     /// A blank Enter on the column's field sends nothing: there is no
@@ -12529,17 +12569,17 @@ mod tests {
         }
     }
 
-    /// A worktree ticket's checkout is its own: nothing to wait for, so the
-    /// toggle is not offered and the key is inert there.
+    /// Worktree follow-ups also offer Queue/Steer.
     #[test]
-    fn the_ask_toggle_is_inert_on_a_worktree_ticket() {
+    fn the_ask_toggle_can_steer_a_worktree_ticket() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         app.board.tickets[0].workspace = Some(WorkspaceStrategy::Worktree);
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queueable);
+        assert!(app.ctx().ask_queueable);
+        assert!(app.ctx().ask_queued);
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queued, "the key did nothing");
+        assert!(!app.ctx().ask_queued, "the key selects steer");
         assert!(matches!(
             app.mode,
             Mode::Input { purpose: InputPurpose::Prompt { queued: false, .. }, .. }
@@ -12579,6 +12619,10 @@ mod tests {
     fn a_queued_ask_reopens_prefilled_and_a_blank_enter_drops_it() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
         app.pending = vec![mesimon_core::command::Pending {
             ticket: ulid::Ulid(1),
             action: "ask".into(),
@@ -12951,15 +12995,21 @@ mod tests {
         assert_eq!(app.status, "claude wakes ∙ after T-9");
     }
 
-    /// T-294. A live pane keeps `now`, busy checkout or not: it is one turn
-    /// in a conversation already there, and the press may well mean interrupt.
+    /// T-390: live-pane follow-ups use the per-board Queue/Steer default.
     #[test]
-    fn a_paned_ask_still_opens_at_now_while_the_checkout_works() {
+    fn a_paned_ask_obeys_the_board_follow_up_default() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         assert!(app.ctx().checkout_busy, "its own claude holds the checkout");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(!app.ctx().ask_queued, "send now, every time the field opens");
+        assert!(app.ctx().ask_queued, "Queue is the default");
+        app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
+        app.client
+            .request(Command::SetFollowUpMode { mode: mesimon_core::board::FollowUpMode::Steer })
+            .unwrap();
+        app.refresh().unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(!app.ctx().ask_queued, "Steer is an explicit board preference");
     }
 
     /// T-294 / T-379. A worktree ticket's checkout is its own: nothing to

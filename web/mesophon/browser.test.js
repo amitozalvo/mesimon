@@ -103,11 +103,19 @@ for (const [name, engine] of [
             .textContent.includes("preview-canary"),
         );
         assert.equal(await page.locator("#preview script").count(), 0);
+        assert.equal(await page.locator("#prompt-mode").inputValue(), "queue");
         const prompt = `browser-canary-${name}-${label}`;
         await page.getByLabel("Prompt", { exact: true }).fill(prompt);
         await page
-          .getByRole("button", { name: "Send prompt", exact: true })
+          .getByRole("button", { name: "Queue prompt", exact: true })
           .click();
+        await page.locator("#queued-row").waitFor({ state: "visible" });
+        assert.equal(await page.locator("#queued-text").textContent(), prompt);
+        await page.getByRole("button", { name: "Take back", exact: true }).click();
+        await page.waitForFunction((text) => document.querySelector("#prompt").value === text, prompt);
+        await page.getByRole("button", { name: "Queue prompt", exact: true }).click();
+        await page.locator("#queued-row").waitFor({ state: "visible" });
+        await page.getByRole("button", { name: "Send now", exact: true }).click();
         await page.waitForFunction(() =>
           document.querySelector("#delivery").textContent.includes("Submitted"),
         );

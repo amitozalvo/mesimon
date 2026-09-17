@@ -461,3 +461,93 @@ fn queued_asks_go_in_board_order_and_a_move_resorts_them() {
 
     let _ = c.request(Command::Shutdown);
 }
+
+/// Follow-ups in an isolated worktree wait for this turn, including its
+/// permission/question stops. Explicit send-now bypasses that wait.
+#[test]
+fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) =
+        Harness::boot_with_env("idleq", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
+    init_repo(&h.repo, "seed", "seed\n");
+    let mut c = h.client("idleq");
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "isolated follow-ups".into(),
+        workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
+    }) {
+        Response::Created { id, .. } => id,
+        other => panic!("{other:?}"),
+    };
+    assert!(matches!(
+        c.request(Command::SpawnSession {
+            ticket,
+            kind: SessionKind::Claude,
+            submit_prompt: false
+        }),
+        Response::Provisioning | Response::Spawned { .. }
+    ));
+    let mut session = None;
+    wait_until(Duration::from_secs(20), "worktree agent", || {
+        session = c.board().live_agent(ticket).map(|s| s.id);
+        session.is_some()
+    });
+    let sid = session.unwrap();
+    let hooks = h.paths.hook_sock();
+    let text = || std::fs::read_to_string(h.dir.join("got.txt")).unwrap_or_default();
+    hook_send(&hooks, &sid.to_string(), "UserPromptSubmit", "{}");
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    let queue = |c: &mut TestClient, words: &str| {
+        assert!(matches!(
+            c.request(Command::PromptSession { ticket, text: words.into(), queued: true }),
+            Response::Queued { .. }
+        ));
+    };
+    queue(&mut c, "idle-queue-first");
+    for (event, payload) in [
+        ("PermissionRequest", r#"{"tool_name":"Bash"}"#),
+        ("PreToolUse", r#"{"tool_name":"AskUserQuestion"}"#),
+    ] {
+        hook_send(&hooks, &sid.to_string(), event, payload);
+        c.await_state(sid, "waiting for person", |s| {
+            matches!(s, SessionState::RequiresAction { .. })
+        });
+        std::thread::sleep(Duration::from_millis(1200));
+        assert!(!text().contains("idle-queue-first"));
+        assert!(pending_of(&mut c, None).iter().any(|p| p.ticket == ticket && !p.in_flight));
+        hook_send(&hooks, &sid.to_string(), "PostToolUse", payload);
+        c.await_state(sid, "running again", |s| *s == SessionState::Running);
+    }
+    hook_send(&hooks, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    wait_until(Duration::from_secs(10), "idle delivery", || text().contains("idle-queue-first"));
+    assert_eq!(text().matches("idle-queue-first").count(), 1);
+    hook_send(&hooks, &sid.to_string(), "UserPromptSubmit", "{}");
+    c.await_state(sid, "running", |s| *s == SessionState::Running);
+    queue(&mut c, "idle-queue-send-now");
+    assert!(matches!(c.request(Command::SendQueuedAsk { ticket }), Response::Ok));
+    wait_until(Duration::from_secs(5), "send now during turn", || {
+        text().contains("idle-queue-send-now")
+    });
+    queue(&mut c, "idle-queue-taken-back");
+    assert!(
+        matches!(c.request(Command::TakeQueuedAsk { ticket }), Response::PromptTakenBack { text } if text == "idle-queue-taken-back")
+    );
+    hook_send(&hooks, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    std::thread::sleep(Duration::from_millis(1200));
+    assert!(!text().contains("idle-queue-taken-back"));
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket,
+            text: "idle-queue-already-idle".into(),
+            queued: true,
+        }),
+        Response::Ok
+    ));
+    wait_until(Duration::from_secs(5), "immediate idle delivery", || {
+        text().contains("idle-queue-already-idle")
+    });
+}

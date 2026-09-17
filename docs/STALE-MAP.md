@@ -11081,3 +11081,27 @@ Both background agent work and monitor-only work remain ineligible for T-391's
 automatic inactivity parking: only a confirmed `EndTurn` starts that timer.
 The combined regression now exercises both states through the real daemon and
 checks that their panes survive while a finished conversation is parked.
+
+## T-390 — follow-ups wait for idle, with a send-now override (2026-09-17)
+
+T-294's in-memory, one-prompt-per-ticket queue now accepts existing worktree
+sessions as well as shared-checkout seats. Delivery requires an observed idle
+state and a quiet checkout; Running, approvals/questions, background turns,
+unobserved Codex sessions, and unknown target states hold the prompt. A normal
+tool-call boundary does not release it. Shared-checkout ordering, seat identity
+checks, user-input cancellation and restart discard semantics remain intact.
+
+The board persists `follow_up_mode = "queue" | "steer"` in `columns.toml`, defaulting
+to Queue. This selects the TUI follow-up composer's timing; Shift+Tab overrides
+one ask. Starting or waking an agent retains its checkout-based timing. The
+queued row exposes send now (Ctrl+Y) and take back (Ctrl+U); take back atomically
+returns the daemon's current text to the editor. Column asks also wait for each
+worktree agent's idle state. Existing wire clients' explicit `queued: false`
+still steers.
+
+Remote Control defaults to Queue independently of the board preference, exposes
+queued text and both actions, and routes waiting words through the same daemon
+queue. The originating paired-device grant is rechecked before delivery;
+revocation cancels its waiting words and receipt. Sends retain bracketed paste
+and separate Enter, including Codex's existing readiness checks; prompt text
+never becomes argv. No delivery at the next tool call was adopted.

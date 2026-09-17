@@ -27,4 +27,4 @@
 
 
 
- enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe ∙ r rename                          esc menu ∙ ? keys
+ ^y send now ∙ ^u take back ∙ enter ticket page ∙ o new ticket ∙ HJKL move card ∙ tab describe        esc menu ∙ ? keys

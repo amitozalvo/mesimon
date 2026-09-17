@@ -594,6 +594,12 @@ pub enum Verb {
     /// cycles it through the columns in board order. Board state like
     /// `McpTools`, in `columns.toml`.
     DefaultColumn,
+    /// Per-board Queue/Steer default for follow-ups.
+    FollowUpMode,
+    /// Deliver a waiting prompt immediately.
+    SendQueuedAsk,
+    /// Return a waiting prompt to the composer.
+    TakeBackAsk,
     /// The menu row that opens the agent-brief dialog (T-217/T-224): the
     /// text shown verbatim, with four ways out.
     BriefOffer,
@@ -805,6 +811,7 @@ impl SettingsSection {
             | Verb::MergeTrainNotice
             | Verb::SnoozeQuiet
             | Verb::WeekStart
+            | Verb::FollowUpMode
             | Verb::DefaultColumn
             | Verb::KeepAwake => Self::Behaviour,
             Verb::SystemPrompt
@@ -929,6 +936,7 @@ pub struct Ctx {
     /// column — `Board::landing_column`'s word, so the row says what the
     /// daemon will do. Empty on a board with no columns.
     pub default_column: String,
+    pub follow_up_mode: crate::board::FollowUpMode,
     /// The brief is off, the repo's `CLAUDE.md` does not say it either, the
     /// tool it names is on, and the offer was not answered with "never". All
     /// four, because each one alone would offer noise.
@@ -1477,6 +1485,28 @@ static GLOBAL: &[Binding] = &[
 ];
 
 static BOARD: &[Binding] = &[
+    Binding {
+        keys: &[Key::Ctrl('y')],
+        verb: Verb::SendQueuedAsk,
+        show: "^y",
+        hint: |_| "send now",
+        avail: |c| c.ticket_queued,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Ctrl('u')],
+        verb: Verb::TakeBackAsk,
+        show: "^u",
+        hint: |_| "take back",
+        avail: |c| c.ticket_queued,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 10,
+    },
     Binding {
         // Deliberately undisclosed until the first press (T-316).
         keys: &[Key::Char('y')],
@@ -2204,6 +2234,28 @@ static BOARD: &[Binding] = &[
 ];
 
 static TICKET: &[Binding] = &[
+    Binding {
+        keys: &[Key::Ctrl('y')],
+        verb: Verb::SendQueuedAsk,
+        show: "^y",
+        hint: |_| "send now",
+        avail: |c| c.ticket_queued,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 10,
+    },
+    Binding {
+        keys: &[Key::Ctrl('u')],
+        verb: Verb::TakeBackAsk,
+        show: "^u",
+        hint: |_| "take back",
+        avail: |c| c.ticket_queued,
+        class: Class::Plain,
+        group: Group::Sessions,
+        mutates: true,
+        prio: 10,
+    },
     Binding {
         // A vertical list takes ↓ ↑ and nothing sideways. Gated on the rail
         // having somewhere to go rather than on there being sessions
@@ -3475,6 +3527,22 @@ static MENU_ITEMS: &[MenuItem] = &[
 /// ever a suggestion (`every_suggestion_is_a_menu_row` holds them apart).
 static SETTINGS_ITEMS: &[MenuItem] = &[
     MenuItem {
+        verb: Verb::FollowUpMode,
+        label: |c| {
+            format!(
+                "Follow-ups: {}",
+                if c.follow_up_mode == crate::board::FollowUpMode::Queue {
+                    "Queue"
+                } else {
+                    "Steer"
+                }
+            )
+        },
+        detail: |_| "default for this board ∙ Queue waits for idle; Steer sends now".into(),
+        avail: always,
+        key: "",
+    },
+    MenuItem {
         verb: Verb::SettingsAppearance,
         label: |_| "Appearance & notifications".into(),
         detail: |_| "theme, notifications, status line".into(),
@@ -4068,6 +4136,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::SnoozeQuiet,
             Verb::WeekStart,
             Verb::DefaultColumn,
+            Verb::FollowUpMode,
         ],
         SettingsSection::Agents => &[
             Verb::AgentProvider,
@@ -7371,6 +7440,7 @@ mod tests {
                     Verb::SnoozeQuiet,
                     Verb::WeekStart,
                     Verb::DefaultColumn,
+                    Verb::FollowUpMode,
                 ],
             ),
             (

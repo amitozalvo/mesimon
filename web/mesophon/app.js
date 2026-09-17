@@ -38,6 +38,7 @@ function endConnection(message) {
 const delivery = (status) => {
   $("delivery").textContent =
     {
+      queued: "Queued · waiting for idle.",
       awaiting_delivery: "Awaiting delivery…",
       submitted: "Submitted to the agent.",
       rejected: "Prompt rejected.",
@@ -112,6 +113,10 @@ function select(ticket) {
   )
     $("preview").textContent = "";
   selected = ticket;
+  $("queued-row").hidden = ticket.queued == null;
+  $("queued-text").textContent = ticket.queued || "";
+  $("send-now").disabled = $("take-back").disabled =
+    !online || !ticket.agent?.promptable;
   $("selection").textContent = `${ticket.key} · ${ticket.title}`;
   $("agent-state").textContent = ticket.agent
     ? `${ticket.agent.provider} · ${ticket.agent.state}`
@@ -168,7 +173,7 @@ async function answer(answer) {
       $("preview").textContent = reply.lines.join("\n");
   } else if (reply.result === "delivery") {
     if (
-      (original?.body.op === "prompt"
+      (["prompt", "send_now"].includes(original?.body.op)
         ? id
         : original?.body.op === "status"
           ? original.body.command
@@ -176,19 +181,26 @@ async function answer(answer) {
       lastPrompt
     ) {
       delivery(reply.status);
-      if (lastPrompt) lastPrompt.waiting = reply.status === "awaiting_delivery";
+      if (lastPrompt)
+        lastPrompt.waiting = ["queued", "awaiting_delivery"].includes(reply.status);
       if (
         original.body.op === "prompt" &&
-        ["submitted", "awaiting_delivery"].includes(reply.status)
+        ["queued", "submitted", "awaiting_delivery"].includes(reply.status)
       )
         $("prompt").value = "";
       if (selected)
         $("send").disabled =
           !online || !selected.agent?.promptable || !!lastPrompt?.waiting;
     }
+    refresh();
+  } else if (reply.result === "taken_back") {
+    if (lastPrompt) lastPrompt.waiting = false;
+    if (selected?.id === original?.body.ticket) $("prompt").value = reply.text;
+    delivery("Taken back. Edit or discard the prompt.");
+    refresh();
   } else if (reply.result === "rejected") {
     if (
-      (original?.body.op === "prompt"
+      (["prompt", "send_now"].includes(original?.body.op)
         ? id
         : original?.body.op === "status"
           ? original.body.command
@@ -198,6 +210,9 @@ async function answer(answer) {
       delivery(`Rejected: ${reply.message}`);
       if (lastPrompt) lastPrompt.waiting = false;
       if (selected) $("send").disabled = !online || !selected.agent?.promptable;
+    } else if (original?.body.op === "take_back") {
+      delivery(`Rejected: ${reply.message}`);
+      refresh();
     } else if (
       original?.body.op === "preview" &&
       selected?.agent?.session === original.context
@@ -341,6 +356,23 @@ $("connect").onclick = () => {
   const entry = identity.boards.find((b) => b.pin.board === $("boards").value);
   if (entry) connect(entry);
 };
+$("prompt-mode").onchange = () => {
+  $("send").textContent = $("prompt-mode").value === "queue" ? "Queue prompt" : "Send prompt";
+};
+$("send-now").onclick = () => {
+  if (!online || !selected?.queued || !selected.agent?.promptable) return;
+  const id = request({ op: "send_now", ticket: selected.id, session: selected.agent.session });
+  if (id) {
+    lastPrompt = { id, incarnation, board: active.pin.board, waiting: true };
+    delivery("awaiting_delivery");
+    $("send-now").disabled = true;
+  }
+};
+$("take-back").onclick = () => {
+  if (!online || !selected?.queued || !selected.agent?.promptable) return;
+  request({ op: "take_back", ticket: selected.id, session: selected.agent.session });
+  $("take-back").disabled = true;
+};
 $("prompt-form").onsubmit = (event) => {
   event.preventDefault();
   if (!online || !selected?.agent?.promptable || lastPrompt?.waiting) return;
@@ -354,6 +386,7 @@ $("prompt-form").onsubmit = (event) => {
     ticket: selected.id,
     session: selected.agent.session,
     text,
+    queued: $("prompt-mode").value === "queue",
   });
   if (id) {
     lastPrompt = { id, incarnation, board: active.pin.board, waiting: true };

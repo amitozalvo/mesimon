@@ -6,7 +6,6 @@
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
-
                            ╭─ BEHAVIOUR ────────────────────────────────────────────────────╮
                            │   Auto merge: off                                              │
                            │     mesimon merges and asks to rebase for you while the board~ │
@@ -18,8 +17,9 @@
                            │     z's last rung: next Monday 9:00 ∙ enter cycles the day     │
                            │   Default column: TODO                                         │
                            │     where an agent's create_ticket lands unplaced ∙ enter cyc~ │
+                           │   Follow-ups: Queue                                            │
+                           │     default for this board ∙ Queue waits for idle; Steer send~ │
                            ╰─────────── jk select ∙ enter choose ∙ b this board ∙ esc back ─╯
-
 
 
 

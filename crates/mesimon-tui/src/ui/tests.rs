@@ -3490,7 +3490,12 @@ fn golden_ticket_queued_120() {
     app.screen = crate::app::Screen::Ticket { ticket: ulid_n(5), rail_idx: 0 };
     let lines = render(&app, 120, 30);
     let state = lines.iter().position(|l| l.contains("REVIEW")).expect("state row");
-    assert_eq!(lines[state + 1].trim_end(), " queued ∙ after T-3", "{}", lines.join("\n"));
+    assert_eq!(
+        lines[state + 1].trim_end(),
+        " queued ∙ after T-3 ∙ ^y send now ∙ ^u take back",
+        "{}",
+        lines.join("\n")
+    );
     golden("ticket_queued_120x30", &render(&app, 120, 30));
 }
 

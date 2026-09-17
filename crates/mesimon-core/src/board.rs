@@ -1426,6 +1426,15 @@ impl Ticket {
     }
 }
 
+/// Default timing for a person's follow-up composer, stored per board.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum FollowUpMode {
+    #[default]
+    Queue,
+    Steer,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Board {
     pub columns: Vec<Column>,
@@ -1500,6 +1509,8 @@ pub struct Board {
     /// hands nobody anything wider.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub default_column: Option<String>,
+    #[serde(default)]
+    pub follow_up_mode: FollowUpMode,
     /// The three sentences mesimon itself types into an agent's box, as this
     /// board would have them (T-353): the rebase ask, the merged notice and
     /// the note nudge. Empty — every board before the field, and every board
@@ -1541,6 +1552,7 @@ impl Default for Board {
             claude_md_ignored: false,
             system_prompt: false,
             default_column: None,
+            follow_up_mode: FollowUpMode::default(),
             prompts: crate::prompts::PromptSet::default(),
         }
     }

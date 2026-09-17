@@ -31,9 +31,28 @@ pub enum LocalAction {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Request {
     Snapshot,
-    Preview { ticket: String, session: String },
-    Prompt { ticket: String, session: String, text: String },
-    Status { command: u64 },
+    Preview {
+        ticket: String,
+        session: String,
+    },
+    Prompt {
+        ticket: String,
+        session: String,
+        text: String,
+        #[serde(default = "queue_by_default")]
+        queued: bool,
+    },
+    SendNow {
+        ticket: String,
+        session: String,
+    },
+    TakeBack {
+        ticket: String,
+        session: String,
+    },
+    Status {
+        command: u64,
+    },
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -46,6 +65,8 @@ pub struct Command {
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub struct Ticket {
+    #[serde(default)]
+    pub queued: Option<String>,
     pub id: String,
     pub key: String,
     pub title: String,
@@ -69,6 +90,7 @@ pub enum Reply {
     Preview { lines: Vec<String> },
     Delivery { status: String },
     Rejected { message: String },
+    TakenBack { text: String },
     Changed,
     Revoked,
 }
@@ -77,4 +99,27 @@ pub enum Reply {
 pub struct Answer {
     pub id: u64,
     pub reply: Reply,
+}
+
+fn queue_by_default() -> bool {
+    true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn phone_composers_queue_unless_they_explicitly_steer() {
+        let request = r#"{"op":"prompt","ticket":"t","session":"s","text":"next"}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(request).unwrap(),
+            Request::Prompt { queued: true, .. }
+        ));
+        let request = r#"{"op":"prompt","ticket":"t","session":"s","text":"next","queued":false}"#;
+        assert!(matches!(
+            serde_json::from_str::<Request>(request).unwrap(),
+            Request::Prompt { queued: false, .. }
+        ));
+    }
 }

@@ -56,6 +56,12 @@
             <h3 id="selection">Select a ticket</h3>
             <p id="agent-state"></p>
             <pre id="preview" aria-label="Agent output" tabindex="0"></pre>
+            <div id="queued-row" hidden>
+              <p>Queued · waits for idle</p>
+              <pre id="queued-text"></pre>
+              <button id="send-now" type="button">Send now</button>
+              <button id="take-back" type="button">Take back</button>
+            </div>
             <form id="prompt-form">
               <label
                 >Prompt<textarea
@@ -65,7 +71,11 @@
                   required
                 ></textarea>
               </label>
-              <button id="send" type="submit" disabled>Send prompt</button>
+              <label>Delivery<select id="prompt-mode">
+                <option value="queue">Queue · wait for idle</option>
+                <option value="steer">Steer · send now</option>
+              </select></label>
+              <button id="send" type="submit" disabled>Queue prompt</button>
             </form>
             <p id="delivery" role="status"></p>
           </article>

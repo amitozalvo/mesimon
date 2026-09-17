@@ -2,7 +2,7 @@
 
  Grapheme truncation
  REVIEW for >1y ∙ created >1y ago
- queued ∙ after T-3
+ queued ∙ after T-3 ∙ ^y send now ∙ ^u take back
 
 
   PREVIEW                                                                                  SESSIONS                  1
@@ -27,4 +27,4 @@
 
 
 
- enter focus ∙ r rename ∙ d delete ∙ n describe                                                                  ? keys
+ ^y send now ∙ ^u take back ∙ enter focus ∙ r rename ∙ d delete ∙ n describe                                     ? keys

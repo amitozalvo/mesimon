@@ -51,6 +51,7 @@ struct Pending {
     command: u64,
     ticket: ulid::Ulid,
     pasted: bool,
+    send_now_receipt: Option<(BoardId, DeviceId, u64)>,
 }
 
 pub(super) struct Control {
@@ -546,8 +547,20 @@ impl Daemon {
             api::Request::Preview { ticket, session } => {
                 self.control_preview(&by, &ticket, &session)
             }
-            api::Request::Prompt { ticket, session, text } => {
-                self.control_prompt(&by, grant, device, command.id, (&ticket, &session), text)
+            api::Request::Prompt { ticket, session, text, queued } => self.control_prompt(
+                &by,
+                grant,
+                device,
+                command.id,
+                (&ticket, &session),
+                text,
+                queued,
+            ),
+            api::Request::SendNow { ticket, session } => {
+                self.control_queue_action(&by, &ticket, &session, Some((grant, device, command.id)))
+            }
+            api::Request::TakeBack { ticket, session } => {
+                self.control_queue_action(&by, &ticket, &session, None)
             }
             api::Request::Status { command } => self
                 .control
@@ -576,6 +589,7 @@ impl Daemon {
                 .filter(|t| !t.is_archived())
                 .map(|t| api::Ticket {
                     id: t.id.to_string(),
+                    queued: self.queued.iter().find(|q| q.ticket == t.id).map(|q| q.text.clone()),
                     key: t.short_key.clone(),
                     title: t.title.clone(),
                     column: t.column.clone(),
@@ -625,6 +639,7 @@ impl Daemon {
             _ => Reply::Rejected { message: "preview unavailable".into() },
         }
     }
+    #[allow(clippy::too_many_arguments)]
     fn control_prompt(
         &mut self,
         by: &Principal,
@@ -633,6 +648,7 @@ impl Daemon {
         command: u64,
         target: (&str, &str),
         text: String,
+        queued: bool,
     ) -> Reply {
         let (ticket, session) = target;
         let Some(id) = self.control_target(ticket, session) else {
@@ -659,6 +675,31 @@ impl Daemon {
                 message: "a prompt is already waiting for this session".into(),
             };
         }
+        self.forget_queued(ticket, "queued_ask_replaced", "mesophon");
+        self.control.pending.insert(
+            id,
+            Pending { grant, device, command, ticket, pasted: false, send_now_receipt: None },
+        );
+        if queued {
+            if let Err(message) = self.park_ask(ticket, QueuedSeat::Pane(id), text) {
+                self.control_cancel(id);
+                return Reply::Rejected { message };
+            }
+            self.drain_queue(now_ms());
+            self.broadcast();
+            return if self.queued.iter().any(|q| q.ticket == ticket) {
+                Reply::Delivery { status: "queued".into() }
+            } else if self.pending_prompt.contains_key(&id) {
+                Reply::Delivery { status: "awaiting_delivery".into() }
+            } else {
+                self.control
+                    .receipts
+                    .get(&grant)
+                    .and_then(|r| r.get(&command))
+                    .cloned()
+                    .unwrap_or(Reply::Delivery { status: "unknown".into() })
+            };
+        }
         match self.paste_to_ticket(ticket, &text) {
             Ok(()) => {
                 let waiting = self.pending_prompt.contains_key(&id);
@@ -668,9 +709,20 @@ impl Daemon {
                     if let Some(rec) = self.board.sessions.iter_mut().find(|r| r.id == id) {
                         rec.pending_prefill = false;
                     }
-                    self.control
-                        .pending
-                        .insert(id, Pending { grant, device, command, ticket, pasted: false });
+                    self.control.pending.insert(
+                        id,
+                        Pending {
+                            grant,
+                            device,
+                            command,
+                            ticket,
+                            pasted: false,
+                            send_now_receipt: None,
+                        },
+                    );
+                }
+                if !waiting {
+                    self.control_submitted(id);
                 }
                 self.feed.board(
                     &format!("device:{}", device.to_hex()),
@@ -681,9 +733,68 @@ impl Daemon {
                     status: if waiting { "awaiting_delivery" } else { "submitted" }.into(),
                 }
             }
-            Err(_) => Reply::Delivery { status: "unknown".into() },
+            Err(_) => {
+                self.control_cancel(id);
+                Reply::Delivery { status: "unknown".into() }
+            }
         }
     }
+    fn control_queue_action(
+        &mut self,
+        by: &Principal,
+        ticket: &str,
+        session: &str,
+        send_now: Option<(BoardId, DeviceId, u64)>,
+    ) -> Reply {
+        let Some(id) = self.control_target(ticket, session) else {
+            return Reply::Rejected {
+                message: "session changed; select a live agent again".into(),
+            };
+        };
+        if authorize(by, &Action::PromptExisting, &Resource::Session { id }).denied() {
+            return Reply::Revoked;
+        }
+        let Some(q) = self.queued.iter().find(|q| matches!(q.seat, QueuedSeat::Pane(s) if s == id))
+        else {
+            return Reply::Rejected { message: "nothing queued on this session".into() };
+        };
+        let ticket = q.ticket;
+        if let Some((grant, device, command)) = send_now {
+            if let Some(p) = self.control.pending.get_mut(&id) {
+                p.send_now_receipt = Some((grant, device, command));
+            } else {
+                // A phone can send a locally queued prompt. Its deferred
+                // native delivery must retain the phone's authorization too.
+                self.control.pending.insert(
+                    id,
+                    Pending {
+                        grant,
+                        device,
+                        command,
+                        ticket,
+                        pasted: false,
+                        send_now_receipt: None,
+                    },
+                );
+            }
+            match self.send_queued_ask(ticket) {
+                Response::Err { message } => Reply::Rejected { message },
+                _ => Reply::Delivery {
+                    status: if self.pending_prompt.contains_key(&id) {
+                        "awaiting_delivery"
+                    } else {
+                        "submitted"
+                    }
+                    .into(),
+                },
+            }
+        } else {
+            let text = q.text.clone();
+            self.drop_queued_ask(ticket);
+            Reply::TakenBack { text }
+        }
+    }
+
     fn control_granted(&self, grant: BoardId, device: DeviceId) -> bool {
         self.control
             .stored
@@ -707,6 +818,8 @@ impl Daemon {
     pub(super) fn control_delivery_allowed(&mut self, id: uuid::Uuid) -> bool {
         if let Some(p) = self.control.pending.get(&id).cloned() {
             if !self.control_granted(p.grant, p.device)
+                || p.send_now_receipt
+                    .is_some_and(|(grant, device, _)| !self.control_granted(grant, device))
                 || self.control_target(&p.ticket.to_string(), &id.to_string()) != Some(id)
             {
                 self.control_cancel(id);
@@ -722,6 +835,13 @@ impl Daemon {
     }
     pub(super) fn control_submitted(&mut self, id: uuid::Uuid) {
         if let Some(p) = self.control.pending.remove(&id) {
+            if let Some((grant, _, command)) = p.send_now_receipt {
+                self.control.remember(
+                    grant,
+                    command,
+                    Reply::Delivery { status: "submitted".into() },
+                );
+            }
             self.control.remember(
                 p.grant,
                 p.command,
@@ -729,11 +849,21 @@ impl Daemon {
             );
         }
     }
-    fn control_cancel(&mut self, id: uuid::Uuid) {
+    pub(super) fn control_cancel(&mut self, id: uuid::Uuid) {
         if let Some(p) = self.control.pending.remove(&id) {
+            self.queued.retain(|q| !matches!(q.seat, QueuedSeat::Pane(s) if s == id));
             self.pending_prompt.remove(&id);
             self.codex_input_due.remove(&id);
             self.clear_pending_submit(id);
+            if let Some((grant, _, command)) = p.send_now_receipt {
+                self.control.remember(
+                    grant,
+                    command,
+                    Reply::Delivery {
+                        status: if p.pasted { "unknown" } else { "rejected" }.into(),
+                    },
+                );
+            }
             self.control.remember(
                 p.grant,
                 p.command,
@@ -758,7 +888,9 @@ impl Daemon {
             .control
             .pending
             .iter()
-            .filter(|(_, p)| p.grant == grant)
+            .filter(|(_, p)| {
+                p.grant == grant || p.send_now_receipt.is_some_and(|(g, _, _)| g == grant)
+            })
             .map(|(id, _)| *id)
             .collect();
         for id in pending {

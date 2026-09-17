@@ -1478,6 +1478,8 @@ impl Daemon {
                 self.prompt_column(&column, text, queued)
             }
             Command::DropQueuedAsk { ticket } => self.drop_queued_ask(ticket),
+            Command::SendQueuedAsk { ticket } => self.send_queued_ask(ticket),
+            Command::TakeQueuedAsk { ticket } => self.take_queued_ask(ticket),
             Command::SetAutomation { merge_train, merge_notice } => {
                 self.set_automation(merge_train, merge_notice, stream)
             }
@@ -1501,6 +1503,15 @@ impl Daemon {
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
+            Command::SetFollowUpMode { mode } => {
+                if self.columns_barred {
+                    Response::Err { message: self.barred_message("columns") }
+                } else {
+                    self.board.follow_up_mode = mode;
+                    self.persist_and_notify();
+                    Response::Ok
+                }
+            }
             Command::SetAgentPrompt { which, text } => self.set_agent_prompt(which, text),
             Command::IgnoreBriefOffer => self.ignore_brief_offer(),
             Command::TeamSignIn { relay, display_name } => self.team_sign_in(relay, display_name),
@@ -5498,18 +5509,9 @@ impl Daemon {
         self.deliver(ticket, seat, text)
     }
 
-    /// The board's Shift+Enter on a column header (T-378): the user's words
-    /// in front of every agent SEATED in the column — `prompt_session` per
-    /// ticket, on the one road (`deliver`), with one receipt. A ticket with
-    /// no agent is skipped and counted, never started: a column is not a
-    /// place to spawn N claudes from one key. With `queued`, each
-    /// shared-checkout ticket's words are parked in the ask queue and the
-    /// queue drained ONCE, so they go one at a time as the checkout goes
-    /// quiet — a column asked to commit is the five-claudes incident by
-    /// construction; a worktree ticket's checkout is its own and it is sent
-    /// now either way. Sending now over a waiting ask drops it, as the
-    /// single ask does. The words are sanitized once; per ticket nothing is
-    /// added (promise 3). One feed line for the gesture, then one per seat.
+    /// Ask every seated agent in a column, skipping empty seats. Queued
+    /// prompts wait for idle; shared checkouts are serialized in board order.
+    /// Park the batch before draining so one receipt covers the gesture.
     fn prompt_column(&mut self, column: &str, text: String, queued: bool) -> Response {
         if self.board.column(column).is_none() {
             return Response::Err { message: format!("no such column: {column}") };
@@ -5532,7 +5534,7 @@ impl Daemon {
                 continue;
             }
             let wakes = matches!(seat, QueuedSeat::Wake(_));
-            if queued && self.shared_checkout(ticket) {
+            if queued {
                 match self.park_ask(ticket, seat, text.clone()) {
                     Ok(()) => parked.push((ticket, wakes)),
                     Err(message) => {
@@ -5691,16 +5693,9 @@ impl Daemon {
         ids.iter().filter_map(|t| self.board.ticket(*t)).map(|t| t.short_key.clone()).collect()
     }
 
-    /// The board's Shift+Enter with the field at `queued`: park the words
-    /// until no claude sharing this ticket's checkout is mid-turn. A SHARED
-    /// checkout is required — a worktree's checkout is its own, and there the
-    /// toggle is not offered — and that is the only requirement since T-294:
-    /// the seat may be a pane, a parked claude the delivery wakes, or empty,
-    /// where the delivery starts one. Those two are the presses that most
-    /// deserve to wait, since they add a writer to the checkout rather than
-    /// asking the one already in it. One entry per ticket (a second replaces
-    /// the words in place, keeping the turn), then a drain: a checkout
-    /// already quiet sends at once.
+    /// Park one prompt per ticket until its target is idle and its checkout
+    /// is quiet. A second ask replaces the words; a quiet target sends now.
+    /// Empty shared-checkout seats retain the queued-start behavior.
     fn enqueue_ask(&mut self, ticket: ulid::Ulid, seat: QueuedSeat, text: String) -> Response {
         let word = seat.word();
         if let Err(message) = self.park_ask(ticket, seat, text) {
@@ -5743,8 +5738,10 @@ impl Daemon {
         if t.is_archived() {
             return Err("ticket archived — restore it first".into());
         }
-        if !self.shared_checkout(ticket) {
-            return Err("a worktree ticket's checkout is its own — send it now".into());
+        // An empty worktree has no resolved checkout yet. Starting it does
+        // not interrupt a turn; provisioning retains its existing path.
+        if !self.shared_checkout(ticket) && matches!(seat, QueuedSeat::Start(_)) {
+            return Err("start the worktree session before queueing a follow-up".into());
         }
         // The checkout the delivery will land in: the target's own cwd where
         // there is a session, else the shared root a spawn would resolve to
@@ -5761,6 +5758,14 @@ impl Daemon {
         // The PTY budget is deliberately NOT consulted here: a start that
         // would be refused for resources now may be fine when its turn comes,
         // and `spawn_session` says so at delivery either way.
+        if let Some(id) =
+            self.queued.iter().find(|q| q.ticket == ticket).and_then(|q| match q.seat {
+                QueuedSeat::Pane(id) => Some(id),
+                _ => None,
+            })
+        {
+            self.control_cancel(id);
+        }
         let now = now_ms();
         let word = seat.word();
         if let Some(q) = self.queued.iter_mut().find(|q| q.ticket == ticket) {
@@ -5780,8 +5785,8 @@ impl Daemon {
     }
 
     /// Is the ticket's checkout the shared one — `SharedCheckout` by
-    /// strategy and no worktree bound to it? The gate the ask queue stands
-    /// on: a worktree's checkout is its own, and nothing there waits.
+    /// strategy and no worktree bound to it? Only this kind of empty seat
+    /// can queue a start before its checkout is resolved.
     fn shared_checkout(&self, ticket: ulid::Ulid) -> bool {
         self.board.ticket(ticket).is_some_and(|t| {
             t.workspace_strategy() == WorkspaceStrategy::SharedCheckout
@@ -5817,6 +5822,9 @@ impl Daemon {
             return Vec::new();
         };
         let mut ids = self.checkout_holders(&q.cwd);
+        if !self.queued_target_ready(q) && !ids.contains(&ticket) {
+            ids.push(ticket);
+        }
         for i in self.queue_order() {
             let ahead = &self.queued[i];
             if ahead.ticket == ticket {
@@ -5836,12 +5844,24 @@ impl Daemon {
     /// `apply_change` (the EndTurn settle and the shutdown flush both come
     /// through it), on the 1 s bucket, and at enqueue. A target that is not
     /// the pane it was queued at is dropped, not redirected.
+    fn queued_target_ready(&self, q: &QueuedAsk) -> bool {
+        match q.seat {
+            QueuedSeat::Pane(id) => self.board.sessions.iter().any(|s| {
+                s.id == id && matches!(s.state, SessionState::Idle { stop_reason } if stop_reason != StopReason::Background)
+                    && !mesimon_core::quiet::is_working(s)
+            }),
+            _ => true,
+        }
+    }
+
     fn drain_queue(&mut self, now: u64) -> bool {
         let mut seen: Vec<String> = Vec::new();
         let mut take: Vec<usize> = Vec::new();
         for i in self.queue_order() {
             let cwd = self.queued[i].cwd.clone();
-            let quiet = !seen.contains(&cwd) && self.checkout_holders(&cwd).is_empty();
+            let quiet = !seen.contains(&cwd)
+                && self.checkout_holders(&cwd).is_empty()
+                && self.queued_target_ready(&self.queued[i]);
             seen.push(cwd);
             if quiet {
                 take.push(i);
@@ -5865,12 +5885,12 @@ impl Daemon {
             // both WORKING — so they need no marker, and the card shows the
             // launching arc instead of `queued ∙ sending`.
             match seat {
-                QueuedSeat::Pane(_) => match self.paste_to_ticket(ticket, &text) {
-                    Ok(()) => {
+                seat @ QueuedSeat::Pane(_) => match self.deliver_queued_ask(ticket, seat, text) {
+                    Response::Ok => {
                         self.inflight.insert(ticket, (now + INFLIGHT_MS, "queued_ask_delivered"));
                         self.feed.board("automation", "queued_ask_sent", Some(ticket));
                     }
-                    Err(_) => self.feed.board("automation", "queued_ask_failed", Some(ticket)),
+                    _ => self.feed.board("automation", "queued_ask_failed", Some(ticket)),
                 },
                 seat => match self.deliver(ticket, seat, text) {
                     Response::Err { message } => {
@@ -5952,7 +5972,14 @@ impl Daemon {
 
     fn forget_queued(&mut self, ticket: ulid::Ulid, why: &str, actor: &str) -> bool {
         let before = self.queued.len();
+        let session = self.queued.iter().find(|q| q.ticket == ticket).and_then(|q| match q.seat {
+            QueuedSeat::Pane(id) => Some(id),
+            _ => None,
+        });
         self.queued.retain(|q| q.ticket != ticket);
+        if let Some(id) = session {
+            self.control_cancel(id);
+        }
         if self.queued.len() != before {
             self.feed.board(actor, why, Some(ticket));
             return true;
@@ -5960,7 +5987,70 @@ impl Daemon {
         false
     }
 
-    /// A blank Enter in the reopened field: the person dropped the ask.
+    fn deliver_queued_ask(
+        &mut self,
+        ticket: ulid::Ulid,
+        seat: QueuedSeat,
+        text: String,
+    ) -> Response {
+        let id = match seat {
+            QueuedSeat::Pane(id) => Some(id),
+            _ => None,
+        };
+        if let Some(id) = id {
+            if !self.control_delivery_allowed(id) {
+                return Response::Err { message: "prompt authorization expired".into() };
+            }
+            let paired = self.control_delivery_principal(id);
+            let action = if paired.is_some() { Action::PromptExisting } else { Action::Mutate };
+            let principal = paired.unwrap_or(Principal::Automation { rule: "queued_ask".into() });
+            if authorize(&principal, &action, &Resource::Session { id }).denied() {
+                self.control_cancel(id);
+                return Response::Err { message: "prompt not authorized".into() };
+            }
+        }
+        let response = self.deliver(ticket, seat, text);
+        if let Some(id) = id {
+            if self.control_delivery_principal(id).is_some()
+                && self.pending_prompt.contains_key(&id)
+            {
+                if let Some(rec) = self.board.sessions.iter_mut().find(|r| r.id == id) {
+                    rec.pending_prefill = false;
+                }
+            }
+            if matches!(response, Response::Err { .. }) {
+                self.control_cancel(id);
+            } else if !self.pending_prompt.contains_key(&id) {
+                self.control_submitted(id);
+            }
+        }
+        response
+    }
+
+    fn send_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
+        let Some(i) = self.queued.iter().position(|q| q.ticket == ticket) else {
+            return Response::Err { message: "nothing queued on this ticket".into() };
+        };
+        let q = self.queued.remove(i);
+        if !self.seat_stands(ticket, &q.seat) {
+            self.broadcast();
+            return Response::Err { message: "queued session changed".into() };
+        }
+        let response = self.deliver_queued_ask(ticket, q.seat, q.text);
+        self.broadcast();
+        response
+    }
+
+    /// Remove and return the current words on the single writer.
+    fn take_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
+        let Some(q) = self.queued.iter().find(|q| q.ticket == ticket) else {
+            return Response::Err { message: "nothing queued on this ticket".into() };
+        };
+        let text = q.text.clone();
+        self.drop_queued_ask(ticket);
+        Response::PromptTakenBack { text }
+    }
+
     fn drop_queued_ask(&mut self, ticket: ulid::Ulid) -> Response {
         if self.forget_queued(ticket, "queued_ask_dropped", "local") {
             self.broadcast();
