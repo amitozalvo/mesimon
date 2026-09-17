@@ -11006,3 +11006,20 @@ reachable. With Teams disabled, that parent offers identity and Remote Control
 without exposing board-sharing actions. Dialog labels, browser copy and setup instructions use the same name
 and path. Protocol names, environment variables and the CLI spelling remain
 compatible.
+
+## T-394 — ticket creation describes consolidation and its cost (2026-09-17)
+
+The MCP tool text now describes a ticket as a unit of work to pick up, rather
+than an idea or list row; findings on one surface share a ticket with a list.
+Research belongs in the current ticket's notes, with the user choosing what
+becomes tickets. Agent-created tickets cannot be deleted by agents, so cleanup
+costs the user.
+
+`create_ticket` points to `list_board` as the prior scope/duplicate check. Its
+companion description spells out title comparison: extensions of todo, in
+progress or review tickets belong on the existing ticket, and the older ticket
+wins near-duplicates. This split and shorter parameter descriptions preserve
+the 820-byte cap on each complete tool definition without weakening the text
+lint. A focused regression test covers the guidance, lint and serialized cap.
+This is descriptive model context, not daemon enforcement; the opt-in agent
+brief is unchanged and remains a separate decision.

@@ -164,7 +164,10 @@ pub fn tools() -> Vec<Value> {
             "name": "list_board",
             "description": "Returns the mesimon board: every column in order, and every \
                             ticket's key, title and column. Session and process information \
-                            is excluded.",
+                            is excluded. Title comparison here is the pre-check for \
+                            create_ticket: work extending a ticket in todo, in progress \
+                            or review belongs on that ticket as scope, not as a sibling. \
+                            A near-duplicate title means the older ticket wins.",
             "inputSchema": { "type": "object", "properties": {}, "additionalProperties": false },
             "annotations": { "readOnlyHint": true },
         }),
@@ -226,34 +229,34 @@ pub fn tools() -> Vec<Value> {
         }),
         json!({
             "name": "create_ticket",
-            "description": "Creates a ticket on the mesimon board and returns its key. It \
-                            has no session; this session stays on its own. For work found \
-                            outside this ticket's scope.",
+            "description": "Creates a sessionless ticket; returns key. One ticket is \
+                            a work unit to pick up, not an idea/list row; findings on one \
+                            surface share a ticket with a list. list_board checks \
+                            scope/duplicates first. Research belongs in this ticket's \
+                            notes; the user chooses tickets. Agents cannot delete \
+                            tickets; cleanup costs the user.",
             "inputSchema": {
                 "type": "object",
                 "properties": {
-                    "title": { "type": "string", "description": "One line, the card's text." },
+                    "title": { "type": "string" },
                     // A plain string, NOT an enum: see the module header.
                     "column": {
                         "type": "string",
-                        "description": "Optional. A column name from list_board; omitted \
-                                        means the board's default column.",
+                        "description": "list_board column; default if omitted.",
                     },
                     "description": {
                         "type": "string",
-                        "description": "Optional markdown, the first note.",
+                        "description": "First note (markdown).",
                     },
                     // Names, NOT the registry: see the module header on enums.
                     "tags": {
                         "type": "array",
                         "items": { "type": "string" },
-                        "description": "Optional. Names from allowed_tags (get_ticket), one \
-                                        per group.",
+                        "description": "get_ticket allowed_tags; one per group.",
                     },
                     "idempotency_key": {
                         "type": "string",
-                        "description": "Optional. Repeating a call with the same key replays \
-                                        the first result.",
+                        "description": "Same key replays result.",
                     },
                 },
                 "required": ["title"],
@@ -996,6 +999,40 @@ mod tests {
         for t in tools() {
             let bytes = serde_json::to_string(&t).unwrap().len();
             let name = t["name"].as_str().unwrap();
+            assert!(bytes <= MAX_TOOL_BYTES, "{name} is {bytes} bytes, cap is {MAX_TOOL_BYTES}");
+        }
+    }
+
+    #[test]
+    fn ticket_creation_guidance_is_bounded_and_descriptive() {
+        let registry = tools();
+        for (name, concepts) in [
+            (
+                "create_ticket",
+                vec![
+                    "work unit to pick up, not an idea/list row",
+                    "findings on one surface share a ticket with a list",
+                    "list_board checks scope/duplicates first",
+                    "Research belongs in this ticket's notes; the user chooses tickets",
+                    "Agents cannot delete tickets; cleanup costs the user",
+                ],
+            ),
+            (
+                "list_board",
+                vec![
+                    "Title comparison here is the pre-check for create_ticket",
+                    "todo, in progress or review belongs on that ticket as scope, not as a sibling",
+                    "A near-duplicate title means the older ticket wins",
+                ],
+            ),
+        ] {
+            let tool = registry.iter().find(|t| t["name"] == name).unwrap();
+            let description = tool["description"].as_str().unwrap();
+            for concept in concepts {
+                assert!(description.contains(concept), "{name} lost guidance: {concept}");
+            }
+            lint_tool_text(description).unwrap();
+            let bytes = serde_json::to_vec(tool).unwrap().len();
             assert!(bytes <= MAX_TOOL_BYTES, "{name} is {bytes} bytes, cap is {MAX_TOOL_BYTES}");
         }
     }
