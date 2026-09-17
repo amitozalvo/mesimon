@@ -11207,6 +11207,18 @@ clears the editor, so a later host rejection must restore the queued words for
 review. Rejected or uncertain receipts now retain those words without overwriting
 a newer draft, and never resubmit them automatically.
 
+### T-396 deployment follow-up — package every browser module
+
+A native binary rebuild does not refresh the web application served by the relay.
+The live localhost Docker relay was still serving its older image's browser files.
+The container recipe also copied only the former monolithic app.js, omitting the
+new connection/board/session/view modules even on a fresh image build. The shared
+`ci/stage-mesophon.sh` now assembles all runtime JavaScript, HTML, CSS and Wasm in
+a fresh directory, excludes Node tests/dependencies, and supplies the Docker image.
+A package regression follows actual HTML and JavaScript imports through the staged
+files so missing modules fail before deployment. The deployment instructions now
+distinguish a native rebuild from deploying the relay's complete browser bundle.
+
 ## T-399 — ask placeholder follows the ticket's agent (2026-09-17)
 
 The empty Shift+Enter field now says `ask codex` for a seated Codex session

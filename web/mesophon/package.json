@@ -6,7 +6,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --test state.test.js && node ux.test.js",
+    "test": "node --test state.test.js assets.test.js && node ux.test.js",
     "test:relay": "node browser.test.js"
   }
 }
