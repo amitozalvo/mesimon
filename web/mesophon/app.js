@@ -1,453 +1,504 @@
 import init, { Browser } from "./pkg/mesimon_web.js";
+import { openIdentity } from "./identity.js";
+import { Connection } from "./connection.js";
+import { BoardState } from "./board.js";
+import { Sessions } from "./sessions.js";
+import { $, View } from "./view.js";
 
-const $ = (id) => document.getElementById(id);
-const node = (tag, text) => {
-  const n = document.createElement(tag);
-  n.textContent = text;
-  return n;
-};
-let db,
-  identity,
-  crypto,
-  socket,
-  generation = 0,
+let identity,
+  storage,
+  connection,
   active,
-  incarnation,
-  next = 1,
-  online = false;
-let tickets = [],
-  selected,
-  lastPrompt,
-  pending = new Map(),
-  reconnect,
-  processing = Promise.resolve();
-const setConnection = (text) => {
-  $("connection").textContent = text;
-};
-function endConnection(message) {
-  ++generation;
-  active = undefined;
-  online = false;
-  clearTimeout(reconnect);
-  socket?.close();
-  pending.clear();
-  $("workspace").hidden = true;
-  $("send").disabled = true;
-  setConnection(message);
-}
-const delivery = (status) => {
-  $("delivery").textContent =
-    {
-      queued: "Queued · waiting for idle.",
-      awaiting_delivery: "Awaiting delivery…",
-      submitted: "Submitted to the agent.",
-      rejected: "Prompt rejected.",
-      unknown:
-        "Delivery outcome unknown. Check the agent before sending again.",
-    }[status] || status;
-};
-function storage() {
-  return new Promise((resolve, reject) => {
-    const req = indexedDB.open("mesophon", 1);
-    req.onupgradeneeded = () => req.result.createObjectStore("device");
-    req.onerror = () => reject(req.error);
-    req.onsuccess = () => resolve(req.result);
+  board,
+  entry,
+  returnBoard,
+  live = false;
+const boards = new Map();
+const sessions = new Sessions();
+const view = new View(select);
+const save = () => storage.save(identity);
+function persist() {
+  save().catch(() => {
+    $("connection").textContent =
+      "Could not save browser preferences. They may be lost on reload.";
   });
 }
-function stored() {
-  return new Promise((resolve, reject) => {
-    const req = db.transaction("device").objectStore("device").get("identity");
-    req.onsuccess = () => resolve(req.result);
-    req.onerror = () => reject(req.error);
-  });
+function render() {
+  if (!board) return;
+  entry = sessions.get(active.pin.board, board.current);
+  view.list(board);
+  view.detail(board.current, entry, live);
 }
-function save() {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction("device", "readwrite");
-    tx.objectStore("device").put(identity, "identity");
-    tx.oncomplete = resolve;
-    tx.onerror = () => reject(tx.error);
-    tx.onabort = () => reject(tx.error);
-  });
-}
-function boards() {
-  const chosen = active?.pin?.board;
-  $("boards").replaceChildren(node("option", "Choose a board"));
-  $("boards").firstChild.value = "";
-  for (const entry of identity.boards) {
-    const opt = node("option", entry.title || "Paired board");
-    opt.value = entry.pin.board;
-    $("boards").append(opt);
-  }
-  $("boards").value = chosen || "";
-}
-function request(body, context) {
-  if (!online || socket?.readyState !== WebSocket.OPEN) return;
-  const id = next++;
-  pending.set(id, { body, context, at: Date.now() });
-  socket.send(
-    crypto.packet(JSON.stringify({ incarnation, id, request: body })),
-  );
-  return id;
-}
-function refresh() {
-  if (![...pending.values()].some((p) => p.body.op === "snapshot"))
-    request({ op: "snapshot" });
-}
-function preview() {
+function detail(open, push = false) {
+  if (open && board && $("tickets").getClientRects().length)
+    board.scroll[board.mode] = $("tickets").scrollTop;
+  if (open && document.body.dataset.detail !== "true")
+    view.entryKey = undefined;
+  document.body.dataset.detail = String(open);
+  if (!open && board) $("tickets").scrollTop = board.scroll[board.mode];
+  if (!open)
+    $("tickets")
+      .querySelector('[aria-pressed="true"]')
+      ?.focus({ preventScroll: true });
   if (
-    !document.hidden &&
-    selected?.agent &&
-    ![...pending.values()].some((p) => p.body.op === "preview")
-  ) {
-    request(
-      { op: "preview", ticket: selected.id, session: selected.agent.session },
-      selected.agent.session,
-    );
-  }
-}
-function select(ticket) {
-  if (
-    selected?.id !== ticket.id ||
-    selected?.agent?.session !== ticket.agent?.session
+    push &&
+    matchMedia("(max-width: 700px)").matches &&
+    !history.state?.detail
   )
-    $("preview").textContent = "";
-  selected = ticket;
-  $("queued-row").hidden = ticket.queued == null;
-  $("queued-text").textContent = ticket.queued || "";
-  $("send-now").disabled = $("take-back").disabled =
-    !online || !ticket.agent?.promptable;
-  $("selection").textContent = `${ticket.key} · ${ticket.title}`;
-  $("agent-state").textContent = ticket.agent
-    ? `${ticket.agent.provider} · ${ticket.agent.state}`
-    : "No live agent";
-  $("send").disabled =
-    !online || !ticket.agent?.promptable || !!lastPrompt?.waiting;
-  for (const b of $("tickets").querySelectorAll("button"))
-    b.setAttribute("aria-pressed", String(b.dataset.id === ticket.id));
+    history.pushState({ detail: true }, "");
+}
+function select(id) {
+  view.capture(entry);
+  board.selected = id;
+  active.selected = id;
+  persist();
+  detail(true, true);
+  render();
+  $("selection").focus({ preventScroll: true });
   preview();
 }
-async function answer(answer) {
-  const { id, reply } = answer;
-  const original = pending.get(id);
-  pending.delete(id);
+function preview() {
+  if (!document.hidden && board?.current?.agent && !connection.has("preview"))
+    connection.request(
+      {
+        op: "preview",
+        ticket: board.current.id,
+        session: board.current.agent.session,
+      },
+      entry.key,
+    );
+}
+function refresh() {
+  if (!connection.has("snapshot")) connection.request({ op: "snapshot" });
+}
+function receipts() {
+  for (const session of sessions.entries.values()) {
+    const receipt = session.receipt;
+    if (session.board !== active?.pin.board || !receipt?.unresolved) continue;
+    if (receipt.incarnation !== connection.incarnation) {
+      sessions.reply(session, { result: "delivery", status: "unknown" });
+    } else if (
+      ![...connection.pending.values()].some(
+        (p) =>
+          p.context === session.key &&
+          ["prompt", "send_now", "take_back", "status"].includes(p.body.op),
+      )
+    ) {
+      connection.request({ op: "status", command: receipt.id }, session.key);
+    }
+  }
+}
+function showPairing() {
+  if (active && !active.revoked) returnBoard = active;
+  $("onboarding").hidden = false;
+  $("shell").hidden = true;
+  $("cancel-pair").hidden = !returnBoard || !!returnBoard.revoked;
+  $("code").focus();
+}
+function openBoard(chosen) {
+  view.capture(entry);
+  live = false;
+  active = chosen;
+  board = boards.get(chosen.pin.board);
+  entry = undefined;
+  view.clear();
+  view.boards(identity, active);
+  $("sidebar").classList.remove("open");
+  $("board-menu").setAttribute("aria-expanded", "false");
+  identity.lastBoard = chosen.pin.board;
+  persist();
+  if (chosen.revoked) {
+    connection.stop();
+    showPairing();
+    $("connection").textContent =
+      "Access revoked. Pair again from the host to restore access.";
+    return;
+  }
+  $("onboarding").hidden = true;
+  $("shell").hidden = false;
+  $("board-title").textContent = chosen.title || "Paired board";
+  detail(!!chosen.selected);
+  render();
+  connection.connect(chosen);
+}
+function onState(state, message) {
+  $("connection").textContent = message;
+  if (state === "revoked" || state === "unverified") {
+    if (active) {
+      sessions.purge(active.pin.board);
+      boards.delete(active.pin.board);
+      if (state === "revoked") {
+        active.revoked = true;
+        persist();
+      }
+    }
+    board = entry = undefined;
+    view.clear();
+    showPairing();
+  }
+  if (["unpaired", "revoked", "unverified"].includes(state))
+    $("pair").disabled = false;
+  render();
+}
+function onReply(reply, original, id) {
   if (reply.result === "changed") {
     refresh();
     return;
   }
-  if (reply.result === "revoked") {
-    endConnection("Access revoked. Pair again from the host.");
-    return;
-  }
   if (reply.result === "board") {
-    tickets = reply.tickets;
-    $("workspace").hidden = false;
-    $("board-title").textContent = reply.title;
-    $("tickets").replaceChildren();
-    for (const column of reply.columns) {
-      $("tickets").append(node("h3", column));
-      for (const ticket of tickets.filter((t) => t.column === column)) {
-        const b = node("button", `${ticket.key} · ${ticket.title}`);
-        b.type = "button";
-        b.dataset.id = ticket.id;
-        b.onclick = () => select(ticket);
-        $("tickets").append(b);
-      }
+    view.capture(entry);
+    if (!board) {
+      board = new BoardState(active.selected);
+      boards.set(active.pin.board, board);
     }
-    if (active && active.title !== reply.title) {
+    board.update(reply);
+    if (active.title !== reply.title || active.selected !== board.selected) {
       active.title = reply.title;
-      await save();
-      boards();
+      active.selected = board.selected;
+      persist();
+      view.boards(identity, active);
     }
-    const current = tickets.find((t) => t.id === selected?.id);
-    if (current) select(current);
-    else {
-      selected = undefined;
-      $("selection").textContent = "Select a ticket";
-      $("preview").textContent = "";
-      $("agent-state").textContent = "";
-      $("send").disabled = true;
+    live = true;
+    if ($("connection").textContent !== "Connected")
+      $("connection").textContent = "Connected";
+    render();
+    preview();
+  } else if (reply.result === "preview" && original?.body.op === "preview") {
+    const session = sessions.entries.get(original.context);
+    if (session) {
+      session.output = reply.lines.join("\n");
+      session.receivedAt = Date.now();
+      if (session.following) session.displayed = session.output;
+      else session.unread = session.output !== session.displayed;
     }
-  } else if (reply.result === "preview") {
-    if (selected?.agent?.session === original?.context)
-      $("preview").textContent = reply.lines.join("\n");
-  } else if (reply.result === "delivery") {
-    if (
-      (["prompt", "send_now"].includes(original?.body.op)
-        ? id
-        : original?.body.op === "status"
-          ? original.body.command
-          : undefined) === lastPrompt?.id &&
-      lastPrompt
-    ) {
-      delivery(reply.status);
-      if (lastPrompt)
-        lastPrompt.waiting = ["queued", "awaiting_delivery"].includes(reply.status);
-      if (
-        original.body.op === "prompt" &&
-        ["queued", "submitted", "awaiting_delivery"].includes(reply.status)
-      )
-        $("prompt").value = "";
-      if (selected)
-        $("send").disabled =
-          !online || !selected.agent?.promptable || !!lastPrompt?.waiting;
-    }
-    refresh();
-  } else if (reply.result === "taken_back") {
-    if (lastPrompt) lastPrompt.waiting = false;
-    if (selected?.id === original?.body.ticket) $("prompt").value = reply.text;
-    delivery("Taken back. Edit or discard the prompt.");
-    refresh();
-  } else if (reply.result === "rejected") {
-    if (
-      (["prompt", "send_now"].includes(original?.body.op)
-        ? id
-        : original?.body.op === "status"
-          ? original.body.command
-          : undefined) === lastPrompt?.id &&
-      lastPrompt
-    ) {
-      delivery(`Rejected: ${reply.message}`);
-      if (lastPrompt) lastPrompt.waiting = false;
-      if (selected) $("send").disabled = !online || !selected.agent?.promptable;
-    } else if (original?.body.op === "take_back") {
-      delivery(`Rejected: ${reply.message}`);
-      refresh();
-    } else if (
-      original?.body.op === "preview" &&
-      selected?.agent?.session === original.context
+    render();
+  } else if (["delivery", "rejected", "taken_back"].includes(reply.result)) {
+    const session = sessions.entries.get(original?.context);
+    const command = ["prompt", "send_now", "take_back"].includes(
+      original?.body.op,
     )
-      $("preview").textContent = reply.message;
+      ? id
+      : original?.body.op === "status"
+        ? original.body.command
+        : undefined;
+    if (session?.receipt?.id === command && command !== undefined)
+      sessions.reply(session, reply);
+    else if (
+      reply.result === "rejected" &&
+      original?.body.op === "preview" &&
+      session
+    ) {
+      session.displayed = `Preview unavailable: ${reply.message}`;
+      // A rejected preview can indicate session replacement; refresh identity.
+      refresh();
+    }
+    render();
+    if (
+      ["delivery", "taken_back"].includes(reply.result) ||
+      ["send_now", "take_back"].includes(original?.body.op)
+    )
+      refresh();
   }
 }
-function disconnect() {
-  online = false;
-  $("send").disabled = true;
-  if (
-    [...pending.values()].some((p) => p.body.op === "prompt") ||
-    lastPrompt?.waiting
-  )
-    delivery("unknown");
-  pending.clear();
-  setConnection("Disconnected. Waiting for the host…");
-}
-async function connect(entry, code, pairingAttempt = 0) {
-  clearTimeout(reconnect);
-  const gen = ++generation;
-  if (lastPrompt && lastPrompt.board !== entry?.pin?.board) {
-    lastPrompt = undefined;
-    $("delivery").textContent = "";
-    $("prompt").value = "";
-  }
-  online = false;
-  $("send").disabled = true;
-  socket?.close();
-  pending.clear();
-  selected = undefined;
-  $("workspace").hidden = true;
-  active = entry;
-  crypto?.free();
-  crypto = new Browser(identity.seed);
-  const ws = new WebSocket(
-    `${location.origin.replace(/^http/, "ws")}/control`,
-  );
-  socket = ws;
-  setConnection(code ? "Pairing…" : "Connecting…");
-  ws.onopen = () =>
-    ws.send(
-      crypto.auth(
-        identity.credential || undefined,
-        $("device-name").value.trim() || "My browser",
-      ),
-    );
-  ws.onmessage = (event) => {
-    processing = processing
-      .then(async () => {
-        if (gen !== generation) return;
-        const wire = JSON.parse(event.data);
-        if (wire.kind === "authenticated") {
-          if (wire.credential) {
-            identity.credential = wire.credential;
-            await save();
-          }
-          ws.send(
-            code
-              ? crypto.pair(code)
-              : crypto.connect(JSON.stringify(entry.pin)),
-          );
-        } else if (wire.kind === "welcome") {
-          const welcome = JSON.stringify(wire.welcome);
-          const ready = JSON.parse(
-            crypto.accept(
-              welcome,
-              code || undefined,
-              code ? undefined : JSON.stringify(entry.pin),
-            ),
-          ).reply;
-          if (ready.result !== "ready")
-            throw new Error("Unsupported host handshake");
-          if (code) {
-            entry = { pin: wire.welcome, title: "Paired board" };
-            identity.boards = identity.boards.filter(
-              (b) => b.pin.board !== entry.pin.board,
-            );
-            identity.boards.push(entry);
-            active = entry;
-            await save();
-            code = undefined;
-            $("code").value = "";
-            boards();
-          }
-          incarnation = ready.incarnation;
-          next = ready.next;
-          online = true;
-          setConnection("Connected");
-          refresh();
-          if (lastPrompt?.incarnation === incarnation)
-            request({ op: "status", command: lastPrompt.id });
-          else if (lastPrompt) {
-            lastPrompt.waiting = false;
-            delivery("unknown");
-          }
-        } else if (wire.kind === "packet")
-          await answer(JSON.parse(crypto.open(event.data)));
-        else if (wire.kind === "error") {
-          setConnection("Host unavailable, or access no longer granted.");
-          ws.close();
-        }
-      })
-      .catch(() => {
-        if (gen === generation) {
-          endConnection("Connection did not verify. Pair again from the host.");
-        }
-      });
-  };
-  ws.onclose = () => {
-    if (gen !== generation) return;
-    disconnect();
-    if (active) reconnect = setTimeout(() => connect(active), 3000);
-    else if (code && pairingAttempt < 3)
-      reconnect = setTimeout(
-        () => connect(undefined, code, pairingAttempt + 1),
-        1000,
-      );
-    else if (code)
-      setConnection(
-        "Pairing did not complete. Generate a new code on the host and try again.",
-      );
-  };
-  ws.onerror = () => {
-    if (gen === generation)
-      setConnection(
-        "Cannot reach the relay. Check its address and certificate.",
-      );
-  };
-}
-$("pair-form").onsubmit = async (event) => {
+$("pair-form").onsubmit = (event) => {
   event.preventDefault();
   const code = $("code").value.trim();
-  if (!code) {
-    setConnection("Enter the code from the host’s Sharing → Remote Control dialog.");
-    return;
-  }
-  await connect(undefined, code);
+  if (!code || !connection) return;
+  view.capture(entry);
+  identity.name = $("device-name").value.trim() || "My browser";
+  active = board = entry = undefined;
+  live = false;
+  view.clear();
+  $("pair").disabled = true;
+  connection.connect(undefined, code);
 };
-$("connect").onclick = () => {
-  const entry = identity.boards.find((b) => b.pin.board === $("boards").value);
-  if (entry) connect(entry);
+$("boards").onchange = () => {
+  const chosen = identity.boards.find((b) => b.pin.board === $("boards").value);
+  if (chosen) openBoard(chosen);
+};
+$("add-board").onclick = showPairing;
+$("cancel-pair").onclick = () => {
+  if (returnBoard) openBoard(returnBoard);
+};
+$("board-menu").onclick = () => {
+  const open = $("sidebar").classList.toggle("open");
+  $("board-menu").setAttribute("aria-expanded", String(open));
+};
+$("back").onclick = () => {
+  view.capture(entry);
+  if (history.state?.detail) history.back();
+  else detail(false);
+  $("tickets")
+    .querySelector('[aria-pressed="true"]')
+    ?.focus({ preventScroll: true });
+};
+addEventListener("keydown", (event) => {
+  if (event.key === "Escape" && $("sidebar").classList.contains("open")) {
+    $("sidebar").classList.remove("open");
+    $("board-menu").setAttribute("aria-expanded", "false");
+    $("board-menu").focus();
+  }
+});
+addEventListener("popstate", (event) => {
+  view.capture(entry);
+  detail(!!event.state?.detail);
+  render();
+});
+$("search").oninput = () => {
+  if (board) {
+    board.search = $("search").value;
+    board.scroll[board.mode] = 0;
+    render();
+  }
+};
+$("filter").onchange = () => {
+  if (board) {
+    board.filter = $("filter").value;
+    board.scroll.agents = 0;
+    render();
+  }
+};
+$("column").onchange = () => {
+  if (board) {
+    board.column = $("column").value;
+    board.scroll.board = 0;
+    render();
+  }
+};
+for (const mode of ["agents", "board"])
+  $(mode + "-mode").onclick = () => {
+    if (board) {
+      board.scroll[board.mode] = $("tickets").scrollTop;
+      board.mode = mode;
+      render();
+    }
+  };
+$("tickets").onscroll = () => {
+  if (board && $("tickets").getClientRects().length)
+    board.scroll[board.mode] = $("tickets").scrollTop;
+};
+$("preview").onscroll = () => {
+  if (!entry || !$("preview").getClientRects().length) return;
+  entry.scroll = $("preview").scrollTop;
+  entry.following =
+    $("preview").scrollHeight - $("preview").clientHeight - entry.scroll < 24;
+  // A paused 50-line window stays frozen until the reader explicitly follows.
+  if (entry.following && entry.unread) {
+    entry.displayed = entry.output;
+    entry.unread = false;
+  }
+  $("latest").hidden = entry.following;
+};
+$("latest").onclick = () => {
+  if (entry) {
+    entry.following = true;
+    entry.unread = false;
+    entry.displayed = entry.output;
+    render();
+  }
+};
+$("wrap").onchange = () =>
+  $("preview").classList.toggle("no-wrap", !$("wrap").checked);
+$("prompt").oninput = () => {
+  if (entry) {
+    entry.draft = $("prompt").value;
+    view.detail(board.current, entry, live);
+  }
+};
+$("review-draft").onclick = () => {
+  if (entry) {
+    entry.review = false;
+    render();
+    $("prompt").focus();
+  }
+};
+$("prompt").onkeydown = (event) => {
+  if (
+    event.key === "Enter" &&
+    (event.ctrlKey || event.metaKey) &&
+    !event.isComposing
+  ) {
+    event.preventDefault();
+    $("prompt-form").requestSubmit();
+  }
 };
 $("prompt-mode").onchange = () => {
-  $("send").textContent = $("prompt-mode").value === "queue" ? "Queue prompt" : "Send prompt";
-};
-$("send-now").onclick = () => {
-  if (!online || !selected?.queued || !selected.agent?.promptable) return;
-  const id = request({ op: "send_now", ticket: selected.id, session: selected.agent.session });
-  if (id) {
-    lastPrompt = { id, incarnation, board: active.pin.board, waiting: true };
-    delivery("awaiting_delivery");
-    $("send-now").disabled = true;
+  if (entry) {
+    entry.mode = $("prompt-mode").value;
+    render();
   }
 };
-$("take-back").onclick = () => {
-  if (!online || !selected?.queued || !selected.agent?.promptable) return;
-  request({ op: "take_back", ticket: selected.id, session: selected.agent.session });
-  $("take-back").disabled = true;
+function queueAction(op) {
+  if (
+    !live ||
+    !board?.current?.agent?.promptable ||
+    board.current.queued == null ||
+    (entry.receipt?.waiting && entry.receipt.status !== "queued")
+  )
+    return;
+  const id = connection.request(
+    { op, ticket: entry.ticket, session: entry.session },
+    entry.key,
+  );
+  if (id !== undefined)
+    sessions.sent(entry, id, connection.incarnation, op, board.current.queued);
+  else
+    entry.delivery = "Delivery unknown. Check the agent before trying again.";
+  render();
+}
+$("send-now").onclick = () => queueAction("send_now");
+$("take-back").onclick = () => queueAction("take_back");
+$("swap-returned").onclick = () => {
+  if (!entry?.returned) return;
+  const returned = entry.returned;
+  entry.returned = entry.draft
+    ? { text: entry.draft, session: entry.session }
+    : undefined;
+  entry.draft = returned.text;
+  entry.review ||= returned.session !== entry.session;
+  render();
+  $("prompt").focus();
 };
 $("prompt-form").onsubmit = (event) => {
   event.preventDefault();
-  if (!online || !selected?.agent?.promptable || lastPrompt?.waiting) return;
-  const text = $("prompt").value;
-  if (new TextEncoder().encode(text).length > 4096) {
-    delivery("Prompt must fit in 4096 UTF-8 bytes.");
+  if (
+    !live ||
+    !board?.current?.agent?.promptable ||
+    !entry?.draft.trim() ||
+    entry.review ||
+    entry.receipt?.waiting
+  )
+    return;
+  if (new TextEncoder().encode(entry.draft).length > 4096) {
+    entry.delivery = "Prompt must fit in 4096 UTF-8 bytes.";
+    render();
     return;
   }
-  const id = request({
-    op: "prompt",
-    ticket: selected.id,
-    session: selected.agent.session,
-    text,
-    queued: $("prompt-mode").value === "queue",
-  });
-  if (id) {
-    lastPrompt = { id, incarnation, board: active.pin.board, waiting: true };
-    delivery("awaiting_delivery");
-    $("send").disabled = true;
-  }
+  const id = connection.request(
+    {
+      op: "prompt",
+      ticket: entry.ticket,
+      session: entry.session,
+      text: entry.draft,
+      queued: entry.mode === "queue",
+    },
+    entry.key,
+  );
+  if (id !== undefined) sessions.sent(entry, id, connection.incarnation);
+  else
+    entry.delivery = "Delivery unknown. Check the agent before sending again.";
+  render();
 };
 $("forget").onclick = async () => {
-  ++generation;
-  active = undefined;
-  clearTimeout(reconnect);
-  socket?.close();
-  online = false;
-  pending.clear();
-  lastPrompt = undefined;
-  crypto?.free();
-  crypto = new Browser();
+  connection.stop();
+  sessions.entries.clear();
+  sessions.targets.clear();
+  boards.clear();
+  active = board = entry = returnBoard = undefined;
+  view.clear();
+  const crypto = new Browser();
   identity = { seed: crypto.seed(), boards: [] };
-  await save();
-  $("workspace").hidden = true;
-  $("prompt").value = "";
-  $("preview").textContent = "";
-  $("code").value = "";
-  boards();
-  setConnection("Device forgotten. Pair again to connect.");
-};
-setInterval(() => {
-  if (online && !document.hidden) {
-    preview();
-    if (
-      lastPrompt?.waiting &&
-      ![...pending.values()].some(
-        (p) => p.body.op === "status" || p.body.op === "prompt",
-      )
-    )
-      request({ op: "status", command: lastPrompt.id });
+  crypto.free();
+  connection.identity = identity;
+  try {
+    await save();
+    $("connection").textContent = "Browser forgotten. Pair again to connect.";
+  } catch {
+    $("connection").textContent =
+      "Could not forget the saved identity. Clear this site's browser storage.";
   }
-  for (const [id, p] of pending)
-    if (Date.now() - p.at > 10000) {
-      pending.delete(id);
-      if (p.body.op === "prompt" && lastPrompt?.id === id) {
-        delivery("unknown");
-        lastPrompt.waiting = false;
-        if (selected)
-          $("send").disabled = !online || !selected.agent?.promptable;
-      }
-    }
+  view.boards(identity);
+  showPairing();
+  $("pair").disabled = false;
+};
+try {
+  const theme = localStorage.getItem("mesophon-theme") || "system";
+  document.documentElement.dataset.theme = theme;
+  $("theme").value = theme;
+} catch {
+  /* System appearance remains usable when preferences are unavailable. */
+}
+$("theme").onchange = () => {
+  document.documentElement.dataset.theme = $("theme").value;
+  try {
+    localStorage.setItem("mesophon-theme", $("theme").value);
+  } catch {
+    /* In-memory choice still applies. */
+  }
+};
+function viewport() {
+  document.documentElement.style.setProperty(
+    "--viewport-height",
+    `${window.visualViewport?.height || innerHeight}px`,
+  );
+}
+window.visualViewport?.addEventListener("resize", viewport);
+addEventListener("resize", viewport);
+viewport();
+document.addEventListener("visibilitychange", () => {
+  if (!document.hidden && connection) {
+    live = false;
+    render();
+    $("connection").textContent =
+      "Checking connection… Last received view is stale.";
+    connection.tick();
+    refresh();
+    preview();
+  }
+});
+setInterval(() => {
+  if (!connection) return;
+  connection.tick();
+  if (!document.hidden && connection.online) {
+    refresh();
+    preview();
+    receipts();
+  }
 }, 2000);
 try {
   await init();
-  db = await storage();
-  identity = await stored();
-  crypto = new Browser(identity?.seed);
+  storage = await openIdentity();
+  identity = await storage.read();
   if (!identity) {
+    const crypto = new Browser();
     identity = { seed: crypto.seed(), boards: [] };
+    crypto.free();
     await save();
   }
-  boards();
-  setConnection("Enable Remote Control on the host, then pair with its code.");
+  connection = new Connection({
+    Browser,
+    identity,
+    save,
+    onState,
+    onReply,
+    onLost: () => {
+      live = false;
+      sessions.lost();
+      render();
+    },
+    onReady: (chosen) => {
+      active = chosen;
+      returnBoard = undefined;
+      board = boards.get(chosen.pin.board);
+      $("code").value = "";
+      $("pair").disabled = false;
+      $("onboarding").hidden = true;
+      $("shell").hidden = false;
+      view.boards(identity, active);
+      render();
+      refresh();
+      receipts();
+    },
+  });
+  $("pair").disabled = false;
+  const remembered =
+    identity.boards.find((b) => b.pin.board === identity.lastBoard) ||
+    identity.boards[0];
+  if (remembered) openBoard(remembered);
+  else
+    $("connection").textContent =
+      "Enable Remote Control on the host, then pair with its code.";
 } catch {
-  setConnection(
-    "Could not load the browser module or device storage. Check the deployment and browser storage permissions.",
-  );
+  $("connection").textContent =
+    "Could not load the browser module or device storage. Check the deployment and browser storage permissions.";
 }

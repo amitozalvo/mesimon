@@ -54,7 +54,11 @@ for (const [name, engine] of [
       try {
         await page.goto(origin);
         assert.equal(await page.title(), "Remote Control");
-        assert(await page.getByRole("heading", { name: "Remote Control", exact: true }).isVisible());
+        assert(
+          await page
+            .getByRole("heading", { name: "Remote Control", exact: true })
+            .isVisible(),
+        );
         assert(await page.evaluate(() => isSecureContext));
         if (localHTTP) {
           const rejected = await context.request.get(origin, {
@@ -83,13 +87,13 @@ for (const [name, engine] of [
         });
         assert(paired.info?.code);
         await page
-          .getByLabel("Device name", { exact: true })
+          .getByLabel("Device name (optional)", { exact: true })
           .fill(`${name}-${label}`);
         await page
           .getByLabel("Pairing code", { exact: true })
           .fill(paired.info.code);
         await page
-          .getByRole("button", { name: "Pair browser", exact: true })
+          .getByRole("button", { name: "Connect", exact: true })
           .click();
         await page
           .getByRole("button", { name: /private-ticket-canary/ })
@@ -111,11 +115,20 @@ for (const [name, engine] of [
           .click();
         await page.locator("#queued-row").waitFor({ state: "visible" });
         assert.equal(await page.locator("#queued-text").textContent(), prompt);
-        await page.getByRole("button", { name: "Take back", exact: true }).click();
-        await page.waitForFunction((text) => document.querySelector("#prompt").value === text, prompt);
-        await page.getByRole("button", { name: "Queue prompt", exact: true }).click();
+        await page
+          .getByRole("button", { name: "Take back", exact: true })
+          .click();
+        await page.waitForFunction(
+          (text) => document.querySelector("#prompt").value === text,
+          prompt,
+        );
+        await page
+          .getByRole("button", { name: "Queue prompt", exact: true })
+          .click();
         await page.locator("#queued-row").waitFor({ state: "visible" });
-        await page.getByRole("button", { name: "Send now", exact: true }).click();
+        await page
+          .getByRole("button", { name: "Send now", exact: true })
+          .click();
         await page.waitForFunction(() =>
           document.querySelector("#delivery").textContent.includes("Submitted"),
         );
@@ -123,7 +136,8 @@ for (const [name, engine] of [
         // stub writes its receipt before echoing; observing the echo makes
         // the subsequent exactly-once receipt check independent of timing.
         await page.waitForFunction(
-          (text) => document.querySelector("#preview").textContent.includes(text),
+          (text) =>
+            document.querySelector("#preview").textContent.includes(text),
           prompt,
         );
         const got = await fs.readFile(
@@ -132,21 +146,16 @@ for (const [name, engine] of [
         );
         assert.equal(got.split(prompt).length - 1, 1);
         await page.reload();
-        await page.waitForFunction(
-          () => document.querySelector("#boards").options.length === 2,
-        );
-        await page.locator("#boards").selectOption({ index: 1 });
-        await page
-          .getByRole("button", { name: "Connect", exact: true })
-          .click();
-        await page
-          .getByRole("button", { name: /private-ticket-canary/ })
-          .waitFor();
-        await page
-          .getByRole("button", { name: /private-ticket-canary/ })
-          .click();
+        // Pair-once restoration must not require a selector or Connect.
         await page.waitForFunction(() =>
-          document.querySelector("#preview").textContent.includes("preview-canary"),
+          document
+            .querySelector("#preview")
+            .textContent.includes("preview-canary"),
+        );
+        assert(await page.locator("#onboarding").isHidden());
+        assert.equal(
+          await page.getByLabel("Prompt", { exact: true }).inputValue(),
+          "",
         );
         const info = (
           await command({ cmd: "mesophon", action: { action: "status" } })
@@ -168,6 +177,8 @@ for (const [name, engine] of [
             .textContent.includes("Access revoked"),
         );
         assert(await page.locator("#send").isDisabled());
+        assert.equal(await page.locator("#preview").textContent(), "");
+        assert.equal(await page.locator("#tickets").textContent(), "");
         assert.deepEqual(errors, []);
         console.log(
           `${name} ${label}: pair, encrypted preview, prompt, remembered reconnect, revoke passed`,

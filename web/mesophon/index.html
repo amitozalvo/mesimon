@@ -2,85 +2,179 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <meta
+      name="viewport"
+      content="width=device-width,initial-scale=1,viewport-fit=cover,interactive-widget=resizes-content"
+    />
     <meta name="referrer" content="no-referrer" />
     <title>Remote Control</title>
     <link rel="stylesheet" href="./style.css" />
     <script type="module" src="./app.js"></script>
   </head>
   <body>
-    <header>
-      <div>
-        <h1>Remote Control</h1>
-        <p>Your board, wherever you are.</p>
-      </div>
-      <button id="forget" type="button">Forget this device</button>
-    </header>
-    <main>
-      <section aria-labelledby="connection-heading">
-        <h2 id="connection-heading">Connect to a board</h2>
-        <form id="pair-form">
+    <section id="onboarding" aria-labelledby="welcome-title">
+      <p class="brand">◒ mesimon</p>
+      <h1 id="welcome-title">Remote Control</h1>
+      <p>Your agents, wherever you are.</p>
+      <p>
+        On your host, open
+        <strong>Esc → Sharing → Remote Control → Pair a browser</strong>, then
+        enter the code here.
+      </p>
+      <form id="pair-form">
+        <label
+          >Pairing code<input
+            id="code"
+            maxlength="80"
+            autocomplete="off"
+            autocapitalize="characters"
+            spellcheck="false"
+            required
+            autofocus
+        /></label>
+        <label
+          >Device name <span class="muted">(optional)</span
+          ><input
+            id="device-name"
+            maxlength="64"
+            placeholder="My browser"
+            autocomplete="off"
+        /></label>
+        <button id="pair" class="primary" type="submit" disabled>
+          Connect
+        </button>
+        <button id="cancel-pair" type="button" hidden>Back to board</button>
+      </form>
+    </section>
+    <div id="shell" hidden>
+      <aside id="sidebar" aria-label="Boards and settings">
+        <p class="brand">◒ mesimon</p>
+        <label>Paired boards<select id="boards"></select></label>
+        <button id="add-board" type="button">+ Pair another board</button>
+        <div class="settings">
           <label
-            >Device name<input
-              id="device-name"
-              maxlength="64"
-              value="My browser"
-              autocomplete="off"
-              required
-          /></label>
-          <label
-            >Pairing code<input
-              id="code"
-              maxlength="80"
-              autocomplete="off"
-              autocapitalize="characters"
-              spellcheck="false"
-              placeholder="Code from Sharing → Remote Control"
-          /></label>
-          <button type="submit">Pair browser</button>
-        </form>
-        <div class="remembered">
-          <label
-            >Paired boards<select id="boards">
-              <option value="">Choose a board</option>
+            >Appearance<select id="theme">
+              <option value="system">System</option>
+              <option value="graphite">Graphite</option>
+              <option value="chalk">Chalk</option>
             </select></label
-          ><button id="connect" type="button">Connect</button>
+          >
+          <button id="forget" type="button">Forget this browser</button>
         </div>
-        <p id="connection" role="status">Starting…</p>
-      </section>
-      <section id="workspace" hidden aria-labelledby="board-title">
-        <h2 id="board-title">Board</h2>
+      </aside>
+      <main id="workspace">
+        <header id="board-header">
+          <button
+            id="board-menu"
+            type="button"
+            aria-expanded="false"
+            aria-controls="sidebar"
+          >
+            Boards & settings
+          </button>
+          <h1 id="board-title">Paired board</h1>
+        </header>
         <div class="workspace">
-          <nav id="tickets" aria-label="Tickets"></nav>
-          <article>
-            <h3 id="selection">Select a ticket</h3>
-            <p id="agent-state"></p>
-            <pre id="preview" aria-label="Agent output" tabindex="0"></pre>
-            <div id="queued-row" hidden>
+          <section id="work-list" aria-label="Work list">
+            <div class="list-tools">
+              <div class="list-heading">
+                <h2 id="list-title">Your agents</h2>
+                <span id="count" class="muted"></span>
+              </div>
+              <label class="sr-only" for="search">Find a ticket</label
+              ><input id="search" type="search" placeholder="Find a ticket…" />
+              <label id="filter-label"
+                >Show<select id="filter">
+                  <option value="all">All agents</option>
+                  <option value="running">Running</option>
+                  <option value="attention">Needs attention</option>
+                </select></label
+              >
+              <label id="column-label" hidden
+                >Column<select id="column"></select
+              ></label>
+            </div>
+            <nav id="tickets" aria-label="Tickets"></nav>
+            <nav id="modes" aria-label="View">
+              <button id="agents-mode" type="button" aria-pressed="true">
+                Agents</button
+              ><button id="board-mode" type="button" aria-pressed="false">
+                Board
+              </button>
+            </nav>
+          </section>
+          <article id="detail" aria-labelledby="selection">
+            <header class="detail-heading">
+              <button id="back" type="button">← Back</button>
+              <div>
+                <h2 id="selection" tabindex="-1">Select a ticket</h2>
+                <p id="agent-state"></p>
+              </div>
+            </header>
+            <div class="output-tools">
+              <strong>Output</strong
+              ><label class="wrap-label"
+                ><input id="wrap" type="checkbox" checked /> Wrap</label
+              >
+            </div>
+            <p id="freshness" class="muted">
+              Periodic preview · up to 50 lines
+            </p>
+            <div class="output">
+              <pre id="preview" aria-label="Agent output" tabindex="0"></pre>
+              <button id="latest" type="button" hidden>↓ Jump to latest</button>
+            </div>
+            <section id="queued-row" hidden aria-label="Queued prompt">
               <p>Queued · waits for idle</p>
               <pre id="queued-text"></pre>
-              <button id="send-now" type="button">Send now</button>
-              <button id="take-back" type="button">Take back</button>
-            </div>
+              <button id="send-now" type="button" disabled>Send now</button>
+              <button id="take-back" type="button" disabled>Take back</button>
+            </section>
+            <section id="returned-row" hidden aria-label="Retained prompt text">
+              <p>Retained text · your current draft is unchanged</p>
+              <pre id="returned-text"></pre>
+              <button id="swap-returned" type="button">Swap with draft</button>
+            </section>
             <form id="prompt-form">
-              <label
-                >Prompt<textarea
-                  id="prompt"
-                  rows="4"
-                  placeholder="Your words to this agent"
-                  required
-                ></textarea>
-              </label>
-              <label>Delivery<select id="prompt-mode">
-                <option value="queue">Queue · wait for idle</option>
-                <option value="steer">Steer · send now</option>
-              </select></label>
-              <button id="send" type="submit" disabled>Queue prompt</button>
+              <label id="target" for="prompt"
+                >Select an agent to send a prompt</label
+              >
+              <p id="session-warning" hidden>
+                Session changed. Review the retained draft before sending to
+                this session.
+                <button id="review-draft" type="button">
+                  Use draft for this session
+                </button>
+              </p>
+              <textarea
+                id="prompt"
+                aria-label="Prompt"
+                rows="3"
+                placeholder="Your words to this agent"
+                required
+                disabled
+              ></textarea>
+              <div class="composer-actions">
+                <label
+                  >Delivery<select id="prompt-mode">
+                    <option value="queue">Queue · wait for idle</option>
+                    <option value="steer">Steer · send now</option>
+                  </select></label
+                >
+                <button id="send" class="primary" type="submit" disabled>
+                  Queue prompt
+                </button>
+              </div>
+              <p id="delivery" role="status"></p>
+              <p class="draft-note muted">
+                Ctrl / ⌘ + Enter to send. Drafts stay with each session in this
+                tab. Reloading discards unsent drafts.
+              </p>
             </form>
-            <p id="delivery" role="status"></p>
           </article>
         </div>
-      </section>
-    </main>
+      </main>
+    </div>
+    <p id="connection" role="status">Starting…</p>
   </body>
 </html>

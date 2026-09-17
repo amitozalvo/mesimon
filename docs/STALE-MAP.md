@@ -11130,3 +11130,74 @@ duplicate terminal events, the next task, preserved independent work, child
 compaction, and the native interrupt response/idle-audit path. Verification uses
 synthetic protocol events; live Codex interruption and Claude Code compaction
 interruption were not exercised, and Claude's adapter is unchanged.
+
+## T-396 — Mesophon everyday browser workspace (Slice A)
+
+The M1 browser now restores the last paired board and selected ticket from its
+existing IndexedDB identity, without a code or a Connect action. Pairing is a
+separate screen with the host's Esc → Sharing → Remote Control path; adding a
+board and forgetting the browser live in board settings. Graphite/Chalk follows
+the system initially and remembers an explicit appearance choice.
+
+Desktop has a board sidebar, searchable agent list and output/composer workspace.
+Tablet collapses board settings; phone uses list/detail navigation with Back and
+Agents/Board navigation. Board exposes all configured columns and tickets without
+agents. State words and attention ordering use only the existing host projection;
+there are no fabricated permission/question cards, machine names or activity
+summaries. Machine grouping awaits a user-recognizable machine label in a later
+projection. This does not introduce any wire capability or remote mutation.
+
+Connection, identity storage, board projection, session state and DOM views are
+separate ES modules. Drafts and receipts are keyed by board/ticket/session and
+remain in memory only. A replacement session retains text behind an explicit
+review action. Submission clears only the acknowledged text, preserving edits
+made while delivery was pending. Disconnect or a request deadline makes output
+stale and unresolved delivery unknown; reconnect can query an existing receipt
+but never sends an old prompt. Explicit authenticated revocation purges protected
+view/draft state and persists an access-removed marker. The relay's generic error
+still cannot distinguish an unavailable host from an inaccessible grant.
+
+The reading surface remains the real periodic 50-line preview. Last received time
+is local receipt time, including unchanged previews, and is never an inferred
+agent activity timestamp. Scrolling up freezes the displayed window so the rolling
+preview cannot displace the reader; Jump to latest resumes following. Reading and
+list positions survive ticket changes, phone navigation and reconnect. Mobile
+controls are at least 44px, inputs use 16px text, and the layout accounts for safe
+areas, the visual viewport, enlarged text and reduced motion.
+
+Validation includes state regressions and real Chromium/WebKit runs with controlled
+M1 replies at desktop, tablet and phone sizes: zero/one/many tickets, long titles,
+search, drafts, session replacement, rejected/uncertain delivery, reconnect without
+replay, frozen output, themes and contrast. The separate real-relay acceptance test
+now requires automatic restoration and checks protected-content clearing on revoke.
+Physical iPhone/Android acceptance with software keyboard, rotation and
+background/resume over reachable browser-trusted HTTPS remains outstanding;
+viewport emulation is not that acceptance. Slices B/C remain proposed.
+
+Verification for T-396: native and Wasm builds, `npm test` (five state regressions
+and Chromium/WebKit UX cases), all four opt-in Mesophon encrypted-relay tests,
+`cargo clippy --workspace --all-targets -- -D warnings`, and the bounded workspace
+nextest run pass (1,557 tests; clean fixture audit). Nextest leaves ten tests
+ignored by default; the four Mesophon tests were run separately. The remaining
+skips are three unrelated PostgreSQL/Teams tests requiring their own database
+fixtures, the live release-channel probe, a timing benchmark and a standalone
+restart-skew helper exercised through its parent tests. Linux/release gates were
+not run for this browser-only change. Initial local PostgreSQL setup and browser
+cache discovery failures were corrected with the disposable Docker backend and
+an explicit `PLAYWRIGHT_BROWSERS_PATH`; these failed attempts are not counted as
+passes. Browser screenshots from both themes, enlarged text, reduced-height phone
+viewports and the real relay were inspected. The browser control-size regression
+also caught WebKit's native select shrinking below 44px; selects now use an
+explicit height and appearance so their actual target meets the requirement.
+
+### T-396 rebase onto T-390 queued follow-ups
+
+The split browser workspace preserves main's Queue default, explicit Steer mode,
+queued preview, Send now and Take back. Delivery mode follows each session's draft;
+queue-action receipts use the same board/ticket/session binding as prompt receipts.
+Queued text remains queryable after reconnect without replaying an action. A
+late take-back response restores the originating ticket's text, preserving a newer
+draft separately; text returned after session replacement requires review. Queue
+and retained-text panes are cleared with the rest of protected content on revoke.
+The browser regressions retain main's real-relay queue/take-back/send-now cycle
+and exercise reconnect and ticket switching while those actions are pending.
