@@ -12,6 +12,8 @@ pub enum Action {
     ImportContent,
     /// Submit user input to an existing session; does not confer lifecycle authority.
     PromptExisting,
+    /// Answer one pending native permission; no policy or lifecycle authority.
+    ApproveExisting,
 }
 
 /// What it is being attempted on.
@@ -63,7 +65,7 @@ impl Decision {
 /// column; ordinary write access does not grant authority to materialize imports.
 pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) -> Decision {
     let deny = |reason: &str| Decision::Deny { reason: reason.to_string() };
-    if *action == Action::PromptExisting {
+    if matches!(action, Action::PromptExisting | Action::ApproveExisting) {
         return match (principal, resource) {
             (Principal::Local | Principal::Paired { .. }, Resource::Session { .. }) => {
                 Decision::Allow
@@ -81,7 +83,7 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
         Principal::Local | Principal::Automation { .. } => Decision::Allow,
         Principal::Paired { .. } => match action {
             Action::Read => Decision::Allow,
-            _ => deny("paired devices only read and prompt in Mesophon M1"),
+            _ => deny("paired devices only read, prompt, and answer existing permissions"),
         },
         Principal::Agent { .. } => match (action, resource) {
             (_, Resource::Session { .. }) => {
@@ -92,7 +94,7 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (Action::ImportContent | Action::PromptExisting, _) => {
+            (Action::ImportContent | Action::PromptExisting | Action::ApproveExisting, _) => {
                 deny("an agent cannot import external content")
             }
         },
@@ -107,7 +109,7 @@ pub fn authorize(principal: &Principal, action: &Action, resource: &Resource) ->
             }
             (Action::Read, _) => Decision::Allow,
             (Action::Mutate, Resource::Ticket { .. } | Resource::Column { .. }) => Decision::Allow,
-            (Action::ImportContent | Action::PromptExisting, _) => {
+            (Action::ImportContent | Action::PromptExisting | Action::ApproveExisting, _) => {
                 deny("a teammate cannot import external content")
             }
         },
@@ -152,6 +154,11 @@ mod tests {
         let paired = Principal::Paired { device: "device".into(), grant: "grant".into() };
         let session = Resource::Session { id: uuid::Uuid::nil() };
         assert_eq!(authorize(&paired, &Action::PromptExisting, &session), Decision::Allow);
+        assert_eq!(authorize(&paired, &Action::ApproveExisting, &session), Decision::Allow);
+        for by in [agent(), remote(), automation()] {
+            assert!(authorize(&by, &Action::ApproveExisting, &session).denied());
+        }
+        assert!(authorize(&paired, &Action::ApproveExisting, &Resource::Board).denied());
         assert_eq!(authorize(&paired, &Action::Read, &session), Decision::Allow);
         for by in [agent(), remote(), automation()] {
             assert!(authorize(&by, &Action::PromptExisting, &session).denied());

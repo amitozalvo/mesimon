@@ -64,6 +64,10 @@ budget); persisted state moves.
 
 ## D33m / D34.4 — the daemon may `Allow`; Inbox permission rows use the RPC
 
+**T-395 clarification (2026-09-17):** this was a design intention, not a
+description of shipped code. See the T-395 decision below; the write-protection
+gate remains deny-only.
+
 - 02 §5.9 "no Allow variant at all, and must never grow one": **wrong as stated**; `Allow` exists behind the machine-local-provenance gate.
 - 15 Part 2 `Verdict` enum, its no-Allow doc-comment, and CI guard #2 (grep for `"allow"`): rewrite around `Allow | Deny | NoOpinion`.
 - 01 R4/§7C deny-only language.
@@ -11227,3 +11231,106 @@ default has changed. Sleeping sessions retain their provider. Empty seats
 still say `start on the title`, and waiting asks still say `enter drops`.
 Rendering regression coverage opens the field through Shift+Enter for both
 providers, awake and sleeping, under either board default and at narrow width.
+
+## T-395 — remote human decisions: doctrine before implementation (2026-09-17)
+
+The existing `Verdict` and `mesimon gate` remain deny-only. The blanket claim
+that no Mesimon component may ever allow is superseded for one bounded surface:
+an explicit answer from an authenticated, currently paired owner to a pending
+Claude `PermissionRequest`. A separate deciding subcommand will return that
+one-shot response using `decision.behavior`; it must not modify tool input,
+install permission rules, change permission modes, or auto-approve. The
+`PreToolUse.permissionDecision` no-allow/no-ask guard remains binding. Observer
+hooks remain silent and do not decide.
+
+The daemon must bind an answer to the exact pending request and live session,
+check a dedicated core authorization action with the real paired principal,
+and consume the request at most once before its deadline. Timeout, disconnect,
+revocation, abort, session replacement, unavailable daemon, and malformed input
+give no opinion (empty stdout), preserving Claude's native permission flow.
+No unattended policy approval or shared-board teammate approval is authorized
+by this change. D33m's proposed machine-local automatic rules are not shipped.
+
+Claude's current official hook reference documents the separate
+`PermissionRequest` response and timeout-with-no-decision behavior:
+https://code.claude.com/docs/en/hooks#permissionrequest-decision-control .
+Installed CLI verification is pinned to 2.1.274; live outcomes and implementation
+validation will be recorded below separately from this design decision.
+
+### T-395 implementation and measured contract (2026-09-18)
+
+`mesimon approve` is the separate deciding bridge; `mesimon hook` is still a
+silent observer, and `mesimon gate` still only denies protected writes. The
+browser's one-shot allow/deny uses `ApproveExisting` with its actual paired
+principal. Only peers subscribed when the request was offered may answer it.
+The daemon holds an ephemeral request for at most 40 seconds, the bridge reads
+for 45 seconds, and Claude's registration timeout is 50 seconds. No paired
+connection means an immediate no-op. Neither request bodies nor decisions enter
+the relay in plaintext. Requests and receipts do not survive as executable work
+across a daemon restart; uncertain delivery is never retried automatically.
+
+The deciding hook uses a duplex, two-line frame. Observer frames retain their
+EOF framing. A write half-close cannot distinguish waiting from cancellation on
+macOS; the deciding peer keeps both directions open, and EOF cancels the offer.
+Turn/session termination, completed tools, disconnect, revoked grants and expired
+requests invalidate pending decisions. A receipt says `decision_sent`, not that
+the tool executed: Claude's local dialog can win the race.
+
+**Live refutation:** CLI 2.1.274 blocks tool execution while awaiting the hook,
+but its native dialog is already visible. It does not defer showing the pane
+until the timeout. This milestone preserves that behavior and permits either
+local or paired-human resolution. The actual generated `approve` command and
+argv were verified alongside the observer, using a disposable decision socket:
+allow executes once, deny does not execute, and read timeout leaves local Enter
+working. The encrypted daemon/relay/browser route is covered separately by its
+integration fixtures. Earlier temporary probes marked passed without submitting
+a prompt are invalid evidence; the final checks require a real tool request,
+bridge frame and filesystem outcome. The initial final-probe failure assumed a
+hidden native dialog; it exposed this upstream behavior, not a passed contract.
+See `docs/claude-live-verification.md` for capture IDs and limits.
+
+Question text/options and plan markdown are projected from native hook payloads.
+Only a measured single-select question (including one-line free text) and the
+native plan menu have remote key mappings. Every step checks the visible menu,
+current selection and exact pending identity. Free text focuses `Type something.`
+and pastes without Enter; a separate verified Enter submits it. Enter on the empty
+field would instead decline the question. Plan acceptance selects **manually
+approve edits**, never auto-accept. Multiselect, multiple questions, MCP forms,
+wrapped/unrecognized selections and stale dialogs yield local fallback or
+`unknown`; transport receipts do not claim the dialog's outcome.
+
+Awareness is a per-ticket attention projection through the encrypted channel,
+with an initial baseline and phase-change publication only. `UserPromptSubmit`
+updates the baseline without publishing. Any paired browser foregrounded on the
+ticket silences ordinary alerts for all peers; its presence expires after 15
+seconds without renewal. As explicitly scoped by the user, delivery only needs
+a connected browser. An in-page alert links to the ticket, with optional system
+notifications where supported and permitted. There is no closed-browser Web Push,
+Live Activity, ongoing Android notification or terminal stream. M2 capabilities
+are advertised in Ready; a new browser does not send unknown M2 commands to an
+older M1 host. Revocation clears protected views before awaiting persistence,
+and reports access removed only after saving the revoked marker.
+
+
+Final verification: native and Wasm builds; workspace Clippy with warnings denied;
+**1,584 nextest tests**; **all nine opt-in Mesophon relay tests**, including real
+Chromium/WebKit pairing; **11 browser state tests**, six Chromium/WebKit UX cases
+(desktop/tablet/phone), the deployment dependency test and real asset staging;
+Python harness syntax, formatting and `git diff --check` passed. The final combined
+Rust/relay run cleaned all **104 fixture owners**. Dialog screenshots were inspected.
+Fifteen tests are skipped by default: the nine Mesophon tests ran separately;
+the remaining six are three unrelated PostgreSQL/Teams cases, the live release
+probe, timing benchmark and standalone restart helper exercised by parent tests.
+Linux, release/Docker-image and physical-phone gates were not run. Docker's data
+volume was full; relay checks used a disposable 512 MiB tmpfs PostgreSQL cluster
+without deleting other containers or volumes.
+
+The deployment staging fix already landed on main as `6376e7b` during this work.
+Its staging script, image wiring, package test and serving instructions are
+included here unchanged, so the new modules are packaged before a future rebase.
+The full-suite hook-count assertion now includes the separate decider. A later
+suite run reproduced an existing worktree fixture race (file created before its
+cwd line was written); that test now waits for the actual line under its original
+deadline. Both initial failures are recorded as failures, followed by passing
+final checks. Initial sandbox-denied process/socket checks were rerun with
+command-scoped permission; they are not counted as passes.

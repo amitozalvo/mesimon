@@ -84,6 +84,8 @@ export class Sessions {
       {
         queued: "Queued · waiting for idle.",
         awaiting_delivery: "Sending… Awaiting delivery.",
+        decision_sent: "Decision sent. Check the output for the agent’s response.",
+        input_sent: "Answer keys sent. Check the output to confirm the result.",
         submitted:
           "Submitted to the agent. This confirms input delivery, not completion.",
         rejected: reply.message

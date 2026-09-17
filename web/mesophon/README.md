@@ -12,7 +12,7 @@ prompt/receipt protocol, including main’s queued follow-ups. Build generated a
 - `app.js`: event wiring and application coordination.
 
 `npm ci && npm test` runs state regressions and Chromium/WebKit UX tests using
-controlled M1 replies. The latter start a loopback HTTP fixture and write ignored
+controlled M1/M2 replies. The latter start a loopback HTTP fixture and write ignored
 screenshots to `test-results/`. Playwright's Chromium and WebKit must be installed.
 The fixture deliberately replaces crypto; it does not validate the relay or Wasm.
 
@@ -43,3 +43,16 @@ Physical-phone acceptance still requires a reachable relay with browser-trusted
 HTTPS. Check pairing, software keyboard open, rotation, background/resume, reading
 position, and send-once behavior on an actual iPhone/Android browser. Desktop
 browser viewport tests are useful coverage but do not complete that acceptance.
+
+M2 adds `dialogs.js` for permission/question/plan cards and `awareness.js` for
+connected-browser alerts. Payloads come from the daemon and render as text, never
+HTML. Only single-choice/single-text questions and the measured plan menu have
+remote key mappings; other shapes require a local answer. The daemon checks each
+selection before sending the next key. The handshake advertises M2 features so
+new browsers can continue using older M1 hosts without sending unknown operations.
+
+Awareness travels through the existing authenticated encrypted channel. Ordinary
+alerts are suppressed while any paired browser foregrounds the ticket; presence
+expires after 15 seconds without renewal. In-page alerts work without system
+notification support; each links to its originating ticket. Browser notification permission is
+requested only by the alerts button. Closed-browser Web Push is not implemented.

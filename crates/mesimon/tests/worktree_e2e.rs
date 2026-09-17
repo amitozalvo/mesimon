@@ -185,21 +185,20 @@ fn m4_worktree_lifecycle() {
         c.request(Command::SetWorkspace { id: t1, workspace: None }),
         Response::Err { .. }
     ));
-    // Stub really started there (give the pane a moment to run the stub).
+    // The stub's shell creates the file before writing its first line. Wait
+    // for the cwd itself, not just file existence, before using that evidence.
     let deadline = Instant::now() + Duration::from_secs(5);
-    while !cwd_log.exists() {
+    let wt_path = loop {
+        if let Ok(log) = std::fs::read_to_string(&cwd_log) {
+            if let Some(cwd) = log.lines().next().filter(|line| !line.is_empty()) {
+                break std::path::PathBuf::from(cwd);
+            }
+        }
         assert!(Instant::now() < deadline, "stub never logged cwd");
         std::thread::sleep(Duration::from_millis(100));
-    }
+    };
 
     // ---- work + merge (clean) --------------------------------------------
-    let wt_path = std::path::PathBuf::from(
-        String::from_utf8_lossy(&std::fs::read(&cwd_log).unwrap())
-            .lines()
-            .next()
-            .unwrap()
-            .to_string(),
-    );
     std::fs::write(wt_path.join("b.txt"), "agent work\n").unwrap();
     git(&wt_path, &["add", "."]);
     git(&wt_path, &["commit", "-qm", "agent work"]);

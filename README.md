@@ -262,7 +262,7 @@ Apache-2.0. See `LICENSE`, `NOTICE`, and `TRADEMARK.md`.
 ## Remote Control browser preview
 
 Remote Control (Mesophon) lets your own browser **view tickets, preview an agent’s
-output, and send a prompt to that existing agent**. It works on desktop and phone.
+output, send a prompt, and answer supported Claude dialogs**. It works on desktop and phone.
 Debug builds include Remote Control automatically. In release builds, set
 `MESIMON_MESOPHON=1` when starting Mesimon. Open **Esc → Sharing → Remote Control**, sign in to
 your relay, and enable this board. Choose **Pair a browser**, open the displayed
@@ -287,6 +287,27 @@ changes. Reconnects never resubmit prompts automatically. If a delivery result
 cannot be recovered, the browser shows **outcome unknown**; check the agent before
 sending again. Prompt text is limited to 4096 UTF-8 bytes; previews show the last
 50 lines, and oversized responses are rejected.
+
+Claude permission requests can be approved once or denied while their remote
+window is open. Claude’s local dialog remains available while the hook waits;
+unanswered requests leave its native permission flow unchanged.
+The write-protection gate remains deny-only; remote approval never installs rules
+or changes the permission mode. Existing sessions need refreshed hook settings
+before they offer remote approvals.
+
+Single-choice questions, single-line free-text answers, and plan accept/reject
+use verified native dialog selections. Plans are accepted with manual edit
+approval. Unrecognized, multiple-question, and multi-select forms require a local
+answer; uncertain delivery is never retried automatically. “Decision sent” and
+“Answer keys sent” confirm transport, not tool execution or completion.
+
+Connected-browser alerts carry encrypted per-ticket phase changes. They never
+announce completion on prompt submission and are silenced while a paired browser
+is foregrounded on that ticket. Updates appear in the page with a ticket link.
+Enable optional system notifications through
+**Enable connected-browser alerts**. This version requires the browser to remain
+connected; it does not provide closed-browser Web Push or mobile live activities.
+Older M1 hosts remain usable through capability negotiation.
 
 Select a paired device in the Remote Control dialog and press Enter twice to revoke it.
 Disabling Remote Control removes every grant for this board; re-enabling requires new

@@ -1,8 +1,8 @@
 //! The deny-only hook verdict (D10).
 //!
-//! mesimon registers exactly one *deciding* hook, and this is the only value it
-//! may return. The attention hooks (D15) stay pure observers with empty stdout;
-//! this type is the whole of the other set.
+//! The static write-protection gate may only tighten permissions. Remote human
+//! PermissionRequest answers use a separate type and subcommand (T-395).
+//! Attention hooks (D15) stay pure observers with empty stdout.
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -45,10 +45,10 @@ impl RuleId {
     }
 }
 
-/// The ONLY value mesimon may return from a deciding hook.
+/// The ONLY value the static write-protection gate may return.
 ///
 /// There is deliberately NO `Allow` variant. mesimon can tighten what the user
-/// already permitted; it can never widen it. Adding a variant here is a change
+/// already permitted; this gate can never widen it. Adding a variant here is a change
 /// to the product's security posture, not a feature request.
 ///
 /// Deliberately NOT `#[non_exhaustive]`: that attribute exists to make ADDING a

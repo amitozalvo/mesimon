@@ -60,7 +60,18 @@ pub fn read_hook_frame(
         let length = capacity.min(chunk.len());
         match stream.read(&mut chunk[..length]) {
             Ok(0) => return parse_frame(&bytes),
-            Ok(got) => bytes.extend_from_slice(&chunk[..got]),
+            Ok(got) => {
+                bytes.extend_from_slice(&chunk[..got]);
+                // A deciding hook stays duplex while waiting. Its frame is
+                // two NDJSON records, so process EOF remains a cancellation
+                // signal instead of also delimiting the request body.
+                if let Some(nl) = bytes.iter().position(|b| *b == b'\n') {
+                    let header: Value = serde_json::from_slice(&bytes[..nl]).unwrap_or(Value::Null);
+                    if header["event"] == "RemotePermission" && bytes[nl + 1..].contains(&b'\n') {
+                        return parse_frame(&bytes);
+                    }
+                }
+            }
             Err(error)
                 if matches!(error.kind(), ErrorKind::WouldBlock | ErrorKind::Interrupted) =>
             {
@@ -82,3 +93,30 @@ pub const HOOK_FRAME_MAX_BYTES: u64 = 1 << 20;
 pub use crate::agents::claude::hooks::{
     detail_of, plan_of, signal_of, signal_with_background, transcript_of,
 };
+
+#[cfg(test)]
+mod transport_tests {
+    use super::*;
+    use std::io::Write;
+    use std::os::unix::net::UnixStream;
+    use std::time::Duration;
+
+    #[test]
+    fn deciding_frame_finishes_without_eof_but_observer_waits_for_eof() {
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer
+            .write_all(
+                b"{\"session\":\"s\",\"event\":\"RemotePermission\"}\n{\"tool_name\":\"Bash\"}\n",
+            )
+            .unwrap();
+        let frame = read_hook_frame(reader, Duration::from_millis(100)).unwrap();
+        assert_eq!(frame.payload["tool_name"], "Bash");
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"{\"session\":\"s\",\"event\":\"Stop\"}\n{}\n").unwrap();
+        assert!(read_hook_frame(reader, Duration::from_millis(20)).is_none());
+        let (reader, mut writer) = UnixStream::pair().unwrap();
+        writer.write_all(b"{\"session\":\"s\",\"event\":\"Stop\"}\n{}").unwrap();
+        drop(writer);
+        assert_eq!(read_hook_frame(reader, Duration::from_millis(100)).unwrap().event, "Stop");
+    }
+}

@@ -59,6 +59,8 @@
               <option value="chalk">Chalk</option>
             </select></label
           >
+          <button id="alerts" type="button">Enable connected-browser alerts</button>
+          <p id="alert-status" class="muted">Alerts need this browser to stay connected.</p>
           <button id="forget" type="button">Forget this browser</button>
         </div>
       </aside>
@@ -74,6 +76,7 @@
           </button>
           <h1 id="board-title">Paired board</h1>
         </header>
+        <div id="awareness" role="status" aria-live="polite" hidden></div>
         <div class="workspace">
           <section id="work-list" aria-label="Work list">
             <div class="list-tools">
@@ -111,6 +114,7 @@
                 <p id="agent-state"></p>
               </div>
             </header>
+            <section id="attention" aria-label="Agent needs your answer" hidden></section>
             <div class="output-tools">
               <strong>Output</strong
               ><label class="wrap-label"

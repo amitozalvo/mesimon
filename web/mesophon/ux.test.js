@@ -36,12 +36,13 @@ export class Browser {
   auth() { return JSON.stringify({kind:'auth'}); }
   pair() { return JSON.stringify({kind:'pair'}); }
   connect() { return JSON.stringify({kind:'connect'}); }
-  accept() { return JSON.stringify({reply:{result:'ready',incarnation:window.fixture.incarnation,next:window.fixture.next}}); }
+  accept() { return JSON.stringify({reply:{result:'ready',incarnation:window.fixture.incarnation,next:window.fixture.next,features:window.fixture.features}}); }
   packet(text) { return text; } open(text) { return text; }
 }`;
 function fixture() {
   const state = (window.fixture = {
     next: 1,
+    features: ["permission", "dialog", "awareness"],
     incarnation: "incarnation-a",
     prompts: [],
     requests: [],
@@ -118,6 +119,8 @@ function fixture() {
             this.message({ kind: "packet", id, reply });
           };
           if (state.holdAll) return;
+          if (request.op === "foreground") answer({ result: "delivery", status: "observed" });
+          if (["permission", "dialog"].includes(request.op)) answer({ result: "delivery", status: "input_sent" });
           if (request.op === "snapshot") answer(state.snapshot());
           if (request.op === "preview")
             answer({ result: "preview", lines: state.lines });
@@ -185,6 +188,7 @@ try {
     ["chromium", chromium],
     ["webkit", webkit],
   ]) {
+    if (process.env.MESOPHON_UX_ENGINE && process.env.MESOPHON_UX_ENGINE !== engineName) continue;
     const browser = await engine.launch();
     try {
       for (const [size, viewport] of [
@@ -192,6 +196,7 @@ try {
         ["tablet", { width: 900, height: 900 }],
         ["phone", { width: 390, height: 844 }],
       ]) {
+        if (process.env.MESOPHON_UX_SIZES && !process.env.MESOPHON_UX_SIZES.split(",").includes(size)) continue;
         const context = await browser.newContext({
           viewport,
           colorScheme: "dark",
@@ -632,6 +637,55 @@ try {
             "chalk",
           );
           assert.equal(await page.locator("#prompt").inputValue(), "");
+          // M2 cards keep untrusted tool/plan text inert and bind each action
+          // to the exact projected session and request.
+          await page.evaluate(() => {
+            fixture.tickets = [{ id: "m2", key: "T-M2", title: "Needs your answer", column: "IN PROGRESS",
+              agent: { session: "m2-session", provider: "claude", state: "needs attention", promptable: true,
+                permission: { request: "permission-1", tool: "Bash", input: { command: "<script>window.bad=true</script>" }, expires_at: Date.now() + 40000 } } }];
+            fixture.update();
+          });
+          if (size === "phone" && !(await page.locator("#back").isVisible())) await page.locator("#tickets button").first().click();
+          await until(page, () => document.querySelector("#attention").textContent.includes("Approve once"));
+          assert.equal(await page.locator("#attention script").count(), 0);
+          await page.getByRole("button", { name: "Approve once", exact: true }).click();
+          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "permission").at(-1)),
+            { op: "permission", request: "permission-1", decision: "allow", ticket: "m2", session: "m2-session" });
+          await page.evaluate(() => {
+            fixture.tickets[0].agent.permission = null;
+            fixture.tickets[0].agent.dialog = { request: "question-1", kind: "questions", questions: [{ question: "Which color?", header: "Color",
+              multiSelect: false, options: [{ label: "Blue", description: "First color" }, { label: "Green", description: "Second color" }] }] };
+            fixture.update();
+          });
+          await page.getByRole("button", { name: "Green", exact: true }).click();
+          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "choice", index: 1 });
+          await page.locator("#attention input").fill("Purple");
+          await page.evaluate(() => fixture.update());
+          assert.equal(await page.locator("#attention input").inputValue(), "Purple");
+          await page.getByRole("button", { name: "Send answer", exact: true }).click();
+          assert.equal(await page.locator("#attention input").inputValue(), "Purple");
+          assert.deepEqual(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).response), { answer: "text", text: "Purple" });
+          await page.evaluate(() => {
+            fixture.tickets[0].agent.dialog = { request: "plan-1", kind: "plan", markdown: "# Plan\\nReview <img src=x onerror=alert(1)> then implement." };
+            fixture.update();
+          });
+          await until(page, () => document.querySelector("#attention").textContent.includes("Review plan"));
+          assert.equal(await page.locator("#attention img").count(), 0);
+          await page.locator("#attention").screenshot({ path: path.join(root, "test-results", `${engineName}-${size}-plan.png`) });
+          await page.getByRole("button", { name: "Reject plan", exact: true }).click();
+          assert.equal(await page.evaluate(() => fixture.requests.filter((r) => r.op === "dialog").at(-1).request), "plan-1");
+          // Connected phone browsers still receive an in-page alert when the
+          // platform cannot construct a system Notification.
+          await page.evaluate(async () => {
+            const { showAlert } = await import("./awareness.js");
+            showAlert({ result: "awareness", ticket: "other", alert: true,
+              awareness: { phase: "completed", headline: "T-OTHER · <script>inert</script>", deepLink: "#ticket=other" } },
+              "m2", (ticket) => { fixture.alertTarget = ticket; });
+          });
+          assert.equal(await page.locator("#awareness script").count(), 0);
+          await page.locator("#awareness button").first().click();
+          assert.equal(await page.evaluate(() => fixture.alertTarget), "other");
+          assert(await page.locator("#awareness").isHidden());
           // Zero and one ticket snapshots; selected identity falls back cleanly.
           await page.evaluate(() => {
             fixture.tickets = [];

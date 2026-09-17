@@ -147,3 +147,30 @@ test("a queue cancelled by the host returns the unsent words to the draft", () =
   assert.equal(entry.draft, "not delivered");
   assert.equal(entry.receipt.waiting, false);
 });
+
+
+test("awareness alerts follow daemon phases and silence the visible ticket", async () => {
+  const { shouldAlert } = await import("./awareness.js");
+  const event = { result: "awareness", ticket: "one", alert: true, awareness: { phase: "completed" } };
+  assert.equal(shouldAlert(event, "one"), false);
+  assert.equal(shouldAlert(event, "two"), true);
+  assert.equal(shouldAlert({ ...event, alert: false }, "two"), false);
+  for (const phase of ["running", "starting", "stale"]) {
+    assert.equal(shouldAlert({ ...event, awareness: { phase } }, null), false);
+  }
+});
+
+test("dialog and approval receipts preserve drafts and never imply execution", () => {
+  const sessions = new Sessions();
+  const entry = sessions.get("board-a", ticket("one", "session-a"));
+  entry.draft = "later follow-up";
+  sessions.sent(entry, 7, "host", "permission", "");
+  sessions.reply(entry, { result: "delivery", status: "decision_sent" });
+  assert.equal(entry.receipt.unresolved, false);
+  assert.equal(entry.draft, "later follow-up");
+  assert.match(entry.delivery, /Decision sent/);
+  sessions.sent(entry, 8, "host", "dialog", "");
+  sessions.lost();
+  assert.match(entry.delivery, /unknown/);
+  assert.equal(entry.draft, "later follow-up");
+});

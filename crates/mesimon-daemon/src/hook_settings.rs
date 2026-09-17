@@ -8,15 +8,16 @@
 //! encodes 11 §11.2.3's silent-failure traps as hard rules, each unit-tested:
 //! `if` is never emitted (silently disables non-tool events), matchers only on
 //! events that support them, `async: true` only where it cannot block, and
-//! `timeout: 2` everywhere.
+//! `timeout: 2` for observers and the gate; a bounded remote decision gets 50s.
 //!
-//! **Two disjoint hook sets live in this file (T-84).** D15's attention hooks
+//! D15's attention hooks
 //! are pure observers: they exec `mesimon hook`, which never writes stdout and
-//! always exits 0, and they can only ever report. The one *deciding* hook execs
+//! always exits 0, and they can only ever report. The static deciding hook execs
 //! `mesimon gate`, which may answer "deny" and nothing else — a separate
 //! subcommand precisely so the observer's never-writes-stdout invariant stays
 //! true and stays testable. They share the `PreToolUse` key with disjoint
-//! matchers; no tool matches both.
+//! matchers; no tool matches both. `mesimon approve` separately bridges a
+//! one-shot paired-human PermissionRequest answer; it never installs rules.
 
 use std::path::{Path, PathBuf};
 
@@ -146,7 +147,7 @@ fn gate_entry(
     })
 }
 
-/// The 35-entry registered set for one session: 34 observers plus the gate.
+/// The 36-entry set: 34 observers, the static gate, and remote human decisions.
 pub fn render_settings(
     hook_bin: &Path,
     hook_sock: &Path,
@@ -199,6 +200,17 @@ pub fn render_settings(
     for ev in SINGLE_EVENTS {
         hooks.insert(ev.into(), Value::Array(vec![e(ev, None, None)]));
     }
+    hooks.insert(
+        "PermissionRequest".into(),
+        Value::Array(vec![
+            e("PermissionRequest", None, None),
+            json!({
+                "hooks": [{"type": "command", "command": hook_bin.display().to_string(),
+                    "args": ["approve", "--sock", hook_sock.display().to_string(),
+                        "--session", session.to_string()], "timeout": 50}]
+            }),
+        ]),
+    );
     json!({ "hooks": hooks })
 }
 
@@ -306,7 +318,7 @@ mod tests {
     }
 
     fn observers(v: &Value) -> Vec<(String, &Value)> {
-        entries(v).into_iter().filter(|(_, e)| e["hooks"][0]["args"][0] != json!("gate")).collect()
+        entries(v).into_iter().filter(|(_, e)| e["hooks"][0]["args"][0] == json!("hook")).collect()
     }
 
     fn entries(v: &Value) -> Vec<(String, &Value)> {
@@ -319,17 +331,15 @@ mod tests {
     }
 
     #[test]
-    fn thirty_five_entries() {
-        // 34 observers (D15) + 1 decider (D10).
-        assert_eq!(entries(&rendered()).len(), 35);
+    fn thirty_six_entries() {
+        // 34 observers + the deny-only gate + the remote permission bridge.
+        assert_eq!(entries(&rendered()).len(), 36);
         assert_eq!(observers(&rendered()).len(), 34);
     }
 
-    /// The two sets are told apart by the binary they exec, not by a comment.
-    /// `mesimon hook` never writes stdout; `mesimon gate` is the only thing
-    /// that may answer a decision.
+    /// Observers and deciders have separate subcommands, not conditional stdout.
     #[test]
-    fn only_the_gate_can_decide() {
+    fn observers_and_deciders_have_distinct_subcommands() {
         let v = rendered();
         for (ev, e) in observers(&v) {
             for h in e["hooks"].as_array().unwrap() {
@@ -405,11 +415,15 @@ mod tests {
     }
 
     #[test]
-    fn timeout_2_everywhere_and_paths_absolute() {
+    fn bounded_timeouts_and_paths_absolute() {
         let v = rendered();
         for (ev, e) in entries(&v) {
             for h in e["hooks"].as_array().unwrap() {
-                assert_eq!(h["timeout"], json!(2), "timeout on {ev}");
+                assert_eq!(
+                    h["timeout"],
+                    if h["args"][0] == "approve" { json!(50) } else { json!(2) },
+                    "timeout on {ev}"
+                );
                 assert_eq!(h["type"], json!("command"));
                 assert!(h["command"].as_str().unwrap().starts_with('/'), "hook bin abs");
             }

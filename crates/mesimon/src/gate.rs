@@ -1,4 +1,4 @@
-//! `mesimon gate` — the one deciding hook (D10, T-84).
+//! `mesimon gate` — the static deny-only deciding hook (D10, T-84).
 //!
 //! Registered as a `PreToolUse` hook on `Edit`/`Write`/`NotebookEdit` for
 //! Claude or `apply_patch` for Codex, it

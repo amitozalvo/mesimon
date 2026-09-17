@@ -573,3 +573,12 @@ label > select {
   min-width: 0;
   max-width: 240px;
 }
+
+#attention { padding: 16px; border: 1px solid currentColor; border-radius: 8px; margin: 12px 0; }
+#attention pre { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 40vh; overflow: auto; }
+#attention button { min-height: 44px; margin: 4px; }
+#attention label { display: block; }
+#attention input { display: block; width: 100%; min-height: 44px; font-size: 16px; }
+
+#awareness { padding: 8px; border-bottom: 1px solid var(--line); overflow-wrap: anywhere; }
+#awareness button { min-height: 44px; margin: 4px; white-space: normal; }

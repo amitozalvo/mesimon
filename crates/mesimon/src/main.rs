@@ -1,5 +1,6 @@
 //! mesimon — me-si-MON. The task instrument.
 
+mod approve;
 mod doctor;
 mod exec;
 mod gate;
@@ -23,6 +24,7 @@ fn main() -> Result<()> {
         // `gate` decides a PreToolUse, `mcp` is the board's tool server. Both
         // are spawned by Claude Code, never by a person.
         Some("gate") => gate::run(&args[1..]),
+        Some("approve") => approve::run(&args[1..]),
         Some("mcp") => mcp::run(&args[1..]),
         // Separate opt-in context handler: the observer remains silent and
         // the write gate remains deny-only. Native Codex owns hook trust.

@@ -205,6 +205,7 @@ struct ClientReply {
 enum Msg {
     Request(Envelope, Sender<ClientReply>, Arc<Mutex<UnixStream>>),
     Hook(HookFrame),
+    RemotePermission(HookFrame, UnixStream),
     CodexSnapshots(Vec<(uuid::Uuid, Option<crate::agents::codex::Snapshot>)>),
     /// The known-owner checks for orphaned Codex cleanup records came back
     /// (T-357): per record, its generation and whether every known native
@@ -644,7 +645,13 @@ pub fn run(paths: Paths) -> Result<()> {
             completed.insert(ordinal, frame);
             while let Some(frame) = completed.remove(&next) {
                 if let Some(frame) = frame {
-                    let _ = hook_tx.send(Msg::Hook(frame));
+                    let (frame, reply): (HookFrame, UnixStream) = frame;
+                    let message = if frame.event == "RemotePermission" {
+                        Msg::RemotePermission(frame, reply)
+                    } else {
+                        Msg::Hook(frame)
+                    };
+                    let _ = hook_tx.send(message);
                 }
                 next += 1;
             }
@@ -656,7 +663,10 @@ pub fn run(paths: Paths) -> Result<()> {
             std::thread::spawn(move || {
                 // Every reader sends completion, including malformed/timed-out
                 // frames, so a missing event cannot strand the ordered queue.
-                let frame = ingest::read_hook_frame(stream, Duration::from_millis(750));
+                let frame = stream.try_clone().ok().and_then(|reader| {
+                    ingest::read_hook_frame(reader, Duration::from_millis(750))
+                        .map(|frame| (frame, stream))
+                });
                 let _ = tx.send((ordinal as u64, frame));
             });
         }
@@ -821,11 +831,13 @@ pub fn run(paths: Paths) -> Result<()> {
         // saying what it handled — the instrument a four-minute silence
         // taught us to want (2026-09-05).
         let started = Instant::now();
+        d.control_prompt_edge(matches!(&msg, Msg::Hook(f) if f.event == "UserPromptSubmit"));
         let what: std::borrow::Cow<'static, str> = match &msg {
             Msg::Tick => "tick".into(),
             Msg::CodexSnapshots(_) => "Codex observations".into(),
             Msg::CodexOrphansChecked(_) => "Codex orphans checked".into(),
             Msg::Hook(f) => format!("hook {}", f.event).into(),
+            Msg::RemotePermission(..) => "remote permission".into(),
             Msg::Request(env, ..) => format!("request {}", env.command.wire_name()).into(),
             Msg::Provisioned(..) => "provisioned".into(),
             Msg::ShellEnvCaptured(_) => "shell env captured".into(),
@@ -851,6 +863,7 @@ pub fn run(paths: Paths) -> Result<()> {
             }
             Msg::Tick => d.on_tick(),
             Msg::Hook(frame) => d.on_hook(frame),
+            Msg::RemotePermission(frame, stream) => d.control_permission_wait(frame, stream),
             Msg::CodexSnapshots(snapshots) => d.on_codex_snapshots(snapshots),
             Msg::CodexOrphansChecked(results) => d.on_codex_orphans_checked(results),
             Msg::Provisioned(ticket, result) => d.on_provisioned(ticket, result),
@@ -2547,6 +2560,21 @@ impl Daemon {
         {
             return;
         }
+        if matches!(
+            frame.event.as_str(),
+            "UserPromptSubmit"
+                | "Stop"
+                | "StopFailure"
+                | "SessionEnd"
+                | "SessionStart"
+                | "PaneDied"
+                | "PostToolUse"
+                | "PostToolUseFailure"
+        ) && frame.payload.get("agent_id").is_none()
+        {
+            self.control_cancel_permission(id);
+        }
+        self.control_observe_dialog(id, &frame);
         let now = now_ms();
         let mut observation = self
             .board

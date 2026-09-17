@@ -15,6 +15,8 @@ import re
 from pathlib import Path
 import shlex
 import shutil
+import socket
+import threading
 import subprocess
 import sys
 import time
@@ -29,7 +31,7 @@ EVENTS = ['SessionStart', 'SessionEnd', 'UserPromptSubmit', 'PreToolUse', 'PostT
           'PostToolUseFailure', 'PermissionRequest', 'PermissionDenied', 'Stop', 'StopFailure',
           'PreCompact', 'PostCompact', 'SubagentStart', 'SubagentStop', 'TeammateIdle',
           'Elicitation', 'ElicitationResult', 'Notification']
-CASES = ['complete', 'permission-allow', 'permission-deny', 'permission-cancel',
+CASES = ['permission-hook-allow', 'permission-hook-deny', 'permission-hook-timeout', 'question-text', 'complete', 'permission-allow', 'permission-deny', 'permission-cancel',
          'interrupt-tool', 'interrupt-early', 'interrupt-stream', 'question', 'question-cancel', 'plan', 'plan-cancel', 'background-shell',
          'compact', 'auto-compact', 'cron-wakeup', 'loop-wakeup', 'monitor-wakeup',
          'clear', 'resume', 'elicitation-accept', 'elicitation-decline',
@@ -96,6 +98,14 @@ def launch(config_path, arguments):
     if config['case'] == 'teammate':
         original['hooks'].setdefault('PreToolUse', []).append({'matcher':'Agent', 'hooks':[{
             'type':'command', 'command':shlex.join([sys.executable,'-B',str(Path(__file__).resolve()),'gate-model']), 'timeout':5}]})
+    if config['case'].startswith('permission-hook-'):
+        # Exercise the generated deciding executable/argv alongside the observer.
+        # Only its socket target changes; the paired transport is tested separately.
+        for entry in original['hooks']['PermissionRequest']:
+            for hook in entry['hooks']:
+                argv = hook.get('args', [])
+                if argv and argv[0] == 'approve':
+                    argv[argv.index('--sock') + 1] = config['permission_socket']
     write(out / 'settings.json', original)
     arguments[index] = str(out / 'settings.json')
     tools = config['tools']
@@ -141,10 +151,31 @@ class Probe:
                  'cron-wakeup': 'CronCreate,CronList,CronDelete,Bash',
                  'loop-wakeup': 'ScheduleWakeup,Bash',
                  'monitor-wakeup': 'Monitor,TaskStop,Bash',
-                 'teammate': 'Agent,SendMessage,Bash,TaskOutput'}.get(args.case.removesuffix('-cancel'), 'Bash')
+                 'teammate': 'Agent,SendMessage,Bash,TaskOutput'}.get('question' if args.case == 'question-text' else args.case.removesuffix('-cancel'), 'Bash')
         if args.case in ('complete', 'interrupt-early', 'interrupt-stream', 'compact', 'clear', 'resume'):
             tools = ''
         config = dict(out=str(out), repo=str(self.repo), claude=str(args.claude_binary), model=args.model, tools=tools, case=args.case)
+        if args.case.startswith('permission-hook-'):
+            config['permission_socket'] = str(guard.root / 'approve.sock')
+            listener = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+            listener.bind(config['permission_socket'])
+            listener.listen(1)
+            listener.settimeout(args.timeout)
+            def answer_permission():
+                try:
+                    with listener, listener.accept()[0] as peer:
+                        peer.settimeout(10)
+                        with peer.makefile('rb') as source:
+                            header = json.loads(source.readline())
+                            payload = json.loads(source.readline())
+                        write(out/'decision.json', dict(header=header, payload=payload))
+                        time.sleep(48 if args.case.endswith('timeout') else 3)
+                        if not args.case.endswith('timeout'):
+                            peer.sendall(json.dumps(args.case.removeprefix('permission-hook-')).encode())
+                except (OSError, ValueError) as error:
+                    write(out/'decision-error.json', str(error))
+            threading.Thread(target=answer_permission, daemon=True).start()
+            manifest['limitation'] = 'Real generated approve hook with a lab decision socket; encrypted pairing is tested separately'
         if args.case == 'auto-compact':
             manifest['autocompact_window_tokens'] = 100000
             # Bounded generated input, never copied from a user's conversation.
@@ -324,13 +355,16 @@ class Probe:
         self.mark(observation='dialog held before response')
 
     def select(self, label):
+        self.focus_selection(label)
+        self.key('Enter')
+
+    def focus_selection(self, label):
         # Numbered menu positions change. Read and verify the visible selection.
         for _ in range(6):
             self.pump()
             if any(re.match(r'^\s*❯\s*(?:\d+\.\s*)?' + re.escape(label) + r'\s*$', line)
                    for line in self.screen.splitlines()):
                 self.mark(observation='verified selection', label=label)
-                self.key('Enter')
                 return
             self.key('Down')
             self.hold(0.35)
@@ -439,6 +473,19 @@ class Probe:
                         'fault-server': ('failed','server'), 'fault-model': ('failed','model_not_found')}[case]
             self.expect(*expected)
             self.hold(2, forbidden_review=True)
+        elif case.startswith('permission-hook-'):
+            self.send('For this temporary lab, use Bash to run printf hello > greeting.txt. If rejected, do not retry. Then reply LAB_DONE.')
+            self.wait('deciding hook entered', lambda: (self.out/'decision.json').exists())
+            self.hold(1)
+            assert not (self.repo/'greeting.txt').exists(), 'tool ran before decision'
+            self.mark(observation='tool held during deciding hook', native_dialog_visible='Do you want to proceed?' in self.screen)
+            if case == 'permission-hook-timeout':
+                self.hold(46)
+                self.attention('permission', 'Do you want to proceed?')
+                self.mark(observation='timeout left native dialog available')
+                self.key('Enter')
+            self.wait('turn ended after decision', lambda: len(self.stops()) > self.stop_count_at_submit, 35)
+            assert (self.repo/'greeting.txt').exists() == (case != 'permission-hook-deny'), 'tool execution disagrees with decision'
         elif case.startswith('permission') or case == 'interrupt-tool':
             command = 'printf ready > tool-started.txt; sleep 60' if case == 'interrupt-tool' else 'printf hello > greeting.txt'
             self.send('For this temporary lab, use Bash to run '+command+'. Run it in the foreground. If rejected, do not retry. Then reply LAB_DONE.')
@@ -493,6 +540,18 @@ class Probe:
                     or 'User declined to answer' in self.screen or "User rejected Claude's plan" in self.screen)
                 self.expect('idle','interrupted')
                 self.recover()
+            elif case == 'question-text':
+                self.focus_selection('Type something.')
+                subprocess.run([shutil.which('tmux'), '-S', str(self.runtime/'tmux.sock'),
+                    'load-buffer', '-b', 'lab-answer', '-'], input='Purple', text=True, check=True, timeout=5)
+                self.tm('paste-buffer', '-p', '-b', 'lab-answer', '-d', '-t', self.target)
+                self.hold(0.5)
+                assert re.search(r'❯\s*\d+\.\s*Purple', self.screen), 'answer text not visible in selected question row'
+                self.key('Enter')
+                self.wait('actual question answer', lambda: any(r['event'] == 'PostToolUse'
+                    and r['payload'].get('tool_name') == 'AskUserQuestion'
+                    and 'Purple' in r['payload'].get('tool_input',{}).get('answers',{}).values() for r in self.events))
+                self.wait('turn ended after answer', lambda: len(self.stops()) > self.stop_count_at_submit, 35)
             else:
                 self.key('Enter')
                 self.finish_turn()
@@ -501,8 +560,11 @@ class Probe:
             self.attention('plan', 'Would you like to proceed?')
             if case == 'plan-cancel':
                 self.key('Escape')
-                self.wait('visible cancellation', lambda: 'Interrupted' in self.screen or 'interrupted' in self.screen
-                    or 'User declined to answer' in self.screen or "User rejected Claude's plan" in self.screen)
+                self.wait('plan rejected in transcript', lambda: any(
+                    any(c.get('type') == 'tool_result' and c.get('is_error') is True
+                        and "The user doesn't want to proceed" in str(c.get('content'))
+                        for c in r.get('message',{}).get('content',[]) if isinstance(c,dict))
+                    for r in lines(self.out/'transcript.jsonl')))
                 self.expect('idle','interrupted')
                 self.recover()
             else:

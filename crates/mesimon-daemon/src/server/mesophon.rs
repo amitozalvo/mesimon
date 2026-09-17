@@ -30,9 +30,29 @@ struct Peer {
     device: DeviceId,
     channel: Channel,
     subscribed: bool,
+    foreground: Option<(String, Instant)>,
     floor: u64,
     ceiling: u64,
     high: u64,
+}
+struct DialogDelivery {
+    grant: BoardId,
+    device: DeviceId,
+    command: u64,
+    ticket: ulid::Ulid,
+    request: String,
+    response: api::DialogAnswer,
+    deadline: Instant,
+    next: Instant,
+    steps: u8,
+    pasted: bool,
+}
+struct PermissionWait {
+    projection: api::Permission,
+    stream: UnixStream,
+    deadline: Instant,
+    /// Only connections present when the prompt was offered may answer it.
+    peers: Vec<String>,
 }
 struct Invite {
     code: InviteCode,
@@ -67,6 +87,11 @@ pub(super) struct Control {
     high: HashMap<BoardId, u64>,
     receipts: HashMap<BoardId, BTreeMap<u64, Reply>>,
     pending: HashMap<uuid::Uuid, Pending>,
+    permissions: HashMap<uuid::Uuid, PermissionWait>,
+    phases: HashMap<ulid::Ulid, api::Phase>,
+    suppress_awareness: bool,
+    dialogs: HashMap<uuid::Uuid, api::Dialog>,
+    dialog_deliveries: HashMap<uuid::Uuid, DialogDelivery>,
     incarnation: ObjectId,
     origin: String,
     online: bool,
@@ -89,6 +114,11 @@ impl Control {
             high: HashMap::new(),
             receipts: HashMap::new(),
             pending: HashMap::new(),
+            permissions: HashMap::new(),
+            phases: HashMap::new(),
+            suppress_awareness: false,
+            dialogs: HashMap::new(),
+            dialog_deliveries: HashMap::new(),
             incarnation: ObjectId::random(),
             origin: String::new(),
             online: false,
@@ -290,8 +320,11 @@ impl Daemon {
     }
     pub(super) fn control_changed(&mut self) {
         self.control.dirty = true;
+        self.control_awareness();
     }
     pub(super) fn control_tick(&mut self) {
+        self.control_expire_permissions();
+        self.control_deliver_dialogs();
         if self.control.stored.is_none() {
             return;
         }
@@ -403,6 +436,7 @@ impl Daemon {
             NetEvent::Frame(Wire::Published) => {}
             NetEvent::Frame(_) => {}
         }
+        self.control_expire_permissions();
         if announce {
             self.broadcast();
         }
@@ -429,7 +463,11 @@ impl Daemon {
         self.control.high.insert(grant.id, ceiling);
         let ready = serde_json::to_value(Answer {
             id: 0,
-            reply: Reply::Ready { incarnation: self.control.incarnation.to_hex(), next },
+            reply: Reply::Ready {
+                incarnation: self.control.incarnation.to_hex(),
+                next,
+                features: vec!["permission".into(), "dialog".into(), "awareness".into()],
+            },
         })
         .unwrap_or_default();
         if let Ok((channel, welcome)) = Channel::host(
@@ -448,6 +486,7 @@ impl Daemon {
                     device,
                     channel,
                     subscribed: false,
+                    foreground: None,
                     floor: next,
                     ceiling,
                     high: next - 1,
@@ -534,6 +573,28 @@ impl Daemon {
         }
         let by = Principal::Paired { device: device.to_hex(), grant: grant.to_hex() };
         let reply = match command.request {
+            api::Request::Foreground { ticket } => {
+                if authorize(&by, &Action::Read, &Resource::Board).denied() {
+                    return self.control.answer(peer, command.id, Reply::Revoked);
+                }
+                if ticket.as_ref().is_some_and(|id| {
+                    ulid::Ulid::from_string(id).ok().and_then(|id| self.board.ticket(id)).is_none()
+                }) {
+                    Reply::Rejected { message: "ticket unavailable".into() }
+                } else {
+                    if let Some(p) = self.control.peers.get_mut(peer) {
+                        p.foreground = ticket.map(|t| (t, Instant::now()));
+                    }
+                    Reply::Delivery { status: "observed".into() }
+                }
+            }
+            api::Request::Dialog { ticket, session, request, response } => self
+                .control_dialog_answer(
+                    &by, grant, device, command.id, &ticket, &session, &request, response,
+                ),
+            api::Request::Permission { ticket, session, request, decision } => {
+                self.control_permission_answer(&by, peer, &ticket, &session, &request, decision)
+            }
             api::Request::Snapshot => {
                 if let Some(p) = self.control.peers.get_mut(peer) {
                     p.subscribed = true;
@@ -573,6 +634,418 @@ impl Daemon {
         self.control.remember(grant, command.id, reply.clone());
         self.control.answer(peer, command.id, reply);
     }
+    pub(super) fn control_observe_dialog(&mut self, id: uuid::Uuid, frame: &HookFrame) {
+        if frame.payload.get("agent_id").is_some() {
+            return;
+        }
+        if matches!(
+            frame.event.as_str(),
+            "UserPromptSubmit"
+                | "SessionStart"
+                | "SessionEnd"
+                | "PaneDied"
+                | "Stop"
+                | "StopFailure"
+                | "PostToolUse"
+                | "PostToolUseFailure"
+        ) {
+            self.control.dialogs.remove(&id);
+        }
+        if !matches!(frame.event.as_str(), "PreToolUse" | "PermissionRequest") {
+            return;
+        }
+        let Some(tool) = frame.payload["tool_name"].as_str() else { return };
+        let input = &frame.payload["tool_input"];
+        if serde_json::to_vec(input).map_or(true, |b| b.len() > 16 * 1024) {
+            return;
+        }
+        let content = match tool {
+            "AskUserQuestion" => {
+                let Ok(questions) =
+                    serde_json::from_value::<Vec<api::Question>>(input["questions"].clone())
+                else {
+                    return;
+                };
+                if questions.is_empty()
+                    || questions.len() > 4
+                    || questions.iter().any(|q| q.options.is_empty() || q.options.len() > 8)
+                {
+                    return;
+                }
+                api::DialogContent::Questions { questions }
+            }
+            "ExitPlanMode" => {
+                let Some(markdown) = input["plan"].as_str().filter(|p| !p.trim().is_empty()) else {
+                    return;
+                };
+                api::DialogContent::Plan { markdown: markdown.into() }
+            }
+            _ => return,
+        };
+        // PermissionRequest may repeat the same PreToolUse payload. Keep its
+        // identity stable while a browser is selecting that exact dialog.
+        if frame.event == "PermissionRequest"
+            && frame.payload["tool_use_id"].is_null()
+            && self.control.dialogs.get(&id).is_some_and(|d| d.content == content)
+        {
+            return;
+        }
+        let request = frame.payload["tool_use_id"]
+            .as_str()
+            .filter(|s| s.len() <= 256)
+            .map(str::to_string)
+            .unwrap_or_else(|| uuid::Uuid::new_v4().to_string());
+        if self
+            .control
+            .dialogs
+            .get(&id)
+            .is_some_and(|d| d.request == request && d.content == content)
+        {
+            return;
+        }
+        self.control.dialogs.insert(id, api::Dialog { request, content });
+        self.control_changed();
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn control_dialog_answer(
+        &mut self,
+        by: &Principal,
+        grant: BoardId,
+        device: DeviceId,
+        command: u64,
+        ticket: &str,
+        session: &str,
+        request: &str,
+        response: api::DialogAnswer,
+    ) -> Reply {
+        let Some(id) = self.control_target(ticket, session) else {
+            return Reply::Rejected { message: "session changed".into() };
+        };
+        if authorize(by, &Action::PromptExisting, &Resource::Session { id }).denied() {
+            return Reply::Revoked;
+        }
+        if self.control.dialog_deliveries.contains_key(&id)
+            || self.control.pending.contains_key(&id)
+        {
+            return Reply::Rejected { message: "input is already pending".into() };
+        }
+        let Some(dialog) = self.control.dialogs.get(&id).filter(|d| d.request == request) else {
+            return Reply::Rejected { message: "dialog changed; check the pane".into() };
+        };
+        if dialog_target(dialog, &response).is_none() {
+            return Reply::Rejected {
+                message: "this dialog shape is not verified; answer in the pane".into(),
+            };
+        }
+        let Ok(ticket) = ulid::Ulid::from_string(ticket) else {
+            return Reply::Rejected { message: "invalid ticket".into() };
+        };
+        self.control.dialog_deliveries.insert(
+            id,
+            DialogDelivery {
+                grant,
+                device,
+                command,
+                ticket,
+                request: request.into(),
+                response,
+                deadline: Instant::now() + Duration::from_secs(8),
+                next: Instant::now(),
+                steps: 0,
+                pasted: false,
+            },
+        );
+        Reply::Delivery { status: "awaiting_delivery".into() }
+    }
+
+    fn control_deliver_dialogs(&mut self) {
+        use mesimon_backend_tmux::DialogKey;
+        let ready: Vec<_> = self
+            .control
+            .dialog_deliveries
+            .iter()
+            .filter(|(_, p)| Instant::now() >= p.next)
+            .map(|(id, _)| *id)
+            .collect();
+        for id in ready {
+            let Some(mut pending) = self.control.dialog_deliveries.remove(&id) else { continue };
+            let by = Principal::Paired {
+                device: pending.device.to_hex(),
+                grant: pending.grant.to_hex(),
+            };
+            let allowed = self.control_granted(pending.grant, pending.device)
+                && !authorize(&by, &Action::PromptExisting, &Resource::Session { id }).denied()
+                && self.control_target(&pending.ticket.to_string(), &id.to_string()) == Some(id)
+                && self.board.sessions.iter().any(|s| {
+                    s.id == id
+                        && matches!(
+                            s.state,
+                            SessionState::RequiresAction {
+                                reason: mesimon_core::board::Reason::Question
+                                    | mesimon_core::board::Reason::Plan
+                            }
+                        )
+                });
+            let dialog = self.control.dialogs.get(&id).filter(|d| d.request == pending.request);
+            let screen = match self.pane_tail(id, 50) {
+                Response::PaneTail { lines } => lines.join("\n"),
+                _ => String::new(),
+            };
+            let step = if allowed && Instant::now() < pending.deadline && pending.steps < 12 {
+                dialog.and_then(|d| dialog_step(d, &pending.response, &screen, pending.pasted))
+            } else {
+                None
+            };
+            let sid = id.simple().to_string()[..16].to_string();
+            let outcome = match step {
+                Some(DialogStep::Up) => self.backend.dialog_key(&sid, DialogKey::Up).map(|_| false),
+                Some(DialogStep::Down) => {
+                    self.backend.dialog_key(&sid, DialogKey::Down).map(|_| false)
+                }
+                Some(DialogStep::Reject) => {
+                    self.backend.dialog_key(&sid, DialogKey::Escape).map(|_| true)
+                }
+                Some(DialogStep::Submit) => self.backend.send_enter(&sid).map(|_| true),
+                Some(DialogStep::Paste(text)) => self.backend.paste_input(&sid, &text).map(|_| {
+                    pending.pasted = true;
+                    false
+                }),
+                None => Err(anyhow::anyhow!("dialog outcome unknown")),
+            };
+            match outcome {
+                Ok(false) => {
+                    pending.steps += 1;
+                    pending.next = Instant::now() + Duration::from_millis(350);
+                    self.control.dialog_deliveries.insert(id, pending);
+                }
+                result => {
+                    self.control.dialogs.remove(&id);
+                    let reply = Reply::Delivery {
+                        status: if result.is_ok() { "input_sent" } else { "unknown" }.into(),
+                    };
+                    self.control.remember(pending.grant, pending.command, reply);
+                    self.feed.board(by.actor(), "mesophon_dialog_answer", Some(pending.ticket));
+                    self.control_changed();
+                }
+            }
+        }
+    }
+
+    pub(super) fn control_prompt_edge(&mut self, prompt: bool) {
+        self.control.suppress_awareness = prompt;
+    }
+    fn control_awareness(&mut self) {
+        let Some(stored) = &self.control.stored else { return };
+        let board = stored.board.to_hex();
+        let mut changes = Vec::new();
+        for ticket in self.board.tickets.iter().filter(|t| !t.is_archived()) {
+            let Some(session) = self
+                .board
+                .sessions
+                .iter()
+                .filter(|s| s.ticket == ticket.id && s.kind.is_agent())
+                .min_by_key(|s| attention::rank(&s.state))
+            else {
+                continue;
+            };
+            let phase = api::Phase::of(&session.state);
+            let previous = self.control.phases.insert(ticket.id, phase);
+            // Initial observation is a baseline, never a completion alert.
+            // A prompt send does not alter the attention state: the old terminal
+            // phase is already cached, so that edge cannot announce Done.
+            if self.control.suppress_awareness || previous.is_none() || previous == Some(phase) {
+                continue;
+            }
+            changes.push((
+                ticket.id.to_string(),
+                api::Awareness {
+                    phase,
+                    headline: format!(
+                        "{} · {}",
+                        ticket.short_key,
+                        ticket.title.chars().take(120).collect::<String>()
+                    ),
+                    detail: session.detail.clone(),
+                    deep_link: format!("#board={board}&ticket={}", ticket.id),
+                },
+            ));
+        }
+        let peers: Vec<_> = self
+            .control
+            .peers
+            .iter()
+            .filter(|(_, p)| p.subscribed)
+            .map(|(id, p)| (id.clone(), p.foreground.clone()))
+            .collect();
+        for (ticket, awareness) in changes {
+            let visible = peers.iter().any(|(_, foreground)| {
+                foreground.as_ref().is_some_and(|(id, stamp)| {
+                    id == &ticket && stamp.elapsed() < Duration::from_secs(15)
+                })
+            });
+            for (peer, _) in &peers {
+                let alert = !visible
+                    && matches!(
+                        awareness.phase,
+                        api::Phase::WaitingForApproval
+                            | api::Phase::WaitingForInput
+                            | api::Phase::Completed
+                            | api::Phase::Failed
+                    );
+                self.control.answer(
+                    peer,
+                    0,
+                    Reply::Awareness {
+                        ticket: ticket.clone(),
+                        awareness: awareness.clone(),
+                        alert,
+                    },
+                );
+            }
+        }
+    }
+
+    pub(super) fn control_permission_wait(&mut self, frame: HookFrame, stream: UnixStream) {
+        let Some(id) = self.resolve_session(&frame.session) else { return };
+        let by = Principal::Automation { rule: "permission_hook".into() };
+        if authorize(&by, &Action::Mutate, &Resource::Session { id }).denied()
+            || self.control.stored.is_none()
+            || !self.control.online
+            || self.control.permissions.contains_key(&id)
+        {
+            return;
+        }
+        let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { return };
+        if rec.kind != SessionKind::Claude
+            || self.control_target(&rec.ticket.to_string(), &id.to_string()) != Some(id)
+            || frame.payload["session_id"].as_str()
+                != Some(rec.claude_session_id.unwrap_or(rec.id).to_string().as_str())
+            || frame.payload["hook_event_name"] != "PermissionRequest"
+            || frame.payload.get("agent_id").is_some()
+        {
+            return;
+        }
+        let Some(tool) =
+            frame.payload["tool_name"].as_str().filter(|t| !t.is_empty() && t.len() <= 256)
+        else {
+            return;
+        };
+        if matches!(tool, "AskUserQuestion" | "ExitPlanMode") {
+            return;
+        }
+        let input = &frame.payload["tool_input"];
+        if !input.is_object()
+            || serde_json::to_vec(&frame.payload).map_or(true, |b| b.len() > 16 * 1024)
+        {
+            return;
+        }
+        let peers: Vec<_> = self
+            .control
+            .peers
+            .iter()
+            .filter(|(_, p)| p.subscribed && self.control_granted(p.grant, p.device))
+            .map(|(id, _)| id.clone())
+            .collect();
+        if peers.is_empty() {
+            return;
+        }
+        // Closing this stream gives the deciding process empty stdout. Never
+        // hold the writer for a phone: all waiting is state plus a deadline.
+        let _ = stream.set_nonblocking(true);
+        self.control.permissions.insert(
+            id,
+            PermissionWait {
+                projection: api::Permission {
+                    request: uuid::Uuid::new_v4().to_string(),
+                    tool: tool.into(),
+                    input: input.clone(),
+                    expires_at: now_ms() + 40_000,
+                },
+                stream,
+                deadline: Instant::now() + Duration::from_secs(40),
+                peers,
+            },
+        );
+        self.control_changed();
+    }
+
+    pub(super) fn control_cancel_permission(&mut self, id: uuid::Uuid) {
+        if self.control.permissions.remove(&id).is_some() {
+            self.control_changed();
+        }
+    }
+
+    fn control_expire_permissions(&mut self) {
+        let expired: Vec<_> = self
+            .control
+            .permissions
+            .iter()
+            .filter(|(id, p)| {
+                Instant::now() >= p.deadline
+                    || permission_peer_closed(&p.stream)
+                    || !p.peers.iter().any(|peer| {
+                        self.control
+                            .peers
+                            .get(peer)
+                            .is_some_and(|peer| self.control_granted(peer.grant, peer.device))
+                    })
+                    || !self.board.sessions.iter().any(|s| {
+                        s.id == **id
+                            && self.control_target(&s.ticket.to_string(), &s.id.to_string())
+                                == Some(**id)
+                    })
+            })
+            .map(|(id, _)| *id)
+            .collect();
+        for id in expired {
+            self.control_cancel_permission(id);
+        }
+    }
+
+    fn control_permission_answer(
+        &mut self,
+        by: &Principal,
+        peer: &str,
+        ticket: &str,
+        session: &str,
+        request: &str,
+        decision: api::PermissionDecision,
+    ) -> Reply {
+        let Some(id) = self.control_target(ticket, session) else {
+            return Reply::Rejected { message: "session changed".into() };
+        };
+        if authorize(by, &Action::ApproveExisting, &Resource::Session { id }).denied() {
+            return Reply::Revoked;
+        }
+        self.control_expire_permissions();
+        if !self
+            .control
+            .permissions
+            .get(&id)
+            .is_some_and(|p| p.projection.request == request && p.peers.iter().any(|p| p == peer))
+        {
+            return Reply::Rejected {
+                message: "permission expired or was already answered; check the pane".into(),
+            };
+        }
+        let Some(mut pending) = self.control.permissions.remove(&id) else {
+            return Reply::Rejected { message: "permission is no longer pending".into() };
+        };
+        // No second browser can answer after this point. Successful transport
+        // is not proof Claude executed the tool; report only decision delivery.
+        let sent = serde_json::to_vec(&decision)
+            .ok()
+            .is_some_and(|bytes| pending.stream.write_all(&bytes).is_ok());
+        self.feed.board(
+            by.actor(),
+            "mesophon_permission_answer",
+            ulid::Ulid::from_string(ticket).ok(),
+        );
+        self.control_changed();
+        Reply::Delivery { status: if sent { "decision_sent" } else { "unknown" }.into() }
+    }
+
     fn control_board(&self) -> Reply {
         Reply::Board {
             title: self
@@ -594,6 +1067,26 @@ impl Daemon {
                     title: t.title.clone(),
                     column: t.column.clone(),
                     agent: self.board.live_agent(t.id).map(|s| api::Agent {
+                        dialog: self
+                            .control
+                            .dialogs
+                            .get(&s.id)
+                            .filter(|_| {
+                                matches!(
+                                    s.state,
+                                    SessionState::RequiresAction {
+                                        reason: mesimon_core::board::Reason::Question
+                                            | mesimon_core::board::Reason::Plan
+                                    }
+                                )
+                            })
+                            .cloned(),
+                        permission: self
+                            .control
+                            .permissions
+                            .get(&s.id)
+                            .filter(|p| Instant::now() < p.deadline)
+                            .map(|p| p.projection.clone()),
                         session: s.id.to_string(),
                         provider: if s.kind == SessionKind::Codex { "codex" } else { "claude" }
                             .into(),
@@ -898,6 +1391,7 @@ impl Daemon {
         }
     }
     fn control_revoke_all(&mut self) {
+        self.control.permissions.clear();
         let grants: Vec<_> = self
             .control
             .stored
@@ -910,9 +1404,243 @@ impl Daemon {
     }
 }
 
+fn permission_peer_closed(stream: &UnixStream) -> bool {
+    use std::os::fd::AsRawFd;
+    let mut byte = 0u8;
+    let received = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            (&mut byte as *mut u8).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    // No more input belongs to this one-shot request. EOF is cancellation;
+    // unexpected trailing bytes or a socket error also invalidate it.
+    received >= 0
+        || !matches!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        )
+}
+
+#[derive(Debug, PartialEq, Eq)]
+enum DialogStep {
+    Up,
+    Down,
+    Submit,
+    Reject,
+    Paste(String),
+}
+
+fn dialog_target(dialog: &api::Dialog, response: &api::DialogAnswer) -> Option<String> {
+    match (&dialog.content, response) {
+        (api::DialogContent::Questions { questions }, answer)
+            if questions.len() == 1 && !questions[0].multi_select =>
+        {
+            match answer {
+                api::DialogAnswer::Choice { index } => {
+                    questions[0].options.get(*index).map(|o| o.label.clone())
+                }
+                api::DialogAnswer::Text { text }
+                    if !text.contains(['\n', '\r'])
+                        && text.len() <= 1000
+                        && mesimon_core::command::sanitize_prompt(text).as_deref()
+                            == Some(text.as_str()) =>
+                {
+                    Some("Type something.".into())
+                }
+                api::DialogAnswer::Reject => Some(String::new()),
+                _ => None,
+            }
+        }
+        (api::DialogContent::Plan { .. }, api::DialogAnswer::Accept) => {
+            Some("Yes, manually approve edits".into())
+        }
+        (api::DialogContent::Plan { .. }, api::DialogAnswer::Reject) => Some(String::new()),
+        _ => None,
+    }
+}
+
+/// Recognize only measured native menus. Missing/wrapped/ambiguous selection,
+/// multi-question and MCP forms yield no action. This does not infer success.
+fn dialog_step(
+    dialog: &api::Dialog,
+    response: &api::DialogAnswer,
+    screen: &str,
+    pasted: bool,
+) -> Option<DialogStep> {
+    let target = dialog_target(dialog, response)?;
+    let normalized = screen.split_whitespace().collect::<Vec<_>>().join(" ");
+    match &dialog.content {
+        api::DialogContent::Questions { questions } => {
+            let question = questions[0].question.split_whitespace().collect::<Vec<_>>().join(" ");
+            if question.is_empty()
+                || !normalized.contains(&question)
+                || !normalized.contains("Enter to select")
+                || !normalized.contains("Esc to cancel")
+            {
+                return None;
+            }
+        }
+        api::DialogContent::Plan { .. } => {
+            if !normalized.contains("Would you like to proceed?")
+                || !normalized.contains("Yes, manually approve edits")
+                || !normalized.contains("Tell Claude what to change")
+            {
+                return None;
+            }
+        }
+    }
+    let mut selected = None;
+    let mut options = Vec::new();
+    for line in screen.lines() {
+        let line = line.trim();
+        let (active, line) = line.strip_prefix('❯').map_or((false, line), |s| (true, s.trim()));
+        let Some((number, label)) = line.split_once(". ") else { continue };
+        let Ok(number) = number.parse::<usize>() else { continue };
+        if active {
+            if selected.is_some() {
+                return None;
+            }
+            selected = Some((number, label.trim()));
+        }
+        options.push((number, label.trim()));
+    }
+    let (current, label) = selected?;
+    if matches!(response, api::DialogAnswer::Reject) {
+        return Some(DialogStep::Reject);
+    }
+    if let api::DialogAnswer::Text { text } = response {
+        if pasted {
+            return (label == text).then_some(DialogStep::Submit);
+        }
+    }
+    let targets: Vec<_> = options.iter().filter(|(_, label)| *label == target).collect();
+    if targets.len() != 1 {
+        return None;
+    }
+    let (number, _) = targets[0];
+    if current < *number {
+        return Some(DialogStep::Down);
+    }
+    if current > *number {
+        return Some(DialogStep::Up);
+    }
+    match response {
+        api::DialogAnswer::Text { text } => Some(DialogStep::Paste(text.clone())),
+        _ => Some(DialogStep::Submit),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn question() -> api::Dialog {
+        api::Dialog {
+            request: "tool-1".into(),
+            content: api::DialogContent::Questions {
+                questions: vec![api::Question {
+                    question: "Which color?".into(),
+                    header: "Color".into(),
+                    multi_select: false,
+                    options: vec![
+                        api::QuestionOption { label: "Blue".into(), description: "".into() },
+                        api::QuestionOption { label: "Green".into(), description: "".into() },
+                    ],
+                }],
+            },
+        }
+    }
+
+    #[test]
+    fn dialog_keys_require_the_measured_shape_and_selected_label() {
+        let dialog = question();
+        let screen = "Which color?\n❯ 1. Blue\n  2. Green\n  3. Type something.\nEnter to select · Esc to cancel";
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 1 }, screen, false),
+            Some(DialogStep::Down)
+        );
+        let selected = screen.replace("❯ 1.", "  1.").replace("  2.", "❯ 2.");
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 1 }, &selected, false),
+            Some(DialogStep::Submit)
+        );
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Choice { index: 8 }, screen, false),
+            None
+        );
+        assert_eq!(dialog_step(&dialog, &api::DialogAnswer::Accept, screen, false), None);
+        for bad in [
+            "ordinary composer",
+            "Which color?\n❯ 1. Blue\nEnter to select",
+            "Which color?\n❯ 1. Blue\n❯ 2. Green\nEnter to select · Esc to cancel",
+        ] {
+            assert_eq!(
+                dialog_step(&dialog, &api::DialogAnswer::Choice { index: 0 }, bad, false),
+                None
+            );
+        }
+        let mut multiple = dialog.clone();
+        if let api::DialogContent::Questions { questions } = &mut multiple.content {
+            questions[0].multi_select = true;
+        }
+        assert_eq!(
+            dialog_step(&multiple, &api::DialogAnswer::Choice { index: 0 }, screen, false),
+            None
+        );
+    }
+
+    #[test]
+    fn question_text_is_pasted_into_the_selected_row_before_a_separate_enter() {
+        let dialog = question();
+        let answer = api::DialogAnswer::Text { text: "Purple".into() };
+        let screen = "Which color?\n  1. Blue\n  2. Green\n❯ 3. Type something.\nEnter to select · Esc to cancel";
+        assert_eq!(
+            dialog_step(&dialog, &answer, screen, false),
+            Some(DialogStep::Paste("Purple".into()))
+        );
+        assert_eq!(
+            dialog_step(&dialog, &answer, screen, true),
+            None,
+            "never Enter on an empty text row"
+        );
+        assert_eq!(
+            dialog_step(&dialog, &answer, &screen.replace("Type something.", "Purple"), true),
+            Some(DialogStep::Submit)
+        );
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Text { text: "a\nb".into() }, screen, false),
+            None
+        );
+    }
+
+    #[test]
+    fn plan_accept_never_selects_auto_accept_and_reject_requires_the_dialog() {
+        let dialog = api::Dialog {
+            request: "p".into(),
+            content: api::DialogContent::Plan { markdown: "plan".into() },
+        };
+        let screen = "Would you like to\n proceed?\n❯ 1. Yes, auto-accept edits\n  2. Yes, manually approve edits\n  3. Tell Claude what to change";
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Accept, screen, false),
+            Some(DialogStep::Down)
+        );
+        assert_eq!(
+            dialog_step(&dialog, &api::DialogAnswer::Reject, screen, false),
+            Some(DialogStep::Reject)
+        );
+        assert_eq!(dialog_step(&dialog, &api::DialogAnswer::Reject, "❯ composer", false), None);
+    }
+
+    #[test]
+    fn permission_connection_stays_duplex_until_process_cancellation() {
+        let (host, hook) = UnixStream::pair().unwrap();
+        assert!(!permission_peer_closed(&host));
+        drop(hook);
+        assert!(permission_peer_closed(&host));
+    }
+
     #[test]
     fn pairing_proof_is_device_bound_and_expires() {
         let owner = mesimon_team::crypto::DeviceKeys::generate();

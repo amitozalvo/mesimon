@@ -299,7 +299,7 @@ fn m2_attention_headless() {
         serde_json::from_str(&std::fs::read_to_string(&settings).unwrap()).unwrap();
     let n: usize =
         parsed["hooks"].as_object().unwrap().values().map(|a| a.as_array().unwrap().len()).sum();
-    assert_eq!(n, 35, "34 observer entries plus the PreToolUse gate");
+    assert_eq!(n, 36, "34 observer entries, the static gate and the paired-human decider");
     for event in ["PreCompact", "PostCompact"] {
         assert_eq!(
             parsed["hooks"][event].as_array().unwrap().len(),

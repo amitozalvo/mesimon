@@ -32,6 +32,13 @@ const ENV_ALLOWLIST: &[&str] =
 /// "bundles" whatever tmux already lives there.
 pub const BUNDLED_TMUX: &str = "mesimon-tmux";
 
+/// Bounded dialog navigation; remote clients never supply tmux key names.
+pub enum DialogKey {
+    Up,
+    Down,
+    Escape,
+}
+
 pub fn tmux_bin() -> PathBuf {
     if let Some(p) = std::env::var_os("MESIMON_TMUX_BIN") {
         return PathBuf::from(p);
@@ -361,6 +368,16 @@ impl TmuxBackend {
     /// The caller owns the timing — see `Daemon::deliver_pending_submit`.
     pub fn send_enter(&self, sid16: &str) -> Result<()> {
         self.run(&["send-keys", "-t", sid16, "Enter"])?;
+        Ok(())
+    }
+
+    pub fn dialog_key(&self, sid16: &str, key: DialogKey) -> Result<()> {
+        let key = match key {
+            DialogKey::Up => "Up",
+            DialogKey::Down => "Down",
+            DialogKey::Escape => "Escape",
+        };
+        self.run(&["send-keys", "-t", sid16, key])?;
         Ok(())
     }
 

@@ -4,6 +4,8 @@ import { Connection } from "./connection.js";
 import { BoardState } from "./board.js";
 import { Sessions } from "./sessions.js";
 import { $, View } from "./view.js";
+import { renderDialogs, clearDialogs } from "./dialogs.js";
+import { showAlert, clearAlerts } from "./awareness.js";
 
 let identity,
   storage,
@@ -28,6 +30,14 @@ function render() {
   entry = sessions.get(active.pin.board, board.current);
   view.list(board);
   view.detail(board.current, entry, live);
+  renderDialogs(board.current, entry, live, sendInteraction);
+}
+function sendInteraction(body, target) {
+  if (!live || !connection.online || !connection.features?.includes(body.op) || entry !== target || target.receipt?.waiting) return;
+  const id = connection.request(body, target.key);
+  if (id === undefined) return;
+  sessions.sent(target, id, connection.incarnation, body.op, "");
+  render();
 }
 function detail(open, push = false) {
   if (open && board && $("tickets").getClientRects().length)
@@ -56,6 +66,7 @@ function select(id) {
   render();
   $("selection").focus({ preventScroll: true });
   preview();
+  foreground();
 }
 function preview() {
   if (!document.hidden && board?.current?.agent && !connection.has("preview"))
@@ -67,6 +78,30 @@ function preview() {
       },
       entry.key,
     );
+}
+function navigateTicket(boardId, ticket) {
+  const chosen = identity?.boards.find((b) => b.pin.board === boardId && !b.revoked);
+  if (!chosen) return;
+  chosen.selected = ticket;
+  if (active?.pin.board === boardId && board?.tickets.some((t) => t.id === ticket)) select(ticket);
+  else {
+    boards.delete(boardId);
+    openBoard(chosen);
+    detail(true);
+  }
+}
+addEventListener("hashchange", () => {
+  const link = new URLSearchParams(location.hash.slice(1));
+  navigateTicket(link.get("board"), link.get("ticket"));
+});
+function visibleTicket() {
+  return !document.hidden && document.hasFocus() && board?.current &&
+    (!matchMedia("(max-width: 700px)").matches || document.body.dataset.detail === "true")
+    ? board.current.id : null;
+}
+function foreground() {
+  if (connection?.online && connection.features?.includes("awareness") && !connection.has("foreground"))
+    connection.request({ op: "foreground", ticket: visibleTicket() });
 }
 function refresh() {
   if (!connection.has("snapshot")) connection.request({ op: "snapshot" });
@@ -81,7 +116,7 @@ function receipts() {
       ![...connection.pending.values()].some(
         (p) =>
           p.context === session.key &&
-          ["prompt", "send_now", "take_back", "status"].includes(p.body.op),
+          ["prompt", "send_now", "take_back", "permission", "dialog", "status"].includes(p.body.op),
       )
     ) {
       connection.request({ op: "status", command: receipt.id }, session.key);
@@ -102,6 +137,8 @@ function openBoard(chosen) {
   board = boards.get(chosen.pin.board);
   entry = undefined;
   view.clear();
+  clearDialogs();
+  clearAlerts();
   view.boards(identity, active);
   $("sidebar").classList.remove("open");
   $("board-menu").setAttribute("aria-expanded", "false");
@@ -121,26 +158,45 @@ function openBoard(chosen) {
   render();
   connection.connect(chosen);
 }
-function onState(state, message) {
-  $("connection").textContent = message;
+async function onState(state, message) {
+  $("connection").textContent = state === "revoked" ? "Removing access…" : message;
+  let revocationSaved;
   if (state === "revoked" || state === "unverified") {
     if (active) {
       sessions.purge(active.pin.board);
       boards.delete(active.pin.board);
       if (state === "revoked") {
         active.revoked = true;
-        persist();
+        revocationSaved = save();
       }
     }
     board = entry = undefined;
     view.clear();
+    clearDialogs();
+    clearAlerts();
     showPairing();
   }
   if (["unpaired", "revoked", "unverified"].includes(state))
     $("pair").disabled = false;
   render();
+  if (revocationSaved) {
+    try {
+      await revocationSaved;
+      $("connection").textContent = message;
+    } catch {
+      $("connection").textContent = `${message} Could not save the access-removed marker.`;
+    }
+  }
 }
+
 function onReply(reply, original, id) {
+  if (original?.body.op === "foreground") return;
+  if (reply.result === "awareness") {
+    const originBoard = active?.pin.board;
+    showAlert(reply, visibleTicket(), (ticket) => navigateTicket(originBoard, ticket));
+    refresh();
+    return;
+  }
   if (reply.result === "changed") {
     refresh();
     return;
@@ -163,6 +219,7 @@ function onReply(reply, original, id) {
       $("connection").textContent = "Connected";
     render();
     preview();
+    foreground();
   } else if (reply.result === "preview" && original?.body.op === "preview") {
     const session = sessions.entries.get(original.context);
     if (session) {
@@ -174,7 +231,7 @@ function onReply(reply, original, id) {
     render();
   } else if (["delivery", "rejected", "taken_back"].includes(reply.result)) {
     const session = sessions.entries.get(original?.context);
-    const command = ["prompt", "send_now", "take_back"].includes(
+    const command = ["prompt", "send_now", "take_back", "permission", "dialog"].includes(
       original?.body.op,
     )
       ? id
@@ -209,6 +266,8 @@ $("pair-form").onsubmit = (event) => {
   active = board = entry = undefined;
   live = false;
   view.clear();
+  clearDialogs();
+  clearAlerts();
   $("pair").disabled = true;
   connection.connect(undefined, code);
 };
@@ -396,6 +455,8 @@ $("forget").onclick = async () => {
   boards.clear();
   active = board = entry = returnBoard = undefined;
   view.clear();
+  clearDialogs();
+  clearAlerts();
   const crypto = new Browser();
   identity = { seed: crypto.seed(), boards: [] };
   crypto.free();
@@ -435,7 +496,19 @@ function viewport() {
 window.visualViewport?.addEventListener("resize", viewport);
 addEventListener("resize", viewport);
 viewport();
+for (const event of ["focus", "blur"]) addEventListener(event, foreground);
+$("alerts").onclick = async () => {
+  if (typeof Notification === "undefined") {
+    $("alert-status").textContent = "Updates appear here while connected. System notifications are unavailable in this browser.";
+    return;
+  }
+  const permission = await Notification.requestPermission();
+  $("alert-status").textContent = permission === "granted"
+    ? "Alerts enabled while this browser stays connected."
+    : "Updates appear here while connected. System notifications are disabled in browser settings.";
+};
 document.addEventListener("visibilitychange", () => {
+  foreground();
   if (!document.hidden && connection) {
     live = false;
     render();
@@ -449,6 +522,7 @@ document.addEventListener("visibilitychange", () => {
 setInterval(() => {
   if (!connection) return;
   connection.tick();
+  foreground();
   if (!document.hidden && connection.online) {
     refresh();
     preview();
@@ -491,10 +565,13 @@ try {
     },
   });
   $("pair").disabled = false;
-  const remembered =
+  const link = new URLSearchParams(location.hash.slice(1));
+  const linked = identity.boards.find((b) => b.pin.board === link.get("board") && !b.revoked);
+  if (linked && link.get("ticket")) linked.selected = link.get("ticket");
+  const remembered = linked ||
     identity.boards.find((b) => b.pin.board === identity.lastBoard) ||
     identity.boards[0];
-  if (remembered) openBoard(remembered);
+  if (remembered) { openBoard(remembered); if (linked) detail(true); }
   else
     $("connection").textContent =
       "Enable Remote Control on the host, then pair with its code.";

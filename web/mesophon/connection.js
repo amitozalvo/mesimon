@@ -21,6 +21,7 @@ export class Connection {
     clearTimeout(this.retry);
     clearTimeout(this.deadline);
     this.online = false;
+    this.features = [];
     this.socket?.close();
     this.pending.clear();
     this.crypto?.free();
@@ -119,6 +120,7 @@ export class Connection {
               code = undefined;
             }
             clearTimeout(this.deadline);
+            this.features = Array.isArray(ready.features) ? ready.features : [];
             this.incarnation = ready.incarnation;
             this.next = ready.next;
             this.online = true;
