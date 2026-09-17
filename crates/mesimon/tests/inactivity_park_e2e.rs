@@ -79,17 +79,24 @@ fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversatio
         SessionState::Idle { stop_reason: StopReason::EndTurn }
     ));
 
-    let (background, _) = start(&h, &mut c, "background");
-    hook(&h, background, "UserPromptSubmit", "{}");
-    hook(
-        &h,
-        background,
-        "Stop",
-        r#"{"stop_hook_active":false,"background_tasks":[{"task_id":"build","type":"shell","status":"running"}]}"#,
-    );
-    c.await_state(background, "background", |s| {
-        *s == SessionState::Idle { stop_reason: StopReason::Background }
-    });
+    let mut background_sessions = Vec::new();
+    for (kind, reason) in [("subagent", StopReason::Background), ("shell", StopReason::Monitoring)]
+    {
+        let (id, _) = start(&h, &mut c, kind);
+        hook(&h, id, "UserPromptSubmit", "{}");
+        hook(
+            &h,
+            id,
+            "Stop",
+            &serde_json::json!({
+                "stop_hook_active": false,
+                "background_tasks": [{"id": "task", "type": kind, "status": "running"}]
+            })
+            .to_string(),
+        );
+        c.await_state(id, kind, |s| *s == SessionState::Idle { stop_reason: reason });
+        background_sessions.push(id);
+    }
     let (attention, _) = start(&h, &mut c, "attention");
     hook(
         &h,
@@ -124,7 +131,7 @@ fn inactivity_parks_only_finished_resumable_turns_and_wakes_the_same_conversatio
     ));
     c.await_state(idle, "automatically sleeping", |s| *s == SessionState::Sleeping);
     let board = c.board();
-    for id in [background, attention, missing, unknown] {
+    for id in background_sessions.into_iter().chain([attention, missing, unknown]) {
         assert!(
             board.sessions.iter().find(|s| s.id == id).unwrap().state.has_pane(),
             "unsafe park: {id}"

@@ -2299,6 +2299,7 @@ mod tests {
             SessionState::Throttled,
             SessionState::unknown(),
             SessionState::Idle { stop_reason: StopReason::Background },
+            SessionState::Idle { stop_reason: StopReason::Monitoring },
             SessionState::Idle { stop_reason: StopReason::Interrupted },
             SessionState::Idle { stop_reason: StopReason::Unknown },
         ] {

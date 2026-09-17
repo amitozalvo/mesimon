@@ -11074,3 +11074,10 @@ TaskCompleted are todo-list hooks, not background lifecycle evidence, and are
 not subscribed here. Regression coverage spans the pure registry, attention
 settling and waits, card words/glyph precedence, automove/quiet gates, replay
 scenarios, and daemon restart with a nested agent in flight.
+
+### T-389 integration with inactivity parking
+
+Both background agent work and monitor-only work remain ineligible for T-391's
+automatic inactivity parking: only a confirmed `EndTurn` starts that timer.
+The combined regression now exercises both states through the real daemon and
+checks that their panes survive while a finished conversation is parked.
