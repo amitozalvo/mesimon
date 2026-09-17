@@ -11105,3 +11105,28 @@ queue. The originating paired-device grant is rechecked before delivery;
 revocation cancels its waiting words and receipt. Sends retain bracketed paste
 and separate Enter, including Codex's existing readiness checks; prompt text
 never becomes argv. No delivery at the next tool call was adopted.
+
+## T-398 — interrupted Codex compaction releases its work hold (2026-09-17)
+
+The Codex observer treated every started item as independent work requiring an
+item completion. A `contextCompaction` start followed by an interrupted turn
+with no completed item therefore held the card Running indefinitely and blocked
+the runtime's idle audit. The new regression reproduced that state before the fix.
+
+Pending compactions now retain their owning turn identity. An interrupted or
+failed terminal turn retires only that turn's compactions, including those in
+observed descendants. Tools, hooks, requests, active flags, descendant audits and
+transport mutation audits retain their existing holds. Interruption settles to
+Idle/Interrupted, never successful ticket completion. Normal manual maintenance
+and automatic compaction completion semantics remain unchanged.
+
+This matches Codex 0.153.4's [remote compaction implementation](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/core/src/compact_remote.rs),
+which emits item completion only after the compact operation succeeds, and its
+[task cancellation](https://github.com/openai/codex/blob/rust-v0.153.4/codex-rs/core/src/tasks/mod.rs),
+which aborts the task before reporting its terminal interruption.
+
+Regression coverage includes manual and in-task compaction, wrong turn identity,
+duplicate terminal events, the next task, preserved independent work, child
+compaction, and the native interrupt response/idle-audit path. Verification uses
+synthetic protocol events; live Codex interruption and Claude Code compaction
+interruption were not exercised, and Claude's adapter is unchanged.

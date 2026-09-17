@@ -1596,6 +1596,50 @@ mod tests {
     }
 
     #[test]
+    fn interrupted_native_compaction_releases_after_the_interrupt_audit() {
+        use mesimon_core::board::StopReason;
+        let mut observer = selected();
+        observer
+            .outgoing(&json!({"id":2,"method":"thread/compact/start",
+            "params":{"threadId":"main"}}))
+            .unwrap();
+        observer.incoming(&config(), json!({"id":2,"result":{}})).unwrap();
+        event(&mut observer, "main", "turn/started", json!({"turn":{"id":"compact"}}));
+        event(
+            &mut observer,
+            "main",
+            "item/started",
+            json!({"turnId":"compact",
+            "item":{"id":"compact-item","type":"contextCompaction"}}),
+        );
+        observer
+            .outgoing(&json!({"id":3,"method":"turn/interrupt",
+            "params":{"threadId":"main","turnId":"compact"}}))
+            .unwrap();
+        observer.incoming(&config(), json!({"id":3,"result":{}})).unwrap();
+        // Cancellation does not send item/completed for contextCompaction.
+        event(
+            &mut observer,
+            "main",
+            "turn/completed",
+            json!({"turn":{"id":"compact","status":"interrupted","items":[]}}),
+        );
+        event(&mut observer, "main", "thread/status/changed", json!({"status":{"type":"idle"}}));
+        assert!(observer.snapshot.observation_hold, "interrupt still requires the transport audit");
+        assert!(observer.apply_audit(&config(), idle_audit(&observer, &["main"])));
+        observer.advance_evidence();
+        assert_eq!(
+            observer.snapshot.state,
+            SessionState::Idle { stop_reason: StopReason::Interrupted }
+        );
+        assert!(!observer.snapshot.observation_hold);
+        assert!(
+            observer.published_completions.is_empty(),
+            "interruption cannot complete the ticket"
+        );
+    }
+
+    #[test]
     fn native_compact_maintenance_never_publishes_a_ticket_completion() {
         use mesimon_core::board::StopReason;
         let mut observer = selected();

@@ -15,6 +15,35 @@ use serde_json::Value;
 const MAX_IDENTITIES: usize = 1024;
 const MAX_PREVIEW_CHARS: usize = 32_768;
 
+#[derive(Debug)]
+enum PendingItem {
+    Independent,
+    Compaction { turn_id: Option<String> },
+}
+
+impl PendingItem {
+    fn new(kind: &str, turn_id: Option<&str>) -> Self {
+        if kind == "contextCompaction" {
+            Self::Compaction { turn_id: turn_id.map(str::to_owned) }
+        } else {
+            Self::Independent
+        }
+    }
+}
+
+fn retire_cancelled_compaction(items: &mut BTreeMap<String, PendingItem>, turn: &Value) {
+    if !matches!(outcome(turn), Some(TurnOutcome::Interrupted | TurnOutcome::Failed(_))) {
+        return;
+    }
+    let Some(id) = string(turn, "id") else { return };
+    // Codex cancels the turn's compaction future without item/completed.
+    // Unlike tools, hooks, requests and descendants, that work cannot outlive
+    // its terminal turn. Require its identity; an idle snapshot is not proof.
+    items.retain(|_, item| {
+        !matches!(item, PendingItem::Compaction { turn_id: Some(turn_id) } if turn_id == id)
+    });
+}
+
 /// Normalized work captured before or after a parent identifies a descendant.
 /// Never retain raw frames or model text, and never interpret child completion
 /// as proof that its approvals, tools or hook continuations have stopped.
@@ -23,7 +52,7 @@ struct ChildWork {
     known: bool,
     requests: BTreeMap<String, Reason>,
     work_requests: BTreeSet<String>,
-    items: BTreeSet<String>,
+    items: BTreeMap<String, PendingItem>,
     hooks: BTreeSet<String>,
     descendants: BTreeSet<String>,
     flags: Vec<Reason>,
@@ -58,13 +87,13 @@ impl ChildWork {
             + self.descendants.len()
     }
 
-    fn item(&mut self, item: &Value, completed: bool) {
+    fn item(&mut self, item: &Value, completed: bool, turn_id: Option<&str>) {
         let (Some(id), Some(kind)) = (string(item, "id"), string(item, "type")) else { return };
         if !matches!(kind, "agentMessage" | "plan" | "userMessage" | "reasoning" | "hookPrompt") {
             if item_terminal(item, completed) {
                 self.items.remove(id);
             } else {
-                self.items.insert(id.into());
+                self.items.insert(id.into(), PendingItem::new(kind, turn_id));
             }
         }
         if kind == "collabAgentToolCall" {
@@ -89,12 +118,13 @@ impl ChildWork {
                 // alone never resolves independently outstanding local work.
                 if let Some(items) = params["turn"]["items"].as_array() {
                     for item in items {
-                        self.item(item, true);
+                        self.item(item, true, string(&params["turn"], "id"));
                     }
                 }
+                retire_cancelled_compaction(&mut self.items, &params["turn"]);
             }
             "item/started" | "item/completed" => {
-                self.item(&params["item"], method == "item/completed")
+                self.item(&params["item"], method == "item/completed", string(params, "turnId"))
             }
             "serverRequest/resolved" => {
                 if let Some(id) = request_id(&params["requestId"]) {
@@ -185,7 +215,7 @@ pub struct Ledger {
     retired_turns: BTreeSet<String>,
     requests: BTreeMap<String, Reason>,
     work_requests: BTreeSet<String>,
-    items: BTreeSet<String>,
+    items: BTreeMap<String, PendingItem>,
     hooks: BTreeSet<String>,
     children: BTreeSet<String>,
     child_work: BTreeMap<String, ChildWork>,
@@ -212,7 +242,7 @@ impl Ledger {
             retired_turns: BTreeSet::new(),
             requests: BTreeMap::new(),
             work_requests: BTreeSet::new(),
-            items: BTreeSet::new(),
+            items: BTreeMap::new(),
             hooks: BTreeSet::new(),
             children: BTreeSet::new(),
             child_work: BTreeMap::new(),
@@ -599,6 +629,7 @@ impl Ledger {
                             self.observe_item(item, true, &mut update);
                         }
                     }
+                    retire_cancelled_compaction(&mut self.items, turn);
                     self.terminal = Some(result);
                     self.runtime_active = false;
                 }
@@ -731,7 +762,8 @@ impl Ledger {
                 if terminal {
                     self.items.remove(id);
                 } else {
-                    self.items.insert(id.into());
+                    self.items
+                        .insert(id.into(), PendingItem::new(kind, self.active_turn.as_deref()));
                 }
                 update.activity = Some(kind.chars().take(80).collect());
             }
@@ -1555,6 +1587,162 @@ mod tests {
                 SessionState::Idle { stop_reason: StopReason::EndTurn }
             );
         }
+    }
+
+    #[test]
+    fn interrupted_compaction_without_item_completion_settles_the_matching_turn() {
+        for automatic in [false, true] {
+            let mut ledger = ready();
+            start(&mut ledger, "compact");
+            if automatic {
+                ledger.observe(
+                    7,
+                    &frame(
+                        "item/completed",
+                        json!({"turnId":"compact",
+                    "item":{"type":"userMessage","id":"user"}}),
+                    ),
+                );
+            }
+            ledger.observe(
+                7,
+                &frame(
+                    "item/started",
+                    json!({"turnId":"compact",
+                "item":{"type":"contextCompaction","id":"compact-item"}}),
+                ),
+            );
+            assert!(complete(&mut ledger, "other", "interrupted").observation_hold);
+            let done = complete(&mut ledger, "compact", "interrupted");
+            assert_eq!(done.state, SessionState::Idle { stop_reason: StopReason::Interrupted });
+            assert_eq!(done.signals, vec![Signal::TurnEnded { outcome: TurnOutcome::Interrupted }]);
+            assert!(!done.observation_hold);
+            assert!(ledger.can_reconcile_work());
+            assert!(complete(&mut ledger, "compact", "interrupted").signals.is_empty());
+            start(&mut ledger, "next-task");
+            assert_eq!(
+                complete(&mut ledger, "next-task", "completed").signals,
+                vec![Signal::TurnEnded { outcome: TurnOutcome::Completed }]
+            );
+        }
+    }
+
+    #[test]
+    fn cancelled_compaction_preserves_independent_work_on_parent_and_child() {
+        for child in [false, true] {
+            for status in ["interrupted", "failed"] {
+                let mut ledger = ready();
+                start(&mut ledger, "turn-1");
+                if child {
+                    discover_child(&mut ledger);
+                }
+                let scoped = if child { child_frame } else { frame };
+                for (id, kind) in [("compact", "contextCompaction"), ("tool", "commandExecution")] {
+                    ledger.observe(
+                        7,
+                        &scoped(
+                            "item/started",
+                            json!({"turnId":"turn-1",
+                        "item":{"id":id,"type":kind}}),
+                        ),
+                    );
+                }
+                ledger.observe(7, &scoped("hook/started", json!({"run":{"id":"hook"}})));
+                let mut approval =
+                    scoped("item/commandExecution/requestApproval", json!({"turnId":"turn-1"}));
+                approval["id"] = json!(1);
+                ledger.observe(7, &approval);
+                let mut callback = scoped("unknown/callback", json!({"turnId":"turn-1"}));
+                callback["id"] = json!(2);
+                ledger.observe(7, &callback);
+                let terminal = scoped(
+                    "turn/completed",
+                    json!({"turn":{
+                    "id":"turn-1","status":status,"items":[]}}),
+                );
+                assert!(ledger.observe(7, &terminal).observation_hold);
+                assert!(!ledger.can_reconcile_work());
+                ledger.observe(7, &scoped("serverRequest/resolved", json!({"requestId":1})));
+                assert!(!ledger.can_reconcile_work(), "callback, tool and hook remain");
+                ledger.observe(7, &scoped("serverRequest/resolved", json!({"requestId":2})));
+                assert!(!ledger.can_reconcile_work(), "tool and hook remain");
+                ledger.observe(
+                    7,
+                    &scoped(
+                        "item/completed",
+                        json!({"turnId":"turn-1",
+                    "item":{"id":"tool","type":"commandExecution","status":"completed"}}),
+                    ),
+                );
+                assert!(!ledger.can_reconcile_work(), "hook remains");
+                let drained = ledger.observe(
+                    7,
+                    &scoped(
+                        "hook/completed",
+                        json!({
+                    "run":{"id":"hook","status":"completed"}}),
+                    ),
+                );
+                assert!(
+                    ledger.can_reconcile_work(),
+                    "cancelled compaction must no longer block audit"
+                );
+                if child {
+                    assert!(drained.observation_hold, "child still needs independent audit");
+                    assert_eq!(drained.state, SessionState::Running, "child cannot end the parent");
+                    complete(&mut ledger, "turn-1", "interrupted");
+                }
+                let audited = ledger.reconcile_work(7, &snapshot(json!({"type":"idle"})));
+                assert!(!audited.observation_hold);
+                assert_eq!(
+                    audited.state,
+                    if child || status == "interrupted" {
+                        SessionState::Idle { stop_reason: StopReason::Interrupted }
+                    } else {
+                        SessionState::Failed { reason: FailReason::Unknown }
+                    }
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn child_compaction_requires_its_own_terminal_turn() {
+        let mut ledger = ready();
+        start(&mut ledger, "turn-1");
+        discover_child(&mut ledger);
+        ledger.observe(
+            7,
+            &child_frame(
+                "item/started",
+                json!({"turnId":"child-turn",
+            "item":{"id":"compact","type":"contextCompaction"}}),
+            ),
+        );
+        complete(&mut ledger, "turn-1", "interrupted");
+        for status in ["interrupted", "failed", "completed"] {
+            ledger.observe(
+                7,
+                &child_frame(
+                    "turn/completed",
+                    json!({"turn":{
+                "id":"wrong-turn","status":status,"items":[]}}),
+                ),
+            );
+            assert!(!ledger.can_reconcile_work());
+        }
+        ledger.observe(7, &child_frame("thread/status/changed", json!({"status":{"type":"idle"}})));
+        assert!(!ledger.can_reconcile_work(), "idle alone cannot retire compaction");
+        ledger.observe(
+            7,
+            &child_frame(
+                "turn/completed",
+                json!({"turn":{
+            "id":"child-turn","status":"interrupted","items":[]}}),
+            ),
+        );
+        assert!(ledger.can_reconcile_work());
+        assert!(!ledger.reconcile_work(7, &snapshot(json!({"type":"idle"}))).observation_hold);
     }
 
     #[test]
