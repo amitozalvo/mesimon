@@ -28,6 +28,16 @@ fn regular_file(path: &Path) -> std::io::Result<std::fs::File> {
     Ok(file)
 }
 
+/// `read_bounded`, except that a file which is not there answers `None`
+/// rather than refusing. Every other failure is still a refusal: an
+/// unreadable artefact is lost evidence, and lost evidence never means done.
+fn read_bounded_optional(path: &Path) -> Result<Option<Vec<u8>>, String> {
+    match regular_file(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        _ => read_bounded(path).map(Some),
+    }
+}
+
 fn read_bounded(path: &Path) -> Result<Vec<u8>, String> {
     let mut bytes = Vec::new();
     regular_file(path)
@@ -49,24 +59,53 @@ fn evidence(
     let snapshot: Snapshot =
         serde_json::from_slice(&read_bounded(&super::snapshot_path(paths, record.id))?)
             .map_err(|_| "Invalid Codex recovery snapshot")?;
-    validate_evidence(paths, record, &config, &snapshot)?;
+    validate_evidence(paths, record, &config, Some(&snapshot))?;
     Ok((config_path, config, snapshot))
+}
+
+/// The same evidence, minus a snapshot that is simply GONE (T-405). The
+/// snapshot, the two endpoints and their `.app-server.log` all live in the
+/// runtime dir under `/tmp`, which a reboot or a tmp sweep empties wholesale.
+/// Its absence therefore proves MORE absence, not less: nothing can listen on
+/// a socket that is not there. What the ownership rung actually needs is the
+/// config — validated against the record, as always, which is what makes its
+/// endpoint paths this session's — and every other rung below still runs.
+/// A snapshot that is present is still read and still must match; only
+/// `NotFound` is forgiven, because only `NotFound` is evidence. The callers
+/// that consume the snapshot's CONTENT (`recovery_launch_target`,
+/// `retain_unverified_cleanup`) keep asking for the whole of it.
+fn ownership_evidence(
+    paths: &Paths,
+    record: &SessionRecord,
+) -> Result<(PathBuf, RuntimeConfig), String> {
+    let config_path = paths.hooks_dir().join(format!("{}.codex.json", record.id));
+    let config: RuntimeConfig = serde_json::from_slice(&read_bounded(&config_path)?)
+        .map_err(|_| "Invalid Codex recovery configuration")?;
+    let snapshot: Option<Snapshot> =
+        match read_bounded_optional(&super::snapshot_path(paths, record.id))? {
+            Some(bytes) => Some(
+                serde_json::from_slice(&bytes).map_err(|_| "Invalid Codex recovery snapshot")?,
+            ),
+            None => None,
+        };
+    validate_evidence(paths, record, &config, snapshot.as_ref())?;
+    Ok((config_path, config))
 }
 
 fn validate_evidence(
     paths: &Paths,
     record: &SessionRecord,
     config: &RuntimeConfig,
-    snapshot: &Snapshot,
+    snapshot: Option<&Snapshot>,
 ) -> Result<(), String> {
     let generation = record.codex_generation.ok_or("Codex recovery has no recorded generation")?;
     let stem = format!("cdx-{}-{:08x}", &record.id.simple().to_string()[..16], generation as u32);
     if record.kind != SessionKind::Codex
         || generation == 0
         || config.session != record.id
-        || snapshot.session != record.id
+        || snapshot.is_some_and(|s| s.session != record.id)
         || config.generation != generation
-        || snapshot.generation != generation
+        || snapshot.is_some_and(|s| s.generation != generation)
         || config.snapshot_path != super::snapshot_path(paths, record.id)
         || config.preview_path != super::preview_path(paths, record.id)
         || config.upstream_socket != paths.rt_dir.join(format!("{stem}-up.sock"))
@@ -263,7 +302,7 @@ fn owners_absent(
 /// modify the snapshot. Only an explicitly authorized caller may acknowledge
 /// that separate uncertainty after this known-owner check succeeds.
 pub fn recovery_owner_absent(paths: &Paths, record: &SessionRecord) -> Result<(), String> {
-    let (config_path, config, _) = evidence(paths, record)?;
+    let (config_path, config) = ownership_evidence(paths, record)?;
     let endpoints = [&config.proxy_socket, &config.upstream_socket];
     for endpoint in endpoints {
         recovery_endpoint_absent(endpoint)?;
@@ -278,7 +317,7 @@ pub fn recovery_owner_absent(paths: &Paths, record: &SessionRecord) -> Result<()
         recovery_endpoint_absent(endpoint)?;
     }
     // A concurrent replacement must not inherit the older check's result.
-    evidence(paths, record)?;
+    ownership_evidence(paths, record)?;
     Ok(())
 }
 
@@ -352,7 +391,7 @@ pub fn restore_unverified_cleanup(
         serde_json::from_value(value["config"].clone()).map_err(|e| e.to_string())?;
     let snapshot: Snapshot =
         serde_json::from_value(value["snapshot"].clone()).map_err(|e| e.to_string())?;
-    validate_evidence(paths, record, &config, &snapshot)?;
+    validate_evidence(paths, record, &config, Some(&snapshot))?;
     let config_path = paths.hooks_dir().join(format!("{}.codex.json", record.id));
     let prepared: RuntimeConfig =
         serde_json::from_slice(&read_bounded(&config_path)?).map_err(|e| e.to_string())?;
@@ -360,12 +399,12 @@ pub fn restore_unverified_cleanup(
     expected_record.codex_generation = Some(prepared_generation);
     let mut expected_snapshot = snapshot.clone();
     expected_snapshot.generation = prepared_generation;
-    validate_evidence(paths, &expected_record, &prepared, &expected_snapshot)?;
+    validate_evidence(paths, &expected_record, &prepared, Some(&expected_snapshot))?;
     // A child that actually started despite a reported spawn error is not a
     // failed preparation to roll back. Leave all evidence held for inspection.
     let current_snapshot: Snapshot =
         serde_json::from_slice(&read_bounded(&config.snapshot_path)?).map_err(|e| e.to_string())?;
-    validate_evidence(paths, record, &config, &current_snapshot)?;
+    validate_evidence(paths, record, &config, Some(&current_snapshot))?;
     super::write_json(&config_path, &config).map_err(|e| e.to_string())
 }
 
@@ -499,24 +538,43 @@ mod tests {
     #[test]
     fn recovery_requires_exact_original_generation_and_both_owned_endpoints() {
         let (paths, mut record, config, snapshot) = fixture_records(Path::new("/owned"));
-        assert!(validate_evidence(&paths, &record, &config, &snapshot).is_ok());
+        assert!(validate_evidence(&paths, &record, &config, Some(&snapshot)).is_ok());
         let mut bad = config.clone();
         bad.generation = 6;
-        assert!(validate_evidence(&paths, &record, &bad, &snapshot).is_err());
+        assert!(validate_evidence(&paths, &record, &bad, Some(&snapshot)).is_err());
         let mut bad = config.clone();
         bad.upstream_socket = "/elsewhere/up.sock".into();
-        assert!(validate_evidence(&paths, &record, &bad, &snapshot).is_err());
+        assert!(validate_evidence(&paths, &record, &bad, Some(&snapshot)).is_err());
         let mut bad = config.clone();
         bad.proxy_socket = "/elsewhere/ui.sock".into();
-        assert!(validate_evidence(&paths, &record, &bad, &snapshot).is_err());
+        assert!(validate_evidence(&paths, &record, &bad, Some(&snapshot)).is_err());
         let mut bad = snapshot.clone();
         bad.session = uuid::Uuid::new_v4();
-        assert!(validate_evidence(&paths, &record, &config, &bad).is_err());
+        assert!(validate_evidence(&paths, &record, &config, Some(&bad)).is_err());
         let mut bad = snapshot.clone();
         bad.generation = 6;
-        assert!(validate_evidence(&paths, &record, &config, &bad).is_err());
+        assert!(validate_evidence(&paths, &record, &config, Some(&bad)).is_err());
         record.codex_generation = None;
-        assert!(validate_evidence(&paths, &record, &config, &snapshot).is_err());
+        assert!(validate_evidence(&paths, &record, &config, Some(&snapshot)).is_err());
+    }
+
+    /// T-405: a runtime dir emptied by a reboot or a tmp sweep takes the
+    /// snapshot with it. The config still says which endpoints are this
+    /// session's, and every other rung still runs, so a MISSING snapshot is
+    /// forgiven where a wrong one is not — and the record's own generation
+    /// is still what the config must match.
+    #[test]
+    fn a_missing_snapshot_is_forgiven_where_a_wrong_one_is_not() {
+        let (paths, mut record, config, snapshot) = fixture_records(Path::new("/owned"));
+        assert!(validate_evidence(&paths, &record, &config, None).is_ok());
+        let mut wrong = snapshot.clone();
+        wrong.generation = 6;
+        assert!(validate_evidence(&paths, &record, &config, Some(&wrong)).is_err());
+        let mut bad = config.clone();
+        bad.generation = 6;
+        assert!(validate_evidence(&paths, &record, &bad, None).is_err());
+        record.codex_generation = None;
+        assert!(validate_evidence(&paths, &record, &config, None).is_err());
     }
     #[test]
     fn endpoint_probe_refuses_live_listener_and_accepts_stale_socket() {

@@ -11573,6 +11573,22 @@ lost one line — it asserted `codex_stopping` was still set moments after the c
 sweep may now have cleared; what the rule is about (the generation, the single launch) is
 asserted beside it and stands.
 
+**And the evidence had to survive `/tmp`.** Bounced onto the fix, the sweep reached all seven
+records on the dogfood board and refused every one: `codex orphan kept: … Cannot inspect Codex
+recovery evidence: No such file or directory`. `recovery_owner_absent` asked for the whole of
+`evidence()` — the runtime CONFIG (under the state dir, still there) and the runtime SNAPSHOT
+(under `rt_dir` in `/tmp`, long since swept with the rest of that directory). But the two
+endpoints the check probes live in that same wiped directory, so its emptiness proves MORE
+absence, not less: nothing can listen on a socket that is not there. So `ownership_evidence`
+forgives a snapshot that is `NotFound` and nothing else — a snapshot that is present is still
+read and must still match, an unreadable one is still lost evidence — while the config is
+validated against the record exactly as before, which is what makes those endpoint paths this
+session's. `recovery_launch_target` and `retain_unverified_cleanup` consume the snapshot's
+CONTENT and still demand all of it. `validate_evidence` took `Option<&Snapshot>` for the two
+clauses that read it, with `a_missing_snapshot_is_forgiven_where_a_wrong_one_is_not` as the law.
+This was a hole under T-357's own sweep too: an ORPHAN whose `/tmp` had been cleared could not
+be released either.
+
 **Not done.** `queue_order` walks `column_tickets`, so a column the TUI is SORTING BY TAG (T-283)
 drains in an order that does not match what the eye reads — the card that looks first can be
 eighth in the queue. T-263's promise ("sort the cards to sort the queue") is only true on an
