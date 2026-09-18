@@ -11377,3 +11377,38 @@ passed on reruns with lower concurrency; no lifecycle assertions were changed.
 Workspace Clippy with warnings denied, formatting, and whitespace checks passed.
 The two new rendering goldens were inspected. Native desktop clipboard gestures
 were not manually exercised from the managed agent pane.
+
+## T-403 — a background park is a clock, not a latch (2026-09-18)
+
+`Idle{Background}` is drawn as a spinner and the word "working", and `quiet::is_working`
+counts it, because a parked lead's turn resumes on its own. Nothing made it leave except a
+stated frame. On the simbly board T-73 a session finished its last turn at 19:44 and still
+spelled "working" hours later.
+
+The evidence is in the state-decision feed for that session: eight teammates were spawned
+(four at 18:49, four at 18:57), Claude Code lists a teammate `running` for its whole life,
+and only four idle notices were ever outstanding. `Stop { teammates: 8 }` against
+`idle_teammates.len() == 4` parks — correctly, by T-135's rule — and the four that never
+reported again (the session hit repeated rate limits; its pane title read "Fable limit
+reached") meant the count could never catch up. Nothing after the Stop touched the machine:
+one `Notification` at 19:45, then silence.
+
+T-135 fixed the count. It could not fix the absence of a frame, and no accounting can: a
+teammate that dies on a usage limit reports nothing, and an idle notice that is lost is
+indistinguishable from one never sent. So the park gets the treatment `RequiresAction`
+already has — it may not latch. `PARK_STALE_MS` (10 min) runs from `Machine::background_at`,
+re-armed by the frames that PROVE background work alive: `SubagentStop`, `TeammateIdle`,
+`TeammateMessaged`, a nested `ToolCompleted`, a nested `Stop`, and `BackgroundChanged` with
+any liveness. Those are exactly the signals `target` answers `None` to, which is why the
+clock has to read them itself.
+
+The demote lands on `Idle{EndTurn}` at Medium: the `Stop` that made the park stated that the
+lead's turn ended, and only the background half of it was ever inference, so only the
+confidence drops. Medium is what `automove` asks for, deliberately — the finished ticket
+reaches REVIEW the way a clean Stop would have taken it there — and any later frame promotes
+straight back to `Running`. `Idle{Monitoring}` has no clock: a watch is meant to be silent,
+and it already spells itself "monitoring" and counts as quiet.
+
+Validation: `cargo ut` (1,514) and the full macOS nextest suite (1,607) passed, clippy clean.
+Three new unit tests carry the rule — the eight-teammate park timing out, five nine-minute
+spells held open by each proving frame in turn, and the monitoring park left alone.

@@ -22,6 +22,17 @@ pub const THROTTLE_LEAVE_MS: u64 = 5000;
 /// dialog the transcript still shows open is a wait that has not lost its
 /// clearing event (T-363).
 pub const STALE_DEMOTE_MS: u64 = 15 * 60 * 1000;
+/// A background park is a CLOCK, not a latch. `Idle{Background}` says the
+/// lead's turn is paused on work it started and resumes on its own — and
+/// nothing in the hook stream is obliged to say that work ended. Claude Code
+/// lists a teammate `running` for its whole life and reports only the
+/// transitions, so a teammate that dies on a usage limit, or an idle notice
+/// that never lands, holds the count above the idle set for good (dogfood
+/// 2026-09-18, T-403: eight teammates, four idle notices, a session that
+/// finished its turn at 19:44 still spelling "working" hours later). Measured
+/// from the last frame that PROVED background work alive, not from entry, so
+/// a slow task that still reports keeps its park (cf. `STALE_DEMOTE_MS`).
+pub const PARK_STALE_MS: u64 = 10 * 60 * 1000;
 /// Flap guard: more than this many debounced changes inside the window pins.
 pub const FLAP_MAX: usize = 4;
 pub const FLAP_WINDOW_MS: u64 = 20_000;
@@ -408,6 +419,10 @@ pub struct Machine {
     /// "reviewers done, lead done" — the daemon persists it on the record so
     /// a restart does not re-park a finished session.
     idle_teammates: BTreeSet<String>,
+    /// When work the lead is parked on was last PROVED alive — entry into
+    /// the park, or a subagent/teammate/nested-tool frame since.
+    /// `PARK_STALE_MS` runs from here.
+    background_at: u64,
     manual_compact_prior: Option<(SessionState, Confidence)>,
 }
 
@@ -448,6 +463,7 @@ impl Machine {
             pinned_until: None,
             recent_left: None,
             idle_teammates: BTreeSet::new(),
+            background_at: now,
             manual_compact_prior: None,
         }
     }
@@ -539,6 +555,12 @@ impl Machine {
                 self.idle_teammates.remove(name);
             }
             _ => {}
+        }
+        // ...and so does the park clock, for the same reason: the frames that
+        // prove a park is still earned are exactly the ones `target` answers
+        // `None` to, so nothing else in this machine ever sees them.
+        if proves_background(sig) {
+            self.background_at = now;
         }
         // Sleeping latches: the daemon's own SIGTERM produces SessionEnd and
         // pane-died, and neither those nor any straggler frame may flip a
@@ -652,6 +674,18 @@ impl Machine {
             let to = SessionState::Unknown { reason: UnknownReason::NoSignal };
             return Some(self.commit(to, Confidence::Stale, now));
         }
+        // Park demotion: a park nothing has proved in PARK_STALE_MS falls back
+        // to what the `Stop` that made it plainly said — the turn ended. Only
+        // the background half of that Stop was ever inference, so only the
+        // confidence drops; any later frame promotes straight back to Running.
+        // `Idle{Monitoring}` is left alone: a watch is MEANT to be silent, and
+        // it already spells itself "monitoring" and counts as quiet.
+        if self.state == (SessionState::Idle { stop_reason: StopReason::Background })
+            && now.saturating_sub(self.background_at) >= PARK_STALE_MS
+        {
+            let to = SessionState::Idle { stop_reason: StopReason::EndTurn };
+            return Some(self.commit(to, Confidence::Medium, now));
+        }
         None
     }
 
@@ -675,6 +709,7 @@ impl Machine {
         }
         self.entered_at = now;
         self.affirmed_at = now;
+        self.background_at = now;
 
         // Flap guard: >FLAP_MAX committed changes in the window pins the
         // machine at the state just committed. (Deviation from 11 §11.7.4's
@@ -986,6 +1021,24 @@ impl Machine {
                 Some((s, Confidence::Low))
             }
         }
+    }
+}
+
+/// Frames that prove work the lead is parked on is still alive. Every one of
+/// them is deliberately `None` in `target` — a subagent's or teammate's step
+/// says nothing about the LEAD's state — which is why the park clock has to
+/// read them here: they are the only evidence a park is still earned, and
+/// without them the clock would time out a team that is plainly working.
+fn proves_background(sig: &Signal) -> bool {
+    match sig {
+        Signal::SubagentStop | Signal::TeammateIdle { .. } | Signal::TeammateMessaged { .. } => {
+            true
+        }
+        // A nested stop is a subagent's turn ending, not the lead's.
+        Signal::Stop { has_agent_id, .. } => *has_agent_id,
+        Signal::ToolCompleted { nested } => *nested,
+        Signal::BackgroundChanged { liveness } => *liveness != crate::background::Liveness::None,
+        _ => false,
     }
 }
 
@@ -1321,6 +1374,70 @@ mod tests {
         m2.apply(&idle("a"), 1000);
         m2.apply(&idle("b"), 1000);
         assert!(m2.apply(&stop_with_teammates(1), 2000).is_some());
+    }
+
+    /// T-403. The count is not enough on its own: a teammate reports its
+    /// transitions, and a teammate that dies on a usage limit reports nothing
+    /// ever again. Eight teammates, four idle notices, a lead whose last turn
+    /// ended at 19:44 — the park never lifted and the card spelled "working"
+    /// for hours. The clock is the floor under every such hole.
+    #[test]
+    fn a_park_nothing_proves_falls_back_to_the_turn_that_ended() {
+        let mut m = m(SessionState::Running);
+        for name in ["reuse", "simplification", "efficiency", "altitude"] {
+            m.apply(&idle(name), 1000);
+        }
+        // Four of the eight are alive but will never report again.
+        assert!(m.apply(&stop_with_teammates(8), 2000).is_none(), "leave settles");
+        let c = m.tick(2000 + SETTLE_MS).expect("parks");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::Background });
+        let parked = 2000 + SETTLE_MS;
+        assert!(m.tick(parked + PARK_STALE_MS - 1).is_none());
+        let c = m.tick(parked + PARK_STALE_MS).expect("the park times out");
+        assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        // Inference, so Medium — and Medium is what automove asks for, which
+        // is the point: the finished ticket reaches REVIEW the way a clean
+        // Stop would have taken it there.
+        assert_eq!(c.confidence, Confidence::Medium);
+        // The demote is not a latch either: the next real frame resumes.
+        let c = m.apply(&Signal::UserPromptSubmit, parked + PARK_STALE_MS + 1).expect("resumes");
+        assert_eq!(c.to, SessionState::Running);
+    }
+
+    /// The other half: a team that is plainly working keeps its park, however
+    /// long it takes. Every frame here is one `target` answers `None` to —
+    /// that is exactly why the clock reads them itself.
+    #[test]
+    fn background_frames_keep_a_park_alive() {
+        for sig in [
+            Signal::SubagentStop,
+            Signal::TeammateIdle { name: Some("reuse".into()) },
+            Signal::TeammateMessaged { name: "reuse".into() },
+            Signal::ToolCompleted { nested: true },
+            Signal::BackgroundChanged { liveness: crate::background::Liveness::Working },
+        ] {
+            let mut m = m(SessionState::Idle { stop_reason: StopReason::Background });
+            let mut at = 0;
+            // Five spells of nine minutes, each ended by one proving frame.
+            for _ in 0..5 {
+                at += PARK_STALE_MS - 60_000;
+                assert!(m.tick(at).is_none(), "{sig:?} left the park to time out");
+                m.apply(&sig, at);
+            }
+            assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Background });
+            let c = m.tick(at + PARK_STALE_MS).expect("silence still times out");
+            assert_eq!(c.to, SessionState::Idle { stop_reason: StopReason::EndTurn });
+        }
+    }
+
+    /// A watch is MEANT to be silent — `tail -f` proves nothing by saying
+    /// nothing — and it already spells itself "monitoring" and counts as
+    /// quiet, so the clock does not touch it.
+    #[test]
+    fn a_monitoring_park_has_no_clock() {
+        let mut m = m(SessionState::Idle { stop_reason: StopReason::Monitoring });
+        assert!(m.tick(10 * PARK_STALE_MS).is_none());
+        assert_eq!(m.state(), &SessionState::Idle { stop_reason: StopReason::Monitoring });
     }
 
     /// Messaging an idle teammate wakes it: it is working again, whatever it
