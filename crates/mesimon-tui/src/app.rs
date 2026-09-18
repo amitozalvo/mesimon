@@ -2915,9 +2915,19 @@ impl App {
         self.shared_checkout(ticket) || self.board.live_agent(ticket).is_some()
     }
 
-    /// Any seated agent can wait for idle, including worktree agents.
+    /// Does the column hold a seat a blank ask could start? The one thing
+    /// a blank column field can do (T-405), and what tells a blank Enter
+    /// there from one the daemon would only refuse.
+    pub(crate) fn column_starts(&self, column: &str) -> bool {
+        self.board.column_tickets(column).iter().any(|t| self.board.live_agent(t.id).is_none())
+    }
+
+    /// Any seat the column ask reaches that could wait: a seated agent
+    /// anywhere (worktree agents included), or an empty seat on the SHARED
+    /// checkout, whose start is what a queue holds back (T-294, T-405).
+    /// One ticket's answer is `ask_queueable`; the column's is any of them.
     pub(crate) fn column_ask_queueable(&self, column: &str) -> bool {
-        self.board.column_tickets(column).iter().any(|t| self.board.live_agent(t.id).is_some())
+        self.board.column_tickets(column).iter().any(|t| self.ask_queueable(t.id))
     }
 
     /// Is a claude mid-turn in this ticket's checkout? The TUI's own read of
@@ -3312,7 +3322,6 @@ impl App {
             col_train_word: cs.train.word(),
             col_delete_armed,
             col_live: col_tickets.len(),
-            col_seats: col_tickets.iter().filter(|t| self.board.live_agent(t.id).is_some()).count(),
             can_repeat: self.repeat_target().is_some(),
             repeat_word: match self.last_action {
                 Some(LastAction::Move { .. }) => "move again",
@@ -4479,7 +4488,7 @@ impl App {
             // board's Queue/Steer default; starts and wakes retain the
             // shared-checkout timing choice.
             Verb::Prompt => {
-                // A column asks every seated agent, using the board default.
+                // A column asks every seat in it, using the board default.
                 if ctx.col_header {
                     if let Some(name) = self.cursor_column().map(|c| c.name.clone()) {
                         let queued = self.column_ask_queueable(&name) && self.board.follow_up_mode == mesimon_core::board::FollowUpMode::Queue;
@@ -8077,14 +8086,11 @@ impl App {
             .unwrap_or(self.board.agent_provider)
     }
 
-    /// Agents seated in a column, paned or parked — what a column ask
-    /// reaches (T-378); the same count `Ctx::col_seats` carries.
-    pub(crate) fn column_seats(&self, column: &str) -> usize {
-        self.board
-            .column_tickets(column)
-            .iter()
-            .filter(|t| self.board.live_agent(t.id).is_some())
-            .count()
+    /// How many agents a column ask reaches — every ticket in the column,
+    /// since T-405: paned, parked, and empty seats the press starts. The
+    /// ask room's context row says this number.
+    pub(crate) fn column_reach(&self, column: &str) -> usize {
+        self.board.column_tickets(column).len()
     }
 
     /// `e`: rescan (lazy census — this is the only trigger) and open the drawer.
@@ -8237,8 +8243,16 @@ impl App {
         // that opened the field, finished (T-294): start claude on the
         // title, which is what a quiet checkout does with no field at all.
         if title.is_empty() {
-            // A blank Enter on a column's field does nothing (T-378): there
-            // is no waiting entry to drop and no seat to start.
+            // A blank Enter on a column's field starts its EMPTY seats on
+            // their own titles (T-405) — the singular's rule, plural — and
+            // says nothing to the agents already seated. With no empty seat
+            // to take it, the daemon refuses it as it always did.
+            if let InputPurpose::Prompt { target: AskTarget::Column(name), .. } = &purpose {
+                if self.column_starts(name) {
+                    return self.commit_prompt(purpose, title);
+                }
+                return Ok(());
+            }
             if let InputPurpose::Prompt { target: AskTarget::Ticket(ticket), queued, .. } = purpose
             {
                 // An EMPTY seat can commit a blank field: there the prompt is
@@ -8458,19 +8472,21 @@ impl App {
     }
 
     /// The column field's second half (T-378): one command, one receipt,
-    /// and a status that reads the receipt out by seat — `asked 3 ∙ queued
-    /// 2 ∙ 1 without claude`. The same caution as the single ask: "asked"
-    /// means the words went into a box and Enter was pressed; whether each
-    /// agent took them is each card's to say.
+    /// and a status that reads the receipt out by seat — `asked 3 ∙ started
+    /// 2 ∙ queued 1`. The same caution as the single ask: "asked" means the
+    /// words went into a box and Enter was pressed; whether each agent took
+    /// them is each card's to say. `skipped` no longer means "without an
+    /// agent" (T-405 starts those): it is an adopted external session, or a
+    /// seated agent under a blank ask, and the feed says which per ticket.
     fn commit_column_prompt(&mut self, column: String, text: String, queued: bool) -> Result<()> {
-        let word = keymap::agent_word(self.board.agent_provider);
         self.status = match self.req(Command::PromptColumn { column, text, queued }) {
-            Response::Asked { sent, woke, queued, skipped, failed } => {
+            Response::Asked { sent, woke, started, queued, skipped, failed } => {
                 let parts: Vec<String> = [
                     (sent, format!("asked {sent}")),
                     (woke, format!("woke {woke}")),
+                    (started, format!("started {started}")),
                     (queued, format!("queued {queued}")),
-                    (skipped, format!("{skipped} without {word}")),
+                    (skipped, format!("{skipped} skipped")),
                     (failed, format!("{failed} failed")),
                 ]
                 .into_iter()
@@ -9345,27 +9361,34 @@ pub(crate) mod test_support {
                 // Queued, each parks and the daemon names who holds the
                 // checkout; sent now, each answers the way the daemon does.
                 // The column's receipt (T-378), by seat: a pane is asked, a
-                // parked one woken; queued, they all park.
-                Command::PromptColumn { column, queued, .. } => {
-                    let (mut sent, mut woke, mut parked, mut skipped) = (0, 0, 0, 0);
+                // parked one woken, an empty one started (T-405); queued,
+                // they all park. A BLANK ask reaches the empty seats alone.
+                Command::PromptColumn { column, text, queued } => {
+                    let blank = text.trim().is_empty();
+                    let (mut sent, mut woke, mut started, mut parked, mut skipped) =
+                        (0, 0, 0, 0, 0);
                     for t in self.board.column_tickets(&column) {
-                        if self.board.pane_target(t.id).is_some() {
-                            if queued {
-                                parked += 1;
-                            } else {
-                                sent += 1;
-                            }
-                        } else if self.board.live_agent(t.id).is_some() {
-                            if queued {
-                                parked += 1;
-                            } else {
-                                woke += 1;
-                            }
-                        } else {
+                        let empty = self.board.live_agent(t.id).is_none();
+                        if blank && !empty {
                             skipped += 1;
+                        } else if queued {
+                            parked += 1;
+                        } else if self.board.pane_target(t.id).is_some() {
+                            sent += 1;
+                        } else if !empty {
+                            woke += 1;
+                        } else {
+                            started += 1;
                         }
                     }
-                    return Ok(Response::Asked { sent, woke, queued: parked, skipped, failed: 0 });
+                    return Ok(Response::Asked {
+                        sent,
+                        woke,
+                        started,
+                        queued: parked,
+                        skipped,
+                        failed: 0,
+                    });
                 }
                 Command::PromptSession { ticket, queued, .. } => {
                     let seat = if self.board.pane_target(ticket).is_some() {
@@ -12624,7 +12647,7 @@ mod tests {
         assert!(sent_contains(&sent, "PromptColumn"), "{:?}", sent.borrow());
         assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "PromptSession"));
-        assert_eq!(app.status, "asked 1 ∙ 1 without claude");
+        assert_eq!(app.status, "asked 1 ∙ started 1");
         assert!(app.on_column_header(), "the cursor stayed on the header");
     }
 
@@ -12638,7 +12661,7 @@ mod tests {
         app.rich_keys = true;
         press(&mut app, 'k');
         assert!(app.on_column_header());
-        assert_eq!(app.ctx().col_seats, 1, "ticket 1 has the claude; ticket 2 has nobody");
+        assert_eq!(app.column_reach("todo"), 2, "both seats — ticket 2's is empty (T-405)");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(
             matches!(
@@ -12661,22 +12684,59 @@ mod tests {
         assert_eq!(app.mode, Mode::Normal, "the field closed");
         assert!(app.on_column_header(), "the cursor stayed on the header");
         assert_eq!(app.screen, Screen::Board);
-        // Ticket 1 shares the checkout, so the field opened at `queued` and
-        // the fake parked it; ticket 2 has no seat and is counted as such.
-        assert_eq!(app.status, "queued 1 ∙ 1 without claude");
+        // Both share the checkout, so the field opened at `queued` and both
+        // parked — ticket 2's entry is the START the press now makes (T-405).
+        assert_eq!(app.status, "queued 2");
         // The words joined the history the single ask keeps.
         assert_eq!(app.prompt_history, vec!["run the tests".to_string()]);
     }
 
-    /// The column key reaches agents that exist and starts none: a header
-    /// over empty seats offers nothing, and the press is inert.
+    /// T-405: the column key reaches every seat, so a header over EMPTY
+    /// seats offers it too — and a blank Enter there starts them on their
+    /// own titles, the singular's rule said to a column. Only a column with
+    /// no ticket at all offers nothing.
     #[test]
-    fn a_header_with_no_seats_does_not_open_the_column_ask() {
-        let mut app = app_three_columns();
+    fn a_header_with_no_seats_still_opens_the_column_ask() {
+        let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.rich_keys = true;
         press(&mut app, 'k');
         assert!(app.on_column_header());
-        assert_eq!(app.ctx().col_seats, 0);
+        assert_eq!(app.column_reach("todo"), 2, "two tickets, no agents");
+        assert!(app.column_starts("todo"), "both seats are empty");
+        assert_eq!(
+            keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
+            Some(("shift+enter", "ask every claude"))
+        );
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        assert!(
+            matches!(
+                &app.mode,
+                Mode::Input { purpose: InputPurpose::Prompt { target: AskTarget::Column(n), .. }, .. }
+                    if n == "todo"
+            ),
+            "the press opens the column's field: {:?}",
+            app.mode
+        );
+        assert!(app.ctx().ask_queueable, "an empty shared-checkout seat can wait");
+        // A blank Enter commits: the empty seats start on their own titles.
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal, "the field closed");
+        assert!(sent_contains(&sent, "PromptColumn"), "{:?}", sent.borrow());
+        assert!(!sent_contains(&sent, "PromptSession"), "one command, not one per ticket");
+        assert_eq!(app.status, "queued 2");
+        assert!(app.prompt_history.is_empty(), "a blank ask writes no history");
+    }
+
+    /// A column with no TICKET is where the key still ends: there is no seat
+    /// there at all, so nothing is hinted and the press is inert.
+    #[test]
+    fn a_header_over_an_empty_column_does_not_open_the_column_ask() {
+        let mut app = app_three_columns();
+        app.rich_keys = true;
+        app.cursor_col = 1; // `doing`, which holds nothing
+        press(&mut app, 'k');
+        assert!(app.on_column_header());
+        assert_eq!(app.column_reach("doing"), 0);
         assert_eq!(keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()), None);
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert_eq!(app.mode, Mode::Normal, "nothing to ask, nothing opened");
@@ -12700,7 +12760,7 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
-        assert_eq!(app.status, "asked 1 ∙ 1 without claude");
+        assert_eq!(app.status, "asked 1 ∙ started 1");
 
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
@@ -12713,13 +12773,47 @@ mod tests {
         assert!(!app.ctx().ask_queued, "the key selects steer");
     }
 
-    /// A blank Enter on the column's field sends nothing: there is no
-    /// waiting entry to drop and no seat to start. Esc leaves the same way.
+    /// A blank Enter on the column's field starts its EMPTY seats on their
+    /// own titles (T-405) — the singular's rule, said to a column — and says
+    /// nothing to the agents already seated, which the receipt counts.
     #[test]
-    fn a_blank_enter_on_the_column_ask_sends_nothing() {
+    fn a_blank_column_ask_starts_the_empty_seats_and_skips_the_rest() {
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
         press(&mut app, 'k');
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent_contains(&sent, "PromptColumn"), "{:?}", sent.borrow());
+        assert_eq!(app.status, "queued 1 ∙ 1 skipped");
+        assert!(app.prompt_history.is_empty(), "a blank ask writes no history");
+        // And the history walk is the same field's: `↑` recalls the last ask.
+        app.prompt_history = vec!["rebase onto main".into()];
+        app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
+        app.handle_key(KeyCode::Up, KeyModifiers::NONE).unwrap();
+        match &app.mode {
+            Mode::Input { buffer, .. } => assert_eq!(buffer.as_str(), "rebase onto main"),
+            other => panic!("{other:?}"),
+        }
+    }
+
+    /// With every seat in the column taken there is nothing a blank ask
+    /// could start, so the press sends nothing at all — the guard that keeps
+    /// a no-op off the wire.
+    #[test]
+    fn a_blank_column_ask_over_a_full_column_sends_nothing() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
+        app.rich_keys = true;
+        app.board.sessions.push(mesimon_core::board::SessionRecord::new(
+            uuid::Uuid::from_u128(8),
+            SessionKind::Claude,
+            ulid::Ulid(2),
+            vec!["claude".into()],
+            "/repo".into(),
+            SessionState::Running,
+        ));
+        press(&mut app, 'k');
+        assert!(!app.column_starts("todo"), "both seats are taken");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);

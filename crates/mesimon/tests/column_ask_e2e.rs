@@ -1,10 +1,12 @@
-//! T-378: the board's Shift+Enter on a COLUMN HEADER asks every agent seated
-//! in the column, end to end. One column, three tickets: one claude awake in
-//! a pane, one parked, one ticket with no agent at all. Sent now, the pane
-//! is pasted into, the parked claude is woken with the words held for its
-//! first tick, and the bare ticket is skipped and counted — never started.
-//! Queued on a shared checkout, every seat parks and the queue drains in
-//! board order as the checkout goes quiet.
+//! T-378/T-405: the board's Shift+Enter on a COLUMN HEADER asks every SEAT in
+//! the column, end to end. One column, three tickets: one claude awake in a
+//! pane, one parked, one ticket with no agent at all. Sent now, the pane is
+//! pasted into, the parked claude is woken with the words held for its first
+//! tick, and the bare ticket STARTS one on them (T-405 — until then it was
+//! skipped, which put the plural behind the singular). Queued on a shared
+//! checkout, every seat parks — asks and the start alike — and the queue
+//! drains in board order as the checkout goes quiet. A blank ask reaches the
+//! empty seats alone: their own titles are the prompt.
 //!
 //! The stub agent appends every line it reads to one file beside itself —
 //! every pane shares it, and every probe is unique, so what is asserted is
@@ -23,7 +25,7 @@ use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{Command, Response};
 
 #[test]
-fn a_column_ask_reaches_every_seated_agent_and_starts_none() {
+fn a_column_ask_reaches_every_seat_and_starts_the_empty_ones() {
     const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
                         printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
     let Some(h) = Harness::boot_with_env(
@@ -86,6 +88,13 @@ fn a_column_ask_reaches_every_seated_agent_and_starts_none() {
         hook_send(&hook_sock, &sid.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
         c.await_state(sid, "idle", |s| matches!(s, SessionState::Idle { .. }));
     };
+    let agent_of = |c: &mut TestClient, ticket: ulid::Ulid| -> Option<uuid::Uuid> {
+        c.board()
+            .sessions
+            .into_iter()
+            .find(|s| s.ticket == ticket && s.kind.is_agent() && s.state.is_live())
+            .map(|s| s.id)
+    };
     // A stub emits no `SessionStart`, so both records sit at `Spawning` —
     // WORKING — until the hooks say otherwise. Walk each through a turn so
     // the checkout starts quiet, then park one.
@@ -109,7 +118,7 @@ fn a_column_ask_reaches_every_seated_agent_and_starts_none() {
     ));
     assert_eq!(c.board().column_tickets(&column).len(), 3, "one column, three tickets");
 
-    // The refusals first: a column that is not there, and nothing to say.
+    // The refusal that survives T-405: a column that is not there.
     err_containing(
         c.request(Command::PromptColumn {
             column: "NOWHERE".into(),
@@ -118,24 +127,16 @@ fn a_column_ask_reaches_every_seated_agent_and_starts_none() {
         }),
         "no such column",
     );
-    err_containing(
-        c.request(Command::PromptColumn {
-            column: column.clone(),
-            text: "  ".into(),
-            queued: false,
-        }),
-        "nothing to send",
-    );
 
     // (1) Sent now: the pane is pasted into, the sleeper is woken with the
-    // words held, the bare ticket is skipped — and nothing was started.
+    // words held, and the bare ticket is STARTED on them.
     match c.request(Command::PromptColumn {
         column: column.clone(),
         text: "mesimon-probe-81 commit what you have".into(),
         queued: false,
     }) {
-        Response::Asked { sent, woke, queued, skipped, failed } => {
-            assert_eq!((sent, woke, queued, skipped, failed), (1, 1, 0, 1, 0));
+        Response::Asked { sent, woke, started, queued, skipped, failed } => {
+            assert_eq!((sent, woke, started, queued, skipped, failed), (1, 1, 1, 0, 0, 0));
         }
         other => panic!("expected the column's receipt: {other:?}"),
     }
@@ -145,42 +146,57 @@ fn a_column_ask_reaches_every_seated_agent_and_starts_none() {
     let rec = c.board().sessions.into_iter().find(|s| s.id == ss).expect("the sleeper's record");
     assert!(rec.state.has_pane(), "woken: {:?}", rec.state);
     assert!(rec.pending_submit, "the words are owed to the woken pane");
-    assert!(
-        c.board().sessions.iter().all(|s| s.ticket != bare),
-        "a column ask never starts a session"
-    );
-    // The woken pane reads on its `SessionStart` edge, and the same words
-    // land a second time — once per seat, never more.
+    let sb = agent_of(&mut c, bare).expect("a column ask starts the empty seat (T-405)");
+    let rec = c.board().sessions.into_iter().find(|s| s.id == sb).expect("the started record");
+    assert!(rec.pending_submit, "the words are owed to the pane being born");
+    // Both born panes read on their own `SessionStart` edge, and the same
+    // words land once each — never before the edge.
     std::thread::sleep(Duration::from_millis(1000));
     assert_eq!(count("mesimon-probe-81"), 1, "nothing reaches a pane being born: {:?}", text());
     hook_send_with(&hook_sock, &ss.to_string(), "SessionStart", Some("resume"), "{}");
     wait_until(Duration::from_secs(15), "the parked words to reach the woken agent", || {
         count("mesimon-probe-81") == 2
     });
-    // Both agents ack and settle, so the checkout is quiet again.
+    hook_send_with(&hook_sock, &sb.to_string(), "SessionStart", Some("startup"), "{}");
+    wait_until(Duration::from_secs(15), "the parked words to reach the started agent", || {
+        count("mesimon-probe-81") == 3
+    });
+    // Both agents ack and settle, so the checkout is quiet again. The one
+    // that was just started goes back to being an empty seat — killed, so
+    // the queued pass below has a START to park beside the two asks.
     for sid in [sa, ss] {
         start(&mut c, sid);
         stop(&mut c, sid);
     }
+    let _ = c.request(Command::KillSession { id: sb });
+    wait_until(Duration::from_secs(10), "the killed record to leave the seat", || {
+        c.board().sessions.iter().all(|s| s.id != sb || !s.state.is_live())
+    });
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: bare, column: column.clone(), before: None }),
+        Response::Ok
+    ));
 
     // (2) Queued on a shared checkout while an agent outside the column
-    // holds it: every seat parks, in board order, and the bare ticket is
-    // skipped as before. The holder's settle sends the first; nothing lands
-    // before that.
+    // holds it: every seat parks — two asks and, last in board order, the
+    // START the empty seat now takes. The holder's settle sends the first;
+    // nothing lands before that.
     start(&mut c, sh);
     match c.request(Command::PromptColumn {
         column: column.clone(),
         text: "mesimon-probe-82 rebase onto main".into(),
         queued: true,
     }) {
-        Response::Asked { sent, woke, queued, skipped, failed } => {
-            assert_eq!((sent, woke, queued, skipped, failed), (0, 0, 2, 1, 0));
+        Response::Asked { sent, woke, started, queued, skipped, failed } => {
+            assert_eq!((sent, woke, started, queued, skipped, failed), (0, 0, 0, 3, 0, 0));
         }
         other => panic!("expected the column's receipt: {other:?}"),
     }
     let p = pending_of(&mut c, None);
-    assert_eq!(p.len(), 2, "{p:?}");
-    assert!(p.iter().all(|p| p.action == "ask" && !p.in_flight), "{p:?}");
+    assert_eq!(p.len(), 3, "{p:?}");
+    assert_eq!(p.iter().filter(|p| p.action == "ask").count(), 2, "{p:?}");
+    assert_eq!(p.iter().filter(|p| p.action == "start").count(), 1, "{p:?}");
+    assert!(p.iter().all(|p| !p.in_flight), "{p:?}");
     assert!(p.iter().all(|p| p.text.as_deref() == Some("mesimon-probe-82 rebase onto main")));
     std::thread::sleep(Duration::from_millis(1500));
     assert_eq!(count("mesimon-probe-82"), 0, "parked words must not land: {:?}", text());
@@ -198,10 +214,58 @@ fn a_column_ask_reaches_every_seated_agent_and_starts_none() {
     });
     let second_sid = if first_sid == sa { ss } else { sa };
     start(&mut c, second_sid);
-    wait_until(Duration::from_secs(5), "the ack to clear the last entry", || {
+    stop(&mut c, second_sid);
+    // And the START goes last, on its own turn: a claude that did not exist
+    // when the key was pressed, carrying the same words.
+    wait_until(Duration::from_secs(15), "the queued start to spawn a claude", || {
+        agent_of(&mut c, bare).is_some()
+    });
+    wait_until(Duration::from_secs(10), "the queue to empty", || {
         pending_of(&mut c, None).is_empty()
     });
-    stop(&mut c, second_sid);
+
+    // (3) A BLANK ask reaches the empty seats ALONE: a fresh ticket in TODO
+    // starts on its own title, and `holder` — seated, with nothing to say to
+    // it — is skipped rather than sent an Enter on a turn nobody wrote. The
+    // title IS the probe, so the line the stub reads is proof the Enter
+    // landed on it. (`holder`'s turn in (2) carried it to IN PROGRESS, so it
+    // is put back by hand first.)
+    let _ = c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "mesimon-probe-83".into(),
+        workspace: None,
+    });
+    assert!(matches!(
+        c.request(Command::MoveTicket { id: holder, column: "TODO".into(), before: None }),
+        Response::Ok
+    ));
+    let fresh = c.board().tickets.into_iter().find(|t| t.title == "mesimon-probe-83").unwrap().id;
+    match c.request(Command::PromptColumn {
+        column: "TODO".into(),
+        text: "   ".into(),
+        queued: false,
+    }) {
+        Response::Asked { sent, woke, started, queued, skipped, failed } => {
+            assert_eq!((sent, woke, started, queued, skipped, failed), (0, 0, 1, 0, 1, 0));
+        }
+        other => panic!("expected the column's receipt: {other:?}"),
+    }
+    let sf = agent_of(&mut c, fresh).expect("the blank ask started the empty seat");
+    hook_send_with(&hook_sock, &sf.to_string(), "SessionStart", Some("startup"), "{}");
+    wait_until(Duration::from_secs(15), "the title to be submitted", || {
+        count("mesimon-probe-83") == 1
+    });
+
+    // (4) And with no empty seat left, a blank ask is the refusal it always
+    // was: there is nobody it could reach.
+    err_containing(
+        c.request(Command::PromptColumn {
+            column: "TODO".into(),
+            text: "  ".into(),
+            queued: false,
+        }),
+        "nothing to send",
+    );
 
     let _ = c.request(Command::Shutdown);
 }

@@ -258,11 +258,13 @@ pub enum Command {
         ticket: ulid::Ulid,
     },
     /// The board's Shift+Enter on a COLUMN HEADER (T-378): the user's words,
-    /// once, in front of every agent seated in that column — a pane is
-    /// pasted into, a parked agent is woken with the words held for its
-    /// first tick, and a ticket with no agent is skipped and counted. This
-    /// command never starts a session: a column is not a place to spawn N
-    /// claudes from one key. `PromptSession` per ticket, with one receipt.
+    /// once, in front of every SEAT in that column — a pane is pasted into,
+    /// a parked agent is woken with the words held for its first tick, and
+    /// a ticket with no agent starts one on them (T-405, the same three
+    /// roads `PromptSession` takes, with one receipt). Blank words reach
+    /// the empty seats alone, where the Enter lands on the ticket title the
+    /// spawn types; every seated agent is skipped, because an empty paste
+    /// would press Enter on a turn nobody wrote.
     ///
     /// Promise 3 holds as it does there: `sanitize_prompt` runs once, only
     /// ever removes, and nothing is appended per ticket.
@@ -995,10 +997,10 @@ mod meta_tests {
     #[test]
     fn a_bare_asked_receipt_reads_as_all_zero() {
         let r: Response = serde_json::from_str(r#"{"resp":"asked"}"#).unwrap();
-        let Response::Asked { sent, woke, queued, skipped, failed } = r else {
+        let Response::Asked { sent, woke, started, queued, skipped, failed } = r else {
             panic!("not asked: {r:?}");
         };
-        assert_eq!((sent, woke, queued, skipped, failed), (0, 0, 0, 0, 0));
+        assert_eq!((sent, woke, started, queued, skipped, failed), (0, 0, 0, 0, 0, 0));
     }
 }
 
@@ -1082,15 +1084,19 @@ pub enum Response {
         skipped: usize,
     },
     /// PromptColumn's receipt (T-378), per seat: pasted into a pane now,
-    /// a parked agent woken with the words held, parked in the ask queue,
-    /// skipped for want of an agent, or refused on the way (a paste that
-    /// failed, a wake the PTY budget turned down). Every field defaulted so
-    /// a client one build behind still reads the line.
+    /// a parked agent woken with the words held, an empty seat started on
+    /// them (T-405), parked in the ask queue, skipped, or refused on the way
+    /// (a paste that failed, a spawn the PTY budget turned down). `skipped`
+    /// is an adopted external session, or — under a BLANK ask, which only an
+    /// empty seat can take — a seat that already has its agent. Every field
+    /// defaulted so a client one build behind still reads the line.
     Asked {
         #[serde(default)]
         sent: usize,
         #[serde(default)]
         woke: usize,
+        #[serde(default)]
+        started: usize,
         #[serde(default)]
         queued: usize,
         #[serde(default)]

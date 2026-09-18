@@ -3341,7 +3341,7 @@ fn golden_column_prompt_field_120() {
     // "in progress": T-3 and T-4 both carry a running claude.
     app.cursor_col = 1;
     app.cursor_row = None;
-    assert_eq!(app.ctx().col_seats, 2);
+    assert_eq!(app.column_reach("in progress"), 2);
     let mut buffer = crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES);
     for c in "commit what you have".chars() {
         buffer.insert(c);
@@ -3393,6 +3393,40 @@ fn golden_column_prompt_field_now_120() {
     assert!(lines.iter().any(|l| l.contains("now  shift+tab")), "{}", lines.join("\n"));
     assert!(lines.last().is_some_and(|l| l.contains("enter send")), "{:?}", lines.last());
     golden("board_column_prompt_now_120x30", &render(&app, 120, 30));
+}
+
+/// T-405: the same field on a column whose seats are EMPTY. The key is bound
+/// there now — the press starts them — and the placeholder says what a blank
+/// Enter does, the plural of the card's `start on the title`.
+#[test]
+fn golden_column_prompt_field_start_120() {
+    let mut app = app_graphite(fixture(false));
+    app.rich_keys = true;
+    // "todo": T-1 and T-2, neither with a session.
+    app.cursor_col = 0;
+    app.cursor_row = None;
+    assert!(app.column_starts("todo"));
+    assert_eq!(
+        mesimon_core::keymap::hint_for(
+            mesimon_core::keymap::Scope::Board,
+            mesimon_core::keymap::Verb::Prompt,
+            &app.ctx()
+        ),
+        Some(("shift+enter", "ask every claude")),
+        "a column of empty seats offers the key"
+    );
+    app.mode = Mode::Input {
+        purpose: crate::app::InputPurpose::Prompt {
+            target: crate::app::AskTarget::Column("todo".into()),
+            walk: None,
+            queued: true,
+        },
+        buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
+    };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("start on the titles")), "{}", lines.join("\n"));
+    assert!(lines.iter().any(|l| l.contains("queued  shift+tab")), "{}", lines.join("\n"));
+    golden("board_column_prompt_start_120x30", &render(&app, 120, 30));
 }
 
 /// T-294: the same field on a ticket with NO claude, which is where the press

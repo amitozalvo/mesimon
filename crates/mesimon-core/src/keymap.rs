@@ -1198,10 +1198,6 @@ pub struct Ctx {
     pub col_delete_armed: bool,
     /// Live tickets in the dialog's column: a delete is refused while any.
     pub col_live: usize,
-    /// Tickets in that column holding a live agent seat, paned or parked
-    /// (T-378): what a column-wide ask would reach. Zero leaves the header's
-    /// Shift+Enter unbound — the batch never starts a session.
-    pub col_seats: usize,
     // ---- terminal ----
     /// The terminal answered the kitty-protocol probe, so `Shift+Enter` is
     /// distinguishable from `Enter`. False on the legacy floor, where every
@@ -1608,9 +1604,10 @@ static BOARD: &[Binding] = &[
         // one-key start on the title is the composer's Shift+Enter, not
         // this one.
         hint: |c| {
-            // On a column header (T-378) the words reach every agent seated
-            // in the column: the same sentence, plural. The board's default
-            // provider names them — a column is not one ticket's seat.
+            // On a column header (T-378) the words reach every seat in the
+            // column — paned, parked, or empty and started on them (T-405):
+            // the same sentence, plural. The board's default provider names
+            // them — a column is not one ticket's seat.
             if c.col_header {
                 return match c.agent_provider {
                     AgentProvider::ClaudeCode => "ask every claude",
@@ -1646,10 +1643,10 @@ static BOARD: &[Binding] = &[
         // the key must be inert AND unhinted, or the press would focus the
         // pane instead of opening a field. A column header is the fourth
         // home (T-378), the same verb widened rather than a second binding
-        // on the atom: every seated agent in the column, and only where
-        // there is at least one — a column of empty seats offers nothing,
-        // because this press never starts a session.
-        avail: |c| (c.has_ticket || (c.col_header && c.col_seats > 0)) && c.rich_keys,
+        // on the atom: every seat in the column, at every stage of its own
+        // (T-405) — so a column offers the key wherever it has a ticket,
+        // and only a column with none offers nothing.
+        avail: |c| (c.has_ticket || (c.col_header && c.col_live > 0)) && c.rich_keys,
         class: Class::Plain,
         group: Group::Sessions,
         mutates: true,
@@ -6098,10 +6095,10 @@ mod tests {
         assert_eq!(resolve(Scope::Input, Key::ShiftEnter, &prompting), Some(Verb::SaveStart));
         // A column header (T-378) is the same home one row up, not a fourth
         // idea: the same verb, the same field, the same sentence said to
-        // every seated agent in the column at once. What keeps it one idea
-        // is what it refuses — it never starts a session, so the plural has
-        // exactly the meaning the singular has on a taken seat.
-        let header = Ctx { col_header: true, col_seats: 1, rich_keys: true, ..Default::default() };
+        // every seat in the column at once. T-405 made the plural reach an
+        // EMPTY seat too, exactly as the singular does since T-379 — the one
+        // press, said to a column instead of a card.
+        let header = Ctx { col_header: true, col_live: 1, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &header), Some(Verb::Prompt));
         // The editor the composer grows into is NOT a fourth home: there
         // Shift+Enter is a newline, composing or noting alike (2026-09-03),
@@ -6246,10 +6243,13 @@ mod tests {
         );
         let no_card = Ctx { has_ticket: false, ..empty.clone() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &no_card), None);
-        // A header over empty seats is the same nothing (T-378): the column
-        // ask reaches agents that exist and starts none.
-        let bare_header = Ctx { col_header: true, col_seats: 0, ..no_card };
+        // A header over an EMPTY COLUMN is the same nothing: there is no
+        // seat there at all. A column of empty seats does offer the key
+        // (T-405) — the press starts them, the way the singular does.
+        let bare_header = Ctx { col_header: true, col_live: 0, ..no_card };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &bare_header), None);
+        let unseated = Ctx { col_live: 2, ..bare_header.clone() };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &unseated), Some(Verb::Prompt));
         let legacy = Ctx { rich_keys: false, ..empty };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &legacy), None);
     }
@@ -7093,11 +7093,12 @@ mod tests {
         for k in [Key::Char('x'), Key::Char('a'), Key::Char('z'), Key::Char('c'), Key::Char('s')] {
             assert_eq!(resolve(Scope::Board, k, &header), None, "{k:?}");
         }
-        // T-378: where the terminal spells Shift+Enter, a header with seated
-        // agents offers the column-wide ask — the same verb the card has,
-        // widened, so the `added` list above is unchanged. No seats, no key:
-        // the batch never starts a session.
-        let rich = Ctx { rich_keys: true, col_seats: 2, ..header.clone() };
+        // T-378: where the terminal spells Shift+Enter, a column header
+        // offers the column-wide ask — the same verb the card has, widened,
+        // so the `added` list above is unchanged. An EMPTY COLUMN offers
+        // nothing; a column of empty seats offers the key and starts them
+        // (T-405).
+        let rich = Ctx { rich_keys: true, col_live: 2, ..header.clone() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich), Some(Verb::Prompt));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &rich),
@@ -7110,9 +7111,9 @@ mod tests {
             hint_for(Scope::Board, Verb::Prompt, &codex),
             Some(("shift+enter", "ask every codex"))
         );
-        let no_seats = Ctx { col_seats: 0, ..rich.clone() };
-        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &no_seats), None);
-        assert_eq!(hint_for(Scope::Board, Verb::Prompt, &no_seats), None);
+        let empty_column = Ctx { col_live: 0, ..rich.clone() };
+        assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &empty_column), None);
+        assert_eq!(hint_for(Scope::Board, Verb::Prompt, &empty_column), None);
         let legacy = Ctx { rich_keys: false, ..rich };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &legacy), None);
     }

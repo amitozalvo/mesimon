@@ -430,7 +430,8 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
         // composer shows its workspace pick — `now` or `queued`, and the key
         // that flips it while the checkout is shared, spelled here because
         // the dialog's bottom edge does not repeat it. A ticket's ask names
-        // the ticket by its key; a column's names the seats the words reach.
+        // the ticket by its key; a column's names the seats the words reach
+        // — every seat in it, since T-405 starts the empty ones.
         EditorPurpose::Ask { target, queued } => {
             if !framed {
                 ctx_spans.push(Span::styled(format!("{} ∙ ", heading(app, ed)), dim2));
@@ -443,7 +444,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                     }
                 }
                 AskTarget::Column(name) => {
-                    let seats = app.column_seats(name);
+                    let seats = app.column_reach(name);
                     let word = mesimon_core::keymap::agent_word(app.board.agent_provider);
                     let plural = if seats == 1 { "" } else { "s" };
                     ctx_spans.push(Span::styled(format!("{seats} {word}{plural}"), dim1));

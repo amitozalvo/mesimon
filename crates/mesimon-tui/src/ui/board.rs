@@ -486,10 +486,17 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
     let mut out: Vec<Line<'static>> = vec![head_line];
     let mut header_cursor_y: u16 = 0;
     if let Some((buf, queued)) = column_ask {
-        // The empty field says what it is for in the key's own words.
-        let placeholder = match app.board.agent_provider {
-            mesimon_core::board::AgentProvider::ClaudeCode => "ask every claude",
-            mesimon_core::board::AgentProvider::Codex => "ask every codex",
+        // The empty field says what it is for in the key's own words — or,
+        // where the column holds a seat a blank Enter would fill, what that
+        // Enter does (T-405), the plural of the card's `start on the title`
+        // and by the same rule `commit_input` judges it.
+        let placeholder = if app.column_starts(name) {
+            "start on the titles"
+        } else {
+            match app.board.agent_provider {
+                mesimon_core::board::AgentProvider::ClaudeCode => "ask every claude",
+                mesimon_core::board::AgentProvider::Codex => "ask every codex",
+            }
         };
         let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
         out.push(line);

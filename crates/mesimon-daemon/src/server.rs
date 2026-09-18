@@ -5590,34 +5590,58 @@ impl Daemon {
         self.deliver(ticket, seat, text)
     }
 
-    /// Ask every seated agent in a column, skipping empty seats. Queued
-    /// prompts wait for idle; shared checkouts are serialized in board order.
-    /// Park the batch before draining so one receipt covers the gesture.
+    /// Ask every seat in a column — paned, parked or EMPTY (T-405). The one
+    /// road (`deliver`) puts the words in front of each: a pane is pasted
+    /// into, a parked agent is woken with them held, and a ticket with no
+    /// agent starts one on them. Queued prompts wait for idle; shared
+    /// checkouts are serialized in board order. Park the batch before
+    /// draining so one receipt covers the gesture.
+    ///
+    /// T-378 skipped the empty seats — "a column is not a place to spawn N
+    /// claudes from one key" — to keep the plural the same idea as the
+    /// singular. T-379 then made the SINGULAR start on an empty seat, so
+    /// that refusal was the odd one out and this is it lifted. What holds a
+    /// burst back is the queued default (`drain_queue` takes one per quiet
+    /// checkout per pass) and `spawn_gate`, not a refusal here.
     fn prompt_column(&mut self, column: &str, text: String, queued: bool) -> Response {
         if self.board.column(column).is_none() {
             return Response::Err { message: format!("no such column: {column}") };
         }
-        let Some(text) = mesimon_core::command::sanitize_prompt(&text) else {
-            return Response::Err { message: "nothing to send".into() };
-        };
         let ids: Vec<ulid::Ulid> = self.board.column_tickets(column).iter().map(|t| t.id).collect();
+        // Blank in, nothing out — with the EMPTY SEAT exception `prompt_session`
+        // already makes (T-294): there the Enter lands on the ticket title the
+        // spawn types, which is a turn the user did write. So a blank column ask
+        // reaches the empty seats and skips every agent already sitting in one;
+        // with no empty seat to take it, it is the refusal it always was.
+        let words = mesimon_core::command::sanitize_prompt(&text);
+        if words.is_none() && !ids.iter().any(|t| matches!(self.seat_of(*t), QueuedSeat::Start(_)))
+        {
+            return Response::Err { message: "nothing to send".into() };
+        }
         self.feed.board("local", "prompt_column", None);
-        let (mut sent, mut woke, mut skipped, mut failed) = (0, 0, 0, 0);
-        let mut parked: Vec<(ulid::Ulid, bool)> = Vec::new();
+        let (mut sent, mut woke, mut started, mut skipped, mut failed) = (0, 0, 0, 0, 0);
+        let mut parked: Vec<(ulid::Ulid, &'static str)> = Vec::new();
         for ticket in ids {
             let external = self
                 .board
                 .live_agent(ticket)
                 .is_some_and(|rec| rec.provenance == Provenance::Adopted && rec.argv.is_empty());
             let seat = self.seat_of(ticket);
-            if external || matches!(seat, QueuedSeat::Start(_)) {
+            let starts = matches!(seat, QueuedSeat::Start(_));
+            if external || (words.is_none() && !starts) {
                 skipped += 1;
                 continue;
             }
-            let wakes = matches!(seat, QueuedSeat::Wake(_));
-            if queued {
-                match self.park_ask(ticket, seat, text.clone()) {
-                    Ok(()) => parked.push((ticket, wakes)),
+            let word = seat.word();
+            let text = words.clone().unwrap_or_default();
+            // A worktree ticket's checkout is its own, so there is nobody to
+            // wait for and `park_ask` refuses a start there outright. It goes
+            // now whatever the column's toggle says — the single ask's rule
+            // since T-294, which never offers the toggle on that seat.
+            let now_anyway = starts && !self.shared_checkout(ticket);
+            if queued && !now_anyway {
+                match self.park_ask(ticket, seat, text) {
+                    Ok(()) => parked.push((ticket, word)),
                     Err(message) => {
                         eprintln!("mesimon: column ask could not park: {message}");
                         failed += 1;
@@ -5626,15 +5650,21 @@ impl Daemon {
                 continue;
             }
             self.forget_queued(ticket, "queued_ask_dropped", "local");
-            match self.deliver(ticket, seat, text.clone()) {
+            match self.deliver(ticket, seat, text) {
                 Response::Err { message } => {
                     eprintln!("mesimon: column ask failed: {message}");
                     self.feed.board("local", "prompt_column_failed", Some(ticket));
                     failed += 1;
                 }
-                _ if wakes => {
+                // `Provisioning` counts with the starts and the wakes: the
+                // session is owed, parked behind its worktree, not refused.
+                _ if word == "wake" => {
                     self.feed.board("local", "prompt_column_woke", Some(ticket));
                     woke += 1;
+                }
+                _ if word == "start" => {
+                    self.feed.board("local", "prompt_column_started", Some(ticket));
+                    started += 1;
                 }
                 _ => {
                     self.feed.board("local", "prompt_column_sent", Some(ticket));
@@ -5648,20 +5678,24 @@ impl Daemon {
             self.broadcast();
             // The drain sent at most one per quiet checkout; the receipt
             // reads what it did the way `enqueue_ask` does — the in-flight
-            // marker for a paste, the record for a wake.
-            for (ticket, wakes) in parked {
+            // marker for a paste, the record for a wake or a start.
+            for (ticket, word) in parked {
                 if self.queued.iter().any(|q| q.ticket == ticket) {
                     still_queued += 1;
                 } else if self.inflight.contains_key(&ticket) {
                     sent += 1;
-                } else if wakes && self.board.pane_target(ticket).is_some() {
-                    woke += 1;
+                } else if word != "ask" && self.board.live_agent(ticket).is_some() {
+                    if word == "wake" {
+                        woke += 1;
+                    } else {
+                        started += 1;
+                    }
                 } else {
                     failed += 1;
                 }
             }
         }
-        Response::Asked { sent, woke, queued: still_queued, skipped, failed }
+        Response::Asked { sent, woke, started, queued: still_queued, skipped, failed }
     }
 
     /// Where the ticket's claude is, for a prompt: in a pane, parked, or not

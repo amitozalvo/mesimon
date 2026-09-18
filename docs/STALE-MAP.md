@@ -11412,3 +11412,84 @@ and it already spells itself "monitoring" and counts as quiet.
 Validation: `cargo ut` (1,514) and the full macOS nextest suite (1,607) passed, clippy clean.
 Three new unit tests carry the rule — the eight-teammate park timing out, five nine-minute
 spells held open by each proving frame in turn, and the monitoring park left alone.
+
+## The column ask starts the empty seats too (T-405, 2026-09-19)
+
+**The ask.** "ask every agent (shift+enter on column) should also work for sleeping /
+tickets without agents." Sleeping already worked — T-378 woke a parked agent with the words
+held for its first tick, and `column_ask_e2e` proved it — so the ask is really its second
+half, and the first half is worth recording as the reason it was believed.
+
+**What was wrong.** T-378 refused to start anything from a column header, in those words: "a
+column is not a place to spawn N claudes from one key, and that refusal is what keeps the
+plural the same idea as the singular." One day later T-379 made the SINGULAR open the same
+field on an empty seat and start claude on Enter. The premise moved and the conclusion did
+not: the plural was the odd one out, a column of fresh tickets did not even offer the key
+(`col_seats > 0`), and a mixed column reported its agentless tickets as `1 without claude`.
+
+**What it is.** The column ask takes the singular's three seats, all three.
+`Daemon::prompt_column` drops the `QueuedSeat::Start` skip and walks `column_tickets` through
+the one road (`deliver`) exactly as `prompt_session` does: a pane is pasted into, a parked
+agent is woken, an empty seat is started with the words riding under the brief. `Ctx::col_seats`
+had one reader — that `avail` — so it is gone, and `col_live` (the column's ticket count,
+which until now had no reader either) gates the key: a column offers Shift+Enter wherever it
+has a ticket, and only an empty column offers nothing. The hint stays `ask every claude` /
+`ask every codex` on the author's call — the plural of the card's word, not of its shape.
+A ticket whose only session is a SHELL is an empty seat and is started: `live_agent` has
+never counted a shell.
+
+**Blank words start the empty seats and say nothing to the rest.** The singular's own rule
+(T-294) applied per ticket: `sanitize_prompt`'s `None` becomes an empty string on a `Start`
+seat, where the Enter lands on the ticket title the spawn types, and every `Pane`/`Wake` seat
+is skipped, because an empty paste would press Enter on a turn nobody wrote. With no empty
+seat to take it the command is the refusal it always was (`nothing to send`), and the TUI's
+`commit_input` keeps its own guard so a no-op never travels. The column field's placeholder
+says which of the two it is — `start on the titles`, the plural of the card's
+`start on the title`, wherever the column holds a seat a blank Enter would fill.
+
+**The receipt grew a sixth count.** `Response::Asked` gains `started` (serde-default like its
+siblings), because `sent` is displayed as `asked N` and means "the words went into a box and
+Enter was pressed" — a start has no box yet. The status reads `asked 2 ∙ woke 1 ∙ started 3 ∙
+queued 2 ∙ 1 skipped`. `skipped` no longer means "without claude": it is an adopted external
+session, or a seated agent under a blank ask, and the feed says which per ticket
+(`prompt_column_started` joins `_sent` / `_woke` / `_failed`). `Provisioning` counts with the
+starts — a worktree being cut is a spawn in motion, replayed verbatim by `on_provisioned`.
+
+**One flag, two checkouts.** A column's `queued` is one flag for every seat in it, so the
+queued pass can now reach a start whose checkout is its own — which `park_ask` refuses in
+words ("start the worktree session before queueing a follow-up") because there is nobody to
+wait for and no cwd to resolve against. `prompt_column` delivers those NOW whatever the
+toggle says, which is T-378's own rule for a worktree ticket said about one more seat.
+Shared-checkout starts park as before.
+
+**The spawn-storm guard is the queue, not a cap.** `App::column_ask_queueable` became the
+plural of `ask_queueable` — an existing session anywhere, or an empty seat on the SHARED
+checkout, which is precisely the start T-294 says can wait. Without that change a column of
+pending shared-checkout tickets would have offered no toggle and fired N spawns into one
+index: the five-claudes shape. With it the field opens at `queued` under `FollowUpMode::Queue`
+and `drain_queue` takes one entry per distinct cwd per pass, so the column starts one claude,
+waits for it to ack and settle, and goes on in board order. A column of WORKTREE tickets is
+the other answer and needs no queue: N trees are N indexes, provisioning is throttled at two
+in flight, and `spawn_gate` is the only resource bar — it refuses in words that name the fix.
+No count cap was added and none is argued for; the field itself is the confirmation, since
+nothing spawns until Enter.
+
+**Tests.** `column_ask_e2e` inverts and grows: the receipt is now
+`(sent, woke, started, queued, skipped, failed)`, `(1, 1, 1, 0, 0, 0)` sent now with the
+started pane reading its words on its own `SessionStart` edge; the queued pass parks THREE —
+two asks and a start, last in board order — and the start spawns a claude on its own turn
+after the two panes have gone; a blank ask starts a fresh ticket on its title (the title is
+the probe) and skips the seated one beside it; and with no empty seat left, blank is
+`nothing to send`. In `app.rs`, `a_header_with_no_seats_does_not_open_the_column_ask` became
+`..._still_opens_...` and gained a sibling for a column with no ticket at all;
+`a_blank_enter_on_the_column_ask_sends_nothing` became
+`a_blank_column_ask_starts_the_empty_seats_and_skips_the_rest`, with the full-column case
+(the `commit_input` guard) taking over its history-walk half. One new golden,
+`board_column_prompt_start_120x30`; no existing golden moved, because every column-ask golden
+renders a fully seated column and every header golden leaves `rich_keys` false.
+
+**Not done.** The worktree-start-while-queued arm still has no e2e of its own (it would need a
+provisioned worktree), as T-378 left it. `paste_to_ticket` still has no "a prompt is already
+waiting" guard on the Claude branch — Codex has one — so a second column ask landing on
+claudes the first one just started would paste over a brief still parked; pre-existing, and
+unchanged here. A mixed claude/codex column is still named by the board's default word.
