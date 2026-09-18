@@ -5,6 +5,7 @@ mod app;
 mod caffeine;
 mod caffeine_watch;
 mod clipboard;
+mod image_paste;
 mod keys;
 // Public so an integration test can drive the real connect path (the
 // build-skew daemon restart lives in it); the TUI itself uses it internally.

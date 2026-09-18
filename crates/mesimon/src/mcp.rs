@@ -118,6 +118,7 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::MoveTicket { to_column, idempotency_key } => {
             Command::AgentMoveTicket { to_column, idempotency_key: idempotency_key.or(tool_use_id) }
         }
+        ToolCall::ReadAttachment { attachment } => Command::AgentReadAttachment { attachment },
         ToolCall::ReadNote { note } => Command::AgentReadNote { note },
         ToolCall::WriteNote { note, text } => Command::AgentWriteNote { note, text },
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
@@ -170,6 +171,10 @@ fn render(resp: Response) -> Value {
         Response::Note { text: body, .. } => {
             json!({ "content": [{ "type": "text", "text": body }], "isError": false })
         }
+        Response::Attachment { data, .. } => json!({
+            "content": [{ "type": "image", "mimeType": "image/png", "data": data }],
+            "isError": false
+        }),
         Response::NoteWritten { note } => {
             text(&json!({ "note": note.map(|n| n.to_string()), "deleted": note.is_none() }))
         }

@@ -20,12 +20,16 @@ use crate::board::KEY_PREFIX;
 /// finds the file; `Ticket` is a key until the caller finds the ticket.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Found {
+    Attachment(ulid::Ulid),
     /// `http://` or `https://`, as written (trailing prose punctuation off).
     Url(String),
     /// `T-12`: a ticket's short key.
     Ticket(String),
     /// A path as written, with a `:LINE` (or `:LINE:COL`) suffix split off.
-    Path { path: String, line: Option<u32> },
+    Path {
+        path: String,
+        line: Option<u32>,
+    },
 }
 
 /// One link in document order: the markdown label when there was one, and
@@ -118,6 +122,9 @@ const TRAIL: &[char] =
 /// One whitespace-delimited word of prose, or one markdown target: what it
 /// points at, if anything.
 fn classify(word: &str) -> Option<Found> {
+    if let Some(id) = crate::attachment::parse_target(word) {
+        return Some(Found::Attachment(id));
+    }
     let word = word.trim_start_matches(LEAD);
     if word.is_empty() {
         return None;

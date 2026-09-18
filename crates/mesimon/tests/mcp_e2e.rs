@@ -224,6 +224,7 @@ fn agent_board_tools_tier_and_collisions() {
             "list_board",
             "move_ticket",
             "read_note",
+            "read_attachment",
             "write_note",
             "create_ticket",
             "tag_ticket",

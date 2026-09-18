@@ -3240,6 +3240,7 @@ fn golden_compose_tags_120() {
             workspace: None,
             tags: vec![mesimon_core::board::TagRef { name: "BUG".into(), group: 1 }],
             description: None,
+            images: Vec::new(),
         },
         buffer,
     };
@@ -4060,6 +4061,7 @@ fn golden_composer_selector_120() {
             workspace: Some(mesimon_core::board::WorkspaceStrategy::Worktree),
             tags: Vec::new(),
             description: None,
+            images: Vec::new(),
         },
         buffer,
     };
@@ -4656,6 +4658,7 @@ fn the_composer_dialog_grows_out_of_its_card() {
             workspace: None,
             tags: Vec::new(),
             description: None,
+            images: Vec::new(),
         },
         buffer,
     };
@@ -7033,4 +7036,44 @@ fn golden_mesophon_pair_and_revoke() {
     let idx = rows.iter().position(|r| matches!(r, SharingRow::ControlDevice(_))).unwrap();
     app.mode = Mode::Sharing { idx, editing: None, armed: true };
     golden("mesophon_revoke_80x24", &render(&app, 80, 24));
+}
+
+#[test]
+fn golden_editor_picture_120() {
+    let mut app = app_noted();
+    app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
+    let body = format!(
+        "The failure appears here:\n[Image #1]({})\nExpected: the whole screenshot is visible.",
+        mesimon_core::attachment::target(ulid_n(91))
+    );
+    app.mode = Mode::Editor(editor_on(
+        crate::app::EditorPurpose::Note { ticket: ulid_n(3), note: Some(ulid_n(90)) },
+        "Fix OSC-11 detection",
+        &body,
+    ));
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("[Image #1]")));
+    assert!(!lines.iter().any(|l| l.contains("mesimon-attachment")));
+    golden("editor_picture_120x30", &lines);
+}
+
+#[test]
+fn golden_unavailable_picture_link_120() {
+    let mut app = app_noted();
+    app.mode = Mode::Links {
+        ticket: ulid_n(3),
+        idx: 0,
+        links: vec![crate::app::TicketLink {
+            label: Some("Image #1".into()),
+            text: mesimon_core::attachment::target(ulid_n(91)),
+            target: crate::app::LinkTarget::Attachment {
+                ticket: ulid_n(3),
+                attachment: ulid_n(91),
+            },
+        }],
+    };
+    let lines = render(&app, 120, 30);
+    assert!(lines.iter().any(|l| l.contains("image unavailable on this machine")));
+    assert!(!lines.iter().any(|l| l.contains("mesimon-attachment")));
+    golden("picture_link_unavailable_120x30", &lines);
 }

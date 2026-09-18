@@ -3,6 +3,8 @@
 //! and the M3.5 ticket screen (Enter opens it; the old session picker is its
 //! SESSIONS rail now).
 
+mod images;
+
 use std::cell::Cell;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
@@ -465,6 +467,8 @@ impl Default for Search {
 /// The note editor's state: a one-line title over a multi-line body.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Editor {
+    pub draft_id: ulid::Ulid,
+    pub images: Vec<crate::image_paste::DraftImage>,
     pub purpose: EditorPurpose,
     /// Composing: the new ticket's title, editable. On a note: the ticket's
     /// title, shown read-only on the same row so both purposes share a shape.
@@ -661,8 +665,20 @@ impl Editor {
         body: TextArea,
         focus: Field,
     ) -> Self {
+        let (plain, images) = if !matches!(purpose, EditorPurpose::Ask { .. }) {
+            crate::image_paste::unpack(body.as_str())
+        } else {
+            (body.as_str().to_string(), Vec::new())
+        };
+        let body = if images.is_empty() {
+            body
+        } else {
+            TextArea::from_text(&plain, mesimon_core::board::NOTE_MAX_BYTES)
+        };
         let baseline = (title.as_str().to_string(), body.as_str().to_string());
         Self {
+            draft_id: ulid::Ulid::new(),
+            images,
             purpose,
             title,
             body,
@@ -735,6 +751,10 @@ pub enum RailRow<'a> {
 /// path that is not a file are not links and never reach this.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LinkTarget {
+    Attachment {
+        ticket: ulid::Ulid,
+        attachment: ulid::Ulid,
+    },
     Url(String),
     Ticket(ulid::Ulid),
     /// An existing file under the ticket's directory (its worktree when
@@ -758,6 +778,7 @@ impl TicketLink {
     /// The row's kind word.
     pub fn kind(&self) -> &'static str {
         match self.target {
+            LinkTarget::Attachment { .. } => "image",
             LinkTarget::Url(_) => "url",
             LinkTarget::Ticket(_) => "ticket",
             LinkTarget::File { .. } => "file",
@@ -872,6 +893,7 @@ pub enum InputPurpose {
         /// (2026-09-04): `Tab` reopens the editor on it, and the mint writes
         /// it as `notes[0]` — the same shape as the tags.
         description: Option<String>,
+        images: Vec<crate::image_paste::DraftImage>,
     },
     Rename {
         id: ulid::Ulid,
@@ -1015,6 +1037,7 @@ pub enum Doomed {
 }
 
 pub struct App {
+    pending_paste: Option<crate::image_paste::Pending>,
     pub client: Box<dyn Transport>,
     pub repo_root: PathBuf,
     pub board: Board,
@@ -1439,6 +1462,7 @@ impl App {
             team_relay_draft: String::new(),
             team_name_draft: String::new(),
             team_drafts_seeded: false,
+            pending_paste: None,
             share_notes: true,
             join_watch: None,
             pending_switch: None,
@@ -2033,7 +2057,7 @@ impl App {
 
     /// Poll one terminal event; returns whether a redraw is needed.
     pub fn tick(&mut self) -> Result<bool> {
-        let mut dirty = false;
+        let mut dirty = self.poll_image_paste();
         // A transport-level advisory (build skew that would not settle) joins
         // the daemon's own notices in the advisory row.
         if let Some(n) = self.client.take_notice() {
@@ -3800,7 +3824,7 @@ impl App {
                 // Shift+Tab still changes it.
                 let workspace = self.cursor_column().and_then(|c| c.settings.workspace);
                 self.mode = Mode::Input {
-                    purpose: InputPurpose::Create { workspace, tags: Vec::new(), description: None },
+                    purpose: InputPurpose::Create { workspace, tags: Vec::new(), description: None, images: Vec::new() },
                     buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
                 };
             }
@@ -4805,7 +4829,8 @@ impl App {
             | Verb::EditorNewline
             | Verb::EditorUp
             | Verb::EditorDown
-            | Verb::EditorExternal => {}
+            | Verb::EditorExternal
+            | Verb::EditorPaste => {}
         }
         Ok(())
     }
@@ -6576,15 +6601,21 @@ impl App {
             // the delivery toggle rides along.
             Some(Verb::Describe) => {
                 let mut ed = match purpose {
-                    InputPurpose::Create { workspace, tags, description } => Editor::new(
-                        EditorPurpose::Compose { workspace, tags },
-                        buffer,
-                        TextArea::from_text(
-                            description.as_deref().unwrap_or(""),
-                            mesimon_core::board::NOTE_MAX_BYTES,
-                        ),
-                        Field::Body,
-                    ),
+                    InputPurpose::Create { workspace, tags, description, images } => {
+                        let mut editor = Editor::new(
+                            EditorPurpose::Compose { workspace, tags },
+                            buffer,
+                            TextArea::from_text(
+                                description.as_deref().unwrap_or(""),
+                                mesimon_core::board::NOTE_MAX_BYTES,
+                            ),
+                            Field::Body,
+                        );
+                        if !images.is_empty() {
+                            editor.images = images;
+                        }
+                        editor
+                    }
                     InputPurpose::Prompt { target, queued, .. } => {
                         self.ask_room(target, queued, buffer.as_str())
                     }
@@ -6839,6 +6870,19 @@ impl App {
             Some(Verb::Cancel) => return self.editor_cancel(ed),
             Some(Verb::EditorSave) => return self.editor_save(ed),
             Some(Verb::EditorSaveStart) => return self.editor_save_start(ed),
+            Some(Verb::EditorPaste) => {
+                if self.pending_paste.is_some() {
+                    self.status = "clipboard read already pending".into();
+                } else if ed.focus == Field::Body && !ed.asking() {
+                    match crate::image_paste::start(ed.draft_id, ed.body.clone()) {
+                        Ok(pending) => {
+                            self.pending_paste = Some(pending);
+                            self.status = "reading clipboard".into();
+                        }
+                        Err(e) => self.status = e.to_string(),
+                    }
+                }
+            }
             Some(Verb::EditorExternal) => {
                 // Parked for the main loop, which owns the terminal; the
                 // editor stays open underneath and `external_edit_done`
@@ -7090,7 +7134,7 @@ impl App {
         };
         let description = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
         self.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace, tags, description },
+            purpose: InputPurpose::Create { workspace, tags, description, images: ed.images },
             buffer: ed.title,
         };
     }
@@ -7106,6 +7150,11 @@ impl App {
     /// the title, "like new"; a Sleeping claude holds the seat and has no
     /// pane to type at, so the keymap leaves the key inert there.
     fn editor_save_start(&mut self, mut ed: Editor) -> Result<()> {
+        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
+            self.status = "clipboard read pending".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
         match ed.purpose.clone() {
             // Unbound in the ask room; the one thing the press could mean.
             EditorPurpose::Ask { .. } => self.editor_send(ed),
@@ -7118,7 +7167,7 @@ impl App {
                 }
                 let body = Some(ed.body.as_str().to_string()).filter(|b| !b.trim().is_empty());
                 self.mode = Mode::Normal;
-                self.mint_ticket(title, workspace, tags, body, true)
+                self.mint_ticket_with_images(title, workspace, tags, body, ed.images, true)
             }
             EditorPurpose::Note { ticket, note } => {
                 let body = ed.body.as_str().to_string();
@@ -7178,9 +7227,31 @@ impl App {
         body: String,
     ) -> Result<Option<ulid::Ulid>> {
         let created = note.is_none();
-        match self.req(Command::WriteNote { ticket, note, text: body.clone() }) {
+        let (body, images, uploads) = match self.upload_draft(&body, &ed.images) {
+            Ok(result) => result,
+            Err(e) => {
+                self.status = format!("could not save pictures: {e}");
+                return Ok(None);
+            }
+        };
+        let command = if uploads.is_empty() {
+            Command::WriteNote { ticket, note, text: body.clone() }
+        } else {
+            Command::SaveNoteWithAttachments {
+                ticket,
+                note,
+                text: body.clone(),
+                uploads: uploads.clone(),
+            }
+        };
+        let response = self.req(command);
+        if !uploads.is_empty() {
+            let _ = self.req(Command::DiscardAttachmentUploads { uploads });
+        }
+        match response {
             Response::NoteWritten { note: Some(id) } => {
                 ed.purpose = EditorPurpose::Note { ticket, note: Some(id) };
+                ed.images = images;
                 ed.saved();
                 self.refresh()?;
                 // A fresh note that landed first IS the description now,
@@ -7210,6 +7281,11 @@ impl App {
     /// Shift+Enter mints and asks. A note is written and the editor closes; a
     /// clean one just closes. Telling the ticket's claude is `^S`'s.
     fn editor_save(&mut self, mut ed: Editor) -> Result<()> {
+        if self.pending_paste.as_ref().is_some_and(|p| p.editor == ed.draft_id && !p.timed_out) {
+            self.status = "clipboard read pending".into();
+            self.mode = Mode::Editor(ed);
+            return Ok(());
+        }
         match ed.purpose.clone() {
             EditorPurpose::Ask { .. } => self.editor_send(ed),
             EditorPurpose::Compose { .. } => {
@@ -8191,8 +8267,8 @@ impl App {
             return Ok(());
         }
         match purpose {
-            InputPurpose::Create { workspace, tags, description } => {
-                self.mint_ticket(title, workspace, tags, description, start)?;
+            InputPurpose::Create { workspace, tags, description, images } => {
+                self.mint_ticket_with_images(title, workspace, tags, description, images, start)?;
             }
             InputPurpose::Rename { id } => {
                 self.send(Command::RenameTicket { id, title })?;
@@ -8219,17 +8295,52 @@ impl App {
     /// picked before it had an id: the workspace, the tags, and — from the
     /// editor — the description as its first note. `start` is Shift+Enter's
     /// half: claude on the title, submitted.
-    fn mint_ticket(
+    fn mint_ticket_with_images(
         &mut self,
         title: String,
         workspace: Option<WorkspaceStrategy>,
         tags: Vec<TagRef>,
         description: Option<String>,
+        images: Vec<crate::image_paste::DraftImage>,
         start: bool,
     ) -> Result<()> {
         let cols = self.columns();
         let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
-        match self.req(Command::CreateTicket { column, title, workspace }) {
+        let recovery = Mode::Input {
+            purpose: InputPurpose::Create {
+                workspace,
+                tags: tags.clone(),
+                description: description.clone(),
+                images: images.clone(),
+            },
+            buffer: EditBuffer::from_text(title.clone(), mesimon_core::board::TITLE_MAX_BYTES),
+        };
+        let with_images = images
+            .iter()
+            .any(|i| description.as_deref().unwrap_or("").contains(&crate::image_paste::marker(i)));
+        let command = if with_images {
+            match self.upload_draft(description.as_deref().unwrap_or(""), &images) {
+                Ok((text, _, uploads)) => {
+                    Command::CreateTicketWithNote { column, title, workspace, text, uploads }
+                }
+                Err(e) => {
+                    self.status = format!("could not save pictures: {e}");
+                    self.mode = recovery;
+                    return Ok(());
+                }
+            }
+        } else {
+            Command::CreateTicket { column, title, workspace }
+        };
+        let uploads = match &command {
+            Command::CreateTicketWithNote { uploads, .. } => uploads.clone(),
+            _ => Vec::new(),
+        };
+        let response = self.req(command);
+        if !uploads.is_empty() {
+            let _ = self.req(Command::DiscardAttachmentUploads { uploads });
+        }
+        match response {
             Response::Created { id, started } => {
                 // Tags picked with `^t` while the ticket was still
                 // being named, replayed now that it has an id.
@@ -8237,7 +8348,7 @@ impl App {
                     let _ =
                         self.req(Command::SetTag { id, group: tag.group, name: Some(tag.name) });
                 }
-                if let Some(text) = description {
+                if let Some(text) = description.filter(|_| !with_images) {
                     if let Response::Err { message } =
                         self.req(Command::WriteNote { ticket: id, note: None, text })
                     {
@@ -8267,10 +8378,15 @@ impl App {
             }
             Response::Err { message } => {
                 self.status = message;
+                self.mode = recovery;
                 self.refresh()?;
             }
             // Pre-Created daemon (rebuild trap): plain Ok, no id to select.
-            _ => self.refresh()?,
+            _ => {
+                self.mode = recovery;
+                self.status = "ticket save was not acknowledged".into();
+                self.refresh()?;
+            }
         }
         Ok(())
     }
@@ -8743,6 +8859,10 @@ impl App {
         use mesimon_core::links::{extract, Found};
         for link in extract(body) {
             let (text, target) = match link.target {
+                Found::Attachment(attachment) => (
+                    mesimon_core::attachment::target(attachment),
+                    LinkTarget::Attachment { ticket, attachment },
+                ),
                 Found::Url(u) => (u.clone(), LinkTarget::Url(u)),
                 Found::Ticket(key) => match self.board.ticket_by_key(&key) {
                     Some(other) if other.id != ticket => (key, LinkTarget::Ticket(other.id)),
@@ -8821,6 +8941,23 @@ impl App {
     fn open_link(&mut self, link: TicketLink) {
         match link.target {
             LinkTarget::Url(url) => self.open_outside(url),
+            LinkTarget::Attachment { ticket, attachment } => {
+                match self.req(Command::ReadAttachment { ticket, attachment }) {
+                    Response::Attachment { .. } => {
+                        if let Some(t) = self.board.ticket(ticket) {
+                            let path = self
+                                .repo_root
+                                .join(".mesimon/board/tickets")
+                                .join(&t.short_key)
+                                .join("attachments")
+                                .join(format!("{attachment}.png"));
+                            self.open_outside(path.display().to_string());
+                        }
+                    }
+                    Response::Err { message } => self.status = message,
+                    _ => self.status = "could not open picture".into(),
+                }
+            }
             LinkTarget::File { path, line } => {
                 if file_is_text(&path) {
                     let command = crate::external::command();
@@ -9031,6 +9168,19 @@ pub(crate) mod test_support {
         fn request(&mut self, command: Command) -> Result<Response> {
             self.sent.borrow_mut().push(format!("{command:?}"));
             match command {
+                Command::UploadAttachment { upload, .. } => {
+                    return Ok(Response::AttachmentUploaded {
+                        upload: upload.unwrap_or_else(ulid::Ulid::new),
+                    })
+                }
+                Command::CreateTicketWithNote { column, title, workspace, text, .. } => {
+                    let created =
+                        self.request(Command::CreateTicket { column, title, workspace })?;
+                    if let Response::Created { id, .. } = created {
+                        self.request(Command::WriteNote { ticket: id, note: None, text })?;
+                    }
+                    return Ok(created);
+                }
                 Command::DuplicateTicket { id } => {
                     let Some(mut ticket) = self.board.ticket(id).cloned() else {
                         return Ok(Response::Err { message: "no such ticket".into() });
@@ -9149,7 +9299,8 @@ pub(crate) mod test_support {
                         _ => Response::Err { message: "no such note".into() },
                     });
                 }
-                Command::WriteNote { ticket, note, text } => {
+                Command::WriteNote { ticket, note, text }
+                | Command::SaveNoteWithAttachments { ticket, note, text, .. } => {
                     let Some(t) = self.board.tickets.iter_mut().find(|t| t.id == ticket) else {
                         return Ok(Response::Err { message: "no such ticket".into() });
                     };
@@ -11389,7 +11540,12 @@ mod tests {
     fn paste_into_the_composer_is_one_title() {
         let (mut app, sent) = App::for_test_logged(board_three_columns(), theme(), false);
         app.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace: None, tags: Vec::new(), description: None },
+            purpose: InputPurpose::Create {
+                workspace: None,
+                tags: Vec::new(),
+                description: None,
+                images: Vec::new(),
+            },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
         assert!(app.on_paste("fix the\nauth bug\n").unwrap());
@@ -11509,7 +11665,12 @@ mod tests {
         assert!(app.status.contains("an ask holds at most 4 KB"), "{}", app.status);
         // The composer's limit is the title's, and the words say so.
         app.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace: None, tags: Vec::new(), description: None },
+            purpose: InputPurpose::Create {
+                workspace: None,
+                tags: Vec::new(),
+                description: None,
+                images: Vec::new(),
+            },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
         app.on_paste(&"y".repeat(mesimon_core::board::TITLE_MAX_BYTES + 1)).unwrap();
@@ -11528,7 +11689,12 @@ mod tests {
         use mesimon_core::board::TAG_MAX_BYTES;
         let mut app = app_three_columns();
         app.mode = Mode::Input {
-            purpose: InputPurpose::Create { workspace: None, tags: Vec::new(), description: None },
+            purpose: InputPurpose::Create {
+                workspace: None,
+                tags: Vec::new(),
+                description: None,
+                images: Vec::new(),
+            },
             buffer: EditBuffer::new(mesimon_core::board::TITLE_MAX_BYTES),
         };
         app.tag_armed =
@@ -15995,5 +16161,176 @@ mod tests {
         let ctx = app.ctx();
         app.dispatch(Verb::SettingsAgents, Key::Enter, Scope::Settings, &ctx).unwrap();
         assert!(!app.ctx().pref_scope_offered, "nothing under Agents is a preference");
+    }
+    fn queued_picture(
+        app: &mut App,
+        result: std::result::Result<crate::image_paste::Pasted, String>,
+    ) {
+        let ed = editor(app);
+        let (tx, rx) = std::sync::mpsc::channel();
+        app.pending_paste = Some(crate::image_paste::Pending {
+            started: Instant::now(),
+            timed_out: false,
+            editor: ed.draft_id,
+            body: ed.body.clone(),
+            result: rx,
+        });
+        tx.send(result).unwrap();
+    }
+
+    #[test]
+    fn pictures_insert_at_the_cursor_and_save_as_links_without_showing_ids() {
+        let (mut app, sent) = app_with_note();
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        app.on_paste("before after").unwrap();
+        if let Mode::Editor(ed) = &mut app.mode {
+            for _ in 0..5 {
+                ed.body.left();
+            }
+        }
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1, 2, 3])));
+        assert!(app.poll_image_paste());
+        assert_eq!(editor(&app).body.as_str(), "before [Image #1]after");
+        assert!(editor(&app).dirty());
+        let ed = editor(&app).clone();
+        app.editor_save(ed).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(sent
+            .borrow()
+            .iter()
+            .any(|c| c.contains("SaveNoteWithAttachments") && c.contains("mesimon-attachment:")));
+        let body = app
+            .notes
+            .values()
+            .filter_map(|n| n.text.as_deref())
+            .find(|b| b.contains("mesimon-attachment:"))
+            .unwrap();
+        let (plain, refs) = crate::image_paste::unpack(body);
+        assert_eq!(plain, "before [Image #1]after");
+        assert_eq!(refs.len(), 1);
+    }
+
+    #[test]
+    fn stale_clipboard_results_cannot_change_another_editor_or_a_changed_body() {
+        let (mut app, _) = app_with_note();
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1])));
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        assert!(!app.poll_image_paste());
+        assert!(editor(&app).images.is_empty());
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1])));
+        app.on_paste("typed meanwhile").unwrap();
+        assert!(app.poll_image_paste());
+        assert_eq!(editor(&app).body.as_str(), "typed meanwhile");
+        assert!(editor(&app).images.is_empty());
+        assert!(app.status.contains("paste again"));
+    }
+
+    #[test]
+    fn image_paste_errors_and_note_limit_do_not_insert_partial_markers() {
+        let (mut app, _) = app_with_note();
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        queued_picture(&mut app, Err("clipboard unavailable".into()));
+        app.poll_image_paste();
+        assert!(editor(&app).body.as_str().is_empty());
+        assert_eq!(app.status, "clipboard unavailable");
+        app.on_paste(&"x".repeat(mesimon_core::board::NOTE_MAX_BYTES - 5)).unwrap();
+        let before = editor(&app).body.clone();
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1])));
+        app.poll_image_paste();
+        assert_eq!(editor(&app).body, before);
+        assert!(editor(&app).images.is_empty());
+    }
+
+    #[test]
+    fn composer_folding_keeps_images_and_discard_does_not_upload() {
+        let (mut app, sent) = app_with_note();
+        app.mode = Mode::Editor(Editor::new(
+            EditorPurpose::Compose { workspace: None, tags: vec![] },
+            EditBuffer::from_text("new ticket".into(), mesimon_core::board::TITLE_MAX_BYTES),
+            TextArea::new(mesimon_core::board::NOTE_MAX_BYTES),
+            Field::Body,
+        ));
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1, 2])));
+        app.poll_image_paste();
+        let ed = editor(&app).clone();
+        app.editor_save(ed).unwrap();
+        let Mode::Input { purpose, buffer } = app.mode.clone() else { panic!("composer folded") };
+        let InputPurpose::Create { images, .. } = &purpose else { panic!() };
+        assert_eq!(images[0].png.as_deref(), Some(&[1, 2][..]));
+        assert!(!sent.borrow().iter().any(|s| s.contains("UploadAttachment")));
+        app.commit_input(purpose, buffer.into_text(), false).unwrap();
+        assert!(sent.borrow().iter().any(|s| s.contains("CreateTicketWithNote")));
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![3])));
+        app.poll_image_paste();
+        sent.borrow_mut().clear();
+        app.editor_cancel(editor(&app).clone()).unwrap();
+        app.editor_cancel(editor(&app).clone()).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        assert!(!sent.borrow().iter().any(|s| s.contains("UploadAttachment")));
+    }
+
+    #[test]
+    fn failed_image_save_keeps_the_draft_and_retry_succeeds() {
+        struct FailOnce {
+            inner: Box<dyn Transport>,
+            failed: bool,
+        }
+        impl Transport for FailOnce {
+            fn request(&mut self, command: Command) -> Result<Response> {
+                if !self.failed && matches!(command, Command::SaveNoteWithAttachments { .. }) {
+                    self.failed = true;
+                    return Ok(Response::Err { message: "disk full".into() });
+                }
+                self.inner.request(command)
+            }
+            fn poll_event(&mut self) -> bool {
+                false
+            }
+        }
+        let (mut app, sent) = app_with_note();
+        app.client = Box::new(FailOnce { inner: app.client, failed: false });
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Image(vec![1])));
+        app.poll_image_paste();
+        app.editor_save(editor(&app).clone()).unwrap();
+        assert_eq!(app.status, "disk full");
+        assert!(editor(&app).images[0].png.is_some());
+        assert!(editor(&app).dirty());
+        assert!(sent.borrow().iter().any(|s| s.contains("DiscardAttachmentUploads")));
+        app.editor_save(editor(&app).clone()).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+    }
+    #[test]
+    fn timed_out_clipboard_reads_do_not_block_save_or_apply_late_results() {
+        let (mut app, _) = app_with_note();
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        let ed = editor(&app).clone();
+        let (tx, result) = std::sync::mpsc::channel();
+        app.pending_paste = Some(crate::image_paste::Pending {
+            editor: ed.draft_id,
+            body: ed.body.clone(),
+            result,
+            started: Instant::now() - Duration::from_secs(4),
+            timed_out: false,
+        });
+        assert!(app.poll_image_paste());
+        assert!(app.status.contains("timed out"));
+        app.editor_save(ed).unwrap();
+        assert_eq!(app.mode, Mode::Normal);
+        tx.send(Ok(crate::image_paste::Pasted::Image(vec![1]))).unwrap();
+        assert!(!app.poll_image_paste());
+        assert!(app.pending_paste.is_none());
+    }
+
+    #[test]
+    fn clipboard_text_paste_keeps_newlines_and_never_saves() {
+        let (mut app, sent) = app_with_note();
+        app.open_note_editor(ulid::Ulid(1), None).unwrap();
+        queued_picture(&mut app, Ok(crate::image_paste::Pasted::Text("one\r\ntwo\n".into())));
+        assert!(app.poll_image_paste());
+        assert_eq!(editor(&app).body.as_str(), "one\ntwo\n");
+        assert!(!sent.borrow().iter().any(|s| s.contains("WriteNote")));
     }
 }

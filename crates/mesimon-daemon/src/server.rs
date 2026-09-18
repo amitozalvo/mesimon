@@ -36,6 +36,7 @@ use crate::paths::Paths;
 use crate::store;
 use crate::worktree::{self, Binding, BindingStatus};
 
+mod attachments;
 mod mesophon;
 mod teamglue;
 
@@ -175,6 +176,7 @@ struct GraceEntry {
     /// resurrect a deleted ticket on the next load), so undo has nowhere
     /// else to get them back from. Bounded — `NOTE_MAX_BYTES` a note.
     notes: Vec<(ulid::Ulid, String)>,
+    attachments: Vec<(mesimon_core::attachment::Attachment, Vec<u8>)>,
 }
 
 /// Raised by the SIGTERM handler, honoured on the next wheel tick.
@@ -239,6 +241,7 @@ pub struct Daemon {
     board: Board,
     backend: TmuxBackend,
     grace: HashMap<ulid::Ulid, GraceEntry>,
+    uploads: crate::attachments::Uploads,
     subscribers: Vec<Arc<Mutex<UnixStream>>>,
     focus: Option<FocusHold>,
     shutting_down: bool,
@@ -693,6 +696,7 @@ pub fn run(paths: Paths) -> Result<()> {
         board,
         backend,
         grace: HashMap::new(),
+        uploads: Default::default(),
         subscribers: Vec::new(),
         focus: None,
         shutting_down: false,
@@ -1376,7 +1380,8 @@ impl Daemon {
         // and naming the resource here is what makes that rule reachable
         // rather than merely true.
         let resource = match &env.command {
-            Command::ImportTicket { column, .. } => Resource::Column { name: column.clone() },
+            Command::ImportTicket { column, .. } | Command::CreateTicketWithNote { column, .. } => Resource::Column { name: column.clone() },
+            Command::ReadAttachment { ticket, .. } | Command::SaveNoteWithAttachments { ticket, .. } => Resource::Ticket { id: *ticket },
             Command::PaneTail { session, .. } => Resource::Session { id: *session },
             // Same rule as the line above, for the pane the user is inside
             // (T-299). `Board` where nothing is focused: there is no session
@@ -1495,6 +1500,25 @@ impl Daemon {
             Command::TakeQueuedAsk { ticket } => self.take_queued_ask(ticket),
             Command::SetAutomation { merge_train, merge_notice } => {
                 self.set_automation(merge_train, merge_notice, stream)
+            }
+            Command::DiscardAttachmentUploads { uploads } => {
+                self.uploads.discard(stream, &uploads);
+                Response::Ok
+            }
+            Command::UploadAttachment { upload, offset, data, complete } => {
+                match self.uploads.chunk(stream, upload, offset, &data, complete) {
+                    Ok(upload) => Response::AttachmentUploaded { upload },
+                    Err(e) => Response::Err { message: format!("could not upload picture: {e:#}") },
+                }
+            }
+            Command::ReadAttachment { ticket, attachment } => {
+                self.read_attachment(ticket, attachment)
+            }
+            Command::SaveNoteWithAttachments { ticket, note, text, uploads } => {
+                self.save_note_with_attachments(stream, ticket, note, text, uploads)
+            }
+            Command::CreateTicketWithNote { column, title, workspace, text, uploads } => {
+                self.create_ticket_with_note(stream, column, title, workspace, text, uploads)
             }
             Command::ReadNote { ticket, note } => self.read_note(ticket, note),
             Command::WriteNote { ticket, note, text } => {
@@ -1677,6 +1701,7 @@ impl Daemon {
             Command::AgentGetTicket
             | Command::AgentListBoard
             | Command::AgentMoveTicket { .. }
+            | Command::AgentReadAttachment { .. }
             | Command::AgentReadNote { .. }
             | Command::AgentWriteNote { .. }
             | Command::AgentCreateTicket { .. }
@@ -1710,6 +1735,7 @@ impl Daemon {
     /// title typed. T-5 measured the ack at ~94 ms, so 500 ms is a wide
     /// margin; 10 attempts covers ~5 s of Claude startup.
     fn on_tick(&mut self) {
+        self.uploads.prune();
         self.ticks += 1;
         self.team_tick();
         self.control_tick();
@@ -3194,6 +3220,16 @@ impl Daemon {
             }
             // The note tools: the ticket is the binding's, and a note id off
             // it reads as "no such note" inside the handlers.
+            Command::AgentReadAttachment { attachment } => {
+                if let Decision::Deny { reason } = authorize(
+                    &Principal::Agent { session },
+                    &Action::Read,
+                    &Resource::Ticket { id: ticket },
+                ) {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                self.read_attachment(ticket, attachment)
+            }
             Command::AgentReadNote { note } => {
                 let by = Principal::Agent { session };
                 if let Decision::Deny { reason } =
@@ -3252,7 +3288,7 @@ impl Daemon {
                 let by = Principal::Agent { session };
                 self.agent_raise_hand(&by, ticket, &reason)
             }
-            // Unreachable: `agent_allows` above admits exactly eight commands.
+            // Unreachable: `agent_allows` above admits exactly nine commands.
             _ => Response::Err { message: "not available to an agent session".into() },
         }
     }
@@ -4600,6 +4636,10 @@ impl Daemon {
                 }
             }
         }
+        let attachments = match crate::attachments::collect(&self.paths, &source.short_key) {
+            Ok(images) => images,
+            Err(e) => return Response::Err { message: format!("could not copy pictures: {e:#}") },
+        };
         let column = self.board.column_tickets(&source.column);
         let next = column.iter().position(|t| t.id == id).and_then(|i| column.get(i + 1));
         let order = fracindex::between(&source.order, next.map_or("", |t| t.order.as_str()));
@@ -4635,6 +4675,9 @@ impl Daemon {
             note.id = ulid::Ulid::new();
         }
         let saved = (|| -> Result<()> {
+            for (meta, bytes) in &attachments {
+                crate::attachments::save(&self.paths, &ticket.short_key, meta, bytes)?;
+            }
             for (note, body) in ticket.notes.iter().zip(bodies) {
                 store::save_note(&self.paths, &ticket.short_key, note.id, &body)?;
             }
@@ -4752,6 +4795,15 @@ impl Daemon {
         let Some(pos) = self.board.tickets.iter().position(|t| t.id == id) else {
             return no_such_ticket();
         };
+        let attachments =
+            match crate::attachments::collect(&self.paths, &self.board.tickets[pos].short_key) {
+                Ok(images) => images,
+                Err(e) => {
+                    return Response::Err {
+                        message: format!("could not preserve pictures for undo: {e:#}"),
+                    }
+                }
+            };
         // M4 delete gate (defense in depth — the TUI prompts first): an
         // unmerged worktree must be merged or explicitly discarded.
         if !discard_worktree {
@@ -4800,6 +4852,7 @@ impl Daemon {
                 expires: Instant::now() + Duration::from_secs(GRACE_SECS),
                 discard_worktree,
                 notes,
+                attachments,
             },
         );
         self.persist_and_notify();
@@ -6143,6 +6196,13 @@ impl Daemon {
         let Some(mut g) = self.grace.remove(&id) else {
             return Response::Err { message: "grace window expired".into() };
         };
+        for (meta, bytes) in &g.attachments {
+            if let Err(e) = crate::attachments::save(&self.paths, &g.ticket.short_key, meta, bytes)
+            {
+                self.grace.insert(id, g);
+                return Response::Err { message: format!("could not restore pictures: {e:#}") };
+            }
+        }
         // Bodies back before the metadata that lists them, the same order
         // `write_note` keeps: an orphan file is harmless, a listed note with
         // no file is the editor's dead end. One whose body could not be read

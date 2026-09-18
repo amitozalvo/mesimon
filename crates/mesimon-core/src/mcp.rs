@@ -209,6 +209,14 @@ pub fn tools() -> Vec<Value> {
             "annotations": { "readOnlyHint": true },
         }),
         json!({
+            "name": "read_attachment",
+            "description": "Returns one PNG picture on this session's ticket as image content. Attachment ids appear in mesimon-attachment links in the description and notes.",
+            "inputSchema": { "type": "object", "properties": {
+                "attachment": { "type": "string", "description": "An attachment id from a note's image link." }
+            }, "required": ["attachment"], "additionalProperties": false },
+            "annotations": { "readOnlyHint": true },
+        }),
+        json!({
             "name": "write_note",
             "description": "Creates a markdown note on this session's ticket, or replaces \
                             the whole text of an existing one. The first note is the \
@@ -346,6 +354,9 @@ pub enum ToolCall {
         to_column: String,
         idempotency_key: Option<String>,
     },
+    ReadAttachment {
+        attachment: ulid::Ulid,
+    },
     ReadNote {
         note: ulid::Ulid,
     },
@@ -398,6 +409,14 @@ pub fn parse_tool_call(name: &str, args: &Value) -> Result<ToolCall, String> {
                     .map(str::to_string),
             })
         }
+        "read_attachment" => Ok(ToolCall::ReadAttachment {
+            attachment: args
+                .get("attachment")
+                .and_then(Value::as_str)
+                .ok_or("read_attachment requires an attachment id")?
+                .parse()
+                .map_err(|_| "not an attachment id")?,
+        }),
         "read_note" => Ok(ToolCall::ReadNote {
             note: note_id(args, true)?.ok_or("read_note requires a note id")?,
         }),
@@ -521,7 +540,7 @@ fn note_id(args: &Value, required: bool) -> Result<Option<ulid::Ulid>, String> {
 /// update, it is a compile error.
 pub fn agent_allows(cmd: &Command) -> bool {
     match cmd {
-        // The tier. Eight tools, eight commands.
+        // The tier. Nine tools, nine commands.
         Command::AgentGetTicket
         | Command::AgentListBoard
         | Command::AgentMoveTicket { .. }
@@ -529,6 +548,7 @@ pub fn agent_allows(cmd: &Command) -> bool {
         // note is what D10 enumerated a tier for, and it is the one channel
         // through which the ticket's description reaches the agent without
         // a token entering its conversation.
+        | Command::AgentReadAttachment { .. }
         | Command::AgentReadNote { .. }
         | Command::AgentWriteNote { .. }
         // Minting a ticket. It is a MUTATE on a column, not on the board
@@ -613,6 +633,11 @@ pub fn agent_allows(cmd: &Command) -> bool {
         | Command::NoteToAgent { .. }
         // The local forms carry a ticket id; the agent forms above are the
         // same operations bound to the session's own ticket.
+        | Command::ReadAttachment { .. }
+        | Command::DiscardAttachmentUploads { .. }
+        | Command::UploadAttachment { .. }
+        | Command::SaveNoteWithAttachments { .. }
+        | Command::CreateTicketWithNote { .. }
         | Command::ReadNote { .. }
         | Command::WriteNote { .. }
         | Command::RestoreTicket { .. }
@@ -716,9 +741,10 @@ pub fn agent_allows(cmd: &Command) -> bool {
 /// command no tier ever admits, which `agent_allows` refuses first anyway.
 pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
     Some(match cmd {
-        Command::AgentGetTicket | Command::AgentListBoard | Command::AgentReadNote { .. } => {
-            AgentTools::Read
-        }
+        Command::AgentGetTicket
+        | Command::AgentListBoard
+        | Command::AgentReadNote { .. }
+        | Command::AgentReadAttachment { .. } => AgentTools::Read,
         Command::AgentWriteNote { .. }
         | Command::AgentTagTicket { .. }
         | Command::AgentRaiseHand { .. } => AgentTools::Annotate,
@@ -730,7 +756,7 @@ pub fn tier_needed_by(cmd: &Command) -> Option<AgentTools> {
 /// The same table by tool NAME, for the shim's `tools/list`.
 pub fn tier_needed_by_tool(name: &str) -> Option<AgentTools> {
     Some(match name {
-        "get_ticket" | "list_board" | "read_note" => AgentTools::Read,
+        "get_ticket" | "list_board" | "read_note" | "read_attachment" => AgentTools::Read,
         "write_note" | "tag_ticket" | "raise_hand" => AgentTools::Annotate,
         "move_ticket" | "create_ticket" => AgentTools::Full,
         _ => return None,
@@ -787,10 +813,21 @@ mod tests {
             tools_for(tier).iter().map(|t| t["name"].as_str().unwrap().to_string()).collect()
         };
         assert!(names(AgentTools::Off).is_empty());
-        assert_eq!(names(AgentTools::Read), ["get_ticket", "list_board", "read_note"]);
+        assert_eq!(
+            names(AgentTools::Read),
+            ["get_ticket", "list_board", "read_note", "read_attachment"]
+        );
         assert_eq!(
             names(AgentTools::Annotate),
-            ["get_ticket", "list_board", "read_note", "write_note", "tag_ticket", "raise_hand"]
+            [
+                "get_ticket",
+                "list_board",
+                "read_note",
+                "read_attachment",
+                "write_note",
+                "tag_ticket",
+                "raise_hand"
+            ]
         );
         assert_eq!(tools_for(AgentTools::Full).len(), tools().len(), "full is everything");
         for t in tools() {
@@ -803,6 +840,7 @@ mod tests {
             (Command::AgentGetTicket, "get_ticket"),
             (Command::AgentListBoard, "list_board"),
             (Command::AgentReadNote { note: ulid::Ulid::nil() }, "read_note"),
+            (Command::AgentReadAttachment { attachment: ulid::Ulid::nil() }, "read_attachment"),
             (Command::AgentWriteNote { note: None, text: "x".into() }, "write_note"),
             (
                 Command::AgentTagTicket { name: "x".into(), group: None, remove: false },
@@ -842,8 +880,12 @@ mod tests {
     /// tier that lists it (T-362).
     #[test]
     fn allowed_tools_are_the_read_rung_only() {
-        let read =
-            ["mcp__mesimon__get_ticket", "mcp__mesimon__list_board", "mcp__mesimon__read_note"];
+        let read = [
+            "mcp__mesimon__get_ticket",
+            "mcp__mesimon__list_board",
+            "mcp__mesimon__read_note",
+            "mcp__mesimon__read_attachment",
+        ];
         assert!(allowed_tool_names(AgentTools::Off).is_empty());
         for tier in [AgentTools::Read, AgentTools::Annotate, AgentTools::Full] {
             assert_eq!(allowed_tool_names(tier), read, "{tier:?}");
@@ -870,9 +912,9 @@ mod tests {
     }
 
     #[test]
-    fn exactly_eight_tools() {
+    fn exactly_nine_tools() {
         let t = tools();
-        assert_eq!(t.len(), 8);
+        assert_eq!(t.len(), 9);
         let names: Vec<&str> = t.iter().filter_map(|v| v["name"].as_str()).collect();
         assert_eq!(
             names,
@@ -881,6 +923,7 @@ mod tests {
                 "list_board",
                 "move_ticket",
                 "read_note",
+                "read_attachment",
                 "write_note",
                 "create_ticket",
                 "tag_ticket",
@@ -1133,12 +1176,13 @@ mod tests {
     /// command an agent may send that no tool can reach would be a hole nobody
     /// is looking at.
     #[test]
-    fn the_tier_is_exactly_eight_commands() {
+    fn the_tier_is_exactly_nine_commands() {
         let allowed = [
             Command::AgentGetTicket,
             Command::AgentListBoard,
             Command::AgentMoveTicket { to_column: "X".into(), idempotency_key: None },
             Command::AgentReadNote { note: ulid::Ulid::nil() },
+            Command::AgentReadAttachment { attachment: ulid::Ulid::nil() },
             Command::AgentWriteNote { note: None, text: "x".into() },
             Command::AgentCreateTicket {
                 title: "x".into(),
@@ -1163,6 +1207,27 @@ mod tests {
         let t = ulid::Ulid::nil();
         let s = uuid::Uuid::nil();
         let denied = vec![
+            Command::UploadAttachment {
+                upload: None,
+                offset: 0,
+                data: "AA==".into(),
+                complete: false,
+            },
+            Command::DiscardAttachmentUploads { uploads: vec![t] },
+            Command::ReadAttachment { ticket: t, attachment: t },
+            Command::SaveNoteWithAttachments {
+                ticket: t,
+                note: None,
+                text: "x".into(),
+                uploads: vec![],
+            },
+            Command::CreateTicketWithNote {
+                column: "TODO".into(),
+                title: "x".into(),
+                workspace: None,
+                text: "x".into(),
+                uploads: vec![],
+            },
             Command::SetAgentProvider { provider: crate::board::AgentProvider::Codex },
             Command::SetParkAfterMinutes { minutes: 30 },
             Command::Hello { version: 1, client: "x".into() },

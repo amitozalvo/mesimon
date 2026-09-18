@@ -165,6 +165,10 @@ pub(crate) const SHARED: u32 = 0o644;
 /// (`mesimon-tui/src/prefs.rs`), which wants the same crash-safety and no
 /// second copy of it.
 pub fn write_atomic(path: &Path, content: &str, mode: u32) -> Result<()> {
+    write_atomic_bytes(path, content.as_bytes(), mode)
+}
+
+pub fn write_atomic_bytes(path: &Path, content: &[u8], mode: u32) -> Result<()> {
     // 13 §13.9.1: temp + fsync + rename + directory fsync. Without the fsync
     // a crash between write and rename leaves a truncated file — precisely
     // the malformed input `load` now has to quarantine, so this is the
@@ -193,7 +197,7 @@ pub fn write_atomic(path: &Path, content: &str, mode: u32) -> Result<()> {
             .open(&tmp)?;
         // `mode` only applies at creation; a leftover temp keeps its old bits.
         f.set_permissions(std::os::unix::fs::PermissionsExt::from_mode(mode))?;
-        std::io::Write::write_all(&mut f, content.as_bytes())?;
+        std::io::Write::write_all(&mut f, content)?;
         f.sync_all()?;
     }
     std::fs::rename(&tmp, path)?;

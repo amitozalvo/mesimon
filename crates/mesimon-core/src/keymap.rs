@@ -737,6 +737,7 @@ pub enum Verb {
     /// editor's write. The key is the one Claude Code teaches for exactly
     /// this ("open in external editor").
     EditorExternal,
+    EditorPaste,
 }
 
 /// 04 §2.0's legend. `Grace` actions land in the undo band; `Arm` actions name
@@ -5175,6 +5176,17 @@ static SEARCH: &[Binding] = &[
 /// (a tab is not a body character; `sanitize_note` turns one into a space),
 /// and `{ }` are text here — paging is `pgup`/`pgdn`.
 static EDITOR: &[Binding] = &[
+    Binding {
+        keys: &[Key::Ctrl('v')],
+        verb: Verb::EditorPaste,
+        show: "^v",
+        hint: |_| "paste",
+        avail: |c| c.editor_body && !c.editor_asking,
+        class: Class::Plain,
+        group: Group::Navigate,
+        mutates: false,
+        prio: 0,
+    },
     Binding {
         // Save, and leave the dialog — either way (2026-09-04, user request:
         // "^s should just save, and exit the composer to go back to the

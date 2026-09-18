@@ -1,0 +1,30 @@
+ NOTE   mesimon › kanban-tui › Fix OSC-11 detection
+
+ DESCRIPTION ∙ ⎇ shared ∙ edited by you >1y ago
+
+ The failure appears here:
+ [Image #1]
+ Expected: the whole screenshot is visible.
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ ^s save ∙ esc close

@@ -9,6 +9,17 @@ daemon keeps everything alive when the TUI closes.
 dogfooded daily, and it will change under you. The current version and its history live in
 [CHANGELOG.md](CHANGELOG.md); see [TESTING.md](TESTING.md) for what is useful to report.
 
+Pictures can be pasted into a ticket note or new-ticket description with **Ctrl+V**
+while the body is focused. Each appears as `[Image #N]`; save keeps the PNG with the
+ticket, and the note's **Ctrl+K** links menu opens it in your desktop image viewer.
+The ticket's agent can read pictures through `read_attachment`. Clipboard text still
+pastes as text. Local macOS, X11, and Wayland desktops are supported (Wayland needs
+clipboard data-control support); SSH and WSL image paste are not supported.
+Pictures are limited to 10 MiB and 25 megapixels each, with 50 MiB of pending
+pictures per draft. Discarding a draft discards its new pictures. Shared boards
+currently synchronize the note text only: a picture absent on another machine is
+reported as unavailable there.
+
 ## Three promises
 
 1. **A strict write allowlist.** On its own, mesimon writes only to `.mesimon/`,

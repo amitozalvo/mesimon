@@ -246,6 +246,22 @@ pub(super) fn draw_links(
                 let title = app.board.ticket(*id).map(|t| t.title.as_str()).unwrap_or("");
                 format!("{} ∙ {title}", l.text)
             }
+            (crate::app::LinkTarget::Attachment { ticket, attachment }, label) => {
+                let label = label.as_deref().unwrap_or("Picture");
+                let available = app.board.ticket(*ticket).is_some_and(|t| {
+                    app.repo_root
+                        .join(".mesimon/board/tickets")
+                        .join(&t.short_key)
+                        .join("attachments")
+                        .join(format!("{attachment}.png"))
+                        .is_file()
+                });
+                if available {
+                    format!("[{label}]")
+                } else {
+                    format!("[{label}] ∙ image unavailable on this machine")
+                }
+            }
             (_, Some(label)) => format!("{label} ∙ {}", l.text),
             (_, None) => l.text.clone(),
         };

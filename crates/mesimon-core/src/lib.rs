@@ -6,6 +6,7 @@
 //! on every mutation path anyway.
 
 pub mod adopt;
+pub mod attachment;
 pub mod attention;
 pub mod authorize;
 pub mod automove;

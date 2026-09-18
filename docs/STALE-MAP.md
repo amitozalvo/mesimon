@@ -11334,3 +11334,46 @@ cwd line was written); that test now waits for the actual line under its origina
 deadline. Both initial failures are recorded as failures, followed by passing
 final checks. Initial sandbox-denied process/socket checks were rerun with
 command-scoped permission; they are not counted as passes.
+
+
+### T-402 — clipboard pictures belong to the ticket, referenced by notes
+
+Ctrl+V in a note or description body reads the local desktop clipboard on a worker
+thread. macOS, X11 and Wayland use arboard (Wayland requires data-control support);
+SSH and WSL refuse image reads without touching the remote/host clipboard. Text
+falls back to the existing paste rules. A result applies only to the originating,
+unchanged editor; save waits for its pending read for up to three seconds. A
+timed-out result is ignored and editing/saving remains available; at most one
+clipboard worker remains in flight. The editor displays `[Image #N]`
+and retains PNG bytes in its draft, including while the composer is folded. Disk
+and upload errors retain that draft for retry; cancel does not upload anything.
+
+Saved Markdown uses `[Image #N](mesimon-attachment:<ULID>)`. The daemon assigns the
+permanent ID and writes `attachments/<id>.png` and a small JSON metadata file next
+to the ticket's notes, before publishing their references. Connection-owned,
+256 KiB upload chunks respect the existing 1 MiB request cap. Staging is bounded
+at 50 MiB across the daemon, removed on commit/discard/disconnect or after ten idle
+minutes; every image is validated as PNG and capped at 10 MiB/25 megapixels. The
+TUI also caps pending pictures at 50 MiB per draft. No image bytes enter snapshots.
+
+The existing links menu opens pictures with the desktop opener. `read_attachment`
+is a descriptive, read-only MCP tool bound to the calling session's ticket and
+returns image content. Description/note Markdown exposes the IDs and labels.
+Duplication copies pictures; archive and delete/undo preserve them. Removing a
+reference or note keeps saved pictures until the ticket itself is deleted. Shared
+boards transfer only Markdown in this version: missing local pictures remain
+visible as links, labelled unavailable, and reads return an explicit error. No
+shared-board blob transport or terminal inline image protocol was added.
+
+Dependencies pin image 0.25.6 and lock Wayland protocols to 0.32.12 so the added
+clipboard path does not raise the workspace's Rust 1.85 minimum. Existing ticket
+metadata and text-only note commands retain their wire format.
+
+Validation: the full macOS nextest suite passed 1,604 tests, and the Debian 12 /
+tmux 3.3a suite passed 1,599, both with clean fixture audits. The same 15 existing
+ignored tests remain (external PostgreSQL/browser/live-release infrastructure,
+a timing probe, and a subprocess helper). Initial Codex lifecycle timing failures
+passed on reruns with lower concurrency; no lifecycle assertions were changed.
+Workspace Clippy with warnings denied, formatting, and whitespace checks passed.
+The two new rendering goldens were inspected. Native desktop clipboard gestures
+were not manually exercised from the managed agent pane.

@@ -561,6 +561,12 @@ fn link(chars: &[char], i: usize, emph: Emph) -> Option<(Vec<Run>, usize)> {
     let label: String = chars[open + 1..close].iter().collect();
     let url: String = chars[close + 2..end].iter().collect();
     let url = url.trim().to_string();
+    if mesimon_core::attachment::parse_target(&url).is_some() {
+        return Some((
+            vec![Run { text: format!("[{label}]"), emph: Emph { em: true, ..emph } }],
+            end + 1,
+        ));
+    }
     if label.trim().is_empty() && url.is_empty() {
         return None;
     }
@@ -894,6 +900,15 @@ mod tests {
     /// The whole point: `**x**` must not reach the screen as four asterisks,
     /// and the emphasis it carries is a step up the ramp plus weight — never
     /// SGR 3, which 06 §5.1 bans and `test_no_banned_sgr` enforces.
+    #[test]
+    fn picture_references_render_as_compact_labels() {
+        let body = format!(
+            "See [Image #2]({}) here.",
+            mesimon_core::attachment::target(ulid::Ulid::nil())
+        );
+        assert_eq!(plain(&render(&body, 80, 3, &dark())), vec!["See [Image #2] here."]);
+    }
+
     #[test]
     fn emphasis_is_a_value_step_never_a_slant() {
         let t = dark();

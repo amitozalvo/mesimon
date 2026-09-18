@@ -274,6 +274,37 @@ pub enum Command {
         #[serde(default)]
         queued: bool,
     },
+    /// Release uncommitted uploads owned by this connection.
+    DiscardAttachmentUploads {
+        uploads: Vec<ulid::Ulid>,
+    },
+    /// A base64 PNG chunk. The first chunk mints a connection-owned handle.
+    UploadAttachment {
+        upload: Option<ulid::Ulid>,
+        offset: usize,
+        data: String,
+        complete: bool,
+    },
+    /// Read a ticket-local PNG on demand; image bytes never ride snapshots.
+    ReadAttachment {
+        ticket: ulid::Ulid,
+        attachment: ulid::Ulid,
+    },
+    /// Commit completed upload handles before publishing the note references.
+    SaveNoteWithAttachments {
+        ticket: ulid::Ulid,
+        note: Option<ulid::Ulid>,
+        text: String,
+        uploads: Vec<ulid::Ulid>,
+    },
+    /// Publish pictures and description before starting any column automation.
+    CreateTicketWithNote {
+        column: String,
+        title: String,
+        workspace: Option<crate::board::WorkspaceStrategy>,
+        text: String,
+        uploads: Vec<ulid::Ulid>,
+    },
     /// One note's body, read whole. Bodies never ride the snapshot (a note
     /// can be 32 KiB and the board is cloned on every event), so the ticket
     /// page asks for the one it is showing.
@@ -646,6 +677,9 @@ pub enum Command {
     /// One of the caller's own ticket's notes, whole. A `note` id off the
     /// ticket reads as "no such note" — the binding, not the id, is the
     /// authority.
+    AgentReadAttachment {
+        attachment: ulid::Ulid,
+    },
     AgentReadNote {
         note: ulid::Ulid,
     },
@@ -823,9 +857,12 @@ impl Command {
             | FocusQuiet
             | ReadNote { .. }
             | AgentGetTicket
+            | AgentReadAttachment { .. }
+            | ReadAttachment { .. }
             | AgentReadNote { .. }
             | AgentListBoard => m(Read, false, None),
-            CreateTicket { .. } => m(Mutate, true, None),
+            CreateTicketWithNote { .. } | CreateTicket { .. } => m(Mutate, true, None),
+            DiscardAttachmentUploads { .. } | UploadAttachment { .. } => m(Mutate, false, None),
             ImportTicket { .. } => m(Action::ImportContent, true, None),
             Mesophon { action: crate::mesophon::LocalAction::Status } => m(Read, false, None),
             Mesophon { .. } => m(Mutate, true, None),
@@ -864,6 +901,7 @@ impl Command {
             | DropQueuedAsk { ticket }
             | SpawnSession { ticket, .. }
             | AdoptTerminal { ticket }
+            | SaveNoteWithAttachments { ticket, .. }
             | WriteNote { ticket, .. }
             | NoteToAgent { ticket, .. } => m(Mutate, true, Some(*ticket)),
             // A column's worth of tickets: `subject` names one, so the
@@ -1194,6 +1232,14 @@ pub enum Response {
     Note {
         text: String,
         meta: crate::board::NoteMeta,
+    },
+    /// Receipt for one accepted upload chunk, including the first minted ID.
+    AttachmentUploaded {
+        upload: ulid::Ulid,
+    },
+    Attachment {
+        meta: crate::attachment::Attachment,
+        data: String,
     },
     /// WriteNote / AgentWriteNote's receipt: the note's id (minted on a
     /// create), or `None` when blank text deleted it.
