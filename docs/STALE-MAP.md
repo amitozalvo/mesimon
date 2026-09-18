@@ -11526,3 +11526,54 @@ the bug this ticket fixed.
 
 This closes T-405's last "Not done" line: a mixed claude/codex column is no longer
 named by the board's default word, because no column ask names a provider at all.
+
+## An unconfirmed Codex cleanup is a clock, not a latch (T-405 follow-up, 2026-09-19)
+
+**Found by dogfooding the block above.** The column ask on simbly's BACKLOG parked all 19 starts
+(feed: one `prompt_column`, nineteen `queued_start`) and **none ever drained**, on a board where
+nothing was working. The card said `starts ∙ after T-62 +6` and T-62 is an ARCHIVED ticket. The
+seven keys were `checkout_holders`, not asks ahead: seven Codex records with `codex_stopping`
+still set — one `Sleeping`, six `Exited`, on six live REVIEW tickets — and `quiet::is_working`
+counts such a record as owning the checkout. `drain_queue` takes an entry only from a QUIET
+checkout, so every queued ask on that board had been stuck for hours, and would have stayed
+stuck forever.
+
+**Nothing could clear it.** `codex_stopping` is lowered by the runtime's own `stopped` report,
+by `resume_session`, or by `sweep_codex_orphans` — which only looked at records whose ticket a
+person had DELETED. A crashed runtime on a LIVE ticket reports nothing, and no gesture reaches
+the flag: `kill_session` on a corpse sets it again (`server.rs:7463`), which is the rail's
+dismissal. `quiet.rs` stated the latch as doctrine — *"a Codex runtime that crashed before
+confirming cleanup keeps `codex_stopping` for good. The checkout stays owned."* True of the
+checkout; wrong about "for good", and the same shape T-403 had just fixed for the background park.
+
+**What changed.** `sweep_codex_orphans` lost the clause that was never the load-bearing one —
+that the ticket be gone. The evidence rung is untouched and is already the harsher act's (it is
+what lets this DELETE an orphan): pane absent, tmux endpoint absent when tmux answers nothing,
+no known conversation owner, `recovery_owner_absent`. On a clean verdict the outcome now forks
+in `on_codex_orphans_checked`: a record whose ticket is gone is dropped as before
+(`CodexOrphanReleased`), and one whose ticket still stands keeps its place on the rail and only
+loses `codex_stopping` and `observation_hold` (`CodexCleanupReleased`). Losing them releases the
+checkout (`quiet::is_working`) and, for a corpse, the agent seat (`holds_agent_seat`) — so the
+ticket can be worked again, which is what deleting the orphan has always done for its own.
+
+**The clock is on the live-ticket case only.** A deleted ticket past its undo window IS the
+acknowledgement a resume would have asked for (T-357's argument), so it releases on sight as
+before. A live ticket says nothing, so its cleanup must STAND `CODEX_CLEANUP_STALE_MS` (60 s,
+seam `MESIMON_CODEX_CLEANUP_STALE_MS`) before the sweep goes looking — well past the reaper's
+grace and any late `stopped`, and far short of the hours the flag used to stand for. Measured
+from `state_changed_at`; no stamp is lost evidence and lost evidence never means done, so such
+a record keeps its claim. The grace band still excludes a deletion inside its undo window.
+
+**Tests.** `codex_startup_recovery_e2e::a_crashed_runtime_on_a_live_ticket_releases_the_checkout`
+drives the synthetic runtime to the stuck state on a live ticket, seams the clock to zero, and
+asserts the flags fall, `quiet::is_working` goes false, the record stays on its ticket, and the
+feed says `CodexCleanupReleased`. `provider_e2e`'s orphan test is unchanged and still pins the
+refusal while a live endpoint answers. `pending_selection_without_identity_cannot_start_fresh`
+lost one line — it asserted `codex_stopping` was still set moments after the crash, which the
+sweep may now have cleared; what the rule is about (the generation, the single launch) is
+asserted beside it and stands.
+
+**Not done.** `queue_order` walks `column_tickets`, so a column the TUI is SORTING BY TAG (T-283)
+drains in an order that does not match what the eye reads — the card that looks first can be
+eighth in the queue. T-263's promise ("sort the cards to sort the queue") is only true on an
+unsorted column. Noticed while reading this board; not fixed here.

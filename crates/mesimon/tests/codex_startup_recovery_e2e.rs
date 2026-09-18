@@ -94,7 +94,10 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
                 }
             }
         }
-        assert!(record(&mut c, id).codex_stopping);
+        // Not `codex_stopping` any more: the sweep may already have proved
+        // the runtime gone and released the checkout (T-405). What the rule
+        // is about survives either way — the record, its identity, and the
+        // single launch behind it.
         assert_eq!(record(&mut c, id).codex_generation, old_generation);
         assert_eq!(
             std::fs::read_to_string(fixture.dir.join("launches.jsonl")).unwrap().lines().count(),
@@ -138,6 +141,75 @@ fn exercise(phase: &str, expected_resume: Option<Option<&str>>) {
     assert!(std::fs::read_to_string(paths.activity_log())
         .unwrap()
         .contains("unknown child processes may remain"));
+}
+
+/// T-405: a crashed runtime on a LIVE ticket must not own the checkout for
+/// good. T-357 released only the records whose ticket a person had deleted,
+/// and no gesture lowers `codex_stopping` otherwise — so every queued ask on
+/// the board waited forever behind a card that showed nothing working. On the
+/// same positive evidence the orphan sweep deletes an orphan for, the record
+/// here merely loses its cleanup flags and stays on its ticket's rail.
+#[test]
+fn a_crashed_runtime_on_a_live_ticket_releases_the_checkout() {
+    if !require_tmux() {
+        return;
+    }
+    let fixture = TestFixture::new("codex-cleanup-release");
+    let repo = fixture.dir.join("repo");
+    init_repo(&repo, "README.md", "Synthetic cleanup release.\n");
+    let script = fixture.dir.join("runtime.py");
+    std::fs::write(&script, RUNTIME).unwrap();
+    std::fs::set_permissions(&script, std::os::unix::fs::PermissionsExt::from_mode(0o700)).unwrap();
+    std::fs::write(fixture.dir.join("phase"), "before_selection").unwrap();
+    fixture.set_env("MESIMON_CODEX_RUNTIME_BIN", &script);
+    fixture.set_env("MESIMON_CODEX_BIN", fixture.dir.join("must-not-run-native"));
+    fixture.set_env("MESIMON_HOOK_BIN", env!("CARGO_BIN_EXE_mesimon"));
+    // The clock, not the rule: a live ticket's cleanup must STAND a while
+    // before the sweep looks for its runtime, and an e2e cannot wait 60 s.
+    fixture.set_env("MESIMON_CODEX_CLEANUP_STALE_MS", "0");
+    let paths = fixture.paths(&repo);
+    let _daemon = fixture.daemon(&repo);
+    let mut c = TestClient::connect(&paths.orch_sock());
+    assert!(matches!(
+        c.request(Command::SetAgentProvider { provider: AgentProvider::Codex }),
+        Response::Ok
+    ));
+    let ticket = match c.request(Command::CreateTicket {
+        column: "TODO".into(),
+        title: "cleanup release".into(),
+        workspace: None,
+    }) {
+        Response::Created { id, .. } => id,
+        response => panic!("create: {response:?}"),
+    };
+    let id = match c.request(Command::SpawnSession {
+        ticket,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        response => panic!("spawn: {response:?}"),
+    };
+    wait_until(Duration::from_secs(10), "the failed runtime claims the checkout", || {
+        let rec = record(&mut c, id);
+        rec.codex_stopping && mesimon_core::quiet::is_working(&rec)
+    });
+    // The ticket is still on the board — this is the case T-357 left out.
+    assert!(c.board().ticket(ticket).is_some());
+    wait_until(Duration::from_secs(60), "the sweep to release the checkout", || {
+        !record(&mut c, id).codex_stopping
+    });
+    let released = record(&mut c, id);
+    assert!(!mesimon_core::quiet::is_working(&released), "the checkout is free: {released:?}");
+    assert!(!released.observation_hold, "the observation hold goes with it");
+    assert_eq!(released.ticket, ticket, "the corpse stays on its ticket's rail");
+    // The feed says which release it was: the record stayed, so this is not
+    // the orphan's `CodexOrphanReleased`.
+    wait_until(Duration::from_secs(10), "the release to reach the feed", || {
+        std::fs::read_to_string(paths.activity_log())
+            .unwrap_or_default()
+            .contains("CodexCleanupReleased")
+    });
 }
 
 #[test]

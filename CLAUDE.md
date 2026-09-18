@@ -458,6 +458,8 @@ a runner without tmux otherwise reports a green suite that ran almost nothing), 
 (manufacture a stale or newer build in `Hello`), `MESIMON_DAEMON_BIN` (what `spawn_detached`
 respawns; required by `restart_skew_e2e`, the only test driving the real `Client::connect`),
 `MESIMON_CLAUDE_HOME` (census root for fabricated `~/.claude` trees), `MESIMON_SLEEP_MIN_AGE_MS`,
+`MESIMON_CODEX_CLEANUP_STALE_MS` (how long an unconfirmed Codex cleanup may own a live ticket's
+checkout before the sweep goes looking for its runtime),
 `MESIMON_PANE_QUIET_MS`, `MESIMON_NO_UPDATE_CHECK`, `MESIMON_UPDATE_CHECK`,
 `MESIMON_SERVER_GUARD_TICKS`, `MESIMON_WT_REFRESH_TICKS` (the slow bucket: worktree flags, merge
 train, CLAUDE.md sample, checkout git sample), `MESIMON_GROUND_WATCH`, `MESIMON_NO_TAG_SEED`,

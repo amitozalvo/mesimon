@@ -126,6 +126,13 @@ const STRAGGLER_WINDOW: Duration = Duration::from_secs(10);
 /// How often an orphaned Codex cleanup record (T-357) is re-checked for
 /// known owners after a check refused. Each check forks one `ps`.
 const CODEX_ORPHAN_RETRY: Duration = Duration::from_secs(15);
+/// T-405: how long an unconfirmed Codex cleanup may own a LIVE ticket's
+/// checkout before the sweep goes looking for its runtime. A deleted ticket
+/// needs no such wait — the deletion, past its undo window, is the person's
+/// acknowledgement (T-357) — but a live one says nothing, so the latch gets a
+/// clock instead. Well past the reaper's grace and any late `stopped` report,
+/// and far short of the hours the flag used to stand for.
+const CODEX_CLEANUP_STALE_MS: u64 = 60_000;
 /// D23 floor: a session younger than this in its current state never sleeps.
 const SLEEP_MIN_AGE_MS: u64 = 60_000;
 /// RSS aggregate refresh (10 s) — one `ps` fork, only while panes exist.
@@ -8381,11 +8388,24 @@ impl Daemon {
     /// that cannot prove absence refuses, and the record stays, re-checked
     /// every `CODEX_ORPHAN_RETRY`. The person's deletion of the ticket, past
     /// its undo window, is the acknowledgement a resume would have asked for.
+    ///
+    /// T-405 widened it past the deleted ticket, which was never the part
+    /// that mattered. A record whose ticket still stands is reachable by
+    /// gesture, but no gesture CLEARS the flag — `kill_session` sets it again
+    /// on a corpse (the rail's dismissal), and only a resume or the runtime's
+    /// own `stopped` ever lowers it. So a crashed runtime on a live ticket
+    /// owns the shared checkout for good, and every queued ask on that board
+    /// waits forever on a card that shows nothing working (dogfooded: seven
+    /// such records on one board, six of them `Exited`, a column's worth of
+    /// queued starts behind them). The evidence bar is unchanged and is
+    /// already the harsher act's — it is what lets this DELETE an orphan — so
+    /// a live ticket's record merely loses the flag and stays on its rail.
     fn sweep_codex_orphans(&mut self) {
         if self.codex_orphan_checking {
             return;
         }
         let now = Instant::now();
+        let stale_at = now_ms().saturating_sub(codex_cleanup_stale_ms());
         let candidates: Vec<SessionRecord> = self
             .board
             .sessions
@@ -8395,8 +8415,15 @@ impl Daemon {
                     && !s.argv.is_empty()
                     && s.codex_stopping
                     && !s.state.has_pane()
-                    && self.board.ticket(s.ticket).is_none()
+                    // A deleted ticket inside its undo window is still the
+                    // person's to bring back, record and all.
                     && !self.grace.contains_key(&s.ticket)
+                    // A live ticket's cleanup gets the clock; a deleted
+                    // ticket was already acknowledged by hand (T-405). No
+                    // stamp is lost evidence, and lost evidence never means
+                    // done — the record keeps its claim, as T-357 has it.
+                    && (self.board.ticket(s.ticket).is_none()
+                        || s.state_changed_at.is_some_and(|at| at <= stale_at))
                     && self.codex_orphan_due.get(&s.id).is_none_or(|(due, _)| *due <= now)
             })
             .cloned()
@@ -8444,8 +8471,11 @@ impl Daemon {
 
     /// The verdicts of `sweep_codex_orphans`, re-judged on the writer: the
     /// record must still be what the check looked at — same generation,
-    /// still stopping, still without a pane, its ticket still gone and not
-    /// in the undo window — or the verdict is stale and dropped.
+    /// still stopping, still without a pane, and its ticket not inside the
+    /// undo window — or the verdict is stale and dropped. A clean verdict
+    /// drops a record whose ticket is gone and, where the ticket still
+    /// stands (T-405), clears the cleanup flags and leaves the corpse on
+    /// its rail: the checkout is released either way.
     fn on_codex_orphans_checked(
         &mut self,
         results: Vec<(uuid::Uuid, Option<u64>, std::result::Result<(), String>)>,
@@ -8461,17 +8491,17 @@ impl Daemon {
                 continue;
             }
             let Some(rec) = self.board.sessions.iter().find(|s| s.id == id) else { continue };
-            let still_orphan = rec.kind == SessionKind::Codex
+            let still_stuck = rec.kind == SessionKind::Codex
                 && rec.codex_stopping
                 && !rec.state.has_pane()
                 && rec.codex_generation == generation
-                && self.board.ticket(rec.ticket).is_none()
                 && !self.grace.contains_key(&rec.ticket);
-            if !still_orphan {
+            if !still_stuck {
                 continue;
             }
+            let orphan = self.board.ticket(rec.ticket).is_none();
             match verdict {
-                Ok(()) => {
+                Ok(()) if orphan => {
                     self.journal.line(&format!(
                         "codex orphan released: session {id} — ticket deleted, pane gone, no known runtime owner remains"
                     ));
@@ -8487,6 +8517,29 @@ impl Daemon {
                     self.codex_input_due.remove(&id);
                     self.pending_prompt.remove(&id);
                     self.cleanup_resume_offers.remove(&id);
+                    self.codex_orphan_due.remove(&id);
+                    dirty = true;
+                }
+                // The ticket still stands, so the record is its rail's to
+                // show: only the cleanup flags go, and with them the claim
+                // on the checkout (`quiet::is_working`) and, for a corpse,
+                // the agent seat (`holds_agent_seat`).
+                Ok(()) => {
+                    self.journal.line(&format!(
+                        "codex cleanup released: session {id} — pane gone, no known runtime owner remains"
+                    ));
+                    self.feed.hook_event(
+                        &id.to_string(),
+                        "CodexCleanupReleased",
+                        Some("no_known_owner"),
+                    );
+                    if let Some(rec) = self.board.sessions.iter_mut().find(|s| s.id == id) {
+                        rec.codex_stopping = false;
+                        rec.observation_hold = false;
+                    }
+                    self.codex_ready.remove(&id);
+                    self.codex_native_ready.remove(&id);
+                    self.codex_input_due.remove(&id);
                     self.codex_orphan_due.remove(&id);
                     dirty = true;
                 }
@@ -8826,6 +8879,14 @@ fn inactivity_minute_ms() -> u64 {
         .and_then(|v| v.parse().ok())
         .filter(|&n| n > 0)
         .unwrap_or(60_000)
+}
+
+/// Test seam only — e2e cannot wait out the real 60 s floor.
+fn codex_cleanup_stale_ms() -> u64 {
+    std::env::var("MESIMON_CODEX_CLEANUP_STALE_MS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(CODEX_CLEANUP_STALE_MS)
 }
 
 /// Test seam only — e2e cannot wait out the real 60 s floor.
