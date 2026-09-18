@@ -6,7 +6,7 @@
 
   PREVIEW                                                                                  SESSIONS                  0
 
-                                    ▄█▄                                                    + codex session
+                                    ▄█▄                                                    + agent session
                     ▄█▄    ▄▄▄     ▄███
                     ▀██▄   ███    ▄███▀
                      ▀███████████████▀
@@ -14,7 +14,7 @@
                      ▀███▄▄█████▄▄███▀
                        ▀▀█████████▀▀
 
-    enter start codex
+    enter start agent
 
     starts in the checkout
     types the ticket title into its box, and sends nothing
@@ -27,4 +27,4 @@
 
 
 
- enter start codex ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                                   ? keys
+ enter start agent ∙ shift+tab own worktree ∙ r rename ∙ d delete ∙ n describe                                   ? keys

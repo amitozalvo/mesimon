@@ -26,22 +26,11 @@ use std::fmt;
 use crate::board::AgentProvider;
 use crate::prefs::PrefKey;
 
-/// Compact provider names used in session actions and status lines.
-pub fn agent_word(provider: AgentProvider) -> &'static str {
-    match provider {
-        AgentProvider::ClaudeCode => "claude",
-        AgentProvider::Codex => "codex",
-    }
-}
-
-fn agent_hint(c: &Ctx, claude: &'static str, codex: &'static str) -> &'static str {
-    let provider =
-        if c.composing || c.editor_composing { c.agent_provider } else { c.ticket_agent_provider };
-    match provider {
-        AgentProvider::ClaudeCode => claude,
-        AgentProvider::Codex => codex,
-    }
-}
+/// The one word every hint, status line and row label uses for a coding
+/// agent. Mesimon runs more than one provider (T-406), so the words a
+/// person reads never name one: the provider is a Settings row, and
+/// `Provider:` is the only place it is spelled.
+pub const AGENT_WORD: &str = "agent";
 
 /// One key atom on 04 §2.0's legacy floor. Deliberately NOT crossterm's
 /// `KeyCode`: core stays free of the input stack, and the TUI does the one
@@ -841,8 +830,6 @@ pub struct Ctx {
     pub prompt_editing: bool,
     pub agent_provider: AgentProvider,
     pub park_after_minutes: u32,
-    /// The ticket's existing provider, falling back to the project default.
-    pub ticket_agent_provider: AgentProvider,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -980,7 +967,7 @@ pub struct Ctx {
     /// The rail has a selected session.
     pub sel_session: bool,
     /// How many rows the ticket page's rail holds — the sessions, the
-    /// `+ claude session` row when it stands, then every note. What `jk`
+    /// `+ agent session` row when it stands, then every note. What `jk`
     /// gates on: a rail of one row is not a list to walk.
     pub ticket_rail_rows: usize,
     pub sel_sleeping: bool,
@@ -988,7 +975,7 @@ pub struct Ctx {
     /// The selected rail session is a live shell (T-366): `x` closes it
     /// rather than parking it, and says so.
     pub sel_shell: bool,
-    /// The rail cursor is on the `+ claude session` row (T-300) — the
+    /// The rail cursor is on the `+ agent session` row (T-300) — the
     /// phantom row the rail carries while the ticket's claude seat is empty
     /// and it can still be filled. Enter there starts the session, which is
     /// why the row exists at all: the two spawn keys under an empty rail
@@ -1606,13 +1593,9 @@ static BOARD: &[Binding] = &[
         hint: |c| {
             // On a column header (T-378) the words reach every seat in the
             // column — paned, parked, or empty and started on them (T-405):
-            // the same sentence, plural. The board's default provider names
-            // them — a column is not one ticket's seat.
+            // the same sentence, plural — a column is not one ticket's seat.
             if c.col_header {
-                return match c.agent_provider {
-                    AgentProvider::ClaudeCode => "ask every claude",
-                    AgentProvider::Codex => "ask every codex",
-                };
+                return "ask every agent";
             }
             // A parked agent has no box to type into, and until 2026-09-04
             // that left the key inert there — `c`, wait, come back, ask.
@@ -1623,18 +1606,18 @@ static BOARD: &[Binding] = &[
             if c.ticket_queued {
                 "edit the queued ask"
             } else if c.ticket_has_agent && !c.ticket_promptable {
-                agent_hint(c, "wake + ask claude", "wake + ask codex")
+                "wake + ask agent"
             } else if c.ticket_has_agent {
-                agent_hint(c, "ask claude", "ask codex")
+                "ask agent"
             } else {
                 // An empty seat (T-379): the press opens the field, and
                 // the daemon starts claude on the way — the words are its
                 // first prompt, a blank field is the title. The same
                 // shape as `wake + ask`: the extra thing the press does,
                 // then the ask. Until T-379 a quiet checkout spawned on
-                // the title with no field (`ask claude the title`), and
+                // the title with no field (`ask the agent the title`), and
                 // only a busy one (T-294) stopped to open it.
-                agent_hint(c, "start + ask claude", "start + ask codex")
+                "start + ask agent"
             }
         },
         // Every ticket, at every stage of its seat: empty (the title is the
@@ -1693,17 +1676,11 @@ static BOARD: &[Binding] = &[
             // Live but paneless is exactly Sleeping: the press wakes the
             // parked conversation and attaches, so the hint says so.
             if c.ticket_has_agent && !c.ticket_promptable {
-                match c.ticket_agent_provider {
-                    AgentProvider::ClaudeCode => "wake claude",
-                    AgentProvider::Codex => "wake codex",
-                }
+                "wake agent"
             } else if c.ticket_has_agent {
-                agent_word(c.ticket_agent_provider)
+                AGENT_WORD
             } else {
-                match c.agent_provider {
-                    AgentProvider::ClaudeCode => "start claude",
-                    AgentProvider::Codex => "start codex",
-                }
+                "start agent"
             }
         },
         avail: |c| c.has_ticket,
@@ -2257,7 +2234,7 @@ static TICKET: &[Binding] = &[
     Binding {
         // A vertical list takes ↓ ↑ and nothing sideways. Gated on the rail
         // having somewhere to go rather than on there being sessions
-        // (T-300): the rail is sessions, then the `+ claude session` row,
+        // (T-300): the rail is sessions, then the `+ agent session` row,
         // then the notes, and a ticket with no session at all still holds
         // two rows to walk. One row is not a list, and the key is inert
         // there — which is what keeps the hint honest.
@@ -2293,10 +2270,7 @@ static TICKET: &[Binding] = &[
         show: "enter",
         hint: |c| {
             if c.sel_new_agent {
-                match c.agent_provider {
-                    AgentProvider::ClaudeCode => "start claude",
-                    AgentProvider::Codex => "start codex",
-                }
+                "start agent"
             } else if c.sel_note && c.team_viewer {
                 // A viewer opens the note to read it; the editor's save
                 // stands down (`Binding::live`).
@@ -2331,14 +2305,11 @@ static TICKET: &[Binding] = &[
             // Otherwise SILENT — the key stays bound, the trailer under the
             // rail stops naming it. A claude that is up is a row already
             // listed, which `enter` on that row says (author 2026-09-03),
-            // and an EMPTY seat is the `+ claude session` row, which says
+            // and an EMPTY seat is the `+ agent session` row, which says
             // the same thing about starting one (T-300). Both would be a
             // second spelling of a row the reader is looking at.
             if c.ticket_has_agent && !c.ticket_promptable {
-                match c.ticket_agent_provider {
-                    AgentProvider::ClaudeCode => "wake claude",
-                    AgentProvider::Codex => "wake codex",
-                }
+                "wake agent"
             } else {
                 ""
             }
@@ -3740,9 +3711,9 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         verb: Verb::ParkAfterMinutes,
         label: |c| {
             if c.park_after_minutes == 0 {
-                "Sleep idle Claude: off".into()
+                "Sleep idle agents: off".into()
             } else {
-                format!("Sleep idle Claude after {} min", c.park_after_minutes)
+                format!("Sleep idle agents after {} min", c.park_after_minutes)
             }
         },
         detail: |_| {
@@ -4307,7 +4278,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
                 format!("Mode: {}", c.col_claude_mode_word)
             }
         },
-        detail: |_| "--permission-mode for a claude started here ∙ a wake picks a change up".into(),
+        detail: |_| "--permission-mode for an agent started here ∙ a wake picks a change up".into(),
         avail: |c| !c.col_new && c.agent_provider == AgentProvider::ClaudeCode,
         key: "",
     },
@@ -4355,12 +4326,7 @@ static COLUMN_ITEMS: &[MenuItem] = &[
     MenuItem {
         verb: Verb::ColumnAutoRun,
         label: |c| format!("Start agent on creation: {}", on_off(c.col_auto_run)),
-        detail: |c| {
-            format!(
-                "a ticket you create here gets {} on its brief, submitted",
-                agent_word(c.agent_provider)
-            )
-        },
+        detail: |_| "a ticket you create here gets an agent on its brief, submitted".into(),
         avail: |c| !c.col_new,
         key: "",
     },
@@ -4807,7 +4773,7 @@ static INPUT: &[Binding] = &[
             if c.prompting {
                 ""
             } else {
-                agent_hint(c, "save + ask claude", "save + ask codex")
+                "save + ask agent"
             }
         },
         avail: |c| (c.composing || c.prompting) && c.rich_keys,
@@ -5245,9 +5211,9 @@ static EDITOR: &[Binding] = &[
         // like new"), and a Sleeping one — live, no pane — leaves it inert.
         hint: |c| {
             if !c.editor_composing && c.ticket_promptable {
-                agent_hint(c, "save + tell claude", "save + tell codex")
+                "save + tell agent"
             } else {
-                agent_hint(c, "save + ask claude", "save + ask codex")
+                "save + ask agent"
             }
         },
         // Off in the ask room (T-380): `^s` already sends there, and a
@@ -5364,8 +5330,8 @@ static EDITOR: &[Binding] = &[
     Binding {
         // Shift+Enter is the SAME newline (2026-09-03, user request). The
         // editor is a body, and every chat-shaped box the user types into —
-        // claude's own included — has taught the finger that Shift+Enter
-        // breaks a line; here it briefly meant agent_hint(c, "save + ask claude", "save + ask codex") while
+        // an agent's own included — has taught the finger that Shift+Enter
+        // breaks a line; here it briefly meant "save + ask agent" while
         // composing, and the press that wanted a blank line minted a ticket
         // and started an agent. That sentence still has its board home a
         // press after `^s` (an empty seat's Shift+Enter asks the title), so
@@ -5708,29 +5674,33 @@ pub fn overlay(scope: Scope, ctx: &Ctx) -> Vec<(Group, Vec<(&'static str, &'stat
 mod tests {
     use super::*;
 
+    /// T-406: mesimon runs more than one provider, so no hint names one.
+    /// Every seat word is `agent`, whichever provider is seated or default,
+    /// and the Settings `Provider:` row is the one place a name is spelled.
     #[test]
-    fn agent_hints_distinguish_project_default_from_existing_seat() {
-        let mut ctx = Ctx {
-            agent_provider: AgentProvider::Codex,
-            ticket_agent_provider: AgentProvider::Codex,
-            has_ticket: true,
-            rich_keys: true,
-            ..Ctx::default()
-        };
-        assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "start codex")));
-        assert_eq!(
-            hint_for(Scope::Board, Verb::Prompt, &ctx),
-            Some(("shift+enter", "start + ask codex"))
-        );
-        ctx.ticket_has_agent = true;
-        ctx.ticket_agent_provider = AgentProvider::ClaudeCode;
-        assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "wake claude")));
-        ctx.agent_provider = AgentProvider::ClaudeCode;
-        ctx.ticket_agent_provider = AgentProvider::Codex;
-        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &ctx), Some(("c", "wake codex")));
-        ctx.ticket_promptable = true;
-        assert_eq!(hint_for(Scope::Board, Verb::Prompt, &ctx), Some(("shift+enter", "ask codex")));
-        ctx.settings_section = SettingsSection::Agents;
+    fn agent_hints_never_name_a_provider() {
+        for provider in [AgentProvider::Codex, AgentProvider::ClaudeCode] {
+            let mut ctx = Ctx {
+                agent_provider: provider,
+                has_ticket: true,
+                rich_keys: true,
+                ..Ctx::default()
+            };
+            assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "start agent")));
+            assert_eq!(
+                hint_for(Scope::Board, Verb::Prompt, &ctx),
+                Some(("shift+enter", "start + ask agent"))
+            );
+            ctx.ticket_has_agent = true;
+            assert_eq!(hint_for(Scope::Board, Verb::Agent, &ctx), Some(("c", "wake agent")));
+            assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &ctx), Some(("c", "wake agent")));
+            ctx.ticket_promptable = true;
+            assert_eq!(
+                hint_for(Scope::Board, Verb::Prompt, &ctx),
+                Some(("shift+enter", "ask agent"))
+            );
+        }
+        let ctx = Ctx { settings_section: SettingsSection::Agents, ..Ctx::default() };
         let provider =
             settings_items(&ctx).into_iter().find(|r| r.verb == Verb::AgentProvider).unwrap();
         assert_eq!((provider.label)(&ctx), "Provider: Claude Code");
@@ -5952,7 +5922,7 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &rich), Some(Verb::EditorSaveStart));
         assert_eq!(
             hint_for(Scope::Editor, Verb::EditorSaveStart, &rich),
-            Some(("^S", "save + ask claude"))
+            Some(("^S", "save + ask agent"))
         );
         // On a note the key follows who is on the ticket: a paned claude is
         // told, an empty seat gets one started ("treat like new"), and a
@@ -5968,13 +5938,13 @@ mod tests {
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &paned), Some(Verb::EditorSaveStart));
         assert_eq!(
             hint_for(Scope::Editor, Verb::EditorSaveStart, &paned),
-            Some(("^S", "save + tell claude"))
+            Some(("^S", "save + tell agent"))
         );
         let empty = Ctx { editing: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Editor, Key::Ctrl('S'), &empty), Some(Verb::EditorSaveStart));
         assert_eq!(
             hint_for(Scope::Editor, Verb::EditorSaveStart, &empty),
-            Some(("^S", "save + ask claude"))
+            Some(("^S", "save + ask agent"))
         );
         let asleep =
             Ctx { editing: true, ticket_has_agent: true, rich_keys: true, ..Default::default() };
@@ -6080,7 +6050,7 @@ mod tests {
     }
 
     #[test]
-    fn shift_enter_asks_claude_at_every_stage() {
+    fn shift_enter_asks_the_agent_at_every_stage() {
         let composing = Ctx { composing: true, rich_keys: true, ..Default::default() };
         let onboard = Ctx {
             has_ticket: true,
@@ -6131,7 +6101,7 @@ mod tests {
         // The board's press is hinted where it works…
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &onboard),
-            Some(("shift+enter", "ask claude"))
+            Some(("shift+enter", "ask agent"))
         );
         // …and the field it opens says `send`, not `save`: nothing about a
         // prompt is a save, and the word is the only thing telling them apart.
@@ -6184,7 +6154,7 @@ mod tests {
     /// wake the daemon does on the way. The distinction still lives in the
     /// hint, which is what tells the user a pane is about to be spent.
     #[test]
-    fn prompting_a_parked_claude_says_it_wakes() {
+    fn prompting_a_parked_agent_says_it_wakes() {
         let rich = |promptable| Ctx {
             has_ticket: true,
             ticket_has_agent: true,
@@ -6196,11 +6166,11 @@ mod tests {
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich(false)), Some(Verb::Prompt));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &rich(true)),
-            Some(("shift+enter", "ask claude"))
+            Some(("shift+enter", "ask agent"))
         );
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &rich(false)),
-            Some(("shift+enter", "wake + ask claude"))
+            Some(("shift+enter", "wake + ask agent"))
         );
         // And plain Enter is untouched either way: the two live side by side
         // in the footer, and only one of them spends the terminal.
@@ -6214,17 +6184,17 @@ mod tests {
     /// — the key wakes it and asks rather than starting a second — an empty
     /// column has no title to ask, and the legacy floor still gets nothing.
     #[test]
-    fn shift_enter_on_an_empty_seat_starts_claude_on_the_title() {
+    fn shift_enter_on_an_empty_seat_starts_an_agent_on_the_title() {
         let empty = Ctx { has_ticket: true, rich_keys: true, ..Default::default() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &empty), Some(Verb::Prompt));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &empty),
-            Some(("shift+enter", "start + ask claude"))
+            Some(("shift+enter", "start + ask agent"))
         );
         let parked = Ctx { ticket_has_agent: true, ..empty.clone() };
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &parked),
-            Some(("shift+enter", "wake + ask claude"))
+            Some(("shift+enter", "wake + ask agent"))
         );
         // T-294: with another claude working in the same checkout the same
         // field opens at `queued` — the busy checkout changes which DEFAULT
@@ -6233,13 +6203,13 @@ mod tests {
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &busy), Some(Verb::Prompt));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &busy),
-            Some(("shift+enter", "start + ask claude"))
+            Some(("shift+enter", "start + ask agent"))
         );
         // A seat that is taken says what it always said.
         let busy_parked = Ctx { checkout_busy: true, ..parked.clone() };
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &busy_parked),
-            Some(("shift+enter", "wake + ask claude"))
+            Some(("shift+enter", "wake + ask agent"))
         );
         let no_card = Ctx { has_ticket: false, ..empty.clone() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &no_card), None);
@@ -6262,7 +6232,7 @@ mod tests {
         assert_eq!(resolve(Scope::Input, Key::Enter, &rich), Some(Verb::Save));
         assert_eq!(
             hint_for(Scope::Input, Verb::SaveStart, &rich),
-            Some(("shift+enter", "save + ask claude"))
+            Some(("shift+enter", "save + ask agent"))
         );
     }
 
@@ -6502,7 +6472,7 @@ mod tests {
     /// While a name is being typed the picker stands down and the field owns
     /// the keys — and the hints come from the TAG table, not from `INPUT`.
     /// Borrowing `Scope::Input` here leaked the composer's own hints
-    /// ("shift+enter save + ask claude") into a field that does no such thing.
+    /// ("shift+enter save + ask agent") into a field that does no such thing.
     #[test]
     fn naming_a_tag_shows_only_its_own_keys() {
         let naming =
@@ -6533,7 +6503,7 @@ mod tests {
             .flat_map(|(_, rows)| rows)
             .map(|(_, h)| h)
             .collect();
-        assert!(!hints.iter().any(|h| h.contains("claude")), "{hints:?}");
+        assert!(!hints.iter().any(|h| h.contains("ask agent")), "{hints:?}");
         assert!(!hints.iter().any(|h| h.contains("worktree")), "{hints:?}");
     }
 
@@ -7102,14 +7072,15 @@ mod tests {
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &rich), Some(Verb::Prompt));
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &rich),
-            Some(("shift+enter", "ask every claude"))
+            Some(("shift+enter", "ask every agent"))
         );
         let shown: Vec<&str> = footer_items(Scope::Board, &rich).iter().map(|b| b.show).collect();
         assert!(shown.contains(&"shift+enter"), "{shown:?}");
+        // The words never name the provider (T-406), whichever is default.
         let codex = Ctx { agent_provider: AgentProvider::Codex, ..rich.clone() };
         assert_eq!(
             hint_for(Scope::Board, Verb::Prompt, &codex),
-            Some(("shift+enter", "ask every codex"))
+            Some(("shift+enter", "ask every agent"))
         );
         let empty_column = Ctx { col_live: 0, ..rich.clone() };
         assert_eq!(resolve(Scope::Board, Key::ShiftEnter, &empty_column), None);
@@ -7292,12 +7263,12 @@ mod tests {
     fn the_offer_is_a_row_and_the_key_that_said_it_stands_down() {
         let offered = Ctx { sel_new_agent: true, ticket_rail_rows: 1, ..Default::default() };
         assert_eq!(resolve(Scope::Ticket, Key::Enter, &offered), Some(Verb::Act));
-        assert_eq!(hint_for(Scope::Ticket, Verb::Act, &offered), Some(("enter", "start claude")));
+        assert_eq!(hint_for(Scope::Ticket, Verb::Act, &offered), Some(("enter", "start agent")));
         assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &offered), None, "no second spelling");
         // The one word `c` keeps: a parked claude holds the seat, so there is
         // no row to offer and the key is what wakes it.
         let parked = Ctx { ticket_has_agent: true, ..Default::default() };
-        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &parked), Some(("c", "wake claude")));
+        assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &parked), Some(("c", "wake agent")));
         // A claude that is up says nothing here either: `enter` on its row does.
         let up = Ctx { ticket_promptable: true, ..parked };
         assert_eq!(hint_for(Scope::Ticket, Verb::Agent, &up), None);

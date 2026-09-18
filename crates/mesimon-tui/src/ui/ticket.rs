@@ -56,15 +56,9 @@ struct NoteView<'a> {
 
 /// Who a note's author string names, in the page's own words: a person at
 /// this board is `you`, and a retained agent record names its provider.
-pub(super) fn author_word(by: &str, app: &App) -> String {
-    if let Some(id) = by.strip_prefix("agent:") {
-        id.parse::<uuid::Uuid>()
-            .ok()
-            .and_then(|id| app.board.sessions.iter().find(|s| s.id == id))
-            .and_then(|s| s.kind.provider())
-            .map(keymap::agent_word)
-            .unwrap_or("agent")
-            .to_string()
+pub(super) fn author_word(by: &str, _app: &App) -> String {
+    if by.starts_with("agent:") {
+        keymap::AGENT_WORD.to_string()
     } else if let Some(name) = by.strip_prefix("member:") {
         // A teammate, by the name they signed in with (T-335).
         name.to_string()
@@ -520,7 +514,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
             }),
             _ => None,
         };
-        // The empty seat (T-308): the cursor is on the `+ claude session`
+        // The empty seat (T-308): the cursor is on the `+ agent session`
         // row and there is no document to show, so the zone previews the
         // SESSION the press would start instead of standing empty.
         let seat = matches!(row, Some(RailRow::NewAgent)).then_some(ticket_id);
@@ -906,7 +900,7 @@ fn box_clause(rec: &mesimon_core::board::SessionRecord) -> String {
     }
 }
 
-/// What the `+ claude session` row would do, previewed (T-308). The zone
+/// What the `+ agent session` row would do, previewed (T-308). The zone
 /// stood empty on that row — the one row on the page whose whole purpose is
 /// a press nobody has made yet — so it now shows the mark, the press in the
 /// keymap's own words, and the clauses that say what the session about to
@@ -1339,10 +1333,7 @@ fn draw_rail(
     // two words before either meant anything.
     if offer {
         let selected = offer_at == rail_idx;
-        let name = truncate(
-            &format!("+ {} session", keymap::agent_word(app.board.agent_provider)),
-            w.saturating_sub(2),
-        );
+        let name = truncate(&format!("+ {} session", keymap::AGENT_WORD), w.saturating_sub(2));
         let style = if selected {
             Style::default().fg(theme.sel.base).add_modifier(Modifier::BOLD)
         } else {

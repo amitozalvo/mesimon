@@ -5,7 +5,7 @@
     Decay treatments      >1y     ⠋ Fix OSC-11 detecti~ >1y     ✓ Grapheme truncation >1y     z Painted accent bar >1y
                                     > codex           ⠋ >1y
     Keymap validator      >1y       $ bash            ◦ >1y     x Flaky e2e on runner >1y
-                                  › ask codex
+                                  › ask agent
                                   queued  shift+tab
 
                                   ⠋ Adopt drawer import >1y

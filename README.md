@@ -55,7 +55,7 @@ reported as unavailable there.
    tool registry verbatim.
 
    And there is one line you can choose to add. The *agent brief* is off until you turn it on:
-   a five-line sentence in the system prompt of the claude sessions mesimon starts in this repo
+   a five-line sentence in the system prompt of the agent sessions mesimon starts in this repo
    — only those, never a session you started yourself — telling the agent to read its ticket
    before it starts work. The dialog that offers it shows the exact text first, `mesimon doctor`
    prints it, and *Settings › Agent brief* turns it off again. Together with the tool registry
@@ -146,7 +146,7 @@ leaves the board where it was. Archived tickets are in the list, ranked under ev
 marked; `tab` takes them out again.
 
 In the new-ticket composer, `shift-tab` cycles between the shared checkout and a dedicated
-worktree; that choice locks once a session exists. On a ticket page: `c` starts a Claude session,
+worktree; that choice locks once a session exists. On a ticket page: `c` starts an agent session,
 `s` a shell, and `enter` focuses a live one — that hands your whole terminal over. Detach with
 `ctrl-]` (or `ctrl-5`) and you are back on the board. `v` shows the diff once there is a worktree,
 and the merge flow lives on the identity line: fast-forward only, so mesimon never mints a merge
@@ -164,7 +164,7 @@ exists, and it means *this session is waiting on you*.
 finished tickets and lists the archive. **Closing the board
 does not stop your agents** — that is the point of the daemon.
 
-**Settings › Agents › Sleep idle Claude** optionally sleeps finished Claude sessions after
+**Settings › Agents › Sleep idle agents** optionally sleeps finished agent sessions after
 15, 30, 60 or 120 idle minutes. It is off by default and applies to this board, even with the
 TUI closed. The daemon checks every five minutes, measuring from when the turn finishes.
 Running turns, background work and sessions needing attention stay awake. Wake resumes the

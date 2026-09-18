@@ -445,9 +445,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 }
                 AskTarget::Column(name) => {
                     let seats = app.column_reach(name);
-                    let word = mesimon_core::keymap::agent_word(app.board.agent_provider);
                     let plural = if seats == 1 { "" } else { "s" };
-                    ctx_spans.push(Span::styled(format!("{seats} {word}{plural}"), dim1));
+                    ctx_spans.push(Span::styled(
+                        format!("{seats} {}{plural}", mesimon_core::keymap::AGENT_WORD),
+                        dim1,
+                    ));
                     ctx_spans.push(Span::styled(" ∙ ".to_string(), dim2));
                 }
             }
@@ -477,20 +479,11 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
 /// the description (`notes[0]`, or the fresh note that becomes it), or
 /// another note.
 fn heading(app: &App, ed: &Editor) -> &'static str {
-    use mesimon_core::board::AgentProvider;
     match &ed.purpose {
         EditorPurpose::Compose { .. } => "NEW TICKET",
         // Who the words reach — the one-line field's own hint, in capitals.
-        EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => {
-            match app.ticket_agent_provider(*ticket) {
-                AgentProvider::ClaudeCode => "ASK CLAUDE",
-                AgentProvider::Codex => "ASK CODEX",
-            }
-        }
-        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => match app.board.agent_provider {
-            AgentProvider::ClaudeCode => "ASK EVERY CLAUDE",
-            AgentProvider::Codex => "ASK EVERY CODEX",
-        },
+        EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } => "ASK AGENT",
+        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => "ASK EVERY AGENT",
         EditorPurpose::Note { ticket, note } => {
             let t = app.board.ticket(*ticket);
             let exists = note.is_some_and(|id| t.is_some_and(|t| t.note(id).is_some()));
@@ -509,25 +502,14 @@ fn heading(app: &App, ed: &Editor) -> &'static str {
 /// the text will be the ticket's description — composing, or a note that
 /// is (or would become) `notes[0]` — and `write the note` otherwise.
 fn body_hint(app: &App, ed: &Editor) -> &'static str {
-    use mesimon_core::board::AgentProvider;
     let describes = match &ed.purpose {
         EditorPurpose::Compose { .. } => true,
         EditorPurpose::Note { ticket, note } => {
             app.board.ticket(*ticket).is_some_and(|t| t.description().map(|d| d.id) == *note)
         }
         // The empty room says what it is for in the field's own words.
-        EditorPurpose::Ask { target: AskTarget::Ticket(ticket), .. } => {
-            return match app.ticket_agent_provider(*ticket) {
-                AgentProvider::ClaudeCode => "ask claude",
-                AgentProvider::Codex => "ask codex",
-            }
-        }
-        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => {
-            return match app.board.agent_provider {
-                AgentProvider::ClaudeCode => "ask every claude",
-                AgentProvider::Codex => "ask every codex",
-            }
-        }
+        EditorPurpose::Ask { target: AskTarget::Ticket(_), .. } => return "ask agent",
+        EditorPurpose::Ask { target: AskTarget::Column(_), .. } => return "ask every agent",
     };
     if describes {
         "describe it"

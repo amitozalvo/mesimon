@@ -136,7 +136,7 @@ fn a_snoozed_ticket_leaves_and_comes_back_lit_at_the_top() {
     c.await_state(sid, "running", |s| *s == SessionState::Running);
     err_containing(
         c.request(Command::SnoozeTicket { id: napper, until: now_secs() + 60, needs_you: true }),
-        "claude still awake",
+        "agent still awake",
     );
     assert!(!c.board().ticket(napper).unwrap().is_archived());
     assert!(c.board().sessions.iter().any(|s| s.id == sid && s.state == SessionState::Running));

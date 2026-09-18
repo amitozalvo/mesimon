@@ -8,7 +8,7 @@
 
 
                            ╭─ AGENT BRIEF ──────────────────────────────────────────────────╮
-                           │ in the system prompt of claude sessions mesimon starts here    │
+                           │ in the system prompt of agent sessions mesimon starts here     │
                            │ only those ∙ nothing written to disk ∙ Settings turns it off   │
                            │                                                                │
                            │   This session was started by mesimon on a ticket. FIRST,      │

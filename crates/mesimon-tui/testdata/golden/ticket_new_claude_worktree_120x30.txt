@@ -7,7 +7,7 @@
 
   PREVIEW                                                                                  SESSIONS                  0
 
-                                     ▄█▄                                                   + claude session
+                                     ▄█▄                                                   + agent session
                      ▄█▄    ▄▄▄     ▄███
                      ▀██▄   ███    ▄███▀
                       ▀███████████████▀
@@ -15,7 +15,7 @@
                       ▀███▄▄█████▄▄███▀
                         ▀▀█████████▀▀
 
-    enter start claude
+    enter start agent
 
     starts in a worktree of its own ∙ plan mode ∙ read tools
     types the ticket title into its box, and sends nothing
@@ -27,4 +27,4 @@
 
 
 
- enter start claude ∙ shift+tab shared checkout ∙ r rename ∙ d delete ∙ n describe                               ? keys
+ enter start agent ∙ shift+tab shared checkout ∙ r rename ∙ d delete ∙ n describe                                ? keys

@@ -11493,3 +11493,36 @@ provisioned worktree), as T-378 left it. `paste_to_ticket` still has no "a promp
 waiting" guard on the Claude branch — Codex has one — so a second column ask landing on
 claudes the first one just started would paste over a brief still parked; pre-existing, and
 unchanged here. A mixed claude/codex column is still named by the board's default word.
+
+### T-406 — the words never name a provider
+
+Mesimon runs Claude Code and Codex, so every generic sentence that said *claude*
+was wrong half the time. The seat word is now `agent`, everywhere a person reads
+one: `c` is `start agent` / `wake agent` / `agent`, Shift+Enter is
+`ask agent` / `wake + ask agent` / `start + ask agent` / `ask every agent`,
+`^S` is `save + ask agent` / `save + tell agent`, the ask room's frame is
+`ASK AGENT` / `ASK EVERY AGENT` and its count reads `2 agents`, the rail's
+phantom row is `+ agent session`, Settings reads `Sleep idle agents`, the column
+dialog's mode detail reads `--permission-mode for an agent started here`, the
+brief dialog says `agent sessions mesimon starts here`, and the statuses are
+`agent started`, `agent wakes ∙ after T-9`, `asked 3 ∙ queued 2 ∙ 1 without agent`
+and `agent still awake — only idle sessions sleep` (the daemon's refusal too).
+
+`keymap::agent_word(provider)` and `agent_hint(ctx, claude, codex)` are gone,
+replaced by `keymap::AGENT_WORD`. `Ctx::ticket_agent_provider` and
+`App::ticket_agent_provider` went with them: no hint reads the seated provider
+any more, so the fact had no reader. `agent_hints_never_name_a_provider` is the
+law — the same words under either provider — and the Settings `Provider:` row
+(`Claude Code` / `Codex`) is the one place a provider is spelled to a person.
+
+What deliberately keeps a provider's name: anything that *identifies* one
+session rather than naming the role. The card and rail rows fall back to
+`claude` / `codex` / `bash` beside the kind mark (`✻` / `>` / `$`), the tmux
+breadcrumb leaf does the same, `doctor`'s `claude` / `codex` installation rows
+and the `claude:` / `codex sandbox:` column-settings summaries name the
+provider whose setting they are, and Mesophon's ticket badge shows
+`ticket.agent.provider`. Naming a real program that is really running is not
+the bug this ticket fixed.
+
+This closes T-405's last "Not done" line: a mixed claude/codex column is no longer
+named by the board's default word, because no column ask names a provider at all.

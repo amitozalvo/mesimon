@@ -12,7 +12,7 @@
       │   /         search                                      tab       describe                               │
       │                                                         n         note                                   │
       │ SESSIONS                                                ^t        tags                                   │
-      │   c         claude                                      a         archive                                │
+      │   c         agent                                       a         archive                                │
       │   x         sleep sessions                              z         snooze                                 │
       │                                                         d         delete                                 │
       │ VIEW                                                                                                     │

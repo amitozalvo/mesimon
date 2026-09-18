@@ -582,7 +582,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
             records.push(
                 rec(Level::Note, "claude.md", "does not mention MESIMON_TICKET")
                     .advice(format!(
-                        "The alternative to the agent brief, if you would rather keep the words in your own file (it reaches every claude in the repo, not only mesimon's). Add this to {}:\n\n{}",
+                        "The alternative to the agent brief, if you would rather keep the words in your own file (it reaches every Claude Code session in the repo, not only mesimon's). Add this to {}:\n\n{}",
                         md.path,
                         mesimon_core::claudemd::SNIPPET,
                     )),

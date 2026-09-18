@@ -11,7 +11,7 @@
   │     the seven board tools every spawn carries ∙ ent~ │
   │   Agent prompts: mesimon's words                     │
   │     what mesimon types at an agent about a rebase, ~ │
-  │   Sleep idle Claude: off                             │
+  │   Sleep idle agents: off                             │
   │     this board ∙ after a finished turn ∙ enter cycl~ │
   ╰──────────────── jk select ∙ enter choose ∙ esc back ─╯
 

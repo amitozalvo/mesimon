@@ -205,10 +205,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
             } else if starts {
                 "start on the title"
             } else {
-                match app.ticket_agent_provider(t.id) {
-                    mesimon_core::board::AgentProvider::ClaudeCode => "ask claude",
-                    mesimon_core::board::AgentProvider::Codex => "ask codex",
-                }
+                "ask agent"
             };
             let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
             lines.push(line);
@@ -490,14 +487,8 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // where the column holds a seat a blank Enter would fill, what that
         // Enter does (T-405), the plural of the card's `start on the title`
         // and by the same rule `commit_input` judges it.
-        let placeholder = if app.column_starts(name) {
-            "start on the titles"
-        } else {
-            match app.board.agent_provider {
-                mesimon_core::board::AgentProvider::ClaudeCode => "ask every claude",
-                mesimon_core::board::AgentProvider::Codex => "ask every codex",
-            }
-        };
+        let placeholder =
+            if app.column_starts(name) { "start on the titles" } else { "ask every agent" };
         let (line, x_off) = card::render_prompt(&ctx, buf, placeholder);
         out.push(line);
         header_cursor_x = Some(x_off);

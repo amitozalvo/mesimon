@@ -56,7 +56,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let mut lines: Vec<Line> = vec![
         Line::from(vec![
             Span::styled(" in the system prompt of ", theme.dim2()),
-            Span::styled("claude sessions mesimon starts here", theme.dim1()),
+            Span::styled("agent sessions mesimon starts here", theme.dim1()),
         ]),
         Line::from(Span::styled(
             " only those ∙ nothing written to disk ∙ Settings turns it off",

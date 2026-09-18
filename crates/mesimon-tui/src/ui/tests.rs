@@ -692,13 +692,13 @@ fn golden_codex_provider_and_existing_claude() {
     app.mode = Mode::Normal;
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let rows = render(&app, 120, 30);
-    assert!(rows.iter().any(|r| r.contains("+ codex session")));
-    assert!(rows.iter().any(|r| r.contains("start codex")));
+    assert!(rows.iter().any(|r| r.contains("+ agent session")));
+    assert!(rows.iter().any(|r| r.contains("start agent")));
     golden("ticket_new_codex_120x30", &rows);
     app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: 0 };
     let rows = render(&app, 120, 30);
     assert!(rows.iter().any(|r| r.contains("claude")));
-    assert!(!rows.iter().any(|r| r.contains("+ codex session")));
+    assert!(!rows.iter().any(|r| r.contains("+ agent session")));
 }
 
 #[test]
@@ -1317,7 +1317,7 @@ fn golden_help_empty_column_120() {
     // the cursor, nothing that needs one is offered — in the footer or the
     // overlay, because both read the same predicate. An empty column IS its
     // header (T-117), so the column's own verbs are what is offered instead.
-    for absent in ["move card", "archive", "start claude", "delete ticket", "ticket page"] {
+    for absent in ["move card", "archive", "start agent", "delete ticket", "ticket page"] {
         assert!(
             !lines.iter().any(|l| l.contains(absent)),
             "{absent:?} offered with an empty column selected"
@@ -1489,7 +1489,7 @@ fn golden_help_header_120() {
     {
         assert!(lines.iter().any(|l| l.contains(present)), "{present:?}");
     }
-    for absent in ["describe", "start claude", "archive", "snooze"] {
+    for absent in ["describe", "start agent", "archive", "snooze"] {
         assert!(!lines.iter().any(|l| l.contains(absent)), "{absent:?}");
     }
     golden("help_header_120x30", &lines);
@@ -1680,9 +1680,9 @@ fn ticket_page_names_an_agent_creator() {
     let t = app.board.tickets.iter_mut().find(|t| t.id == ulid_n(3)).unwrap();
     t.created_by = format!("agent:{}", uuid_n(31));
     let codex = render(&app, 120, 30).join("\n");
-    assert!(codex.contains("created >1y ago by codex"), "{codex}");
+    assert!(codex.contains("created >1y ago by agent"), "{codex}");
     assert!(codex.contains("> codex"), "{codex}");
-    assert!(!codex.contains("+ claude session"), "Codex holds the agent seat: {codex}");
+    assert!(!codex.contains("+ agent session"), "Codex holds the agent seat: {codex}");
 }
 
 #[test]
@@ -3389,7 +3389,7 @@ fn golden_column_prompt_field_now_120() {
         buffer: crate::text::EditBuffer::new(mesimon_core::command::PROMPT_MAX_BYTES),
     };
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("ask every claude")), "{}", lines.join("\n"));
+    assert!(lines.iter().any(|l| l.contains("ask every agent")), "{}", lines.join("\n"));
     assert!(lines.iter().any(|l| l.contains("now  shift+tab")), "{}", lines.join("\n"));
     assert!(lines.last().is_some_and(|l| l.contains("enter send")), "{:?}", lines.last());
     golden("board_column_prompt_now_120x30", &render(&app, 120, 30));
@@ -3412,7 +3412,7 @@ fn golden_column_prompt_field_start_120() {
             mesimon_core::keymap::Verb::Prompt,
             &app.ctx()
         ),
-        Some(("shift+enter", "ask every claude")),
+        Some(("shift+enter", "ask every agent")),
         "a column of empty seats offers the key"
     );
     app.mode = Mode::Input {
@@ -3793,7 +3793,7 @@ fn test_an_empty_prompt_field_names_itself() {
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     for (kind, placeholder) in
-        [(SessionKind::Claude, "› ask claude"), (SessionKind::Codex, "› ask codex")]
+        [(SessionKind::Claude, "› ask agent"), (SessionKind::Codex, "› ask agent")]
     {
         for provider in [AgentProvider::ClaudeCode, AgentProvider::Codex] {
             for state in [SessionState::Running, SessionState::Sleeping] {
@@ -4925,7 +4925,7 @@ fn golden_editor_ask_120() {
     ed.body.end();
     app.mode = Mode::Editor(ed);
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("ASK CLAUDE")), "the frame names it: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("ASK AGENT")), "the frame names it: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("Fix OSC-11 detection")), "{lines:?}");
     assert!(lines.iter().any(|l| l.contains("T-3 ∙ now")), "the delivery row: {lines:?}");
     assert!(lines.iter().any(|l| l.contains("rebase onto main")), "{lines:?}");
@@ -4956,8 +4956,8 @@ fn golden_editor_ask_column_120() {
     ed.body.end();
     app.mode = Mode::Editor(ed);
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("ASK EVERY CLAUDE")), "{lines:?}");
-    assert!(lines.iter().any(|l| l.contains("2 claudes ∙ queued  shift+tab")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("ASK EVERY AGENT")), "{lines:?}");
+    assert!(lines.iter().any(|l| l.contains("2 agents ∙ queued  shift+tab")), "{lines:?}");
     assert!(lines.last().is_some_and(|l| l.contains("^s queue")), "{:?}", lines.last());
     golden("editor_ask_column_120x30", &lines);
 }
@@ -5025,8 +5025,8 @@ fn golden_ticket_new_claude_120() {
     app.remember_note(ulid_n(90), 1, Some(crate::peek::sanitize(RICH_REPLY)));
     app.screen = Screen::Ticket { ticket: ulid_n(1), rail_idx: 0 };
     let lines = render(&app, 120, 30);
-    assert!(lines.iter().any(|l| l.contains("+ claude session")), "the offer: {lines:?}");
-    assert!(lines.iter().any(|l| l.contains("enter start claude")), "and the press: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("+ agent session")), "the offer: {lines:?}");
+    assert!(lines.iter().any(|l| l.contains("enter start agent")), "and the press: {lines:?}");
     assert!(!lines.iter().any(|l| l.contains("s shell")), "the gated key is silent: {lines:?}");
     golden("ticket_new_claude_120x30", &lines);
     // The zone the row sits beside is no longer blank (T-308): the mark, the
@@ -5169,7 +5169,7 @@ fn the_empty_seat_drops_its_mark_before_its_words() {
     // ordinary way it runs out.
     let short = render(&app, 120, 20);
     assert!(!short.iter().any(|l| l.contains("▀███████████████▀")), "the mark goes: {short:?}");
-    assert!(short.iter().any(|l| l.contains("enter start claude")), "the press stays: {short:?}");
+    assert!(short.iter().any(|l| l.contains("enter start agent")), "the press stays: {short:?}");
     assert!(
         short.iter().any(|l| l.contains("starts in the checkout")),
         "and so do the words: {short:?}"
@@ -5272,7 +5272,7 @@ fn exactly_one_rail_row_wears_the_cursor() {
         t.notes.push(note_meta(90, "What changed", "local"));
     }
     let mut app = app_graphite(b);
-    assert!(app.new_agent_row(ulid_n(3)), "a shell does not fill the claude seat");
+    assert!(app.new_agent_row(ulid_n(3)), "a shell does not fill the agent seat");
     for idx in 0..3 {
         app.screen = Screen::Ticket { ticket: ulid_n(3), rail_idx: idx };
         one_row(&app, idx, "one shell, the offer, one note");

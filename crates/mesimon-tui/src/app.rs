@@ -726,7 +726,7 @@ impl Editor {
 }
 
 /// One row of the ticket page's rail: the sessions first, in spawn order,
-/// then the `+ claude session` row while the seat is empty, then every note
+/// then the `+ agent session` row while the seat is empty, then every note
 /// of the ticket. Sessions-first is an invariant `board_enter` and the focus
 /// return lean on — a position in `rail_sessions` IS a `rail_idx` — which is
 /// why the phantom row goes AFTER them and not at the top.
@@ -2828,12 +2828,7 @@ impl App {
             .iter()
             .filter(|s| s.ticket == id && s.state.has_pane())
             .find(|s| s.kind.is_agent() && !matches!(s.state, SessionState::Idle { .. }))
-            .map(|s| {
-                format!(
-                    "{} still awake — only idle sessions sleep",
-                    keymap::agent_word(s.kind.provider().expect("agent predicate"))
-                )
-            })
+            .map(|_| format!("{} still awake — only idle sessions sleep", keymap::AGENT_WORD))
     }
 
     /// The snooze chord's status: what `z` and Enter do next. Names the
@@ -3260,10 +3255,6 @@ impl App {
             settings_section: self.settings_section,
             agent_provider: self.board.agent_provider,
             park_after_minutes: self.board.park_after_minutes,
-            ticket_agent_provider: subject
-                .and_then(|t| self.board.live_agent(t))
-                .and_then(|s| s.kind.provider())
-                .unwrap_or(self.board.agent_provider),
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
@@ -5067,7 +5058,7 @@ impl App {
                     if let Some(note) = self.selected_note() {
                         return self.open_note_editor(ticket, Some(note));
                     }
-                    // The `+ claude session` row (T-300): the offer IS the
+                    // The `+ agent session` row (T-300): the offer IS the
                     // press. Same road `c` takes on an empty seat — spawn,
                     // then focus — so the two cannot drift.
                     if matches!(self.rail_row(), Some(RailRow::NewAgent)) {
@@ -7210,13 +7201,12 @@ impl App {
                             Response::Err { message } => message,
                             _ => String::new(),
                         },
-                        None => format!("nothing to tell {}", self.ticket_agent_word(ticket)),
+                        None => format!("nothing to tell {}", keymap::AGENT_WORD),
                     };
                 } else if self.board.live_agent(ticket).is_none() {
                     self.start_composed(ticket);
                 } else {
-                    self.status =
-                        format!("{} is asleep ∙ c wakes it", self.ticket_agent_word(ticket));
+                    self.status = format!("{} is asleep ∙ c wakes it", keymap::AGENT_WORD);
                 }
                 Ok(())
             }
@@ -7407,7 +7397,7 @@ impl App {
 
         // Editing keys inside the name field. Resolved against the TAG scope,
         // NOT `Scope::Input`: borrowing that scope is what used to put the
-        // composer's own hints ("shift+enter save + ask claude", "shift+tab
+        // composer's own hints ("shift+enter save + ask agent", "shift+tab
         // workspace") under a field that does none of those things.
         if let Some((_, buf)) = arm.naming.as_mut() {
             match crate::keys::text_code(code, mods) {
@@ -8070,22 +8060,6 @@ impl App {
         }
     }
 
-    fn ticket_agent_word(&self, ticket: ulid::Ulid) -> &'static str {
-        keymap::agent_word(self.ticket_agent_provider(ticket))
-    }
-
-    /// The provider seated on the ticket, or the board's default while the
-    /// seat is empty — the one the words of an ask would reach.
-    pub(crate) fn ticket_agent_provider(
-        &self,
-        ticket: ulid::Ulid,
-    ) -> mesimon_core::board::AgentProvider {
-        self.board
-            .live_agent(ticket)
-            .and_then(|s| s.kind.provider())
-            .unwrap_or(self.board.agent_provider)
-    }
-
     /// How many agents a column ask reaches — every ticket in the column,
     /// since T-405: paned, parked, and empty seats the press starts. The
     /// ask room's context row says this number.
@@ -8376,7 +8350,7 @@ impl App {
                 if started {
                     self.status = format!(
                         "{} started ∙ the column starts one on creation",
-                        self.ticket_agent_word(id)
+                        keymap::AGENT_WORD
                     );
                     return Ok(());
                 }
@@ -8388,7 +8362,7 @@ impl App {
                 // the fresh ticket (board_enter's fast path).
                 self.just_created = Some(id);
                 self.status =
-                    format!("enter starts {} ∙ space opens the ticket", self.ticket_agent_word(id));
+                    format!("enter starts {} ∙ space opens the ticket", keymap::AGENT_WORD);
             }
             Response::Err { message } => {
                 self.status = message;
@@ -8430,14 +8404,14 @@ impl App {
         let starting = self.board.live_agent(ticket).is_none();
         let waking = !starting && self.board.pane_target(ticket).is_none();
         let own = self.board.ticket(ticket).map(|t| t.short_key.clone()).unwrap_or_default();
-        let word = self.ticket_agent_word(ticket);
+        let word = keymap::AGENT_WORD;
         let (lead, first) = match (starting, waking) {
             (true, _) => (format!("{word} starts"), format!("{word} starts next")),
             (_, true) => (format!("{word} wakes"), format!("{word} wakes next")),
             _ => ("queued".into(), "queued ∙ sends next".into()),
         };
         self.status = match self.req(Command::PromptSession { ticket, text, queued }) {
-            // Deliberately not "sent to claude": what is provably
+            // Deliberately not "sent to the agent": what is provably
             // true is that it went into the box and Enter was
             // pressed. Whether the agent took it is the card's to
             // say, seconds from now, in the only vocabulary that has
@@ -8523,7 +8497,7 @@ impl App {
     /// running, so the next Enter should mean what it always means.
     fn start_composed(&mut self, ticket: ulid::Ulid) {
         let kind = self.board.agent_provider.session_kind();
-        let word = keymap::agent_word(self.board.agent_provider);
+        let word = keymap::AGENT_WORD;
         let cmd = Command::SpawnSession { ticket, kind, submit_prompt: true };
         self.status = match self.req(cmd) {
             Response::Spawned { .. } => format!("{word} started on the title"),
@@ -8568,7 +8542,7 @@ impl App {
     }
 
     /// The ticket page's rail: `rail_sessions` first, then the
-    /// `+ claude session` row while there is a seat to fill, then every note
+    /// `+ agent session` row while there is a seat to fill, then every note
     /// of the ticket in creation order — the description included, so a long
     /// one can be paged in the preview zone. Sessions-first is what keeps a
     /// position in `rail_sessions` a valid `rail_idx` (`board_enter`, the
@@ -8592,7 +8566,7 @@ impl App {
         rows
     }
 
-    /// Does the rail carry the `+ claude session` row (T-300)? Exactly when
+    /// Does the rail carry the `+ agent session` row (T-300)? Exactly when
     /// a press on it would work: the daemon's own two refusals, mirrored —
     /// one claude per ticket (a parked one holds the seat), and never on an
     /// archived ticket, which must not grow a pane no board surface shows.
@@ -8674,7 +8648,7 @@ impl App {
                     // daemon is rebuilding it under the wake: the parked
                     // focus finishes this keypress when the pane lands.
                     Response::Provisioning => {
-                        let word = kind.provider().map(keymap::agent_word).unwrap_or("shell");
+                        let word = if kind.is_agent() { keymap::AGENT_WORD } else { "shell" };
                         self.status = format!("provisioning worktree ∙ {word} wakes when ready");
                         self.pending_spawn_focus = Some((ticket, kind));
                         self.refresh()?;
@@ -9426,7 +9400,7 @@ pub(crate) mod test_support {
                         uuid::Uuid::from_u128(4242),
                         self.board.agent_provider.session_kind(),
                         ticket,
-                        vec![keymap::agent_word(self.board.agent_provider).into()],
+                        vec!["claude".into()],
                         "/repo".into(),
                         SessionState::Spawning,
                     );
@@ -9602,7 +9576,7 @@ pub(crate) mod test_support {
                         s.kind.is_agent() && !matches!(s.state, SessionState::Idle { .. })
                     }) {
                         return Ok(Response::Err {
-                            message: "claude still awake — only idle sessions sleep".into(),
+                            message: "agent still awake — only idle sessions sleep".into(),
                         });
                     }
                     for i in awake {
@@ -10539,7 +10513,7 @@ mod tests {
         assert!(create < note, "the ticket before its note: {log}");
         assert!(log.contains("why\\nand how"), "newlines survive: {log}");
         assert!(!log.contains("SpawnSession"), "Enter asks nothing: {log}");
-        assert!(app.status.contains("enter starts claude"), "{}", app.status);
+        assert!(app.status.contains("enter starts agent"), "{}", app.status);
     }
 
     /// Without the kitty tier ctrl+shift+s ARRIVES as ctrl+s, and the press
@@ -10597,7 +10571,7 @@ mod tests {
         assert!(log.contains("submit_prompt: true"), "the title is submitted: {log}");
         assert!(log.contains("why\\nand how"), "newlines survive: {log}");
         assert_eq!(app.screen, Screen::Board, "stays on the board");
-        assert!(app.status.contains("claude started"), "{}", app.status);
+        assert!(app.status.contains("agent started"), "{}", app.status);
         assert_eq!(app.just_created, None, "no Enter window: the agent is already on it");
     }
 
@@ -10854,7 +10828,7 @@ mod tests {
         press(&mut app, '?');
         app.handle_key(KeyCode::Char('S'), cs).unwrap();
         assert_eq!(app.mode, Mode::Normal);
-        assert_eq!(app.status, "claude started on the title");
+        assert_eq!(app.status, "agent started on the title");
         let log = sent.borrow().join("\n");
         let write = log.find("WriteNote").expect("written");
         let spawn = log.find("SpawnSession").expect("started");
@@ -11470,7 +11444,7 @@ mod tests {
         sent.borrow().iter().any(|c| c.contains(needle))
     }
 
-    /// The rail's `+ claude session` row (T-300). It is the FIRST row on a
+    /// The rail's `+ agent session` row (T-300). It is the FIRST row on a
     /// ticket with no session — ahead of the notes, which is the whole ask:
     /// what a fresh ticket needs is the agent, not the reading. Enter on it
     /// spawns, `j` still reaches the note under it, and a ticket whose seat
@@ -11484,13 +11458,13 @@ mod tests {
         assert!(ctx.sel_new_agent && !ctx.sel_note && !ctx.sel_session);
         assert_eq!(
             keymap::hint_for(Scope::Ticket, Verb::Act, &ctx),
-            Some(("enter", "start claude")),
+            Some(("enter", "start agent")),
             "and the row says what the press does",
         );
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         let log = sent.borrow().join("\n");
         assert!(log.contains("SpawnSession"), "{log}");
-        assert!(log.contains("Claude"), "the offer is a claude, never a shell: {log}");
+        assert!(log.contains("Claude"), "the offer is an agent, never a shell: {log}");
         // The note is one row down, and Enter there is the editor as before.
         let (mut app, _sent) = app_with_note_and(false);
         app.screen = Screen::Ticket { ticket: ulid::Ulid(1), rail_idx: 0 };
@@ -12093,7 +12067,6 @@ mod tests {
                 };
                 let ctx = app.ctx();
                 assert!(ctx.ticket_has_agent);
-                assert_eq!(ctx.ticket_agent_provider, kind.provider().unwrap());
                 assert!(!app.new_agent_row(ulid::Ulid(1)), "a parked agent holds the seat");
                 press(&mut app, 'c');
                 assert!(!sent_contains(&sent, "SpawnSession"));
@@ -12705,7 +12678,7 @@ mod tests {
         assert!(app.column_starts("todo"), "both seats are empty");
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
-            Some(("shift+enter", "ask every claude"))
+            Some(("shift+enter", "ask every agent"))
         );
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(
@@ -13109,7 +13082,7 @@ mod tests {
         assert!(!app.ctx().checkout_busy);
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
-            Some(("shift+enter", "start + ask claude"))
+            Some(("shift+enter", "start + ask agent"))
         );
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(
@@ -13134,7 +13107,7 @@ mod tests {
         assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "CreateTicket"), "nothing minted: {:?}", sent.borrow());
-        assert_eq!(app.status, "claude started ∙ asked");
+        assert_eq!(app.status, "agent started ∙ asked");
         assert!(app.board.live_agent(ulid::Ulid(1)).is_some());
         assert_eq!(app.screen, Screen::Board, "the board never leaves");
         assert!(app.pending_attach.is_none(), "no handover");
@@ -13143,12 +13116,12 @@ mod tests {
         let (mut app, sent, _) = app_with_shell(SessionState::Running);
         app.rich_keys = true;
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
-        assert!(matches!(app.mode, Mode::Input { .. }), "a shell is not a claude: {:?}", app.mode);
+        assert!(matches!(app.mode, Mode::Input { .. }), "a shell is not an agent: {:?}", app.mode);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert_eq!(app.mode, Mode::Normal);
         assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
-        assert_eq!(app.status, "claude started ∙ asked");
+        assert_eq!(app.status, "agent started ∙ asked");
 
         // Shift+Tab parks the start behind the checkout's current holder,
         // even on a quiet one: the user chose to wait.
@@ -13159,7 +13132,7 @@ mod tests {
         assert!(app.ctx().ask_queued);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
-        assert_eq!(app.status, "claude starts ∙ after T-9");
+        assert_eq!(app.status, "agent starts ∙ after T-9");
         assert!(app.ctx().ticket_queued, "the card carries it now");
 
         // Esc opens nothing and starts nothing.
@@ -13181,10 +13154,10 @@ mod tests {
         app.rich_keys = true;
         press(&mut app, 'j');
         assert!(!app.ctx().ticket_has_agent, "the cursor is on the seatless ticket");
-        assert!(app.ctx().checkout_busy, "a claude is mid-turn in the same checkout");
+        assert!(app.ctx().checkout_busy, "an agent is mid-turn in the same checkout");
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
-            Some(("shift+enter", "start + ask claude"))
+            Some(("shift+enter", "start + ask agent"))
         );
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(
@@ -13201,7 +13174,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
-        assert_eq!(app.status, "claude starts ∙ after T-9");
+        assert_eq!(app.status, "agent starts ∙ after T-9");
         assert!(app.ctx().ticket_queued, "the card carries it now");
         assert_eq!(app.pending_row(ulid::Ulid(2)).as_deref(), Some("starts ∙ after T-9"));
 
@@ -13210,7 +13183,7 @@ mod tests {
         app.handle_key(KeyCode::BackTab, KeyModifiers::SHIFT).unwrap();
         assert!(!app.ctx().ask_queued);
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
-        assert_eq!(app.status, "claude started ∙ asked");
+        assert_eq!(app.status, "agent started ∙ asked");
         assert!(app.board.live_agent(ulid::Ulid(2)).is_some());
     }
 
@@ -13220,7 +13193,7 @@ mod tests {
     fn shift_enter_on_a_sleeping_claude_queues_the_wake_while_the_checkout_works() {
         let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
         app.rich_keys = true;
-        assert!(!app.ctx().checkout_busy, "a parked claude works on nothing");
+        assert!(!app.ctx().checkout_busy, "a parked agent works on nothing");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(
             matches!(
@@ -13252,7 +13225,7 @@ mod tests {
         }
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "queued: true"), "{:?}", sent.borrow());
-        assert_eq!(app.status, "claude wakes ∙ after T-9");
+        assert_eq!(app.status, "agent wakes ∙ after T-9");
     }
 
     /// T-390: live-pane follow-ups use the per-board Queue/Steer default.
@@ -13260,7 +13233,7 @@ mod tests {
     fn a_paned_ask_obeys_the_board_follow_up_default() {
         let (mut app, _sent, _) = app_with_claude(SessionState::Running, false);
         app.rich_keys = true;
-        assert!(app.ctx().checkout_busy, "its own claude holds the checkout");
+        assert!(app.ctx().checkout_busy, "its own agent holds the checkout");
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(app.ctx().ask_queued, "Queue is the default");
         app.handle_key(KeyCode::Esc, KeyModifiers::NONE).unwrap();
@@ -13297,7 +13270,7 @@ mod tests {
         app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
         assert!(sent_contains(&sent, "queued: false"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
-        assert_eq!(app.status, "claude started ∙ asked");
+        assert_eq!(app.status, "agent started ∙ asked");
     }
 
     /// A parked agent has no box to type into, and `Sleeping` is LIVE — so
@@ -13313,7 +13286,7 @@ mod tests {
         assert!(!app.ctx().ticket_promptable, "…and has no pane to type into");
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Prompt, &app.ctx()),
-            Some(("shift+enter", "wake + ask claude"))
+            Some(("shift+enter", "wake + ask agent"))
         );
         app.handle_key(KeyCode::Enter, KeyModifiers::SHIFT).unwrap();
         assert!(
@@ -13328,7 +13301,7 @@ mod tests {
         assert!(sent_contains(&sent, "PromptSession"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "ResumeSession"), "the wake is the daemon's");
-        assert_eq!(app.status, "woke claude ∙ asked");
+        assert_eq!(app.status, "woke agent ∙ asked");
         assert_eq!(app.screen, Screen::Board);
         assert!(app.pending_attach.is_none(), "no handover");
     }
@@ -13341,7 +13314,7 @@ mod tests {
         let (mut app, sent, sid) = app_with_claude(SessionState::Sleeping, false);
         assert_eq!(
             keymap::hint_for(Scope::Board, Verb::Agent, &app.ctx()),
-            Some(("c", "wake claude"))
+            Some(("c", "wake agent"))
         );
         press(&mut app, 'c');
         assert!(
@@ -13352,7 +13325,7 @@ mod tests {
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
 
         let (mut app, sent, _) = app_with_claude(SessionState::Running, false);
-        assert_eq!(keymap::hint_for(Scope::Board, Verb::Agent, &app.ctx()), Some(("c", "claude")));
+        assert_eq!(keymap::hint_for(Scope::Board, Verb::Agent, &app.ctx()), Some(("c", "agent")));
         press(&mut app, 'c');
         assert!(sent_contains(&sent, "FocusStart"), "{:?}", sent.borrow());
         assert!(!sent_contains(&sent, "SpawnSession"), "{:?}", sent.borrow());
@@ -15254,7 +15227,7 @@ mod tests {
         let (mut app, _sent, _sid) = app_with_claude(SessionState::Running, false);
         press(&mut app, 'z');
         assert_eq!(app.snooze_armed, None);
-        assert_eq!(app.status, "claude still awake — only idle sessions sleep");
+        assert_eq!(app.status, "agent still awake — only idle sessions sleep");
     }
 
     /// An idle claude is put to sleep BY the snooze (user 2026-09-04:
@@ -15865,7 +15838,7 @@ mod tests {
         assert_eq!(keymap::resolve(Scope::Board, Key::Char('v'), &ctx), None);
         assert_eq!(keymap::resolve(Scope::Board, Key::Char('!'), &ctx), None);
         let footer = footer_text(&app);
-        for absent in ["claude", "codex", "shell", "diff", "merge"] {
+        for absent in ["agent", "shell", "diff", "merge"] {
             assert!(!footer.contains(absent), "{absent} is hinted on a joined board: {footer}");
         }
         assert!(footer.contains("Synced ∙ 3 members"), "{footer}");

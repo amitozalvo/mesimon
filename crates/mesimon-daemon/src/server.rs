@@ -6349,11 +6349,7 @@ impl Daemon {
         for (sid, kind) in &awake {
             let Some(rec) = self.board.sessions.iter().find(|s| s.id == *sid) else { continue };
             if let Err(why) = self.sleep_eligible(rec, now, false) {
-                let who = match kind {
-                    SessionKind::Claude => "claude",
-                    SessionKind::Codex => "codex",
-                    SessionKind::Bash => "shell",
-                };
+                let who = if kind.is_agent() { "agent" } else { "shell" };
                 return Response::Err { message: format!("{who} still awake — {why}") };
             }
         }

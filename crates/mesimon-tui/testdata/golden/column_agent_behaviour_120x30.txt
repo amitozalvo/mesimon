@@ -15,7 +15,7 @@
                            │   When agent starts working: stay                              │
                            │   When agent ends a turn: stay                                 │
                            │                                                                │
-                           │     --permission-mode for a claude started here ∙ a wake pick~ │
+                           │     --permission-mode for an agent started here ∙ a wake pick~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
 
 
