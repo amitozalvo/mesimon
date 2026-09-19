@@ -1,0 +1,54 @@
+{
+  "schema": 1,
+  "id": "ambient-artifact-watch",
+  "title": "An ambient artifact watch is a finished turn",
+  "provenance": {
+    "kind": "capture_derived",
+    "capture": "simbly T-43 session 72105cdd, 2026-09-19T15:01:02Z",
+    "claude_version": "2.1.278",
+    "note": "A session that published an artifact: Claude Code keeps an ambient websocket watch on it for the session's whole life and lists it in every Stop as a running `monitor` (description `live updates for artifact <slug> (\u2026)`, `ambient` flag dropped from the hook payload). No Monitor tool result named it, so it is housekeeping and the turn ended (T-408). Normalized id and virtual timing."
+  },
+  "initial": {
+    "state": "running"
+  },
+  "confidence": "high",
+  "column": "IN PROGRESS",
+  "steps": [
+    {
+      "at_ms": 100,
+      "input": {
+        "source": "hook",
+        "event": "Stop",
+        "payload": {
+          "background_tasks": [
+            {
+              "id": "sk3m9x2qp",
+              "type": "monitor",
+              "status": "running",
+              "description": "live updates for artifact plan (comments)"
+            }
+          ]
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
+      "at_ms": 1600,
+      "input": {
+        "source": "tick"
+      },
+      "expect": {
+        "state": {
+          "state": "idle",
+          "stop_reason": "end_turn"
+        },
+        "column": "REVIEW"
+      }
+    }
+  ]
+}

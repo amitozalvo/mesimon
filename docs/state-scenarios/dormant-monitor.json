@@ -1,10 +1,11 @@
 {
   "schema": 1,
   "id": "dormant-monitor",
-  "title": "A live monitor parks without active work",
+  "title": "A live monitor the agent armed parks without active work",
   "provenance": {
     "kind": "synthetic_regression",
-    "source": "docs/claude-state-lab.md"
+    "source": "docs/claude-state-lab.md",
+    "note": "Rewritten for T-408: the Monitor tool result names the task before the Stop lists it. A monitor row nobody armed is ambient \u2014 see ambient-artifact-watch."
   },
   "initial": {
     "state": "running"
@@ -13,6 +14,27 @@
   "column": "IN PROGRESS",
   "steps": [
     {
+      "at_ms": 50,
+      "input": {
+        "source": "hook",
+        "event": "PostToolUse",
+        "payload": {
+          "tool_name": "Monitor",
+          "tool_response": {
+            "taskId": "m7k2p9qzx",
+            "timeoutMs": 0,
+            "persistent": true
+          }
+        }
+      },
+      "expect": {
+        "state": {
+          "state": "running"
+        },
+        "column": "IN PROGRESS"
+      }
+    },
+    {
       "at_ms": 100,
       "input": {
         "source": "hook",
@@ -20,8 +42,10 @@
         "payload": {
           "background_tasks": [
             {
+              "id": "m7k2p9qzx",
               "type": "monitor",
-              "status": "running"
+              "status": "running",
+              "description": "plugin monitor"
             }
           ]
         }

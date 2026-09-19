@@ -11593,3 +11593,52 @@ be released either.
 drains in an order that does not match what the eye reads — the card that looks first can be
 eighth in the queue. T-263's promise ("sort the cards to sort the queue") is only true on an
 unsorted column. Noticed while reading this board; not fixed here.
+
+## A monitor nobody armed is not a park (T-408, 2026-09-19)
+
+**The report.** "simbly T-43 is marked as running (background work) but nothing is running."
+The session had said "done" and was waiting at its prompt; the card wore the slow background
+arc and the record read `Idle{Monitoring}` at High, so the DONE edge never fired and the
+ticket sat in IN PROGRESS.
+
+**What the wire said.** The session had published an artifact. Claude Code 2.1.278 keeps an
+*ambient* websocket watch on every artifact a session publishes — `monitor_ws`, persistent,
+no timeout, alive for the session's whole life — and its `Stop` payload lists it as
+`{type:"monitor", status:"running", description:"live updates for artifact <slug> (…)"}`.
+The builder (`fnn`) maps `monitor_ws`/`monitor_mcp` to the friendly word `monitor` and drops
+the `ambient` flag; the in-flight filter (`hm`) keeps any running task. Claude Code's own
+tasks panel hides an ambient `monitor_ws` (`if (O.ambient) break`), so the session it draws
+is finished while the hook payload says a monitor is live. The same shape has been on the
+wire since T-135's capture (`"type":"monitor","description":"comments"` — a comment-thread
+watch), read as harmless because `monitoring_tasks` was not asserted there. The other
+ambient descriptions are `Comment on <artifact>`, `artifact comment thread <id>`,
+`presence on artifact <url>` and `Observe <envelope>`; matching on them would be a string
+contract with a minified binary.
+
+**The rule.** A `monitor` row is decided by provenance, never by the payload alone. The
+Monitor tool's result names its task id (`{taskId, timeoutMs, persistent}`) and registers it
+in the transient `background::Registry`; a `Stop` snapshot row is recorded as the new
+`Transition::Listed`, which is a start for every kind except a `monitor` the registry does
+not already hold — that one is ambient and counts for nothing (`is_monitor_kind`). Shells
+keep their snapshot classification: the Monitor tool's own watches are `local_bash
+kind:"monitor"` and reach the payload as `shell`, and a background shell is work the agent
+started. `signal_of`'s payload-only `monitoring_tasks` excludes monitor kinds for the same
+reason; the registry is the one road for them. `Idle{Monitoring}` itself, its glyph, its
+release of the working/keep-awake holds and its lack of a clock (T-389, T-403) are
+unchanged.
+
+**The hole, accepted.** The registry is empty after a daemon restart, so a Monitor watch over
+an MCP or websocket source armed before the restart and still live at the next `Stop` reads
+as a finished turn. It is narrow (the common Monitor watch is a shell, which survives), the
+error is the mild one (done instead of monitoring, and any later frame promotes back to
+`Running`), and the alternative — every artifact-publishing session reading "monitoring"
+after every turn, for good — was the bug.
+
+**Repair for a stuck board.** A record persisted as `Idle{Monitoring}` stays so until its
+next `Stop`; a daemon restart re-derives it from the transcript tail, which reads the
+finished turn as done.
+
+Validation: `cargo ut`, clippy clean, `state_lab_e2e` (a new step: an unarmed monitor row
+after a shell park lands on `EndTurn`), a new replay scenario `ambient-artifact-watch`
+(capture-derived, expects `end_turn` and the move to REVIEW), and `dormant-monitor` rewritten
+to arm its watch through the Monitor tool first.

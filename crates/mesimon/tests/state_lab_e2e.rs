@@ -258,6 +258,17 @@ fn background_liveness_reclassifies_and_restart_drops_the_registry() {
         client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
             == SessionState::Idle { stop_reason: StopReason::Monitoring }
     });
+    // An ambient artifact watch alone is a finished turn (T-408): Claude
+    // Code lists it as a running `monitor` no tool armed.
+    send("UserPromptSubmit", "{}");
+    send(
+        "Stop",
+        r#"{"background_tasks":[{"id":"sart","type":"monitor","status":"running","description":"live updates for artifact plan (comments)"}]}"#,
+    );
+    wait_until(Duration::from_secs(5), "an unarmed monitor is not a park", || {
+        client.board().sessions.iter().find(|s| s.id == sid).unwrap().state
+            == SessionState::Idle { stop_reason: StopReason::EndTurn }
+    });
     assert!(matches!(client.request(Command::Shutdown), Response::Ok));
     daemon.join().unwrap();
 }

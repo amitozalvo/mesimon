@@ -14,9 +14,13 @@ pub enum Liveness {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Transition {
+    /// A tool result named the task: the agent armed it on purpose.
     Started,
     Updated,
     Completed,
+    /// A `Stop` snapshot row. Claude Code lists what is in flight, so a row
+    /// is a start — except a `monitor` nobody armed (see [`is_monitor_kind`]).
+    Listed,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -51,6 +55,21 @@ pub fn classify(kind: Option<&str>) -> Liveness {
     }
 }
 
+/// Claude Code spells two task families `monitor` in a hook payload: the
+/// watches an agent arms through the Monitor tool, and the ambient
+/// housekeeping it keeps for itself — live updates for a published artifact,
+/// a comment thread, presence on a page, a plugin monitor — which its own
+/// tasks panel hides and which lives as long as the session does. The payload
+/// drops the `ambient` flag, so the two are told apart by provenance: a
+/// Monitor tool result registers its task id, and a `monitor` row a `Stop`
+/// lists without one is ambient and counts for nothing (T-408: a session
+/// that had published an artifact read "monitoring" after every turn, for
+/// good). Shells keep their snapshot classification — the Monitor tool's own
+/// watches are shells, and a background shell is work the agent started.
+pub fn is_monitor_kind(kind: Option<&str>) -> bool {
+    kind.unwrap_or_default().to_ascii_lowercase().contains("monitor")
+}
+
 impl Registry {
     pub fn clear(&mut self) {
         self.tasks.clear();
@@ -67,8 +86,9 @@ impl Registry {
     }
 
     /// Replace this owner's snapshot, retaining descendants owned by another
-    /// agent: children may outlive their parent. Status-free snapshot entries
-    /// are starts because Stop explicitly lists in-flight tasks.
+    /// agent: children may outlive their parent. Snapshot rows are then
+    /// recorded as [`Transition::Listed`]: starts, because Stop explicitly
+    /// lists in-flight tasks, save for the ambient `monitor` rows.
     pub fn retain_snapshot(&mut self, owner: Option<&str>, ids: &[&str]) {
         self.tasks.retain(|id, task| task.owner.as_deref() != owner || ids.contains(&id.as_str()));
     }
@@ -93,6 +113,11 @@ impl Registry {
             return;
         }
         if transition == Transition::Updated && status.is_none() && !self.tasks.contains_key(id) {
+            return;
+        }
+        if transition == Transition::Listed && is_monitor_kind(kind) && !self.tasks.contains_key(id)
+        {
+            // Ambient housekeeping (`is_monitor_kind`): no tool armed it.
             return;
         }
         if self.tasks.len() < 1024 || self.tasks.contains_key(id) {
@@ -160,6 +185,28 @@ mod tests {
         r.retain_snapshot(None, &[]);
         assert_eq!(r.liveness(), Liveness::Working);
         r.record("child", None, None, Transition::Completed, Some("parent"));
+        assert_eq!(r.liveness(), Liveness::None);
+    }
+
+    /// A `monitor` row a Stop lists is ambient unless the Monitor tool armed
+    /// it (T-408); a listed shell is a start either way.
+    #[test]
+    fn a_listed_monitor_counts_only_with_tool_provenance() {
+        let mut r = Registry::default();
+        r.record("art", Some("monitor"), Some("running"), Transition::Listed, None);
+        assert_eq!(r.liveness(), Liveness::None);
+        r.record("watch", Some("shell"), Some("running"), Transition::Listed, None);
+        assert_eq!(r.liveness(), Liveness::Monitoring);
+        r.retain_snapshot(None, &[]);
+        assert_eq!(r.liveness(), Liveness::None);
+        // The Monitor tool result names the task first; the snapshot then keeps it.
+        r.record("armed", Some("monitor"), None, Transition::Started, None);
+        r.record("armed", Some("monitor"), Some("running"), Transition::Listed, None);
+        assert_eq!(r.liveness(), Liveness::Monitoring);
+        // An ambient row beside it changes nothing.
+        r.record("art", Some("monitor"), Some("running"), Transition::Listed, None);
+        assert_eq!(r.liveness(), Liveness::Monitoring);
+        r.record("armed", None, None, Transition::Completed, None);
         assert_eq!(r.liveness(), Liveness::None);
     }
 }

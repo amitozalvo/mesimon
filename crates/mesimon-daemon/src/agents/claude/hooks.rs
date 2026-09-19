@@ -4,7 +4,9 @@ use mesimon_core::attention::{
     is_teammate_task, AttentionTool, EndKind, NotificationKind, Signal, StartSource,
     StopFailureClass,
 };
-use mesimon_core::background::{classify, is_live_status, Liveness, Registry, Transition};
+use mesimon_core::background::{
+    classify, is_live_status, is_monitor_kind, Liveness, Registry, Transition,
+};
 use serde_json::Value;
 
 /// Cards get an excerpt, never a transcript (D11). Hard cap.
@@ -47,7 +49,7 @@ pub fn signal_with_background(frame: &HookFrame, tasks: &mut Registry) -> Option
                         id,
                         kind,
                         task.get("status").and_then(Value::as_str),
-                        Transition::Started,
+                        Transition::Listed,
                         owner,
                     );
                 }
@@ -159,9 +161,11 @@ pub fn signal_of(frame: &HookFrame) -> Option<Signal> {
                     && !t.get("type").and_then(Value::as_str).is_some_and(is_teammate_task)
                     && classify(t.get("type").and_then(Value::as_str)) == Liveness::Working
             }),
+            // A `monitor` row is decided by the registry's provenance, never
+            // by the payload alone (`background::is_monitor_kind`).
             monitoring_tasks: background_tasks(frame).any(|t| {
-                live_task(t)
-                    && classify(t.get("type").and_then(Value::as_str)) == Liveness::Monitoring
+                let kind = t.get("type").and_then(Value::as_str);
+                live_task(t) && classify(kind) == Liveness::Monitoring && !is_monitor_kind(kind)
             }),
             // ...except a teammate, which is counted (T-135): it reads
             // `running` idle or busy, so the machine weighs the count against
@@ -492,6 +496,42 @@ mod tests {
         );
     }
 
+    /// The Stop payload of a session that published an artifact (2.1.278):
+    /// Claude Code keeps an ambient websocket watch on it for the session's
+    /// whole life and lists it as a running `monitor`, `ambient` flag dropped.
+    /// Without a Monitor tool result naming that id it is housekeeping, and
+    /// the turn ended (T-408). The same row after the tool armed it parks.
+    #[test]
+    fn an_ambient_artifact_watch_is_not_a_park() {
+        let stop = r#"{"background_tasks":[{"id":"sk3m9x2qp","type":"monitor","status":"running","description":"live updates for artifact plan (comments)"}]}"#;
+        let mut tasks = Registry::default();
+        assert!(matches!(
+            signal_with_background(&frame("Stop", None, stop), &mut tasks),
+            Some(Signal::Stop { blocking_tasks: false, monitoring_tasks: false, .. })
+        ));
+        assert_eq!(tasks.liveness(), Liveness::None);
+        signal_with_background(
+            &frame(
+                "PostToolUse",
+                None,
+                r#"{"tool_name":"Monitor","tool_response":{"taskId":"sk3m9x2qp","timeoutMs":0,"persistent":true}}"#,
+            ),
+            &mut tasks,
+        );
+        assert!(matches!(
+            signal_with_background(&frame("Stop", None, stop), &mut tasks),
+            Some(Signal::Stop { blocking_tasks: false, monitoring_tasks: true, .. })
+        ));
+        // A daemon restart empties the registry: the armed watch is then
+        // indistinguishable from an ambient one and reads as done — the
+        // narrow hole the provenance rule accepts.
+        let mut fresh = Registry::default();
+        assert!(matches!(
+            signal_with_background(&frame("Stop", None, stop), &mut fresh),
+            Some(Signal::Stop { monitoring_tasks: false, .. })
+        ));
+    }
+
     /// A teammate is counted, not classed (T-135): the payload lists one as
     /// `running` for its whole life, so the machine weighs the count against
     /// the idle notices. The shape is the one captured on the wire.
@@ -502,8 +542,10 @@ mod tests {
             {"id":"t2","type":"teammate","status":"running","description":"Altitude review"},
             {"id":"m1","type":"monitor","status":"running","description":"comments"}]}"#;
         match signal_of(&frame("Stop", None, body)) {
-            Some(Signal::Stop { blocking_tasks, teammates, .. }) => {
+            Some(Signal::Stop { blocking_tasks, monitoring_tasks, teammates, .. }) => {
                 assert!(!blocking_tasks);
+                // The `comments` watch is an ambient artifact watch (T-408).
+                assert!(!monitoring_tasks);
                 assert_eq!(teammates, 2);
             }
             other => panic!("expected Stop, got {other:?}"),
