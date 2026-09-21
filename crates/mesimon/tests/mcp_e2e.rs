@@ -229,13 +229,16 @@ fn agent_board_tools_tier_and_collisions() {
             "create_ticket",
             "tag_ticket",
             "raise_hand",
-            // The crown's three (T-411): listed on every full-tier session,
-            // refused by the daemon on every ticket but the crowned one.
+            // The crown's three (T-411) and its start (T-412): listed on
+            // every full-tier session, refused by the daemon on every
+            // ticket but the crowned one.
             "rename_ticket",
             "set_workspace",
-            "archive_ticket"
+            "archive_ticket",
+            "start_agent"
         ]
     );
+
 
     let t = shim.call_ok("get_ticket", json!({}));
     assert_eq!(t["key"], key.as_str());

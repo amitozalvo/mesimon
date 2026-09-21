@@ -1119,6 +1119,10 @@ struct PendingSpawn {
     /// or a send-now one. `None` is the ordinary spawn, whose whole prompt is
     /// the title and the brief.
     prompt: Option<String>,
+    /// The crown's ticket when the crown asked (T-412), carried across the
+    /// provisioning wait so the replayed record still counts against the
+    /// budget.
+    started_by: Option<ulid::Ulid>,
 }
 
 /// Words waiting for a pane that reads (`Daemon::pending_prompt`). `brief`
@@ -1615,6 +1619,7 @@ impl Daemon {
             Command::SetMcpTools { on } => self.set_mcp_tools(on),
             Command::SetAgentProvider { provider } => self.set_agent_provider(provider),
             Command::SetParkAfterMinutes { minutes } => self.set_park_after_minutes(minutes),
+            Command::SetCrownBudget { budget } => self.set_crown_budget(budget),
             Command::SetStatusLine { top } => self.set_status_line(top),
             Command::SetSystemPrompt { on } => self.set_system_prompt(on),
             Command::SetDefaultColumn { column } => self.set_default_column(column.as_deref()),
@@ -1683,6 +1688,7 @@ impl Daemon {
                 ticket,
                 if kind.is_agent() { self.board.agent_provider.session_kind() } else { kind },
                 submit_prompt,
+                None,
                 None,
             ),
             Command::KillSession { id } => self.kill_session(id),
@@ -1788,6 +1794,7 @@ impl Daemon {
             | Command::AgentRenameTicket { .. }
             | Command::AgentSetWorkspace { .. }
             | Command::AgentArchiveTicket { .. }
+            | Command::AgentStartTicket { .. }
             | Command::AgentRaiseHand { .. } => {
                 Response::Err { message: "agent commands require an agent principal".into() }
             }
@@ -3487,6 +3494,60 @@ impl Daemon {
                 self.agent_ticket_view(target)
                     .map_or_else(no_such_ticket, |ticket| Response::AgentTicket { ticket })
             }
+            // The crown's start (T-412): an ask to spawn, judged here. The
+            // budget and the seat rule are the daemon's; the agent names a
+            // ticket and nothing else — no kind, no prompt, no session.
+            Command::AgentStartTicket { key, seen } => {
+                let target = match self.keyed_target(ticket, Some(&key), seen.as_deref(), false) {
+                    Ok(t) => t,
+                    Err(message) => return Response::Err { message },
+                };
+                if target == ticket {
+                    return Response::Err {
+                        message: format!(
+                            "{key} is this session's own ticket, which already runs; start_agent \
+                             is for another ticket"
+                        ),
+                    };
+                }
+                let by = Principal::Agent { session };
+                if let Decision::Deny { reason } =
+                    authorize(&by, &Action::Mutate, &Resource::Ticket { id: target })
+                {
+                    return Response::Err { message: format!("denied: {reason}") };
+                }
+                if let Some(held) = self.board.live_agent(target) {
+                    return Response::Err {
+                        message: format!(
+                            "{key} already has an agent ({}); one agent per ticket",
+                            agent_state_word(&held.state)
+                        ),
+                    };
+                }
+                if let Some(message) = self.crown_budget_refusal() {
+                    return Response::Err { message };
+                }
+                let kind = self.board.agent_provider.session_kind();
+                let session_started =
+                    match self.spawn_session(target, kind, true, None, Some(ticket)) {
+                        Response::Spawned { .. } => true,
+                        Response::Provisioning => false,
+                        Response::Err { message } => return Response::Err { message },
+                        other => {
+                            return Response::Err {
+                                message: format!("unexpected spawn answer: {other:?}"),
+                            }
+                        }
+                    };
+                self.feed.board(by.actor(), "start_agent", Some(target));
+                self.crown_touched(ticket, target, "started");
+                let (held, _) = self.crown_seats();
+                Response::AgentStarted {
+                    key: self.board.ticket(target).map(|t| t.short_key.clone()).unwrap_or(key),
+                    session_started,
+                    budget_left: self.board.crown_budget.saturating_sub(held.len() as u8),
+                }
+            }
             Command::AgentCreateTicket { title, column, description, tags, idempotency_key } => {
                 // Replay first, for the same reason as a move: a retry after
                 // `Connection closed` must not file the same work twice.
@@ -3536,12 +3597,60 @@ impl Daemon {
                 let by = Principal::Agent { session };
                 self.agent_raise_hand(&by, ticket, &reason)
             }
-            // Unreachable: `agent_allows` above admits exactly thirteen commands.
+            // Unreachable: `agent_allows` above admits exactly fourteen commands.
             _ => Response::Err { message: "not available to an agent session".into() },
         }
     }
 
     // ------------------------------------------------------------ the crown
+
+    /// The seats the crown's starts hold right now (T-412): the keys of
+    /// every ticket whose agent carries `started_by` and still holds its
+    /// seat, plus the starts parked behind a worktree provision — those
+    /// have no record yet and would otherwise let a burst of worktree
+    /// tickets outrun the cap. The second value is how many are parked.
+    fn crown_seats(&self) -> (Vec<String>, usize) {
+        let mut keys: Vec<String> = self
+            .board
+            .crown_started()
+            .iter()
+            .filter_map(|s| self.board.ticket(s.ticket).map(|t| t.short_key.clone()))
+            .collect();
+        let parked: Vec<String> = self
+            .pending_spawns
+            .iter()
+            .filter(|s| s.started_by.is_some())
+            .filter_map(|s| self.board.ticket(s.ticket).map(|t| t.short_key.clone()))
+            .collect();
+        let n = parked.len();
+        keys.extend(parked);
+        keys.sort();
+        keys.dedup();
+        (keys, n)
+    }
+
+    /// Why the crown may not start another agent right now, if it may not:
+    /// the cap and the tickets holding it, so the agent can wait for one to
+    /// finish, or relay the number to the person who sets it.
+    fn crown_budget_refusal(&self) -> Option<String> {
+        let budget = self.board.crown_budget;
+        let (held, _) = self.crown_seats();
+        if held.len() < budget as usize {
+            return None;
+        }
+        Some(if budget == 0 {
+            "the crown's spawn budget is 0 on this board: start_agent is off \
+             (Settings → Agents → Crown may start … sets it)"
+                .to_string()
+        } else {
+            format!(
+                "the crown's spawn budget is spent: {budget} of {budget} crown-started agents \
+                 are live ({}). A seat frees when its agent exits — a sleeping agent still \
+                 holds it — or the person raises the budget in Settings → Agents",
+                held.join(", ")
+            )
+        })
+    }
 
     /// The ticket a keyed call is about (T-411): the caller's own when the
     /// key names it — a session may always address its own card, crown or
@@ -3714,6 +3823,15 @@ impl Daemon {
         let Some(t) = self.board.ticket(id) else { return no_such_ticket() };
         if t.is_archived() {
             return Response::Err { message: "ticket archived — restore it first".into() };
+        }
+        // One level deep by construction (T-412): an agent the crown started
+        // can never wear the crown, so no crown-started agent starts agents.
+        if self.board.live_agent(id).is_some_and(|s| s.started_by.is_some()) {
+            return Response::Err {
+                message: "its agent was started by the crown — a crown-started ticket cannot \
+                          be crowned (kill or sleep-and-forget that session first)"
+                    .into(),
+            };
         }
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -5256,7 +5374,7 @@ impl Daemon {
         if !wants {
             return false;
         }
-        match self.spawn_session(id, self.board.agent_provider.session_kind(), true, None) {
+        match self.spawn_session(id, self.board.agent_provider.session_kind(), true, None, None) {
             Response::Spawned { .. } | Response::Provisioning => {
                 self.feed.board("automation", "auto_run_started", Some(id));
                 true
@@ -6277,7 +6395,7 @@ impl Daemon {
             QueuedSeat::Wake(_) => self.prompt_sleeping(ticket, text),
             QueuedSeat::Start(provider) => {
                 let words = (!text.is_empty()).then_some(text);
-                self.spawn_session(ticket, provider.session_kind(), true, words)
+                self.spawn_session(ticket, provider.session_kind(), true, words, None)
             }
         }
     }
@@ -7028,6 +7146,20 @@ impl Daemon {
         Response::Ok
     }
 
+    /// `Command::SetCrownBudget` (T-412): the cap on crown-started seats.
+    /// Lowering it below what is held stops the next start and kills
+    /// nothing — the seats already paid for run out on their own.
+    fn set_crown_budget(&mut self, budget: u8) -> Response {
+        if self.columns_barred {
+            return Response::Err { message: self.barred_message("columns") };
+        }
+        if self.board.crown_budget != budget {
+            self.board.crown_budget = budget;
+            self.persist_and_notify();
+        }
+        Response::Ok
+    }
+
     fn set_mcp_tools(&mut self, on: bool) -> Response {
         if self.columns_barred {
             return Response::Err { message: self.barred_message("columns") };
@@ -7511,12 +7643,16 @@ impl Daemon {
         }
     }
 
+    /// `started_by` is the crown's ticket when the crown asked (T-412) and
+    /// `None` for every start a person or a column rule made; it lands on
+    /// the record and is what the spawn budget counts.
     fn spawn_session(
         &mut self,
         ticket: ulid::Ulid,
         kind: SessionKind,
         submit_prompt: bool,
         prompt: Option<String>,
+        started_by: Option<ulid::Ulid>,
     ) -> Response {
         if self.board.ticket(ticket).is_none() {
             return no_such_ticket();
@@ -7574,7 +7710,13 @@ impl Daemon {
                 if !self.pending_spawns.iter().any(|s| {
                     s.ticket == ticket && (s.kind == kind || (s.kind.is_agent() && kind.is_agent()))
                 }) {
-                    self.pending_spawns.push(PendingSpawn { ticket, kind, submit_prompt, prompt });
+                    self.pending_spawns.push(PendingSpawn {
+                        ticket,
+                        kind,
+                        submit_prompt,
+                        prompt,
+                        started_by,
+                    });
                 }
                 self.persist_and_notify();
                 return Response::Provisioning;
@@ -7601,6 +7743,7 @@ impl Daemon {
             SessionRecord::new(id, kind, ticket, argv.clone(), cwd.display().to_string(), state);
         rec.state_changed_at = Some(now_ms());
         rec.codex_generation = spec.generation;
+        rec.started_by = started_by;
         if kind == SessionKind::Codex {
             rec.agent_preview_path =
                 Some(crate::agents::codex::preview_path(&self.paths, id).display().to_string());
@@ -7786,7 +7929,7 @@ impl Daemon {
                     // "attached but no session" outcome to the user).
                     let kind = s.kind;
                     if let Response::Err { message } =
-                        self.spawn_session(s.ticket, kind, s.submit_prompt, s.prompt)
+                        self.spawn_session(s.ticket, kind, s.submit_prompt, s.prompt, s.started_by)
                     {
                         eprintln!("mesimon: parked spawn replay failed ({kind:?}): {message}");
                         self.feed.board("daemon", "spawn_replay_failed", Some(s.ticket));

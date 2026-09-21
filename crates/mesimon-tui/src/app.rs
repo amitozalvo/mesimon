@@ -3507,6 +3507,7 @@ impl App {
             settings_section: self.settings_section,
             agent_provider: self.board.agent_provider,
             park_after_minutes: self.board.park_after_minutes,
+            crown_budget: self.board.crown_budget,
             column_agents: self.column_agents,
             col_naming: matches!(self.mode, Mode::ColumnSettings { naming: Some(_), .. }),
             col_offers_word: cs.offers().word(),
@@ -4445,6 +4446,20 @@ impl App {
                     _ => 0,
                 };
                 match self.client.request(Command::SetParkAfterMinutes { minutes })? {
+                    Response::Err { message } => self.status = message,
+                    _ => self.refresh()?,
+                }
+            }
+            Verb::CrownBudget => {
+                let budget = match self.board.crown_budget {
+                    0 => 1,
+                    1 => 2,
+                    2 => 3,
+                    3..=4 => 5,
+                    5..=7 => 8,
+                    _ => 0,
+                };
+                match self.client.request(Command::SetCrownBudget { budget })? {
                     Response::Err { message } => self.status = message,
                     _ => self.refresh()?,
                 }
@@ -9819,6 +9834,10 @@ pub(crate) mod test_support {
                     self.board.park_after_minutes = minutes;
                     Ok(Response::Ok)
                 }
+                Command::SetCrownBudget { budget } => {
+                    self.board.crown_budget = budget;
+                    Ok(Response::Ok)
+                }
                 Command::SetFollowUpMode { mode } => {
                     self.board.follow_up_mode = mode;
                     Ok(Response::Ok)
@@ -12237,6 +12256,24 @@ mod tests {
             assert_eq!(app.mode, Mode::Settings { idx });
         }
         assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetParkAfterMinutes")).count(), 5);
+    }
+
+    /// The crown's spawn budget (T-412) cycles through the board command
+    /// like the inactivity row, from the default of three.
+    #[test]
+    fn crown_budget_setting_cycles_through_board_command() {
+        let (mut app, sent, _) = app_with_claude(SessionState::Sleeping, false);
+        app.settings_section = keymap::SettingsSection::Agents;
+        let idx = app.settings_row(Verb::CrownBudget);
+        app.mode = Mode::Settings { idx };
+        assert_eq!(app.board.crown_budget, 3);
+        for budget in [5, 8, 0, 1, 2, 3] {
+            app.handle_key(KeyCode::Enter, KeyModifiers::NONE).unwrap();
+            assert_eq!(app.board.crown_budget, budget);
+            assert_eq!(app.ctx().crown_budget, budget);
+            assert_eq!(app.mode, Mode::Settings { idx });
+        }
+        assert_eq!(sent.borrow().iter().filter(|r| r.contains("SetCrownBudget")).count(), 6);
     }
 
     #[test]

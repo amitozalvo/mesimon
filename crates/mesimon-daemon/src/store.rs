@@ -71,6 +71,10 @@ fn schema_v1() -> u32 {
 }
 
 /// `ColumnsFile::mcp_tools` defaults ON — see the field.
+fn default_crown_budget() -> u8 {
+    mesimon_core::board::DEFAULT_CROWN_BUDGET
+}
+
 fn yes() -> bool {
     true
 }
@@ -86,6 +90,12 @@ struct ColumnsFile {
     agent_provider: AgentProvider,
     #[serde(default)]
     park_after_minutes: u32,
+    /// The crown's spawn budget (`Board::crown_budget`, T-412). A scalar,
+    /// so it sits here; absent — every file before the field — means the
+    /// default of three, and no bump: a build that drops it falls back to
+    /// that same number, and the count it caps is in `sessions.json`.
+    #[serde(default = "default_crown_budget")]
+    crown_budget: u8,
     /// Whether the starter tags were offered (`Board::tags_seeded`). A scalar,
     /// so it sits here, before the tables. Absent on every file written
     /// before 2026-09-04, which is what makes an existing board's first load
@@ -414,6 +424,7 @@ fn load_columns(cols_path: &Path, notices: &mut Vec<Notice>) -> (Board, bool, bo
                                 next_key: cf.next_key,
                                 agent_provider: cf.agent_provider,
                                 park_after_minutes: cf.park_after_minutes,
+                                crown_budget: cf.crown_budget,
                                 tags: cf.tags,
                                 tags_seeded: cf.tags_seeded,
                                 mcp_tools: cf.mcp_tools,
@@ -606,6 +617,8 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ColumnsScalars {
     pub agent_provider: AgentProvider,
+    /// `Board::crown_budget` (T-412).
+    pub crown_budget: u8,
     /// `Board::mcp_tools` (T-217).
     pub mcp_tools: bool,
     /// `Board::system_prompt` (T-224).
@@ -626,7 +639,9 @@ impl Default for ColumnsScalars {
     fn default() -> Self {
         Self {
             agent_provider: AgentProvider::default(),
+            crown_budget: mesimon_core::board::DEFAULT_CROWN_BUDGET,
             mcp_tools: true,
+
             system_prompt: false,
             default_column: None,
             prompts: PromptSet::default(),
@@ -652,6 +667,7 @@ pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
     }
     ColumnsScalars {
         agent_provider: cf.agent_provider,
+        crown_budget: cf.crown_budget,
         mcp_tools: cf.mcp_tools,
         system_prompt: cf.system_prompt,
         default_column,
@@ -673,6 +689,7 @@ pub fn save_columns(paths: &Paths, board: &Board) -> Result<()> {
         next_key: board.next_key,
         agent_provider: board.agent_provider,
         park_after_minutes: board.park_after_minutes,
+        crown_budget: board.crown_budget,
         tags_seeded: board.tags_seeded,
         mcp_tools: board.mcp_tools,
         claude_md_ignored: board.claude_md_ignored,
@@ -1845,6 +1862,7 @@ order = "a0"
             next_key: 3,
             agent_provider: AgentProvider::Codex,
             park_after_minutes: 30,
+            crown_budget: 5,
             tags_seeded: true,
             mcp_tools: false,
             claude_md_ignored: true,
@@ -1904,7 +1922,9 @@ order = "a0"
         assert_eq!(back.follow_up_mode, mesimon_core::board::FollowUpMode::Steer);
         assert_eq!(back.agent_provider, AgentProvider::Codex);
         assert_eq!(back.park_after_minutes, 30);
+        assert_eq!(back.crown_budget, 5);
         assert!(text.find("agent_provider").unwrap() < text.find("[[columns]]").unwrap());
+
         let scalars = text.find("mcp_tools").expect("mcp_tools on disk");
         assert!(
             text.find("system_prompt").expect("system_prompt on disk")

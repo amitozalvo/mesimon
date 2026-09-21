@@ -440,6 +440,13 @@ pub enum Command {
     SetParkAfterMinutes {
         minutes: u32,
     },
+    /// The crown's spawn budget (`Board::crown_budget`, T-412): how many
+    /// agent seats the crown's agent may have started at once. Zero means
+    /// none. Local only — a tier that could raise its own budget is D10's
+    /// money fire with the fuse removed.
+    SetCrownBudget {
+        budget: u8,
+    },
     /// Project default for newly accepted agent starts. Existing sessions
     /// retain their provider. Local only: agents cannot choose who runs
     /// subsequent sessions on the board.
@@ -761,6 +768,17 @@ pub enum Command {
         #[serde(default)]
         seen: Option<String>,
     },
+    /// Start the board's agent provider on another ticket, by key (T-412):
+    /// what Shift+Enter does — the title and the brief submitted, a worktree
+    /// provisioned lazily when the ticket asks for one. Crown only, behind
+    /// `Board::crown_budget`; refused on a ticket that already holds an
+    /// agent seat and on the crown's own. The daemon spawns; the agent only
+    /// asks, and `SpawnSession` itself stays in the never-tier.
+    AgentStartTicket {
+        key: String,
+        #[serde(default)]
+        seen: Option<String>,
+    },
     /// Mint a NEW ticket (`create_ticket`). The one agent command that is
     /// not about the caller's own ticket, and the one place the tier makes a
     /// second card: an agent that finds work outside its ticket's scope
@@ -1004,6 +1022,7 @@ impl Command {
             | SetMcpTools { .. }
             | SetAgentProvider { .. }
             | SetParkAfterMinutes { .. }
+            | SetCrownBudget { .. }
             | SetSystemPrompt { .. }
             | SetFollowUpMode { .. }
             | SetDefaultColumn { .. }
@@ -1039,6 +1058,7 @@ impl Command {
             | AgentRenameTicket { .. }
             | AgentSetWorkspace { .. }
             | AgentArchiveTicket { .. }
+            | AgentStartTicket { .. }
             | AgentRaiseHand { .. } => m(Mutate, false, None),
         }
     }
@@ -1381,6 +1401,16 @@ pub enum Response {
         reason: String,
         #[serde(default)]
         board_version: u64,
+    },
+    /// AgentStartTicket's receipt (T-412): which ticket, whether a session
+    /// is running now (`false` while a worktree provisions — the start is
+    /// parked and replays on ready), and how many seats the budget still
+    /// has after this one.
+    AgentStarted {
+        key: String,
+        session_started: bool,
+        #[serde(default)]
+        budget_left: u8,
     },
 }
 

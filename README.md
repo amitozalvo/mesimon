@@ -52,10 +52,13 @@ reported as unavailable there.
    It does give the sessions it spawns scoped board tools — read and move its ticket, read and
    write its notes, tag it from the tags you already made, and file a new ticket — so an agent
    can see which ticket it is on and what it is about. One ticket per board can wear the
-   *crown* (`^o` on its card): its agent may then move, retitle, tag, annotate, archive and set
-   the workspace of the other tickets, each edit checked against the ticket as the agent last
-   read it and lit on the card as it happens. Only you can crown a ticket; an agent that asks
-   for it is told to ask you. `mesimon doctor --mcp` prints the current tool registry verbatim.
+   *crown* (`^o` on its card): its agent may then move, retitle, tag, annotate, archive, set
+   the workspace of and start an agent on the other tickets, each edit checked against the
+   ticket as the agent last read it and lit on the card as it happens. Starts are capped by a
+   per-board budget (Settings → Agents, three by default), and a ticket the crown started can
+   never itself be crowned. Only you can crown a ticket; an agent that asks for it is told to
+   ask you. `mesimon doctor --mcp` prints the current tool registry verbatim.
+
 
    And there is one line you can choose to add. The *agent brief* is off until you turn it on:
    a five-line sentence in the system prompt of the agent sessions mesimon starts in this repo

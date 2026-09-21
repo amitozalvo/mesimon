@@ -12045,3 +12045,50 @@ untouched.
   the eye review could not see.
 - `menu::words_key` folded into `dialog::reveal`; the marquee clock is still `App::menu_marquee`,
   keyed on the detail's own words.
+
+## The crown starts agents, behind a spawn budget (T-412, 2026-09-22)
+
+**Shipped.** The thirteenth tool, `start_agent { key, seen }` (crown only, `Full` rung):
+starts the board's agent provider on another ticket exactly as Shift+Enter does —
+`spawn_session(kind: provider, submit_prompt: true)`, the title and the brief submitted, a
+worktree provisioned lazily when the ticket asks for one. T-411 kept `SpawnSession` in the
+never-tier until a budget existed (D10: an agent that starts agents is a self-replicating
+money fire), and it still is: `AgentStartTicket` is an ASK the daemon judges, the agent names
+a ticket and nothing else — no kind, no prompt, no session id — and `authorize` is untouched
+(Session denied at every action for an agent, Board mutate denied).
+
+- **The budget is a board scalar.** `Board.crown_budget: u8` in `columns.toml`
+  (`DEFAULT_CROWN_BUDGET` = 3, serde default, no `COLUMNS_SCHEMA` bump: a build that drops it
+  falls back to the same number). Counted from a new `SessionRecord.started_by:
+  Option<Ulid>` (`#[serde(default)]`, the crown ticket's id, persisted in `sessions.json` so a
+  restart keeps the count) over records that hold an agent seat (`holds_agent_seat`, so a
+  sleeping record still counts — the seat is held), plus the starts parked behind a worktree
+  provision (`PendingSpawn.started_by`), which have no record yet and would otherwise let a
+  burst of worktree tickets outrun the cap. `Board::crown_started()` is the one reader;
+  `Daemon::crown_seats()` adds the parked ones. **Board-wide, not per crown**: a displaced
+  crown does not free the seats the last one started, because the money is spent either way.
+  Zero turns the road off in words. `SetCrownBudget { budget }` is local-only (a tier that
+  could raise its own budget is the fire with the fuse removed); Settings → Agents → "Crown may
+  start N agents at once" cycles off / 1 / 2 / 3 / 5 / 8; `mesimon doctor` prints the number
+  under `crown budget`.
+- **One level deep by construction.** `crown_ticket` refuses a ticket whose live agent carries
+  `started_by`, so no crown-started agent ever starts agents. Lowering the budget below what
+  is held stops the next start and kills nothing.
+- **Refusals, in order:** the crown's own ticket ("already runs"), a ticket already holding a
+  seat (`Board::live_agent`, the one-claude-per-ticket rule, with the agent's state word),
+  then the budget — the cap and the keys holding it, and that a seat frees when its agent
+  exits (a sleeping one still holds it) or the person raises the number. The receipt
+  (`Response::AgentStarted { key, session_started, budget_left }`) says what is left;
+  `session_started` is false while a worktree provisions and the start is parked.
+- **The board sees it.** `crown_touched(target, "started")` lights the card `♛ started` and
+  the launch arc draws itself (the record enters `Spawning` like any spawn); the feed line is
+  `start_agent` with actor `agent` and the target as subject.
+
+**Tests.** `mcp`: `exactly_thirteen_tools`, `the_tier_is_exactly_fourteen_commands`, the tier
+table and the parse test; `store` round-trips the scalar; the TUI's
+`crown_budget_setting_cycles_through_board_command`; the settings goldens gained the row.
+`crown_e2e` extended: the budget set and persisted, a start refused on a seated ticket, on the
+crown's own and without the stamp, a start with its receipt / record / touch / persisted
+`started_by`, the seat refusing a second start, the started ticket refused the crown, the cap
+naming the number and the holders, a killed seat freeing one, the feed line, budget zero, and
+the shim listing thirteen tools with `seen` required.

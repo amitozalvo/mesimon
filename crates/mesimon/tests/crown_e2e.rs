@@ -3,11 +3,14 @@
 //! an agent never can; an uncrowned agent reaching for another ticket reads
 //! how a person grants one; every keyed write is judged against the ticket
 //! as it was READ (`seen`); the touched card rides the snapshot for the
-//! board to light; and the crown leaves with its ticket.
+//! board to light; and the crown leaves with its ticket. The crown's one
+//! start (T-412) sits behind the board's spawn budget: a seat it started
+//! is counted while held, the cap names its holders, and a crown-started
+//! ticket can never be crowned.
 
 #![allow(clippy::unwrap_used, clippy::expect_used)]
 
-use mesimon_core::board::SessionKind;
+use mesimon_core::board::{SessionKind, SessionState};
 use mesimon_core::command::{AgentTicketView, Command, CrownTouch, Response};
 use mesimon_core::Principal;
 use serde_json::json;
@@ -325,12 +328,125 @@ fn the_crown_lets_one_agent_edit_the_others() {
     }
     assert!(!c.board().ticket(d).unwrap().is_archived());
 
-    // ---- the shim: twelve tools, and `get_ticket` with a key ------------------
+    // ---- start_agent: the crown starts work, behind the spawn budget --------
+    // The budget is a board scalar a person sets; two here so the cap is
+    // reached on the second start.
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 2 }), Response::Ok));
+    assert_eq!(c.board().crown_budget, 2);
+    let file = std::fs::read_to_string(h.paths.board_dir.join("board/columns.toml")).unwrap();
+    assert!(file.contains("crown_budget = 2"), "{file}");
+    let e1 = create(&mut c, "first start");
+    let e2 = create(&mut c, "second start");
+    let e3 = create(&mut c, "third start");
+    let (k1, k2, k3) = (key_of(&mut c, e1), key_of(&mut c, e2), key_of(&mut c, e3));
+    let start = |c: &mut TestClient, key: &str, seen: Option<String>| {
+        c.send(
+            Principal::Agent { session: sa },
+            Command::AgentStartTicket { key: key.into(), seen },
+        )
+    };
+    // Refused: a ticket that already holds a seat, the crown's own ticket,
+    // and a start without the stamp.
+    let bv = read(&mut c, sa, &kb).unwrap();
+    match start(&mut c, &kb, bv.seen) {
+        Response::Err { message } => assert!(message.contains("already has an agent"), "{message}"),
+        other => panic!("a start on a seated ticket: {other:?}"),
+    }
+    match start(&mut c, &ka, None) {
+        Response::Err { message } => assert!(message.contains("own ticket"), "{message}"),
+        other => panic!("a start on the crown's own ticket: {other:?}"),
+    }
+    match start(&mut c, &k1, None) {
+        Response::Err { message } => assert!(message.contains("seen is required"), "{message}"),
+        other => panic!("a start without the stamp: {other:?}"),
+    }
+    // The start: a launch on the card, the record carries the crown's id,
+    // the touch says so, and the receipt says what is left.
+    let v1 = read(&mut c, sa, &k1).unwrap();
+    match start(&mut c, &k1, v1.seen) {
+        Response::AgentStarted { key, session_started, budget_left } => {
+            assert_eq!(key, k1);
+            assert!(session_started);
+            assert_eq!(budget_left, 1);
+        }
+        other => panic!("the first start: {other:?}"),
+    }
+    let started = c.board().live_agent(e1).cloned().expect("E1 holds a seat now");
+    assert_eq!(started.started_by, Some(a), "the record names the crown's ticket");
+    assert_eq!(started.kind, SessionKind::Claude);
+    assert!(
+        matches!(started.state, SessionState::Spawning | SessionState::Running),
+        "{:?}",
+        started.state
+    );
+    assert!(started.pending_submit, "Shift+Enter's road: the title is submitted, not typed");
+    assert_eq!(touches(&mut c).iter().find(|t| t.ticket == e1).unwrap().action, "started");
+    let sessions = std::fs::read_to_string(h.paths.state_dir.join("sessions.json")).unwrap();
+    assert!(sessions.contains("\"started_by\""), "persisted, so a restart keeps the count");
+    // A second start on the same ticket is refused by the seat.
+    let v1 = read(&mut c, sa, &k1).unwrap();
+    match start(&mut c, &k1, v1.seen) {
+        Response::Err { message } => assert!(message.contains("already has an agent"), "{message}"),
+        other => panic!("a second start on E1: {other:?}"),
+    }
+    // A crown-started ticket cannot be crowned: the graph is one level deep.
+    match c.request(Command::CrownTicket { id: e1 }) {
+        Response::Err { message } => assert!(message.contains("crown-started"), "{message}"),
+        other => panic!("crowning a crown-started ticket: {other:?}"),
+    }
+    assert_eq!(c.board().crown, Some(a), "A still wears it");
+    // The cap: the third start is refused with the number and the holders.
+    let v2 = read(&mut c, sa, &k2).unwrap();
+    match start(&mut c, &k2, v2.seen) {
+        Response::AgentStarted { budget_left, .. } => assert_eq!(budget_left, 0),
+        other => panic!("the second start: {other:?}"),
+    }
+    let v3 = read(&mut c, sa, &k3).unwrap();
+    match start(&mut c, &k3, v3.seen) {
+        Response::Err { message } => {
+            for word in ["2 of 2", &k1, &k2] {
+                assert!(message.contains(word), "the refusal names {word}: {message}");
+            }
+        }
+        other => panic!("the (N+1)th start: {other:?}"),
+    }
+    // A seat frees when its agent exits (a sleeping one would still hold it).
+    let s2 = c.board().live_agent(e2).unwrap().id;
+    let _ = c.request(Command::KillSession { id: s2 });
+    assert!(c.board().live_agent(e2).is_none(), "E2's seat is free");
+    let v3 = read(&mut c, sa, &k3).unwrap();
+    match start(&mut c, &k3, v3.seen) {
+        Response::AgentStarted { budget_left, .. } => assert_eq!(budget_left, 0),
+        other => panic!("the start after a seat freed: {other:?}"),
+    }
+    // The feed says the agent started it (buffered; flushed on a later tick).
+    let feed_path = h.paths.state_dir.join("activity.jsonl");
+    wait_until(std::time::Duration::from_secs(5), "the feed line", || {
+        std::fs::read_to_string(&feed_path).is_ok_and(|feed| {
+            feed.lines().any(|l| l.contains("\"start_agent\"") && l.contains("\"actor\":\"agent\""))
+        })
+    });
+
+    // A budget of zero turns the road off, in words.
+    assert!(matches!(c.request(Command::SetCrownBudget { budget: 0 }), Response::Ok));
+    let e4 = create(&mut c, "never started");
+    let k4 = key_of(&mut c, e4);
+    let v4 = read(&mut c, sa, &k4).unwrap();
+    match start(&mut c, &k4, v4.seen) {
+        Response::Err { message } => assert!(message.contains("budget is 0"), "{message}"),
+        other => panic!("a start at budget 0: {other:?}"),
+    }
+    assert!(c.board().live_agent(e4).is_none());
+
+    // ---- the shim: thirteen tools, and `get_ticket` with a key ----------------
     let mut shim = Shim::start(&sock, sa);
     shim.rpc("initialize", json!({"protocolVersion": "2025-11-25"}));
     shim.notify("notifications/initialized");
     let listed = shim.rpc("tools/list", json!({}));
-    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 12);
+    assert_eq!(listed["result"]["tools"].as_array().unwrap().len(), 13);
+    let r = shim.call("start_agent", json!({ "key": k4 }));
+    assert_eq!(r["isError"], true, "seen is required by the tool: {r}");
+
     let other = shim.call_ok("get_ticket", json!({ "key": kb }));
     assert_eq!(other["key"], json!(kb));
     assert!(other["seen"].is_string(), "{other}");

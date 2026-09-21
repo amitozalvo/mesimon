@@ -191,6 +191,7 @@ mod tests {
             transcript_path: None,
             detail: None,
             title: None,
+            started_by: None,
             foreground: None,
             confidence: Confidence::High,
             provenance: Provenance::Spawned,

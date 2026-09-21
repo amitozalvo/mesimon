@@ -139,6 +139,7 @@ fn call_tool(id: Value, params: &Value, sock: &PathBuf, session: uuid::Uuid) -> 
         ToolCall::ArchiveTicket { key, restore, seen } => {
             Command::AgentArchiveTicket { key, restore, seen: Some(seen) }
         }
+        ToolCall::StartAgent { key, seen } => Command::AgentStartTicket { key, seen: Some(seen) },
         ToolCall::CreateTicket { title, column, description, tags, idempotency_key } => {
             Command::AgentCreateTicket {
                 title,
@@ -196,6 +197,12 @@ fn render(resp: Response) -> Value {
         Response::AgentRaised { reason, board_version } => {
             text(&json!({ "reason": reason, "board_version": board_version }))
         }
+        // The crown's start (T-412): which ticket, whether a pane runs now
+        // (false while a worktree provisions), and the seats left.
+        Response::AgentStarted { key, session_started, budget_left } => text(&json!({
+            "key": key, "session_started": session_started, "budget_left": budget_left
+        })),
+
         // The body as the text block itself: markdown inside a JSON string is
         // a worse read, and the metadata already travels in `get_ticket`.
         Response::Note { text: body, .. } => {

@@ -530,10 +530,22 @@ fn agents(repo: &Path, verbose: bool) -> Section {
                 )),
         );
 
+        // The crown's spawn budget (T-412): the one number that bounds an
+        // agent starting agents on this board. Printed either way, because
+        // "how many could it start" must be answerable without the TUI.
+        records.push(match cols.crown_budget {
+            0 => rec(Level::Note, "crown budget", "0 - a crowned agent starts no agents").advice(
+                "start_agent is refused on this board. Settings > Agents > Crown may start ... sets the cap.",
+            ),
+            n => rec(Level::Ok, "crown budget", format!("{n} - the most agents a crowned agent may have started at once"))
+                .advice("Counted over live seats the crown started, sleeping ones included; a crown-started ticket cannot itself be crowned. Settings > Agents > Crown may start ... sets it."),
+        });
+
         // The columns and what each one DOES (T-117): every automation is a
         // column setting now, so this line is the whole answer to "why did
         // that card move". A board with no file prints nothing — doctor
         // never creates one.
+
         if let Some(columns) = &cols.columns {
             let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
             let mut rules: Vec<String> = Vec::new();

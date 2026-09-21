@@ -6,7 +6,6 @@
 
     Keymap validator      >1y     ⠋ Adopt drawer import >1y     x Flaky e2e on runner >1y
 
-
                            ╭─ AGENTS ───────────────────────────────────────────────────────╮
                            │   Provider: Claude Code                                        │
                            │     new sessions only ∙ enter selects Codex                    │
@@ -18,8 +17,9 @@
                            │     what mesimon types at an agent about a rebase, a merge, a~ │
                            │   Sleep idle agents: off                                       │
                            │     this board ∙ after a finished turn ∙ enter cycles off / 1~ │
+                           │   Crown may start 3 agents at once                             │
+                           │     start_agent on the crowned ticket ∙ a sleeping seat still~ │
                            ╰────────────────────────── jk select ∙ enter choose ∙ esc back ─╯
-
 
 
 

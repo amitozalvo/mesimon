@@ -579,6 +579,10 @@ pub enum Verb {
     /// Project default for newly accepted sessions; existing seats retain theirs.
     AgentProvider,
     ParkAfterMinutes,
+    /// The Settings row for the crown's spawn budget (T-412): how many agent
+    /// seats the crowned agent may have started at once. Board state like
+    /// `McpTools`, in `columns.toml`; Enter cycles it.
+    CrownBudget,
     /// The Settings row under it (T-224): whether every claude mesimon
     /// starts on this board carries `brief::TEXT` in its system prompt.
     /// Board state like `McpTools`, and the switch the offer's dialog turns.
@@ -813,6 +817,7 @@ impl SettingsSection {
             | Verb::McpTools
             | Verb::AgentProvider
             | Verb::ParkAfterMinutes
+            | Verb::CrownBudget
             | Verb::AgentPrompts => Self::Agents,
             _ => Self::Root,
         }
@@ -835,6 +840,8 @@ pub struct Ctx {
     pub prompt_editing: bool,
     pub agent_provider: AgentProvider,
     pub park_after_minutes: u32,
+    /// `Board::crown_budget` (T-412), for the Settings row's words.
+    pub crown_budget: u8,
     pub column_agents: bool,
     pub col_naming: bool,
     pub col_offers_word: &'static str,
@@ -3767,6 +3774,25 @@ static SETTINGS_ITEMS: &[MenuItem] = &[
         avail: always,
         key: "",
     },
+    // The crown's spawn budget (T-412). Board state in `columns.toml` like
+    // the provider row: the cap on agents an agent may have running at once
+    // is a property of the board, not of the person's terminal.
+    MenuItem {
+        verb: Verb::CrownBudget,
+        label: |c| {
+            if c.crown_budget == 0 {
+                "Crown starts agents: off".into()
+            } else {
+                format!("Crown may start {} at once", plural(c.crown_budget as usize, "agent"))
+            }
+        },
+        detail: |_| {
+            "start_agent on the crowned ticket ∙ a sleeping seat still counts ∙ enter cycles off / 1 / 2 / 3 / 5 / 8"
+                .into()
+        },
+        avail: always,
+        key: "",
+    },
     MenuItem {
         verb: Verb::McpTools,
         label: |c| {
@@ -4158,6 +4184,7 @@ pub fn settings_items(ctx: &Ctx) -> Vec<&'static MenuItem> {
             Verb::McpTools,
             Verb::AgentPrompts,
             Verb::ParkAfterMinutes,
+            Verb::CrownBudget,
         ],
     };
     verbs
@@ -7480,6 +7507,7 @@ mod tests {
                     Verb::McpTools,
                     Verb::AgentPrompts,
                     Verb::ParkAfterMinutes,
+                    Verb::CrownBudget,
                 ],
             ),
         ] {

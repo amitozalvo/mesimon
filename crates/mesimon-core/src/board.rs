@@ -262,6 +262,15 @@ pub struct SessionRecord {
     pub confidence: Confidence,
     #[serde(default)]
     pub provenance: Provenance,
+    /// The crown's ticket when the crown's agent asked for this session
+    /// (`start_agent`, T-412); `None` for every seat a person started. The
+    /// spawn budget counts records that carry it while they hold a seat
+    /// (`Board::crown_started`), and a ticket whose agent carries it can
+    /// never be crowned — so the graph of agents that start agents is one
+    /// level deep by construction (D10). Persisted so a restart keeps the
+    /// count honest; `#[serde(default)]` is the migration.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub started_by: Option<ulid::Ulid>,
     /// The claude-side session id when it differs from `id` — set for adopted
     /// sessions, and relearned from the SessionStart transcript filename when
     /// an in-app /resume hands the pane a different conversation. Stays None
@@ -398,6 +407,7 @@ impl SessionRecord {
             transcript_path: None,
             detail: None,
             title: None,
+            started_by: None,
             foreground: None,
             confidence: Confidence::default(),
             provenance: Provenance::default(),
@@ -1466,6 +1476,14 @@ pub struct Board {
     /// Automatically sleep quiet Claude sessions after this many minutes; zero disables it.
     #[serde(default)]
     pub park_after_minutes: u32,
+    /// The spawn budget (T-412): how many agent seats the crown's agent may
+    /// have started at once, counted over `SessionRecord::started_by` while
+    /// each seat is held (a sleeping record holds its seat). Zero means the
+    /// crown starts nothing. D10's money fire — an agent that starts agents
+    /// — is bounded by this number and by the one-level rule on
+    /// `started_by`, never by trust.
+    #[serde(default = "default_crown_budget")]
+    pub crown_budget: u8,
     /// Counter feeding short keys (T-1, T-2, …).
     pub next_key: u64,
     /// The tag registry: the vocabulary each axis offers, in the order it was
@@ -1559,6 +1577,15 @@ pub struct Board {
     pub crown: Option<ulid::Ulid>,
 }
 
+/// The crown's spawn budget when the file says nothing (T-412): three
+/// seats, enough for a coordinator to fan out a small batch and few enough
+/// that a runaway costs three sessions, not a fleet.
+pub const DEFAULT_CROWN_BUDGET: u8 = 3;
+
+fn default_crown_budget() -> u8 {
+    DEFAULT_CROWN_BUDGET
+}
+
 /// `Board::mcp_tools` defaults ON: a serde default has to be a function, and
 /// this is the whole of it.
 fn yes() -> bool {
@@ -1601,6 +1628,7 @@ impl Default for Board {
             sessions: Vec::new(),
             agent_provider: AgentProvider::default(),
             park_after_minutes: 0,
+            crown_budget: DEFAULT_CROWN_BUDGET,
             next_key: 0,
             tags: Vec::new(),
             tags_seeded: false,
@@ -2309,6 +2337,15 @@ impl Board {
     /// Compatibility name for callers migrating to the common agent seat.
     pub fn live_claude(&self, ticket: ulid::Ulid) -> Option<&SessionRecord> {
         self.live_agent(ticket)
+    }
+
+    /// The seats the crown's agent started and still holds (T-412): the
+    /// records that carry `started_by` and hold an agent seat — parked or
+    /// not, whoever wears the crown now. The budget is counted over these,
+    /// board-wide: a displaced crown does not free the seats the last one
+    /// started, because the money is spent either way.
+    pub fn crown_started(&self) -> Vec<&SessionRecord> {
+        self.sessions.iter().filter(|s| s.started_by.is_some() && s.holds_agent_seat()).collect()
     }
 
     pub fn ticket_awake_sessions(&self, id: ulid::Ulid) -> usize {
