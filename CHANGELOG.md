@@ -6,6 +6,96 @@ changes, the old file is preserved.
 These notes describe each version at the time of release. They are available
 in the Esc menu under `Release notes` and on GitHub.
 
+## v0.1.0-alpha.23 — 2026-09-21
+
+### Added
+
+- **Remote Control opens a board in your own browser, on desktop or phone
+  (preview).** View tickets, preview an agent's output, send a prompt, approve
+  or deny Claude permission requests, and answer supported Claude dialogs.
+  Debug builds include it; release builds need `MESIMON_MESOPHON=1` at startup.
+  Open `Esc › Sharing › Remote Control`, sign in to your relay, enable the
+  board, then `Pair a browser` and enter the single-use code within ten
+  minutes. Each board is enabled and paired separately, and enabling it shares
+  nothing with teammates. The host must stay awake with its daemon running.
+  `mesimon mesophon setup` checks the connection and opens the browser for a
+  browser on the same Mac, with no certificate to install; a phone or another
+  computer needs a reachable HTTPS relay. Existing agent sessions need
+  refreshed hook settings before they offer remote approvals. The preview has
+  no board editing, no agent start or stop, no interactive terminal, and
+  cannot start a stopped daemon; alerts require the browser to stay connected.
+  Select a paired device and press Enter twice to revoke it; disabling Remote
+  Control removes every grant for that board.
+- **Pictures paste into a ticket note or a new ticket's description with
+  `Ctrl+V`.** Each appears in the text as `[Image #N]`; saving keeps the PNG
+  with the ticket, and the note's `Ctrl+K` links menu opens it in your image
+  viewer. The ticket's agent can read them through the new `read_attachment`
+  tool. Local macOS, X11 and Wayland desktops are supported; SSH and WSL are
+  not. Limits are 10 MiB and 25 megapixels per picture and 50 MiB of pending
+  pictures per draft. Discarding a draft discards its new pictures, and shared
+  boards synchronize the note text only.
+- **One ticket per board can wear the crown (`^o` on its card), letting its
+  agent edit the other tickets.** A crowned agent may move, retitle, tag,
+  annotate, archive and set the workspace of any ticket; each edit is checked
+  against the ticket as that agent last read it, lights the touched card, and
+  leaves a mark until you see it. Only you can crown a ticket — an agent that
+  asks for the crown is told to ask you. Archiving or snoozing the crowned
+  ticket by hand drops the crown.
+- **`Settings › Agents › Sleep idle agents` sleeps finished agent sessions
+  after 15, 30, 60 or 120 idle minutes.** It is off by default, applies to the
+  current board, and keeps working with the TUI closed. Running turns,
+  background work and sessions needing attention stay awake; waking resumes the
+  same conversation. The board's `park_after_minutes` setting takes any whole
+  number of minutes, and `0` disables it.
+- **Follow-up prompts now wait for the agent's current turn to end.** `Queue`
+  is the default and holds the prompt through approval and question stops; a
+  queued prompt shows on the ticket page, where `Ctrl+Y` sends it now and
+  `Ctrl+U` takes it back for editing. `Settings › Behaviour › Follow-ups`
+  switches the default to `Steer`, and Shift+Tab flips a single composer. The
+  queue holds one prompt per ticket in memory, and a daemon restart discards it.
+- **An open card names its ticket's key.** `p` on the card under the cursor and
+  `P` on every card now close the meta row with the short key, right-aligned
+  under the age, with or without tags.
+
+### Changed
+
+- **Key hints and statuses say `agent` instead of `claude`.** `c` reads `start
+  agent` and `wake agent`, Shift+Enter reads `ask agent`, the ask room's frame
+  reads `ASK AGENT`, and `Settings › Agents` reads `Sleep idle agents`. Labels
+  that identify one session — card and rail rows, the tmux breadcrumb, doctor's
+  installation rows, the `Provider:` row — still name Claude or Codex.
+- **Shift+Enter on a column header now starts an agent on the tickets with no
+  session.** It previously skipped them. A blank Enter starts each empty seat on
+  its own title and says nothing to the agents already seated; the receipt now
+  reads, for example, `asked 2 ∙ started 3`. A column of pending tickets sharing
+  the checkout opens at `queued` and drains one agent at a time.
+- **The `create_ticket` tool text now asks agents to extend an existing
+  ticket rather than file a near-duplicate.** It describes a ticket as a unit of
+  work to pick up, points at `list_board` as the duplicate check, and says the
+  older ticket wins. This is guidance in the tool description, not enforcement.
+- **The README explains why `shift-enter` may do nothing in iTerm2.** Claude
+  Code's `/terminal-setup` installs a `⇧↩` binding that sends a plain newline
+  and defeats the key; delete that row under Keys → Key Bindings and restart
+  mesimon.
+
+### Fixed
+
+- **A session that published an artifact no longer counts as working forever.**
+  Claude Code lists an ambient artifact watch as a running monitor in every
+  `Stop`, so a finished session read as monitoring and never reached REVIEW.
+  Only a monitor whose task the session actually started counts now.
+- **A session whose background work goes silent no longer reads as working for
+  hours.** A background wait that gets no further signal for ten minutes now
+  settles to idle, which is what the automatic column move needs.
+- **Codex sessions that never reported `stopped` no longer hold the shared
+  checkout.** Records left mid-stop counted as working, so queued asks on that
+  board waited forever on cards showing nothing running. Such a record now keeps
+  its place on the rail and releases the checkout and the agent seat after 60
+  seconds. The check also survives a cleared `/tmp`.
+- **Interrupting a Codex compaction no longer leaves the card running.** An
+  interrupted turn now retires that turn's pending compactions and settles to
+  interrupted, instead of waiting for a completion that never arrives.
+
 ## v0.1.0-alpha.22 — 2026-09-15
 
 ### Added
