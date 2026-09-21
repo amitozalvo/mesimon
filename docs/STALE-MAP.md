@@ -11906,3 +11906,29 @@ untouched.
   board attached stays unseen for two buckets, and the forced-open gate fails it) and the
   catch-up (a subscribe lands `ahead 1` with no fetch press). `workspace_e2e` subscribes: its
   census wait was the bucket's, headless.
+
+## The frame builds one Ctx, and a card's peek stats once a quarter second (T-255, 2026-09-22)
+
+- **`App::frame_ctx()` is what every draw fn reads.** A `RefCell<Option<Rc<Ctx>>>` on `App`,
+  cleared first thing in `ui::draw` and built on the first read; a board frame built `ctx()`
+  three times and a ticket page six, each a column sort, `column_tickets`, two rail walks and a
+  dozen clones, at 10 fps at rest and 60 through a glide. A keypress still builds its own through
+  `ctx()` — the same function — so the keymap's rule that one predicate gates the key and its
+  hint is untouched. The ticket's "build it at the top of draw" was wrong by one detail: the
+  ticket page and the diff screen write draw-side cells the `Ctx` reads (`preview_view` for the
+  `{ }` hint, `diff_two_pane` for `z s`) *between* the header's read and the footer's, and the
+  preview heading reads the LAST frame's measurement on purpose. So the cache is lazy and the
+  two writes go through `set_preview_view` / `set_diff_two_pane`, which drop it; the footer then
+  rebuilds once. The rule for a new cell: if `ctx()` reads it and draw writes it, write it
+  through a setter that calls `ctx_dirty`. `frame_ctx_is_built_once_and_dropped_by_the_setters`
+  holds the contract; every golden is unchanged.
+- **`App::columns()` is a cached `&[String]`**, rebuilt by `reindex_columns` where `absorb`
+  replaces the board — the one place outside a test that does. Five `&mut self` keypress paths
+  that held the list across a mutation take a `to_vec()`, which is where the clone used to be
+  anyway; the per-frame readers (`selected_ticket`, `ctx`, `can_nudge`, `repeat_target`, the
+  column draw) borrow. A test that edits `board.columns` in place calls `reindex_columns`.
+- **`PeekCache` stamps `checked_at` and answers from the entry under 250 ms** — the draw asks
+  per open card per frame, every card under `P`, and each ask was a `metadata()` syscall. The
+  spoke scan reads through `peek_fresh`, which never waits: it is the once-a-second bound on how
+  late a reply can show, and its stat renews the entry for the frames after it. Tests that
+  rewrite a transcript and redraw at once call `expire()`.

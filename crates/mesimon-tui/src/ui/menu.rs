@@ -23,21 +23,21 @@ use crate::text::{marquee_offset, marquee_window, truncate};
 use super::dialog;
 
 pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
-    let items = keymap::menu_items(&app.ctx());
+    let items = keymap::menu_items(&app.frame_ctx());
     draw_list(f, app, idx, "MENU", Scope::Menu, &items);
 }
 
 /// The settings submenu: the same surface, its own name and keys. No row
 /// here is ever a suggestion, so the lead never carries the mark.
 pub(super) fn draw_settings(f: &mut Frame, app: &App, idx: usize) {
-    let items = keymap::settings_items(&app.ctx());
+    let items = keymap::settings_items(&app.frame_ctx());
     draw_list(f, app, idx, &scoped(app, app.settings_section.title()), Scope::Settings, &items);
 }
 
 /// The notifications list, one level under it (T-282): the same surface
 /// again, its own name and its own rows.
 pub(super) fn draw_notify(f: &mut Frame, app: &App, idx: usize) {
-    let items = keymap::notify_items(&app.ctx());
+    let items = keymap::notify_items(&app.frame_ctx());
     draw_list(f, app, idx, &scoped(app, "NOTIFICATIONS"), Scope::Notifications, &items);
 }
 
@@ -58,7 +58,7 @@ fn scoped(app: &App, name: &str) -> String {
 /// the mode says so, edited in place with the hardware cursor.
 pub(super) fn draw_column(f: &mut Frame, app: &App) {
     let Mode::ColumnSettings { subject, idx, naming, .. } = &app.mode else { return };
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     let items = keymap::column_items(&ctx);
     let title = match subject {
         ColumnSubject::Existing(name) if app.column_agents => {
@@ -77,7 +77,7 @@ pub(super) fn draw_column(f: &mut Frame, app: &App) {
 /// so the sentence being rewritten never loses its label.
 pub(super) fn draw_prompts(f: &mut Frame, app: &App) {
     let Mode::Prompts { idx, editing } = &app.mode else { return };
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     let items = keymap::prompt_items(&ctx);
     let lead = items
         .get(*idx)
@@ -254,7 +254,7 @@ fn draw_list(
     items: &[&'static MenuItem],
 ) {
     let theme = &app.theme;
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     if items.is_empty() {
         return;
     }

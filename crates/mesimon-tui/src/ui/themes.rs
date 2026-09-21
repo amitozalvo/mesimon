@@ -22,7 +22,7 @@ use super::dialog;
 
 pub(super) fn draw(f: &mut Frame, app: &App, idx: usize) {
     let theme = &app.theme;
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     let rows = app.theme_rows();
     let idx = idx.min(rows - 1);
 

@@ -513,7 +513,7 @@ fn draw_column(f: &mut Frame, area: Rect, app: &App, ci: usize, name: &str) {
         // only under the cursor (author 2026-08-30).
         if is_cursor_col {
             let nudge =
-                keymap::hint_for(keymap::Scope::Board, keymap::Verb::OpenTicket, &app.ctx())
+                keymap::hint_for(keymap::Scope::Board, keymap::Verb::OpenTicket, &app.frame_ctx())
                     .map(|(show, hint)| format!("  {show}  {hint}"))
                     .unwrap_or_default();
             out.push(Line::from(Span::styled(nudge, theme.dim3())));

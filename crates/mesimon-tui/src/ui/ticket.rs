@@ -213,7 +213,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         // Grey ramp only — archived is the quiet condition, not an alarm.
         // The restore key comes from the table, which is also what makes the
         // word flip to "restore" while we are here.
-        let how = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Archive, &app.ctx())
+        let how = keymap::hint_for(keymap::Scope::Ticket, keymap::Verb::Archive, &app.frame_ctx())
             .map(|(show, hint)| format!(" ∙ {show} {hint}s"))
             .unwrap_or_default();
         // A snooze says when it ends; restoring it by hand ends it early.
@@ -267,7 +267,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         let busy = app.ticket_busy(ticket.id);
         // What `m` would do next, in the keymap's own words — or nothing at
         // all when `m` is inert here, so the line never names a dead key.
-        let ctx = app.ctx();
+        let ctx = app.frame_ctx();
         // The ask the agent already has takes the offer's place: "main moved
         // ∙ rebase requested" until it lands or the cooldown passes
         // (`App::merge_outstanding`), never the same ask offered twice.
@@ -556,7 +556,7 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         );
     } else {
         // No zone, nothing to page: the footer must not offer `{ }`.
-        app.preview_view.set(PreviewView::default());
+        app.set_preview_view(PreviewView::default());
         draw_rail(
             f,
             Rect { x: area.x + 1, y: rail_y, width: area.width.saturating_sub(2), height: rail_h },
@@ -596,7 +596,7 @@ fn draw_preview(
     // The heading carries the paging keys on its right while the zone
     // overflows (T-158: the hint beside the thing it pages, off the footer)
     // — read from the LAST frame's measurement, before this one resets it.
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     // The word names what the zone is holding, in the page's own heading
     // vocabulary: PREVIEW for a session, because neither a transcript tail
     // nor a pane capture is the record (author 2026-09-01) — and, since
@@ -619,7 +619,7 @@ fn draw_preview(
         Line::from(spans)
     };
     // Until something below measures a document, there is nothing to page.
-    app.preview_view.set(PreviewView::default());
+    app.set_preview_view(PreviewView::default());
 
     // The selected session's latest assistant reply, wrapped into whatever
     // height the zone has left. Absent transcript (bash, fresh spawn) means
@@ -924,7 +924,7 @@ fn empty_seat(app: &App, ticket: &mesimon_core::board::Ticket, area: Rect) -> Ve
     // over their middle rather than over the zone's. The zone is far wider
     // than these sentences, so centring the art in IT would leave the
     // picture floating off to the right of everything it is about.
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     let press = keymap::binding_for(keymap::Scope::Ticket, keymap::Verb::Act, &ctx);
     let rows = seat_rows(app, ticket);
     let mut text: Vec<Line<'static>> = Vec::new();
@@ -1104,7 +1104,7 @@ fn window(
         let back = if follows_tail && offset >= max { None } else { key.map(|k| (k, offset)) };
         app.preview_scroll.set(back);
     }
-    app.preview_view.set(PreviewView {
+    app.set_preview_view(PreviewView {
         key,
         offset,
         max,
@@ -1165,7 +1165,7 @@ fn draw_rail(
     // one that acts on the selected row — in the keymap's words, through
     // the footer's own span builder, so nothing here can drift from the
     // keys. The footer no longer carries them.
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     // Packed into as many rows as the rail's width needs — a key that does
     // not fit is wrapped, never dropped, because these ARE the hints now.
     let trailer = |verbs: &[keymap::Verb]| -> Vec<Line<'static>> {

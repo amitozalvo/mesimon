@@ -305,7 +305,7 @@ fn git_clause(app: &App, room: usize, focused: bool) -> Vec<Span<'static>> {
 /// Grey: an offer is never an alarm, and attn stays needs-you-only (L3).
 fn suggestion_chip(app: &App, budget: usize) -> Vec<Span<'static>> {
     let theme = &app.theme;
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     let offers = keymap::suggestions(&ctx);
     let Some(top) = offers.first() else {
         return Vec::new();
@@ -494,7 +494,7 @@ pub(super) fn footer_line(app: &App, width: u16) -> Line<'static> {
         return Line::from(spans).style(band);
     }
     let scope = app.scope();
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     let (own, right) = keymap::footer_split(scope, &ctx);
     let own: Vec<&Binding> = if dialog_open(app) { Vec::new() } else { own };
 

@@ -1257,6 +1257,19 @@ pub struct App {
     /// how `test_no_drawn_structure` tells a frame's box glyph, which the L1
     /// law admits, from one that leaked in anywhere else, which it bans.
     pub frames: std::cell::RefCell<Vec<ratatui::layout::Rect>>,
+    /// This frame's `Ctx`, built on the first `frame_ctx` read and shared
+    /// by every draw fn after it (T-255): a board frame used to build it
+    /// three times and a ticket-page frame six, each build a sort and a
+    /// dozen clones. `ui::draw` clears it first thing, and every draw-side
+    /// write a `Ctx` field reads goes through a setter that clears it
+    /// again (`set_preview_view`, `set_diff_two_pane`), so the footer never
+    /// reads a measurement the frame has since moved. A keypress still
+    /// builds its own through `ctx()`.
+    pub(crate) frame_ctx: std::cell::RefCell<Option<std::rc::Rc<Ctx>>>,
+    /// `board.columns` sorted by `order`, names only — what `columns()`
+    /// hands out. Rebuilt by `reindex_columns` whenever `board` is
+    /// replaced; a test that edits `board.columns` in place calls it too.
+    columns_sorted: Vec<String>,
     /// The compact shin's exact bounds, for the scoped block-glyph law.
     pub mascot: std::cell::RefCell<Option<ratatui::layout::Rect>>,
     /// Working-spinner clock: epoch of the first draw (draw-side state, so
@@ -1436,6 +1449,7 @@ impl App {
         // Before the move: the checker resolves the state root and the
         // staging dir off the same repo path everything else keys on.
         let release = crate::release::ReleaseWatch::new(&repo_root);
+        let columns_sorted = column_names(&snap.board);
         let mut app = Self {
             client,
             repo_root,
@@ -1509,6 +1523,8 @@ impl App {
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
+            frame_ctx: std::cell::RefCell::new(None),
+            columns_sorted,
             mascot: std::cell::RefCell::new(None),
             spin_epoch: Cell::new(None),
             diff: None,
@@ -1754,6 +1770,7 @@ impl App {
         let joined_before = self.team.board.as_ref().map(|b| b.role != "owner");
         let crown_was = self.board.crown;
         self.board = board;
+        self.reindex_columns();
         self.grace = grace;
         self.external = external;
         self.resources = resources;
@@ -1881,8 +1898,47 @@ impl App {
         parts.join(" ∙ ")
     }
 
-    pub fn columns(&self) -> Vec<String> {
-        self.board.sorted_columns().iter().map(|c| c.name.clone()).collect()
+    /// The board's column names in display order. A cached slice: the
+    /// sort and the clones happen once per snapshot (`reindex_columns`),
+    /// not on each of the dozen reads a frame makes.
+    pub fn columns(&self) -> &[String] {
+        &self.columns_sorted
+    }
+
+    /// Recompute what `columns()` returns from `board`. `absorb` calls it;
+    /// so must anything else that rewrites `board.columns`.
+    pub(crate) fn reindex_columns(&mut self) {
+        self.columns_sorted = column_names(&self.board);
+    }
+
+    /// This frame's `Ctx` (see the field): built once, on the first read.
+    pub(crate) fn frame_ctx(&self) -> std::rc::Rc<Ctx> {
+        if let Some(c) = self.frame_ctx.borrow().as_ref() {
+            return std::rc::Rc::clone(c);
+        }
+        let c = std::rc::Rc::new(self.ctx());
+        *self.frame_ctx.borrow_mut() = Some(std::rc::Rc::clone(&c));
+        c
+    }
+
+    /// Forget this frame's `Ctx`: the next `frame_ctx` read rebuilds it.
+    /// `ui::draw` calls it first thing; the draw-side setters below call it
+    /// after writing a cell that `ctx()` reads.
+    pub(crate) fn ctx_dirty(&self) {
+        *self.frame_ctx.borrow_mut() = None;
+    }
+
+    /// Draw-side write of the preview zone's measurement. `Ctx::preview_scrolls`
+    /// reads it, so the frame's cached `Ctx` goes with the old value.
+    pub(crate) fn set_preview_view(&self, v: PreviewView) {
+        self.preview_view.set(v);
+        self.ctx_dirty();
+    }
+
+    /// Draw-side write of the diff screen's breakpoint (`Ctx::two_pane`).
+    pub(crate) fn set_diff_two_pane(&self, two: bool) {
+        self.diff_two_pane.set(two);
+        self.ctx_dirty();
     }
 
     pub fn selected_ticket(&self) -> Option<&Ticket> {
@@ -1922,12 +1978,12 @@ impl App {
     }
 
     fn clamp_cursor(&mut self) {
-        let cols = self.columns();
-        if cols.is_empty() {
+        let ncols = self.columns().len();
+        if ncols == 0 {
             return;
         }
-        self.cursor_col = self.cursor_col.min(cols.len() - 1);
-        let n = self.board.column_tickets(&cols[self.cursor_col]).len();
+        self.cursor_col = self.cursor_col.min(ncols - 1);
+        let n = self.board.column_tickets(&self.columns()[self.cursor_col]).len();
         self.cursor_row = self.cursor_row.map(|r| r.min(n.saturating_sub(1)));
     }
 
@@ -2353,7 +2409,7 @@ impl App {
         };
         // An unreadable transcript (not written yet, gone) teaches nothing:
         // keep whatever was known rather than re-baselining on every beat.
-        let Some(peek) = self.peek_cache.peek_for(kind, &path) else {
+        let Some(peek) = self.peek_cache.peek_fresh(kind, &path) else {
             return false;
         };
         match self.spoke.get_mut(&ticket) {
@@ -5421,7 +5477,8 @@ impl App {
         current: impl Fn(&ColumnSettings) -> Option<String>,
     ) -> Option<String> {
         let col = self.dialog_column()?;
-        let others: Vec<String> = self.columns().into_iter().filter(|c| *c != col.name).collect();
+        let others: Vec<String> =
+            self.columns().iter().filter(|c| **c != col.name).cloned().collect();
         match current(&col.settings) {
             None => others.first().cloned(),
             Some(cur) => {
@@ -5510,7 +5567,8 @@ impl App {
                             *naming = None;
                         }
                         self.refresh()?;
-                        if let Some(ci) = self.columns().iter().position(|c| *c == text) {
+                        let ci = self.columns().iter().position(|c| *c == text);
+                        if let Some(ci) = ci {
                             self.cursor_col = ci;
                         }
                     }
@@ -5677,14 +5735,17 @@ impl App {
         if !matches!(self.mode, Mode::Normal | Mode::Menu { .. } | Mode::Sharing { .. }) {
             return;
         }
-        let cols = self.columns();
-        for (c, name) in cols.iter().enumerate() {
-            if let Some(r) = self.board.column_tickets(name).iter().position(|t| t.id == id) {
-                self.cursor_col = c;
-                self.cursor_row = Some(r);
-                return;
-            }
+        if let Some((c, r)) = self.locate(id) {
+            self.cursor_col = c;
+            self.cursor_row = Some(r);
         }
+    }
+
+    /// Where a ticket sits on the board: (column index, row).
+    fn locate(&self, id: ulid::Ulid) -> Option<(usize, usize)> {
+        self.columns().iter().enumerate().find_map(|(c, name)| {
+            self.board.column_tickets(name).iter().position(|t| t.id == id).map(|r| (c, r))
+        })
     }
 
     /// The initials a card wears when a teammate made its last change
@@ -6360,7 +6421,7 @@ impl App {
     /// the source row selected so the next ticket slides under the cursor.
     fn grab(&mut self, key: Key, scope: Scope, _ctx: &Ctx) -> Result<()> {
         let Key::Char(c) = key else { return Ok(()) };
-        let cols = self.columns();
+        let cols = self.columns().to_vec();
         if scope != Scope::Move {
             let Some(t) = self.selected_ticket() else { return Ok(()) };
             let id = t.id;
@@ -6408,7 +6469,7 @@ impl App {
     /// the cursor riding with it. Up and down mean nothing to a column and
     /// are as silent as a card's edge press.
     fn reorder_column(&mut self, key: Key) -> Result<()> {
-        let cols = self.columns();
+        let cols = self.columns().to_vec();
         let Some(name) = cols.get(self.cursor_col).cloned() else { return Ok(()) };
         let right = matches!(key, Key::Char('L') | Key::AltRight);
         let left = matches!(key, Key::Char('H') | Key::AltLeft);
@@ -6444,7 +6505,7 @@ impl App {
         if self.on_column_header() {
             return self.reorder_column(key);
         }
-        let cols = self.columns();
+        let cols = self.columns().to_vec();
         let Some(id) = self.selected_ticket().map(|t| t.id) else {
             return Ok(());
         };
@@ -8273,7 +8334,7 @@ impl App {
     fn repeat_last(&mut self) -> Result<()> {
         let Some(col) = self.repeat_target() else { return Ok(()) };
         let Some(id) = self.selected_ticket().map(|t| t.id) else { return Ok(()) };
-        let cols = self.columns();
+        let cols = self.columns().to_vec();
         let (home_col, home_row) = (self.cursor_col, self.cursor_row);
         self.drop_ghost(&cols, id, col, 0)?;
         self.cursor_col = home_col;
@@ -8357,7 +8418,8 @@ impl App {
                 if name != title {
                     self.send(Command::RenameColumn { name, to: title.clone() })?;
                     // Follow the column under its new name.
-                    if let Some(ci) = self.columns().iter().position(|c| *c == title) {
+                    let ci = self.columns().iter().position(|c| *c == title);
+                    if let Some(ci) = ci {
                         self.cursor_col = ci;
                     }
                 }
@@ -8384,8 +8446,7 @@ impl App {
         images: Vec<crate::image_paste::DraftImage>,
         start: bool,
     ) -> Result<()> {
-        let cols = self.columns();
-        let column = cols.get(self.cursor_col).cloned().unwrap_or_default();
+        let column = self.columns().get(self.cursor_col).cloned().unwrap_or_default();
         let recovery = Mode::Input {
             purpose: InputPurpose::Create {
                 workspace,
@@ -9084,13 +9145,9 @@ impl App {
 
     /// Point the board cursor at a ticket (so Esc from the ticket screen lands on it).
     fn select_ticket(&mut self, ticket: ulid::Ulid) {
-        let cols = self.columns();
-        for (ci, col) in cols.iter().enumerate() {
-            if let Some(ri) = self.board.column_tickets(col).iter().position(|t| t.id == ticket) {
-                self.cursor_col = ci;
-                self.cursor_row = Some(ri);
-                return;
-            }
+        if let Some((ci, ri)) = self.locate(ticket) {
+            self.cursor_col = ci;
+            self.cursor_row = Some(ri);
         }
     }
 
@@ -9220,6 +9277,11 @@ fn fetch(client: &mut dyn Transport) -> Result<Snapshot> {
 }
 
 /// Test-only transport + constructor: canned snapshots, no daemon, no tmux.
+/// `board.columns` in display order, names only (see `App::columns`).
+fn column_names(board: &Board) -> Vec<String> {
+    board.sorted_columns().iter().map(|c| c.name.clone()).collect()
+}
+
 #[cfg(test)]
 pub(crate) mod test_support {
     use super::*;
@@ -15069,7 +15131,31 @@ mod tests {
         app.cursor_col = 0;
         assert!(app.ctx().can_repeat);
         app.board.columns.retain(|c| c.name != "done");
+        app.reindex_columns();
         assert!(!app.ctx().can_repeat);
+    }
+
+    /// The frame's `Ctx` is one object (T-255): every draw fn reads the same
+    /// build until the frame ends, or until a draw-side setter moves a cell
+    /// the `Ctx` reads — then the next read is a fresh build. A keypress
+    /// never sees it: `ctx()` is the same function, built anew.
+    #[test]
+    fn frame_ctx_is_built_once_and_dropped_by_the_setters() {
+        let app = App::for_test(board_three_columns(), theme());
+        let a = app.frame_ctx();
+        let b = app.frame_ctx();
+        assert!(std::rc::Rc::ptr_eq(&a, &b), "one build per frame");
+        app.ctx_dirty();
+        let c = app.frame_ctx();
+        assert!(!std::rc::Rc::ptr_eq(&a, &c), "the frame boundary drops it");
+        assert!(!c.preview_scrolls);
+        app.set_preview_view(PreviewView { max: 3, ..PreviewView::default() });
+        let d = app.frame_ctx();
+        assert!(!std::rc::Rc::ptr_eq(&c, &d) && d.preview_scrolls, "a measurement rebuilds it");
+        assert!(d.two_pane);
+        app.set_diff_two_pane(false);
+        assert!(!app.frame_ctx().two_pane, "so does the breakpoint");
+        assert_eq!(app.columns(), ["todo", "doing", "done"]);
     }
 
     #[test]

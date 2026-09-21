@@ -34,7 +34,7 @@ const GAP: u16 = 2;
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let theme = &app.theme;
     let scope = app.scope();
-    let groups = keymap::overlay(scope, &app.ctx());
+    let groups = keymap::overlay(scope, &app.frame_ctx());
     if groups.is_empty() {
         return;
     }

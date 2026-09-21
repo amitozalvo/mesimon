@@ -170,7 +170,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     // From the keymap, like every other screen. `z s` drops itself above the
     // two-pane breakpoint because there is nothing to swap up there — which
     // is why draw records the breakpoint for the keymap to read.
-    app.diff_two_pane.set(area.width >= TWO_PANE_MIN_W);
+    app.set_diff_two_pane(area.width >= TWO_PANE_MIN_W);
     let footer = chrome::footer_line(app, area.width);
     f.render_widget(
         Paragraph::new(footer),
@@ -587,7 +587,7 @@ fn hunk_heading(
 
 /// Contextual hints use the same binding text and styling as the footer.
 fn hints(app: &App, verbs: &[Verb], width: usize) -> Vec<Span<'static>> {
-    let ctx = app.ctx();
+    let ctx = app.frame_ctx();
     let bindings: Vec<_> =
         verbs.iter().filter_map(|v| keymap::binding_for(Scope::Diff, *v, &ctx)).collect();
     chrome::hint_spans(&bindings, &ctx, &app.theme.rest, width)

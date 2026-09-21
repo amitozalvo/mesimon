@@ -1901,13 +1901,16 @@ fn test_preview_pages_a_long_reply() {
     std::fs::write(&path, reply_record(&long.replace("of the reply", "of the next reply")))
         .expect("rewrite");
     let meta = std::fs::metadata(&path).expect("meta");
-    // The peek cache keys on (len, mtime); the length differs, which is enough.
+    // The peek cache keys on (len, mtime) once its stat window has passed
+    // (T-255); the length differs, which is enough.
     assert_ne!(meta.len(), 0);
+    app.peek_cache.expire();
     assert!(shows(&app, "row 01 of the next reply"), "a new reply starts at its top");
     assert!(app.preview_glide.get().is_none(), "and a glide on the old one is dropped");
 
     // A reply that fits offers nothing to turn: keys inert, hint gone.
     std::fs::write(&path, reply_record("short")).expect("rewrite");
+    app.peek_cache.expire();
     assert!(shows(&app, "short"));
     assert!(!footer(&app).contains("{ }"));
     press(&mut app, '}');

@@ -3,9 +3,11 @@
 //! the snapshot already carries `transcript_path`, and the read is observe-
 //! tier and read-only, so the single-writer rule (D22) is untouched.
 //!
-//! Cost model: the board redraws ~10/s and only ONE card can peek, so the
-//! draw's steady cost is a `metadata()` call; the 64 KiB tail re-reads only
-//! when the file's (len, mtime) moves. Since T-173 the cache is per PATH,
+//! Cost model: the board redraws ~10/s (60/s through a glide) and asks per
+//! OPEN card — every card with a transcript under `P` — so the draw's
+//! steady cost is a `metadata()` call per open card per frame, unless the
+//! entry was checked within `FRESH` (T-255), in which case it is a map
+//! lookup. The 64 KiB tail re-reads only when the file's (len, mtime) moves. Since T-173 the cache is per PATH,
 //! because `App::scan_spoke` reads every paned claude's transcript once a
 //! second to learn whether it spoke (`Peek::reply_key`): one `metadata()`
 //! per card per second at rest, and for a Running session — whose file
@@ -18,6 +20,7 @@ use std::cell::RefCell;
 use std::collections::HashMap;
 use std::path::Path;
 use std::rc::Rc;
+use std::time::{Duration, Instant};
 
 use mesimon_core::board::{SessionKind, SessionRecord};
 use unicode_segmentation::UnicodeSegmentation;
@@ -37,7 +40,15 @@ struct Entry {
     len: u64,
     mtime_ms: u64,
     peek: Rc<Peek>,
+    /// When the file was last stat'ed. A read under `FRESH` after it is
+    /// answered from the entry without touching the disk.
+    checked_at: Instant,
 }
+
+/// How long a stat stays good for. A reply lands on a card at most this
+/// late — well inside the 1 s spoke scan, which already bounds how fresh
+/// the card's verdict can be.
+const FRESH: Duration = Duration::from_millis(250);
 
 impl PeekCache {
     /// Sanitized preview of `path`, re-read only when the file's (len, mtime)
@@ -49,15 +60,36 @@ impl PeekCache {
     }
 
     pub(crate) fn peek_for(&self, kind: SessionKind, path: &str) -> Option<Rc<Peek>> {
+        self.read(kind, path, true)
+    }
+
+    /// `peek_for` without the stat window: the once-a-second spoke scan
+    /// (`App::scan_spoke`) always asks the disk, which is what makes it the
+    /// bound on how late a reply can show. Its stat renews the entry, so the
+    /// frames that follow it are the ones the window spares.
+    pub(crate) fn peek_fresh(&self, kind: SessionKind, path: &str) -> Option<Rc<Peek>> {
+        self.read(kind, path, false)
+    }
+
+    fn read(&self, kind: SessionKind, path: &str, windowed: bool) -> Option<Rc<Peek>> {
         if !kind.is_agent() {
             return None;
+        }
+        let now = Instant::now();
+        let mut map = self.0.borrow_mut();
+        if windowed {
+            if let Some(e) = map.get(path) {
+                if e.kind == kind && now.duration_since(e.checked_at) < FRESH {
+                    return Some(Rc::clone(&e.peek));
+                }
+            }
         }
         let meta = std::fs::metadata(path).ok()?;
         let len = meta.len();
         let mtime_ms = meta.modified().ok().and_then(mesimon_core::clock::epoch_ms).unwrap_or(0);
-        let mut map = self.0.borrow_mut();
-        if let Some(e) = map.get(path) {
+        if let Some(e) = map.get_mut(path) {
             if e.kind == kind && e.len == len && e.mtime_ms == mtime_ms {
+                e.checked_at = now;
                 return Some(Rc::clone(&e.peek));
             }
         }
@@ -71,7 +103,10 @@ impl PeekCache {
             }),
             reply_key: raw.reply_key,
         });
-        map.insert(path.to_string(), Entry { kind, len, mtime_ms, peek: Rc::clone(&peek) });
+        map.insert(
+            path.to_string(),
+            Entry { kind, len, mtime_ms, peek: Rc::clone(&peek), checked_at: now },
+        );
         Some(peek)
     }
 
@@ -85,6 +120,16 @@ impl PeekCache {
     #[cfg(test)]
     fn len(&self) -> usize {
         self.0.borrow().len()
+    }
+
+    /// Age every stat past `FRESH`, so the next read goes to the disk — a
+    /// test's stand-in for the 250 ms a real frame sequence would wait.
+    #[cfg(test)]
+    pub(crate) fn expire(&self) {
+        let old = Instant::now() - FRESH * 2;
+        for e in self.0.borrow_mut().values_mut() {
+            e.checked_at = old;
+        }
     }
 }
 
@@ -253,7 +298,16 @@ mod tests {
         )
         .unwrap();
         f.flush().unwrap();
+        // Within the stat window the growth is not yet seen; past it, it is.
+        assert_eq!(txt(&cache).as_deref(), Some("one"), "under FRESH, no stat");
+        cache.expire();
         assert_eq!(txt(&cache).as_deref(), Some("two"));
+        // The scan's read never waits for the window.
+        writeln!(f, "{}", reply("u3", "three").trim_end()).unwrap();
+        f.flush().unwrap();
+        let fresh = cache.peek_fresh(SessionKind::Claude, &path).and_then(|p| p.text.clone());
+        assert_eq!(fresh.as_deref(), Some("three"), "peek_fresh stats at once");
+        assert_eq!(txt(&cache).as_deref(), Some("three"), "and renews the entry for the draw");
         std::fs::remove_dir_all(p.parent().unwrap()).ok();
     }
 
@@ -275,6 +329,7 @@ mod tests {
         let mut f = std::fs::OpenOptions::new().append(true).open(&a).unwrap();
         write!(f, "{}", reply("a2", "alpha two")).unwrap();
         f.flush().unwrap();
+        cache.expire();
         assert_eq!(cache.peek(&pa).unwrap().text.as_deref(), Some("alpha two"));
         assert_eq!(cache.peek(&pb).unwrap().text.as_deref(), Some("beta"));
         cache.retain(|p| p == pb);

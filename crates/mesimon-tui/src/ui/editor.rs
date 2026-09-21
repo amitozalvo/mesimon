@@ -405,7 +405,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 parts.push(Span::styled(format!("⎇ {}", workspace_word(t.workspace)), dim1));
                 // Spelled only while Shift+Tab can still change it — the
                 // choice locks with the first session or worktree.
-                if app.ctx().workspace_open {
+                if app.frame_ctx().workspace_open {
                     parts.push(Span::styled("shift+tab".to_string(), dim2));
                 }
             }
@@ -454,7 +454,7 @@ fn context_line(app: &App, ed: &Editor, ink: &Ramp, framed: bool) -> Line<'stati
                 }
             }
             ctx_spans.push(Span::styled(if *queued { "queued" } else { "now" }, dim1));
-            if app.ctx().ask_queueable {
+            if app.frame_ctx().ask_queueable {
                 ctx_spans.push(Span::styled("  shift+tab".to_string(), dim2));
             }
         }
