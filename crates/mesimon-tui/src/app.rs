@@ -3577,19 +3577,13 @@ impl App {
             notify_sound_needs_you: self.prefs.notify_sound_needs_you.name(),
             notify_sound_done: self.prefs.notify_sound_done.name(),
             mcp_tools: self.board.mcp_tools,
-            // Every clause, and the first is `path`: an empty one means no
-            // daemon has answered yet (a build predating the field, or a
-            // first sample still in flight), and an unknown must never read
-            // as "missing" — that would offer to write a file on a guess.
             system_prompt: self.board.system_prompt,
             // Spelled as the header spells every column: uppercased.
             default_column: self.board.landing_column().unwrap_or_default().to_uppercase(),
             follow_up_mode: self.board.follow_up_mode,
-            brief_offer: !self.claude_md.path.is_empty()
-                && !self.claude_md.present
-                && self.board.mcp_tools
-                && !self.board.system_prompt
-                && !self.board.claude_md_ignored,
+            // The daemon's answer (T-247), computed once beside the switches
+            // it depends on; the snapshot after Enter or `i` withdraws it.
+            brief_offer: self.claude_md.offer,
             pref_scope_offered: matches!(self.mode, Mode::Notifications { .. })
                 || (matches!(self.mode, Mode::Settings { .. })
                     && matches!(
@@ -9299,8 +9293,8 @@ pub(crate) mod test_support {
         /// Where the fake daemon holds the status line (T-264).
         pub status_top: bool,
         /// What the fake daemon says about the repo's CLAUDE.md. Default is
-        /// an empty path, which no test has to think about: it reads as "not
-        /// sampled" and offers nothing.
+        /// unsampled, which no test has to think about: it offers nothing.
+        /// `offer` is answered per snapshot from the board, as the daemon's.
         pub claude_md: mesimon_core::command::ClaudeMdStatus,
         /// Debug-formatted log of every request, for behavior assertions.
         pub sent: std::rc::Rc<std::cell::RefCell<Vec<String>>>,
@@ -9593,7 +9587,7 @@ pub(crate) mod test_support {
                     notices: Vec::new(),
                     shell_env: self.shell_env.clone(),
                     git: self.git.clone(),
-                    claude_md: self.claude_md.clone(),
+                    claude_md: self.claude_md.clone().for_board(&self.board),
                     pending: self.pending.clone(),
                     automation: self.automation.clone(),
                     claude_default_mode: Some("auto".into()),
@@ -10058,7 +10052,8 @@ mod tests {
             status_top: false,
             claude_md: mesimon_core::command::ClaudeMdStatus {
                 path: "/repo/kanban-tui/CLAUDE.md".into(),
-                present: false,
+                sampled: true,
+                ..Default::default()
             },
             sent,
             refuse_focus: false,

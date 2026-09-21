@@ -11953,3 +11953,23 @@ untouched.
   file no longer reads every other untracked file on the way.
 - Not a `Snapshot` field, not a `Ctx` field, no wire change: the budget is invisible except as
   a missing badge on a pathological checkout.
+
+## The daemon computes the brief offer once; doctor reads columns.toml once (T-247, 2026-09-22)
+
+- **`ClaudeMdStatus` carries `sampled` and `offer`, and `ClaudeMdStatus::offered(&Board)` is
+  the one predicate.** The TUI's `Ctx::brief_offer` was a five-clause AND in `App::ctx()` over
+  facts the daemon owns (the T-234 simplify pass filed it); now the daemon answers it at
+  snapshot time (`status().for_board(&board)`) and the TUI reads `claude_md.offer`. The
+  `FakeTransport` answers its snapshot the same way, so the three TUI dialog tests hold
+  unchanged; the clause test moved to core beside the predicate. An EMPTY `path` no longer
+  stands for "not sampled" — `sampled` does, the idiom `RepoGit::sampled` already set. Both
+  fields are `#[serde(default)]`: a daemon predating them sends `sampled: false, offer: false`,
+  the safe direction (an unknown must never offer to write a file on a guess).
+- **`store::read_columns_scalars` is the one doctor reader**, replacing `read_agent_provider`,
+  `read_mcp_tools`, `read_system_prompt`, `read_default_column`, `read_prompts` and
+  `read_columns`, which each parsed `columns.toml` again (six parses per `doctor`). Their
+  per-field defaults for an unreadable file — tools ON, brief OFF, mesimon's prompt words, no
+  default column, no columns — are `ColumnsScalars::default()`, with the reasons on the struct.
+- Doctor's `claude.md` line still ignores `claude_md_ignored` on purpose (it is the one door
+  "never" does not close) and still samples with its own `Sampler`: it has no daemon to ask.
+  What it no longer does is disagree with the chip about the switches.

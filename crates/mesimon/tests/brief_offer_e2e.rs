@@ -61,6 +61,10 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     let s = status(c.request(Command::Snapshot));
     assert!(!s.present, "a fresh repo has nothing to say about MESIMON_TICKET");
     assert_eq!(s.path, md.display().to_string(), "doctor names the file");
+    // The daemon answers the offer itself (T-247): sampled, missing, tools
+    // on, brief off, never stamped — so the chip stands.
+    assert!(s.sampled, "the first snapshot comes after the first sample");
+    assert!(s.offer, "and the daemon offers");
     let board = board_of(c.request(Command::Snapshot));
     assert!(board.mcp_tools, "the tools ship on");
     assert!(!board.system_prompt, "the brief ships OFF: it is opt-in");
@@ -69,6 +73,7 @@ fn the_brief_offer_switches_persist_and_survive_a_restart() {
     // ---- Enter turns the brief on; nothing on disk but the board ----------
     assert!(matches!(c.request(Command::SetSystemPrompt { on: true }), Response::Ok));
     assert!(board_of(c.request(Command::Snapshot)).system_prompt);
+    assert!(!status(c.request(Command::Snapshot)).offer, "on withdraws the offer, daemon-side");
     assert!(!md.exists(), "the brief writes no CLAUDE.md");
     let raw = std::fs::read_to_string(&cols).unwrap();
     assert!(raw.contains("system_prompt = true"), "{raw}");

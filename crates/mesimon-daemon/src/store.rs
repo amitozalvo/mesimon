@@ -590,68 +590,78 @@ pub fn load_with(paths: &Paths, seed_tags: bool) -> Result<Loaded> {
     Ok(Loaded { board, notices, columns_write_barred, sessions_write_barred })
 }
 
-/// The agent-tools switch, read and nothing else (T-217).
+/// Everything `doctor` reads off `columns.toml`, from ONE parse (T-247): the
+/// board's switches, the agent prompts, the default column and the columns
+/// themselves. An unreadable file answers the shipped defaults, each in its
+/// safe direction — the tools ON (doctor reporting "off" for a repo that
+/// never said so would be worse than saying nothing), the brief OFF
+/// (reporting a system-prompt line on for a repo that never asked for one
+/// would be the worse mistake), mesimon's own prompt words, no default
+/// column, and no columns at all: doctor never creates a board.
 ///
 /// `load` is not an option for this: it seeds the starter tags and writes
 /// `columns.toml` out for a repo that has none, and `mesimon doctor` runs
 /// against arbitrary directories and may not create a board to answer a
-/// question about one. Anything unreadable answers `true`, the shipped
-/// default — doctor reporting "off" for a repo that never said so would be
-/// worse than saying nothing.
-pub fn read_agent_provider(paths: &Paths) -> AgentProvider {
-    read_columns_file(paths).map(|cf| cf.agent_provider).unwrap_or_default()
+/// question about one.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnsScalars {
+    pub agent_provider: AgentProvider,
+    /// `Board::mcp_tools` (T-217).
+    pub mcp_tools: bool,
+    /// `Board::system_prompt` (T-224).
+    pub system_prompt: bool,
+    /// `Board::default_column` (T-279): the chosen name while the file still
+    /// lists that column, else `None`, which doctor reads as the first
+    /// column — the daemon's own `landing_column` answer, so the two agree.
+    pub default_column: Option<String>,
+    /// `Board::prompts` (T-353).
+    pub prompts: PromptSet,
+    /// The columns in board order (T-117), `None` where there is no board to
+    /// speak of. A v3 file answers with the template rules the daemon would
+    /// seed, so doctor and the board agree.
+    pub columns: Option<Vec<Column>>,
 }
 
-pub fn read_mcp_tools(paths: &Paths) -> bool {
-    read_columns_file(paths).is_none_or(|cf| cf.mcp_tools)
+impl Default for ColumnsScalars {
+    fn default() -> Self {
+        Self {
+            agent_provider: AgentProvider::default(),
+            mcp_tools: true,
+            system_prompt: false,
+            default_column: None,
+            prompts: PromptSet::default(),
+            columns: None,
+        }
+    }
 }
 
-/// `Board::system_prompt` off the file, for `doctor`, on `read_mcp_tools`'s
-/// terms — except that anything unreadable answers `false`, the shipped
-/// default, for the inverse reason: reporting a system-prompt line ON for a
-/// repo that never asked for one would be the worse mistake.
-pub fn read_system_prompt(paths: &Paths) -> bool {
-    read_columns_file(paths).is_some_and(|cf| cf.system_prompt)
-}
-
-/// `Board::default_column` off the file, for `doctor`'s `columns` line
-/// (T-279): the chosen name while the file still lists that column, else
-/// `None`, which doctor reads as the first column — the daemon's own
-/// `landing_column` answer, so the two agree.
-pub fn read_default_column(paths: &Paths) -> Option<String> {
-    let cf = read_columns_file(paths)?;
-    let name = cf.default_column?;
-    cf.columns.iter().any(|c| c.name == name).then_some(name)
-}
-
-/// `Board::prompts` off the file, for `doctor` (T-353), on `read_mcp_tools`'s
-/// terms: an unreadable board answers "mesimon's own words", which is what an
-/// unreadable board sends.
-pub fn read_prompts(paths: &Paths) -> PromptSet {
-    read_columns_file(paths)
-        .map(|cf| PromptSet {
-            rebase: cf.prompt_rebase,
-            merged: cf.prompt_merged,
-            note_updated: cf.prompt_note_updated,
-        })
-        .unwrap_or_default()
-}
-
-/// The columns in board order, for `doctor`'s `columns` line (T-117) — read
-/// off the file on `read_mcp_tools`'s terms, and `None` where there is no
-/// board to speak of (doctor never creates one). A v3 file answers with the
-/// template rules the daemon would seed, so doctor and the board agree.
-pub fn read_columns(paths: &Paths) -> Option<Vec<Column>> {
-    let cf = read_columns_file(paths)?;
+pub fn read_columns_scalars(paths: &Paths) -> ColumnsScalars {
+    let Some(cf) = read_columns_file(paths) else {
+        return ColumnsScalars::default();
+    };
+    let default_column =
+        cf.default_column.filter(|name| cf.columns.iter().any(|c| &c.name == name));
+    let prompts = PromptSet {
+        rebase: cf.prompt_rebase,
+        merged: cf.prompt_merged,
+        note_updated: cf.prompt_note_updated,
+    };
     let mut b = Board { columns: cf.columns, ..Default::default() };
     if cf.schema_version < 4 {
         b.seed_template_settings();
     }
-    Some(b.sorted_columns().into_iter().cloned().collect())
+    ColumnsScalars {
+        agent_provider: cf.agent_provider,
+        mcp_tools: cf.mcp_tools,
+        system_prompt: cf.system_prompt,
+        default_column,
+        prompts,
+        columns: Some(b.sorted_columns().into_iter().cloned().collect()),
+    }
 }
 
-/// `columns.toml` parsed, or `None` where it is missing or unreadable — the
-/// two doctor readers above decide what that answers.
+/// `columns.toml` parsed, or `None` where it is missing or unreadable —
+/// `read_columns_scalars` decides what that answers.
 fn read_columns_file(paths: &Paths) -> Option<ColumnsFile> {
     let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).ok()?;
     toml::from_str::<ColumnsFile>(&text).ok()
@@ -1771,13 +1781,13 @@ order = "a0"
         save_columns(&paths, &l.board).unwrap();
         let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).unwrap();
         assert!(!text.contains("default_column"), "unchosen is unwritten:\n{text}");
-        assert_eq!(read_default_column(&paths), None);
+        assert_eq!(read_columns_scalars(&paths).default_column, None);
         l.board.set_default_column(Some("REVIEW")).unwrap();
         save_columns(&paths, &l.board).unwrap();
         let back = load(&paths).unwrap();
         assert_eq!(back.board.default_column.as_deref(), Some("REVIEW"));
         assert_eq!(back.board.landing_column().as_deref(), Some("REVIEW"));
-        assert_eq!(read_default_column(&paths).as_deref(), Some("REVIEW"));
+        assert_eq!(read_columns_scalars(&paths).default_column.as_deref(), Some("REVIEW"));
         // Written by hand to a column the board lacks: the board lands on the
         // first column and doctor says the same.
         let text = std::fs::read_to_string(paths.board_dir.join("board/columns.toml")).unwrap();
@@ -1788,7 +1798,7 @@ order = "a0"
         .unwrap();
         let back = load(&paths).unwrap();
         assert_eq!(back.board.landing_column().as_deref(), Some("TODO"));
-        assert_eq!(read_default_column(&paths), None);
+        assert_eq!(read_columns_scalars(&paths).default_column, None);
         cleanup(&dir, &paths);
     }
 

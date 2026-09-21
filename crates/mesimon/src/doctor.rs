@@ -441,8 +441,9 @@ fn provider_installation(
 
 fn agents(repo: &Path, verbose: bool) -> Section {
     let paths = mesimon_daemon::Paths::for_repo(repo).ok();
-    let selected =
-        paths.as_ref().map(mesimon_daemon::store::read_agent_provider).unwrap_or_default();
+    // Everything this section reads off `columns.toml`, parsed once (T-247).
+    let cols = paths.as_ref().map(mesimon_daemon::store::read_columns_scalars).unwrap_or_default();
+    let selected = cols.agent_provider;
     let mut records = vec![rec(Level::Ok, "new sessions", selected.label())
         .advice("Settings > Agents selects the provider for new sessions only. Existing and sleeping sessions keep their original provider.")];
     for (provider, name, override_key) in [
@@ -465,7 +466,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
     // The agent tool surface, and whether the repo tells a session to use it
     // (T-217). Both read the board's own files; neither writes one.
     if let Some(paths) = paths {
-        let on = mesimon_daemon::store::read_mcp_tools(&paths);
+        let on = cols.mcp_tools;
         if on {
             records.push(rec(Level::Ok, "agent tools", "on for this repo"));
         } else {
@@ -480,7 +481,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         // prompt of the sessions it starts, opt-in. Printed VERBATIM either
         // way — on, so the user can see what every agent of theirs is told;
         // off, so the offer is never a surprise.
-        let brief = mesimon_daemon::store::read_system_prompt(&paths);
+        let brief = cols.system_prompt;
         if brief && on {
             records.push(
                 rec(
@@ -508,7 +509,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         // brief's reason: these are the only words Mesimon adds to a
         // conversation, so "what does it say" must be answerable without
         // opening the TUI.
-        let prompts = mesimon_daemon::store::read_prompts(&paths);
+        let prompts = &cols.prompts;
         let custom = prompts.custom_count();
         let body = mesimon_core::prompts::AgentPrompt::ALL
             .iter()
@@ -533,10 +534,10 @@ fn agents(repo: &Path, verbose: bool) -> Section {
         // column setting now, so this line is the whole answer to "why did
         // that card move". A board with no file prints nothing — doctor
         // never creates one.
-        if let Some(cols) = mesimon_daemon::store::read_columns(&paths) {
-            let names: Vec<&str> = cols.iter().map(|c| c.name.as_str()).collect();
+        if let Some(columns) = &cols.columns {
+            let names: Vec<&str> = columns.iter().map(|c| c.name.as_str()).collect();
             let mut rules: Vec<String> = Vec::new();
-            for c in &cols {
+            for c in columns {
                 let words = c.settings.summary();
                 if !words.is_empty() {
                     rules.push(format!("{}: {}", c.name, words.join(" ∙ ")));
@@ -545,7 +546,7 @@ fn agents(repo: &Path, verbose: bool) -> Section {
             let mut line = names.join(" → ");
             // The default column (T-279), only when one was chosen: unset
             // means the first, which the arrow line already shows first.
-            if let Some(d) = mesimon_daemon::store::read_default_column(&paths) {
+            if let Some(d) = &cols.default_column {
                 line.push_str(&format!(" ∙ an agent's create_ticket lands in {d}"));
             }
             let record = rec(Level::Ok, "columns", line);

@@ -4493,7 +4493,7 @@ impl Daemon {
             },
             pending,
             automation: self.automation_status(),
-            claude_md: self.claude_md.status(),
+            claude_md: self.claude_md.status().for_board(&self.board),
             claude_default_mode: user_default_mode(),
             status_top: self.backend.status_top(),
             crown_touches: self.recent_crown_touches(),

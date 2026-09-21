@@ -1790,14 +1790,44 @@ pub struct ShellEnvStatus {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ClaudeMdStatus {
     /// `<repo>/CLAUDE.md`, whether or not it exists — the file `doctor` names.
-    /// Empty before the first sample, which offers nothing: an unknown must
-    /// never read as "missing".
     #[serde(default)]
     pub path: String,
+    /// The daemon has looked at least once. False before the first sample
+    /// (and from a build predating the field), which offers nothing: an
+    /// unknown must never read as "missing" — that would offer to write a
+    /// file on a guess. The same idiom as `RepoGit::sampled`.
+    #[serde(default)]
+    pub sampled: bool,
     /// `claudemd::MARKER` was found — here, or in `.claude/CLAUDE.md`. True
     /// withdraws the offer, however the words got there.
     #[serde(default)]
     pub present: bool,
+    /// Whether the header offers the agent brief (T-247): computed ONCE, by
+    /// the daemon, from this sample and the board's three switches
+    /// (`offered`), so the chip and every other reader agree. A build
+    /// predating the field sends `false`, the safe direction.
+    #[serde(default)]
+    pub offer: bool,
+}
+
+impl ClaudeMdStatus {
+    /// The one predicate behind `offer`: a sampled repo whose file does not
+    /// say the words, on a board with the tools on, the brief off, and no
+    /// "never ask again" stamp. Every clause is a fact the daemon owns, so
+    /// the daemon answers and the TUI reads.
+    pub fn offered(&self, board: &Board) -> bool {
+        self.sampled
+            && !self.present
+            && board.mcp_tools
+            && !board.system_prompt
+            && !board.claude_md_ignored
+    }
+
+    /// `self` with `offer` answered for `board` — what a snapshot carries.
+    pub fn for_board(self, board: &Board) -> Self {
+        let offer = self.offered(board);
+        Self { offer, ..self }
+    }
 }
 
 /// A commit in one direction of the checkout's upstream comparison.
@@ -1880,6 +1910,47 @@ pub enum Event {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Every clause of the brief offer, one at a time (T-247: computed here,
+    /// once, and read everywhere). Four are the feature's own logic; the
+    /// fifth — UNSAMPLED — is the one that matters most: an older daemon and
+    /// a first sample still in flight both report it, and an unknown that
+    /// read as "missing" would offer on a guess.
+    #[test]
+    fn the_offer_stands_only_when_every_clause_holds() {
+        let mut board = Board::default();
+        let mut md = ClaudeMdStatus { sampled: true, ..Default::default() };
+        assert!(md.offered(&board), "sampled, missing, tools on, not ignored");
+        assert!(md.clone().for_board(&board).offer, "and the snapshot carries it");
+
+        // The file already says it — however it got there.
+        md.present = true;
+        assert!(!md.offered(&board));
+        md.present = false;
+
+        // The tools it names are switched off, so the brief would be a lie.
+        board.mcp_tools = false;
+        assert!(!md.offered(&board));
+        board.mcp_tools = true;
+
+        // Already on: there is nothing left to offer.
+        board.system_prompt = true;
+        assert!(!md.offered(&board));
+        board.system_prompt = false;
+
+        // Answered "never".
+        board.claude_md_ignored = true;
+        assert!(!md.offered(&board));
+        board.claude_md_ignored = false;
+
+        // And no answer at all is not the same as "missing".
+        md.sampled = false;
+        assert!(!md.offered(&board), "unsampled is an unknown, not a no");
+        // A daemon predating the fields sends neither, and offers nothing.
+        let old: ClaudeMdStatus = serde_json::from_str(r#"{"path":"/r/CLAUDE.md"}"#).unwrap();
+        assert!(!old.sampled && !old.offer);
+        assert!(!old.offered(&board));
+    }
 
     #[test]
     fn old_git_sample_has_unavailable_commit_lists() {

@@ -991,7 +991,9 @@ fn golden_brief_120() {
 fn offer_brief(app: &mut App) {
     app.claude_md = mesimon_core::command::ClaudeMdStatus {
         path: "/repo/kanban-tui/CLAUDE.md".into(),
+        sampled: true,
         present: false,
+        offer: true,
     };
 }
 
@@ -1055,43 +1057,23 @@ fn suggesting_app() -> App {
     app
 }
 
-/// Every clause of the offer, one at a time. Four of them are the feature's
-/// own logic; the fifth — an EMPTY path — is the one that matters most, since
-/// an older daemon and a first sample still in flight both report it, and an
-/// unknown that read as "missing" would offer on a guess.
+/// The chip reads the daemon's answer and nothing else (T-247): the clauses
+/// live in `ClaudeMdStatus::offered`, tested beside it in core. Here, an
+/// unsampled snapshot — an older daemon, a first sample still in flight —
+/// offers nothing, and the answered one is taken as it comes.
 #[test]
-fn the_offer_stands_only_when_every_clause_holds() {
+fn the_offer_is_the_daemons_answer() {
     let mut app = app_graphite(fixture_archived());
     use mesimon_core::keymap::{is_suggested, Verb};
     let offered = |a: &App| is_suggested(Verb::BriefOffer, &a.ctx());
 
     assert!(!offered(&app), "an unsampled board offers nothing");
     offer_brief(&mut app);
-    assert!(offered(&app), "sampled, missing, tools on, not ignored");
-
-    // The file already says it — however it got there.
-    app.claude_md.present = true;
-    assert!(!offered(&app));
-    app.claude_md.present = false;
-
-    // The tools it names are switched off, so the brief would be a lie.
-    app.board.mcp_tools = false;
-    assert!(!offered(&app));
-    app.board.mcp_tools = true;
-
-    // Already on: there is nothing left to offer.
-    app.board.system_prompt = true;
-    assert!(!offered(&app));
-    app.board.system_prompt = false;
-
-    // Answered "never".
-    app.board.claude_md_ignored = true;
-    assert!(!offered(&app));
-    app.board.claude_md_ignored = false;
-
-    // And no answer at all is not the same as "missing".
-    app.claude_md.path = String::new();
-    assert!(!offered(&app), "an empty path is an unknown, not a no");
+    assert!(offered(&app), "the daemon said so");
+    // The TUI does not re-derive the answer from the switches it can see:
+    // the snapshot after Enter or `i` is what withdraws the chip.
+    app.claude_md.offer = false;
+    assert!(!offered(&app), "and the daemon's no is a no");
 }
 
 /// The offer is a chip AND the menu row it points at, and they are the same

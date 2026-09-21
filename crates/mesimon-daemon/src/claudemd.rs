@@ -56,14 +56,21 @@ impl Sampler {
     pub fn refresh(&mut self, repo: &Path) -> bool {
         let files = paths(repo);
         let stamps: Vec<Option<(u64, u64)>> = files.iter().map(|p| stamp(p)).collect();
-        if stamps == self.stamps && !self.status.path.is_empty() {
+        if stamps == self.stamps && self.status.sampled {
             return false;
         }
         self.stamps = stamps;
         let present = files
             .iter()
             .any(|p| std::fs::read_to_string(p).is_ok_and(|b| claudemd::has_marker(&b)));
-        let next = ClaudeMdStatus { path: files[0].display().to_string(), present };
+        // `offer` is answered per snapshot (`ClaudeMdStatus::for_board`): it
+        // needs the board's switches, which this sampler does not hold.
+        let next = ClaudeMdStatus {
+            path: files[0].display().to_string(),
+            sampled: true,
+            present,
+            offer: false,
+        };
         let changed = next != self.status;
         self.status = next;
         changed
@@ -89,6 +96,7 @@ mod tests {
         let mut s = Sampler::default();
         assert!(s.refresh(&repo), "the first sample is always news");
         assert!(!s.status().present);
+        assert!(s.status().sampled, "and it says so: an unsampled repo offers nothing");
         assert_eq!(s.status().path, repo.join("CLAUDE.md").display().to_string());
 
         std::fs::write(repo.join("CLAUDE.md"), "# Rules\n").expect("seed");
