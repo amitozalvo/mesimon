@@ -74,6 +74,11 @@ impl Paths {
     pub fn sessions_file(&self) -> PathBuf {
         self.state_dir.join("sessions.json")
     }
+    /// The ask queue's starts and wakes (T-418), beside `sessions.json`;
+    /// absent whenever the queue is empty.
+    pub fn queue_file(&self) -> PathBuf {
+        self.state_dir.join("queue.json")
+    }
     /// This board's overrides of the machine's `prefs.json` (T-361): the
     /// TUI's file, not the daemon's, under the state dir so it is private to
     /// the machine and never rides a team board.

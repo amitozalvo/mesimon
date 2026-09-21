@@ -11814,3 +11814,43 @@ characters, the floor still cuts on a character boundary) and e2e
 `notes_e2e::a_note_past_the_limit_is_refused_and_the_existing_note_stays_whole` (exact
 lands whole on disk, one byte over leaves one file and one note, a refused replacement keeps
 text, `rev` and `edited_at`, a multi-byte note is refused on bytes).
+
+## A queued start outlives the daemon (T-418, 2026-09-21, user: "investigate why queue stopped (backlog column shift+enter 2 hours ago)" ∙ "do option 1")
+
+**What happened.** Shift+Enter on the BACKLOG header parked twenty starts and one ask. The first
+start's agent (T-251, a daemon-side ticket) rebuilt the binary and ran `pkill -f "mesimon
+daemon"` — the standing rule after a daemon rebuild — 4.5 minutes later. `Daemon::queued` was in
+memory by design (`pending_prompt`'s argument: a restart must not paste words into a pane it no
+longer understands), so the other nineteen starts went with the process, and nothing in the feed,
+the journal or on the cards said so. The drain logic was never at fault.
+
+**What shipped.** `crates/mesimon-daemon/src/askqueue.rs` and `<state>/queue.json`: the queue's
+`Start` and `Wake` entries, written on every mutation of the list (`persist_queue`, the one write
+path; the four other state files' contract — own `schema_version`, a newer build's bytes left
+untouched and barred, garbage quarantined). The file is absent whenever the queue is empty. At
+boot the entries are re-seated (`Start` on the shared root, `Wake` on its record's own cwd — a
+record `sessions.json` no longer carries is not restored), swept once by `sweep_queue`, announced
+as `queued_start_restored`/`queued_wake_restored` in the feed, and written back. Board order is
+still read at every drain, never stored.
+
+**The `Pane` seat stays memory-only**, argued rather than lost: its words are owed to a pane the
+next daemon re-derives at Low confidence, and a paste into a box mid-turn is the one thing the
+queue exists to prevent. A start has no pane and a wake names a parked record, so both replay
+exactly.
+
+**One guard the restore needed.** Right after a restart every session of ours sits at
+`Unknown{DaemonRestarted}` with a pane, and `quiet::is_working` does not count a Claude
+`Unknown` (the reconcile resolves it within a tick). A restored start may be judged on that very
+first tick, so `drain_queue` now also holds while any agent on the checkout is `Unknown` with a
+pane (`checkout_unresolved`) — a checkout that cannot be proved quiet is not quiet. `is_working`
+itself is unchanged: it also feeds the keep-awake hold and the merge train, where a one-tick
+`Unknown` should not count.
+
+**Tests.** Four unit tests on the file (round trip, empty-removes-file, newer-schema-barred,
+garbage-quarantined) and `ask_queue_e2e::a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not`,
+on the new `Harness::restart` (clean shutdown, fresh daemon on the same fixture; the private tmux
+and its panes survive, as they do for a `U` reload).
+
+**Not done.** A feed line for the entries a restart still drops (a `Pane` ask): the card's mark
+simply goes, as before. The auto-memory rule that made the T-251 agent kill the daemon now says
+to look for `queued` marks first and prefer the `U` chip.

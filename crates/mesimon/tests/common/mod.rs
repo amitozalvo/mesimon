@@ -402,6 +402,25 @@ impl Harness {
         Some(Self { dir, repo, paths, stub, fixture })
     }
 
+    /// Stop the daemon cleanly and boot a fresh one on the same fixture:
+    /// the state dir, the private tmux and its panes all survive, exactly as
+    /// a `U` reload or a `pkill` does for a real board. Returns once the new
+    /// socket answers.
+    pub fn restart(&self) {
+        if let Some(mut c) =
+            TestClient::try_connect(&self.paths.orch_sock(), Duration::from_millis(500))
+        {
+            let _ = c.request(Command::Shutdown);
+        }
+        wait_until(Duration::from_secs(10), "the old daemon to leave", || {
+            !self.paths.orch_sock().exists()
+        });
+        let _daemon = self.fixture.daemon(&self.repo);
+        wait_until(Duration::from_secs(10), "the replacement daemon socket", || {
+            self.paths.orch_sock().exists()
+        });
+    }
+
     pub fn client(&self, name: &str) -> TestClient {
         let mut c = TestClient::connect(&self.paths.orch_sock());
         assert!(matches!(

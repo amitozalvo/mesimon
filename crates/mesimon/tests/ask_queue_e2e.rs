@@ -551,3 +551,93 @@ fn worktree_follow_up_waits_for_idle_with_send_now_and_take_back() {
         text().contains("idle-queue-already-idle")
     });
 }
+
+/// A queued START outlives the daemon (T-418): the column's Shift+Enter
+/// parked twenty starts, the first one's agent rebuilt the daemon and
+/// `pkill`ed it, and the other nineteen vanished with no line in the feed.
+/// Now `queue.json` carries starts and wakes across a restart; the card
+/// shows the same `start` mark afterwards and the start goes when the
+/// holder settles. A queued PANE ask — words owed to a pane the new daemon
+/// re-derives at Low confidence — is still dropped, as before.
+#[test]
+fn a_queued_start_survives_a_daemon_restart_and_a_queued_pane_ask_does_not() {
+    const STUB: &str = "#!/bin/sh\nstty -icanon 2>/dev/null\nwhile IFS= read -r line; do \
+                        printf '%s\\n' \"$line\" >> \"$(dirname \"$0\")/got.txt\"; done\n";
+    let Some(h) =
+        Harness::boot_with_env("askrestart", Some(STUB), &[("MESIMON_PANE_QUIET_MS", "600000")])
+    else {
+        return;
+    };
+    let hook_sock = h.paths.hook_sock();
+    let mut c = h.client("askrestart");
+
+    for title in ["holder", "waiter"] {
+        let _ = c.request(Command::CreateTicket {
+            column: "TODO".into(),
+            title: title.into(),
+            workspace: None,
+        });
+    }
+    let board = c.board();
+    let a = board.tickets.iter().find(|t| t.title == "holder").expect("a").id;
+    let b = board.tickets.iter().find(|t| t.title == "waiter").expect("b").id;
+    let a_key = board.ticket(a).unwrap().short_key.clone();
+
+    let sa = match c.request(Command::SpawnSession {
+        ticket: a,
+        kind: SessionKind::Claude,
+        submit_prompt: false,
+    }) {
+        Response::Spawned { id, .. } => id,
+        other => panic!("spawn failed: {other:?}"),
+    };
+    hook_send(&hook_sock, &sa.to_string(), "UserPromptSubmit", r#"{"prompt":"go"}"#);
+    c.await_state(sa, "running", |s| *s == SessionState::Running);
+
+    // A start parks on the empty seat, and a pane ask parks on the holder.
+    match c.request(Command::PromptSession {
+        ticket: b,
+        text: "mesimon-probe-418 read the ticket".into(),
+        queued: true,
+    }) {
+        Response::Queued { behind } => assert_eq!(behind, vec![a_key.clone()]),
+        other => panic!("expected the start to be parked: {other:?}"),
+    }
+    assert!(matches!(
+        c.request(Command::PromptSession {
+            ticket: a,
+            text: "mesimon-probe-418 follow-up for the holder".into(),
+            queued: true,
+        }),
+        Response::Queued { .. }
+    ));
+    assert_eq!(pending_of(&mut c, None).len(), 2);
+    assert!(h.paths.queue_file().is_file(), "the start is on disk the moment it parks");
+
+    // The daemon goes and comes back; the holder's pane never noticed.
+    h.restart();
+    let mut c = h.client("askrestart-2");
+    let p = pending_of(&mut c, None);
+    assert_eq!(p.len(), 1, "the start came back and the pane ask did not: {p:?}");
+    assert_eq!(p[0].ticket, b);
+    assert_eq!(p[0].action, "start");
+    assert_eq!(p[0].text.as_deref(), Some("mesimon-probe-418 read the ticket"));
+    std::thread::sleep(Duration::from_millis(1500));
+    assert!(
+        c.board().sessions.iter().all(|s| s.ticket != b),
+        "a restored start waits for the checkout like any other"
+    );
+
+    // The holder settles; the restored start goes, and the file goes with it.
+    hook_send(&hook_sock, &sa.to_string(), "Stop", r#"{"stop_hook_active":false}"#);
+    c.await_state(sa, "idle", |s| matches!(s, SessionState::Idle { .. }));
+    wait_until(Duration::from_secs(10), "the restored start to spawn a claude", || {
+        c.board().sessions.iter().any(|s| s.ticket == b && s.kind == SessionKind::Claude)
+    });
+    assert!(pending_of(&mut c, None).is_empty(), "the entry left with the delivery");
+    wait_until(Duration::from_secs(5), "queue.json to be removed once empty", || {
+        !h.paths.queue_file().exists()
+    });
+
+    let _ = c.request(Command::Shutdown);
+}

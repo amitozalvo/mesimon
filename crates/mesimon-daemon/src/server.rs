@@ -282,6 +282,8 @@ pub struct Daemon {
     columns_barred: bool,
     sessions_barred: bool,
     worktrees_barred: bool,
+    /// `queue.json` (T-418): the same bar, for the same reason.
+    queue_barred: bool,
     /// One attention machine per session, keyed by session UUID.
     machines: HashMap<uuid::Uuid, Machine>,
     /// Sessions whose owed Enter has been pressed but not yet acknowledged:
@@ -309,10 +311,13 @@ pub struct Daemon {
     /// Shift+Enter with the field's toggle at `queued`. One entry per
     /// ticket, in BOARD order (`queue_order`), delivered by `drain_queue`
     /// when `checkout_holders` is empty — pasted into a pane, or, since
-    /// T-294, waking the ticket's parked claude or starting one. In memory
-    /// for `pending_prompt`'s reason: a restart drops the words rather than
-    /// pasting them into a pane it no longer understands, and the mark on
-    /// the card goes with them.
+    /// T-294, waking the ticket's parked claude or starting one. The
+    /// `Pane` entries are in memory for `pending_prompt`'s reason: a restart
+    /// drops the words rather than pasting them into a pane it no longer
+    /// understands, and the mark on the card goes with them. The `Start`
+    /// and `Wake` entries ride `queue.json` (`askqueue`, T-418) and come
+    /// back after a restart: a column's worth of parked starts died with an
+    /// agent's `pkill` of the daemon, and nothing on the board said so.
     queued: Vec<QueuedAsk>,
     /// Tickets whose pane mesimon pasted into ON ITS OWN CLOCK — a queued
     /// ask, the train's rebase request or merged notice — whose
@@ -626,6 +631,28 @@ pub fn run(paths: Paths) -> Result<()> {
     if wt_changed && !worktrees_barred {
         let _ = worktree::save_bindings(&paths, &worktrees);
     }
+
+    // T-418: the queue's starts and wakes come back. A `Wake` whose record
+    // `sessions.json` no longer carries has no seat to stand on and is not
+    // restored; everything else is re-checked by `sweep_queue` below, the
+    // same predicate a live entry is swept by.
+    let (queue_entries, queue_notices, queue_barred) = crate::askqueue::load_or_recover(&paths);
+    notices.extend(queue_notices);
+    let queued: Vec<QueuedAsk> = queue_entries
+        .into_iter()
+        .filter_map(|e| {
+            let (seat, cwd) = match e.seat {
+                crate::askqueue::PersistedSeat::Wake { session } => {
+                    let rec = board.sessions.iter().find(|s| s.id == session)?;
+                    (QueuedSeat::Wake(session), rec.cwd.clone())
+                }
+                crate::askqueue::PersistedSeat::Start { provider } => {
+                    (QueuedSeat::Start(provider), paths.repo_root.display().to_string())
+                }
+            };
+            Some(QueuedAsk { ticket: e.ticket, seat, cwd, text: e.text, queued_at: e.queued_at })
+        })
+        .collect();
     if !worktrees.is_empty() {
         let _ = worktree::sweep_stale_locks(&paths.repo_root);
     }
@@ -726,10 +753,11 @@ pub fn run(paths: Paths) -> Result<()> {
         columns_barred: columns_write_barred,
         sessions_barred: sessions_write_barred,
         worktrees_barred,
+        queue_barred,
         machines,
         submit_retry: HashMap::new(),
         pending_prompt: HashMap::new(),
-        queued: Vec::new(),
+        queued,
         inflight: HashMap::new(),
         train: Default::default(),
         base_tip: String::new(),
@@ -798,6 +826,21 @@ pub fn run(paths: Paths) -> Result<()> {
         git_fetched_at_ms: 0,
         git_fetch_error: None,
     };
+    // The restored entries (T-418), judged once as any entry is (a gone
+    // ticket, a seat someone took) and written back so the file is the list
+    // again; each survivor is announced, so the feed says where the marks
+    // on the cards came from. The drain itself waits for the tick: the
+    // checkouts are `Unknown` until the reconcile speaks
+    // (`checkout_unresolved`).
+    let restored: Vec<(ulid::Ulid, &'static str)> =
+        d.queued.iter().map(|q| (q.ticket, q.seat.word())).collect();
+    d.sweep_queue();
+    for (ticket, word) in restored {
+        if d.queued.iter().any(|q| q.ticket == ticket) {
+            d.feed.board("automation", &format!("queued_{word}_restored"), Some(ticket));
+        }
+    }
+    d.persist_queue();
     // Board sharing (T-215): identity, this board's sharing state, the
     // relay executor. Before any client can observe the board, so the first
     // snapshot already says whether it is shared.
@@ -4667,6 +4710,36 @@ impl Daemon {
         let _ = worktree::save_bindings(&self.paths, &self.worktrees);
     }
 
+    /// The single write path for `queue.json` (T-418): the starts and wakes
+    /// of the ask queue, in list order — the board order is re-read at every
+    /// drain, never stored. A `Pane` entry is never written (see `queued`).
+    /// Called after every mutation of `queued`, so the file is the list.
+    fn persist_queue(&self) {
+        if self.queue_barred {
+            return;
+        }
+        let entries: Vec<crate::askqueue::QueuedEntry> = self
+            .queued
+            .iter()
+            .filter_map(|q| {
+                let seat = match q.seat {
+                    QueuedSeat::Pane(_) => return None,
+                    QueuedSeat::Wake(session) => crate::askqueue::PersistedSeat::Wake { session },
+                    QueuedSeat::Start(provider) => {
+                        crate::askqueue::PersistedSeat::Start { provider }
+                    }
+                };
+                Some(crate::askqueue::QueuedEntry {
+                    ticket: q.ticket,
+                    seat,
+                    text: q.text.clone(),
+                    queued_at: q.queued_at,
+                })
+            })
+            .collect();
+        let _ = crate::askqueue::save(&self.paths, &entries);
+    }
+
     /// Header figures (D33e) — real measurements only.
     fn resources(&self) -> Resources {
         Resources {
@@ -6325,6 +6398,7 @@ impl Daemon {
             self.queued.push(QueuedAsk { ticket, seat, cwd, text, queued_at: now });
             self.feed.board("local", &format!("queued_{word}"), Some(ticket));
         }
+        self.persist_queue();
         Ok(())
     }
 
@@ -6405,6 +6479,7 @@ impl Daemon {
             let cwd = self.queued[i].cwd.clone();
             let quiet = !seen.contains(&cwd)
                 && self.checkout_holders(&cwd).is_empty()
+                && !self.checkout_unresolved(&cwd)
                 && self.queued_target_ready(&self.queued[i]);
             seen.push(cwd);
             if quiet {
@@ -6451,7 +6526,26 @@ impl Daemon {
                 },
             }
         }
+        if changed {
+            self.persist_queue();
+        }
         changed
+    }
+
+    /// Does an agent on this checkout sit at `Unknown` with a pane — the
+    /// state every session of ours has right after a daemon restart, before
+    /// the transcript tail or a hook says what it is doing? `is_working`
+    /// does not count it (the reconcile resolves it within a tick), but a
+    /// RESTORED start (T-418) may be judged on the very first tick, and a
+    /// checkout that cannot be proved quiet is not quiet — the whole point
+    /// of the queue is never to be a second writer in one index.
+    fn checkout_unresolved(&self, cwd: &str) -> bool {
+        self.board.sessions.iter().any(|s| {
+            s.cwd == cwd
+                && s.kind.is_agent()
+                && s.state.has_pane()
+                && matches!(s.state, SessionState::Unknown { .. })
+        })
     }
 
     /// Is the seat an entry was queued at still the seat it named? A pane
@@ -6526,6 +6620,7 @@ impl Daemon {
         }
         if self.queued.len() != before {
             self.feed.board(actor, why, Some(ticket));
+            self.persist_queue();
             return true;
         }
         false
@@ -6576,6 +6671,7 @@ impl Daemon {
             return Response::Err { message: "nothing queued on this ticket".into() };
         };
         let q = self.queued.remove(i);
+        self.persist_queue();
         if !self.seat_stands(ticket, &q.seat) {
             self.broadcast();
             return Response::Err { message: "queued session changed".into() };

@@ -324,11 +324,13 @@ no tag registry writes, no session read at any tier. `authorize()` is real for `
 **Schema evolution.** Every new `SessionRecord` field must be `#[serde(default)]` — the defaults
 *are* the migration (back-compat fixture test in `core/src/board.rs`). A parse error
 **quarantines** the file (bytes preserved as `<name>.quarantine-<ms>`, board up on a default,
-notice in the advisory row) rather than killing the daemon. Each of the four state files carries
+notice in the advisory row) rather than killing the daemon. Each of the five state files carries
 its own `schema_version`; a file from a newer build is left untouched and its writes are
 **barred** rather than downgraded. Every save goes through
-`persist_columns`/`persist_sessions`/`persist_worktrees`, which honour the bars — never call
-`store::save_*` or `worktree::save_bindings` directly. `SessionState` is matched
+`persist_columns`/`persist_sessions`/`persist_worktrees`/`persist_queue`, which honour the bars —
+never call `store::save_*`, `worktree::save_bindings` or `askqueue::save` directly. The ask
+queue's starts and wakes ride `queue.json` (T-418) and come back after a restart; a queued PANE
+ask is memory-only on purpose and dies with the daemon. `SessionState` is matched
 non-exhaustively in places: use `state.is_live()` for working-set membership and
 `state.has_pane()` for pane existence. `Sleeping` is live-but-parked.
 

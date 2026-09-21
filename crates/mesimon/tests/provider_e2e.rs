@@ -904,9 +904,15 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
     drop(listener);
     std::fs::remove_file(endpoint).unwrap();
     warning(c.request(Command::ResumeSession { id, confirm: true }));
-    // A new daemon cannot inherit an unconfirmed user gesture.
+    // A new daemon cannot inherit an unconfirmed user gesture. The queued
+    // start it CAN inherit (T-418): the entry is back on the card, and it
+    // keeps waiting behind the unverified cleanup exactly as before.
     c = h.restart(&mut c);
     warning(c.request(Command::ResumeSession { id, confirm: true }));
+    let parked = pending_of(&mut c, Some(waiting));
+    assert_eq!(parked.len(), 1, "the queued start survives the restart: {parked:?}");
+    assert_eq!(parked[0].action, "start");
+    assert!(c.board().live_agent(waiting).is_none(), "and still waits on the cleanup");
     assert_eq!(session(&mut c, id).codex_generation, old.codex_generation);
     assert!(session(&mut c, id).codex_stopping);
     h.control(id, json!({}));
@@ -937,7 +943,15 @@ fn uncertain_cleanup_requires_new_human_acknowledgement_and_retains_old_evidence
     assert_eq!(resumed.codex_thread_id, old.codex_thread_id);
     assert_ne!(resumed.codex_generation, old.codex_generation);
     assert!(!resumed.codex_stopping);
-    assert!(c.board().live_agent(waiting).is_none());
+    // The checkout is proved quiet at last, and only now does the start
+    // that waited through the cleanup — and the restart — go (T-418), on
+    // the provider it was queued with.
+    wait_until(
+        Duration::from_secs(15),
+        "the restored start to go once the cleanup verified",
+        || c.board().live_agent(waiting).is_some(),
+    );
+    assert_eq!(c.board().live_agent(waiting).unwrap().kind, SessionKind::Claude);
     assert_eq!(
         c.board()
             .sessions
