@@ -15,7 +15,7 @@ use ratatui::widgets::Paragraph;
 use ratatui::Frame;
 use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
-use crate::app::{App, DiffState, PreviewView};
+use crate::app::{App, DiffState};
 use crate::glyphs::Tier;
 use crate::text::truncate;
 
@@ -47,11 +47,16 @@ pub(crate) fn density_word(context: u32) -> &'static str {
     }
 }
 
+/// The commit list's document key on the diff pager — a file's is its
+/// index, so a page turn on one never carries into the other.
+pub(crate) const COMMITS_KEY: u64 = u64::MAX;
+
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let theme = &app.theme;
     let area = f.area();
     let Some(d) = app.diff.as_ref() else { return };
-    d.view.set(PreviewView::default());
+    // Until a pane below measures itself there is nothing to page.
+    d.pager.view.set(crate::app::View::default());
 
     // ---- top block: the header (DIFF chip, breadcrumb, and the ticket as its
     // leaf where there is one — the checkout's diff belongs to the repo, which
@@ -162,8 +167,8 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
         );
     }
 
-    if d.view.get().key.is_none() {
-        d.glide.set(None);
+    if d.pager.view.get().key.is_none() {
+        d.pager.glide.set(None);
     }
 
     // ---- footer ----------------------------------------------------------
@@ -257,21 +262,7 @@ fn draw_commits(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         )));
     }
     let visible = (area.height as usize).saturating_sub(2);
-    let max = rows.len().saturating_sub(visible);
-    let scroll = d.scroll.get().min(max);
-    d.scroll.set(scroll);
-    d.view.set(PreviewView {
-        key: Some(u64::MAX),
-        offset: scroll,
-        max,
-        page: visible.saturating_sub(1).max(1),
-        follows_tail: false,
-    });
-    let at = d
-        .glide
-        .get()
-        .filter(|g| g.key == u64::MAX && g.progress().is_some())
-        .map_or(scroll, |g| g.offset(scroll).min(max));
+    let at = d.pager.window(Some(COMMITS_KEY), rows.len(), visible, false);
     let mut lines =
         vec![Line::from(hints(app, &[Verb::PageDown, Verb::ScrollDown], w)), Line::default()];
     lines.extend(rows.into_iter().skip(at).take(visible));
@@ -530,27 +521,10 @@ fn draw_hunks(f: &mut Frame, area: Rect, app: &App, d: &DiffState) {
         }
     }
 
-    // j/k scroll: clamp against the built content, write the clamp back.
+    // j/k scroll: clamp against the built content, write the clamp back
+    // (`Pager::window`), and draw the glide's row while a turn is in motion.
     let visible = (area.height as usize).saturating_sub(2);
-    let max_scroll = body.len().saturating_sub(visible);
-    let scroll = d.scroll.get().min(max_scroll);
-    d.scroll.set(scroll);
-    d.view.set(PreviewView {
-        key: Some(d.file_idx as u64),
-        offset: scroll,
-        max: max_scroll,
-        page: visible.saturating_sub(1).max(1),
-        follows_tail: false,
-    });
-    let at = match d.glide.get() {
-        Some(g) if g.key == d.file_idx as u64 && g.progress().is_some() => {
-            g.offset(scroll).min(max_scroll)
-        }
-        _ => {
-            d.glide.set(None);
-            scroll
-        }
-    };
+    let at = d.pager.window(Some(d.file_idx as u64), body.len(), visible, false);
     lines.push(hunk_heading(app, d, head, w, f.area().width >= TWO_PANE_MIN_W));
     lines.push(Line::default());
     lines.extend(body.into_iter().skip(at).take(visible));
@@ -565,13 +539,13 @@ fn hunk_heading(
     two_pane: bool,
 ) -> Line<'static> {
     let mut verbs = Vec::new();
-    if d.view.get().max > 0 {
+    if d.pager.view.get().max > 0 {
         verbs.push(Verb::PageDown);
     }
     if !two_pane && d.files.len() > 1 {
         verbs.push(Verb::NextFile);
     }
-    if d.view.get().max > 0 {
+    if d.pager.view.get().max > 0 {
         verbs.push(Verb::ScrollDown);
     }
     let keys = hints(app, &verbs, w / 2);

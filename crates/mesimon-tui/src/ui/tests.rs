@@ -130,8 +130,8 @@ fn page(app: &mut App, c: char) {
 }
 
 fn settle_preview(app: &mut App) {
-    if let Some(g) = app.preview_glide.get() {
-        app.preview_glide.set(Some(crate::app::Glide {
+    if let Some(g) = app.preview.glide.get() {
+        app.preview.glide.set(Some(crate::app::Glide {
             at: std::time::Instant::now() - crate::app::GLIDE,
             ..g
         }));
@@ -332,9 +332,7 @@ fn install_diff(app: &mut App) {
         branch_oid: "b".repeat(40),
         files,
         file_idx: 0,
-        scroll: std::cell::Cell::new(0),
-        view: std::cell::Cell::new(crate::app::PreviewView::default()),
-        glide: std::cell::Cell::new(None),
+        pager: crate::app::Pager::default(),
         marquee: std::cell::Cell::new(None),
         density: 3,
         cache,
@@ -419,9 +417,7 @@ fn install_checkout_diff(app: &mut App) {
         branch_oid: String::new(),
         files,
         file_idx: 0,
-        scroll: std::cell::Cell::new(0),
-        view: std::cell::Cell::new(crate::app::PreviewView::default()),
-        glide: std::cell::Cell::new(None),
+        pager: crate::app::Pager::default(),
         marquee: std::cell::Cell::new(None),
         density: 3,
         cache,
@@ -1813,7 +1809,7 @@ fn test_preview_pages_a_long_reply() {
     assert!(!shows(&app, "row 60"));
     assert!(heading(&app).contains("{ } page"), "an overflowing preview offers the page keys");
     assert!(!footer(&app).contains("{ }"), "and the footer does not repeat them");
-    let v = app.preview_view.get();
+    let v = app.preview.view.get();
     assert!(v.max > 0 && v.page > 1 && !v.follows_tail, "{v:?}");
 
     // A press is a GLIDE: the record moves to the next page at once, the
@@ -1822,17 +1818,17 @@ fn test_preview_pages_a_long_reply() {
     // the first row; halfway through, the window is between the two pages;
     // landed, the first row is gone.
     press(&mut app, '}');
-    let first = app.preview_view.get().offset;
+    let first = app.preview.view.get().offset;
     assert_eq!(first, v.page / 2, "the record is already half a page down");
-    let g = app.preview_glide.get().expect("the press arms a glide");
+    let g = app.preview.glide.get().expect("the press arms a glide");
     assert_eq!((g.key, g.from), (v.key.expect("a document"), 0));
     assert!(app.animating(), "the frame after the press is in motion");
     let future = std::time::Instant::now() + std::time::Duration::from_secs(1);
-    app.preview_glide.set(Some(crate::app::Glide { at: future, ..g }));
+    app.preview.glide.set(Some(crate::app::Glide { at: future, ..g }));
     assert!(shows(&app, "row 01"), "frame zero: the old page is still on screen");
-    assert_eq!(app.preview_view.get().offset, first, "the record does not move with the frame");
+    assert_eq!(app.preview.view.get().offset, first, "the record does not move with the frame");
     let half = std::time::Instant::now() - crate::app::GLIDE / 2;
-    app.preview_glide.set(Some(crate::app::Glide { at: half, ..g }));
+    app.preview.glide.set(Some(crate::app::Glide { at: half, ..g }));
     let mid = render(&app, 120, 30);
     let top_row = mid
         .iter()
@@ -1842,13 +1838,13 @@ fn test_preview_pages_a_long_reply() {
     settle_preview(&mut app);
     assert!(!app.animating(), "landed");
     assert!(!shows(&app, "row 01"), "one page down and the first row is gone");
-    assert!(app.preview_glide.get().is_none(), "the draw retires a landed glide");
+    assert!(app.preview.glide.get().is_none(), "the draw retires a landed glide");
     // Past the end: the last window is a FULL one, marked nowhere.
     for _ in 0..20 {
         page(&mut app, '}');
     }
     assert!(shows(&app, "row 60"));
-    assert_eq!(app.preview_view.get().offset, v.max);
+    assert_eq!(app.preview.view.get().offset, v.max);
     assert!(
         !render(&app, 120, 30).iter().any(|l| l.contains("row 60 of the reply~")),
         "the last row is not a cut"
@@ -1859,20 +1855,20 @@ fn test_preview_pages_a_long_reply() {
         page(&mut app, '{');
     }
     assert!(shows(&app, "row 01"));
-    assert_eq!(app.preview_view.get().offset, 0);
+    assert_eq!(app.preview.view.get().offset, 0);
 
     // A second press mid-glide starts from where the eye IS, not from where
     // the first press started: one continuous scroll, no restart.
     press(&mut app, '}');
-    let g = app.preview_glide.get().expect("glide");
+    let g = app.preview.glide.get().expect("glide");
     let g = crate::app::Glide { at: std::time::Instant::now() - crate::app::GLIDE / 2, ..g };
-    app.preview_glide.set(Some(g));
+    app.preview.glide.set(Some(g));
     let eye = g.offset(first);
     assert!(eye > 0 && eye < first, "{eye}");
     press(&mut app, '}');
-    let g2 = app.preview_glide.get().expect("glide");
+    let g2 = app.preview.glide.get().expect("glide");
     assert_eq!(g2.from, eye, "the second turn begins where the first had got to");
-    assert_eq!(app.preview_view.get().offset, 2 * (v.page / 2));
+    assert_eq!(app.preview.view.get().offset, 2 * (v.page / 2));
     for _ in 0..20 {
         page(&mut app, '{');
     }
@@ -1888,7 +1884,7 @@ fn test_preview_pages_a_long_reply() {
     assert_ne!(meta.len(), 0);
     app.peek_cache.expire();
     assert!(shows(&app, "row 01 of the next reply"), "a new reply starts at its top");
-    assert!(app.preview_glide.get().is_none(), "and a glide on the old one is dropped");
+    assert!(app.preview.glide.get().is_none(), "and a glide on the old one is dropped");
 
     // A reply that fits offers nothing to turn: keys inert, hint gone.
     std::fs::write(&path, reply_record("short")).expect("rewrite");
@@ -1896,7 +1892,7 @@ fn test_preview_pages_a_long_reply() {
     assert!(shows(&app, "short"));
     assert!(!footer(&app).contains("{ }"));
     press(&mut app, '}');
-    assert_eq!(app.preview_view.get().offset, 0);
+    assert_eq!(app.preview.view.get().offset, 0);
     let _ = std::fs::remove_dir_all(path.parent().expect("dir"));
 }
 
@@ -1913,21 +1909,21 @@ fn test_preview_pages_a_shell_tail() {
     let shows = |app: &App, row: &str| render(app, 120, 30).iter().any(|l| l.contains(row));
 
     assert!(shows(&app, "line 60") && !shows(&app, "line 01"), "a tail opens at its bottom");
-    let v = app.preview_view.get();
+    let v = app.preview.view.get();
     assert!(v.follows_tail && v.offset == v.max && v.max > 0, "{v:?}");
-    assert!(app.preview_scroll.get().is_none(), "following is the absence of a request");
+    assert!(app.preview.request.get().is_none(), "following is the absence of a request");
 
     page(&mut app, '{');
     assert!(!shows(&app, "line 60"));
     assert!(shows(&app, "line 60~") || render(&app, 120, 30).iter().any(|l| l.ends_with('~')));
     // New output while scrolled up: the reader's window holds still.
-    let before = app.preview_view.get().offset;
+    let before = app.preview.view.get().offset;
     let mut more = tail.clone();
     more.push("line 61".into());
     app.shell_tail =
         Some(crate::app::ShellTail::new(crate::app::TailKey::Session(uuid_n(32)), more));
     let _ = render(&app, 120, 30);
-    assert_eq!(app.preview_view.get().offset, before);
+    assert_eq!(app.preview.view.get().offset, before);
     assert!(!shows(&app, "line 61"));
 
     // One page back down lands where the bottom WAS: the pane grew a row
@@ -1936,10 +1932,10 @@ fn test_preview_pages_a_shell_tail() {
     // and releases it — the new line arrives with it.
     page(&mut app, '}');
     assert!(shows(&app, "line 60~") && !shows(&app, "line 61"));
-    assert!(app.preview_scroll.get().is_some());
+    assert!(app.preview.request.get().is_some());
     page(&mut app, '}');
     assert!(shows(&app, "line 61"), "back at the bottom, and the new line is there");
-    assert!(app.preview_scroll.get().is_none(), "at the bottom the tail is released");
+    assert!(app.preview.request.get().is_none(), "at the bottom the tail is released");
 }
 
 #[test]
@@ -1973,7 +1969,11 @@ fn diff_hints_live_beside_their_panes_and_pages_use_the_viewport() {
             let files = render(&app, width, height);
             assert!(files[5].contains("n N file"), "{}", files[5]);
             press(&mut app, '}');
-            assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0, "hidden diff does not page");
+            assert_eq!(
+                app.diff.as_ref().unwrap().pager.view.get().offset,
+                0,
+                "hidden diff does not page"
+            );
             app.diff.as_mut().unwrap().swap = true;
         }
         let rows = render(&app, width, height);
@@ -1985,24 +1985,24 @@ fn diff_hints_live_beside_their_panes_and_pages_use_the_viewport() {
         for hint in ["n N", "{ }", "jk scroll"] {
             assert!(!rows.last().unwrap().contains(hint), "{rows:?}");
         }
-        let v = app.diff.as_ref().unwrap().view.get();
+        let v = app.diff.as_ref().unwrap().pager.view.get();
         assert_eq!(v.page, height as usize - 9);
         press(&mut app, '}');
-        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), v.page / 2);
+        assert_eq!(app.diff.as_ref().unwrap().pager.view.get().offset, v.page / 2);
         for _ in 0..20 {
             press(&mut app, '}');
         }
-        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), v.max);
+        assert_eq!(app.diff.as_ref().unwrap().pager.view.get().offset, v.max);
         for _ in 0..20 {
             press(&mut app, '{');
         }
-        assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0);
+        assert_eq!(app.diff.as_ref().unwrap().pager.view.get().offset, 0);
     }
 }
 
 #[test]
 fn half_page_jumps_round_small_views_and_preserve_full_page_keys() {
-    use crate::app::{PreviewView, ReleasesView};
+    use crate::app::View;
     use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
     for screen in
@@ -2013,16 +2013,9 @@ fn half_page_jumps_round_small_views_and_preserve_full_page_keys() {
             install_long_diff(&mut app);
             install_releases(&mut app);
             app.screen = screen.clone();
-            let view = PreviewView { key: Some(1), page, max: 97, ..Default::default() };
-            app.preview_view.set(view);
-            app.diff.as_ref().unwrap().view.set(view);
-            app.releases.as_ref().unwrap().view.set(ReleasesView { page, max: 97 });
-            let offset = |app: &App| match screen {
-                Screen::Diff => app.diff.as_ref().unwrap().scroll.get(),
-                Screen::Ticket { .. } => app.preview_view.get().offset,
-                Screen::Releases => app.releases.as_ref().unwrap().scroll.get(),
-                Screen::Board => unreachable!(),
-            };
+            let view = View { key: Some(1), page, max: 97, ..Default::default() };
+            app.pager().expect("a reading screen").view.set(view);
+            let offset = |app: &App| app.pager().expect("a reading screen").view.get().offset;
             for (key, expected) in [
                 (KeyCode::Char('}'), half),
                 (KeyCode::Char('}'), 2 * half),
@@ -2051,14 +2044,15 @@ fn diff_pages_glide_and_file_changes_cancel_the_motion() {
     let mut app = app_graphite(fixture(false));
     install_long_diff(&mut app);
     let before = render(&app, 120, 30);
-    let page = app.diff.as_ref().unwrap().view.get().page / 2;
+    let page = app.diff.as_ref().unwrap().pager.view.get().page / 2;
     press(&mut app, '}');
-    let g = app.diff.as_ref().unwrap().glide.get().unwrap();
+    let g = app.diff.as_ref().unwrap().pager.glide.get().unwrap();
     assert_eq!(g.from, 0);
     assert!(app.animating());
     app.diff
         .as_ref()
         .unwrap()
+        .pager
         .glide
         .set(Some(Glide { at: Instant::now() + Duration::from_secs(1), ..g }));
     assert_eq!(render(&app, 120, 30), before, "frame zero retains the old page");
@@ -2069,14 +2063,14 @@ fn diff_pages_glide_and_file_changes_cancel_the_motion() {
             })
             .unwrap()
     };
-    app.diff.as_ref().unwrap().glide.set(Some(Glide { at: Instant::now() - GLIDE / 2, ..g }));
+    app.diff.as_ref().unwrap().pager.glide.set(Some(Glide { at: Instant::now() - GLIDE / 2, ..g }));
     let mid = top_row(&render(&app, 120, 30));
     assert!(mid > 1 && mid < page, "{mid} between 1 and {page}");
     press(&mut app, '}');
-    let next = app.diff.as_ref().unwrap().glide.get().unwrap();
+    let next = app.diff.as_ref().unwrap().pager.glide.get().unwrap();
     assert!(next.from >= mid && next.from < page, "continues from the visible row");
-    assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 2 * page);
-    app.diff.as_ref().unwrap().glide.set(Some(Glide { at: Instant::now() - GLIDE, ..next }));
+    assert_eq!(app.diff.as_ref().unwrap().pager.view.get().offset, 2 * page);
+    app.diff.as_ref().unwrap().pager.glide.set(Some(Glide { at: Instant::now() - GLIDE, ..next }));
     let landed = render(&app, 120, 30);
     assert_eq!(top_row(&landed), 2 * page);
     assert!(!app.animating());
@@ -2084,7 +2078,7 @@ fn diff_pages_glide_and_file_changes_cancel_the_motion() {
     assert!(app.animating(), "paging up also glides");
     press(&mut app, 'n');
     assert!(!app.animating());
-    assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0);
+    assert_eq!(app.diff.as_ref().unwrap().pager.view.get().offset, 0);
     assert!(!render(&app, 120, 30)[5].contains("{ } page"), "binary fits");
 
     // File navigation stays visible even on a display-only untracked entry.
@@ -2221,15 +2215,15 @@ fn checkout_commits_scroll_to_incoming_and_clamp_after_snapshot_shrinks() {
     let text = render(&app, 60, 20).join("\n");
     assert!(text.contains("outgoing 0"));
     assert!(!text.contains("incoming commit"));
-    app.diff.as_ref().unwrap().scroll.set(usize::MAX);
+    app.diff.as_ref().unwrap().pager.request.set(Some((crate::ui::diff::COMMITS_KEY, usize::MAX)));
     let text = render(&app, 60, 20).join("\n");
     assert!(text.contains("5 more commits"));
     assert!(text.contains("incoming commit"));
-    assert!(app.diff.as_ref().unwrap().view.get().max > 0);
+    assert!(app.diff.as_ref().unwrap().pager.view.get().max > 0);
     app.git.ahead = 0;
     app.git.behind = 0;
     let _ = render(&app, 60, 20);
-    assert_eq!(app.diff.as_ref().unwrap().scroll.get(), 0);
+    assert_eq!(app.diff.as_ref().unwrap().pager.view.get().offset, 0);
 }
 
 #[test]
@@ -2466,7 +2460,12 @@ fn golden_releases_scrolled_120() {
     // pinned to the first row while its notes scroll under it.
     let mut app = app_graphite(fixture(false));
     install_releases(&mut app);
-    app.releases.as_ref().expect("state").scroll.set(14);
+    app.releases
+        .as_ref()
+        .expect("state")
+        .pager
+        .request
+        .set(Some((crate::ui::releases::DOC_KEY, 14)));
     let lines = render(&app, 120, 30);
     assert!(lines[4].contains("v0.9.0-alpha.3"), "band pinned: {:?}", lines[4]);
     golden("releases_scrolled_120x30", &lines);
@@ -2502,13 +2501,15 @@ fn test_release_notes_from_the_menu() {
     assert!(lines[4].contains(build) && lines[4].contains("this build"), "band: {:?}", lines[4]);
     assert!(lines.last().expect("footer").contains("next / previous release"));
 
-    // `}` pages; `{` back to the top.
+    // `}` pages — a glide, as on the preview and the diff (T-246: one
+    // pager, one motion); `{` back to the top.
     press(&mut app, '}');
-    let page = app.releases.as_ref().expect("state").view.get().page;
+    assert!(app.animating(), "a page turn on the notes glides");
+    let page = app.releases.as_ref().expect("state").pager.view.get().page;
     assert!(page > 1);
-    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), page / 2);
+    assert_eq!(app.releases.as_ref().expect("state").pager.view.get().offset, page / 2);
     press(&mut app, '{');
-    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 0);
+    assert_eq!(app.releases.as_ref().expect("state").pager.view.get().offset, 0);
     // `n` lands the second release's band on the first row; `N` comes back.
     press(&mut app, 'n');
     let _ = render(&app, 120, 30);
@@ -2516,13 +2517,13 @@ fn test_release_notes_from_the_menu() {
     let second = &app.releases.as_ref().expect("state").releases[1].tag;
     assert!(lines[4].contains(second.as_str()), "n: {:?}", lines[4]);
     press(&mut app, 'N');
-    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 0);
+    assert_eq!(app.releases.as_ref().expect("state").pager.view.get().offset, 0);
     // `j` scrolls one row and never past the end.
     press(&mut app, 'j');
-    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 1);
+    assert_eq!(app.releases.as_ref().expect("state").pager.view.get().offset, 1);
     press(&mut app, 'G');
     press(&mut app, 'k');
-    assert_eq!(app.releases.as_ref().expect("state").scroll.get(), 0);
+    assert_eq!(app.releases.as_ref().expect("state").pager.view.get().offset, 0);
     press(&mut app, 'q');
     assert!(matches!(app.screen, Screen::Board));
     assert!(app.releases.is_none());
@@ -2544,11 +2545,11 @@ fn test_real_changelog_reads_lawfully() {
         app.screen = Screen::Releases;
         let _ = render(&app, w, h);
         let st = app.releases.as_ref().expect("state");
-        let (max, page) = (st.view.get().max, st.view.get().page);
+        let (max, page) = (st.pager.view.get().max, st.pager.view.get().page);
         assert_eq!(st.starts.borrow().len(), releases.len());
         let mut top = 0;
         loop {
-            st.scroll.set(top);
+            st.pager.jump(top);
             for line in render(&app, w, h) {
                 for c in line.chars() {
                     let u = c as u32;

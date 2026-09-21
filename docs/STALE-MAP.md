@@ -12005,3 +12005,27 @@ untouched.
   not `Running` now blocks at the `z` as the daemon would have refused at the Enter. No such
   record exists today (D15 pins a shell at `Running` for the life of its pane), so it is the same
   answer, only no longer by coincidence.
+
+## One pager for the diff, PREVIEW and RELEASES (T-246, 2026-09-22)
+
+- **`app::Pager { request, view, glide }`** is the reading position of every read-only zone:
+  the ticket page's preview (`App::preview`), the diff's hunk pane and commit list
+  (`DiffState.pager`) and the release notes (`ReleasesState.pager`). `View` is the one
+  draw-measured shape (`PreviewView` and `ReleasesView` were it twice). The press side is
+  `scroll` (a row from where the eye is, glide dropped), `page` (a page from the row recorded,
+  as a glide from where the eye is) and `jump` (`n`/`N`, no motion); the draw side is
+  `window(key, total, budget, follows_tail) -> at`, which honours a request only for the
+  document it was asked of, clamps, writes the clamp back and returns the glide's row. The
+  request is keyed on every zone now — the diff's commit list is `ui::diff::COMMITS_KEY`, a file
+  its index, the notes `ui::releases::DOC_KEY` — so a page into one document never opens the
+  next halfway, which the diff used to get by resetting.
+- **`App::pager()` is the one switch on `self.screen`** for the reading verbs: `ScrollDown/Up`
+  and `PageDown/Up/HalfPage*` call it and stop; `animating` asks it. `NextFile/PrevFile` still
+  route (the notes step between bands, the diff between files — different verbs on one key)
+  and `Refresh` is the diff's alone. A fourth reading screen is a `Pager` on its state and an
+  arm in `pager()`.
+- **The motion decision the one-pager left open:** the notes glide now, like the preview and
+  the diff — one pager, one speed (`GLIDE == GROW`). `test_release_notes_from_the_menu` pins it;
+  the scrolled golden did not move because a request draws at rest.
+- `App::set_preview_view` became `preview_measured()`: the draw writes through the pager and
+  then dirties the frame's `Ctx`, since `Ctx::preview_scrolls` reads the measurement.

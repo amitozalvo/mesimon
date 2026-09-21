@@ -19,7 +19,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::keymap;
 
-use crate::app::{App, InputPurpose, Mode, PreviewView, RailRow, TailKey};
+use crate::app::{App, InputPurpose, Mode, RailRow, TailKey, View};
 use crate::glyphs;
 use crate::text::{
     age_created, age_in_column, age_slot, created_at_epoch_ms, edit_window, marquee_offset,
@@ -556,7 +556,8 @@ pub(super) fn draw(f: &mut Frame, app: &App, ticket_id: ulid::Ulid, rail_idx: us
         );
     } else {
         // No zone, nothing to page: the footer must not offer `{ }`.
-        app.set_preview_view(PreviewView::default());
+        app.preview.view.set(View::default());
+        app.preview_measured();
         draw_rail(
             f,
             Rect { x: area.x + 1, y: rail_y, width: area.width.saturating_sub(2), height: rail_h },
@@ -619,7 +620,8 @@ fn draw_preview(
         Line::from(spans)
     };
     // Until something below measures a document, there is nothing to page.
-    app.set_preview_view(PreviewView::default());
+    app.preview.view.set(View::default());
+    app.preview_measured();
 
     // The selected session's latest assistant reply, wrapped into whatever
     // height the zone has left. Absent transcript (bash, fresh spawn) means
@@ -1054,15 +1056,6 @@ fn note_key(meta: &NoteMeta) -> u64 {
     crate::text::hash64((1u8, meta.id, meta.rev))
 }
 
-/// The zone's window onto `rows`: honours the offset `{ }` asked for
-/// (`App::preview_scroll`, only if it was asked of THIS document), clamps
-/// it the way the diff pane does and writes the clamp back, and records what
-/// was shown (`App::preview_view`) so the next press and the footer know
-/// the page size and whether there is a further one. A window that stops
-/// short of the last row ends in the `~` cut mark. While a page turn is in
-/// motion (`App::preview_glide`) the rows drawn are the glide's frame, on
-/// the way to the offset recorded — the record is where the reader is
-/// going, the glide is where the eye is.
 /// The zone's markdown, rendered once per document, width and theme and
 /// kept on `App::rich_cache`: `rich::render_all` parses and wraps the whole
 /// reply, and the draw runs at 60 fps through a glide only to keep a
@@ -1080,6 +1073,10 @@ fn rendered(app: &App, key: u64, width: usize, text: &str) -> Rc<Vec<Line<'stati
     rows
 }
 
+/// The zone's window onto `rows`: the preview pager's draw half
+/// (`Pager::window` — the request, the clamp written back, the glide's
+/// frame), then the rows from there. A window that stops short of the last
+/// row ends in the `~` cut mark.
 fn window(
     app: &App,
     key: Option<u64>,
@@ -1089,38 +1086,8 @@ fn window(
     follows_tail: bool,
 ) -> Vec<Line<'static>> {
     let total = rows.len();
-    let max = total.saturating_sub(budget);
-    let asked = match (app.preview_scroll.get(), key) {
-        (Some((k, n)), Some(key)) if k == key => Some(n),
-        _ => None,
-    };
-    let offset = match asked {
-        Some(n) => n.min(max),
-        None if follows_tail => max,
-        None => 0,
-    };
-    if asked.is_some() {
-        // A tail scrolled to its bottom is released, not pinned to it.
-        let back = if follows_tail && offset >= max { None } else { key.map(|k| (k, offset)) };
-        app.preview_scroll.set(back);
-    }
-    app.set_preview_view(PreviewView {
-        key,
-        offset,
-        max,
-        page: budget.saturating_sub(1).max(1),
-        follows_tail,
-    });
-    // A glide on another document, or one that has landed, is retired here
-    // so `App::animating` stops asking for fast frames the moment it can.
-    let at = match app.preview_glide.get() {
-        Some(g) if Some(g.key) == key && g.progress().is_some() => g.offset(offset).min(max),
-        Some(_) => {
-            app.preview_glide.set(None);
-            offset
-        }
-        None => offset,
-    };
+    let at = app.preview.window(key, total, budget, follows_tail);
+    app.preview_measured();
     let mut shown: Vec<Line<'static>> = rows.iter().skip(at).take(budget).cloned().collect();
     if at + shown.len() < total {
         crate::rich::mark_cut(&mut shown, width, &app.theme);

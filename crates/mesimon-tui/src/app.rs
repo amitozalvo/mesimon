@@ -97,15 +97,17 @@ pub(crate) struct Spoke {
     pub(crate) seen: u64,
 }
 
-/// What the last draw of the ticket page's preview zone measured: which
-/// document it showed, where it was scrolled to, and how far it could go.
-/// Draw-side state, written by `ui/ticket.rs` and read by the `{ }` press
-/// and the footer — the zone's height is a fact of the frame, so the page
-/// size and the overflow can only be known there.
+/// What the last draw of a reading zone measured: which document it
+/// showed, where it was scrolled to, and how far it could go. Draw-side
+/// state, written by the zone's draw and read by the `{ }` press and the
+/// footer — the zone's height is a fact of the frame, so the page size and
+/// the overflow can only be known there. One shape for the ticket page's
+/// preview, the diff's hunk pane and the release notes (T-246).
 #[derive(Clone, Copy, Default, Debug, PartialEq, Eq)]
-pub struct PreviewView {
+pub struct View {
     /// The document on screen: the selected session and, for a reply, the
-    /// reply itself. `None` while the zone shows nothing.
+    /// reply itself; the diff's file; the release notes. `None` while the
+    /// zone shows nothing.
     pub key: Option<u64>,
     /// Rows hidden above the window, after the clamp.
     pub offset: usize,
@@ -119,17 +121,6 @@ pub struct PreviewView {
     pub follows_tail: bool,
 }
 
-/// What the last draw of the RELEASES screen measured: the document's
-/// height is a fact of the frame (it is rendered at the terminal's width),
-/// so the clamp and the page size come from there, `PreviewView`'s shape.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub struct ReleasesView {
-    /// The largest offset that still fills the window (0 = it all fits).
-    pub max: usize,
-    /// One press's worth of rows: the window less one row of overlap.
-    pub page: usize,
-}
-
 /// Everything the release notes screen holds. `releases` is the parsed
 /// changelog (`relnotes::parse`), `build` the tag this binary answers to —
 /// the screen marks that entry `this build` — and the rest is the reading
@@ -138,8 +129,7 @@ pub struct ReleasesView {
 pub struct ReleasesState {
     pub releases: Vec<mesimon_core::relnotes::Release>,
     pub build: String,
-    pub scroll: Cell<usize>,
-    pub view: Cell<ReleasesView>,
+    pub pager: Pager,
     pub starts: std::cell::RefCell<Vec<usize>>,
 }
 
@@ -148,8 +138,7 @@ impl ReleasesState {
         ReleasesState {
             releases,
             build: build.to_string(),
-            scroll: Cell::new(0),
-            view: Cell::new(ReleasesView::default()),
+            pager: Pager::default(),
             starts: std::cell::RefCell::new(Vec::new()),
         }
     }
@@ -170,11 +159,9 @@ pub struct DiffState {
     pub branch_oid: String,
     pub files: Vec<mesimon_core::diff::FileEntry>,
     pub file_idx: usize,
-    /// Hunk-pane top row; draw clamps against the rendered height.
-    pub scroll: Cell<usize>,
-    /// Rendered hunk-pane geometry and the current page turn.
-    pub view: Cell<PreviewView>,
-    pub glide: Cell<Option<Glide>>,
+    /// The hunk pane's (or the commit list's) reading position: the row
+    /// asked for, what the draw measured, and the page turn in motion.
+    pub pager: Pager,
     /// Marquee clock for the selected file row's overflowing path — same
     /// behaviour as the board card title and the ticket rail (draw-side).
     pub marquee: Cell<Option<(usize, std::time::Instant)>>,
@@ -503,11 +490,11 @@ pub struct Editor {
 /// different place.
 pub const GROW: Duration = Duration::from_millis(180);
 
-/// A page turn in motion on the ticket page's preview zone: the document
-/// it is on, where the window was when `{ }` was pressed, and when. The
-/// draw carries the window from there to the offset asked for over
-/// `GLIDE`, so the eye follows the text to its new place instead of losing
-/// it in a jump (author 2026-09-04: "should scroll smoothly"). Keyed to the
+/// A page turn in motion on a reading zone (see `Pager`): the document it
+/// is on, where the window was when `{ }` was pressed, and when. The draw
+/// carries the window from there to the offset asked for over `GLIDE`, so
+/// the eye follows the text to its new place instead of losing it in a
+/// jump (author 2026-09-04: "should scroll smoothly"). Keyed to the
 /// document like the request itself: a reply that changes under a glide
 /// opens at its top with no motion at all.
 #[derive(Clone, Copy, Debug)]
@@ -633,6 +620,145 @@ impl Glide {
                 (from + (to as f32 - from) * p).round().max(0.0) as usize
             }
         }
+    }
+}
+
+/// One read-only zone's reading position (T-246): the ticket page's
+/// preview, the diff's hunk pane (and its commit list) and the release
+/// notes each own one, and `App::pager` names the screen's. The press side
+/// (`scroll`, `page`, `jump`) moves by what the last draw measured; the
+/// draw side (`window`) honours the request, clamps it against the rows it
+/// has, writes the clamp back and says which row to draw this frame — the
+/// glide's, while a turn is in motion. Every field is a `Cell` because the
+/// draw takes `&App`.
+#[derive(Default)]
+pub struct Pager {
+    /// Where the keys asked the window to be: rows hidden above, and the
+    /// document (`View::key`) that was asked for. Another document under
+    /// the window — the rail moved, a new reply landed, the diff changed
+    /// file — reads it as unasked, so a page into one never opens the next
+    /// halfway. `None` is the resting place: the top, or a tail's bottom.
+    pub request: Cell<Option<(u64, usize)>>,
+    /// What the last draw measured (see `View`).
+    pub view: Cell<View>,
+    /// The page turn in motion, if one is (see `Glide`). Armed by the
+    /// press, read and retired by the draw.
+    pub glide: Cell<Option<Glide>>,
+}
+
+impl Pager {
+    /// `j`/`k`: one row (or `delta`) from where the eye IS — mid-glide,
+    /// that is partway to the last target — and the glide is dropped, so
+    /// a row step never fights a page turn.
+    pub fn scroll(&self, delta: isize) {
+        let v = self.view.get();
+        let Some(key) = v.key else { return };
+        let eye = self.eye(key, v.offset) as isize;
+        self.glide.set(None);
+        self.land(key, v, eye.saturating_add(delta).clamp(0, v.max as isize) as usize);
+    }
+
+    /// `{ }`: a page (half of one for the braces) from the row RECORDED,
+    /// so a held key advances a page per press, as a glide from where the
+    /// eye is, so it reads as one continuous scroll rather than a stutter
+    /// of restarts. Clamped here AND at draw, so a press past the end sits
+    /// on the last full window rather than a blank one; a shell tail
+    /// scrolled back to its bottom is released to follow the pane again.
+    pub fn page(&self, dir: isize, half: bool) {
+        let v = self.view.get();
+        let Some(key) = v.key else { return };
+        let next = (v.offset as isize + dir * page_rows(v.page, half) as isize)
+            .clamp(0, v.max as isize) as usize;
+        if next != v.offset {
+            let from = self.eye(key, v.offset);
+            self.glide.set(Some(Glide { key, from, at: Instant::now() }));
+        }
+        self.land(key, v, next);
+    }
+
+    /// `n`/`N` on the release notes: straight to a row, no motion.
+    pub fn jump(&self, row: usize) {
+        let v = self.view.get();
+        let Some(key) = v.key else { return };
+        self.glide.set(None);
+        self.land(key, v, row.min(v.max));
+    }
+
+    /// Back to the top of nothing: the document changed under the zone
+    /// (file, commit list, density, refresh).
+    pub fn reset(&self) {
+        self.request.set(None);
+        self.view.set(View::default());
+        self.glide.set(None);
+    }
+
+    /// Whether a turn is mid-motion and wants the next frame sooner.
+    pub fn animating(&self) -> bool {
+        self.glide.get().is_some_and(|g| g.progress().is_some())
+    }
+
+    /// The draw's half. `key` is the document on screen (`None`: nothing),
+    /// `total` its rows, `budget` the rows that fit. Honours the request
+    /// (only if it was asked of THIS document), clamps it, writes the
+    /// clamp back and records the measurement, and returns the row to draw
+    /// from this frame: the glide's while one is in motion — the record is
+    /// where the reader is going, the glide is where the eye is. A glide on
+    /// another document, or one that has landed, is retired here so
+    /// `App::animating` stops asking for fast frames the moment it can.
+    pub fn window(
+        &self,
+        key: Option<u64>,
+        total: usize,
+        budget: usize,
+        follows_tail: bool,
+    ) -> usize {
+        let max = total.saturating_sub(budget);
+        let asked = match (self.request.get(), key) {
+            (Some((k, n)), Some(key)) if k == key => Some(n),
+            _ => None,
+        };
+        let offset = match asked {
+            Some(n) => n.min(max),
+            None if follows_tail => max,
+            None => 0,
+        };
+        if asked.is_some() {
+            // A tail scrolled to its bottom is released, not pinned to it.
+            let back = if follows_tail && offset >= max { None } else { key.map(|k| (k, offset)) };
+            self.request.set(back);
+        }
+        self.view.set(View {
+            key,
+            offset,
+            max,
+            page: budget.saturating_sub(1).max(1),
+            follows_tail,
+        });
+        match self.glide.get() {
+            Some(g) if Some(g.key) == key && g.progress().is_some() => g.offset(offset).min(max),
+            Some(_) => {
+                self.glide.set(None);
+                offset
+            }
+            None => offset,
+        }
+    }
+
+    /// Where the window is THIS frame: the glide's row while one is on
+    /// this document, else the record.
+    fn eye(&self, key: u64, offset: usize) -> usize {
+        match self.glide.get() {
+            Some(g) if g.key == key => g.offset(offset),
+            _ => offset,
+        }
+    }
+
+    /// Record a press: the request, released at a tail's bottom, and the
+    /// measurement moved with it — the next press may land before the next
+    /// frame (a held key queues several), so it cannot wait for the draw.
+    fn land(&self, key: u64, v: View, next: usize) {
+        self.request.set(if v.follows_tail && next >= v.max { None } else { Some((key, next)) });
+        self.view.set(View { offset: next, ..v });
     }
 }
 
@@ -1232,23 +1358,15 @@ pub struct App {
     /// ride the snapshot; `poll_notes` fetches the ones on screen, once per
     /// `(id, rev)`, and a save seeds it from our own text.
     pub notes: std::collections::HashMap<ulid::Ulid, NoteText>,
-    /// Where `{ }` asked the preview zone to be: rows hidden above, and the
-    /// document (`PreviewView::key`) that was asked for. Another document
-    /// under the cursor — the rail moved, or a new reply landed — reads it
-    /// as zero, so a page into one reply never opens the next one halfway.
-    /// Draw clamps it and writes the clamp back, as the diff pane does.
-    pub preview_scroll: Cell<Option<(u64, usize)>>,
-    /// What the last draw of that zone measured (see `PreviewView`).
-    pub preview_view: Cell<PreviewView>,
-    /// The page turn in motion, if one is (see `Glide`). Armed by the
-    /// press, read and retired by the draw.
-    pub preview_glide: Cell<Option<Glide>>,
+    /// The ticket page's preview zone: where `{ }` asked it to be, what the
+    /// last draw measured, and the page turn in motion (see `Pager`).
+    pub preview: Pager,
     /// The PREVIEW zone's markdown, rendered once per document and width
     /// rather than once per frame (see `ui::ticket::rendered`).
     pub rich_cache: std::cell::RefCell<Option<crate::ui::RichCache>>,
     /// Where the board last drew the cursor card — the composer's phantom
     /// card, or the ticket under the cursor — which is the rectangle Tab's
-    /// dialog grows out of. Draw-side, like `preview_view`: the card's place
+    /// dialog grows out of. Draw-side, like `preview.view`: the card's place
     /// on screen is a fact of the frame, not of the board. `None` when the
     /// card is cut by the window's edge (an origin off screen is no origin).
     pub cursor_card: Cell<Option<ratatui::layout::Rect>>,
@@ -1262,7 +1380,7 @@ pub struct App {
     /// three times and a ticket-page frame six, each build a sort and a
     /// dozen clones. `ui::draw` clears it first thing, and every draw-side
     /// write a `Ctx` field reads goes through a setter that clears it
-    /// again (`set_preview_view`, `set_diff_two_pane`), so the footer never
+    /// again (`preview_measured`, `set_diff_two_pane`), so the footer never
     /// reads a measurement the frame has since moved. A keypress still
     /// builds its own through `ctx()`.
     pub(crate) frame_ctx: std::cell::RefCell<Option<std::rc::Rc<Ctx>>>,
@@ -1517,9 +1635,7 @@ impl App {
             spoke_polled: None,
             spoke_subject: None,
             notes: std::collections::HashMap::new(),
-            preview_scroll: Cell::new(None),
-            preview_view: Cell::new(PreviewView::default()),
-            preview_glide: Cell::new(None),
+            preview: Pager::default(),
             rich_cache: std::cell::RefCell::new(None),
             cursor_card: Cell::new(None),
             frames: std::cell::RefCell::new(Vec::new()),
@@ -1597,16 +1713,22 @@ impl App {
 
     /// Whether something on screen is mid-motion and wants the next frame
     /// sooner than the spinner's cadence: the composer dialog growing, or
-    /// the preview zone turning a page.
+    /// the screen's reading zone turning a page.
     pub fn animating(&self) -> bool {
         matches!(&self.mode, Mode::Editor(ed) if ed.grow_progress().is_some())
-            || (matches!(self.screen, Screen::Ticket { .. })
-                && self.preview_glide.get().is_some_and(|g| g.progress().is_some()))
-            || (matches!(self.screen, Screen::Diff)
-                && self
-                    .diff
-                    .as_ref()
-                    .is_some_and(|d| d.glide.get().is_some_and(|g| g.progress().is_some())))
+            || self.pager().is_some_and(Pager::animating)
+    }
+
+    /// The reading zone the screen's `{ }` and `j`/`k` move (T-246): the
+    /// ticket page's preview, the diff's pane, the release notes. The one
+    /// place a paging verb asks which screen it is on.
+    pub fn pager(&self) -> Option<&Pager> {
+        match self.screen {
+            Screen::Board => None,
+            Screen::Ticket { .. } => Some(&self.preview),
+            Screen::Diff => self.diff.as_ref().map(|d| &d.pager),
+            Screen::Releases => self.releases.as_ref().map(|r| &r.pager),
+        }
     }
 
     /// The working-spinner frame for this draw. The event loop redraws at
@@ -1928,10 +2050,10 @@ impl App {
         *self.frame_ctx.borrow_mut() = None;
     }
 
-    /// Draw-side write of the preview zone's measurement. `Ctx::preview_scrolls`
-    /// reads it, so the frame's cached `Ctx` goes with the old value.
-    pub(crate) fn set_preview_view(&self, v: PreviewView) {
-        self.preview_view.set(v);
+    /// The draw measured (or cleared) the preview zone, through
+    /// `self.preview`. `Ctx::preview_scrolls` reads the measurement, so the
+    /// frame's cached `Ctx` goes with the old value.
+    pub(crate) fn preview_measured(&self) {
         self.ctx_dirty();
     }
 
@@ -3458,7 +3580,7 @@ impl App {
             theme_blurb: self.theme.flavor.blurb(),
             theme_slot_word: self.ground.word(),
             theme_pinned: self.forced.is_some(),
-            preview_scrolls: self.preview_view.get().max > 0,
+            preview_scrolls: self.preview.view.get().max > 0,
             update_ready: self.update_ready(),
             // A binary already waiting on disk outranks a download: reload
             // what you have before fetching it again. This is also what keeps
@@ -4718,29 +4840,21 @@ impl App {
                 _ => {}
             },
             Verb::Terminal => self.open_terminal(),
-            // ---- diff, and the release notes on the same keys -------------
+            // ---- the reading keys: one pair each, three read-only zones ----
+            // The diff's pane, the ticket page's preview and the release
+            // notes. Which one is the screen's to say, once, in `pager()`.
             Verb::ScrollDown | Verb::ScrollUp => {
                 let dir: isize = if verb == Verb::ScrollDown { 1 } else { -1 };
-                match self.screen {
-                    Screen::Releases => self.releases_scroll(dir),
-                    _ => self.diff_scroll(dir),
+                if let Some(p) = self.pager() {
+                    p.scroll(dir);
                 }
             }
-            // One pair of keys, three read-only zones: the diff's hunk pane,
-            // the ticket page's preview and the release notes. Which one is
-            // the screen's to say.
             Verb::PageDown | Verb::PageUp | Verb::HalfPageDown | Verb::HalfPageUp => {
                 let dir: isize =
                     if matches!(verb, Verb::PageDown | Verb::HalfPageDown) { 1 } else { -1 };
                 let half = matches!(verb, Verb::HalfPageDown | Verb::HalfPageUp);
-                match self.screen {
-                    Screen::Diff => self.diff_page(dir, half),
-                    Screen::Ticket { .. } => self.preview_page(dir, half),
-                    Screen::Releases => {
-                        let page = self.releases.as_ref().map(|r| r.view.get().page).unwrap_or(0);
-                        self.releases_scroll(dir * page_rows(page.max(1), half) as isize);
-                    }
-                    Screen::Board => {}
+                if let Some(p) = self.pager() {
+                    p.page(dir, half);
                 }
             }
             Verb::NextFile | Verb::PrevFile => {
@@ -4753,9 +4867,7 @@ impl App {
             Verb::GitCommits => {
                 if let Some(d) = self.diff.as_mut().filter(|d| !d.is_branch()) {
                     d.commits = !d.commits;
-                    d.scroll.set(0);
-                    d.view.set(PreviewView::default());
-                    d.glide.set(None);
+                    d.pager.reset();
                 }
             }
             Verb::Refresh => {
@@ -4784,7 +4896,7 @@ impl App {
                         _ => 1,
                     };
                     d.cache.clear();
-                    d.scroll.set(0);
+                    d.pager.reset();
                     let noun = if d.density == 1 { "line" } else { "lines" };
                     self.status = format!(
                         "{} ∙ {} context {noun} around each change",
@@ -6592,22 +6704,12 @@ impl App {
         self.screen = Screen::Releases;
     }
 
-    /// `j`/`k`/`{`/`}` on the notes: move the window, clamped against what
-    /// the last draw measured (and again at draw, so a press past the end
-    /// rests on the last full window).
-    fn releases_scroll(&mut self, delta: isize) {
-        let Some(r) = self.releases.as_ref() else { return };
-        let max = r.view.get().max as isize;
-        let now = r.scroll.get() as isize;
-        r.scroll.set((now + delta).clamp(0, max.max(0)) as usize);
-    }
-
     /// `n`/`N` on the notes: the next release's band below the top of the
     /// window, or the previous one's above it — by the rows the draw
     /// recorded, so a jump lands the band on the first row exactly.
     fn releases_nav(&mut self, dir: isize) {
         let Some(r) = self.releases.as_ref() else { return };
-        let top = r.scroll.get().min(r.view.get().max);
+        let top = r.pager.view.get().offset;
         let starts = r.starts.borrow();
         let target = if dir > 0 {
             starts.iter().copied().find(|s| *s > top)
@@ -6615,58 +6717,8 @@ impl App {
             starts.iter().rev().copied().find(|s| *s < top)
         };
         if let Some(t) = target {
-            r.scroll.set(t.min(r.view.get().max));
+            r.pager.jump(t);
         }
-    }
-
-    fn diff_scroll(&mut self, delta: isize) {
-        let Some(d) = self.diff.as_ref() else { return };
-        let now = d.glide.get().map_or(d.scroll.get(), |g| g.offset(d.scroll.get())) as isize;
-        d.glide.set(None);
-        d.scroll.set(now.saturating_add(delta).clamp(0, d.view.get().max as isize) as usize);
-    }
-
-    fn diff_page(&mut self, dir: isize, half: bool) {
-        let Some(d) = self.diff.as_ref() else { return };
-        let v = d.view.get();
-        let next = (d.scroll.get() as isize + dir * page_rows(v.page, half) as isize)
-            .clamp(0, v.max as isize) as usize;
-        if next == d.scroll.get() {
-            return;
-        }
-        let from = d.glide.get().map_or(d.scroll.get(), |g| g.offset(d.scroll.get()));
-        d.glide.set(Some(Glide { key: d.file_idx as u64, from, at: Instant::now() }));
-        d.scroll.set(next);
-    }
-
-    /// Page the ticket preview (half a page for `{ }`), by what the
-    /// last draw measured. Clamped here AND at draw, so a press past the end
-    /// sits on the last full window rather than a blank one; a shell tail
-    /// scrolled back to its bottom is released to follow the pane again.
-    /// The move is a glide, not a jump: it starts where the window IS this
-    /// frame — mid-turn, that is partway to the last target — so a held key
-    /// reads as one continuous scroll rather than a stutter of restarts.
-    fn preview_page(&mut self, dir: isize, half: bool) {
-        let v = self.preview_view.get();
-        let Some(key) = v.key else { return };
-        let next = (v.offset as isize + dir * page_rows(v.page, half) as isize)
-            .clamp(0, v.max as isize) as usize;
-        if v.follows_tail && next >= v.max {
-            self.preview_scroll.set(None);
-        } else {
-            self.preview_scroll.set(Some((key, next)));
-        }
-        let from = match self.preview_glide.get() {
-            Some(g) if g.key == key => g.offset(v.offset),
-            _ => v.offset,
-        };
-        if from != next {
-            self.preview_glide.set(Some(Glide { key, from, at: Instant::now() }));
-        }
-        // The next press may land before the next frame (a held key queues
-        // several), so the measurement moves with the request instead of
-        // waiting for the draw to say so.
-        self.preview_view.set(PreviewView { offset: next, ..v });
     }
 
     /// The external drawer's two verbs. `resume` adopts and takes the
@@ -7953,9 +8005,7 @@ impl App {
                     branch_oid,
                     files,
                     file_idx: 0,
-                    scroll: Cell::new(0),
-                    view: Cell::new(PreviewView::default()),
-                    glide: Cell::new(None),
+                    pager: Pager::default(),
                     marquee: Cell::new(None),
                     density: 3,
                     cache: std::collections::HashMap::new(),
@@ -7988,9 +8038,7 @@ impl App {
                 d.files = files;
                 d.worktree_present = worktree_present;
                 d.cache.clear();
-                d.scroll.set(0);
-                d.view.set(PreviewView::default());
-                d.glide.set(None);
+                d.pager.reset();
                 let idx = d.file_idx;
                 self.diff_fetch(idx);
             }
@@ -8044,9 +8092,7 @@ impl App {
             return;
         }
         d.file_idx = idx;
-        d.scroll.set(0);
-        d.view.set(PreviewView::default());
-        d.glide.set(None);
+        d.pager.reset();
         self.diff_fetch(idx);
     }
 
@@ -15149,7 +15195,8 @@ mod tests {
         let c = app.frame_ctx();
         assert!(!std::rc::Rc::ptr_eq(&a, &c), "the frame boundary drops it");
         assert!(!c.preview_scrolls);
-        app.set_preview_view(PreviewView { max: 3, ..PreviewView::default() });
+        app.preview.view.set(View { max: 3, ..View::default() });
+        app.preview_measured();
         let d = app.frame_ctx();
         assert!(!std::rc::Rc::ptr_eq(&c, &d) && d.preview_scrolls, "a measurement rebuilds it");
         assert!(d.two_pane);
@@ -15321,11 +15368,17 @@ mod tests {
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         assert!(app.diff.as_ref().unwrap().commits);
         assert!(keymap::binding_for(Scope::Diff, Verb::NextFile, &app.ctx()).is_none());
-        app.diff.as_ref().unwrap().scroll.set(15);
+        app.diff.as_ref().unwrap().pager.view.set(View {
+            key: Some(u64::MAX),
+            offset: 15,
+            max: 40,
+            page: 9,
+            follows_tail: false,
+        });
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();
         let d = app.diff.as_ref().unwrap();
         assert!(!d.commits);
-        assert_eq!(d.scroll.get(), 0);
+        assert_eq!(d.pager.view.get(), View::default());
         assert!(keymap::binding_for(Scope::Diff, Verb::NextFile, &app.ctx()).is_some());
         app.diff.as_mut().unwrap().target = DiffTarget::Ticket { id: ulid::Ulid(1) };
         app.handle_key(KeyCode::Tab, KeyModifiers::NONE).unwrap();

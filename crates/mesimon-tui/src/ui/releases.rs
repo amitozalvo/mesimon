@@ -25,7 +25,7 @@ use unicode_width::UnicodeWidthStr;
 
 use mesimon_core::relnotes::Release;
 
-use crate::app::{App, ReleasesState, ReleasesView};
+use crate::app::{App, ReleasesState};
 use crate::theme::Theme;
 
 use super::chrome;
@@ -36,6 +36,10 @@ const MEASURE_MAX: usize = 100;
 const MARGIN_MIN: usize = 2;
 /// The notes sit this far inside the band's left edge.
 const INDENT: usize = 2;
+
+/// The notes' document key on their pager: one document for as long as the
+/// screen is open, so the request and the glide carry across frames.
+pub(crate) const DOC_KEY: u64 = 0;
 
 pub(super) fn draw(f: &mut Frame, app: &App) {
     let theme = &app.theme;
@@ -63,9 +67,7 @@ pub(super) fn draw(f: &mut Frame, app: &App) {
     let left = (width - measure) / 2;
 
     let doc = document(r, measure, left, theme);
-    let max = doc.lines.len().saturating_sub(body_h);
-    let top = r.scroll.get().min(max);
-    r.view.set(ReleasesView { max, page: body_h.saturating_sub(1).max(1) });
+    let top = r.pager.window(Some(DOC_KEY), doc.lines.len(), body_h, false);
     *r.starts.borrow_mut() = doc.starts.clone();
 
     let mut shown: Vec<Line<'static>> = doc.lines.into_iter().skip(top).take(body_h).collect();
